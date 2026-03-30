@@ -470,14 +470,21 @@ void mglClientActiveTexture(GLMContext ctx, GLenum texture)
 
 void mglActiveTexture(GLMContext ctx, GLenum texture)
 {
-    texture -= GL_TEXTURE0;
+    GLuint unit;
 
-    if (texture > STATE_VAR(max_combined_texture_image_units))
+    if (texture < GL_TEXTURE0)
     {
-        ERROR_RETURN(GL_INVALID_INDEX);
+        ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    STATE(active_texture) = texture;
+    unit = (GLuint)(texture - GL_TEXTURE0);
+
+    if (unit >= TEXTURE_UNITS || unit >= STATE_VAR(max_combined_texture_image_units))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+    }
+
+    STATE(active_texture) = unit;
     ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
 }
 

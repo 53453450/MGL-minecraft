@@ -93,18 +93,7 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao)
 
 VertexArray *getVAO(GLMContext ctx, GLuint vao)
 {
-    VertexArray *ptr;
-
-    ptr = (VertexArray *)searchHashTable(&STATE(vao_table), vao);
-
-    if (!ptr)
-    {
-        ptr = newVAO(ctx, vao);
-
-        insertHashElement(&STATE(vao_table), vao, ptr);
-    }
-
-    return ptr;
+    return (VertexArray *)searchHashTable(&STATE(vao_table), vao);
 }
 
 int isVAO(GLMContext ctx, GLuint vao)
@@ -121,9 +110,18 @@ int isVAO(GLMContext ctx, GLuint vao)
 
 void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
 {
-    while(n--)
+    ERROR_CHECK_RETURN(arrays, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(n >= 0, GL_INVALID_VALUE);
+
+    while (n--)
     {
-        *arrays++ = getNewName(&STATE(vao_table));
+        GLuint name;
+        VertexArray *ptr;
+
+        name = getNewName(&STATE(vao_table));
+        *arrays++ = name;
+        ptr = newVAO(ctx, name);
+        insertHashElement(&STATE(vao_table), name, ptr);
     }
 }
 
@@ -137,11 +135,8 @@ void mglBindVertexArray(GLMContext ctx, GLuint array)
     }
     else
     {
-        //ERROR_CHECK_RETURN(isVAO(ctx, array), GL_INVALID_VALUE);
-
         ptr = getVAO(ctx, array);
-
-        ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+        ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     }
 
     if (STATE(vao) != ptr)
@@ -535,15 +530,6 @@ void mglCreateVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
     ERROR_CHECK_RETURN(arrays, GL_INVALID_VALUE);
 
     mglGenVertexArrays(ctx, n, arrays);
-
-    for(int i=0; i<n; i++)
-    {
-        VertexArray *ptr;
-
-        ptr = getVAO(ctx, arrays[i]);
-
-        assert(ptr);
-    }
 }
 
 /*
