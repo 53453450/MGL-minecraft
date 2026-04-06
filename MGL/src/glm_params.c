@@ -68,12 +68,28 @@ void getMacOSDefaults(GLMContext glm_ctx)
     CGLPixelFormatObj pix;
     CGLError errorCode;
     GLint num; // stores the number of possible pixel formats
-    errorCode = CGLChoosePixelFormat( attributes, &pix, &num ); assert(errorCode == kCGLNoError);
-    // add error checking here
-    errorCode = CGLCreateContext( pix, NULL, &ctx ); assert(errorCode == kCGLNoError);
+    errorCode = CGLChoosePixelFormat(attributes, &pix, &num);
+    if (errorCode != kCGLNoError || !pix || num <= 0)
+    {
+        fprintf(stderr, "MGL WARN: CGLChoosePixelFormat failed (%d), using fallback defaults\n", (int)errorCode);
+        return;
+    }
+    errorCode = CGLCreateContext(pix, NULL, &ctx);
+    if (errorCode != kCGLNoError || !ctx)
+    {
+        fprintf(stderr, "MGL WARN: CGLCreateContext failed (%d), using fallback defaults\n", (int)errorCode);
+        CGLDestroyPixelFormat(pix);
+        return;
+    }
     CGLDestroyPixelFormat( pix );
 
-    errorCode = CGLSetCurrentContext( ctx ); assert(errorCode == kCGLNoError);
+    errorCode = CGLSetCurrentContext(ctx);
+    if (errorCode != kCGLNoError)
+    {
+        fprintf(stderr, "MGL WARN: CGLSetCurrentContext failed (%d), using fallback defaults\n", (int)errorCode);
+        CGLDestroyContext(ctx);
+        return;
+    }
 
     glGetFloatv(GL_POINT_SIZE,&glm_ctx->state.var.point_size);
     glGetIntegerv(GL_POINT_SIZE_RANGE,&glm_ctx->state.var.point_size_range);

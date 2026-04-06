@@ -408,7 +408,17 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
 {
     GLuint buffer;
 
+    ctx = mgl_sanitize_ctx(ctx, __FUNCTION__);
+    if (!ctx)
+        return;
+
     if (n < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n > 0 && buffers == NULL)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -418,11 +428,17 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
     {
         buffer = *buffers++;
 
+        // OpenGL: deleting name 0 is silently ignored.
+        if (buffer == 0)
+            continue;
+
         if (isBuffer(ctx, buffer))
         {
             Buffer *ptr;
 
-            ptr = (Buffer *)searchHashTable(&STATE(buffer_table), buffer);
+            ptr = findBuffer(ctx, buffer);
+            if (!ptr)
+                continue;
 
             if (ptr->data.buffer_data)
             {
@@ -432,6 +448,7 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     {
                         // the mtl buffer has a deallocator for the vm allocate
                         ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
+                        ptr->data.mtl_data = NULL;
                     }
                     else
                     {
@@ -443,58 +460,56 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     if (ptr->data.mtl_data)
                     {
                         ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
+                        ptr->data.mtl_data = NULL;
                     }
                 }
 
                 ptr->data.buffer_data = 0;
             }
 
-            deleteHashElement(&STATE(buffer_table), buffer);
-
-            // remove any dangling references
-            GLuint target;
-
-            target = ptr->target;
-            if (STATE(buffers[target]))
+            // remove any dangling references from generic buffer bindings
+            for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
             {
-                if (STATE(buffers[target])->name == buffer)
+                if (STATE(buffers[i]) == ptr ||
+                    (STATE(buffers[i]) && STATE(buffers[i])->name == buffer))
                 {
-                    STATE(buffers[target]) = NULL;
+                    STATE(buffers[i]) = NULL;
                 }
             }
 
+            // remove dangling VAO references (attribute buffers + element buffer)
             if (VAO())
             {
-                if (VAO_ATTRIB_STATE(target).buffer)
+                if (VAO_STATE(element_array.buffer) == ptr ||
+                    (VAO_STATE(element_array.buffer) && VAO_STATE(element_array.buffer)->name == buffer))
                 {
-                    if (VAO_ATTRIB_STATE(target).buffer->name == buffer)
+                    VAO_STATE(element_array.buffer) = NULL;
+                }
+
+                for (GLuint i = 0; i < MAX_ATTRIBS; i++)
+                {
+                    if (VAO_ATTRIB_STATE(i).buffer == ptr ||
+                        (VAO_ATTRIB_STATE(i).buffer && VAO_ATTRIB_STATE(i).buffer->name == buffer))
                     {
-                        VAO_ATTRIB_STATE(target).buffer = NULL;
+                        VAO_ATTRIB_STATE(i).buffer = NULL;
                     }
                 }
             }
 
-            switch(target)
+            // remove any dangling references in indexed buffer-base bindings
+            for (GLuint idx = 0; idx < _MAX_BUFFER_TYPES; idx++)
             {
-                case GL_UNIFORM:
-                case GL_TRANSFORM_FEEDBACK_BUFFER:
-                case GL_SHADER_STORAGE_BUFFER:
-                case GL_ATOMIC_COUNTER_BUFFER:
+                for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
                 {
-                    GLuint index;
-
-                    index = bufferIndexFromTarget(ctx, target);
-
-                    for(int i=0; i<MAX_BINDABLE_BUFFERS; i++)
+                    if (ctx->state.buffer_base[idx].buffers[i].buf == ptr ||
+                        ctx->state.buffer_base[idx].buffers[i].buffer == buffer)
                     {
-                        if (ctx->state.buffer_base[index].buffers[i].buffer == buffer)
-                        {
-                            bzero(&ctx->state.buffer_base[index], sizeof(BufferBaseTarget));
-                        }
+                        bzero(&ctx->state.buffer_base[idx].buffers[i], sizeof(BufferBaseTarget));
                     }
                 }
             }
 
+            deleteHashElement(&STATE(buffer_table), buffer);
             free(ptr);
         } // if (isBuffer(ctx, buffer))
     } // while(--n)
@@ -1756,4 +1771,3 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
     // Unimplemented function
     assert(0);
 }
-

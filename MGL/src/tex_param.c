@@ -791,14 +791,84 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
     }
 }
 
+void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenum pname, GLint *params);
+
 void mglGetTexLevelParameterfv(GLMContext ctx, GLenum target, GLint level, GLenum pname, GLfloat *params)
 {
-    // Unimplemented function
-    assert(0);
+    GLint value = 0;
+    mglGetTexLevelParameteriv(ctx, target, level, pname, &value);
+    *params = (GLfloat)value;
 }
 
 void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenum pname, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    GLuint index;
+    Texture *tex;
+    GLint internalformat;
+
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (level < 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    index = textureIndexFromTarget(ctx, target);
+    if (index == _MAX_TEXTURE_TYPES)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    tex = currentTexture(ctx, index);
+    if (!tex)
+    {
+        *params = 0;
+        return;
+    }
+
+    if (level >= (GLint)tex->num_levels || !tex->faces[0].levels)
+    {
+        *params = 0;
+        return;
+    }
+
+    internalformat = tex->internalformat;
+
+    switch (pname)
+    {
+        case GL_TEXTURE_WIDTH:
+            *params = tex->faces[0].levels[level].width;
+            return;
+        case GL_TEXTURE_HEIGHT:
+            *params = tex->faces[0].levels[level].height;
+            return;
+        case GL_TEXTURE_DEPTH:
+            *params = tex->faces[0].levels[level].depth;
+            return;
+        case GL_TEXTURE_INTERNAL_FORMAT:
+            *params = internalformat;
+            return;
+        case GL_TEXTURE_RED_SIZE:
+        case GL_TEXTURE_GREEN_SIZE:
+        case GL_TEXTURE_BLUE_SIZE:
+        case GL_TEXTURE_ALPHA_SIZE:
+            // Conservative default sufficient for capability probing.
+            *params = 8;
+            return;
+        case GL_TEXTURE_DEPTH_SIZE:
+            *params = (internalformat == GL_DEPTH_COMPONENT16) ? 16 : 24;
+            return;
+        case GL_TEXTURE_STENCIL_SIZE:
+            *params = (internalformat == GL_DEPTH24_STENCIL8 || internalformat == GL_STENCIL_INDEX8) ? 8 : 0;
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }

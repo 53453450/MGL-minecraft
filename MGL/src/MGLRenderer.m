@@ -137,6 +137,7 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
     SyncList  *_currentCommandBufferSyncList;
 
     id<MTLRenderCommandEncoder> _currentRenderEncoder;
+    id<MTLTexture> _fallbackRenderTargetTexture;
 
     GLuint _blitOperationComplete;
 
@@ -335,6 +336,20 @@ void logDirtyBits(GLMContext ctx)
 - (void) bindMTLBuffer:(Buffer *) ptr
 {
     MTLResourceOptions options;
+    const size_t kMaxSafeBufferSize = (size_t)2 * 1024 * 1024 * 1024; // 2 GiB safety cap
+
+    if (!ptr) {
+        NSLog(@"MGL ERROR: bindMTLBuffer called with NULL buffer");
+        return;
+    }
+
+    // Corrupted buffer sizes can crash Metal validation immediately.
+    if (ptr->size == 0 || ptr->size > kMaxSafeBufferSize) {
+        NSLog(@"MGL ERROR: Refusing to create Metal buffer with suspicious size=%zu for buffer %u",
+              (size_t)ptr->size, ptr->name);
+        ptr->data.mtl_data = NULL;
+        return;
+    }
 
     options = MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeManaged;
 
@@ -346,17 +361,23 @@ void logDirtyBits(GLMContext ctx)
 
     if (ptr->storage_flags & GL_CLIENT_STORAGE_BIT)
     {
-        id<MTLBuffer> buffer = [_device newBufferWithBytesNoCopy: (void *)(ptr->data.buffer_data)
-                                                     length: ptr->size // allocate only size since this is what will be transferred
-                                                    options: options
-                                                deallocator: ^(void *pointer, NSUInteger length)
-                                                {
-                                                    kern_return_t err;
-                                                    err = vm_deallocate((vm_map_t) mach_task_self(),
-                                                                        (vm_address_t) pointer,
-                                                                        length);
-                                                    assert(err == 0);
-                                                }];
+        if (!ptr->data.buffer_data) {
+            NSLog(@"MGL ERROR: GL_CLIENT_STORAGE_BIT set but buffer_data is NULL for buffer %u", ptr->name);
+            ptr->data.mtl_data = NULL;
+            return;
+        }
+
+        id<MTLBuffer> buffer = [_device newBufferWithBytesNoCopy:(void *)(ptr->data.buffer_data)
+                                                           length:ptr->size
+                                                          options:options
+                                                      deallocator:^(void *pointer, NSUInteger length)
+                              {
+                                  kern_return_t err;
+                                  err = vm_deallocate((vm_map_t) mach_task_self(),
+                                                      (vm_address_t) pointer,
+                                                      length);
+                                  assert(err == 0);
+                              }];
 
         ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
     }
@@ -368,18 +389,28 @@ void logDirtyBits(GLMContext ctx)
         // backing data to the MTL buffer
         if (ptr->data.buffer_data)
         {
+            size_t safeBufferSize = ptr->data.buffer_size;
+            if (safeBufferSize == 0 || safeBufferSize > kMaxSafeBufferSize) {
+                safeBufferSize = ptr->size;
+            }
+
             // check the GL allocated size, not the vm_allocated size as these are page aligned
             if (ptr->size > 4095)
             {
                 buffer = [_device newBufferWithBytes:(void *)ptr->data.buffer_data
-                                                            length:ptr->data.buffer_size
+                                                            length:safeBufferSize
                                                            options:options];
-                assert(buffer);
+                if (!buffer) {
+                    NSLog(@"MGL ERROR: Failed to create Metal buffer from backing data (size=%zu, buffer=%u)",
+                          safeBufferSize, ptr->name);
+                    ptr->data.mtl_data = NULL;
+                    return;
+                }
 
                 kern_return_t err;
                 err = vm_deallocate((vm_map_t) mach_task_self(),
                                     (vm_address_t) ptr->data.buffer_data,
-                                    ptr->data.buffer_size);
+                                    safeBufferSize);
                 assert(err == 0);
 
                 ptr->data.buffer_data = (vm_address_t)buffer.contents;
@@ -390,7 +421,12 @@ void logDirtyBits(GLMContext ctx)
                 buffer = [_device newBufferWithBytes:(void *)ptr->data.buffer_data
                                               length:ptr->size
                                              options:options];
-                assert(buffer);
+                if (!buffer) {
+                    NSLog(@"MGL ERROR: Failed to create small Metal buffer (size=%zu, buffer=%u)",
+                          (size_t)ptr->size, ptr->name);
+                    ptr->data.mtl_data = NULL;
+                    return;
+                }
 
                 // Don't deallocate the original buffer for small sizes to maintain compatibility
                 ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
@@ -400,7 +436,12 @@ void logDirtyBits(GLMContext ctx)
         {
             buffer = [_device newBufferWithLength: ptr->size // allocate by size
                                                         options: options];
-            assert(buffer);
+            if (!buffer) {
+                NSLog(@"MGL ERROR: Failed to allocate Metal buffer with length=%zu (buffer=%u)",
+                      (size_t)ptr->size, ptr->name);
+                ptr->data.mtl_data = NULL;
+                return;
+            }
 
             ptr->data.buffer_data = (vm_address_t)NULL;
         }
@@ -449,40 +490,47 @@ void logDirtyBits(GLMContext ctx)
         if (count)
         {
             BufferBaseTarget *buffers;
-            int buffers_to_be_mapped = count;
 
             buffers = ctx->state.buffer_base[gl_buffer_type].buffers;
             
-            for (int i=0; buffers_to_be_mapped; i++)
+            for (int i = 0; i < count; i++)
             {
                 GLuint spirv_binding;
                 Buffer *buf;
 
                 // get the ubo binding from spirv
                 spirv_binding = [self getProgramBinding:stage type:spvc_type index: i];
+                if (spirv_binding >= MAX_BINDABLE_BUFFERS)
+                {
+                    NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping",
+                          stage, spvc_type, spirv_binding, MAX_BINDABLE_BUFFERS);
+                    continue;
+                }
 
                 buf = buffers[spirv_binding].buf;
 
                 if (buf)
                 {
+                    if (buffer_map->count >= MAX_MAPPED_BUFFERS)
+                    {
+                        NSLog(@"MGL ERROR: mapGLBuffersToMTLBufferMap overflow: count=%d max=%d",
+                              buffer_map->count, MAX_MAPPED_BUFFERS);
+                        return false;
+                    }
                     buffer_map->buffers[buffer_map->count].attribute_mask = 0; // non attribute.. no bits set
                     buffer_map->buffers[buffer_map->count].buffer_base_index = spirv_binding;
                     buffer_map->buffers[buffer_map->count].buf = buf;
                     buffer_map->buffers[buffer_map->count].offset = buffers[spirv_binding].offset;
                     buffer_map->count++;
-                    buffers_to_be_mapped--;
                     
                     //DEBUG_PRINT("Found buffer type: %s buffer_base_index: %d\n", mapped_types[type].name, spirv_binding);
                 }
                 else
                 {
-                    ctx->error_func(ctx, __FUNCTION__, GL_INVALID_OPERATION);
-
-                    return false;
+                    // Some vanilla shader paths tolerate unbound blocks on specific stages.
+                    // Skip instead of poisoning global GL error state with GL_INVALID_OPERATION.
+                    continue;
                 }
-
-                // endless loop
-                RETURN_FALSE_ON_FAILURE(i < MAX_ATTRIBS);
             }
         }
     }
@@ -532,7 +580,11 @@ void logDirtyBits(GLMContext ctx)
                 if (map_buffer == NULL)
                 {
                     // map the buffer object to a metal vertex index
-                    assert(buffer_map->count < ctx->state.max_vertex_attribs);
+                    if (buffer_map->count >= ctx->state.max_vertex_attribs) {
+                        NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
+                              buffer_map->count, ctx->state.max_vertex_attribs, att);
+                        continue;
+                    }
                     buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
                     buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
                     buffer_map->count++;
@@ -564,7 +616,11 @@ void logDirtyBits(GLMContext ctx)
                     if (found_buffer == false)
                     {
                         // map the next buffer object to a metal vertex index
-                        assert(buffer_map->count < ctx->state.max_vertex_attribs);
+                        if (buffer_map->count >= ctx->state.max_vertex_attribs) {
+                            NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
+                                  buffer_map->count, ctx->state.max_vertex_attribs, att);
+                            continue;
+                        }
                         buffer_map->buffers[buffer_map->count].attribute_mask = (0x1 << att);
                         buffer_map->buffers[buffer_map->count].buf = gl_buffer;
                         buffer_map->count++;
@@ -578,7 +634,14 @@ void logDirtyBits(GLMContext ctx)
                 break;
         }
 
-        assert(mapped_buffers == count);
+        if (mapped_buffers != count) {
+            static unsigned long long s_map_mismatch_hits = 0;
+            s_map_mismatch_hits++;
+            if ((s_map_mismatch_hits % 64ull) == 1ull) {
+                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (mapped=%u expected=%u stage=%d hit=%llu)",
+                      mapped_buffers, count, stage, s_map_mismatch_hits);
+            }
+        }
     }
     else if (stage == _COMPUTE_SHADER)
     {
@@ -713,8 +776,11 @@ void logDirtyBits(GLMContext ctx)
     BufferMap *map;
     Buffer *ptr;
     GLintptr offset;
-    
-    assert(_currentRenderEncoder);
+
+    if (!_currentRenderEncoder) {
+        NSLog(@"MGL ERROR: bindVertexBuffersToCurrentRenderEncoder: no current render encoder");
+        return false;
+    }
 
     for(int i=0; i<ctx->state.vertex_buffer_map_list.count; i++)
     {
@@ -723,24 +789,46 @@ void logDirtyBits(GLMContext ctx)
         ptr = map->buf;
         offset = map->offset;
 
-        assert(ptr);
+        if (!ptr) {
+            NSLog(@"MGL WARNING: Vertex buffer map[%d] has NULL buffer pointer, skipping", i);
+            continue;
+        }
 
         // for buffers less than 4k we should use this call
         if (ptr->size < 4096)
         {
-            assert(ptr->data.mtl_data == NULL);
-
-            [_currentRenderEncoder setVertexBytes:(const void *)ptr->data.buffer_data length:ptr->size atIndex:i];
+            if (ptr->data.buffer_data && ptr->size > 0) {
+                [_currentRenderEncoder setVertexBytes:(const void *)ptr->data.buffer_data length:ptr->size atIndex:i];
+            } else if (ptr->data.mtl_data) {
+                id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+                if (fallbackBuffer) {
+                    [_currentRenderEncoder setVertexBuffer:fallbackBuffer offset:offset atIndex:i];
+                }
+            } else {
+                // Explicitly unbind this slot if no data is available.
+                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:i];
+            }
             
             // clear buffer data dirty bits
             ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
         }
         else
         {
-            assert(ptr->data.mtl_data);
+            if (!ptr->data.mtl_data) {
+                [self bindMTLBuffer:ptr];
+            }
+            if (!ptr->data.mtl_data) {
+                NSLog(@"MGL WARNING: Vertex buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
+                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:i];
+                continue;
+            }
 
             id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-            assert(buffer);
+            if (!buffer) {
+                NSLog(@"MGL WARNING: Vertex buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
+                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:i];
+                continue;
+            }
 
             [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:i ];
         }
@@ -754,8 +842,11 @@ void logDirtyBits(GLMContext ctx)
     BufferMap *map;
     Buffer *ptr;
     GLintptr offset;
-    
-    assert(_currentRenderEncoder);
+
+    if (!_currentRenderEncoder) {
+        NSLog(@"MGL ERROR: bindFragmentBuffersToCurrentRenderEncoder: no current render encoder");
+        return false;
+    }
 
     for(int i=0; i<ctx->state.fragment_buffer_map_list.count; i++)
     {
@@ -764,23 +855,44 @@ void logDirtyBits(GLMContext ctx)
         ptr = map->buf;
         offset = map->offset;
 
-        assert(ptr);
+        if (!ptr) {
+            NSLog(@"MGL WARNING: Fragment buffer map[%d] has NULL buffer pointer, skipping", i);
+            continue;
+        }
         
         if (ptr->size < 4096)
         {
-            assert(ptr->data.mtl_data == NULL);
-
-            [_currentRenderEncoder setFragmentBytes:(const void *)ptr->data.buffer_data length:ptr->size atIndex:i];
+            if (ptr->data.buffer_data && ptr->size > 0) {
+                [_currentRenderEncoder setFragmentBytes:(const void *)ptr->data.buffer_data length:ptr->size atIndex:i];
+            } else if (ptr->data.mtl_data) {
+                id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+                if (fallbackBuffer) {
+                    [_currentRenderEncoder setFragmentBuffer:fallbackBuffer offset:offset atIndex:i];
+                }
+            } else {
+                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:i];
+            }
             
             // clear buffer data dirty bits
             ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
         }
         else
         {
-            assert(ptr->data.mtl_data);
+            if (!ptr->data.mtl_data) {
+                [self bindMTLBuffer:ptr];
+            }
+            if (!ptr->data.mtl_data) {
+                NSLog(@"MGL WARNING: Fragment buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
+                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:i];
+                continue;
+            }
             
             id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-            assert(buffer);
+            if (!buffer) {
+                NSLog(@"MGL WARNING: Fragment buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
+                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:i];
+                continue;
+            }
             
             [_currentRenderEncoder setFragmentBuffer:buffer offset:offset atIndex:i ];
         }
@@ -2250,78 +2362,87 @@ void logDirtyBits(GLMContext ctx)
 
 - (bool) bindTexturesToCurrentRenderEncoder
 {
-    GLuint count;
+    if (!_currentRenderEncoder) {
+        // No active render encoder yet (or it was rotated). Texture/sampler binding
+        // can be deferred until the next encoder is created.
+        return true;
+    }
 
-    // iterate shader storage buffers
-    count = [self getProgramBindingCount: _FRAGMENT_SHADER type: SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
-    if (count)
+    id<MTLSamplerState> defaultSampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+
+    // Bind sampled images (texture + sampler).
+    GLuint sampledCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+    for (GLuint i = 0; i < sampledCount; i++)
     {
-        int textures_to_be_mapped = count;
+        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index:(int)i];
+        if (spirvBinding >= TEXTURE_UNITS) {
+            continue;
+        }
 
-        // something is very wrong..
-        assert(textures_to_be_mapped < TEXTURE_UNITS);
+        Texture *ptr = STATE(active_textures[spirvBinding]);
+        id<MTLTexture> texture = nil;
+        id<MTLSamplerState> sampler = nil;
 
-        for (int i=0; textures_to_be_mapped > 0; i++)
-        {
-            RETURN_FALSE_ON_FAILURE(i < count);
-
-            GLuint spirv_binding;
-            Texture *ptr;
-
-            spirv_binding = [self getProgramBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index: i];
-
-            ptr = STATE(active_textures[spirv_binding]);
-
-            if (ptr)
-            {
-                id<MTLTexture> texture;
-
-                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: ptr]);
-                assert(ptr->mtl_data);
-
+        if (ptr) {
+            RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
+            if (ptr->mtl_data) {
                 texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
-                assert(texture);
-
-                id<MTLSamplerState> sampler;
-
-                // late binding of texture samplers.. but its better than scanning all texture_samplers
-                // texture samplers take priority over texture parameters
-                if(STATE(texture_samplers[spirv_binding]))
-                {
-                    Sampler *gl_sampler;
-
-                    gl_sampler = STATE(texture_samplers[spirv_binding]);
-
-                    // delete existing sampler if dirty
-                    if (gl_sampler->dirty_bits)
-                    {
-                        if (gl_sampler->mtl_data)
-                        {
-                            CFBridgingRelease(gl_sampler->mtl_data);
-                            gl_sampler->mtl_data = NULL;
-                        }
-                    }
-
-                    if (gl_sampler->mtl_data == NULL)
-                    {
-                        gl_sampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&gl_sampler->params target:ptr->target]);
-                        gl_sampler->dirty_bits = 0;
-                    }
-
-                    sampler = (__bridge id<MTLSamplerState>)(gl_sampler->mtl_data);
-                    assert(sampler);
-                }
-                else
-                {
-                    sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
-                    assert(sampler);
-                }
-
-                [_currentRenderEncoder setFragmentTexture:texture atIndex:spirv_binding];
-                [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:spirv_binding];
-
-                textures_to_be_mapped--;
             }
+
+            if (STATE(texture_samplers[spirvBinding])) {
+                Sampler *glSampler = STATE(texture_samplers[spirvBinding]);
+                if (glSampler->dirty_bits && glSampler->mtl_data) {
+                    CFBridgingRelease(glSampler->mtl_data);
+                    glSampler->mtl_data = NULL;
+                }
+                if (glSampler->mtl_data == NULL) {
+                    glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
+                    glSampler->dirty_bits = 0;
+                }
+                sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+            } else {
+                sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+            }
+        }
+
+        if (!sampler) {
+            sampler = defaultSampler;
+        }
+
+        [_currentRenderEncoder setFragmentTexture:texture atIndex:spirvBinding];
+        if (sampler) {
+            [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:spirvBinding];
+        }
+    }
+
+    // Bind separate samplers explicitly.
+    GLuint separateSamplerCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
+    for (GLuint i = 0; i < separateSamplerCount; i++)
+    {
+        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS index:(int)i];
+        if (spirvBinding >= TEXTURE_UNITS) {
+            continue;
+        }
+
+        id<MTLSamplerState> sampler = nil;
+        if (STATE(texture_samplers[spirvBinding])) {
+            Sampler *glSampler = STATE(texture_samplers[spirvBinding]);
+            if (glSampler->dirty_bits && glSampler->mtl_data) {
+                CFBridgingRelease(glSampler->mtl_data);
+                glSampler->mtl_data = NULL;
+            }
+            if (glSampler->mtl_data == NULL) {
+                glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:GL_TEXTURE_2D]);
+                glSampler->dirty_bits = 0;
+            }
+            sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+        }
+
+        if (!sampler) {
+            sampler = defaultSampler;
+        }
+        if (sampler) {
+            [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:spirvBinding];
         }
     }
 
@@ -2335,21 +2456,50 @@ extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum 
 
 -(void)mtlBlitFramebuffer:(GLMContext)glm_ctx srcX0:(size_t)srcX0 srcY0:(size_t)srcY0 srcX1:(size_t)srcX1 srcY1:(size_t)srcY1 dstX0:(size_t)dstX0 dstY0:(size_t)dstY0 dstX1:(size_t)dstX1 dstY1:(size_t)dstY1 mask:(size_t)mask filter:(GLuint)filter
 {
+    if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
+        NSLog(@"MGL ERROR: mtlBlitFramebuffer called with invalid glm_ctx=%p", glm_ctx);
+        return;
+    }
+
+    if (srcX1 <= srcX0 || srcY1 <= srcY0) {
+        NSLog(@"MGL WARN: mtlBlitFramebuffer ignored invalid source rect (%zu,%zu)-(%zu,%zu)", srcX0, srcY0, srcX1, srcY1);
+        return;
+    }
+
+    // Keep renderer ivar state consistent with the call site context.
+    ctx = glm_ctx;
+
     Framebuffer * readfbo, * drawfbo;
+    GLenum readAttachment, drawAttachment;
     //int readtex, drawtex;
 
-    readfbo = ctx->state.readbuffer;
-    assert(readfbo);
+    readfbo = glm_ctx->state.readbuffer;
 
     id<MTLTexture> readtexid;
 
     if (readfbo==NULL) {
-        assert(_drawable);
+        if (!_drawable || !_drawable.texture) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer has no drawable source texture");
+            return;
+        }
         readtexid = _drawable.texture;
     } else {
-        assert(readfbo);
-        FBOAttachment * fboa = getFBOAttachment(ctx, readfbo, STATE(read_buffer));
-        assert(fboa);
+        readAttachment = glm_ctx->state.read_buffer;
+        if (!isColorAttachment(glm_ctx, readAttachment) &&
+            readAttachment != GL_DEPTH_ATTACHMENT &&
+            readAttachment != GL_STENCIL_ATTACHMENT &&
+            readAttachment != GL_DEPTH_STENCIL_ATTACHMENT)
+        {
+            // OpenGL compatibility enums (e.g. GL_FRONT/GL_BACK) are not valid
+            // FBO attachment enums. For user FBO blits, treat them as COLOR_ATTACHMENT0.
+            readAttachment = GL_COLOR_ATTACHMENT0;
+        }
+
+        FBOAttachment * fboa = getFBOAttachment(glm_ctx, readfbo, readAttachment);
+        if (!fboa) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer read attachment missing");
+            return;
+        }
         Texture * readtexobj;
         if (fboa->textarget == GL_RENDERBUFFER)
         {
@@ -2359,22 +2509,42 @@ extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum 
         {
             readtexobj = fboa->buf.tex;
         }
-        assert(readtexobj);
+        if (!readtexobj) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer read texture object missing");
+            return;
+        }
         readtexid = (__bridge id<MTLTexture>)(readtexobj->mtl_data);
-        assert(readtexid);
+        if (!readtexid) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer read MTL texture missing");
+            return;
+        }
     }
 
 
-    drawfbo = ctx->state.framebuffer;
+    drawfbo = glm_ctx->state.framebuffer;
 
     id<MTLTexture> drawtexid;
     if (drawfbo==NULL) {
-        assert(_drawable);
+        if (!_drawable || !_drawable.texture) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer has no drawable destination texture");
+            return;
+        }
         drawtexid = _drawable.texture;
     } else {
-        assert(drawfbo);
-        FBOAttachment * fboa = getFBOAttachment(ctx, drawfbo, STATE(draw_buffer));
-        assert(fboa);
+        drawAttachment = glm_ctx->state.draw_buffer;
+        if (!isColorAttachment(glm_ctx, drawAttachment) &&
+            drawAttachment != GL_DEPTH_ATTACHMENT &&
+            drawAttachment != GL_STENCIL_ATTACHMENT &&
+            drawAttachment != GL_DEPTH_STENCIL_ATTACHMENT)
+        {
+            drawAttachment = GL_COLOR_ATTACHMENT0;
+        }
+
+        FBOAttachment * fboa = getFBOAttachment(glm_ctx, drawfbo, drawAttachment);
+        if (!fboa) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer draw attachment missing");
+            return;
+        }
         Texture * drawtexobj;
         if (fboa->textarget == GL_RENDERBUFFER)
         {
@@ -2384,18 +2554,33 @@ extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum 
         {
             drawtexobj = fboa->buf.tex;
         }
-        assert(drawtexobj);
+        if (!drawtexobj) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer draw texture object missing");
+            return;
+        }
         drawtexid = (__bridge id<MTLTexture>)(drawtexobj->mtl_data);
-        assert(drawtexid);
+        if (!drawtexid) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer draw MTL texture missing");
+            return;
+        }
     }
 
 
     // end encoding on current render encoder
     [self endRenderEncoding];
 
+    if (![self ensureWritableCommandBuffer:"mtlBlitFramebuffer"]) {
+        NSLog(@"MGL WARN: mtlBlitFramebuffer could not obtain writable command buffer");
+        return;
+    }
+
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
     blitCommandEncoder = [_currentCommandBuffer blitCommandEncoder];
+    if (!blitCommandEncoder) {
+        NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
+        return;
+    }
     [blitCommandEncoder
         copyFromTexture:readtexid sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(srcX0, srcY0, 0) sourceSize:MTLSizeMake(srcX1-srcX0, srcY1-srcY0, 1)
         toTexture:drawtexid destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(dstX0, dstY0, 0) /*destinationSize:MTLSizeMake(dstX1, dstY1, 0)*/ ];
@@ -2405,28 +2590,55 @@ extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum 
 
 void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
+    if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
+        fprintf(stderr, "MGL ERROR: mtlBlitFramebuffer bridge received invalid glm_ctx=%p\n", (void*)glm_ctx);
+        return;
+    }
+
     [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBlitFramebuffer:glm_ctx srcX0:srcX0 srcY0:srcY0 srcX1:srcX1 srcY1:srcY1 dstX0:dstX0 dstY0:dstY0 dstX1:dstX1 dstY1:dstY1 mask:mask filter:filter];
 }
 
 - (Texture *)framebufferAttachmentTexture: (FBOAttachment *)fbo_attachment
 {
-    Texture *tex;
+    Texture *tex = NULL;
+
+    if (!fbo_attachment) {
+        NSLog(@"MGL ERROR: framebufferAttachmentTexture called with NULL attachment");
+        return NULL;
+    }
 
     if (fbo_attachment->textarget == GL_RENDERBUFFER)
     {
-        tex = fbo_attachment->buf.rbo->tex;
+        if (fbo_attachment->buf.rbo) {
+            tex = fbo_attachment->buf.rbo->tex;
+        }
     }
     else
     {
         tex = fbo_attachment->buf.tex;
     }
-    assert(tex);
+    if (!tex) {
+        NSLog(@"MGL WARN: framebuffer attachment has no texture (target=0x%x)", fbo_attachment->textarget);
+    }
 
     return tex;
 }
 
 - (bool)bindMTLTexture:(Texture *)tex
 {
+    // If this texture is now used as a render target but was previously created
+    // without render-target usage, force a recreate with proper usage flags.
+    if (tex->mtl_data && tex->is_render_target) {
+        id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+        if (existingTexture && ((existingTexture.usage & MTLTextureUsageRenderTarget) == 0)) {
+            NSLog(@"MGL WARNING: Recreating texture %u with RenderTarget usage (old usage=0x%lx)",
+                  tex->name, (unsigned long)existingTexture.usage);
+            CFBridgingRelease(tex->mtl_data);
+            tex->mtl_data = NULL;
+            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        }
+    }
+
     if (tex->dirty_bits)
     {
         // release mtl data
@@ -2490,9 +2702,15 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 if (mask & (0x1 << bitpos))
                 {
                     Texture *tex;
+                    int unit = i * 32 + bitpos;
 
-                    tex = STATE(active_textures[i*32+bitpos]);
-                    assert(tex);
+                    tex = STATE(active_textures[unit]);
+                    if (!tex)
+                    {
+                        // Stale active texture mask bit; clear it and continue.
+                        STATE(active_texture_mask[i]) &= ~(0x1u << bitpos);
+                        continue;
+                    }
 
                     RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
                 }
@@ -2512,7 +2730,10 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
     Texture *tex;
 
     tex = [self framebufferAttachmentTexture: fbo_attachment];
-    assert(tex);
+    if (!tex) {
+        // Incomplete/missing attachment. Do not crash.
+        return true;
+    }
 
     tex->is_render_target = isDrawBuffer;
 
@@ -2535,13 +2756,15 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
         case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
         case SPVC_RESOURCE_TYPE_STAGE_INPUT:
+        case SPVC_RESOURCE_TYPE_STAGE_OUTPUT:
         case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
         case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
             break;
 
         default:
-           // CRITICAL FIX: Handle assertion gracefully instead of crashing
-            NSLog(@"MGL ERROR: Unknown stage %d in getProgramBindingCount", stage);
+            NSLog(@"MGL ERROR: Unknown resource type %d in getProgramBindingCount (stage=%d)", type, stage);
             return 0;
     }
 
@@ -2564,13 +2787,15 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
        case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
        case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
        case SPVC_RESOURCE_TYPE_STAGE_INPUT:
+       case SPVC_RESOURCE_TYPE_STAGE_OUTPUT:
        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
+       case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
+       case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
            break;
 
        default:
-          // CRITICAL FIX: Handle assertion gracefully instead of crashing
-            NSLog(@"MGL ERROR: Assertion hit in MGLRenderer.m at line %d", __LINE__);
+            NSLog(@"MGL ERROR: Unknown resource type %d in getProgramBinding (stage=%d)", type, stage);
             return 0;
     }
 
@@ -2940,12 +3165,22 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 Texture *tex;
 
                 tex = [self framebufferAttachmentTexture: &fbo->color_attachments[i]];
-                assert(tex);
+                if (!tex) {
+                    continue;
+                }
 
-                assert(tex->mtl_data);
+                // Ensure attachment textures are created with RenderTarget usage.
+                tex->is_render_target = true;
+                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+                if (!tex->mtl_data) {
+                    continue;
+                }
+
                 _renderPassDescriptor.colorAttachments[i].texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
 
-                if (fbo->color_attachments[i].buf.rbo->is_draw_buffer)
+                if (fbo->color_attachments[i].textarget == GL_RENDERBUFFER &&
+                    fbo->color_attachments[i].buf.rbo &&
+                    fbo->color_attachments[i].buf.rbo->is_draw_buffer)
                 {
                     GLuint width, height;
 
@@ -2968,9 +3203,13 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             Texture *tex;
 
             tex = [self framebufferAttachmentTexture: &fbo->depth];
-            assert(tex);
-
-            _renderPassDescriptor.depthAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
+            if (tex) {
+                tex->is_render_target = true;
+                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+            }
+            if (tex && tex->mtl_data) {
+                _renderPassDescriptor.depthAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
+            }
         }
 
         // stencil attachment
@@ -2979,9 +3218,13 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             Texture *tex;
 
             tex = [self framebufferAttachmentTexture: &fbo->stencil];
-            assert(tex);
-
-            _renderPassDescriptor.stencilAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
+            if (tex) {
+                tex->is_render_target = true;
+                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+            }
+            if (tex && tex->mtl_data) {
+                _renderPassDescriptor.stencilAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
+            }
         }
     }
     else
@@ -3169,6 +3412,56 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         return false;
     }
 
+    // Metal debug layer crashes if render pass has no output attachment.
+    // Provide a tiny fallback color attachment for targetless/invalid passes.
+    bool hasOutputAttachment = false;
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (_renderPassDescriptor.colorAttachments[i].texture) {
+            hasOutputAttachment = true;
+            break;
+        }
+    }
+    if (!hasOutputAttachment &&
+        (_renderPassDescriptor.depthAttachment.texture || _renderPassDescriptor.stencilAttachment.texture)) {
+        hasOutputAttachment = true;
+    }
+
+    if (!hasOutputAttachment) {
+        if (!_fallbackRenderTargetTexture) {
+            MTLTextureDescriptor *fbDesc =
+                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+                                                                   width:1
+                                                                  height:1
+                                                               mipmapped:NO];
+            fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+            fbDesc.storageMode = MTLStorageModeShared;
+            _fallbackRenderTargetTexture = [_device newTextureWithDescriptor:fbDesc];
+        }
+
+        if (_fallbackRenderTargetTexture) {
+            NSLog(@"MGL WARNING: Render pass had no attachments; binding 1x1 fallback color target");
+            _renderPassDescriptor.colorAttachments[0].texture = _fallbackRenderTargetTexture;
+            _renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            _renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+            _renderPassDescriptor.renderTargetWidth = 1;
+            _renderPassDescriptor.renderTargetHeight = 1;
+        } else {
+            NSLog(@"MGL ERROR: Failed to allocate fallback render target texture");
+            [self recordGPUError];
+            return false;
+        }
+    }
+
+    // Final guard: Metal will assert if a color attachment texture is missing RenderTarget usage.
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        id<MTLTexture> attTex = _renderPassDescriptor.colorAttachments[i].texture;
+        if (attTex && ((attTex.usage & MTLTextureUsageRenderTarget) == 0)) {
+            NSLog(@"MGL WARNING: colorAttachment[%d] usage=0x%lx lacks RenderTarget; clearing attachment to avoid Metal assert",
+                  i, (unsigned long)attTex.usage);
+            _renderPassDescriptor.colorAttachments[i].texture = nil;
+        }
+    }
+
     // CRITICAL FIX: Validate command buffer state before creating render encoder
     if (!_currentCommandBuffer) {
         NSLog(@"MGL ERROR: Cannot create render encoder - command buffer is NULL");
@@ -3187,12 +3480,28 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         _currentRenderEncoder = nil;
     }
 
-    // Validate command buffer status - cannot create encoders on committed/buffer
+    // Validate command buffer status. If already committed/completed, rotate to a new buffer.
     MTLCommandBufferStatus bufferStatus = _currentCommandBuffer.status;
     if (bufferStatus >= MTLCommandBufferStatusCommitted) {
-        NSLog(@"MGL ERROR: Cannot create render encoder on committed command buffer (status: %ld)", (long)bufferStatus);
-        [self recordGPUError];
-        return false;
+        NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL ERROR: Failed to rotate command buffer before creating render encoder");
+            [self recordGPUError];
+            return false;
+        }
+
+        if (!_currentCommandBuffer) {
+            NSLog(@"MGL ERROR: newCommandBuffer returned but _currentCommandBuffer is NULL");
+            [self recordGPUError];
+            return false;
+        }
+
+        bufferStatus = _currentCommandBuffer.status;
+        if (bufferStatus >= MTLCommandBufferStatusCommitted) {
+            NSLog(@"MGL ERROR: Fresh command buffer is still finalized (status: %ld)", (long)bufferStatus);
+            [self recordGPUError];
+            return false;
+        }
     }
 
     NSLog(@"MGL DEBUG: About to create render encoder with descriptor and command buffer");
@@ -3275,13 +3584,29 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             [_metalStateLock lock];
         }
 
-        GLuint count;
-        count = _currentCommandBufferSyncList->count;
+        GLuint count = _currentCommandBufferSyncList->count;
+        GLuint size = _currentCommandBufferSyncList->size;
+
+        if (_currentCommandBufferSyncList->list == NULL || size == 0) {
+            NSLog(@"MGL WARNING: Sync list storage invalid (list=%p size=%u), resetting", _currentCommandBufferSyncList->list, size);
+            _currentCommandBufferSyncList->count = 0;
+            if (_metalStateLock) {
+                [_metalStateLock unlock];
+            }
+            goto create_new_command_buffer;
+        }
+
+        if (count > size) {
+            NSLog(@"MGL WARNING: Sync list count overflow (count=%u size=%u), clamping", count, size);
+            count = size;
+            _currentCommandBufferSyncList->count = size;
+        }
 
         for(GLuint i=0; i<count; i++)
         {
             Sync *sync;
             sync = _currentCommandBufferSyncList->list[i];
+            _currentCommandBufferSyncList->list[i] = NULL;
 
             // CRITICAL FIX: Validate sync pointer itself before dereferencing
             if (!sync) {
@@ -3337,6 +3662,7 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         }
     }
 
+create_new_command_buffer:
     // CRITICAL SAFETY: Validate command queue before creating buffer
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Cannot create command buffer - command queue is NULL");
@@ -3505,6 +3831,34 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
     return true;
 }
 
+- (bool)ensureWritableCommandBuffer:(const char *)reason
+{
+    if (!_currentCommandBuffer) {
+        NSLog(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
+            return false;
+        }
+    }
+
+    MTLCommandBufferStatus status = _currentCommandBuffer.status;
+    if (status >= MTLCommandBufferStatusCommitted) {
+        NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
+        [self endRenderEncoding];
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL ERROR: Failed to rotate command buffer for %s", reason ? reason : "operation");
+            return false;
+        }
+
+        if (!_currentCommandBuffer || _currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+            NSLog(@"MGL ERROR: Unable to obtain writable command buffer for %s", reason ? reason : "operation");
+            return false;
+        }
+    }
+
+    return true;
+}
+
 - (bool) newCommandBufferAndRenderEncoder
 {
     // AGGRESSIVE MEMORY SAFETY: Validate fundamental Metal objects before use
@@ -3518,9 +3872,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         return false;
     }
 
-    // Validate device pointer bounds (more realistic bounds for 64-bit systems)
+    // Validate device pointer lower bound only (high canonical addresses are valid on macOS)
     uintptr_t device_addr = (uintptr_t)_device;
-    if (device_addr < 0x1000 || device_addr > 0x100000000000ULL) {
+    if (device_addr < 0x1000) {
         NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - Invalid device pointer: 0x%lx", device_addr);
         return false;
     }
@@ -3852,9 +4206,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         return false;
     }
 
-    // Validate context pointer is within reasonable bounds (more realistic for 64-bit systems)
+    // Validate context pointer lower bound only (high addresses are valid on macOS/arm64)
     uintptr_t ctx_addr = (uintptr_t)ctx;
-    if (ctx_addr < 0x1000 || ctx_addr > 0x100000000000ULL) {
+    if (ctx_addr < 0x1000) {
         NSLog(@"MGL ERROR: Invalid context pointer detected in bindFramebufferAttachmentTextures: 0x%lx", ctx_addr);
         return false;
     }
@@ -3867,9 +4221,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         return false;
     }
 
-    // Validate framebuffer pointer is within reasonable bounds (more realistic for 64-bit systems)
+    // Validate framebuffer pointer lower bound only (high addresses are valid on macOS/arm64)
     uintptr_t fbo_addr = (uintptr_t)fbo;
-    if (fbo_addr < 0x1000 || fbo_addr > 0x100000000000ULL) {
+    if (fbo_addr < 0x1000) {
         NSLog(@"MGL ERROR: Invalid framebuffer pointer detected in bindFramebufferAttachmentTextures: 0x%lx", fbo_addr);
         return false;
     }
@@ -3878,7 +4232,12 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
     {
         if (fbo->color_attachments[i].texture)
         {
-            if ([self bindFramebufferTexture: &fbo->color_attachments[i] isDrawBuffer: (fbo->color_attachments[i].buf.rbo->is_draw_buffer)] == false)
+            bool isDrawBuffer = true;
+            if (fbo->color_attachments[i].textarget == GL_RENDERBUFFER && fbo->color_attachments[i].buf.rbo) {
+                isDrawBuffer = fbo->color_attachments[i].buf.rbo->is_draw_buffer;
+            }
+
+            if ([self bindFramebufferTexture: &fbo->color_attachments[i] isDrawBuffer:isDrawBuffer] == false)
             {
                 DEBUG_PRINT("Failed Framebuffer Attachment\n");
                 return false;
@@ -3970,8 +4329,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
     static int corruption_recovery_count = 0;
     static int max_recovery_attempts = 3;
 
-    // Check for corrupted Metal objects that might cause crashes (more realistic bounds)
-    if (!_device || !_commandQueue || (_device && _commandQueue && ((uintptr_t)_device < 0x1000 || (uintptr_t)_device > 0x100000000000ULL || (uintptr_t)_commandQueue < 0x1000 || (uintptr_t)_commandQueue > 0x100000000000ULL))) {
+    // Check for corrupted Metal objects that might cause crashes.
+    // Only reject NULL / obviously invalid low addresses.
+    if (!_device || !_commandQueue || ((uintptr_t)_device < 0x1000) || ((uintptr_t)_commandQueue < 0x1000)) {
         NSLog(@"MGL CRITICAL: Metal state corruption detected in processGLState!");
         NSLog(@"MGL CRITICAL: device=0x%lx, queue=0x%lx", (uintptr_t)_device, (uintptr_t)_commandQueue);
 
@@ -4063,11 +4423,30 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         return false;
     }
 
-    // Validate context pointer is within reasonable bounds (more realistic for 64-bit systems)
+    // Validate context pointer lower bound only (high addresses are valid on macOS/arm64)
     uintptr_t ctx_addr = (uintptr_t)ctx;
-    if (ctx_addr < 0x1000 || ctx_addr > 0x100000000000ULL) {
+    if (ctx_addr < 0x1000) {
         NSLog(@"MGL ERROR: Invalid context pointer detected: 0x%lx", ctx_addr);
         return false;
+    }
+
+    // Keep command buffer lifecycle healthy: if the active one is already finalized,
+    // rotate to a fresh buffer before any state processing.
+    if (_currentCommandBuffer && _currentRenderEncoder == NULL) {
+        MTLCommandBufferStatus preStatus = _currentCommandBuffer.status;
+        if (preStatus >= MTLCommandBufferStatusCommitted) {
+            NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld)", (long)preStatus);
+            if (![self newCommandBuffer]) {
+                NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
+                return false;
+            }
+        }
+    } else if (!_currentCommandBuffer) {
+        NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
+            return false;
+        }
     }
 
     if (ctx->state.dirty_bits)
@@ -4080,9 +4459,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 // MEMORY SAFETY: Add comprehensive validation to prevent use-after-free crashes
                 if (ctx->state.framebuffer)
                 {
-                    // Validate framebuffer pointer is within reasonable bounds
+                    // Validate framebuffer pointer lower bound only
                     uintptr_t fb_addr = (uintptr_t)ctx->state.framebuffer;
-                    if (fb_addr < 0x1000 || fb_addr > 0x100000000) {
+                    if (fb_addr < 0x1000) {
                         NSLog(@"MGL ERROR: Invalid framebuffer pointer detected: 0x%lx", fb_addr);
                         return false;
                     }
@@ -4205,6 +4584,7 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
 
             // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
             NSError *error;
+            id<MTLRenderPipelineState> previousPipelineState = _pipelineState;
 
             @try {
                 NSLog(@"MGL INFO: Creating Metal pipeline state with AGX virtualization compatibility...");
@@ -4291,8 +4671,53 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             if (!_pipelineState) {
                 NSLog(@"MGL ERROR: Failed to create pipeline state: %@", error);
                 NSLog(@"MGL ERROR: This is usually caused by shader compilation failures or invalid texture formats");
-                NSLog(@"MGL ERROR: Skipping pipeline creation to prevent crashes");
-                return false;
+
+                // Try a universal fallback pipeline that does not require vertex->fragment varyings.
+                @try {
+                    MTLRenderPipelineDescriptor *fallbackDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+                    fallbackDescriptor.colorAttachments[0].pixelFormat = pipelineStateDescriptor.colorAttachments[0].pixelFormat;
+                    fallbackDescriptor.depthAttachmentPixelFormat = pipelineStateDescriptor.depthAttachmentPixelFormat;
+                    fallbackDescriptor.stencilAttachmentPixelFormat = pipelineStateDescriptor.stencilAttachmentPixelFormat;
+                    fallbackDescriptor.colorAttachments[0].blendingEnabled = NO;
+
+                    NSString *fallbackSource =
+                        @"#include <metal_stdlib>\n"
+                        "using namespace metal;\n"
+                        "struct VSOut { float4 pos [[position]]; };\n"
+                        "vertex VSOut mgl_fallback_vs(uint vid [[vertex_id]]) {\n"
+                        "  VSOut o;\n"
+                        "  float2 p = float2((vid == 1) ? 3.0 : -1.0, (vid == 2) ? 3.0 : -1.0);\n"
+                        "  o.pos = float4(p, 0.0, 1.0);\n"
+                        "  return o;\n"
+                        "}\n"
+                        "fragment float4 mgl_fallback_fs() { return float4(0.0, 0.0, 0.0, 1.0); }\n";
+
+                    NSError *fallbackError = nil;
+                    id<MTLLibrary> fallbackLibrary = [_device newLibraryWithSource:fallbackSource options:nil error:&fallbackError];
+                    if (fallbackLibrary) {
+                        fallbackDescriptor.vertexFunction = [fallbackLibrary newFunctionWithName:@"mgl_fallback_vs"];
+                        fallbackDescriptor.fragmentFunction = [fallbackLibrary newFunctionWithName:@"mgl_fallback_fs"];
+                        _pipelineState = [_device newRenderPipelineStateWithDescriptor:fallbackDescriptor error:&fallbackError];
+                    }
+
+                    if (_pipelineState) {
+                        NSLog(@"MGL WARNING: Using fallback pipeline due to shader interface mismatch");
+                    } else if (previousPipelineState) {
+                        NSLog(@"MGL WARNING: Reusing previous pipeline state after pipeline creation failure");
+                        _pipelineState = previousPipelineState;
+                    } else {
+                        NSLog(@"MGL ERROR: No fallback or previous pipeline available; aborting this draw");
+                        return false;
+                    }
+                } @catch (NSException *fallbackException) {
+                    if (previousPipelineState) {
+                        NSLog(@"MGL WARNING: Fallback pipeline exception (%@); reusing previous pipeline", fallbackException.reason);
+                        _pipelineState = previousPipelineState;
+                    } else {
+                        NSLog(@"MGL ERROR: Fallback pipeline exception and no previous pipeline available: %@", fallbackException.reason);
+                        return false;
+                    }
+                }
             } else {
                 NSLog(@"MGL INFO: Pipeline state created successfully");
             }
@@ -4404,9 +4829,11 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         {
             int textures_to_be_mapped = count;
 
-            assert(textures_to_be_mapped < TEXTURE_UNITS);
+            if (textures_to_be_mapped > TEXTURE_UNITS) {
+                textures_to_be_mapped = TEXTURE_UNITS;
+            }
 
-            for (int i=0; textures_to_be_mapped > 0; i++)
+            for (int i=0; i < (int)count && textures_to_be_mapped > 0; i++)
             {
                // GLuint spirv_location;
                 GLuint spirv_binding;
@@ -4414,6 +4841,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
 
                 spirv_binding = [self getProgramLocation:_COMPUTE_SHADER type:spvc_type index: i];
                 spirv_binding = [self getProgramBinding:_COMPUTE_SHADER type:spvc_type index: i];
+                if (spirv_binding >= TEXTURE_UNITS) {
+                    continue;
+                }
 
                 switch(gl_texture_type)
                 {
@@ -4429,11 +4859,15 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 if (ptr)
                 {
                     RETURN_FALSE_ON_FAILURE([self bindMTLTexture: ptr]);
-                    assert(ptr->mtl_data);
+                    if (!ptr->mtl_data) {
+                        continue;
+                    }
 
                     id<MTLTexture> texture;
                     texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
-                    assert(texture);
+                    if (!texture) {
+                        continue;
+                    }
 
                     id<MTLSamplerState> sampler;
 
@@ -4461,12 +4895,18 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                         }
 
                         sampler = (__bridge id<MTLSamplerState>)(gl_sampler->mtl_data);
-                        assert(sampler);
                     }
                     else
                     {
                         sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
-                        assert(sampler);
+                    }
+
+                    if (!sampler) {
+                        id<MTLSamplerState> fallbackSampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+                        sampler = fallbackSampler;
+                        if (!sampler) {
+                            continue;
+                        }
                     }
 
                     [computeCommandEncoder setTexture:texture atIndex:spirv_binding];
@@ -4474,8 +4914,6 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
 
                     textures_to_be_mapped--;
                 }
-
-                RETURN_FALSE_ON_FAILURE((i<TEXTURE_UNITS));
             }
 
             // texture not found
@@ -4547,8 +4985,13 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
     // end encoding on current render encoder
     [self endRenderEncoding];
 
+    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlDispatchCompute"]);
+
     id <MTLComputeCommandEncoder> computeCommandEncoder = [_currentCommandBuffer computeCommandEncoder];
-    assert(computeCommandEncoder);
+    if (!computeCommandEncoder) {
+        NSLog(@"MGL ERROR: Failed to create compute command encoder");
+        return;
+    }
 
     RETURN_ON_FAILURE([self processCompute:computeCommandEncoder]);
 
@@ -4865,18 +5308,16 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
         _currentCommandBufferSyncList->count = 0;
     }
 
-    _currentCommandBufferSyncList->list[_currentCommandBufferSyncList->count] = sync;
-    _currentCommandBufferSyncList->count++;
-
     if (_currentCommandBufferSyncList->count >= _currentCommandBufferSyncList->size)
     {
         // CRITICAL SECURITY FIX: Check for integer overflow before multiplication
-        if (_currentCommandBufferSyncList->size > SIZE_MAX / 2 / sizeof(Sync *)) {
+        size_t current_size = (size_t)_currentCommandBufferSyncList->size;
+        if (current_size > SIZE_MAX / 2 / sizeof(Sync *)) {
             NSLog(@"MGL SECURITY ERROR: SyncList size would overflow, preventing expansion");
             return;
         }
 
-        size_t new_size = _currentCommandBufferSyncList->size * 2;
+        size_t new_size = current_size * 2;
         Sync **new_list = (Sync **)realloc(_currentCommandBufferSyncList->list,
                                            sizeof(Sync *) * new_size);
         if (!new_list) {
@@ -4887,6 +5328,9 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
         _currentCommandBufferSyncList->size = new_size;
         _currentCommandBufferSyncList->list = new_list;
     }
+
+    _currentCommandBufferSyncList->list[_currentCommandBufferSyncList->count] = sync;
+    _currentCommandBufferSyncList->count++;
 }
 
 void mtlGetSync (GLMContext glm_ctx, Sync *sync)
@@ -5071,8 +5515,8 @@ void mtlSwapBuffers (GLMContext glm_ctx)
         return;
     }
 
-    // Validate the Metal object pointer (realistic bounds for 64-bit systems)
-    if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000) || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj > 0x100000000000ULL)) {
+    // Validate the Metal object pointer lower bound only.
+    if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000)) {
         NSLog(@"MGL CRITICAL: mtlSwapBuffers - Invalid Metal object pointer: %p", glm_ctx->mtl_funcs.mtlObj);
         NSLog(@"MGL CRITICAL: This indicates memory corruption or context destruction");
         return;
@@ -5367,6 +5811,8 @@ void mtlGetTexImage(GLMContext glm_ctx, Texture *tex, void *pixelBytes, GLuint b
     // end encoding on current render encoder
     [self endRenderEncoding];
 
+    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlGenerateMipmaps"]);
+
     // no failure path..?
     RETURN_ON_FAILURE([self bindMTLTexture:tex]);
     assert(tex->mtl_data);
@@ -5379,6 +5825,10 @@ void mtlGetTexImage(GLMContext glm_ctx, Texture *tex, void *pixelBytes, GLuint b
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
     blitCommandEncoder = [_currentCommandBuffer blitCommandEncoder];
+    if (!blitCommandEncoder) {
+        NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
+        return;
+    }
 
     [blitCommandEncoder generateMipmapsForTexture:texture];
     [blitCommandEncoder endEncoding];
@@ -5418,9 +5868,15 @@ void mtlGenerateMipmaps(GLMContext glm_ctx, Texture *tex)
     // end encoding on current render encoder
     [self endRenderEncoding];
 
+    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlTexSubImage"]);
+
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
     blitCommandEncoder = [_currentCommandBuffer blitCommandEncoder];
+    if (!blitCommandEncoder) {
+        NSLog(@"MGL ERROR: Failed to create blit encoder for TexSubImage");
+        return;
+    }
 
     [blitCommandEncoder copyFromBuffer:buffer sourceOffset:src_offset sourceBytesPerRow:src_pitch sourceBytesPerImage:src_image_size sourceSize:MTLSizeMake(width, height, depth) toTexture:texture destinationSlice:zoffset destinationLevel:level destinationOrigin:MTLOriginMake(xoffset, yoffset, 0)
                                 options:MTLBlitOptionNone];
@@ -5504,22 +5960,36 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
     MTLPrimitiveType primitiveType;
+    static uint64_t process_state_fail_count = 0;
+    static uint64_t no_render_encoder_count = 0;
 
-    // AGGRESSIVE MEMORY SAFETY: Immediate validation before any Metal operations (realistic bounds)
-    if (!ctx || ((uintptr_t)ctx < 0x1000) || ((uintptr_t)ctx > 0x100000000000ULL)) {
+    // AGGRESSIVE MEMORY SAFETY: Immediate validation before any Metal operations
+    if (!ctx || ((uintptr_t)ctx < 0x1000)) {
         NSLog(@"MGL ERROR: mtlDrawArrays - Invalid context detected, aborting");
         return; // Early return to prevent crash
     }
 
     if ([self processGLState: true] == false) {
-        NSLog(@"MGL ERROR: mtlDrawArrays - processGLState failed, aborting");
+        process_state_fail_count++;
+        if (process_state_fail_count <= 8 || (process_state_fail_count % 1000) == 0) {
+            NSLog(@"MGL ERROR: mtlDrawArrays - processGLState failed, aborting (occurrence=%llu)",
+                  (unsigned long long)process_state_fail_count);
+        }
         return; // Early return instead of continuing with invalid state
     }
 
     // Additional safety check after processGLState
     if (!_currentRenderEncoder) {
-        NSLog(@"MGL ERROR: mtlDrawArrays - No current render encoder, aborting");
-        return;
+        // One recovery attempt to avoid persistent "No current render encoder" failure loops.
+        [self newRenderEncoder];
+        if (!_currentRenderEncoder) {
+            no_render_encoder_count++;
+            if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {
+                NSLog(@"MGL ERROR: mtlDrawArrays - No current render encoder, aborting (occurrence=%llu)",
+                      (unsigned long long)no_render_encoder_count);
+            }
+            return;
+        }
     }
 
     primitiveType = getMTLPrimitiveType(mode);
@@ -5539,14 +6009,14 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
 {
     // FINAL FAILSAFE: Catch any unhandled exceptions to prevent QEMU crashes
     @try {
-        // Validate context before bridging (realistic bounds for 64-bit systems)
-        if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000) || ((uintptr_t)glm_ctx > 0x100000000000ULL)) {
+        // Validate context before bridging
+        if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
             NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid GLM context, aborting operation");
             return;
         }
 
-        // Validate the Metal object pointer (realistic bounds for 64-bit systems)
-        if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000) || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj > 0x100000000000ULL)) {
+        // Validate the Metal object pointer lower bound only
+        if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000)) {
             NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid Metal object, aborting operation");
             return;
         }

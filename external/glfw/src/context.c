@@ -341,6 +341,7 @@ GLFWbool _glfwRefreshContextAttribs(_GLFWwindow* window,
                                     const _GLFWctxconfig* ctxconfig)
 {
     int i;
+    GLFWbool usedMGLVersionFallback = GLFW_FALSE;
     _GLFWwindow* previous;
     const char* version;
     const char* prefixes[] =
@@ -371,6 +372,21 @@ GLFWbool _glfwRefreshContextAttribs(_GLFWwindow* window,
     version = (const char*) window->context.GetString(GL_VERSION);
     if (!version)
     {
+#if defined(_GLFW_COCOA)
+        if (window->context.mgl.ctx)
+        {
+            // MGL may not expose a usable GL_VERSION string early enough for
+            // GLFW probing. Fall back to the requested version so context
+            // creation can proceed.
+            window->context.client = GLFW_OPENGL_API;
+            window->context.major = ctxconfig->major;
+            window->context.minor = ctxconfig->minor;
+            window->context.revision = 0;
+            usedMGLVersionFallback = GLFW_TRUE;
+        }
+        else
+#endif
+        {
         if (ctxconfig->client == GLFW_OPENGL_API)
         {
             _glfwInputError(GLFW_PLATFORM_ERROR,
@@ -384,38 +400,42 @@ GLFWbool _glfwRefreshContextAttribs(_GLFWwindow* window,
 
         glfwMakeContextCurrent((GLFWwindow*) previous);
         return GLFW_FALSE;
-    }
-
-    for (i = 0;  prefixes[i];  i++)
-    {
-        const size_t length = strlen(prefixes[i]);
-
-        if (strncmp(version, prefixes[i], length) == 0)
-        {
-            version += length;
-            window->context.client = GLFW_OPENGL_ES_API;
-            break;
         }
     }
 
-    if (!sscanf(version, "%d.%d.%d",
-                &window->context.major,
-                &window->context.minor,
-                &window->context.revision))
+    if (!usedMGLVersionFallback)
     {
-        if (window->context.client == GLFW_OPENGL_API)
+        for (i = 0;  prefixes[i];  i++)
         {
-            _glfwInputError(GLFW_PLATFORM_ERROR,
-                            "No version found in OpenGL version string");
-        }
-        else
-        {
-            _glfwInputError(GLFW_PLATFORM_ERROR,
-                            "No version found in OpenGL ES version string");
+            const size_t length = strlen(prefixes[i]);
+
+            if (strncmp(version, prefixes[i], length) == 0)
+            {
+                version += length;
+                window->context.client = GLFW_OPENGL_ES_API;
+                break;
+            }
         }
 
-        glfwMakeContextCurrent((GLFWwindow*) previous);
-        return GLFW_FALSE;
+        if (!sscanf(version, "%d.%d.%d",
+                    &window->context.major,
+                    &window->context.minor,
+                    &window->context.revision))
+        {
+            if (window->context.client == GLFW_OPENGL_API)
+            {
+                _glfwInputError(GLFW_PLATFORM_ERROR,
+                                "No version found in OpenGL version string");
+            }
+            else
+            {
+                _glfwInputError(GLFW_PLATFORM_ERROR,
+                                "No version found in OpenGL ES version string");
+            }
+
+            glfwMakeContextCurrent((GLFWwindow*) previous);
+            return GLFW_FALSE;
+        }
     }
 
     if (window->context.major < ctxconfig->major ||
@@ -458,10 +478,20 @@ GLFWbool _glfwRefreshContextAttribs(_GLFWwindow* window,
             window->context.getProcAddress("glGetStringi");
         if (!window->context.GetStringi)
         {
+#if defined(_GLFW_COCOA)
+            if (window->context.mgl.ctx && usedMGLVersionFallback)
+            {
+                // Keep going for MGL; extension probing will fall back to the
+                // platform extension callback.
+            }
+            else
+#endif
+            {
             _glfwInputError(GLFW_PLATFORM_ERROR,
                             "Entry point retrieval is broken");
             glfwMakeContextCurrent((GLFWwindow*) previous);
             return GLFW_FALSE;
+            }
         }
     }
 
@@ -628,6 +658,10 @@ GLFWAPI void glfwMakeContextCurrent(GLFWwindow* handle)
 
     if (window)
         window->context.makeCurrent(window);
+
+    // Backend safety net: ensure GLFW's view of current context is updated
+    // even if a backend fails to set TLS itself.
+    _glfwPlatformSetTls(&_glfw.contextSlot, window);
 }
 
 GLFWAPI GLFWwindow* glfwGetCurrentContext(void)
@@ -696,6 +730,9 @@ GLFWAPI int glfwExtensionSupported(const char* extension)
         int i;
         GLint count;
 
+        if (!window->context.GetStringi)
+            return window->context.extensionSupported(extension);
+
         // Check if extension is in the modern OpenGL extensions string list
 
         window->context.GetIntegerv(GL_NUM_EXTENSIONS, &count);
@@ -706,9 +743,9 @@ GLFWAPI int glfwExtensionSupported(const char* extension)
                 window->context.GetStringi(GL_EXTENSIONS, i);
             if (!en)
             {
-                _glfwInputError(GLFW_PLATFORM_ERROR,
-                                "Extension string retrieval is broken");
-                return GLFW_FALSE;
+                // Some backends (like MGL) may not expose GL extension strings
+                // in a GLFW-compatible way during early probing.
+                return window->context.extensionSupported(extension);
             }
 
             if (strcmp(en, extension) == 0)
@@ -723,9 +760,9 @@ GLFWAPI int glfwExtensionSupported(const char* extension)
             window->context.GetString(GL_EXTENSIONS);
         if (!extensions)
         {
-            _glfwInputError(GLFW_PLATFORM_ERROR,
-                            "Extension string retrieval is broken");
-            return GLFW_FALSE;
+            // Fall back to backend-specific extension query when the generic
+            // OpenGL extension string path is unavailable.
+            return window->context.extensionSupported(extension);
         }
 
         if (_glfwStringInExtensionString(extension, extensions))
@@ -753,4 +790,3 @@ GLFWAPI GLFWglproc glfwGetProcAddress(const char* procname)
 
     return window->context.getProcAddress(procname);
 }
-

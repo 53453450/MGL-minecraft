@@ -134,7 +134,12 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
 
     ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
 
-    assert(sync->mtl_event == NULL);
+    // Do not crash the process if backend wait/recovery couldn't signal the event.
+    if (sync->mtl_event != NULL)
+    {
+        fprintf(stderr, "MGL WARNING: mglClientWaitSync timed out or backend recovery incomplete; event still pending (%p)\n", sync->mtl_event);
+        return GL_TIMEOUT_EXPIRED;
+    }
 
     return GL_CONDITION_SATISFIED;
 }
@@ -253,4 +258,3 @@ void mglMemoryBarrierByRegion(GLMContext ctx, GLbitfield barriers)
         ERROR_RETURN(GL_INVALID_VALUE);
     }
 }
-

@@ -138,8 +138,15 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
 
 void mglDrawBuffer(GLMContext ctx, GLenum buf)
 {
+    if (buf == GL_NONE)
+    {
+        STATE(draw_buffer) = GL_NONE;
+        STATE(dirty_bits) |= DIRTY_STATE;
+        return;
+    }
+
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
-        (buf <= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
+        (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
         // ok
     }
@@ -149,7 +156,6 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         case GL_FRONT:
             break;
 
-        case GL_NONE:
         case GL_FRONT_LEFT:
         case GL_FRONT_RIGHT:
         case GL_BACK_LEFT:
@@ -157,8 +163,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         case GL_LEFT:
         case GL_RIGHT:
         case GL_FRONT_AND_BACK:
-            // TODO: Implement these buffer modes properly
-            fprintf(stderr, "MGL: mglDrawBuffer called with unimplemented mode 0x%x\n", buf);
+            // Accept for compatibility; backend may treat them as front/default draw target.
             break;
 
         default:
@@ -167,17 +172,23 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     }
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
-        (buf <= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
+        (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
         // probably should validate current fbo..
         Framebuffer * fbo = ctx->state.framebuffer;
-        if (!fbo || !fbo->color_attachments[buf-GL_COLOR_ATTACHMENT0].buf.rbo)
+        FBOAttachment *att = NULL;
+        if (fbo)
+            att = &fbo->color_attachments[buf-GL_COLOR_ATTACHMENT0];
+
+        if (!fbo || !att || (!att->buf.rbo && !att->buf.tex))
         {
-            fprintf(stderr, "MGL Error: mglDrawBuffer: missing color attachment %u\n", (unsigned)(buf - GL_COLOR_ATTACHMENT0));
-            ERROR_RETURN(GL_INVALID_OPERATION);
+            // Minecraft may temporarily select draw buffers before attachments are fully configured.
+            fprintf(stderr, "MGL WARNING: mglDrawBuffer: color attachment %u not ready yet\n",
+                    (unsigned)(buf - GL_COLOR_ATTACHMENT0));
             return;
         }
-        fbo->color_attachments[buf-GL_COLOR_ATTACHMENT0].buf.rbo->is_draw_buffer = GL_TRUE;
+        if (att->buf.rbo)
+            att->buf.rbo->is_draw_buffer = GL_TRUE;
     }
 
     STATE(draw_buffer) = buf;
@@ -187,7 +198,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
 void mglReadBuffer(GLMContext ctx, GLenum buf)
 {
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
-        (buf <= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
+        (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
         // ok
     }
@@ -213,7 +224,7 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
     }
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
-        (buf <= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
+        (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
         // probably should validate current fbo..
     }
@@ -508,4 +519,3 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     
     vm_deallocate(mach_host_self(), buffer_data, buffer_size);
 }
-

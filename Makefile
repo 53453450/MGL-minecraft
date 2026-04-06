@@ -235,7 +235,7 @@ mgl_es_lib := $(build_dir)/libmgl_es.dylib
 mgl_toolchain_obj := $(build_dir)/MGL/src/mgl_toolchain.o
 mgl_toolchain_lib := $(build_dir)/libmgl_toolchain.a
 
-$(mgl_lib): $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_gl_obj)
+$(mgl_lib): $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
 	@mkdir -p $(dir $@)
 	$(CC) -D$(CFLAGS_GL_CORE) -dynamiclib -o $@ $^ $(LIBS)
 	# loading dynamic library requires this
@@ -262,6 +262,8 @@ $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 		-o $@ \
 		$(GLFW_FRAMEWORKS) \
 		-install_name @rpath/libglfw.dylib
+	@install_name_tool -change build/libmgl.dylib @loader_path/libmgl.dylib $@ 2>/dev/null || true
+	@install_name_tool -change @rpath/libmgl.dylib @loader_path/libmgl.dylib $@ 2>/dev/null || true
 	@echo "✅ GLFW shared library built: $@"
 	@echo "This enables compatibility with Minecraft mods and Prism Launcher"
 

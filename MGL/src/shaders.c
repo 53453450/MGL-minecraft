@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <glslang_c_interface.h>
 #include <glslang_c_shader_types.h>
 
@@ -120,65 +121,53 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         input->client_version = GLSLANG_TARGET_OPENGL_450;
     }
 
-    /* For legacy GLSL versions, replace #version directive in source copy */
+    /* Build a mutable source copy for compatibility rewrites. */
     static char *modified_src = NULL;
     static size_t modified_src_size = 0;
+    size_t src_len = strlen(src);
+    if (src_len + 2048 > modified_src_size) {
+        modified_src_size = src_len + 2048;
+        free(modified_src);
+        modified_src = (char *)malloc(modified_src_size);
+    }
 
-    if (original_version < 330) {
-        fprintf(stderr, "[MGL] Upgrading GLSL shader from version %d to %d\n",
-                original_version, glsl_version);
+    if (!modified_src) {
+        fprintf(stderr, "[MGL] ERROR: Failed to allocate modified_src\n");
+        input->code = src;
+    } else {
+        strcpy(modified_src, src);
 
-        size_t src_len = strlen(src);
-        if (src_len + 100 > modified_src_size) {
-            modified_src_size = src_len + 100;
-            free(modified_src);
-            modified_src = (char *)malloc(modified_src_size);
-        }
-
-        if (modified_src) {
-            strcpy(modified_src, src);
+        if (original_version < 330) {
+            fprintf(stderr, "[MGL] Upgrading GLSL shader from version %d to %d\n",
+                    original_version, glsl_version);
 
             /* Find and replace #version line */
             char *version_line = strstr(modified_src, "#version");
             if (!version_line) {
                 fprintf(stderr, "[MGL] WARNING: #version not found in source\n");
-                input->code = src;
             } else {
                 char *newline = strchr(version_line, '\n');
                 if (!newline) {
                     fprintf(stderr, "[MGL] WARNING: newline not found after #version\n");
-                    input->code = src;
                 } else {
                     char version_buf[64];
                     snprintf(version_buf, sizeof(version_buf), "#version %d core", glsl_version);
-                    size_t old_len = newline - version_line;
+                    size_t old_len = (size_t)(newline - version_line);
                     size_t new_len = strlen(version_buf);
 
-                    fprintf(stderr, "[MGL] Old version line length: %zu, new: %zu\n", old_len, new_len);
-                    fprintf(stderr, "[MGL] Old line: %.*s\n", (int)old_len, version_line);
-
                     if (new_len <= old_len) {
-                        /* Simple in-place replacement with space padding */
                         memset(version_line, ' ', old_len);
                         memcpy(version_line, version_buf, new_len);
-                        fprintf(stderr, "[MGL] Replaced version line in source (in-place)\n");
                     } else {
-                        /* Need to shift the rest of the source */
                         size_t rest_of_src = strlen(newline);
-                        memmove(version_line + new_len, newline, rest_of_src + 1); /* +1 for null terminator */
+                        memmove(version_line + new_len, newline, rest_of_src + 1);
                         memcpy(version_line, version_buf, new_len);
-                        fprintf(stderr, "[MGL] Replaced version line with shift\n");
-                        fprintf(stderr, "[MGL] New line: %.*s\n", (int)new_len, version_line);
                     }
                 }
             }
-            input->code = modified_src;
-        } else {
-            fprintf(stderr, "[MGL] ERROR: Failed to allocate modified_src\n");
-            input->code = src;
         }
-    } else {
-        input->code = src;
+
+        input->code = modified_src;
     }
 
     input->default_version = glsl_version;
@@ -449,8 +438,10 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
         ptr->log = NULL;
     }
 
-    /* Set glslang options to auto-assign locations for legacy shaders */
-    int options = GLSLANG_SHADER_VULKAN_RULES_RELAXED;
+    /* Use OpenGL semantics (not Vulkan rules) and auto-map bindings/locations
+     * so Minecraft GLSL 330 shaders without explicit layout(binding=...) work.
+     */
+    int options = GLSLANG_SHADER_AUTO_MAP_BINDINGS | GLSLANG_SHADER_AUTO_MAP_LOCATIONS;
 
     /* Detect if this is a legacy GLSL shader that needs location auto-assignment */
     int shader_version = 330; /* Default */
@@ -459,10 +450,8 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
         sscanf(version_str, "#version %d", &shader_version);
     }
 
-    /* For GLSL < 330, auto-assign locations since old shaders don't have layout() qualifiers */
     if (shader_version < 330) {
-        options |= GLSLANG_SHADER_AUTO_MAP_LOCATIONS;
-        fprintf(stderr, "[MGL] Enabling auto-map locations for legacy GLSL %d shader\n", shader_version);
+        fprintf(stderr, "[MGL] Enabling compatibility mode for legacy GLSL %d shader\n", shader_version);
     }
     glslang_shader_set_options(glsl_shader, options);
 

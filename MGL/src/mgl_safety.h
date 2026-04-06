@@ -105,12 +105,10 @@ extern "C" {
             return GL_INVALID_OPERATION; \
         } \
         \
-        /* Check for suspiciously high pointer values */ \
-        if (ptr_val > 0x100000000ULL) { \
-            fprintf(stderr, "MGL BUFFER ERROR: %s - Suspicious buffer pointer %p at %s:%d\n", \
-                    (function_name), (ptr), __FILE__, __LINE__); \
-            return GL_INVALID_OPERATION; \
-        } \
+        /* \
+         * On 64-bit macOS, valid heap pointers are commonly above 4GB. \
+         * Do not reject high addresses; only reject obviously invalid patterns above. \
+         */ \
     } while(0)
 
 // Buffer pointer validation for void functions (returns early instead of returning a value)
@@ -138,12 +136,10 @@ extern "C" {
             return; \
         } \
         \
-        /* Check for suspiciously high pointer values */ \
-        if (ptr_val > 0x100000000ULL) { \
-            fprintf(stderr, "MGL BUFFER ERROR: %s - Suspicious buffer pointer %p at %s:%d\n", \
-                    (function_name), (ptr), __FILE__, __LINE__); \
-            return; \
-        } \
+        /* \
+         * On 64-bit macOS, valid heap pointers are commonly above 4GB. \
+         * Do not reject high addresses; only reject obviously invalid patterns above. \
+         */ \
     } while(0)
 
 // Safe buffer size access with validation (for functions that return values)

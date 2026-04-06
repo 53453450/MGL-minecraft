@@ -14,6 +14,8 @@
 
 #include <unistd.h>
 #include <math.h>
+#include <dlfcn.h>
+#include <limits.h>
 
 #define GL_BGRA                           0x80E1
 #define GL_UNSIGNED_INT_8_8_8_8_REV       0x8367
@@ -44,6 +46,7 @@ static void makeContextCurrentMGL(_GLFWwindow* window)
         MGLsetCurrentContext(createGLMContext(0, 0,
                                               0, 0,
                                               0, 0));
+        _glfwPlatformSetTls(&_glfw.contextSlot, NULL);
     }
 
     } // autoreleasepool
@@ -68,12 +71,10 @@ static int extensionSupportedMGL(const char* extension)
 static GLFWglproc getProcAddressMGL(const char* procname)
 {
     GLFWproc symbol;
-
-    assert(_glfw.mgl.handle);
+    if (!_glfw.mgl.handle)
+        return NULL;
 
     symbol = _glfwPlatformGetModuleSymbol(_glfw.mgl.handle, procname);
-    assert(symbol);
-
     return symbol;
 }
 
@@ -94,11 +95,36 @@ static void destroyContextMGL(_GLFWwindow* window)
 //
 GLFWbool _glfwInitMGL(void)
 {
+    Dl_info info;
+    char modulePath[PATH_MAX];
+    const char* slash;
+
     if (_glfw.mgl.handle)
         return GLFW_TRUE;
 
+    // Fast path: rely on platform loader search rules first.
     _glfw.mgl.handle = _glfwPlatformLoadModule("libmgl.dylib");
-    assert(_glfw.mgl.handle);
+
+    // Robust fallback for Java/LWJGL launchers: load libmgl from the same
+    // directory as the currently loaded libglfw.dylib.
+    if (_glfw.mgl.handle == NULL &&
+        dladdr((const void*) _glfwInitMGL, &info) != 0 &&
+        info.dli_fname != NULL)
+    {
+        slash = strrchr(info.dli_fname, '/');
+        if (slash)
+        {
+            size_t dirLen = (size_t) (slash - info.dli_fname);
+            if (dirLen + 1 + strlen("libmgl.dylib") + 1 < sizeof(modulePath))
+            {
+                memcpy(modulePath, info.dli_fname, dirLen);
+                modulePath[dirLen] = '/';
+                strcpy(modulePath + dirLen + 1, "libmgl.dylib");
+                modulePath[dirLen + 1 + strlen("libmgl.dylib")] = '\0';
+                _glfw.mgl.handle = _glfwPlatformLoadModule(modulePath);
+            }
+        }
+    }
 
     if (_glfw.mgl.handle == NULL)
     {
@@ -129,17 +155,14 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
         return GLFW_FALSE;
     }
 
-    if (ctxconfig->major < 4)
+    // MGL internally targets a modern core feature set, but callers like
+    // Minecraft commonly request a 3.2 core profile context on macOS.
+    // Accept 3.2+ requests and provide the MGL-backed context.
+    if (ctxconfig->major < 3 ||
+        (ctxconfig->major == 3 && ctxconfig->minor < 2))
     {
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
-                        "MGL: OpenGL 4.6 and above supported on MGL");
-        return GLFW_FALSE;
-    }
-
-    if (ctxconfig->minor < 6)
-    {
-        _glfwInputError(GLFW_VERSION_UNAVAILABLE,
-                        "MGL: OpenGL 4.6 and above supported on MGL");
+                        "MGL: OpenGL 3.2+ required");
         return GLFW_FALSE;
     }
 
@@ -173,6 +196,10 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
     window->context.getProcAddress = getProcAddressMGL;
     window->context.destroy = destroyContextMGL;
 
+    // Keep behavior robust for callers that create capabilities immediately
+    // after window creation.
+    makeContextCurrentMGL(window);
+
     return GLFW_TRUE;
 }
 
@@ -201,4 +228,3 @@ GLFWAPI void * glfwGetMGLContext(GLFWwindow* handle)
 
     return window->context.mgl.ctx;
 }
-

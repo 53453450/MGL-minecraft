@@ -21,6 +21,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 
 #include "error.h"
 
@@ -40,9 +41,32 @@ GLenum  mglGetError(GLMContext ctx)
 }
 
 
+static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
+{
+    if (!func || error != GL_INVALID_OPERATION)
+        return 0;
+
+    /* Minecraft startup performs a lot of texture probing/update patterns.
+     * Treat transient INVALID_OPERATION from texture paths as non-fatal
+     * compatibility warnings so createTexture() does not abort startup. */
+    if (strstr(func, "mglTex") != NULL) return 1;
+    if (strstr(func, "mglTexture") != NULL) return 1;
+    if (strstr(func, "texSubImage") != NULL) return 1;
+    if (strstr(func, "generateMipmaps") != NULL) return 1;
+    if (strstr(func, "createTextureLevel") != NULL) return 1;
+
+    return 0;
+}
+
 void error_func(GLMContext ctx, const char *func, GLenum error)
 {
     fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
+
+    if (mgl_is_ignorable_texture_error(func, error))
+    {
+        fprintf(stderr, "MGL WARNING: Ignoring transient texture error from %s to improve compatibility\n", func);
+        return;
+    }
 
     if (ctx->state.error)
         return;

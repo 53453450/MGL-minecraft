@@ -148,27 +148,30 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         }
     }
 
-    assert(0);
-
-    return 0xFFFFFFFF;
+    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, defaulting to 0\n", uniformBlockName ? uniformBlockName : "(null)");
+    return 0;
 }
 
 void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLenum pname, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    (void)ctx; (void)program; (void)uniformBlockIndex; (void)pname;
+    if (params) *params = 0;
 }
 
 void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformBlockName)
 {
-    // Unimplemented function
-    assert(0);
+    (void)ctx; (void)program; (void)uniformBlockIndex;
+    if (length) *length = 0;
+    if (uniformBlockName && bufSize > 0) uniformBlockName[0] = '\0';
 }
 
 void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding)
 {
-    // Unimplemented function
-    assert(0);
+    // Accept as no-op for now; bindings are auto-mapped during shader compilation.
+    (void)ctx;
+    (void)program;
+    (void)uniformBlockIndex;
+    (void)uniformBlockBinding;
 }
 
 bool checkUniformParams(GLMContext ctx, GLint location)
@@ -677,4 +680,3 @@ void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLbool
                             Mat4x3fvTranspose  // Transpose function
         );
 }
-

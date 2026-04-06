@@ -12,3 +12,5 @@ external/glslang/
 /SPIRV-Cross
 /MGL.gputrace
 /Info.plist
+*.dylib
+*.dylib

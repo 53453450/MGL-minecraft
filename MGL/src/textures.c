@@ -36,28 +36,42 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 
 GLuint textureIndexFromTarget(GLMContext ctx, GLenum target)
 {
+    (void)ctx;
+
     switch(target)
     {
+        case GL_PROXY_TEXTURE_1D:
         case GL_TEXTURE_BUFFER: return _TEXTURE_BUFFER_TARGET;
         case GL_TEXTURE_1D: return _TEXTURE_1D;
+        case GL_PROXY_TEXTURE_2D:
         case GL_TEXTURE_2D: return _TEXTURE_2D;
+        case GL_PROXY_TEXTURE_3D:
         case GL_TEXTURE_3D: return _TEXTURE_3D;
+        case GL_PROXY_TEXTURE_RECTANGLE:
         case GL_TEXTURE_RECTANGLE: return _TEXTURE_RECTANGLE;
+        case GL_PROXY_TEXTURE_1D_ARRAY:
         case GL_TEXTURE_1D_ARRAY: return _TEXTURE_1D_ARRAY;
+        case GL_PROXY_TEXTURE_2D_ARRAY:
         case GL_TEXTURE_2D_ARRAY: return _TEXTURE_2D_ARRAY;
+        case GL_PROXY_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
         case GL_TEXTURE_CUBE_MAP: return _TEXTURE_CUBE_MAP;
+        case GL_PROXY_TEXTURE_CUBE_MAP_ARRAY:
         case GL_TEXTURE_CUBE_MAP_ARRAY: return _TEXTURE_CUBE_MAP_ARRAY;
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE:
         case GL_TEXTURE_2D_MULTISAMPLE: return _TEXTURE_2D_MULTISAMPLE;
+        case GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY:
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY: return _TEXTURE_2D_MULTISAMPLE_ARRAY;
         case GL_RENDERBUFFER: return _RENDERBUFFER;
 
         default:
-            assert(0);
+            return _MAX_TEXTURE_TYPES;
     }
-
-    assert(0);
-
-    return _MAX_TEXTURE_TYPES;
 }
 
 Texture *currentTexture(GLMContext ctx, GLuint index)
@@ -77,7 +91,8 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        assert(0);
+        STATE(error) = GL_INVALID_ENUM;
+        return NULL;
     }
 
     ptr = (Texture *)malloc(sizeof(Texture));
@@ -127,7 +142,8 @@ Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture)
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        assert(0);
+        STATE(error) = GL_INVALID_ENUM;
+        return NULL;
     }
 
     ptr = newTexObj(ctx, target);
@@ -182,7 +198,11 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
     if (name == 0)
     {
         index = textureIndexFromTarget(ctx, target);
-        assert(index != _MAX_TEXTURE_TYPES);
+        if (index == _MAX_TEXTURE_TYPES)
+        {
+            STATE(error) = GL_INVALID_ENUM;
+            return NULL;
+        }
 
         ptr = currentTexture(ctx, index);
         
@@ -203,7 +223,11 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
         target = ptr->target;
 
         index = textureIndexFromTarget(ctx, target);
-        assert(index != _MAX_TEXTURE_TYPES);
+        if (index == _MAX_TEXTURE_TYPES)
+        {
+            STATE(error) = GL_INVALID_ENUM;
+            return NULL;
+        }
     }
 
     return ptr;
@@ -407,6 +431,8 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 if(ctx->state.active_textures[i] == tex)
                 {
                     ctx->state.active_textures[i] = NULL;
+                    ctx->state.texture_units[i].textures[tex->index] = NULL;
+                    ctx->state.active_texture_mask[i / 32] &= ~(1u << (i % 32));
 
                     ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
                 }
@@ -1190,6 +1216,19 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     tex->faces[face].levels[level].height = height;
     tex->faces[face].levels[level].depth = depth;
 
+    // Proxy textures are capability probes: validate and store metadata only.
+    // Do not allocate backing storage or upload data.
+    if (proxy)
+    {
+        tex->is_array = is_array;
+        tex->faces[face].levels[level].pitch = 0;
+        tex->faces[face].levels[level].data_size = 0;
+        tex->faces[face].levels[level].data = 0;
+        tex->faces[face].levels[level].complete = true;
+        tex->complete = true;
+        return true;
+    }
+
     kern_return_t err;
     vm_address_t texture_data;
     size_t pixel_size;
@@ -1386,6 +1425,7 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     GLuint face;
     GLboolean is_array;
     GLboolean proxy;
+    bool created_ok;
 
     fprintf(stderr, "MGL: mglTexImage2D called - target=0x%x, level=%d, internalformat=0x%x, width=%d, height=%d, format=0x%x, type=0x%x\n",
             target, level, internalformat, width, height, format, type);
@@ -1447,7 +1487,12 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     tex->access = GL_READ_ONLY;
 
-    createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
+    created_ok = createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
+    if (created_ok)
+    {
+        /* Clear stale validation errors on successful upload to avoid false-positive 1282. */
+        ctx->state.error = GL_NO_ERROR;
+    }
 }
 
 void mglTexImage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
@@ -1746,6 +1791,7 @@ void mglTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset,
 {
     Texture *tex;
     GLuint face;
+    bool updated_ok;
 
     face = 0;
 
@@ -1775,7 +1821,11 @@ void mglTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset,
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
     
-    texSubImage2D(ctx, tex, face, level, xoffset, yoffset, width, height, format, type, pixels);
+    updated_ok = texSubImage2D(ctx, tex, face, level, xoffset, yoffset, width, height, format, type, pixels);
+    if (updated_ok)
+    {
+        ctx->state.error = GL_NO_ERROR;
+    }
 }
 
 void mglTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels)
@@ -1951,7 +2001,7 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 
         case GL_TEXTURE_CUBE_MAP:
             num_faces = 6;
-            proxy = true;
+            proxy = false;
             break;
 
         case GL_PROXY_TEXTURE_CUBE_MAP:
@@ -1986,6 +2036,7 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     fflush(stderr);
 
     texStorage(ctx, tex, num_faces, levels, is_array, internalformat, width, height, 1, proxy);
+    ctx->state.error = GL_NO_ERROR;
 }
 
 
@@ -2518,4 +2569,3 @@ void mglSampleCoverage(GLMContext ctx, GLfloat value, GLboolean invert)
     // Stub - sample coverage is a hint for multisampling
     fprintf(stderr, "MGL: glSampleCoverage called (stub) value=%f invert=%d\n", value, invert);
 }
-

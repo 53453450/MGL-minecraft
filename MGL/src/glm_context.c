@@ -40,10 +40,9 @@ GLMContext _ctx = NULL;
 /* Declared in MGLRenderer.m */
 extern void* CppCreateMGLRendererHeadless(void *glm_ctx);
 
-/* Auto-initialize MGL with headless renderer when library loads.
- * Headless = offscreen rendering, QEMU blits the framebuffer to screen.
+/* Initialize MGL on-demand (not at library load time).
+ * Loading via dlopen must never crash if runtime dependencies are not ready.
  */
-__attribute__((constructor))
 static void mgl_auto_init(void) {
     if (_ctx == NULL) {
         _ctx = createGLMContext(GL_RGBA, GL_UNSIGNED_BYTE,
@@ -278,7 +277,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     ctx->temp_element_buffer = NULL;
     
     err = glslang_initialize_process();
-    assert(err);
+    if (!err)
+    {
+        // Do not abort the host process during dynamic loading.
+        // Shader compilation may fail later, but the library remains loadable.
+        fprintf(stderr, "MGL WARN: glslang_initialize_process failed; continuing without hard abort\n");
+    }
     
     _ctx = save;
 
@@ -407,4 +411,3 @@ static void mgl_auto_cleanup(void)
         fprintf(stderr, "MGL INFO: Auto-cleanup completed\n");
     }
 }
-
