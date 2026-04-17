@@ -164,6 +164,57 @@ bool checkUsage(GLMContext ctx, GLenum usage)
     return false;
 }
 
+static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint index)
+{
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *bound_vao = ctx->state.vao;
+        int vao_is_valid = 0;
+
+        if (bound_vao && STATE(vao_table).keys && STATE(vao_table).size > 0)
+        {
+            for (size_t i = 1; i < STATE(vao_table).size; i++)
+            {
+                if (STATE(vao_table).keys[i].data == bound_vao)
+                {
+                    vao_is_valid = 1;
+                    break;
+                }
+            }
+        }
+
+        if (bound_vao && !vao_is_valid)
+        {
+            fprintf(stderr, "MGL WARNING: dropping invalid current VAO pointer %p during EBO unbind\n",
+                    (void *)bound_vao);
+            ctx->state.vao = NULL;
+            bound_vao = NULL;
+        }
+
+        if (bound_vao)
+        {
+            bound_vao->element_array.buffer = NULL;
+            bound_vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
+            STATE(dirty_bits) |= DIRTY_VAO;
+        }
+        else
+        {
+            // Compatibility path: emulate VAO 0 element binding behavior.
+            STATE(default_vao_element_array_buffer) = NULL;
+        }
+
+        STATE(buffers[index]) = NULL;
+        STATE_VAR(element_array_buffer_binding) = 0;
+        return;
+    }
+
+    if (STATE(buffers[index]) != NULL)
+    {
+        STATE(buffers[index]) = NULL;
+        STATE(dirty_bits) |= DIRTY_BUFFER;
+    }
+}
+
 static inline bool mgl_range_ok_glsize(GLintptr offset, GLsizeiptr size, GLsizeiptr total)
 {
     if (offset < 0 || size < 0 || total < 0)
@@ -213,6 +264,60 @@ static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
 
     fprintf(stderr, "MGL ERROR: %s recovery failed; dropping call\n", func);
     return NULL;
+}
+
+static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
+{
+    VertexArray *vao;
+
+    if (!ctx)
+        return NULL;
+
+    vao = ctx->state.vao;
+    if (!vao)
+        return NULL;
+
+    if (!STATE(vao_table).keys || STATE(vao_table).size == 0)
+    {
+        fprintf(stderr, "MGL WARNING: VAO table unavailable, dropping current VAO pointer %p\n", (void *)vao);
+        ctx->state.vao = NULL;
+        return NULL;
+    }
+
+    for (size_t i = 1; i < STATE(vao_table).size; i++)
+    {
+        if (STATE(vao_table).keys[i].data == vao)
+        {
+            return vao;
+        }
+    }
+
+    fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in VAO table; resetting to VAO 0\n", (void *)vao);
+    ctx->state.vao = NULL;
+    return NULL;
+}
+
+static Buffer *mglGetBoundBufferForTarget(GLMContext ctx, GLenum target)
+{
+    GLuint index;
+
+    if (!ctx || !checkTarget(ctx, target))
+        return NULL;
+
+    index = bufferIndexFromTarget(ctx, target);
+
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx);
+        if (vao)
+            return vao->element_array.buffer;
+        return STATE(default_vao_element_array_buffer);
+    }
+
+    if (index >= _MAX_BUFFER_TYPES)
+        return NULL;
+
+    return STATE(buffers[index]);
 }
 
 size_t page_size_align(size_t size)
@@ -495,6 +600,11 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     }
                 }
             }
+            if (STATE(default_vao_element_array_buffer) == ptr ||
+                (STATE(default_vao_element_array_buffer) && STATE(default_vao_element_array_buffer)->name == buffer))
+            {
+                STATE(default_vao_element_array_buffer) = NULL;
+            }
 
             // remove any dangling references in indexed buffer-base bindings
             for (GLuint idx = 0; idx < _MAX_BUFFER_TYPES; idx++)
@@ -530,13 +640,39 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
     GLint index;
     Buffer *ptr;
 
+    if (!ctx)
+        return;
+
+    fprintf(stderr, "MGL BindBuffer target=0x%x buffer=%u ctx=%p vao=%p\n",
+            target, buffer, (void *)ctx, ctx ? (void *)ctx->state.vao : NULL);
+
     // GL_INVALID_ENUM is generated if target is not supported.
-    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+    if (!checkTarget(ctx, target))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (buffer == 0)
+    {
+        index = bufferIndexFromTarget(ctx, target);
+        if (index < 0 || index >= _MAX_BUFFER_TYPES)
+        {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+        mglBindNullBufferForTarget(ctx, target, index);
+        return;
+    }
 
     if (buffer)
     {
         ptr = getBuffer(ctx, target, buffer);
-        ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+        if (!ptr)
+        {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
     }
     else
     {
@@ -544,6 +680,36 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
     }
 
     index = bufferIndexFromTarget(ctx, target);
+    if (index < 0 || index >= _MAX_BUFFER_TYPES)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    // GL_ELEMENT_ARRAY_BUFFER binding is part of VAO state, not global state.
+    // Keep VAO + compatibility state in sync so indexed draws can find EBO reliably.
+    if (target == GL_ELEMENT_ARRAY_BUFFER)
+    {
+        VertexArray *vao = mglGetSafeCurrentVAO(ctx);
+        if (vao)
+        {
+            if (vao->element_array.buffer != ptr)
+            {
+                vao->element_array.buffer = ptr;
+                vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
+                STATE(dirty_bits) |= DIRTY_VAO;
+            }
+        }
+        else
+        {
+            // Compatibility path: treat VAO 0 as a default VAO bucket.
+            STATE(default_vao_element_array_buffer) = ptr;
+        }
+
+        STATE(buffers[index]) = ptr;
+        STATE_VAR(element_array_buffer_binding) = ptr ? ptr->name : 0;
+        return;
+    }
 
     if (STATE(buffers[index]) != ptr)
     {
@@ -771,10 +937,18 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
     Buffer *ptr;
 
     // GL_INVALID_ENUM is generated if target is not supported.
-    ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
+    if (!checkTarget(ctx, target))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     // GL_INVALID_ENUM is generated if target is not one of the allowable values.
-    ERROR_CHECK_RETURN(checkUsage(ctx, usage), GL_INVALID_ENUM);
+    if (!checkUsage(ctx, usage))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     if (size < 0)
     {
@@ -783,6 +957,11 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
     }
 
     index = bufferIndexFromTarget(ctx, target);
+    if (index >= _MAX_BUFFER_TYPES)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     ptr = STATE(buffers[index]);
     if (ptr == NULL)
@@ -816,7 +995,11 @@ void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const vo
 
     ptr = findBuffer(ctx, buffer);
 
-    ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
+    if (ptr == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
     if (size < 0)
     {
@@ -824,7 +1007,11 @@ void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const vo
     }
 
     // GL_INVALID_ENUM is generated if target is not one of the allowable values.
-    ERROR_CHECK_RETURN(checkUsage(ctx, usage), GL_INVALID_ENUM);
+    if (!checkUsage(ctx, usage))
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
 
     // buffer was created via buffer storage call for immutable storage
@@ -1297,7 +1484,10 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     ptr->mapped_offset = 0;
     ptr->mapped_length = 0;
 
-    ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, 0, ptr->size, 0, false);
+    if (ctx->mtl_funcs.mtlMapUnmapBuffer)
+    {
+        ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, 0, ptr->size, 0, false);
+    }
 
     return GL_TRUE;
 }
@@ -1313,8 +1503,12 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
 
 void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access_flags)
 {
-    GLuint index;
     Buffer *ptr;
+
+    if (!ctx || length <= 0)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
 
     // GL_INVALID_ENUM is generated if target is not supported.
     ERROR_CHECK_RETURN_VALUE(checkTarget(ctx, target), GL_INVALID_ENUM, NULL);
@@ -1331,14 +1525,22 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
     }
 
-    index = bufferIndexFromTarget(ctx, target);
-    ptr = STATE(buffers[index]);
+    ptr = mglGetBoundBufferForTarget(ctx, target);
 
-    ERROR_CHECK_RETURN_VALUE((ptr != NULL), GL_INVALID_OPERATION, NULL);
-
-    if (offset + length > ptr->size)
+    if (!ptr)
     {
-        fprintf(stderr, "MGL Error: mglMapBufferRange: range overflow (offset=%ld length=%ld buffer_size=%ld)\n", offset, length, ptr->size);
+        fprintf(stderr, "MGL MapBufferRange NULL bound buffer target=0x%x\n", target);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (!ptr->data.buffer_data || !mgl_range_ok_glsize(offset, length, ptr->size))
+    {
+        fprintf(stderr, "MGL MapBufferRange invalid range target=0x%x off=%lld len=%lld size=%lld data=%p\n",
+                target,
+                (long long)offset,
+                (long long)length,
+                (long long)ptr->size,
+                (void *)(uintptr_t)ptr->data.buffer_data);
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
     }
 
@@ -1382,6 +1584,12 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
 
     ptr->access_flags = access_flags;
     ptr->mapped = GL_TRUE;
+
+    if (!ctx->mtl_funcs.mtlMapUnmapBuffer)
+    {
+        // Safety fallback: keep the process alive even if Metal map callback is unavailable.
+        return (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + offset);
+    }
 
     return ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, offset, length, access_flags, true);
 }

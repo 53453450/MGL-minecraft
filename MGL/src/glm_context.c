@@ -179,8 +179,9 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(var.scissor_box[0]) = 0;
     STATE(var.scissor_box[1]) = 0;
-    STATE(var.scissor_box[2]) = 0;  // needs to be set on binding to window
-    STATE(var.scissor_box[3]) = 0;  // needs to be set on binding to window
+    // Default to a safe, non-zero scissor that matches initial viewport.
+    STATE(var.scissor_box[2]) = 1024;
+    STATE(var.scissor_box[3]) = 768;
 
     // Initialize viewport to default size - critical for rendering
     STATE(viewport[0]) = 0;
@@ -257,6 +258,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.cull_face_mode) = GL_BACK;
 
     STATE(sync_name) = 1;
+    STATE(program_name) = 0;
+    STATE(var.current_program) = 0;
 
     STATE(dirty_bits) = DIRTY_ALL;
 

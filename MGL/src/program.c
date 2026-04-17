@@ -374,6 +374,67 @@ void addShadersToProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_
     }
 }
 
+static void replace_all_substr(char **pstr, const char *from, const char *to)
+{
+    char *src;
+    char *pos;
+    size_t from_len;
+    size_t to_len;
+    size_t count = 0;
+    size_t src_len;
+    size_t new_len;
+    char *dst;
+    char *out;
+
+    if (!pstr || !*pstr || !from || !to) {
+        return;
+    }
+
+    src = *pstr;
+    from_len = strlen(from);
+    to_len = strlen(to);
+    if (from_len == 0) {
+        return;
+    }
+
+    pos = src;
+    while ((pos = strstr(pos, from)) != NULL) {
+        count++;
+        pos += from_len;
+    }
+
+    if (count == 0) {
+        return;
+    }
+
+    src_len = strlen(src);
+    new_len = src_len + count * (to_len - from_len);
+    out = (char *)malloc(new_len + 1);
+    if (!out) {
+        return;
+    }
+
+    pos = src;
+    dst = out;
+    while (1) {
+        char *match = strstr(pos, from);
+        size_t chunk_len;
+        if (!match) {
+            strcpy(dst, pos);
+            break;
+        }
+        chunk_len = (size_t)(match - pos);
+        memcpy(dst, pos, chunk_len);
+        dst += chunk_len;
+        memcpy(dst, to, to_len);
+        dst += to_len;
+        pos = match + from_len;
+    }
+
+    free(*pstr);
+    *pstr = out;
+}
+
 char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 {
     const SpvId *spirv;
@@ -595,6 +656,17 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     DEBUG_PRINT("\n%s\n", result);
 
     str_ret = strdup(result);
+    if (str_ret) {
+        /* Some generated MSL uses `sampler` as an identifier, which collides
+         * with Metal's `sampler` type in function signatures. Normalize these
+         * generated helper names to keep compilation valid. */
+        replace_all_substr(&str_ret,
+                           "texture2d<float> sampler, sampler samplerSmplr",
+                           "texture2d<float> sourceTex, sampler sourceSmplr");
+        replace_all_substr(&str_ret,
+                           " sampler.sample(samplerSmplr,",
+                           " sourceTex.sample(sourceSmplr,");
+    }
 
     // Frees all memory we allocated so far.
     spvc_context_destroy(context);
@@ -697,7 +769,7 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
-    glslang_program_t *glsl_program = NULL;
+    glslang_program_t *glsl_program;
     int err;
     bool link_ok = true;
     bool has_any_shader = false;
@@ -713,19 +785,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
-    glsl_program = glslang_program_create();
-    if (!glsl_program) {
-        fprintf(stderr, "MGL Error: glslang_program_create failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    fprintf(stderr, "MGL DEBUG: Created glslang program %p\n", (void*)glsl_program);
-
-    fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
-    addShadersToProgram(ctx, pptr, glsl_program);
-    fprintf(stderr, "MGL DEBUG: Shaders added\n");
-
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if (pptr->shader_slots[stage]) {
             has_any_shader = true;
@@ -739,7 +798,19 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    fprintf(stderr, "MGL DEBUG: About to link program\n");
+    fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
+    glsl_program = glslang_program_create();
+    if (!glsl_program) {
+        fprintf(stderr, "MGL Error: glslang_program_create failed\n");
+        pptr->linked_glsl_program = NULL;
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
+    addShadersToProgram(ctx, pptr, glsl_program);
+    fprintf(stderr, "MGL DEBUG: Shaders added\n");
+
     err = glslang_program_link(glsl_program, GLSLANG_MSG_DEFAULT_BIT);
     fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
     if (!err)
@@ -788,7 +859,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
 void mglUseProgram(GLMContext ctx, GLuint program)
 {
-    Program *pptr;
+    Program *pptr = NULL;
     static GLuint s_last_unlinked_program = 0;
     static unsigned int s_unlinked_program_hits = 0;
 
@@ -847,6 +918,16 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         }
         // When unbinding (pptr=NULL), don't mark dirty - keep existing pipeline state
     }
+
+    /*
+     * Keep program name and pointer state in sync so renderer-side recovery can
+     * re-resolve by name if the cached pointer is lost.
+     */
+    ctx->state.program_name = program;
+    ctx->state.var.current_program = program;
+
+    fprintf(stderr, "MGL UseProgram program=%u resolved=%p\n",
+            program, (void *)ctx->state.program);
 }
 
 void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const GLchar *name)

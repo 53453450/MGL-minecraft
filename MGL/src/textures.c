@@ -31,6 +31,7 @@
 #include "glm_context.h"
 
 extern void *getBufferData(GLMContext ctx, Buffer *ptr);
+extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 
 bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, void *pixels);
 
@@ -285,7 +286,14 @@ void mglCreateTextures(GLMContext ctx, GLenum target, GLsizei n, GLuint *texture
     while(n--)
     {
         // create a texture object
-        assert(getTexture(ctx, target, *textures++));
+        GLuint name = *textures++;
+        if (!getTexture(ctx, target, name))
+        {
+            fprintf(stderr, "MGL Error: mglCreateTextures: failed to create texture %u for target 0x%x\n",
+                    (unsigned)name, (unsigned)target);
+            STATE(error) = GL_INVALID_ENUM;
+            return;
+        }
     }
 }
 
@@ -298,7 +306,9 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        assert(0);
+        fprintf(stderr, "MGL Error: mglBindTexture: invalid target 0x%x\n", (unsigned)target);
+        STATE(error) = GL_INVALID_ENUM;
+        return;
     }
 
     if (texture)
@@ -1139,6 +1149,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         // Compatibility: Treat glTexImage* on immutable texture as glTexSubImage*
         // This allows guests to update content using glTexImage* which is common in some drivers
         // We pass 0 for offsets. texSubImage will handle validation.
+        if (pixels == NULL) {
+            // Allocation-only call against immutable storage: nothing to upload.
+            return true;
+        }
         return texSubImage(ctx, tex, face, level, 0, 0, 0, width, height, depth, format, type, pixels);
     }
     
@@ -1202,6 +1216,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
         GLubyte *buffer_data;
         buffer_data = getBufferData(ctx, ptr);
+        if (!buffer_data) {
+            fprintf(stderr, "MGL ERROR: createTextureLevel unpack buffer has NULL data\n");
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
 
         // if a pixel buffer is the src, pixels is the offset
         // need to check offset against size
@@ -1358,6 +1376,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
                 GLubyte *buffer_data;
                 buffer_data = getBufferData(ctx, ptr);
+                if (!buffer_data) {
+                    fprintf(stderr, "MGL ERROR: createTextureLevel unpack buffer has NULL data\n");
+                    ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+                }
 
                 // if a pixel buffer is the src, pixels is the offset
                 // need to check offset against size
@@ -1427,8 +1449,32 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     GLboolean proxy;
     bool created_ok;
 
-    fprintf(stderr, "MGL: mglTexImage2D called - target=0x%x, level=%d, internalformat=0x%x, width=%d, height=%d, format=0x%x, type=0x%x\n",
-            target, level, internalformat, width, height, format, type);
+    fprintf(stderr,
+            "MGL: mglTexImage2D called - target=0x%x, level=%d, internalformat=0x%x, width=%d, height=%d, border=%d, format=0x%x, type=0x%x, pixels=%p\n",
+            target, level, internalformat, width, height, border, format, type, pixels);
+
+    // Proxy texture targets are capability probes only. Never create backing textures.
+    if (target == GL_PROXY_TEXTURE_2D)
+    {
+        GLsizei maxSize = mglSafeMaxTextureSize(ctx);
+
+        bool ok = (level == 0) &&
+                  (width > 0) &&
+                  (height > 0) &&
+                  (border == 0) &&
+                  (width <= maxSize) &&
+                  (height <= maxSize);
+
+        STATE(proxy_texture_2d_width) = ok ? width : 0;
+        STATE(proxy_texture_2d_height) = ok ? height : 0;
+        STATE(proxy_texture_2d_internalformat) = ok ? internalformat : 0;
+
+        fprintf(stderr, "MGL PROXY_TEXTURE_2D result ok=%d req=%dx%d max=%d\n",
+                ok ? 1 : 0, width, height, maxSize);
+        // Proxy probe failure/success should not leave a GL error behind.
+        STATE(error) = GL_NO_ERROR;
+        return;
+    }
 
     face = 0;
     is_array = false;
@@ -1486,6 +1532,23 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
     tex->access = GL_READ_ONLY;
+
+    if (pixels == NULL)
+    {
+        created_ok = createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, NULL, proxy);
+        if (created_ok)
+        {
+            tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+            tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+            STATE(dirty_bits) |= DIRTY_TEX;
+            ctx->state.error = GL_NO_ERROR;
+        }
+
+        fprintf(stderr,
+                "MGL TexImage2D allocate-only tex=%u target=0x%x %dx%d pixels=NULL\n",
+                tex->name, target, width, height);
+        return;
+    }
 
     created_ok = createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
     if (created_ok)
@@ -1569,8 +1632,8 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 {
     // Debug: Log large texture uploads (VM framebuffer size)
     if (width >= 640 && height >= 400) {
-        fprintf(stderr, "MGL DEBUG: texSubImage tex_id=%u %dx%d at (%d,%d) pixels=%p\n",
-                tex ? tex->name : 0, width, height, xoffset, yoffset, pixels);
+        fprintf(stderr, "MGL DEBUG: texSubImage tex_id=%u face=%u level=%d %dx%dx%d at (%d,%d,%d) pixels=%p\n",
+                tex ? tex->name : 0, face, level, width, height, depth, xoffset, yoffset, zoffset, pixels);
     }
     
     // ERROR_CHECK_RETURN_VALUE(tex != NULL, GL_INVALID_OPERATION, false);
@@ -1579,9 +1642,21 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 
+    if (face >= _CUBE_MAP_MAX_FACE) {
+        fprintf(stderr, "MGL ERROR: texSubImage invalid face=%u\n", face);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (width <= 0 || height <= 0 || depth <= 0) {
+        fprintf(stderr,
+                "MGL texSubImage skip invalid size tex=%u %dx%dx%d\n",
+                tex->name, width, height, depth);
+        return true;
+    }
+
     // ERROR_CHECK_RETURN_VALUE(level <= tex->num_levels, GL_INVALID_OPERATION, false);
-    if (level > tex->num_levels) {
-        fprintf(stderr, "MGL Error: texSubImage: level %d > num_levels %d\n", level, tex->num_levels);
+    if (level >= (GLint)tex->num_levels) {
+        fprintf(stderr, "MGL Error: texSubImage: level %d >= num_levels %d\n", level, tex->num_levels);
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
     
@@ -1611,6 +1686,10 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 
         GLubyte *buffer_data;
         buffer_data = getBufferData(ctx, ptr);
+        if (!buffer_data) {
+            fprintf(stderr, "MGL ERROR: texSubImage unpack buffer has NULL data\n");
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
 
         // if a pixel buffer is the src, pixels is the offset
         // need to check offset against size
@@ -1620,8 +1699,13 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         pixels = &buffer_data[offset];
     }
 
-    // no src data.. return
-    ERROR_CHECK_RETURN(pixels, GL_INVALID_OPERATION);
+    if (!pixels)
+    {
+        fprintf(stderr,
+                "MGL texSubImage skip upload: pixels=NULL tex=%u target=0x%x %dx%d\n",
+                tex->name, tex->target, width, height);
+        return true;
+    }
 
     size_t pixel_size;
     size_t src_size;
@@ -1711,7 +1795,8 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 
         src_size = src_image_size * depth;
 
-        ctx->mtl_funcs.mtlTexSubImage(ctx, tex, buf, src_offset, src_pitch, src_image_size, src_size, zoffset, level, width, height, depth, xoffset, yoffset, zoffset);
+        // Preserve cube-map / array target slice information. zoffset is for 3D origin, not array/cube slice.
+        ctx->mtl_funcs.mtlTexSubImage(ctx, tex, buf, src_offset, src_pitch, src_image_size, src_size, face, level, width, height, depth, xoffset, yoffset, zoffset);
 
         return true;
     } while(false);

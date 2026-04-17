@@ -342,7 +342,10 @@ typedef struct VertexElementArray_t {
     const void *ptr;
 } VertexElementArray;
 
+#define MGL_VAO_MAGIC 0x56414F31u
+
 typedef struct VertexArray_t {
+    uint32_t magic;
     GLuint dirty_bits;
     unsigned name;
     unsigned enabled_attribs;
@@ -562,6 +565,12 @@ typedef struct {
     GLfloat color_clear_value[4]; // GL_COLOR_CLEAR_VALUE
 
     Buffer *buffers[MAX_BINDABLE_BUFFERS];
+    // Compatibility slot for VAO 0 element-array binding.
+    Buffer *default_vao_element_array_buffer;
+    // Proxy texture probe state (capability query, no allocation).
+    GLint proxy_texture_2d_width;
+    GLint proxy_texture_2d_height;
+    GLint proxy_texture_2d_internalformat;
 
     VertexArray *vao;
     Texture     *tex;
@@ -591,6 +600,7 @@ typedef struct {
 
     Shader      *shaders[_MAX_SHADER_TYPES];
     Program     *program;
+    GLuint      program_name;
     ProgramPipeline *program_pipeline;
     TransformFeedback *transform_feedback;
 

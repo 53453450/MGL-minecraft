@@ -174,21 +174,16 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
         (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
-        // probably should validate current fbo..
-        Framebuffer * fbo = ctx->state.framebuffer;
-        FBOAttachment *att = NULL;
+        // GL_COLOR_ATTACHMENTi selection on user FBO should be sticky even before
+        // attachment validation completes. Resolve readiness later during draw/clear/blit.
+        Framebuffer *fbo = ctx->state.framebuffer;
         if (fbo)
-            att = &fbo->color_attachments[buf-GL_COLOR_ATTACHMENT0];
-
-        if (!fbo || !att || (!att->buf.rbo && !att->buf.tex))
         {
-            // Minecraft may temporarily select draw buffers before attachments are fully configured.
-            fprintf(stderr, "MGL WARNING: mglDrawBuffer: color attachment %u not ready yet\n",
-                    (unsigned)(buf - GL_COLOR_ATTACHMENT0));
-            return;
+            GLuint draw_index = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
+            FBOAttachment *att = &fbo->color_attachments[draw_index];
+            if (att->buf.rbo)
+                att->buf.rbo->is_draw_buffer = GL_TRUE;
         }
-        if (att->buf.rbo)
-            att->buf.rbo->is_draw_buffer = GL_TRUE;
     }
 
     STATE(draw_buffer) = buf;

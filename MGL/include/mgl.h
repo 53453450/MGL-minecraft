@@ -59,6 +59,7 @@ void mglGetDoublev(GLMContext ctx, GLenum pname, GLdouble *data);
 GLenum  mglGetError(GLMContext ctx);
 void mglGetFloatv(GLMContext ctx, GLenum pname, GLfloat *data);
 void mglGetIntegerv(GLMContext ctx, GLenum pname, GLint *data);
+GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 const GLubyte  *mglGetString(GLMContext ctx, GLenum name);
 void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, void *pixels);
 void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *params);

@@ -11,6 +11,7 @@
 #include "glcorearb.h"
 
 #include "glm_context.h"
+#include <stdio.h>
 
 extern GLMContext _ctx;
 extern void mgl_lazy_init(void);
@@ -104,6 +105,12 @@ void glTexImage1D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels)
 {
     GLMContext ctx = GET_CONTEXT();
+
+    if (target == GL_PROXY_TEXTURE_2D) {
+        fprintf(stderr,
+                "MGL ABI TRACE glTexImage2D target=%x level=%d internal=%x width=%d height=%d border=%d format=%x type=%x pixels=%p\n",
+                target, level, internalformat, width, height, border, format, type, pixels);
+    }
 
     ctx->dispatch.tex_image2D(ctx, target, level, internalformat, width, height, border, format, type, pixels);
 }
@@ -288,6 +295,10 @@ void glGetIntegerv(GLenum pname, GLint *data)
     GLMContext ctx = GET_CONTEXT();
 
     ctx->dispatch.get_integerv(ctx, pname, data);
+
+    if (data && (pname == GL_MAX_TEXTURE_SIZE || pname == GL_MAX_VIEWPORT_DIMS)) {
+        fprintf(stderr, "MGL ABI TRACE glGetIntegerv pname=0x%x -> %d\n", pname, data[0]);
+    }
 }
 
 GLubyte const  *glGetString(GLenum name)
@@ -7351,4 +7362,3 @@ void glPolygonOffsetClamp(GLfloat factor, GLfloat units, GLfloat clamp)
 
     ctx->dispatch.polygon_offset_clamp(ctx, factor, units, clamp);
 }
-

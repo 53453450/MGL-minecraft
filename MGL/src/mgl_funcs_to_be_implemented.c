@@ -7,6 +7,7 @@
 //
 
 #include <assert.h>
+#include <string.h>
 
 #include "mgl.h"
 
@@ -14,14 +15,140 @@
 TransformFeedback *newTransformFeedback(GLMContext ctx, GLuint name);
 TransformFeedback *findTransformFeedback(GLMContext ctx, GLuint name);
 TransformFeedback *getTransformFeedback(GLMContext ctx, GLuint name);
+Program *findProgram(GLMContext ctx, GLuint program);
+ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline);
 
 // Forward declaration for texture lookup from textures.c
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 
+typedef struct QueryObject_t {
+	GLuint name;
+	GLenum target;
+	GLboolean active;
+	GLboolean available;
+	GLuint64 result;
+} QueryObject;
+
+static HashTable s_query_table;
+static GLboolean s_query_table_initialized = GL_FALSE;
+static GLuint s_active_query_by_target[8];
+static GLuint64 s_fake_timestamp_counter = 1;
+
+static void mgl_init_query_table_if_needed(void)
+{
+	if (!s_query_table_initialized)
+	{
+		initHashTable(&s_query_table, 64);
+		memset(s_active_query_by_target, 0, sizeof(s_active_query_by_target));
+		s_query_table_initialized = GL_TRUE;
+	}
+}
+
+static int mgl_query_target_slot(GLenum target)
+{
+	switch (target)
+	{
+		case GL_SAMPLES_PASSED: return 0;
+		case GL_ANY_SAMPLES_PASSED: return 1;
+		case GL_ANY_SAMPLES_PASSED_CONSERVATIVE: return 2;
+		case GL_PRIMITIVES_GENERATED: return 3;
+		case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN: return 4;
+		case GL_TIME_ELAPSED: return 5;
+		default: return -1;
+	}
+}
+
+static QueryObject *mgl_find_query(GLuint id)
+{
+	mgl_init_query_table_if_needed();
+	return (QueryObject *)searchHashTable(&s_query_table, id);
+}
+
+static QueryObject *mgl_get_query(GLuint id)
+{
+	QueryObject *q;
+
+	mgl_init_query_table_if_needed();
+	q = (QueryObject *)searchHashTable(&s_query_table, id);
+	if (!q)
+	{
+		q = (QueryObject *)calloc(1, sizeof(QueryObject));
+		if (!q)
+			return NULL;
+		q->name = id;
+		insertHashElement(&s_query_table, id, q);
+	}
+	return q;
+}
+
+static int mgl_program_interface_to_spvc(GLenum programInterface)
+{
+	switch (programInterface)
+	{
+		case GL_PROGRAM_INPUT: return _STAGE_INPUT_RES;
+		case GL_PROGRAM_OUTPUT: return _STAGE_OUTPUT_RES;
+		case GL_UNIFORM: return _UNIFORM_CONSTANT_RES;
+		case GL_UNIFORM_BLOCK: return _UNIFORM_BUFFER_RES;
+		case GL_SHADER_STORAGE_BLOCK: return _STORAGE_BUFFER_RES;
+		case GL_BUFFER_VARIABLE: return _STORAGE_BUFFER_RES;
+		case GL_ATOMIC_COUNTER_BUFFER: return _ATOMIC_COUNTER_RES;
+		default: return -1;
+	}
+}
+
+static GLsizei mgl_program_resource_count(Program *pptr, int res_type)
+{
+	GLsizei total = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+		total += (GLsizei)pptr->spirv_resources_list[stage][res_type].count;
+	return total;
+}
+
+static SpirvResource *mgl_program_resource_at_index(Program *pptr, int res_type, GLuint index, int *out_stage)
+{
+	GLuint offset = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		if (index < offset + count)
+		{
+			if (out_stage)
+				*out_stage = stage;
+			return &pptr->spirv_resources_list[stage][res_type].list[index - offset];
+		}
+		offset += count;
+	}
+	return NULL;
+}
+
+static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
+{
+	GLuint offset = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		for (GLuint i = 0; i < count; i++)
+		{
+			SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+			if (res->name && !strcmp(res->name, name))
+			{
+				if (out_index)
+					*out_index = offset + i;
+				if (out_stage)
+					*out_stage = stage;
+				return res;
+			}
+		}
+		offset += count;
+	}
+	return NULL;
+}
+
 void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
 {
 	// Set active program in pipeline - no-op for now
+	(void)ctx;
 	(void)pipeline;
 	(void)program;
 }
@@ -29,23 +156,56 @@ void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
 void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 {
 	// Conditional render - no-op, always render
+	(void)ctx;
 	(void)id;
 	(void)mode;
 }
 
 void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 {
-	// Query - no-op, basic stub
-	(void)target;
-	(void)id;
+	int slot;
+	QueryObject *q;
+
+	slot = mgl_query_target_slot(target);
+	if (slot < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (id == 0)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	q = mgl_get_query(id);
+	if (!q)
+	{
+		STATE(error) = GL_OUT_OF_MEMORY;
+		return;
+	}
+
+	if (q->active || (q->target != 0 && q->target != target) || s_active_query_by_target[slot] != 0)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	q->target = target;
+	q->active = GL_TRUE;
+	q->available = GL_FALSE;
+	q->result = 0;
+	s_active_query_by_target[slot] = id;
 }
 
 void mglBeginQueryIndexed(GLMContext ctx, GLenum target, GLuint index, GLuint id)
 {
-	// Indexed query - no-op, basic stub
-	(void)target;
-	(void)index;
-	(void)id;
+	if (index != 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	mglBeginQuery(ctx, target, id);
 }
 
 void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
@@ -120,29 +280,56 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
 void mglClampColor(GLMContext ctx, GLenum target, GLenum clamp)
 {
 	// Clamp color - no-op, clamping handled automatically
+	(void)ctx;
 	(void)target;
 	(void)clamp;
 }
 
 void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLint *value)
 {
-	// Clear buffer - use standard clear functions
-	(void)buffer;
+	if (!value)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
 	(void)drawbuffer;
-	(void)value;
+	switch (buffer)
+	{
+		case GL_COLOR:
+			mglClearColor(ctx, (GLfloat)value[0], (GLfloat)value[1], (GLfloat)value[2], (GLfloat)value[3]);
+			mglClear(ctx, GL_COLOR_BUFFER_BIT);
+			break;
+		case GL_STENCIL:
+			mglClearStencil(ctx, value[0]);
+			mglClear(ctx, GL_STENCIL_BUFFER_BIT);
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLuint *value)
 {
-	// Clear buffer - use standard clear functions
-	(void)buffer;
+	if (!value)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
 	(void)drawbuffer;
-	(void)value;
+	if (buffer == GL_COLOR)
+	{
+		mglClearColor(ctx, (GLfloat)value[0], (GLfloat)value[1], (GLfloat)value[2], (GLfloat)value[3]);
+		mglClear(ctx, GL_COLOR_BUFFER_BIT);
+		return;
+	}
+	STATE(error) = GL_INVALID_ENUM;
 }
 
 void mglClipControl(GLMContext ctx, GLenum origin, GLenum depth)
 {
 	// Clip control - no-op, use default clip control
+	(void)ctx;
 	(void)origin;
 	(void)depth;
 }
@@ -157,6 +344,7 @@ void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboo
 void mglColorP3ui(GLMContext ctx, GLenum type, GLuint color)
 {
 	// Packed color - deprecated, no-op
+	(void)ctx;
 	(void)type;
 	(void)color;
 }
@@ -164,6 +352,7 @@ void mglColorP3ui(GLMContext ctx, GLenum type, GLuint color)
 void mglColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
 	// Packed color - deprecated, no-op
+	(void)ctx;
 	(void)type;
 	(void)color;
 }
@@ -171,6 +360,7 @@ void mglColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 void mglColorP4ui(GLMContext ctx, GLenum type, GLuint color)
 {
 	// Packed color - deprecated, no-op
+	(void)ctx;
 	(void)type;
 	(void)color;
 }
@@ -178,6 +368,7 @@ void mglColorP4ui(GLMContext ctx, GLenum type, GLuint color)
 void mglColorP4uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
 	// Packed color - deprecated, no-op
+	(void)ctx;
 	(void)type;
 	(void)color;
 }
@@ -259,6 +450,7 @@ void mglCreateTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 void mglDebugMessageCallback(GLMContext ctx, GLDEBUGPROC callback, const void *userParam)
 {
 	// Debug callback - no-op if debug infrastructure not available
+	(void)ctx;
 	(void)callback;
 	(void)userParam;
 }
@@ -266,6 +458,7 @@ void mglDebugMessageCallback(GLMContext ctx, GLDEBUGPROC callback, const void *u
 void mglDebugMessageControl(GLMContext ctx, GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled)
 {
 	// Debug message control - no-op
+	(void)ctx;
 	(void)source;
 	(void)type;
 	(void)severity;
@@ -277,6 +470,7 @@ void mglDebugMessageControl(GLMContext ctx, GLenum source, GLenum type, GLenum s
 void mglDebugMessageInsert(GLMContext ctx, GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf)
 {
 	// Insert debug message - no-op
+	(void)ctx;
 	(void)source;
 	(void)type;
 	(void)id;
@@ -287,9 +481,34 @@ void mglDebugMessageInsert(GLMContext ctx, GLenum source, GLenum type, GLuint id
 
 void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 {
-	// Query deletion - no-op, basic stub
-	(void)n;
-	(void)ids;
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
+	for (GLsizei i = 0; i < n; i++)
+	{
+		QueryObject *q;
+		int slot;
+		if (ids[i] == 0)
+			continue;
+		q = mgl_find_query(ids[i]);
+		if (!q)
+			continue;
+		if (q->active)
+		{
+			STATE(error) = GL_INVALID_OPERATION;
+			continue;
+		}
+		slot = mgl_query_target_slot(q->target);
+		if (slot >= 0 && s_active_query_by_target[slot] == q->name)
+			s_active_query_by_target[slot] = 0;
+		deleteHashElement(&s_query_table, q->name);
+		free(q);
+	}
 }
 
 void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
@@ -345,6 +564,7 @@ void mglDepthRangef(GLMContext ctx, GLfloat n, GLfloat f)
 void mglDrawTransformFeedback(GLMContext ctx, GLenum mode, GLuint id)
 {
 	// Draw from transform feedback - no-op for now
+	(void)ctx;
 	(void)mode;
 	(void)id;
 }
@@ -352,6 +572,7 @@ void mglDrawTransformFeedback(GLMContext ctx, GLenum mode, GLuint id)
 void mglDrawTransformFeedbackInstanced(GLMContext ctx, GLenum mode, GLuint id, GLsizei instancecount)
 {
 	// Draw from transform feedback instanced - no-op for now
+	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)instancecount;
@@ -360,6 +581,7 @@ void mglDrawTransformFeedbackInstanced(GLMContext ctx, GLenum mode, GLuint id, G
 void mglDrawTransformFeedbackStream(GLMContext ctx, GLenum mode, GLuint id, GLuint stream)
 {
 	// Draw from transform feedback stream - no-op for now
+	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)stream;
@@ -368,6 +590,7 @@ void mglDrawTransformFeedbackStream(GLMContext ctx, GLenum mode, GLuint id, GLui
 void mglDrawTransformFeedbackStreamInstanced(GLMContext ctx, GLenum mode, GLuint id, GLuint stream, GLsizei instancecount)
 {
 	// Draw from transform feedback stream instanced - no-op for now
+	(void)ctx;
 	(void)mode;
 	(void)id;
 	(void)stream;
@@ -382,15 +605,43 @@ void mglEndConditionalRender(GLMContext ctx)
 
 void mglEndQuery(GLMContext ctx, GLenum target)
 {
-	// End query - no-op
-	(void)target;
+	int slot;
+	QueryObject *q;
+	GLuint id;
+
+	slot = mgl_query_target_slot(target);
+	if (slot < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	id = s_active_query_by_target[slot];
+	if (id == 0)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	q = mgl_find_query(id);
+	if (!q)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	q->active = GL_FALSE;
+	q->available = GL_TRUE;
+	q->result = 1;
+	s_active_query_by_target[slot] = 0;
 }
 
 void mglEndQueryIndexed(GLMContext ctx, GLenum target, GLuint index)
 {
-	// End indexed query - no-op
-	(void)target;
-	(void)index;
+	if (index != 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	mglEndQuery(ctx, target);
 }
 
 void mglEndTransformFeedback(GLMContext ctx)
@@ -407,9 +658,20 @@ void mglEndTransformFeedback(GLMContext ctx)
 
 void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)
 {
-	// Generate query IDs - simple sequential IDs
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
+	mgl_init_query_table_if_needed();
 	for (GLsizei i = 0; i < n; i++)
-		ids[i] = i + 1;
+	{
+		ids[i] = getNewName(&s_query_table);
+		(void)mgl_get_query(ids[i]);
+	}
 }
 
 void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
@@ -423,6 +685,7 @@ void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 
 void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint *params)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Atomic counter buffers - return 0
 	(void)program; (void)bufferIndex; (void)pname;
 	if (params) *params = 0;
@@ -430,6 +693,7 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Subroutines - return empty string
 	(void)program; (void)shadertype; (void)index; (void)bufSize;
 	if (length) *length = 0;
@@ -438,6 +702,7 @@ void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertyp
 
 void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Subroutine uniforms - return empty string
 	(void)program; (void)shadertype; (void)index; (void)bufSize;
 	if (length) *length = 0;
@@ -446,6 +711,7 @@ void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum sh
 
 void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLenum pname, GLint *values)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Subroutine uniform parameters - return 0
 	(void)program; (void)shadertype; (void)index; (void)pname;
 	if (values) *values = 0;
@@ -453,20 +719,25 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 
 void mglGetBooleani_v(GLMContext ctx, GLenum target, GLuint index, GLboolean *data)
 {
-	// Indexed boolean - return false
-	(void)target; (void)index;
-	if (data) *data = GL_FALSE;
+	GLint tmp = 0;
+	if (!data)
+		return;
+	mglGetIntegeri_v(ctx, target, index, &tmp);
+	*data = (tmp != 0) ? GL_TRUE : GL_FALSE;
 }
 
 void mglGetBufferParameteri64v(GLMContext ctx, GLenum target, GLenum pname, GLint64 *params)
 {
-	// Buffer parameter - return 0
-	(void)target; (void)pname;
-	if (params) *params = 0;
+	GLint tmp = 0;
+	if (!params)
+		return;
+	mglGetBufferParameteriv(ctx, target, pname, &tmp);
+	*params = (GLint64)tmp;
 }
 
 GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLenum *sources, GLenum *types, GLuint *ids, GLenum *severities, GLsizei *lengths, GLchar *messageLog)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// No debug messages stored
 	(void)count;
 	(void)bufSize;
@@ -481,38 +752,57 @@ GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLe
 
 void mglGetDoublei_v(GLMContext ctx, GLenum target, GLuint index, GLdouble *data)
 {
-	// Indexed double - return 0.0
-	(void)target; (void)index;
-	if (data) *data = 0.0;
+	GLint tmp = 0;
+	if (!data)
+		return;
+	mglGetIntegeri_v(ctx, target, index, &tmp);
+	*data = (GLdouble)tmp;
 }
 
 void mglGetFloati_v(GLMContext ctx, GLenum target, GLuint index, GLfloat *data)
 {
-	// Indexed float - return 0.0
-	(void)target; (void)index;
-	if (data) *data = 0.0f;
+	GLint tmp = 0;
+	if (!data)
+		return;
+	mglGetIntegeri_v(ctx, target, index, &tmp);
+	*data = (GLfloat)tmp;
 }
 
 GLint  mglGetFragDataIndex(GLMContext ctx, GLuint program, const GLchar *name)
 {
-	// Return fragment output index
-	(void)program;
-	(void)name;
-	return 0;
+	GLint location = mglGetFragDataLocation(ctx, program, name);
+	return (location >= 0) ? 0 : -1;
 }
 
 GLint  mglGetFragDataLocation(GLMContext ctx, GLuint program, const GLchar *name)
 {
-	// Return fragment output location - default to 0
-	(void)program;
-	(void)name;
-	return 0;
+	Program *pptr;
+	SpirvResource *res;
+
+	if (!name)
+		return -1;
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return -1;
+	}
+	if (!pptr->linked_glsl_program)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return -1;
+	}
+
+	res = mgl_program_resource_find_by_name(pptr, _STAGE_OUTPUT_RES, name, NULL, NULL);
+	return res ? (GLint)res->location : -1;
 }
 
 
 GLenum  mglGetGraphicsResetStatus(GLMContext ctx)
 {
 	// No robust context support - always return no error
+	(void)ctx;
 	return GL_NO_ERROR;
 }
 
@@ -533,6 +823,7 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 void mglGetObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei bufSize, GLsizei *length, GLchar *label)
 {
 	// No labels stored
+	(void)ctx;
 	(void)identifier;
 	(void)name;
 	if (length) *length = 0;
@@ -542,6 +833,7 @@ void mglGetObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei b
 void mglGetObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei bufSize, GLsizei *length, GLchar *label)
 {
 	// No labels stored
+	(void)ctx;
 	(void)ptr;
 	if (length) *length = 0;
 	if (label && bufSize > 0) label[0] = '\0';
@@ -551,19 +843,64 @@ void mglGetProgramBinary(GLMContext ctx, GLuint program, GLsizei bufSize, GLsize
 {
 	// Program binary not supported
 	(void)program; (void)bufSize; (void)binary;
+	STATE(error) = GL_INVALID_OPERATION;
 	if (length) *length = 0;
 	if (binaryFormat) *binaryFormat = 0;
 }
 
 void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInterface, GLenum pname, GLint *params)
 {
-	// Program interface query - return 0
-	(void)program; (void)programInterface; (void)pname;
-	if (params) *params = 0;
+	Program *pptr;
+	int res_type;
+
+	if (!params)
+		return;
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	res_type = mgl_program_interface_to_spvc(programInterface);
+	if (res_type < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+
+	switch (pname)
+	{
+		case GL_ACTIVE_RESOURCES:
+			*params = mgl_program_resource_count(pptr, res_type);
+			break;
+		case GL_MAX_NAME_LENGTH:
+		{
+			GLint max_len = 1;
+			for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+			{
+				GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+				for (GLuint i = 0; i < count; i++)
+				{
+					SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+					GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
+					if (len > max_len)
+						max_len = len;
+				}
+			}
+			*params = max_len;
+			break;
+		}
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Pipeline info log - return empty
 	(void)pipeline;
 	if (length) *length = 0;
@@ -572,6 +909,7 @@ void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSi
 
 void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLint *params)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Get program pipeline parameters - return 0
 	(void)pipeline; (void)pname;
 	if (params) *params = 0;
@@ -579,106 +917,311 @@ void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLin
 
 GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
-	// Program resource index - return 0 (not found)
-	(void)program; (void)programInterface; (void)name;
-	return 0;
+	Program *pptr;
+	int res_type;
+	GLuint index = GL_INVALID_INDEX;
+
+	if (!name)
+		return GL_INVALID_INDEX;
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return GL_INVALID_INDEX;
+	}
+	res_type = mgl_program_interface_to_spvc(programInterface);
+	if (res_type < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return GL_INVALID_INDEX;
+	}
+
+	if (mgl_program_resource_find_by_name(pptr, res_type, name, &index, NULL))
+		return index;
+	return GL_INVALID_INDEX;
 }
 
 GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
-	// Program resource location - return -1 (not found)
-	(void)program; (void)programInterface; (void)name;
-	return -1;
+	Program *pptr;
+	SpirvResource *res;
+	int res_type;
+
+	if (!name)
+		return -1;
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return -1;
+	}
+	res_type = mgl_program_interface_to_spvc(programInterface);
+	if (res_type < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return -1;
+	}
+
+	res = mgl_program_resource_find_by_name(pptr, res_type, name, NULL, NULL);
+	return res ? (GLint)res->location : -1;
 }
 
 GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
-	// Program resource location index - return -1 (not found)
-	(void)program; (void)programInterface; (void)name;
-	return -1;
+	GLint location = mglGetProgramResourceLocation(ctx, program, programInterface, name);
+	return (location >= 0) ? 0 : -1;
 }
 
 void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInterface, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
-	// TODO: Implement
-	(void)ctx;
+	Program *pptr;
+	SpirvResource *res;
+	int res_type;
+	const char *src;
+	GLsizei src_len;
+	GLsizei copy_len;
+
+	if (length)
+		*length = 0;
+	if (name && bufSize > 0)
+		name[0] = '\0';
+	if (bufSize < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	res_type = mgl_program_interface_to_spvc(programInterface);
+	if (res_type < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	res = mgl_program_resource_at_index(pptr, res_type, index, NULL);
+	if (!res)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	src = res->name ? res->name : "";
+	src_len = (GLsizei)strlen(src);
+	if (length)
+		*length = src_len;
+	if (name && bufSize > 0)
+	{
+		copy_len = (src_len < (bufSize - 1)) ? src_len : (bufSize - 1);
+		memcpy(name, src, copy_len);
+		name[copy_len] = '\0';
+	}
 }
 
 void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInterface, GLuint index, GLsizei propCount, const GLenum *props, GLsizei count, GLsizei *length, GLint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	Program *pptr;
+	SpirvResource *res;
+	int stage = 0;
+	int res_type;
+	GLsizei n;
+
+	if (length)
+		*length = 0;
+	if (propCount < 0 || count < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!props || !params)
+	{
+		if (propCount > 0)
+			STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	res_type = mgl_program_interface_to_spvc(programInterface);
+	if (res_type < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	res = mgl_program_resource_at_index(pptr, res_type, index, &stage);
+	if (!res)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	n = (propCount < count) ? propCount : count;
+	for (GLsizei i = 0; i < n; i++)
+	{
+		switch (props[i])
+		{
+			case GL_NAME_LENGTH: params[i] = (GLint)(res->name ? strlen(res->name) + 1 : 1); break;
+			case GL_TYPE: params[i] = 0; break;
+			case GL_ARRAY_SIZE: params[i] = 1; break;
+			case GL_OFFSET: params[i] = -1; break;
+			case GL_BLOCK_INDEX: params[i] = -1; break;
+			case GL_ARRAY_STRIDE: params[i] = 0; break;
+			case GL_MATRIX_STRIDE: params[i] = 0; break;
+			case GL_IS_ROW_MAJOR: params[i] = 0; break;
+			case GL_ATOMIC_COUNTER_BUFFER_INDEX: params[i] = -1; break;
+			case GL_BUFFER_BINDING: params[i] = (GLint)res->binding; break;
+			case GL_BUFFER_DATA_SIZE: params[i] = 0; break;
+			case GL_NUM_ACTIVE_VARIABLES: params[i] = 0; break;
+			case GL_REFERENCED_BY_VERTEX_SHADER: params[i] = (stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_FRAGMENT_SHADER: params[i] = (stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_GEOMETRY_SHADER: params[i] = (stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_TESS_CONTROL_SHADER: params[i] = (stage == _TESS_CONTROL_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER: params[i] = (stage == _TESS_EVALUATION_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_COMPUTE_SHADER: params[i] = (stage == _COMPUTE_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_LOCATION: params[i] = (GLint)res->location; break;
+			case GL_LOCATION_INDEX: params[i] = 0; break;
+			default:
+				STATE(error) = GL_INVALID_ENUM;
+				return;
+		}
+	}
+	if (length)
+		*length = n;
 }
 
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)id; (void)buffer; (void)pname; (void)offset;
+	STATE(error) = GL_INVALID_OPERATION;
 }
 
 void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)id; (void)buffer; (void)pname; (void)offset;
+	STATE(error) = GL_INVALID_OPERATION;
 }
 
 void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)id; (void)buffer; (void)pname; (void)offset;
+	STATE(error) = GL_INVALID_OPERATION;
 }
 
 void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)id; (void)buffer; (void)pname; (void)offset;
+	STATE(error) = GL_INVALID_OPERATION;
 }
 
 void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pname, GLint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	if (index != 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	mglGetQueryiv(ctx, target, pname, params);
 }
 
 void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	QueryObject *q = mgl_find_query(id);
+	if (!params)
+		return;
+	if (!q)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (pname == GL_QUERY_RESULT_AVAILABLE)
+		*params = q->available ? 1 : 0;
+	else if (pname == GL_QUERY_RESULT)
+		*params = (GLint64)(q->available ? q->result : 0);
+	else
+		STATE(error) = GL_INVALID_ENUM;
 }
 
 void mglGetQueryObjectiv(GLMContext ctx, GLuint id, GLenum pname, GLint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	GLint64 val = 0;
+	if (!params)
+		return;
+	mglGetQueryObjecti64v(ctx, id, pname, &val);
+	*params = (GLint)val;
 }
 
 void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	QueryObject *q = mgl_find_query(id);
+	if (!params)
+		return;
+	if (!q)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (pname == GL_QUERY_RESULT_AVAILABLE)
+		*params = q->available ? 1u : 0u;
+	else if (pname == GL_QUERY_RESULT)
+		*params = q->available ? q->result : 0u;
+	else
+		STATE(error) = GL_INVALID_ENUM;
 }
 
 void mglGetQueryObjectuiv(GLMContext ctx, GLuint id, GLenum pname, GLuint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	GLuint64 val = 0;
+	if (!params)
+		return;
+	mglGetQueryObjectui64v(ctx, id, pname, &val);
+	*params = (GLuint)val;
 }
 
 void mglGetQueryiv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	int slot = mgl_query_target_slot(target);
+	if (!params)
+		return;
+	if (slot < 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+
+	switch (pname)
+	{
+		case GL_CURRENT_QUERY:
+			*params = (GLint)s_active_query_by_target[slot];
+			break;
+		case GL_QUERY_COUNTER_BITS:
+			*params = (target == GL_TIME_ELAPSED) ? 64 : 32;
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 void mglGetShaderPrecisionFormat(GLMContext ctx, GLenum shadertype, GLenum precisiontype, GLint *range, GLint *precision)
 {
 	// Return shader precision format - full precision for all types
+	(void)ctx;
 	(void)shadertype;
 	(void)precisiontype;
 	if (range) {
@@ -692,148 +1235,150 @@ void mglGetShaderPrecisionFormat(GLMContext ctx, GLenum shadertype, GLenum preci
 
 GLuint mglGetSubroutineIndex(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 	return 0;
 }
 
 GLint mglGetSubroutineUniformLocation(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 	return 0;
 }
 void mglGetTransformFeedbackVarying(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLsizei *size, GLenum *type, GLchar *name)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint64 *param)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetTransformFeedbacki_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint *param)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *param)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *params)
 {
-	// TODO: Implement
-	(void)ctx;
+	GLint tmp = 0;
+	if (!params)
+		return;
+	mglGetUniformiv(ctx, program, location, &tmp);
+	*params = (GLuint)tmp;
 }
 
 void mglGetVertexAttribIiv(GLMContext ctx, GLuint index, GLenum pname, GLint *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetVertexAttribIuiv(GLMContext ctx, GLuint index, GLenum pname, GLuint *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetVertexAttribLdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnMapdv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLdouble *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnMapfv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLfloat *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnMapiv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLint *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnPixelMapfv(GLMContext ctx, GLenum map, GLsizei bufSize, GLfloat *values)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnPixelMapuiv(GLMContext ctx, GLenum map, GLsizei bufSize, GLuint *values)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnPixelMapusv(GLMContext ctx, GLenum map, GLsizei bufSize, GLushort *values)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLdouble *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnUniformfv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLfloat *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnUniformiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLint *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLuint *params)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 GLboolean mglIsQuery(GLMContext ctx, GLuint id)
 {
-	// TODO: Implement
 	(void)ctx;
-	return GL_FALSE;
+	return mgl_find_query(id) ? GL_TRUE : GL_FALSE;
 }
 
 GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
@@ -845,36 +1390,38 @@ GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
 void mglMinSampleShading(GLMContext ctx, GLfloat value)
 {
 	// Set minimum sample shading - no-op
+	(void)ctx;
 	(void)value;
 }
 
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglNormalP3ui(GLMContext ctx, GLenum type, GLuint coords)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglNormalP3uiv(GLMContext ctx, GLenum type, const GLuint *coords)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei length, const GLchar *label)
 {
 	// Object label - no-op
+	(void)ctx;
 	(void)identifier;
 	(void)name;
 	(void)length;
@@ -884,6 +1431,7 @@ void mglObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei leng
 void mglObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei length, const GLchar *label)
 {
 	// Object ptr label - no-op
+	(void)ctx;
 	(void)ptr;
 	(void)length;
 	(void)label;
@@ -891,13 +1439,13 @@ void mglObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei length, const GL
 
 void mglPatchParameterfv(GLMContext ctx, GLenum pname, const GLfloat *values)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
@@ -914,332 +1462,135 @@ void mglPauseTransformFeedback(GLMContext ctx)
 
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglPopDebugGroup(GLMContext ctx)
 {
 	// Pop debug group - no-op
+	(void)ctx;
 }
 
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	// Set primitive restart index - no-op
 	(void)index;
 }
 
 void mglProgramBinary(GLMContext ctx, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)program; (void)binaryFormat; (void)binary; (void)length;
+	STATE(error) = GL_INVALID_OPERATION;
 }
 
 void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint value)
 {
-	// TODO: Implement
-	(void)ctx;
+	(void)ctx; (void)program; (void)pname; (void)value;
+	/* no-op: program binary hints ignored */
 }
 
-void mglProgramUniform1d(GLMContext ctx, GLuint program, GLint location, GLdouble v0)
+static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program, Program **saved_program)
 {
-	// TODO: Implement
-	(void)ctx;
+	Program *target;
+
+	if (!saved_program)
+		return GL_FALSE;
+
+	target = findProgram(ctx, program);
+	if (!target)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return GL_FALSE;
+	}
+	if (!target->linked_glsl_program)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return GL_FALSE;
+	}
+
+	*saved_program = STATE(program);
+	if (STATE(program) != target)
+		mglUseProgram(ctx, program);
+	return GL_TRUE;
 }
 
-void mglProgramUniform1dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value)
+static void mgl_program_uniform_end(GLMContext ctx, Program *saved_program)
 {
-	// TODO: Implement
-	(void)ctx;
+	if (STATE(program) != saved_program)
+	{
+		GLuint restore_program = saved_program ? saved_program->name : 0;
+		mglUseProgram(ctx, restore_program);
+	}
 }
 
-void mglProgramUniform1f(GLMContext ctx, GLuint program, GLint location, GLfloat v0)
-{
-	// TODO: Implement
-	(void)ctx;
+#define DEFINE_PROGRAM_UNIFORM_FORWARD(_suffix, _decl, ...) \
+void mglProgramUniform##_suffix _decl \
+{ \
+	Program *saved_program = NULL; \
+	if (!mgl_program_uniform_begin(ctx, program, &saved_program)) \
+		return; \
+	mglUniform##_suffix(ctx, __VA_ARGS__); \
+	mgl_program_uniform_end(ctx, saved_program); \
 }
 
-void mglProgramUniform1fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+DEFINE_PROGRAM_UNIFORM_FORWARD(1d, (GLMContext ctx, GLuint program, GLint location, GLdouble v0), location, v0)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1f, (GLMContext ctx, GLuint program, GLint location, GLfloat v0), location, v0)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1i, (GLMContext ctx, GLuint program, GLint location, GLint v0), location, v0)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1iv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1ui, (GLMContext ctx, GLuint program, GLint location, GLuint v0), location, v0)
+DEFINE_PROGRAM_UNIFORM_FORWARD(1uiv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value), location, count, value)
 
-void mglProgramUniform1i(GLMContext ctx, GLuint program, GLint location, GLint v0)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+DEFINE_PROGRAM_UNIFORM_FORWARD(2d, (GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1), location, v0, v1)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2f, (GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1), location, v0, v1)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2i, (GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1), location, v0, v1)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2iv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2ui, (GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1), location, v0, v1)
+DEFINE_PROGRAM_UNIFORM_FORWARD(2uiv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value), location, count, value)
 
-void mglProgramUniform1iv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+DEFINE_PROGRAM_UNIFORM_FORWARD(3d, (GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1, GLdouble v2), location, v0, v1, v2)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3f, (GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2), location, v0, v1, v2)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3i, (GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1, GLint v2), location, v0, v1, v2)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3iv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3ui, (GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2), location, v0, v1, v2)
+DEFINE_PROGRAM_UNIFORM_FORWARD(3uiv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value), location, count, value)
 
-void mglProgramUniform1ui(GLMContext ctx, GLuint program, GLint location, GLuint v0)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+DEFINE_PROGRAM_UNIFORM_FORWARD(4d, (GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1, GLdouble v2, GLdouble v3), location, v0, v1, v2, v3)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4f, (GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3), location, v0, v1, v2, v3)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4i, (GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1, GLint v2, GLint v3), location, v0, v1, v2, v3)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4iv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value), location, count, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4ui, (GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3), location, v0, v1, v2, v3)
+DEFINE_PROGRAM_UNIFORM_FORWARD(4uiv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value), location, count, value)
 
-void mglProgramUniform1uiv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2x3dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2x3fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2x4dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix2x4fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3x2dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3x2fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3x4dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix3x4fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x2dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x2fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x3dv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value), location, count, transpose, value)
+DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x3fv, (GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value), location, count, transpose, value)
 
-void mglProgramUniform2d(GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2f(GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2i(GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2iv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2ui(GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform2uiv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3d(GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1, GLdouble v2)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3f(GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3i(GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1, GLint v2)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3iv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3ui(GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform3uiv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4d(GLMContext ctx, GLuint program, GLint location, GLdouble v0, GLdouble v1, GLdouble v2, GLdouble v3)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4f(GLMContext ctx, GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4i(GLMContext ctx, GLuint program, GLint location, GLint v0, GLint v1, GLint v2, GLint v3)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4iv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4ui(GLMContext ctx, GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniform4uiv(GLMContext ctx, GLuint program, GLint location, GLsizei count, const GLuint *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2x3dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2x3fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2x4dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix2x4fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3x2dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3x2fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3x4dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix3x4fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4x2dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4x2fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4x3dv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
-
-void mglProgramUniformMatrix4x3fv(GLMContext ctx, GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
-{
-	// TODO: Implement
-	(void)ctx;
-}
+#undef DEFINE_PROGRAM_UNIFORM_FORWARD
 
 void mglProvokingVertex(GLMContext ctx, GLenum mode)
 {
@@ -1254,6 +1605,7 @@ void mglProvokingVertex(GLMContext ctx, GLenum mode)
 void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length, const GLchar *message)
 {
 	// Push debug group - no-op
+	(void)ctx;
 	(void)source;
 	(void)id;
 	(void)length;
@@ -1262,19 +1614,56 @@ void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length,
 
 void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 {
-	// TODO: Implement
-	(void)ctx;
+	QueryObject *q;
+	if (target != GL_TIMESTAMP)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (id == 0)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	q = mgl_get_query(id);
+	if (!q)
+	{
+		STATE(error) = GL_OUT_OF_MEMORY;
+		return;
+	}
+	if (q->active)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	q->target = GL_TIMESTAMP;
+	q->available = GL_TRUE;
+	q->result = s_fake_timestamp_counter++;
 }
 
 void mglReadnPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data)
 {
-	// TODO: Implement
-	(void)ctx;
+	size_t bytes_per_pixel;
+	size_t needed;
+	if (!data || bufSize < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	bytes_per_pixel = sizeForFormatType(format, type);
+	needed = (size_t)width * (size_t)height * bytes_per_pixel;
+	if ((GLsizei)needed > bufSize)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	mglReadPixels(ctx, x, y, width, height, format, type, data);
 }
 
 void mglReleaseShaderCompiler(GLMContext ctx)
 {
 	// No-op - shader compiler is always available
+	(void)ctx;
 }
 
 void mglResumeTransformFeedback(GLMContext ctx)
@@ -1290,72 +1679,73 @@ void mglResumeTransformFeedback(GLMContext ctx)
 
 void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglScissorIndexedv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglSecondaryColorP3ui(GLMContext ctx, GLenum type, GLuint color)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglSecondaryColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglShaderBinary(GLMContext ctx, GLsizei count, const GLuint *shaders, GLenum binaryFormat, const void *binary, GLsizei length)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storageBlockIndex, GLuint storageBlockBinding)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTexBufferRange(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
 {
+	assert(0 && "Unimplemented in reference libMGL.dylib");
     // For multisample textures, we need to create storage but Apple Silicon 
     // handles MSAA differently than traditional GL. For now, we create a 
     // regular texture and let the rendering pipeline handle any MSAA.
@@ -1381,529 +1771,461 @@ void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
 
 void mglTexStorage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype, GLsizei count, const GLuint *indices)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglValidateProgram(GLMContext ctx, GLuint program)
 {
 	// Program validation - no-op for now, programs are validated during linking
-	(void)program;
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
 }
 
 void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 {
-	// TODO: Implement
-	(void)ctx;
+	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	if (!pp)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	pp->validated = GL_TRUE;
 }
 
 void mglVertexAttrib1d(GLMContext ctx, GLuint index, GLdouble x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib1dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib1f(GLMContext ctx, GLuint index, GLfloat x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib1fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib1s(GLMContext ctx, GLuint index, GLshort x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib1sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2f(GLMContext ctx, GLuint index, GLfloat x, GLfloat y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2s(GLMContext ctx, GLuint index, GLshort x, GLshort y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib2sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3f(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3s(GLMContext ctx, GLuint index, GLshort x, GLshort y, GLshort z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib3sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nbv(GLMContext ctx, GLuint index, const GLbyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Niv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nsv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nub(GLMContext ctx, GLuint index, GLubyte x, GLubyte y, GLubyte z, GLubyte w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nubv(GLMContext ctx, GLuint index, const GLubyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nuiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4Nusv(GLMContext ctx, GLuint index, const GLushort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4bv(GLMContext ctx, GLuint index, const GLbyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z, GLdouble w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4f(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4fv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4iv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4s(GLMContext ctx, GLuint index, GLshort x, GLshort y, GLshort z, GLshort w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4ubv(GLMContext ctx, GLuint index, const GLubyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4uiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttrib4usv(GLMContext ctx, GLuint index, const GLushort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI1i(GLMContext ctx, GLuint index, GLint x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI1iv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI1ui(GLMContext ctx, GLuint index, GLuint x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI1uiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI2i(GLMContext ctx, GLuint index, GLint x, GLint y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI2iv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI2ui(GLMContext ctx, GLuint index, GLuint x, GLuint y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI2uiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI3i(GLMContext ctx, GLuint index, GLint x, GLint y, GLint z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI3iv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI3ui(GLMContext ctx, GLuint index, GLuint x, GLuint y, GLuint z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI3uiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4bv(GLMContext ctx, GLuint index, const GLbyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4i(GLMContext ctx, GLuint index, GLint x, GLint y, GLint z, GLint w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4iv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4sv(GLMContext ctx, GLuint index, const GLshort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4ubv(GLMContext ctx, GLuint index, const GLubyte *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4ui(GLMContext ctx, GLuint index, GLuint x, GLuint y, GLuint z, GLuint w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4uiv(GLMContext ctx, GLuint index, const GLuint *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribI4usv(GLMContext ctx, GLuint index, const GLushort *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL1d(GLMContext ctx, GLuint index, GLdouble x)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL1dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL2d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL2dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL3d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL3dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL4d(GLMContext ctx, GLuint index, GLdouble x, GLdouble y, GLdouble z, GLdouble w)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribL4dv(GLMContext ctx, GLuint index, const GLdouble *v)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP1ui(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP1uiv(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP2ui(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP2uiv(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP3ui(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP3uiv(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP4ui(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexAttribP4uiv(GLMContext ctx, GLuint index, GLenum type, GLboolean normalized, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP2ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP2uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP3ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP3uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP4ui(GLMContext ctx, GLenum type, GLuint value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglVertexP4uiv(GLMContext ctx, GLenum type, const GLuint *value)
 {
-	// TODO: Implement
 	(void)ctx;
 }
 
 void mglViewportArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLfloat *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 
 void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	// TODO: Implement
+	assert(0 && "Unimplemented in reference libMGL.dylib");
 	(void)ctx;
 }
 

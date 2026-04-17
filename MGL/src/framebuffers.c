@@ -30,6 +30,7 @@
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
+extern Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture);
 
 
 #pragma mark renderbuffer logic
@@ -173,6 +174,14 @@ void mglGenFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
 void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 {
     Framebuffer *ptr;
+
+    if (ctx && ctx->state.vao && ctx->state.vao->magic != MGL_VAO_MAGIC)
+    {
+        fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p magic=0x%x, resetting\n",
+                (void *)ctx->state.vao,
+                ctx->state.vao->magic);
+        ctx->state.vao = NULL;
+    }
 
     if(framebuffer)
     {
@@ -426,7 +435,7 @@ FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum attachm
 bool isColorAttachment(GLMContext ctx, GLuint attachment)
 {
     return ((attachment >= GL_COLOR_ATTACHMENT0) &&
-            (attachment <= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))));
+            (attachment < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))));
 }
 
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget)
@@ -482,7 +491,19 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     if (texture)
     {
         tex = findTexture(ctx, texture);
-        (assert(tex));
+
+        // Some apps attach by name before the texture object is fully realized in MGL.
+        // Create a placeholder object so later render/blit paths can resolve it.
+        if (!tex && textarget != GL_NONE)
+        {
+            tex = newTexture(ctx, textarget, texture);
+            if (tex)
+            {
+                insertHashElement(&STATE(texture_table), texture, tex);
+                fprintf(stderr, "MGL INFO: framebufferTexture created missing texture object %u target=0x%x\n",
+                        texture, textarget);
+            }
+        }
 
         switch(textarget)
         {
@@ -498,6 +519,12 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                 break;
 
             default:
+                if (!tex)
+                {
+                    // Keep attachment name and defer completeness validation.
+                    break;
+                }
+
                 if (tex->target == GL_TEXTURE_CUBE_MAP)
                 {
                     if (isCubeMapTarget(ctx, textarget))
@@ -520,7 +547,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
         // A texture may legally be attached before it has storage allocated; that should
         // make the FBO incomplete, not raise GL_INVALID_VALUE.
-        if (tex->mipmap_levels != 0 && level >= (GLint)tex->mipmap_levels)
+        if (tex && tex->mipmap_levels != 0 && level >= (GLint)tex->mipmap_levels)
         {
             STATE(error) = GL_INVALID_VALUE;
             return;
@@ -547,7 +574,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                     break;
 
                 default:
-                    if (tex->target == GL_TEXTURE_CUBE_MAP)
+                    if (tex && tex->target == GL_TEXTURE_CUBE_MAP)
                     {
                         // if textarget is one of GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_POSITIVE_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, or GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, then level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_CUBE_MAP_TEXTURE_SIZE.
 
@@ -721,7 +748,10 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     fbo_attachment_ptr->texture = renderbuffer;
     fbo_attachment_ptr->level = 0;
     fbo_attachment_ptr->buf.rbo = rbo;
-    fbo_attachment_ptr->buf.rbo->is_draw_buffer = GL_FALSE;
+    if (fbo_attachment_ptr->buf.rbo)
+    {
+        fbo_attachment_ptr->buf.rbo->is_draw_buffer = GL_FALSE;
+    }
 
     if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
     {
@@ -1080,4 +1110,3 @@ void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLe
     // Unimplemented function
     assert(0);
 }
-

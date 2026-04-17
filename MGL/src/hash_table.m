@@ -24,6 +24,7 @@
 #include <assert.h>
 #include <stdint.h>  // For SIZE_MAX and UINT_MAX
 #include <limits.h>  // For UINT_MAX fallback
+#include <string.h>  // For memcpy
 
 #ifdef __APPLE__
 #include <Metal/Metal.h>
@@ -32,23 +33,136 @@
 #include "hash_table.h"
 #include "glm_context.h"
 
+#define MGL_HASH_TABLE_MAX_CAPACITY (1u << 24)
+
+static int ensureHashTableCapacity(HashTable *table, GLuint name)
+{
+    size_t old_size = 0;
+    size_t new_size;
+    HashObj *new_keys;
+    int has_valid_old_storage = 0;
+
+    assert(table);
+
+    if (table->keys != NULL &&
+        table->size > 0 &&
+        table->size < MGL_HASH_TABLE_MAX_CAPACITY)
+    {
+        has_valid_old_storage = 1;
+        old_size = table->size;
+    }
+
+    if (has_valid_old_storage && name < table->size)
+    {
+        return 1;
+    }
+
+    new_size = old_size ? old_size : 64;
+
+    while (new_size <= name)
+    {
+        if (new_size > (size_t)(MGL_HASH_TABLE_MAX_CAPACITY / 2))
+        {
+            new_size = MGL_HASH_TABLE_MAX_CAPACITY;
+            break;
+        }
+
+        new_size *= 2;
+    }
+
+    if (new_size <= name)
+    {
+        fprintf(stderr, "MGL ERROR: hash table cannot grow to hold name %u\n", name);
+        return 0;
+    }
+
+    if (new_size > MGL_HASH_TABLE_MAX_CAPACITY)
+    {
+        fprintf(stderr, "MGL ERROR: hash table growth exceeds max capacity (%u)\n",
+                MGL_HASH_TABLE_MAX_CAPACITY);
+        return 0;
+    }
+
+    if (new_size > SIZE_MAX / sizeof(HashObj))
+    {
+        fprintf(stderr, "MGL SECURITY ERROR: Hash table allocation would overflow size_t, preventing\n");
+        return 0;
+    }
+
+    new_keys = (HashObj *)calloc(new_size, sizeof(HashObj));
+    if (!new_keys)
+    {
+        fprintf(stderr, "MGL SECURITY ERROR: Hash table allocation failed\n");
+        return 0;
+    }
+
+    fprintf(stderr,
+            "MGL HASH grow table=%p keys=%p oldCap=%zu required=%u newCap=%zu\n",
+            (void *)table,
+            (void *)table->keys,
+            has_valid_old_storage ? table->size : (size_t)0,
+            name,
+            new_size);
+
+    if (has_valid_old_storage && table->keys && old_size > 0)
+    {
+        memcpy(new_keys, table->keys, old_size * sizeof(HashObj));
+        free(table->keys);
+    }
+
+    table->keys = new_keys;
+    table->size = new_size;
+
+    return 1;
+}
+
 void initHashTable(HashTable *ptr, GLuint size)
 {
-    size_t len;
+    if (!ptr)
+    {
+        return;
+    }
 
-    len = sizeof(HashObj) * size;
+    ptr->keys = NULL;
+    ptr->current_name = 0;
+    ptr->size = 0;
 
-    ptr->current_name = 1;
-    ptr->size = size;
-    ptr->keys = (HashObj *)malloc(len);
-    assert(ptr->keys);
+    if (size == 0)
+    {
+        return;
+    }
 
-    bzero(ptr->keys, len);
+    if (!ensureHashTableCapacity(ptr, size - 1))
+    {
+        fprintf(stderr, "MGL ERROR: initHashTable failed to allocate initial capacity %u\n", size);
+    }
 }
 
 GLuint getNewName(HashTable *table)
 {
-    return table->current_name++;
+    GLuint name;
+
+    if (!table)
+    {
+        return 0;
+    }
+
+    if (table->current_name == UINT_MAX)
+    {
+        fprintf(stderr, "MGL ERROR: hash table name space exhausted\n");
+        return 0;
+    }
+
+    name = ++table->current_name;
+
+    // Pre-grow the table so callers using generated names never hit fixed-size limits.
+    if (!ensureHashTableCapacity(table, name))
+    {
+        table->current_name--;
+        return 0;
+    }
+
+    return name;
 }
 
 void *searchHashTable(HashTable *table, GLuint name)
@@ -57,7 +171,6 @@ void *searchHashTable(HashTable *table, GLuint name)
     
     if (name >= table->size)
     {
-        fprintf(stderr, "MGL: searchHashTable - name %u exceeds table size %zu, returning NULL\n", name, table->size);
         return NULL;
     }
 
@@ -68,57 +181,12 @@ void insertHashElement(HashTable *table, GLuint name, void *data)
 {
     assert(table);
 
-    if (name < table->size)
+    if (!ensureHashTableCapacity(table, name))
     {
-        assert(table->keys[name].data == NULL);
-
-        table->keys[name].data = data;
-
         return;
     }
 
-    // CRITICAL SECURITY FIX: Prevent integer overflow in hash table resizing
-    // some calls allow the user to specify a name...
-    while(table->size <= name)
-    {
-        size_t old_size = table->size;
-
-        // CRITICAL: Check for integer overflow before multiplication
-        if (old_size > UINT_MAX / 2) {
-            // SECURITY: Hash table size would overflow, use maximum safe size
-            fprintf(stderr, "MGL SECURITY ERROR: Hash table size would overflow, capping at maximum safe size\n");
-            // We could return an error here, but for now we'll cap at UINT_MAX to prevent overflow
-            // This might limit functionality but prevents critical security vulnerability
-            if (old_size == UINT_MAX) {
-                break; // Can't grow any further
-            }
-            table->size = UINT_MAX;
-        } else {
-            table->size = old_size * 2; // Safe multiplication
-        }
-
-        // CRITICAL: Check for overflow in size calculation before malloc
-        if (table->size > SIZE_MAX / sizeof(HashObj)) {
-            fprintf(stderr, "MGL SECURITY ERROR: Hash table allocation would overflow size_t, preventing\n");
-            // Reset to old size to prevent crash
-            table->size = old_size;
-            return; // Exit function safely
-        }
-
-        table->keys = (HashObj *)realloc(table->keys, table->size * sizeof(HashObj));
-        if (!table->keys) {
-            // CRITICAL: Handle allocation failure to prevent crash
-            fprintf(stderr, "MGL SECURITY ERROR: Hash table allocation failed\n");
-            table->size = old_size; // Restore old size
-            return;
-        }
-
-        // Initialize new entries
-        for (size_t i = old_size; i < table->size; i++) {
-            table->keys[i].data = NULL;
-        }
-    }
-
+    assert(table->keys[name].data == NULL);
     table->keys[name].data = data;
 }
 

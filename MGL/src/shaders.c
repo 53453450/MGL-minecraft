@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <glslang_c_interface.h>
 #include <glslang_c_shader_types.h>
 
@@ -28,6 +29,210 @@
 #include "glm_context.h"
 
 const glslang_resource_t* glslang_default_resource(void);
+
+#define MGL_MAX_UBO_BINDINGS 512
+
+typedef struct {
+    char *name;
+    int binding;
+} MGLUBOBindingEntry;
+
+static MGLUBOBindingEntry s_ubo_binding_entries[MGL_MAX_UBO_BINDINGS];
+static int s_ubo_binding_count = 0;
+
+static int mgl_get_or_assign_ubo_binding(const char *block_name)
+{
+    if (!block_name || !block_name[0]) {
+        return 0;
+    }
+
+    for (int i = 0; i < s_ubo_binding_count; i++) {
+        if (s_ubo_binding_entries[i].name && strcmp(s_ubo_binding_entries[i].name, block_name) == 0) {
+            return s_ubo_binding_entries[i].binding;
+        }
+    }
+
+    if (s_ubo_binding_count >= MGL_MAX_UBO_BINDINGS) {
+        /* Fallback: deterministic but bounded binding index */
+        unsigned hash = 2166136261u;
+        for (const char *p = block_name; *p; p++) {
+            hash ^= (unsigned char)*p;
+            hash *= 16777619u;
+        }
+        return (int)(hash % 256u);
+    }
+
+    s_ubo_binding_entries[s_ubo_binding_count].name = strdup(block_name);
+    s_ubo_binding_entries[s_ubo_binding_count].binding = s_ubo_binding_count;
+    s_ubo_binding_count++;
+    return s_ubo_binding_entries[s_ubo_binding_count - 1].binding;
+}
+
+static void mgl_patch_uniform_block_bindings(char *src, size_t src_capacity)
+{
+    static const char *patterns[] = {
+        "layout(std140) uniform ",
+        "layout(std430) uniform "
+    };
+    char *cursor = src;
+
+    if (!src || src_capacity == 0) {
+        return;
+    }
+
+    while (*cursor) {
+        char *match = NULL;
+        const char *pat = NULL;
+        size_t pat_len = 0;
+        for (int i = 0; i < 2; i++) {
+            char *p = strstr(cursor, patterns[i]);
+            if (p && (!match || p < match)) {
+                match = p;
+                pat = patterns[i];
+                pat_len = strlen(patterns[i]);
+            }
+        }
+
+        if (!match) {
+            break;
+        }
+
+        char *name_start = match + pat_len;
+        while (*name_start && isspace((unsigned char)*name_start)) {
+            name_start++;
+        }
+        if (!isalpha((unsigned char)*name_start) && *name_start != '_') {
+            cursor = match + pat_len;
+            continue;
+        }
+
+        char block_name[128];
+        size_t bn = 0;
+        char *p = name_start;
+        while ((*p == '_' || isalnum((unsigned char)*p)) && bn + 1 < sizeof(block_name)) {
+            block_name[bn++] = *p++;
+        }
+        block_name[bn] = '\0';
+
+        if (bn == 0) {
+            cursor = match + pat_len;
+            continue;
+        }
+
+        int binding = mgl_get_or_assign_ubo_binding(block_name);
+        char replacement[96];
+        if (strncmp(pat, "layout(std140)", 14) == 0) {
+            snprintf(replacement, sizeof(replacement), "layout(std140, binding = %d) uniform ", binding);
+        } else {
+            snprintf(replacement, sizeof(replacement), "layout(std430, binding = %d) uniform ", binding);
+        }
+
+        size_t repl_len = strlen(replacement);
+        if (repl_len <= pat_len) {
+            memcpy(match, replacement, repl_len);
+            if (repl_len < pat_len) {
+                memset(match + repl_len, ' ', pat_len - repl_len);
+            }
+            cursor = match + pat_len;
+        } else {
+            size_t tail_len = strlen(match + pat_len);
+            size_t used = strlen(src);
+            size_t grow = repl_len - pat_len;
+            if (used + grow + 1 >= src_capacity) {
+                /* No room to grow safely; skip this block */
+                cursor = match + pat_len;
+                continue;
+            }
+            memmove(match + repl_len, match + pat_len, tail_len + 1);
+            memcpy(match, replacement, repl_len);
+            cursor = match + repl_len;
+        }
+    }
+}
+
+static void mgl_ensure_420pack_extension(char *src, size_t src_capacity)
+{
+    const char *ext_line = "#extension GL_ARB_shading_language_420pack : require\n";
+    size_t ext_len = strlen(ext_line);
+    char *version_line;
+    char *newline;
+    size_t used;
+
+    if (!src || src_capacity == 0) {
+        return;
+    }
+    if (!strstr(src, "binding = ")) {
+        return;
+    }
+    if (strstr(src, "GL_ARB_shading_language_420pack")) {
+        return;
+    }
+
+    version_line = strstr(src, "#version");
+    if (!version_line) {
+        return;
+    }
+    newline = strchr(version_line, '\n');
+    if (!newline) {
+        return;
+    }
+
+    used = strlen(src);
+    if (used + ext_len + 1 >= src_capacity) {
+        return;
+    }
+
+    memmove(newline + 1 + ext_len, newline + 1, strlen(newline + 1) + 1);
+    memcpy(newline + 1, ext_line, ext_len);
+}
+
+static void mgl_upgrade_version_for_bindings(char *src)
+{
+    char *version_line;
+    int version = 0;
+    char profile[32] = {0};
+    char replacement[64];
+    char *newline;
+    size_t old_len;
+    size_t new_len;
+
+    if (!src) {
+        return;
+    }
+    if (!strstr(src, "binding = ")) {
+        return;
+    }
+
+    version_line = strstr(src, "#version");
+    if (!version_line) {
+        return;
+    }
+
+    if (sscanf(version_line, "#version %d %31s", &version, profile) < 1) {
+        return;
+    }
+    if (version >= 420) {
+        return;
+    }
+
+    newline = strchr(version_line, '\n');
+    if (!newline) {
+        return;
+    }
+
+    snprintf(replacement, sizeof(replacement), "#version 420 core");
+    old_len = (size_t)(newline - version_line);
+    new_len = strlen(replacement);
+
+    if (new_len <= old_len) {
+        memset(version_line, ' ', old_len);
+        memcpy(version_line, replacement, new_len);
+    } else {
+        size_t rest = strlen(newline);
+        memmove(version_line + new_len, newline, rest + 1);
+        memcpy(version_line, replacement, new_len);
+    }
+}
 
 const char *getShaderTypeStr(GLuint type)
 {
@@ -167,16 +372,29 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
             }
         }
 
+        /* Inject explicit UBO bindings for desktop GLSL sources that omit them.
+         * Newer glslang/SPIR-V paths may require these at parse time. */
+        mgl_patch_uniform_block_bindings(modified_src, modified_src_size);
+        mgl_upgrade_version_for_bindings(modified_src);
+        mgl_ensure_420pack_extension(modified_src, modified_src_size);
+
+        if (strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
+            glsl_version = 420;
+        }
+
         input->code = modified_src;
     }
 
     input->default_version = glsl_version;
     input->default_profile = GLSLANG_CORE_PROFILE;
-    //input->messages = 0xFFFF & ~GLSLANG_MSG_RELAXED_ERRORS_BIT;
-    input->messages = GLSLANG_MSG_DEFAULT_BIT | GLSLANG_MSG_DEBUG_INFO_BIT | GLSLANG_MSG_RELAXED_ERRORS_BIT;
+    /* Use relaxed OpenGL-style validation at shader compile stage.
+     * Program-level link/map_io will assign/validate resource interfaces.
+     * This avoids forcing explicit layout(binding=...) in vanilla MC GLSL 330.
+     */
+    input->messages = GLSLANG_MSG_RELAXED_ERRORS_BIT;
     input->resource = glslang_default_resource();
 
-    input->force_default_version_and_profile = 1;
+    input->force_default_version_and_profile = 0;
 }
 
 Shader *newShader(GLMContext ctx, GLenum type, GLuint shader)
@@ -441,7 +659,12 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     /* Use OpenGL semantics (not Vulkan rules) and auto-map bindings/locations
      * so Minecraft GLSL 330 shaders without explicit layout(binding=...) work.
      */
-    int options = GLSLANG_SHADER_AUTO_MAP_BINDINGS | GLSLANG_SHADER_AUTO_MAP_LOCATIONS;
+    /* IMPORTANT: do not auto-map bindings per-shader here.
+     * Per-shader auto binding assignment can diverge between VS/FS and then fail
+     * at program link with "Layout binding qualifier must match".
+     * We resolve bindings/locations at program level via glslang_program_map_io().
+     */
+    int options = GLSLANG_SHADER_AUTO_MAP_LOCATIONS;
 
     /* Detect if this is a legacy GLSL shader that needs location auto-assignment */
     int shader_version = 330; /* Default */

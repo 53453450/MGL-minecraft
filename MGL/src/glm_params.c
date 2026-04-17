@@ -22,6 +22,7 @@
 #include "glcorearb.h"
 
 #include "glm_context.h"
+#include "mgl_extensions.h"
 
 #include <unistd.h>
 #include <dlfcn.h>
@@ -130,6 +131,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetBooleanv(GL_COLOR_WRITEMASK,glm_ctx->state.var.color_writemask[0]);
 
     glGetIntegerv(GL_MAX_TEXTURE_SIZE,&glm_ctx->state.var.max_texture_size);
+    if (glm_ctx->state.var.max_texture_size > 16384)
+    {
+        glm_ctx->state.var.max_texture_size = 16384;
+    }
     glGetIntegerv(GL_MAX_VIEWPORT_DIMS,&glm_ctx->state.var.max_viewport_dims);
     glGetIntegerv(GL_SUBPIXEL_BITS,&glm_ctx->state.var.subpixel_bits);
     glGetIntegerv(GL_POLYGON_OFFSET_UNITS,&glm_ctx->state.var.polygon_offset_units);
@@ -193,8 +198,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     //glGetIntegerv(GL_MINOR_VERSION,&glm_ctx->state.var.minor_version);
     glm_ctx->state.var.minor_version = 6;
 
-    //glGetIntegerv(GL_NUM_EXTENSIONS,&glm_ctx->state.var.num_extensions);
-    glm_ctx->state.var.num_extensions = 0;
+    glm_ctx->state.var.num_extensions = MGL_NUM_EXTENSIONS;
 
     glGetIntegerv(GL_CONTEXT_FLAGS,&glm_ctx->state.var.context_flags);
     glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS,&glm_ctx->state.var.max_array_texture_layers);

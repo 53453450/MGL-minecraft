@@ -24,6 +24,21 @@ extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
 
+static bool mglInternalFormatHasDepth(GLint internalformat)
+{
+    switch (internalformat)
+    {
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+            return true;
+        default:
+            return false;
+    }
+}
+
 #pragma mark set params
 bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *param)
 {
@@ -796,6 +811,11 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
 void mglGetTexLevelParameterfv(GLMContext ctx, GLenum target, GLint level, GLenum pname, GLfloat *params)
 {
     GLint value = 0;
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
     mglGetTexLevelParameteriv(ctx, target, level, pname, &value);
     *params = (GLfloat)value;
 }
@@ -805,6 +825,9 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     GLuint index;
     Texture *tex;
     GLint internalformat;
+
+    fprintf(stderr, "MGL GetTexLevelParameter ENTER target=0x%x level=%d pname=0x%x\n",
+            target, level, pname);
 
     if (!params)
     {
@@ -818,6 +841,53 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         return;
     }
 
+    if (target == GL_PROXY_TEXTURE_2D)
+    {
+        GLint proxy_internal = (level == 0) ? STATE(proxy_texture_2d_internalformat) : 0;
+        switch (pname)
+        {
+            case GL_TEXTURE_WIDTH:
+                *params = (level == 0) ? STATE(proxy_texture_2d_width) : 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_HEIGHT:
+                *params = (level == 0) ? STATE(proxy_texture_2d_height) : 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_INTERNAL_FORMAT:
+                *params = proxy_internal;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_RED_SIZE:
+            case GL_TEXTURE_GREEN_SIZE:
+            case GL_TEXTURE_BLUE_SIZE:
+            case GL_TEXTURE_ALPHA_SIZE:
+                // Conservative capability reporting for common RGBA8 probe paths.
+                *params = (proxy_internal != 0) ? 8 : 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_COMPRESSED:
+                *params = 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_DEPTH_SIZE:
+                *params = mglInternalFormatHasDepth(proxy_internal) ? 24 : 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_STENCIL_SIZE:
+                *params = 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_SHARED_SIZE:
+                *params = 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+        }
+    }
+
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
@@ -829,12 +899,14 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     if (!tex)
     {
         *params = 0;
+        fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
         return;
     }
 
     if (level >= (GLint)tex->num_levels || !tex->faces[0].levels)
     {
         *params = 0;
+        fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
         return;
     }
 
@@ -844,15 +916,19 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     {
         case GL_TEXTURE_WIDTH:
             *params = tex->faces[0].levels[level].width;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_HEIGHT:
             *params = tex->faces[0].levels[level].height;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_DEPTH:
             *params = tex->faces[0].levels[level].depth;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_INTERNAL_FORMAT:
             *params = internalformat;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_RED_SIZE:
         case GL_TEXTURE_GREEN_SIZE:
@@ -860,12 +936,23 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         case GL_TEXTURE_ALPHA_SIZE:
             // Conservative default sufficient for capability probing.
             *params = 8;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+            return;
+        case GL_TEXTURE_COMPRESSED:
+            *params = 0;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_DEPTH_SIZE:
-            *params = (internalformat == GL_DEPTH_COMPONENT16) ? 16 : 24;
+            *params = mglInternalFormatHasDepth(internalformat) ? 24 : 0;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         case GL_TEXTURE_STENCIL_SIZE:
-            *params = (internalformat == GL_DEPTH24_STENCIL8 || internalformat == GL_STENCIL_INDEX8) ? 8 : 0;
+            *params = 0;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+            return;
+        case GL_TEXTURE_SHARED_SIZE:
+            *params = 0;
+            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);

@@ -25,6 +25,42 @@
 
 #include "glm_context.h"
 
+static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
+{
+    VertexArray *vao;
+
+    if (!ctx)
+        return NULL;
+
+    vao = (VertexArray *)searchHashTable(&STATE(vao_table), 0);
+    if (!vao)
+    {
+        vao = (VertexArray *)calloc(1, sizeof(VertexArray));
+        if (!vao)
+            return NULL;
+
+        vao->magic = MGL_VAO_MAGIC;
+        vao->name = 0;
+
+        for (int i = 0; i < MAX_ATTRIBS; i++)
+        {
+            vao->attrib[i].size = 4;
+            vao->attrib[i].type = GL_FLOAT;
+            vao->attrib[i].stride = 0;
+            vao->attrib[i].divisor = 0;
+            vao->attrib[i].relativeoffset = 0;
+            vao->attrib[i].buffer_bindingindex = 0;
+        }
+
+        insertHashElement(&STATE(vao_table), 0, vao);
+    }
+
+    // Keep VAO0 EBO compatibility slot synchronized.
+    vao->element_array.buffer = STATE(default_vao_element_array_buffer);
+
+    return vao;
+}
+
 static bool should_log_throttled(uint64_t *counter, uint64_t burst_limit, uint64_t every_n)
 {
     (*counter)++;
@@ -120,9 +156,27 @@ bool processVAO(GLMContext ctx)
 
 bool validate_vao(GLMContext ctx, bool uses_elements)
 {
-    if (!VAO()) {
-        fprintf(stderr, "MGL Error: validate_vao: VAO is NULL\n");
+    if (!ctx)
         return false;
+
+    if (!VAO()) {
+        VertexArray *default_vao = mglGetOrCreateDefaultVAO(ctx);
+        if (!default_vao) {
+            fprintf(stderr, "MGL Error: validate_vao: VAO is NULL and default VAO creation failed\n");
+            return false;
+        }
+
+        ctx->state.vao = default_vao;
+        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = default_vao->element_array.buffer;
+        STATE_VAR(element_array_buffer_binding) =
+            default_vao->element_array.buffer ? default_vao->element_array.buffer->name : 0;
+        fprintf(stderr, "MGL INFO: validate_vao: rebound to default VAO\n");
+    } else if (ctx->state.vao->magic != MGL_VAO_MAGIC) {
+        fprintf(stderr, "MGL Error: validate_vao: VAO magic invalid (vao=%p magic=0x%x)\n",
+                (void *)ctx->state.vao, ctx->state.vao->magic);
+        ctx->state.vao = mglGetOrCreateDefaultVAO(ctx);
+        if (!ctx->state.vao)
+            return false;
     }
 
     // no attribs enabled..

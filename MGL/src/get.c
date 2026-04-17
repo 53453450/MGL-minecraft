@@ -19,6 +19,40 @@
  */
 
 #include "glm_context.h"
+#include "mgl_extensions.h"
+
+static const char *kMglExtensions[] = {
+    "GL_ARB_vertex_array_object",
+    "GL_ARB_framebuffer_object",
+    "GL_ARB_texture_storage",
+    "GL_ARB_sampler_objects",
+    "GL_ARB_uniform_buffer_object",
+    "GL_ARB_draw_buffers",
+    "GL_ARB_multisample",
+    "GL_ARB_debug_output"
+};
+static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
+              "MGL_NUM_EXTENSIONS must match kMglExtensions");
+
+GLsizei mglSafeMaxTextureSize(GLMContext ctx)
+{
+    const GLsizei kFallback = 16384;
+    GLint maxTex = 0;
+
+    if (!ctx) {
+        return kFallback;
+    }
+
+    maxTex = ctx->state.var.max_texture_size;
+    if (maxTex == 0x01010101 || maxTex <= 1024 || maxTex > 32768) {
+        fprintf(stderr,
+                "MGL WARNING: GL_MAX_TEXTURE_SIZE state value suspicious (%u), using safe fallback %d\n",
+                (unsigned)maxTex, (int)kFallback);
+        return kFallback;
+    }
+
+    return (GLsizei)maxTex;
+}
 
 // these cast a void ptr to a type and value
 #define RET_BOOL(__value__) *((GLboolean *)data) = (GLboolean)__value__; break;
@@ -111,7 +145,16 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 
         case 0x0C23: RET_TYPE_VAR_COUNT(type, color_writemask[0], 4); break; // GL_COLOR_WRITEMASK
 
-        case 0x0D33: RET_TYPE_VAR(type, max_texture_size); break; // GL_MAX_TEXTURE_SIZE
+        case 0x0D33: { // GL_MAX_TEXTURE_SIZE
+            GLsizei maxTex = mglSafeMaxTextureSize(ctx);
+            switch(type) {
+                case kBool: RET_BOOL(maxTex);
+                case kInt: RET_INT(maxTex);
+                case kFloat: RET_FLOAT(maxTex);
+                case kDouble: RET_DOUBLE(maxTex);
+            }
+            break;
+        }
         case 0x0D3A: RET_TYPE_VAR(type, max_viewport_dims); break; // GL_MAX_VIEWPORT_DIMS
         case 0x0D50: RET_TYPE_VAR(type, subpixel_bits); break; // GL_SUBPIXEL_BITS
         case 0x0B00: RET_TYPE_VAR(type, current_color); break; // GL_CURRENT_COLOR
@@ -234,7 +277,21 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8005: RET_TYPE_VAR_COUNT(type, blend_color,4); break; // GL_BLEND_COLOR
 
         case 0x8894: RET_TYPE_VAR(type, array_buffer_binding); break; // GL_ARRAY_BUFFER_BINDING
-        case 0x8895: RET_TYPE_VAR(type, element_array_buffer_binding); break; // GL_ELEMENT_ARRAY_BUFFER_BINDING
+        case 0x8895: { // GL_ELEMENT_ARRAY_BUFFER_BINDING
+            GLuint ebo = 0;
+            if (ctx->state.vao && ctx->state.vao->element_array.buffer) {
+                ebo = ctx->state.vao->element_array.buffer->name;
+            } else if (ctx->state.default_vao_element_array_buffer) {
+                ebo = ctx->state.default_vao_element_array_buffer->name;
+            }
+            switch(type) {
+                case kBool: RET_BOOL(ebo);
+                case kInt: RET_INT(ebo);
+                case kFloat: RET_FLOAT(ebo);
+                case kDouble: RET_DOUBLE(ebo);
+            }
+            break;
+        }
         case 0x8009: RET_TYPE_VAR(type, blend_equation_rgb[0]); break; // GL_BLEND_EQUATION_RGB
         case 0x8800: RET_TYPE_VAR(type, stencil_back_func); break; // GL_STENCIL_BACK_FUNC
         case 0x8801: RET_TYPE_VAR(type, stencil_back_fail); break; // GL_STENCIL_BACK_FAIL
@@ -259,7 +316,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x88EF: RET_TYPE_VAR(type, pixel_unpack_buffer_binding); break; // GL_PIXEL_UNPACK_BUFFER_BINDING
         case 0x821B: RET_TYPE_VAR(type, major_version); break; // GL_MAJOR_VERSION
         case 0x821C: RET_TYPE_VAR(type, minor_version); break; // GL_MINOR_VERSION
-        case 0x821D: RET_TYPE_VAR(type, num_extensions); break; // GL_NUM_EXTENSIONS
+        case 0x821D: // GL_NUM_EXTENSIONS
+            switch(type) {
+                case kBool: RET_BOOL(MGL_NUM_EXTENSIONS);
+                case kInt: RET_INT(MGL_NUM_EXTENSIONS);
+                case kFloat: RET_FLOAT(MGL_NUM_EXTENSIONS);
+                case kDouble: RET_DOUBLE(MGL_NUM_EXTENSIONS);
+            }
+            break;
         case 0x821E: RET_TYPE_VAR(type, context_flags); break; // GL_CONTEXT_FLAGS
         case 0x88FF: RET_TYPE_VAR(type, max_array_texture_layers); break; // GL_MAX_ARRAY_TEXTURE_LAYERS
         case 0x8904: RET_TYPE_VAR(type, min_program_texel_offset); break; // GL_MIN_PROGRAM_TEXEL_OFFSET
@@ -412,8 +476,10 @@ const GLubyte *mglGetString(GLMContext ctx, GLenum name)
             return (const GLubyte *)"4.6";
 
         default:
-            assert(0);
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
     }
+
+    return NULL;
 }
 
 void mglGetInteger64v(GLMContext ctx, GLenum pname, GLint64 *data)
@@ -430,19 +496,20 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
 
 const GLubyte  *mglGetStringi(GLMContext ctx, GLenum name, GLuint index)
 {
-    switch(index)
-    {
-        case GL_VENDOR: return (const GLubyte *)"Mike Larson";
-        case GL_RENDERER: return (const GLubyte *) "MGL";
-        case GL_VERSION: return (const GLubyte *) "4.6.0";
-        case GL_SHADING_LANGUAGE_VERSION: return (const GLubyte *) "4.6.0";
-        case GL_EXTENSIONS: return NULL;
+    if (!ctx)
+        return NULL;
 
-        default:
-            assert(0);
+    if (name != GL_EXTENSIONS)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
     }
 
-    return NULL;
+    if (index >= MGL_NUM_EXTENSIONS)
+    {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, NULL);
+    }
+
+    return (const GLubyte *)kMglExtensions[index];
 }
 
 void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
