@@ -736,19 +736,19 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(index < TEXTURE_UNITS, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
     if (buffer)
     {
+        ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
         ptr = getBuffer(ctx, target, buffer);
         assert(ptr);
 
-        ERROR_CHECK_RETURN(ptr->data.buffer_size, GL_INVALID_VALUE);
-        ERROR_CHECK_RETURN(ptr->data.buffer_data, GL_INVALID_VALUE);
+        // Bind-by-name semantics: bind succeeds even when storage is not yet initialized.
+        // Storage/range validity is validated later at draw/upload time.
+        ERROR_CHECK_RETURN(ptr->size >= 0, GL_INVALID_VALUE);
 
         ctx->state.buffer_base[buffer_index].buffers[index].buffer = buffer;
         ctx->state.buffer_base[buffer_index].buffers[index].offset = 0;
@@ -792,9 +792,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(index < TEXTURE_UNITS, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(index < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
 
     // ERROR_CHECK_RETURN(offset >= 0, GL_INVALID_VALUE);
     if (offset < 0) {
@@ -812,17 +810,14 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
 
     if (buffer)
     {
+        ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
         ptr = getBuffer(ctx, target, buffer);
         assert(ptr);
 
-        // ERROR_CHECK_RETURN(ptr->data.buffer_data, GL_INVALID_VALUE);
-        if (!ptr->data.buffer_data) {
-             fprintf(stderr, "MGL Error: mglBindBufferRange: buffer_data is NULL\n");
-             ERROR_RETURN(GL_INVALID_VALUE);
-        }
-
-        if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size)) {
-            fprintf(stderr, "MGL Error: mglBindBufferRange: range overflow (offset=%ld size=%ld buffer_size=%ld)\n", offset, size, (long)ptr->data.buffer_size);
+        // GL allows binding ranges before upload; validate against logical size.
+        if (!mgl_range_ok_size_t(offset, size, ptr->size)) {
+            fprintf(stderr, "MGL Error: mglBindBufferRange: range overflow (offset=%ld size=%ld buffer_size=%ld)\n",
+                    offset, size, (long)ptr->size);
             ERROR_RETURN(GL_INVALID_VALUE);
         }
 

@@ -92,6 +92,9 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
 
 // Debug switch: temporarily disable shared-event synchronization path to isolate GPU timeout sources.
 static const BOOL kMGLDisableSharedEventSync = YES;
+// Keep vertex attribute buffers in a dedicated high slot range so they do not collide
+// with UBO/SSBO bindings that are expected at low indices.
+static const NSUInteger kMGLVertexAttribBufferBase = MAX_BINDABLE_BUFFERS;
 
 static Program *mglResolveProgramFromState(GLMContext ctx)
 {
@@ -202,6 +205,76 @@ static Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, 
     }
 
     return candidate;
+}
+
+static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
+                                                        VertexArray *vao,
+                                                        GLuint attribute,
+                                                        const char *where)
+{
+    if (!ctx || !vao || attribute >= MAX_ATTRIBS) {
+        return -1;
+    }
+
+    if ((vao->enabled_attribs & (0x1u << attribute)) == 0u) {
+        return -1;
+    }
+
+    Buffer *target = mglRendererGetValidatedBuffer(ctx, vao->attrib[attribute].buffer, where, attribute);
+    if (!target) {
+        return -1;
+    }
+
+    Buffer *seenBuffers[MAX_ATTRIBS] = {0};
+    GLuint seenCount = 0;
+    GLuint maxAttribs = ctx->state.max_vertex_attribs;
+    if (maxAttribs > MAX_ATTRIBS) {
+        maxAttribs = MAX_ATTRIBS;
+    }
+
+    for (GLuint i = 0; i < maxAttribs; i++) {
+        if ((vao->enabled_attribs & (0x1u << i)) == 0u) {
+            continue;
+        }
+
+        Buffer *attribBuffer = mglRendererGetValidatedBuffer(ctx, vao->attrib[i].buffer, where, i);
+        if (!attribBuffer) {
+            continue;
+        }
+
+        int slot = -1;
+        for (GLuint s = 0; s < seenCount; s++) {
+            Buffer *known = seenBuffers[s];
+            if (known == attribBuffer ||
+                (known && known->name == attribBuffer->name && known->target == attribBuffer->target)) {
+                slot = (int)s;
+                break;
+            }
+        }
+
+        if (slot < 0) {
+            if (kMGLVertexAttribBufferBase + seenCount >= MAX_MAPPED_BUFFERS) {
+                NSLog(@"MGL ERROR: Vertex attrib mapping overflow (seen=%u base=%lu max=%d)",
+                      seenCount, (unsigned long)kMGLVertexAttribBufferBase, MAX_MAPPED_BUFFERS);
+                return -1;
+            }
+
+            seenBuffers[seenCount] = attribBuffer;
+            slot = (int)seenCount;
+            seenCount++;
+        }
+
+        if (i == attribute) {
+            return (int)(kMGLVertexAttribBufferBase + (NSUInteger)slot);
+        }
+
+        // Early out once there are no higher enabled attributes.
+        if ((vao->enabled_attribs >> (i + 1)) == 0u) {
+            break;
+        }
+    }
+
+    return -1;
 }
 
 // Main class performing the rendering
@@ -622,6 +695,7 @@ void logDirtyBits(GLMContext ctx)
             {
                 GLuint spirv_binding;
                 Buffer *buf;
+                BufferBaseTarget *baseBinding;
 
                 // get the ubo binding from spirv
                 spirv_binding = [self getProgramBinding:stage type:spvc_type index: i];
@@ -632,8 +706,24 @@ void logDirtyBits(GLMContext ctx)
                     continue;
                 }
 
-                buf = buffers[spirv_binding].buf;
-                buf = mglRendererGetValidatedBuffer(ctx, buf, "mapGLBuffersToMTLBufferMap(base)", (NSUInteger)spirv_binding);
+                baseBinding = &buffers[spirv_binding];
+                buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
+                                                    "mapGLBuffersToMTLBufferMap(base)",
+                                                    (NSUInteger)spirv_binding);
+
+                // Recover from name/object map skew: some paths can preserve GL name while pointer slot is stale.
+                if (!buf && baseBinding->buffer != 0) {
+                    Buffer *resolved = (Buffer *)searchHashTable(&ctx->state.buffer_table, baseBinding->buffer);
+                    resolved = mglRendererGetValidatedBuffer(ctx, resolved,
+                                                             "mapGLBuffersToMTLBufferMap(base,recover)",
+                                                             (NSUInteger)spirv_binding);
+                    if (resolved) {
+                        baseBinding->buf = resolved;
+                        buf = resolved;
+                        NSLog(@"MGL BUFFER RECOVER: stage=%d type=%d binding=%u name=%u ptr=%p",
+                              stage, spvc_type, spirv_binding, baseBinding->buffer, resolved);
+                    }
+                }
 
                 if (buf)
                 {
@@ -646,17 +736,22 @@ void logDirtyBits(GLMContext ctx)
                     buffer_map->buffers[buffer_map->count].attribute_mask = 0; // non attribute.. no bits set
                     buffer_map->buffers[buffer_map->count].buffer_base_index = spirv_binding;
                     buffer_map->buffers[buffer_map->count].buf = buf;
-                    buffer_map->buffers[buffer_map->count].offset = buffers[spirv_binding].offset;
+                    buffer_map->buffers[buffer_map->count].offset = baseBinding->offset;
+                    baseBinding->buffer = buf->name;
                     buffer_map->count++;
                     
                     //DEBUG_PRINT("Found buffer type: %s buffer_base_index: %d\n", mapped_types[type].name, spirv_binding);
                 }
                 else
                 {
-                    if (buffers[spirv_binding].buf) {
-                        NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: dropping invalid base buffer pointer for binding=%u stage=%d type=%d",
-                              spirv_binding, stage, spvc_type);
-                        bzero(&buffers[spirv_binding], sizeof(BufferBaseTarget));
+                    if (baseBinding->buf || baseBinding->buffer != 0 || baseBinding->offset != 0 || baseBinding->size != 0) {
+                        NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: dropping invalid base buffer binding=%u stage=%d type=%d name=%u ptr=%p offset=%lld size=%lld",
+                              spirv_binding, stage, spvc_type,
+                              baseBinding->buffer,
+                              baseBinding->buf,
+                              (long long)baseBinding->offset,
+                              (long long)baseBinding->size);
+                        bzero(baseBinding, sizeof(BufferBaseTarget));
                     }
                     // Some vanilla shader paths tolerate unbound blocks on specific stages.
                     // Skip instead of poisoning global GL error state with GL_INVALID_OPERATION.
@@ -670,6 +765,7 @@ void logDirtyBits(GLMContext ctx)
     if (stage == _VERTEX_SHADER)
     {
         int vao_buffer_start;
+        GLuint next_vertex_binding_index = (GLuint)kMGLVertexAttribBufferBase;
         VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
 
         count = [self getProgramBindingCount: stage type: SPVC_RESOURCE_TYPE_STAGE_INPUT];
@@ -692,7 +788,7 @@ void logDirtyBits(GLMContext ctx)
             return false;
         }
         buffer_map->buffers[vao_buffer_start].attribute_mask = 0;
-        buffer_map->buffers[vao_buffer_start].buffer_base_index = 0;
+        buffer_map->buffers[vao_buffer_start].buffer_base_index = (GLuint)kMGLVertexAttribBufferBase;
         buffer_map->buffers[vao_buffer_start].buf = NULL;
         buffer_map->buffers[vao_buffer_start].offset = 0;
 
@@ -721,6 +817,11 @@ void logDirtyBits(GLMContext ctx)
                 // empty slot map it here, only works on first buffer..
                 if (map_buffer == NULL)
                 {
+                    if (next_vertex_binding_index >= MAX_MAPPED_BUFFERS) {
+                        NSLog(@"MGL WARNING: vertex binding index overflow (next=%u max=%u), skipping attrib %d",
+                              next_vertex_binding_index, MAX_MAPPED_BUFFERS, att);
+                        continue;
+                    }
                     // map the buffer object to a metal vertex index
                     if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
                         NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
@@ -729,7 +830,7 @@ void logDirtyBits(GLMContext ctx)
                     }
                     buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
                     buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
-                    buffer_map->buffers[vao_buffer_start].buffer_base_index = 0;
+                    buffer_map->buffers[vao_buffer_start].buffer_base_index = next_vertex_binding_index++;
                     buffer_map->buffers[vao_buffer_start].offset = 0;
                     buffer_map->count++;
 
@@ -764,6 +865,11 @@ void logDirtyBits(GLMContext ctx)
 
                     if (found_buffer == false)
                     {
+                        if (next_vertex_binding_index >= MAX_MAPPED_BUFFERS) {
+                            NSLog(@"MGL WARNING: vertex binding index overflow (next=%u max=%u), cannot append attrib %d",
+                                  next_vertex_binding_index, MAX_MAPPED_BUFFERS, att);
+                            continue;
+                        }
                         // map the next buffer object to a metal vertex index
                         if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
                             NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
@@ -771,7 +877,7 @@ void logDirtyBits(GLMContext ctx)
                             continue;
                         }
                         buffer_map->buffers[buffer_map->count].attribute_mask = (0x1 << att);
-                        buffer_map->buffers[buffer_map->count].buffer_base_index = 0;
+                        buffer_map->buffers[buffer_map->count].buffer_base_index = next_vertex_binding_index++;
                         buffer_map->buffers[buffer_map->count].buf = gl_buffer;
                         buffer_map->buffers[buffer_map->count].offset = 0;
                         buffer_map->count++;
@@ -962,7 +1068,8 @@ void logDirtyBits(GLMContext ctx)
     Buffer *ptr;
     GLintptr offset;
     NSUInteger bindingIndex;
-    bool anyBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
+    bool isBaseBinding;
+    bool anyBindingPresent[MAX_MAPPED_BUFFERS] = {false};
     bool baseBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
     static id<MTLBuffer> fallbackBindingBuffer = nil;
     VertexArray *vao;
@@ -1020,19 +1127,23 @@ void logDirtyBits(GLMContext ctx)
         
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
-        if (map->attribute_mask == 0) {
-            bindingIndex = map->buffer_base_index;
-        } else {
-            bindingIndex = (NSUInteger)i;
-        }
+        isBaseBinding = (map->attribute_mask == 0);
+        bindingIndex = map->buffer_base_index;
 
-        if (bindingIndex >= MAX_BINDABLE_BUFFERS) {
-            NSLog(@"MGL WARNING: Vertex binding index %lu out of range (max=%d), skipping map[%d]",
-                  (unsigned long)bindingIndex, MAX_BINDABLE_BUFFERS, i);
+        // Vertex attribute streams are rebound from VAO below using a deterministic
+        // attribute->slot mapping shared with generateVertexDescriptor.
+        // Keep this pass for resource/base bindings only.
+        if (!isBaseBinding) {
             continue;
         }
 
-        if (map->attribute_mask == 0 && map->buffer_base_index < MAX_BINDABLE_BUFFERS) {
+        if (bindingIndex >= MAX_MAPPED_BUFFERS) {
+            NSLog(@"MGL WARNING: Vertex binding index %lu out of range (max=%d), skipping map[%d]",
+                  (unsigned long)bindingIndex, MAX_MAPPED_BUFFERS, i);
+            continue;
+        }
+
+        if (isBaseBinding && map->buffer_base_index < MAX_BINDABLE_BUFFERS) {
             baseBindingPresent[map->buffer_base_index] = true;
         }
 
@@ -1056,93 +1167,111 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
 
-        // for buffers less than 4k we should use this call
-        if (ptr->size < 4096)
-        {
-            if (ptr->data.buffer_data && ptr->size > 0) {
-                uintptr_t cpuData = (uintptr_t)ptr->data.buffer_data;
-                if (cpuData < 0x10000u) {
-                    NSLog(@"MGL VBIND skip small attrib/base buffer %u: suspicious CPU pointer=%p",
-                          ptr->name, (void *)ptr->data.buffer_data);
-                    [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                    continue;
-                }
-                size_t bindOffset = (size_t)offset;
-                size_t bufferSize = (size_t)ptr->size;
-                if (bindOffset >= bufferSize) {
-                    NSLog(@"MGL VBIND skip small attrib/base buffer %u: offset=%lu bufferSize=%lu",
-                          ptr->name, (unsigned long)bindOffset, (unsigned long)bufferSize);
-                    [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                    continue;
-                }
-
-                size_t bindLength = bufferSize - bindOffset;
-                const uint8_t *bindPtr = ((const uint8_t *)ptr->data.buffer_data) + bindOffset;
-                [_currentRenderEncoder setVertexBytes:bindPtr length:bindLength atIndex:bindingIndex];
-                anyBindingPresent[bindingIndex] = true;
-            } else if (ptr->data.mtl_data) {
-                if ((uintptr_t)ptr->data.mtl_data < 0x10000u) {
-                    NSLog(@"MGL VBIND skip small MTL buffer %u: suspicious mtl_data pointer=%p",
-                          ptr->name, ptr->data.mtl_data);
-                    [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                    continue;
-                }
-                id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-                if (fallbackBuffer) {
-                    NSUInteger metalLen = fallbackBuffer.length;
-                    NSUInteger bindOffset = (NSUInteger)offset;
-                    if (bindOffset >= metalLen) {
-                        NSLog(@"MGL VBIND skip small MTL buffer %u: offset=%lu length=%lu",
-                              ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
-                        [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                        continue;
-                    }
-                    [_currentRenderEncoder setVertexBuffer:fallbackBuffer offset:offset atIndex:bindingIndex];
-                    anyBindingPresent[bindingIndex] = true;
-                }
-            } else {
-                // Explicitly unbind this slot if no data is available.
-                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            }
-            
-            // clear buffer data dirty bits
-            ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
+        if (!ptr->data.mtl_data) {
+            [self bindMTLBuffer:ptr];
         }
-        else
-        {
-            if (!ptr->data.mtl_data) {
-                [self bindMTLBuffer:ptr];
-            }
-            if (!ptr->data.mtl_data) {
-                NSLog(@"MGL WARNING: Vertex buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
-                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                continue;
-            }
-            if ((uintptr_t)ptr->data.mtl_data < 0x10000u) {
-                NSLog(@"MGL VBIND skip attrib/base slot %d buffer=%u: suspicious mtl_data pointer=%p",
-                      i, ptr->name, ptr->data.mtl_data);
-                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                continue;
-            }
+        if (!ptr->data.mtl_data) {
+            NSLog(@"MGL WARNING: Vertex buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
+            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            continue;
+        }
+        if ((uintptr_t)ptr->data.mtl_data < 0x10000u) {
+            NSLog(@"MGL VBIND skip base slot %d buffer=%u: suspicious mtl_data pointer=%p",
+                  i, ptr->name, ptr->data.mtl_data);
+            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            continue;
+        }
 
-            id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-            if (!buffer) {
-                NSLog(@"MGL WARNING: Vertex buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
-                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                continue;
-            }
+        id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+        if (!buffer) {
+            NSLog(@"MGL WARNING: Vertex buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
+            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            continue;
+        }
 
-            NSUInteger metalLen = buffer.length;
-            NSUInteger bindOffset = (NSUInteger)offset;
-            if (bindOffset >= metalLen) {
-                NSLog(@"MGL VBIND skip attrib/base slot %d buffer=%u: offset=%lu length=%lu",
-                      i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
-                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                continue;
-            }
+        NSUInteger metalLen = buffer.length;
+        NSUInteger bindOffset = (NSUInteger)offset;
+        if (bindOffset >= metalLen) {
+            NSLog(@"MGL VBIND skip base slot %d buffer=%u: offset=%lu length=%lu",
+                  i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
+            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            continue;
+        }
 
-            [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
-            anyBindingPresent[bindingIndex] = true;
+        [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
+        NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=%lu available=%lu source=base",
+              (unsigned long)bindingIndex,
+              ptr->name,
+              (unsigned long)bindOffset,
+              (unsigned long)metalLen);
+        anyBindingPresent[bindingIndex] = true;
+    }
+
+    // Attribute bindings must use the exact same index mapping as generateVertexDescriptor.
+    // Do this pass directly from the VAO so pipeline creation does not depend on map list timing.
+    GLuint maxAttribs = ctx->state.max_vertex_attribs;
+    if (maxAttribs > MAX_ATTRIBS) {
+        maxAttribs = MAX_ATTRIBS;
+    }
+    for (GLuint attrib = 0; attrib < maxAttribs; attrib++) {
+        if ((vao->enabled_attribs & (0x1u << attrib)) == 0u) {
+            continue;
+        }
+
+        int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
+        if (mappedIndex < 0 || mappedIndex >= MAX_MAPPED_BUFFERS) {
+            NSLog(@"MGL ERROR: VBIND attrib=%u unresolved mapping=%d", attrib, mappedIndex);
+            continue;
+        }
+
+        bindingIndex = (NSUInteger)mappedIndex;
+        if (anyBindingPresent[bindingIndex]) {
+            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+                break;
+            }
+            continue;
+        }
+
+        Buffer *attribBuffer = mglRendererGetValidatedBuffer(ctx, vao->attrib[attrib].buffer, __FUNCTION__, attrib);
+        if (!attribBuffer) {
+            NSLog(@"MGL VBIND skip attrib=%u: enabled but buffer is invalid", attrib);
+            continue;
+        }
+
+        if (!attribBuffer->data.mtl_data) {
+            [self bindMTLBuffer:attribBuffer];
+        }
+        if (!attribBuffer->data.mtl_data) {
+            NSLog(@"MGL VBIND skip attrib=%u buffer=%u: no Metal backing",
+                  attrib, attribBuffer->name);
+            continue;
+        }
+        if ((uintptr_t)attribBuffer->data.mtl_data < 0x10000u) {
+            NSLog(@"MGL VBIND skip attrib=%u buffer=%u: suspicious mtl_data=%p",
+                  attrib, attribBuffer->name, attribBuffer->data.mtl_data);
+            continue;
+        }
+
+        id<MTLBuffer> attribMetalBuffer = (__bridge id<MTLBuffer>)(attribBuffer->data.mtl_data);
+        if (!attribMetalBuffer) {
+            NSLog(@"MGL VBIND skip attrib=%u buffer=%u: Metal bridge failed",
+                  attrib, attribBuffer->name);
+            continue;
+        }
+
+        [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
+        anyBindingPresent[bindingIndex] = true;
+        NSLog(@"MGL VBIND attrib map attrib=%u -> index=%lu buffer=%u mtl=%p len=%lu attrOffset=0x%llx stride=%u",
+              attrib,
+              (unsigned long)bindingIndex,
+              attribBuffer->name,
+              attribBuffer->data.mtl_data,
+              (unsigned long)attribMetalBuffer.length,
+              (unsigned long long)(uintptr_t)vao->attrib[attrib].relativeoffset,
+              (unsigned)vao->attrib[attrib].stride);
+
+        if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            break;
         }
     }
 
@@ -1195,6 +1324,7 @@ void logDirtyBits(GLMContext ctx)
     Buffer *ptr;
     GLintptr offset;
     NSUInteger bindingIndex;
+    bool isBaseBinding;
     bool anyBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
     bool baseBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
     static id<MTLBuffer> fallbackBindingBuffer = nil;
@@ -1226,11 +1356,8 @@ void logDirtyBits(GLMContext ctx)
 
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
-        if (map->attribute_mask == 0) {
-            bindingIndex = map->buffer_base_index;
-        } else {
-            bindingIndex = (NSUInteger)i;
-        }
+        isBaseBinding = (map->attribute_mask == 0);
+        bindingIndex = map->buffer_base_index;
 
         if (bindingIndex >= MAX_BINDABLE_BUFFERS) {
             NSLog(@"MGL WARNING: Fragment binding index %lu out of range (max=%d), skipping map[%d]",
@@ -1238,7 +1365,7 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
 
-        if (map->attribute_mask == 0 && map->buffer_base_index < MAX_BINDABLE_BUFFERS) {
+        if (isBaseBinding && map->buffer_base_index < MAX_BINDABLE_BUFFERS) {
             baseBindingPresent[map->buffer_base_index] = true;
         }
 
@@ -1262,7 +1389,7 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
         
-        if (ptr->size < 4096)
+        if (!isBaseBinding && ptr->size < 4096)
         {
             if (ptr->data.buffer_data && ptr->size > 0) {
                 uintptr_t cpuData = (uintptr_t)ptr->data.buffer_data;
@@ -1359,6 +1486,12 @@ void logDirtyBits(GLMContext ctx)
             }
             
             [_currentRenderEncoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
+            NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=%lu available=%lu source=%s",
+                  (unsigned long)bindingIndex,
+                  ptr->name,
+                  (unsigned long)bindOffset,
+                  (unsigned long)metalLen,
+                  isBaseBinding ? "base" : "attrib");
             NSLog(@"MGL FBIND ok(slot=%lu) setFragmentBuffer buffer=%u mtl=%p len=%lu offset=%lu",
                   (unsigned long)bindingIndex,
                   ptr->name,
@@ -1409,15 +1542,33 @@ void logDirtyBits(GLMContext ctx)
 
 - (int) getVertexBufferIndexWithAttributeSet: (int) attribute
 {
-    for(int i=0; i<ctx->state.vertex_buffer_map_list.count; i++)
-    {
-        if (ctx->state.vertex_buffer_map_list.buffers[i].attribute_mask & (0x1 << attribute))
-            return i;
+    if (attribute < 0 || attribute >= MAX_ATTRIBS) {
+        NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet invalid attribute=%d", attribute);
+        return -1;
     }
 
-    // CRITICAL FIX: Handle assertion gracefully instead of crashing
-            NSLog(@"MGL ERROR: Assertion hit in MGLRenderer.m at line %d", __LINE__);
-            return 0;
+    VertexArray *vao = mglRendererGetValidatedVAO(ctx, __FUNCTION__);
+    if (vao) {
+        int resolved = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, (GLuint)attribute, __FUNCTION__);
+        if (resolved >= 0) {
+            return resolved;
+        }
+    }
+
+    // Legacy fallback: use cached map list if available.
+    GLuint mapCount = ctx->state.vertex_buffer_map_list.count;
+    if (mapCount > MAX_MAPPED_BUFFERS) {
+        mapCount = MAX_MAPPED_BUFFERS;
+    }
+
+    for (GLuint i = 0; i < mapCount; i++)
+    {
+        if (ctx->state.vertex_buffer_map_list.buffers[i].attribute_mask & (0x1 << attribute))
+            return (int)ctx->state.vertex_buffer_map_list.buffers[i].buffer_base_index;
+    }
+
+    NSLog(@"MGL ERROR: No vertex buffer mapping found for attribute %d", attribute);
+    return -1;
 }
 
 #pragma mark textures
@@ -4956,45 +5107,62 @@ create_new_command_buffer:
 {
     MTLVertexDescriptor *vertexDescriptor = [[MTLVertexDescriptor alloc] init];
     assert(vertexDescriptor);
+    VertexArray *vao = mglRendererGetValidatedVAO(ctx, __FUNCTION__);
+    GLuint maxAttribs;
+
+    if (!vao) {
+        NSLog(@"MGL PIPELINE DESC fail: cannot build vertex descriptor without a valid VAO");
+        return nil;
+    }
 
     [vertexDescriptor reset]; // ??? debug
+    maxAttribs = ctx->state.max_vertex_attribs;
+    if (maxAttribs > MAX_ATTRIBS) {
+        maxAttribs = MAX_ATTRIBS;
+    }
 
     // we can bind a new vertex descriptor without creating a new renderbuffer
-    for(int i=0;i<ctx->state.max_vertex_attribs; i++)
+    for (GLuint i = 0; i < maxAttribs; i++)
     {
-        if (VAO_STATE(enabled_attribs) & (0x1 << i))
+        if (vao->enabled_attribs & (0x1u << i))
         {
             MTLVertexFormat format;
+            Buffer *attribBuffer = mglRendererGetValidatedBuffer(ctx, vao->attrib[i].buffer, __FUNCTION__, i);
 
-            if (VAO_ATTRIB_STATE(i).buffer == NULL)
+            if (!attribBuffer)
             {
-                NSLog(@"Error: Invalid VAO defined enabled but no buffer bound\n");
+                NSLog(@"MGL PIPELINE DESC fail: attrib %u enabled but buffer is invalid", i);
                 return NULL;
             }
 
-            format = glTypeSizeToMtlType(VAO_ATTRIB_STATE(i).type,
-                                         VAO_ATTRIB_STATE(i).size,
-                                         VAO_ATTRIB_STATE(i).normalized);
+            format = glTypeSizeToMtlType(vao->attrib[i].type,
+                                         vao->attrib[i].size,
+                                         vao->attrib[i].normalized);
 
             if (format == MTLVertexFormatInvalid)
             {
-                NSLog(@"Error: unable to map gl type / size / normalize to format\n");
-                return false;
+                NSLog(@"MGL PIPELINE DESC fail: unable to map attrib %u type/size/normalize to MTL format", i);
+                return nil;
             }
 
             int mapped_buffer_index;
 
-            mapped_buffer_index = [self getVertexBufferIndexWithAttributeSet: i];
+            mapped_buffer_index = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, i, __FUNCTION__);
+            if (mapped_buffer_index < 0 || mapped_buffer_index >= MAX_MAPPED_BUFFERS) {
+                NSLog(@"MGL ERROR: Invalid vertex buffer index %d for attribute %d (max=%d)",
+                      mapped_buffer_index, i, MAX_MAPPED_BUFFERS);
+                return NULL;
+            }
 
             vertexDescriptor.attributes[i].bufferIndex = mapped_buffer_index;
-            vertexDescriptor.attributes[i].offset = ctx->state.vao->attrib[i].relativeoffset;
+            vertexDescriptor.attributes[i].offset = vao->attrib[i].relativeoffset;
             vertexDescriptor.attributes[i].format = format;
 
-            vertexDescriptor.layouts[mapped_buffer_index].stride = VAO_ATTRIB_STATE(i).stride;
+            vertexDescriptor.layouts[mapped_buffer_index].stride = vao->attrib[i].stride;
 
-            if (ctx->state.vao->attrib[i].divisor)
+            if (vao->attrib[i].divisor)
             {
-                vertexDescriptor.layouts[mapped_buffer_index].stepRate = ctx->state.vao->attrib[i].divisor;
+                vertexDescriptor.layouts[mapped_buffer_index].stepRate = vao->attrib[i].divisor;
                 vertexDescriptor.layouts[mapped_buffer_index].stepFunction = MTLVertexStepFunctionPerInstance;
             }
             else
@@ -5002,15 +5170,22 @@ create_new_command_buffer:
                 vertexDescriptor.layouts[mapped_buffer_index].stepRate = 1;
                 vertexDescriptor.layouts[mapped_buffer_index].stepFunction = MTLVertexStepFunctionPerVertex;
             }
+
+            NSLog(@"MGL VERTEX DESC attrib=%u buffer=%u -> metalIndex=%d offset=0x%llx stride=%u",
+                  i,
+                  attribBuffer->name,
+                  mapped_buffer_index,
+                  (unsigned long long)(uintptr_t)vao->attrib[i].relativeoffset,
+                  (unsigned)vao->attrib[i].stride);
         }
 
         // early out
-        if ((VAO_STATE(enabled_attribs) >> (i+1)) == 0)
+        if ((vao->enabled_attribs >> (i + 1)) == 0u)
             break;
     }
 
     // clear all dirty bits as they have been translated into a vertex descriptor
-    ctx->state.vao->dirty_bits = 0;
+    vao->dirty_bits = 0;
 
     return vertexDescriptor;
 }
