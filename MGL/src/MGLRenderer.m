@@ -94,7 +94,7 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
 static const BOOL kMGLDisableSharedEventSync = YES;
 // Keep vertex attribute buffers in a dedicated high slot range so they do not collide
 // with UBO/SSBO bindings that are expected at low indices.
-static const NSUInteger kMGLVertexAttribBufferBase = MAX_BINDABLE_BUFFERS;
+static const NSUInteger kMGLVertexAttribBufferBase = 1;
 
 static Program *mglResolveProgramFromState(GLMContext ctx)
 {
@@ -1071,6 +1071,8 @@ void logDirtyBits(GLMContext ctx)
     bool isBaseBinding;
     bool anyBindingPresent[MAX_MAPPED_BUFFERS] = {false};
     bool baseBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
+    bool attribBindingReserved[MAX_MAPPED_BUFFERS] = {false};
+    int attribBindingIndex[MAX_ATTRIBS];
     static id<MTLBuffer> fallbackBindingBuffer = nil;
     VertexArray *vao;
     GLuint mapCount;
@@ -1095,6 +1097,35 @@ void logDirtyBits(GLMContext ctx)
         NSLog(@"MGL WARNING: VBIND mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
               mapCount, MAX_MAPPED_BUFFERS);
         mapCount = MAX_MAPPED_BUFFERS;
+    }
+
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        attribBindingIndex[i] = -1;
+    }
+
+    // Resolve attribute slot reservations first so base/resource bindings do not
+    // overwrite shader-required vertex input slots.
+    GLuint reserveMaxAttribs = ctx->state.max_vertex_attribs;
+    if (reserveMaxAttribs > MAX_ATTRIBS) {
+        reserveMaxAttribs = MAX_ATTRIBS;
+    }
+    for (GLuint attrib = 0; attrib < reserveMaxAttribs; attrib++) {
+        if ((vao->enabled_attribs & (0x1u << attrib)) == 0u) {
+            continue;
+        }
+
+        int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
+        if (mappedIndex < 0 || mappedIndex >= MAX_MAPPED_BUFFERS) {
+            NSLog(@"MGL ERROR: VBIND reserve attrib=%u unresolved mapping=%d", attrib, mappedIndex);
+            continue;
+        }
+
+        attribBindingIndex[attrib] = mappedIndex;
+        attribBindingReserved[mappedIndex] = true;
+
+        if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            break;
+        }
     }
 
     for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
@@ -1140,6 +1171,12 @@ void logDirtyBits(GLMContext ctx)
         if (bindingIndex >= MAX_MAPPED_BUFFERS) {
             NSLog(@"MGL WARNING: Vertex binding index %lu out of range (max=%d), skipping map[%d]",
                   (unsigned long)bindingIndex, MAX_MAPPED_BUFFERS, i);
+            continue;
+        }
+
+        if (attribBindingReserved[bindingIndex]) {
+            NSLog(@"MGL VBIND skip base slot %lu: reserved by attrib mapping",
+                  (unsigned long)bindingIndex);
             continue;
         }
 
@@ -1218,7 +1255,7 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
 
-        int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
+        int mappedIndex = attribBindingIndex[attrib];
         if (mappedIndex < 0 || mappedIndex >= MAX_MAPPED_BUFFERS) {
             NSLog(@"MGL ERROR: VBIND attrib=%u unresolved mapping=%d", attrib, mappedIndex);
             continue;
@@ -1261,14 +1298,14 @@ void logDirtyBits(GLMContext ctx)
 
         [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
         anyBindingPresent[bindingIndex] = true;
-        NSLog(@"MGL VBIND attrib map attrib=%u -> index=%lu buffer=%u mtl=%p len=%lu attrOffset=0x%llx stride=%u",
-              attrib,
+        NSLog(@"MGL SET VERTEX ATTRIB BUFFER index=%lu glName=%u offset=0 available=%lu attrib=%u stride=%u attrOffset=0x%llx mtl=%p",
               (unsigned long)bindingIndex,
               attribBuffer->name,
-              attribBuffer->data.mtl_data,
               (unsigned long)attribMetalBuffer.length,
+              attrib,
+              (unsigned)vao->attrib[attrib].stride,
               (unsigned long long)(uintptr_t)vao->attrib[attrib].relativeoffset,
-              (unsigned)vao->attrib[attrib].stride);
+              attribBuffer->data.mtl_data);
 
         if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
             break;
