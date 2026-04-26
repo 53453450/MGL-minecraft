@@ -31,6 +31,10 @@
 #include "shaders.h"
 #include "buffers.h"
 
+#ifndef MGL_VERBOSE_PROGRAM_LOGS
+#define MGL_VERBOSE_PROGRAM_LOGS 0
+#endif
+
 // Program Pipeline management
 ProgramPipeline *newProgramPipeline(GLMContext ctx, GLuint pipeline)
 {
@@ -117,6 +121,11 @@ Program *getProgram(GLMContext ctx, GLuint program)
 {
     Program *ptr;
 
+    if (!ctx || program == 0u)
+    {
+        return NULL;
+    }
+
     ptr = (Program *)searchHashTable(&STATE(program_table), program);
 
     if (!ptr)
@@ -133,6 +142,11 @@ int isProgram(GLMContext ctx, GLuint program)
 {
     Program *ptr;
 
+    if (!ctx || program == 0u)
+    {
+        return 0;
+    }
+
     ptr = (Program *)searchHashTable(&STATE(program_table), program);
 
     if (ptr)
@@ -144,6 +158,11 @@ int isProgram(GLMContext ctx, GLuint program)
 Program *findProgram(GLMContext ctx, GLuint program)
 {
     Program *ptr;
+
+    if (!ctx || program == 0u)
+    {
+        return NULL;
+    }
 
     ptr = (Program *)searchHashTable(&STATE(program_table), program);
 
@@ -649,6 +668,84 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].set = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationDescriptorSet);
             ptr->spirv_resources_list[stage][res_type].list[i].binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
             ptr->spirv_resources_list[stage][res_type].list[i].location = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationLocation);
+            ptr->spirv_resources_list[stage][res_type].list[i].required_size = 0;
+            ptr->spirv_resources_list[stage][res_type].list[i].image_dim = 0;
+            ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
+            ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled = 0;
+
+            if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+                res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE ||
+                res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE) {
+                spvc_type image_type = NULL;
+                if (list[i].type_id) {
+                    image_type = spvc_compiler_get_type_handle(compiler_msl, list[i].type_id);
+                }
+                if (!image_type && list[i].base_type_id) {
+                    image_type = spvc_compiler_get_type_handle(compiler_msl, list[i].base_type_id);
+                }
+
+                if (image_type) {
+                    ptr->spirv_resources_list[stage][res_type].list[i].image_dim =
+                        (GLuint)spvc_type_get_image_dimension(image_type);
+                    ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed =
+                        (GLuint)spvc_type_get_image_arrayed(image_type);
+                    ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled =
+                        (GLuint)spvc_type_get_image_multisampled(image_type);
+
+                    if (ptr->spirv_resources_list[stage][res_type].list[i].image_dim == (GLuint)SpvDimCube) {
+                        fprintf(stderr,
+                                "MGL SPIRV IMAGE resource program=%u stage=%d type=%d name=%s binding=%u dim=Cube arrayed=%u multisampled=%u\n",
+                                ptr->name,
+                                stage,
+                                res_type,
+                                list[i].name ? list[i].name : "(null)",
+                                ptr->spirv_resources_list[stage][res_type].list[i].binding,
+                                ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed,
+                                ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled);
+                    }
+                }
+            }
+
+            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+                res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT ||
+                res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+                res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER ||
+                res_type == SPVC_RESOURCE_TYPE_PUSH_CONSTANT) {
+                size_t declared_size = 0;
+                size_t active_size = 0;
+                spvc_type reflected_type = NULL;
+
+                if (list[i].base_type_id) {
+                    reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].base_type_id);
+                }
+                if (!reflected_type && list[i].type_id) {
+                    reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].type_id);
+                }
+
+                if (reflected_type && spvc_type_get_basetype(reflected_type) == SPVC_BASETYPE_STRUCT) {
+                    size_t struct_size = 0;
+                    if (spvc_compiler_get_declared_struct_size(compiler_msl, reflected_type, &struct_size) == SPVC_SUCCESS) {
+                        declared_size = struct_size;
+                    }
+                }
+
+                const spvc_buffer_range *ranges = NULL;
+                size_t num_ranges = 0;
+                if (spvc_compiler_get_active_buffer_ranges(compiler_msl, list[i].id, &ranges, &num_ranges) == SPVC_SUCCESS && ranges) {
+                    for (size_t r = 0; r < num_ranges; r++) {
+                        size_t end = ranges[r].offset + ranges[r].range;
+                        if (end > active_size) {
+                            active_size = end;
+                        }
+                    }
+                }
+
+                if (active_size > declared_size) {
+                    declared_size = active_size;
+                }
+
+                ptr->spirv_resources_list[stage][res_type].list[i].required_size = declared_size;
+            }
         }
     }
 
@@ -717,9 +814,13 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
 
     clearStageCompileState(pptr, stage);
 
-    fprintf(stderr, "MGL DEBUG: Generating SPIRV for stage %d\n", stage);
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Generating SPIRV for stage %d\n", stage);
+    }
     glslang_program_SPIRV_generate(glsl_program, stage);
-    fprintf(stderr, "MGL DEBUG: SPIRV generated\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: SPIRV generated\n");
+    }
 
     spirv_messages = glslang_program_SPIRV_get_messages(glsl_program);
     if (spirv_messages && spirv_messages[0] != '\0')
@@ -730,9 +831,13 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
     }
 
     // save SPIRV code
-    fprintf(stderr, "MGL DEBUG: Getting SPIRV size\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Getting SPIRV size\n");
+    }
     pptr->spirv[stage].size = glslang_program_SPIRV_get_size(glsl_program);
-    fprintf(stderr, "MGL DEBUG: SPIRV size: %zu\n", pptr->spirv[stage].size);
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: SPIRV size: %zu\n", pptr->spirv[stage].size);
+    }
 
     // CRITICAL SECURITY FIX: Prevent integer overflow in SPIRV allocation
     // Check if size * sizeof(unsigned) would overflow size_t
@@ -749,14 +854,22 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
         ERROR_RETURN(GL_OUT_OF_MEMORY);
         return false;
     }
-    fprintf(stderr, "MGL DEBUG: Getting SPIRV IR\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Getting SPIRV IR\n");
+    }
     glslang_program_SPIRV_get(glsl_program, pptr->spirv[stage].ir);
-    fprintf(stderr, "MGL DEBUG: SPIRV IR obtained\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: SPIRV IR obtained\n");
+    }
 
     // compile SPIRV to Metal
-    fprintf(stderr, "MGL DEBUG: About to parse SPIRV to Metal\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: About to parse SPIRV to Metal\n");
+    }
     pptr->spirv[stage].msl_str = parseSPIRVShaderToMetal(ctx, pptr, stage);
-    fprintf(stderr, "MGL DEBUG: SPIRV parsed to Metal\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: SPIRV parsed to Metal\n");
+    }
     if (pptr->spirv[stage].msl_str == NULL) {
         fprintf(stderr, "MGL Error: parseSPIRVShaderToMetal failed for stage %d\n", stage);
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -798,7 +911,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
+    }
     glsl_program = glslang_program_create();
     if (!glsl_program) {
         fprintf(stderr, "MGL Error: glslang_program_create failed\n");
@@ -807,12 +922,18 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
-    fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
+    }
     addShadersToProgram(ctx, pptr, glsl_program);
-    fprintf(stderr, "MGL DEBUG: Shaders added\n");
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Shaders added\n");
+    }
 
     err = glslang_program_link(glsl_program, GLSLANG_MSG_DEFAULT_BIT);
-    fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
+    }
     if (!err)
     {
         fprintf(stderr, "MGL Error: glslang_program_link failed err: %d\n", err);
@@ -926,8 +1047,10 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     ctx->state.program_name = program;
     ctx->state.var.current_program = program;
 
-    fprintf(stderr, "MGL UseProgram program=%u resolved=%p\n",
-            program, (void *)ctx->state.program);
+    if (MGL_VERBOSE_PROGRAM_LOGS) {
+        fprintf(stderr, "MGL UseProgram program=%u resolved=%p\n",
+                program, (void *)ctx->state.program);
+    }
 }
 
 void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const GLchar *name)

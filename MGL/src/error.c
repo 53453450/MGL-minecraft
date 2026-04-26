@@ -32,8 +32,14 @@ GLenum  mglGetError(GLMContext ctx)
 
     err = ctx->state.error;
 
-    if (err != GL_NO_ERROR)
-        fprintf(stderr, "MGL DEBUG: mglGetError returning 0x%x (%d)\n", err, err);
+    if (err != GL_NO_ERROR) {
+        static unsigned long long s_get_error_log_count = 0;
+        s_get_error_log_count++;
+        if (s_get_error_log_count <= 64ull || (s_get_error_log_count % 1024ull) == 0ull) {
+            fprintf(stderr, "MGL DEBUG: mglGetError returning 0x%x (%d) hit=%llu\n",
+                    err, err, s_get_error_log_count);
+        }
+    }
 
     ctx->state.error = GL_NO_ERROR;
 
@@ -58,15 +64,46 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
     return 0;
 }
 
-void error_func(GLMContext ctx, const char *func, GLenum error)
+void mglDispatchError(GLMContext ctx, const char *func, GLenum error)
 {
-    fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
-
-    if (mgl_is_ignorable_texture_error(func, error))
-    {
-        fprintf(stderr, "MGL WARNING: Ignoring transient texture error from %s to improve compatibility\n", func);
+    if (!ctx) {
+        fprintf(stderr,
+                "MGL ERROR: dispatch with NULL ctx in %s (0x%x)\n",
+                func ? func : "(null)",
+                error);
         return;
     }
+
+    if (ctx->error_func) {
+        ctx->error_func(ctx, func, error);
+        return;
+    }
+
+    fprintf(stderr,
+            "MGL WARNING: ctx->error_func is NULL in %s (0x%x), falling back to default handler\n",
+            func ? func : "(null)",
+            error);
+    error_func(ctx, func, error);
+}
+
+void error_func(GLMContext ctx, const char *func, GLenum error)
+{
+    if (mgl_is_ignorable_texture_error(func, error))
+    {
+        static unsigned long long s_ignorable_texture_error_count = 0;
+        s_ignorable_texture_error_count++;
+        if (s_ignorable_texture_error_count <= 64ull ||
+            (s_ignorable_texture_error_count % 1024ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL WARNING: Ignoring transient texture error from %s to improve compatibility (0x%x, hit=%llu)\n",
+                    func,
+                    error,
+                    s_ignorable_texture_error_count);
+        }
+        return;
+    }
+
+    fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
 
     if (ctx->state.error)
         return;

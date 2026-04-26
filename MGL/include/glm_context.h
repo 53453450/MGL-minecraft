@@ -23,6 +23,7 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <stdint.h>
 
 #include <mach/vm_types.h>
 #include <glslang_c_interface.h>
@@ -61,10 +62,12 @@
 #define VAO_STATE(_val_)   ctx->state.vao->_val_
 #define VAO_ATTRIB_STATE(_index_) ctx->state.vao->attrib[_index_]
 
-#define ERROR_RETURN(_type_) ctx->error_func(ctx, __FUNCTION__, _type_)
-#define ERROR_RETURN_VALUE(_type_, _val_) ctx->error_func(ctx, __FUNCTION__, _type_); return _val_
-#define ERROR_CHECK_RETURN(_expr_, _type_) if ((_expr_) == false) {ctx->error_func(ctx, __FUNCTION__, _type_);}
-#define ERROR_CHECK_RETURN_VALUE(_expr_, _type_, _val_) if ((_expr_) == false) {ctx->error_func(ctx, __FUNCTION__, _type_); return _val_;}
+void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
+
+#define ERROR_RETURN(_type_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); } while(0)
+#define ERROR_RETURN_VALUE(_type_, _val_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } while(0)
+#define ERROR_CHECK_RETURN(_expr_, _type_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); } } while(0)
+#define ERROR_CHECK_RETURN_VALUE(_expr_, _type_, _val_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } } while(0)
 
 enum {
     _TEXTURE_BUFFER = 0, // duplicate of _TEXTURE_BUFFER_TARGET
@@ -188,6 +191,15 @@ typedef struct BufferData_t {
 #define BUFFER_IMMUTABLE_STORAGE_FLAG   0x1
 #define BUFFER_MAP_PERSISTENT_BIT       (BUFFER_IMMUTABLE_STORAGE_FLAG << 1)
 
+typedef enum MGLBufferInitSource_t {
+    kInitNone = 0,
+    kInitBufferDataNull,
+    kInitBufferDataCopy,
+    kInitBufferSubData,
+    kInitCopyBufferSubData,
+    kInitMapWrite
+} MGLBufferInitSource;
+
 typedef struct Buffer_t {
     GLuint name;
     GLenum target;
@@ -202,6 +214,15 @@ typedef struct Buffer_t {
     GLsizeiptr mapped_offset;
     GLsizeiptr mapped_length;
     BufferData data;
+    GLboolean has_initialized_data;
+    GLboolean ever_written;
+    GLintptr written_min;
+    GLintptr written_max; // exclusive byte offset, -1 when unknown/unwritten
+    MGLBufferInitSource last_init_source;
+    GLintptr last_write_offset;
+    GLsizeiptr last_write_size;
+    const void *last_write_src_ptr;
+    uint64_t last_write_src_hash;
 } Buffer;
 
 typedef struct BufferBaseTarget_t {
@@ -242,6 +263,14 @@ typedef struct TextureParameter_t {
     void *mtl_data;
 } TextureParameter;
 
+typedef enum MGLTexLevelInitSource_t {
+    kTexInitNone = 0,
+    kTexImageNull,
+    kTexImageCopy,
+    kTexSubImageCPU,
+    kTexSubImagePBO
+} MGLTexLevelInitSource;
+
 typedef struct TextureLevel_t {
     GLboolean complete;
     GLuint width;
@@ -251,6 +280,13 @@ typedef struct TextureLevel_t {
     GLuint mtl_format;
     size_t  data_size;
     vm_address_t data;
+    GLboolean has_initialized_data;
+    GLboolean ever_written;
+    GLboolean suspicious_zero_upload;
+    GLuint last_init_source;
+    size_t last_upload_size;
+    const void *last_src_ptr;
+    uint64_t last_src_hash;
 } TextureLevel;
 
 enum {
@@ -391,6 +427,10 @@ typedef struct SpirvResource_t {
     GLuint  set;
     GLuint  binding;
     GLuint  location;
+    size_t  required_size;
+    GLuint  image_dim;
+    GLuint  image_arrayed;
+    GLuint  image_multisampled;
 } SpirvResource;
 
 typedef struct SpirvResourceList_t {
@@ -409,6 +449,13 @@ typedef struct BufferMapList_t {
     GLuint      count;
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
+
+typedef struct ProxyTextureQueryState_t {
+    GLint width;
+    GLint height;
+    GLint depth;
+    GLint internalformat;
+} ProxyTextureQueryState;
 
 typedef struct Program_t {
     GLuint dirty_bits;
@@ -567,10 +614,8 @@ typedef struct {
     Buffer *buffers[MAX_BINDABLE_BUFFERS];
     // Compatibility slot for VAO 0 element-array binding.
     Buffer *default_vao_element_array_buffer;
-    // Proxy texture probe state (capability query, no allocation).
-    GLint proxy_texture_2d_width;
-    GLint proxy_texture_2d_height;
-    GLint proxy_texture_2d_internalformat;
+    // Proxy texture probe state per texture target/index (capability query, no allocation).
+    ProxyTextureQueryState proxy_texture_query[_MAX_TEXTURE_TYPES];
 
     VertexArray *vao;
     Texture     *tex;

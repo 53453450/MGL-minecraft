@@ -27,6 +27,10 @@
 
 #define RENDBUF_STATE(_val_)    ctx->state.renderbuffer->_val_
 
+#ifndef MGL_VERBOSE_FBO_LOGS
+#define MGL_VERBOSE_FBO_LOGS 0
+#endif
+
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -186,12 +190,16 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     if(framebuffer)
     {
         ptr = getFramebuffer(ctx, framebuffer);
-        fprintf(stderr, "MGL: glBindFramebuffer target=%x fbo=%u ptr=%p\n", target, framebuffer, ptr);
+        if (MGL_VERBOSE_FBO_LOGS) {
+            fprintf(stderr, "MGL: glBindFramebuffer target=%x fbo=%u ptr=%p\n", target, framebuffer, ptr);
+        }
     }
     else
     {
         ptr = NULL;
-        fprintf(stderr, "MGL: glBindFramebuffer target=%x fbo=0 (default framebuffer)\n", target);
+        if (MGL_VERBOSE_FBO_LOGS) {
+            fprintf(stderr, "MGL: glBindFramebuffer target=%x fbo=0 (default framebuffer)\n", target);
+        }
     }
 
     switch(target) {
@@ -453,7 +461,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo = currentFBOForType(ctx, target);
     
     // Log FBO texture attachments for large textures (framebuffer size)
-    if (texture != 0) {
+    if (MGL_VERBOSE_FBO_LOGS && texture != 0) {
         Texture *t = findTexture(ctx, texture);
         if (t && t->width >= 640 && t->height >= 400) {
             fprintf(stderr, "MGL DEBUG: FBO attach tex %u (%dx%d) to FBO %u attachment 0x%x\n",
@@ -898,8 +906,10 @@ void mglGetNamedFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuf
 
 void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
-    fprintf(stderr, "MGL: glBlitFramebuffer src(%d,%d)-(%d,%d) dst(%d,%d)-(%d,%d) mask=0x%x\n",
-            srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask);
+    if (MGL_VERBOSE_FBO_LOGS) {
+        fprintf(stderr, "MGL: glBlitFramebuffer src(%d,%d)-(%d,%d) dst(%d,%d)-(%d,%d) mask=0x%x\n",
+                srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask);
+    }
     ctx->mtl_funcs.mtlBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 

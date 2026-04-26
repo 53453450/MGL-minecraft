@@ -841,17 +841,40 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         return;
     }
 
-    if (target == GL_PROXY_TEXTURE_2D)
+    if (target == GL_PROXY_TEXTURE_2D ||
+        target == GL_PROXY_TEXTURE_1D ||
+        target == GL_PROXY_TEXTURE_3D ||
+        target == GL_PROXY_TEXTURE_RECTANGLE ||
+        target == GL_PROXY_TEXTURE_1D_ARRAY ||
+        target == GL_PROXY_TEXTURE_2D_ARRAY ||
+        target == GL_PROXY_TEXTURE_CUBE_MAP ||
+        target == GL_PROXY_TEXTURE_CUBE_MAP_ARRAY ||
+        target == GL_PROXY_TEXTURE_2D_MULTISAMPLE ||
+        target == GL_PROXY_TEXTURE_2D_MULTISAMPLE_ARRAY)
     {
-        GLint proxy_internal = (level == 0) ? STATE(proxy_texture_2d_internalformat) : 0;
+        GLuint proxy_index = textureIndexFromTarget(ctx, target);
+        ProxyTextureQueryState *proxy_state = NULL;
+        GLint proxy_internal = 0;
+
+        if (proxy_index >= _MAX_TEXTURE_TYPES) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+
+        proxy_state = &STATE(proxy_texture_query[proxy_index]);
+        proxy_internal = (level == 0) ? proxy_state->internalformat : 0;
         switch (pname)
         {
             case GL_TEXTURE_WIDTH:
-                *params = (level == 0) ? STATE(proxy_texture_2d_width) : 0;
+                *params = (level == 0) ? proxy_state->width : 0;
                 fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
                 return;
             case GL_TEXTURE_HEIGHT:
-                *params = (level == 0) ? STATE(proxy_texture_2d_height) : 0;
+                *params = (level == 0) ? proxy_state->height : 0;
+                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
+                return;
+            case GL_TEXTURE_DEPTH:
+                *params = (level == 0) ? proxy_state->depth : 0;
                 fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
                 return;
             case GL_TEXTURE_INTERNAL_FORMAT:

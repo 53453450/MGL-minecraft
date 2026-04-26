@@ -48,6 +48,8 @@ GLsizei mglSafeMaxTextureSize(GLMContext ctx)
         fprintf(stderr,
                 "MGL WARNING: GL_MAX_TEXTURE_SIZE state value suspicious (%u), using safe fallback %d\n",
                 (unsigned)maxTex, (int)kFallback);
+        // Self-heal corrupted/uninitialized state so repeated queries stay stable.
+        ctx->state.var.max_texture_size = kFallback;
         return kFallback;
     }
 

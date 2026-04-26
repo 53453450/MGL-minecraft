@@ -30,15 +30,36 @@
 #include "pixel_utils.h"
 #include "glm_context.h"
 
+static inline bool mglShouldTraceClearCall(uint64_t callCount)
+{
+    return (callCount <= 60ull) || ((callCount % 200ull) == 0ull);
+}
+
 void mglClear(GLMContext ctx, GLbitfield mask)
 {
+    static uint64_t s_mglClearCallCount = 0;
+    uint64_t callCount = ++s_mglClearCallCount;
+
     if (mask & ~(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT))
     {
         fprintf(stderr, "MGL Error: mglClear: invalid mask 0x%x\n", mask);
         ERROR_RETURN(GL_INVALID_VALUE);
     }
 
+    GLbitfield previousMask = ctx->state.clear_bitmask;
     ctx->state.clear_bitmask = mask;
+    if (mglShouldTraceClearCall(callCount)) {
+        fprintf(stderr,
+                "MGL TRACE clear.set call=%llu mask=0x%x prevMask=0x%x drawBuf=0x%x readBuf=0x%x fbo=%p(%u) dirty=0x%x\n",
+                (unsigned long long)callCount,
+                (unsigned)mask,
+                (unsigned)previousMask,
+                (unsigned)ctx->state.draw_buffer,
+                (unsigned)ctx->state.read_buffer,
+                (void *)ctx->state.framebuffer,
+                (unsigned)(ctx->state.framebuffer ? ctx->state.framebuffer->name : 0),
+                (unsigned)ctx->state.dirty_bits);
+    }
 }
 
 void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
@@ -67,6 +88,8 @@ void mglClearDepth(GLMContext ctx, GLdouble depth)
 
 void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
+    static uint64_t s_mglClearBufferfvCallCount = 0;
+    uint64_t callCount = ++s_mglClearBufferfvCallCount;
     Framebuffer * fbo = ctx->state.framebuffer;
     FBOAttachment * fboa;
 
@@ -94,10 +117,26 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
             ERROR_RETURN(GL_INVALID_ENUM);
             break;
     }
+
+    if (mglShouldTraceClearCall(callCount)) {
+        fprintf(stderr,
+                "MGL TRACE clearBufferfv call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) value=(%.3f,%.3f,%.3f,%.3f)\n",
+                (unsigned long long)callCount,
+                (unsigned)buffer,
+                (int)drawbuffer,
+                (void *)fbo,
+                (unsigned)(fbo ? fbo->name : 0),
+                value ? value[0] : 0.0f,
+                value ? value[1] : 0.0f,
+                value ? value[2] : 0.0f,
+                value ? value[3] : 0.0f);
+    }
 }
 
 void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
 {
+    static uint64_t s_mglClearBufferfiCallCount = 0;
+    uint64_t callCount = ++s_mglClearBufferfiCallCount;
     Framebuffer * fbo = ctx->state.framebuffer;
     FBOAttachment * fboa;
 
@@ -115,6 +154,18 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
             fprintf(stderr, "MGL Error: mglClearBufferfi: invalid buffer 0x%x\n", buffer);
             ERROR_RETURN(GL_INVALID_ENUM);
             break;
+    }
+
+    if (mglShouldTraceClearCall(callCount)) {
+        fprintf(stderr,
+                "MGL TRACE clearBufferfi call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) depth=%.3f stencil=%d\n",
+                (unsigned long long)callCount,
+                (unsigned)buffer,
+                (int)drawbuffer,
+                (void *)fbo,
+                (unsigned)(fbo ? fbo->name : 0),
+                depth,
+                stencil);
     }
 }
 
@@ -154,6 +205,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     switch(buf)
     {
         case GL_FRONT:
+        case GL_BACK:
             break;
 
         case GL_FRONT_LEFT:

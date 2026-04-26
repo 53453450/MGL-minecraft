@@ -32,40 +32,45 @@
 
 GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 {
-    if (isProgram(ctx, program) == GL_FALSE)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION); // also may be GL_INVALID_VALUE ????
-
+    if (!ctx) {
         return -1;
     }
 
-    Program *ptr;
+    if (!name) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
 
-    ptr = getProgram(ctx, program);
-    assert(program);
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
 
-    if (ptr->linked_glsl_program == NULL)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+    Program *ptr = getProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
+    }
 
-        return -1;
+    if (ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, -1);
     }
 
     for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
     {
-        int count;
-
-        count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].count;
+        int count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].count;
+        SpirvResource *list = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].list;
+        if (count <= 0 || !list) {
+            continue;
+        }
 
         for (int i=0; i<count; i++)
         {
-            const char *str = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].list[i].name;
+            const char *str = list[i].name;
+            if (!str) {
+                continue;
+            }
 
             if (!strcmp(str, name))
             {
-                GLuint binding;
-
-                binding = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].list[i].binding;
+                GLuint binding = list[i].binding;
 
                 return binding;
             }
@@ -77,79 +82,154 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 
 void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params)
 {
-    // Unimplemented function
-    assert(0);
+    (void)location;
+    if (!ctx) {
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (params) {
+        *params = 0.0f;
+    }
 }
 
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    (void)location;
+    if (!ctx) {
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (params) {
+        *params = 0;
+    }
 }
 
 
 void mglGetUniformIndices(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLchar *const*uniformNames, GLuint *uniformIndices)
 {
-    // Unimplemented function
-    assert(0);
+    if (!ctx) {
+        return;
+    }
+    if (uniformCount < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (uniformCount > 0 && (!uniformNames || !uniformIndices)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < uniformCount; i++) {
+        uniformIndices[i] = (GLuint)-1;
+    }
 }
 
 void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLuint *uniformIndices, GLenum pname, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    (void)uniformIndices;
+    (void)pname;
+    if (!ctx) {
+        return;
+    }
+    if (uniformCount < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (uniformCount > 0 && !params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < uniformCount; i++) {
+        params[i] = 0;
+    }
 }
 
 void mglGetActiveUniformName(GLMContext ctx, GLuint program, GLuint uniformIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformName)
 {
-    // Unimplemented function
-    assert(0);
+    (void)uniformIndex;
+    if (!ctx) {
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (length) {
+        *length = 0;
+    }
+    if (uniformName && bufSize > 0) {
+        uniformName[0] = '\0';
+    }
 }
 
 GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *uniformBlockName)
 {
-    if (isProgram(ctx, program) == GL_FALSE)
-    {
-        assert(0);
-
-        return 0;
+    if (!ctx) {
+        return (GLuint)-1;
     }
 
-    Program *ptr;
+    if (!uniformBlockName) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
 
-    ptr = getProgram(ctx, program);
-    assert(program);
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
 
-    if (ptr->linked_glsl_program == NULL)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+    Program *ptr = getProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
+    }
 
-        return -1;
+    if (ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, (GLuint)-1);
     }
 
     for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
     {
-        int count;
-
-        count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].count;
+        int count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].count;
+        SpirvResource *list = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].list;
+        if (count <= 0 || !list) {
+            continue;
+        }
 
         for (int i=0; i<count; i++)
         {
-            const char *str = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].list[i].name;
+            const char *str = list[i].name;
+            if (!str) {
+                continue;
+            }
 
             if (!strcmp(str, uniformBlockName))
             {
-                GLuint binding;
-
-                binding = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].list[i].binding;
+                GLuint binding = list[i].binding;
 
                 return binding;
             }
         }
     }
 
-    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, defaulting to 0\n", uniformBlockName ? uniformBlockName : "(null)");
-    return 0;
+    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, returning GL_INVALID_INDEX\n", uniformBlockName ? uniformBlockName : "(null)");
+    return (GLuint)-1;
 }
 
 void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLenum pname, GLint *params)
@@ -178,11 +258,11 @@ bool checkUniformParams(GLMContext ctx, GLint location)
 {
     Program* ptr = ctx->state.program;
     
-    ERROR_CHECK_RETURN_VALUE(ptr, GL_INVALID_OPERATION, false)
+    ERROR_CHECK_RETURN_VALUE(ptr, GL_INVALID_OPERATION, false);
 
-    ERROR_CHECK_RETURN_VALUE(location >= 0, GL_INVALID_OPERATION, false)
+    ERROR_CHECK_RETURN_VALUE(location >= 0, GL_INVALID_OPERATION, false);
         
-    ERROR_CHECK_RETURN_VALUE(location < MAX_BINDABLE_BUFFERS, GL_INVALID_OPERATION, false)
+    ERROR_CHECK_RETURN_VALUE(location < MAX_BINDABLE_BUFFERS, GL_INVALID_OPERATION, false);
 
     return true;
 }

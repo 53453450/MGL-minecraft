@@ -131,7 +131,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetBooleanv(GL_COLOR_WRITEMASK,glm_ctx->state.var.color_writemask[0]);
 
     glGetIntegerv(GL_MAX_TEXTURE_SIZE,&glm_ctx->state.var.max_texture_size);
-    if (glm_ctx->state.var.max_texture_size > 16384)
+    if (glm_ctx->state.var.max_texture_size == 0x01010101 ||
+        glm_ctx->state.var.max_texture_size <= 1024 ||
+        glm_ctx->state.var.max_texture_size > 32768)
+    {
+        glm_ctx->state.var.max_texture_size = 16384;
+    }
+    else if (glm_ctx->state.var.max_texture_size > 16384)
     {
         glm_ctx->state.var.max_texture_size = 16384;
     }

@@ -115,6 +115,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     assert(STATE(max_color_attachments) <= MAX_COLOR_ATTACHMENTS);
     assert(STATE(max_vertex_attribs) <= MAX_ATTRIBS);
 
+    // For this Metal backend, default framebuffer rendering targets the current drawable.
+    // Keep legacy default as FRONT to avoid routing GL_BACK to an internal offscreen buffer.
     STATE(draw_buffer) = GL_FRONT;
     STATE(read_buffer) = GL_FRONT;
     STATE(active_texture) = 0;
@@ -268,6 +270,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     initHashTable(&STATE(texture_table), 32);
     initHashTable(&STATE(shader_table), 32);
     initHashTable(&STATE(program_table), 32);
+    initHashTable(&STATE(program_pipeline_table), 32);
+    initHashTable(&STATE(transform_feedback_table), 32);
     initHashTable(&STATE(renderbuffer_table), 32);
     initHashTable(&STATE(framebuffer_table), 32);
     initHashTable(&STATE(sampler_table), 32);
@@ -343,56 +347,28 @@ void destroyGLMContext(GLMContext ctx)
 
     fprintf(stderr, "MGL INFO: Destroying GLMContext\n");
 
-    // CRITICAL FIX: Implement basic cleanup of context resources to prevent major memory leaks
-    // Clean up critical hash tables to prevent memory corruption
+    // CRITICAL FIX: Use hash-table owned cleanup to avoid freeing non-owned/corrupted pointers.
+    #define MGL_FREE_HASH_TABLE(_tbl_) destroyHashTable(&(_tbl_))
 
     // 1. Basic cleanup of programs and shaders (major memory leaks)
-    if (ctx->state.program_table.keys) {
-        free(ctx->state.program_table.keys);
-        ctx->state.program_table.keys = NULL;
-    }
-
-    if (ctx->state.shader_table.keys) {
-        free(ctx->state.shader_table.keys);
-        ctx->state.shader_table.keys = NULL;
-    }
+    MGL_FREE_HASH_TABLE(ctx->state.program_table);
+    MGL_FREE_HASH_TABLE(ctx->state.shader_table);
 
     // 2. Basic cleanup of textures (major memory leaks)
-    if (ctx->state.texture_table.keys) {
-        free(ctx->state.texture_table.keys);
-        ctx->state.texture_table.keys = NULL;
-    }
+    MGL_FREE_HASH_TABLE(ctx->state.texture_table);
 
     // 3. Basic cleanup of buffers (major memory leaks)
-    if (ctx->state.buffer_table.keys) {
-        free(ctx->state.buffer_table.keys);
-        ctx->state.buffer_table.keys = NULL;
-    }
+    MGL_FREE_HASH_TABLE(ctx->state.buffer_table);
 
     // CRITICAL FIX: Basic cleanup for remaining hash tables to prevent major memory leaks
-    // These tables are also critical and would cause memory corruption if not cleaned
+    MGL_FREE_HASH_TABLE(ctx->state.renderbuffer_table);
+    MGL_FREE_HASH_TABLE(ctx->state.framebuffer_table);
+    MGL_FREE_HASH_TABLE(ctx->state.vao_table);
+    MGL_FREE_HASH_TABLE(ctx->state.sampler_table);
+    MGL_FREE_HASH_TABLE(ctx->state.program_pipeline_table);
+    MGL_FREE_HASH_TABLE(ctx->state.transform_feedback_table);
 
-    if (ctx->state.renderbuffer_table.keys) {
-        free(ctx->state.renderbuffer_table.keys);
-        ctx->state.renderbuffer_table.keys = NULL;
-    }
-
-    if (ctx->state.framebuffer_table.keys) {
-        free(ctx->state.framebuffer_table.keys);
-        ctx->state.framebuffer_table.keys = NULL;
-    }
-
-    // 5. Clean up vertex arrays (VAO table)
-    if (ctx->state.vao_table.keys) {
-        free(ctx->state.vao_table.keys);
-        ctx->state.vao_table.keys = NULL;
-    }
-
-    // 6. Clean up samplers
-    if (ctx->state.sampler_table.keys) {
-        free(ctx->state.sampler_table.keys);
-        ctx->state.sampler_table.keys = NULL;
-    }
+    #undef MGL_FREE_HASH_TABLE
 
     // 12. The MGLRenderer dealloc will handle Metal resource cleanup
     ctx->mtl_funcs.mtlObj = NULL;

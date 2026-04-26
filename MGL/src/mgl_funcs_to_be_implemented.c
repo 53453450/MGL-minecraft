@@ -7,9 +7,23 @@
 //
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "mgl.h"
+
+static void mgl_unimplemented(GLMContext ctx, const char *func)
+{
+    static uint32_t warn_count = 0u;
+    if (warn_count < 128u) {
+        fprintf(stderr, "MGL WARNING: %s is unimplemented, returning GL_INVALID_OPERATION\n",
+                func ? func : "(unknown)");
+        warn_count++;
+    }
+    if (ctx) {
+        STATE(error) = GL_INVALID_OPERATION;
+    }
+}
 
 // Forward declarations for transform feedback functions from program.c
 TransformFeedback *newTransformFeedback(GLMContext ctx, GLuint name);
@@ -685,7 +699,7 @@ void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 
 void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Atomic counter buffers - return 0
 	(void)program; (void)bufferIndex; (void)pname;
 	if (params) *params = 0;
@@ -693,7 +707,7 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Subroutines - return empty string
 	(void)program; (void)shadertype; (void)index; (void)bufSize;
 	if (length) *length = 0;
@@ -702,7 +716,7 @@ void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertyp
 
 void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Subroutine uniforms - return empty string
 	(void)program; (void)shadertype; (void)index; (void)bufSize;
 	if (length) *length = 0;
@@ -711,7 +725,7 @@ void mglGetActiveSubroutineUniformName(GLMContext ctx, GLuint program, GLenum sh
 
 void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLenum pname, GLint *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Subroutine uniform parameters - return 0
 	(void)program; (void)shadertype; (void)index; (void)pname;
 	if (values) *values = 0;
@@ -737,7 +751,7 @@ void mglGetBufferParameteri64v(GLMContext ctx, GLenum target, GLenum pname, GLin
 
 GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLenum *sources, GLenum *types, GLuint *ids, GLenum *severities, GLsizei *lengths, GLchar *messageLog)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// No debug messages stored
 	(void)count;
 	(void)bufSize;
@@ -900,7 +914,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 
 void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Pipeline info log - return empty
 	(void)pipeline;
 	if (length) *length = 0;
@@ -909,7 +923,7 @@ void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSi
 
 void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Get program pipeline parameters - return 0
 	(void)pipeline; (void)pname;
 	if (params) *params = 0;
@@ -1101,7 +1115,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1235,50 +1249,50 @@ void mglGetShaderPrecisionFormat(GLMContext ctx, GLenum shadertype, GLenum preci
 
 GLuint mglGetSubroutineIndex(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 	return 0;
 }
 
 GLint mglGetSubroutineUniformLocation(GLMContext ctx, GLuint program, GLenum shadertype, const GLchar *name)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 	return 0;
 }
 void mglGetTransformFeedbackVarying(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLsizei *size, GLenum *type, GLchar *name)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint64 *param)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetTransformFeedbacki_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint *param)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *param)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetUniformdv(GLMContext ctx, GLuint program, GLint location, GLdouble *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1293,85 +1307,85 @@ void mglGetUniformuiv(GLMContext ctx, GLuint program, GLint location, GLuint *pa
 
 void mglGetVertexAttribIiv(GLMContext ctx, GLuint index, GLenum pname, GLint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetVertexAttribIuiv(GLMContext ctx, GLuint index, GLenum pname, GLuint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetVertexAttribLdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnMapdv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLdouble *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnMapfv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLfloat *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnMapiv(GLMContext ctx, GLenum target, GLenum query, GLsizei bufSize, GLint *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnPixelMapfv(GLMContext ctx, GLenum map, GLsizei bufSize, GLfloat *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnPixelMapuiv(GLMContext ctx, GLenum map, GLsizei bufSize, GLuint *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnPixelMapusv(GLMContext ctx, GLenum map, GLsizei bufSize, GLushort *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnUniformdv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLdouble *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnUniformfv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLfloat *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnUniformiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglGetnUniformuiv(GLMContext ctx, GLuint program, GLint location, GLsizei bufSize, GLuint *params)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1396,25 +1410,25 @@ void mglMinSampleShading(GLMContext ctx, GLfloat value)
 
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglNormalP3ui(GLMContext ctx, GLenum type, GLuint coords)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglNormalP3uiv(GLMContext ctx, GLenum type, const GLuint *coords)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1439,13 +1453,13 @@ void mglObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei length, const GL
 
 void mglPatchParameterfv(GLMContext ctx, GLenum pname, const GLfloat *values)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1462,7 +1476,7 @@ void mglPauseTransformFeedback(GLMContext ctx)
 
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -1474,7 +1488,7 @@ void mglPopDebugGroup(GLMContext ctx)
 
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	// Set primitive restart index - no-op
 	(void)index;
 }
@@ -1679,73 +1693,73 @@ void mglResumeTransformFeedback(GLMContext ctx)
 
 void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglScissorIndexedv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglSecondaryColorP3ui(GLMContext ctx, GLenum type, GLuint color)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglSecondaryColorP3uiv(GLMContext ctx, GLenum type, const GLuint *color)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglShaderBinary(GLMContext ctx, GLsizei count, const GLuint *shaders, GLenum binaryFormat, const void *binary, GLsizei length)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storageBlockIndex, GLuint storageBlockBinding)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTexBufferRange(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
     // For multisample textures, we need to create storage but Apple Silicon 
     // handles MSAA differently than traditional GL. For now, we create a 
     // regular texture and let the rendering pipeline handle any MSAA.
@@ -1756,7 +1770,7 @@ void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
     // Validate target
     if (target != GL_TEXTURE_2D_MULTISAMPLE && target != GL_PROXY_TEXTURE_2D_MULTISAMPLE) {
         fprintf(stderr, "MGL WARNING: mglTexStorage2DMultisample invalid target 0x%x\n", target);
-        ctx->error_func(ctx, __FUNCTION__, GL_INVALID_ENUM);
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         return;
     }
     
@@ -1771,31 +1785,31 @@ void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
 
 void mglTexStorage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglUniformSubroutinesuiv(GLMContext ctx, GLenum shadertype, GLsizei count, const GLuint *indices)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -2213,19 +2227,19 @@ void mglVertexP4uiv(GLMContext ctx, GLenum type, const GLuint *value)
 
 void mglViewportArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLfloat *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
 void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	assert(0 && "Unimplemented in reference libMGL.dylib");
+	mgl_unimplemented(ctx, __FUNCTION__);
 	(void)ctx;
 }
 
@@ -2233,7 +2247,7 @@ void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 void  mglBlendBarrier(GLMContext ctx)
 {
     // Unimplemented function
-    assert(0);
+    mgl_unimplemented(ctx, __FUNCTION__);
 
 }
 
