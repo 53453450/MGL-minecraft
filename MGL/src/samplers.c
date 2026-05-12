@@ -19,6 +19,7 @@
  */
 
 #include <strings.h>
+#include <stdio.h>
 #include "glm_context.h"
 
 bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *param);
@@ -72,6 +73,9 @@ Sampler *getSampler(GLMContext ctx, GLuint sampler)
 {
     Sampler *ptr;
 
+    if (!ctx || sampler == 0)
+        return NULL;
+
     ptr = (Sampler *)searchHashTable(&STATE(sampler_table), sampler);
 
     if (!ptr)
@@ -88,6 +92,9 @@ bool isSampler(GLMContext ctx, GLuint sampler)
 {
     Sampler *ptr;
 
+    if (!ctx || sampler == 0)
+        return false;
+
     ptr = (Sampler *)searchHashTable(&STATE(sampler_table), sampler);
 
     if (ptr)
@@ -99,6 +106,9 @@ bool isSampler(GLMContext ctx, GLuint sampler)
 Sampler *findSampler(GLMContext ctx, GLuint sampler)
 {
     Sampler *ptr;
+
+    if (!ctx || sampler == 0)
+        return NULL;
 
     ptr = (Sampler *)searchHashTable(&STATE(sampler_table), sampler);
 
@@ -112,6 +122,13 @@ GLboolean mglIsSampler(GLMContext ctx, GLuint sampler)
 
 void mglGenSamplers(GLMContext ctx, GLsizei count, GLuint *samplers)
 {
+    if (!ctx || count < 0 || !samplers)
+    {
+        if (ctx && count < 0)
+            ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     while(count--)
     {
         *samplers++ = getNewName(&ctx->state.sampler_table);
@@ -122,23 +139,28 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
 {
     Sampler *ptr;
 
-    unit = unit - GL_TEXTURE0;
+    if (!ctx)
+        return;
 
-    if (unit > STATE_VAR(max_combined_texture_image_units))
+    // glBindSampler takes a zero-based texture unit index, not GL_TEXTURE0 + unit.
+    if (unit >= STATE_VAR(max_combined_texture_image_units) || unit >= TEXTURE_UNITS)
     {
         ERROR_RETURN(GL_INVALID_INDEX);
+        return;
     }
 
     if (sampler)
     {
-        ERROR_CHECK_RETURN(isSampler(ctx, sampler), GL_INVALID_OPERATION);
-
         ptr = findSampler(ctx, sampler);
 
         if(ptr == NULL)
         {
-            ptr = getSampler(ctx, sampler);
-            assert(ptr);
+            fprintf(stderr,
+                    "MGL ERROR: mglBindSampler invalid sampler name unit=%u sampler=%u\n",
+                    unit,
+                    sampler);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
     }
     else
@@ -152,11 +174,21 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
 
 void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
 {
+    if (!ctx || count < 0 || !samplers)
+    {
+        if (ctx && count < 0)
+            ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     while(count--)
     {
         GLuint sampler;
 
         sampler = *samplers++;
+
+        if (sampler == 0)
+            continue;
 
         if (isSampler(ctx, sampler))
         {
@@ -188,6 +220,13 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
 
 void mglCreateSamplers(GLMContext ctx, GLsizei n, GLuint *samplers)
 {
+    if (!ctx || n < 0 || !samplers)
+    {
+        if (ctx && n < 0)
+            ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     mglGenSamplers(ctx, n, samplers);
 
     while(n--)
@@ -196,15 +235,27 @@ void mglCreateSamplers(GLMContext ctx, GLsizei n, GLuint *samplers)
 
         name = *samplers++;
 
-        assert(getSampler(ctx, name));
+        if (!getSampler(ctx, name))
+        {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
     }
 }
 
 void mglBindSamplers(GLMContext ctx, GLuint first, GLsizei count, const GLuint *samplers)
 {
+    if (!ctx || count < 0)
+    {
+        if (ctx && count < 0)
+            ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     while(count--)
     {
-        mglBindSampler(ctx, first, *samplers++);
+        GLuint sampler = samplers ? *samplers++ : 0;
+        mglBindSampler(ctx, first, sampler);
         first++;
     }
 }

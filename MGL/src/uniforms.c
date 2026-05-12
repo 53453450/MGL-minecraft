@@ -20,6 +20,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <limits.h>
 #include "spirv_cross_c.h"
 
 #include "shaders.h"
@@ -29,6 +30,77 @@
 
 
 #pragma mark uniforms
+
+static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, GLint location)
+{
+    if (!res || location < 0) {
+        return GL_FALSE;
+    }
+
+    if (res->location != 0xffffffffu && (GLint)res->location == location) {
+        return GL_TRUE;
+    }
+
+    return (GLint)res->binding == location ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, GLuint *binding_out)
+{
+    static const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+    };
+
+    if (!program || location < 0 || !binding_out) {
+        return GL_FALSE;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglUniformLocationMatchesResource(res, location)) {
+                    continue;
+                }
+
+                if (res->binding < TEXTURE_UNITS) {
+                    *binding_out = res->binding;
+                    return GL_TRUE;
+                }
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint unit)
+{
+    if (!ctx || location < 0) {
+        return GL_FALSE;
+    }
+
+    Program *program = ctx->state.program;
+    if (!program) {
+        return GL_FALSE;
+    }
+
+    GLuint binding = 0;
+    if (!mglFindSamplerUniformBinding(program, location, &binding)) {
+        return GL_FALSE;
+    }
+
+    if (unit < 0 || unit >= TEXTURE_UNITS) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+    }
+
+    program->sampler_units[binding] = unit;
+    return GL_TRUE;
+}
 
 GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 {
@@ -53,28 +125,60 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, -1);
     }
 
-    for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
-    {
-        int count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].count;
-        SpirvResource *list = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT].list;
-        if (count <= 0 || !list) {
-            continue;
-        }
+    const int resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
 
-        for (int i=0; i<count; i++)
+    for (size_t rt = 0; rt < sizeof(resource_types) / sizeof(resource_types[0]); rt++)
+    {
+        int res_type = resource_types[rt];
+        for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
         {
-            const char *str = list[i].name;
-            if (!str) {
+            int count = ptr->spirv_resources_list[stage][res_type].count;
+            SpirvResource *list = ptr->spirv_resources_list[stage][res_type].list;
+            if (count <= 0 || !list) {
                 continue;
             }
 
-            if (!strcmp(str, name))
+            for (int i=0; i<count; i++)
             {
-                GLuint binding = list[i].binding;
+                const char *str = list[i].name;
+                if (!str) {
+                    continue;
+                }
 
-                return binding;
+                if (!strcmp(str, name))
+                {
+                    GLuint binding = list[i].binding;
+                    GLint location = (list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding;
+
+                    if (strstr(name, "CloudFaces")) {
+                        fprintf(stderr,
+                                "MGL REFLECT UniformLocation program=%u name=%s -> loc=%d binding=%u type=%d stage=%d dim=%u\n",
+                                program,
+                                name,
+                                location,
+                                binding,
+                                res_type,
+                                stage,
+                                list[i].image_dim);
+                    }
+
+                    return location;
+                }
             }
         }
+    }
+
+    if (strstr(name, "CloudFaces")) {
+        fprintf(stderr,
+                "MGL REFLECT UniformLocation MISS program=%u name=%s\n",
+                program,
+                name);
     }
     
     return -1;
@@ -97,7 +201,6 @@ void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *pa
 
 void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params)
 {
-    (void)location;
     if (!ctx) {
         return;
     }
@@ -106,7 +209,13 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
         return;
     }
     if (params) {
-        *params = 0;
+        Program *ptr = getProgram(ctx, program);
+        GLuint binding = 0;
+        if (ptr && mglFindSamplerUniformBinding(ptr, location, &binding)) {
+            *params = ptr->sampler_units[binding];
+        } else {
+            *params = 0;
+        }
     }
 }
 
@@ -304,21 +413,38 @@ void mglUniform1fv(GLMContext ctx, GLint location, GLsizei count, const GLfloat 
 
 void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
 {
+    if (mglSetSamplerUniformUnit(ctx, location, v0)) {
+        return;
+    }
+
     mglUniform(ctx, location, &v0, sizeof(GLint));
 }
 
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
+    if (count > 0 && value && mglSetSamplerUniformUnit(ctx, location, value[0])) {
+        return;
+    }
+
     mglUniform(ctx, location, (void *)value, count * sizeof(GLint));
 }
 
 void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 {
+    if (v0 <= (GLuint)INT_MAX && mglSetSamplerUniformUnit(ctx, location, (GLint)v0)) {
+        return;
+    }
+
     mglUniform(ctx, location, &v0, sizeof(GLuint));
 }
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
+    if (count > 0 && value && value[0] <= (GLuint)INT_MAX &&
+        mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
+        return;
+    }
+
     mglUniform(ctx, location, (void *)value, count * sizeof(GLuint));
 }
 

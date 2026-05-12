@@ -5,6 +5,7 @@ SHELL := /bin/bash
 # Find SDK path via xcode-select, backwards compatible with Xcode vers < 4.5
 # on M1 monterey, comment out the following line
 SDK_ROOT = $(shell xcrun --sdk macosx --show-sdk-path)
+APPLE_CLANG = $(shell xcrun --find clang)
 
 # lets only install from external, devs complained about brew and we want the latest build from spirv
 spirv_cross_include_path ?= ./external/SPIRV-Cross
@@ -298,7 +299,7 @@ $(build_core_dir)/%.o: %.cpp
 #-std=c++14
 $(build_core_dir)/arc/%.o: %.m
 	@mkdir -p $(dir $@)
-	clang -fobjc-arc -fmodules -MMD $(CFLAGS_GL_CORE) \
+	$(APPLE_CLANG) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_CORE) \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
@@ -306,7 +307,7 @@ $(build_core_dir)/arc/%.o: %.m
 
 $(build_core_dir)/%.o: %.m
 	@mkdir -p $(dir $@)
-	clang -fmodules -MMD $(CFLAGS_GL_CORE) -c $< -o $@
+	$(APPLE_CLANG) -fmodules -MMD $(CFLAGS_GL_CORE) -c $< -o $@
 
 
 #
@@ -324,7 +325,7 @@ $(build_es_dir)/%.o: %.cpp
 #-std=c++14
 $(build_es_dir)/arc/%.o: %.m
 	@mkdir -p $(dir $@)
-	clang -fobjc-arc -fmodules -MMD $(CFLAGS_GL_ES) \
+	$(APPLE_CLANG) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_ES) \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
@@ -332,7 +333,7 @@ $(build_es_dir)/arc/%.o: %.m
 
 $(build_dir)/%.o: %.m
 	@mkdir -p $(dir $@)
-	clang -fmodules -MMD $(CXXFLAGS_GL_ES) -c $< -o $@
+	$(APPLE_CLANG) -fmodules -MMD $(CXXFLAGS_GL_ES) -c $< -o $@
 
 
 

@@ -15,6 +15,7 @@
 
 extern GLMContext _ctx;
 extern void mgl_lazy_init(void);
+extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 
 #define GET_CONTEXT()   (mgl_lazy_init(), _ctx)
 
@@ -4490,6 +4491,13 @@ void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer)
 {
     GLMContext ctx = GET_CONTEXT();
 
+    fprintf(stderr,
+            "MGL TRACE glTexBuffer.entry target=0x%x internal=0x%x buffer=%u ctx=%p\n",
+            target,
+            internalformat,
+            buffer,
+            (void *)ctx);
+
     ctx->dispatch.tex_buffer(ctx, target, internalformat, buffer);
 }
 
@@ -6282,6 +6290,15 @@ void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLint
 {
     GLMContext ctx = GET_CONTEXT();
 
+    fprintf(stderr,
+            "MGL TRACE glTexBufferRange.entry target=0x%x internal=0x%x buffer=%u offset=%lld size=%lld ctx=%p\n",
+            target,
+            internalformat,
+            buffer,
+            (long long)offset,
+            (long long)size,
+            (void *)ctx);
+
     ctx->dispatch.tex_buffer_range(ctx, target, internalformat, buffer, offset, size);
 }
 
@@ -6800,6 +6817,13 @@ void glTextureBuffer(GLuint texture, GLenum internalformat, GLuint buffer)
 {
     GLMContext ctx = GET_CONTEXT();
 
+    fprintf(stderr,
+            "MGL TRACE glTextureBuffer.entry texture=%u internal=0x%x buffer=%u ctx=%p\n",
+            texture,
+            internalformat,
+            buffer,
+            (void *)ctx);
+
     ctx->dispatch.texture_buffer(ctx, texture, internalformat, buffer);
 }
 
@@ -6807,7 +6831,124 @@ void glTextureBufferRange(GLuint texture, GLenum internalformat, GLuint buffer, 
 {
     GLMContext ctx = GET_CONTEXT();
 
+    fprintf(stderr,
+            "MGL TRACE glTextureBufferRange.entry texture=%u internal=0x%x buffer=%u offset=%lld size=%lld ctx=%p\n",
+            texture,
+            internalformat,
+            buffer,
+            (long long)offset,
+            (long long)size,
+            (void *)ctx);
+
     ctx->dispatch.texture_buffer_range(ctx, texture, internalformat, buffer, offset, size);
+}
+
+void glTexBufferARB(GLenum target, GLenum internalformat, GLuint buffer)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    fprintf(stderr,
+            "MGL TRACE glTexBufferARB.entry target=0x%x internal=0x%x buffer=%u ctx=%p\n",
+            target,
+            internalformat,
+            buffer,
+            (void *)ctx);
+
+    ctx->dispatch.tex_buffer(ctx, target, internalformat, buffer);
+}
+
+void glTextureBufferEXT(GLuint texture, GLenum target, GLenum internalformat, GLuint buffer)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    fprintf(stderr,
+            "MGL TRACE glTextureBufferEXT.entry texture=%u target=0x%x internal=0x%x buffer=%u ctx=%p\n",
+            texture,
+            target,
+            internalformat,
+            buffer,
+            (void *)ctx);
+
+    if (target != GL_TEXTURE_BUFFER) {
+        if (ctx) {
+            ctx->state.error = GL_INVALID_ENUM;
+        }
+        return;
+    }
+
+    ctx->dispatch.texture_buffer(ctx, texture, internalformat, buffer);
+}
+
+void glTextureBufferRangeEXT(GLuint texture, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    fprintf(stderr,
+            "MGL TRACE glTextureBufferRangeEXT.entry texture=%u target=0x%x internal=0x%x buffer=%u offset=%lld size=%lld ctx=%p\n",
+            texture,
+            target,
+            internalformat,
+            buffer,
+            (long long)offset,
+            (long long)size,
+            (void *)ctx);
+
+    if (target != GL_TEXTURE_BUFFER) {
+        if (ctx) {
+            ctx->state.error = GL_INVALID_ENUM;
+        }
+        return;
+    }
+
+    ctx->dispatch.texture_buffer_range(ctx, texture, internalformat, buffer, offset, size);
+}
+
+void glMultiTexBufferEXT(GLenum texunit, GLenum target, GLenum internalformat, GLuint buffer)
+{
+    GLMContext ctx = GET_CONTEXT();
+    GLuint unit = texunit;
+    GLuint index = _MAX_TEXTURE_TYPES;
+    Texture *tex = NULL;
+
+    if (texunit >= GL_TEXTURE0) {
+        unit = texunit - GL_TEXTURE0;
+    }
+
+    fprintf(stderr,
+            "MGL TRACE glMultiTexBufferEXT.entry texunit=0x%x unit=%u target=0x%x internal=0x%x buffer=%u ctx=%p\n",
+            texunit,
+            unit,
+            target,
+            internalformat,
+            buffer,
+            (void *)ctx);
+
+    if (!ctx || target != GL_TEXTURE_BUFFER || unit >= TEXTURE_UNITS) {
+        if (ctx) {
+            ctx->state.error = (target == GL_TEXTURE_BUFFER) ? GL_INVALID_VALUE : GL_INVALID_ENUM;
+        }
+        return;
+    }
+
+    index = textureIndexFromTarget(ctx, target);
+    if (index >= _MAX_TEXTURE_TYPES) {
+        ctx->state.error = GL_INVALID_ENUM;
+        return;
+    }
+
+    tex = ctx->state.texture_units[unit].textures[index];
+    fprintf(stderr,
+            "MGL TRACE glMultiTexBufferEXT.resolve unit=%u boundTex=%u tex=%p\n",
+            unit,
+            tex ? tex->name : 0u,
+            (void *)tex);
+
+    if (!tex) {
+        ctx->state.error = GL_INVALID_OPERATION;
+        return;
+    }
+
+    ctx->dispatch.texture_buffer(ctx, tex->name, internalformat, buffer);
 }
 
 void glTextureStorage1D(GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width)

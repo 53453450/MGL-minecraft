@@ -111,6 +111,8 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         }
     }
 
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+
     if (mglShouldTraceClearCall(callCount)) {
         fprintf(stderr,
                 "MGL TRACE clear.set call=%llu mask=0x%x prevMask=0x%x drawBuf=0x%x readBuf=0x%x fbo=%p(%u) dirty=0x%x\n",
@@ -199,6 +201,8 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
             break;
     }
 
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+
     if (mglShouldTraceClearCall(callCount)) {
         fprintf(stderr,
                 "MGL TRACE clearBufferfv call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) value=(%.3f,%.3f,%.3f,%.3f)\n",
@@ -243,6 +247,8 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
             break;
     }
 
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+
     if (mglShouldTraceClearCall(callCount)) {
         fprintf(stderr,
                 "MGL TRACE clearBufferfi call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) depth=%.3f stencil=%d\n",
@@ -279,7 +285,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     if (buf == GL_NONE)
     {
         STATE(draw_buffer) = GL_NONE;
-        STATE(dirty_bits) |= DIRTY_STATE;
+        STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
         return;
     }
 
@@ -326,7 +332,7 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     }
 
     STATE(draw_buffer) = buf;
-    STATE(dirty_bits) |= DIRTY_STATE;
+    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 }
 
 void mglReadBuffer(GLMContext ctx, GLenum buf)
@@ -364,7 +370,7 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
     }
 
     STATE(read_buffer) = buf;
-    STATE(dirty_bits) |= DIRTY_STATE;
+    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 }
 
 void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)

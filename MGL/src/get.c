@@ -29,7 +29,9 @@ static const char *kMglExtensions[] = {
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",
     "GL_ARB_multisample",
-    "GL_ARB_debug_output"
+    "GL_ARB_debug_output",
+    "GL_ARB_texture_buffer_object",
+    "GL_ARB_texture_buffer_range"
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -54,6 +56,44 @@ GLsizei mglSafeMaxTextureSize(GLMContext ctx)
     }
 
     return (GLsizei)maxTex;
+}
+
+static GLsizei mglSafeMaxTextureBufferSize(GLMContext ctx)
+{
+    const GLsizei kFallback = 1 << 20; // texels, conservative but useful for Minecraft cloud buffers
+    GLuint value = ctx ? ctx->state.var.max_texture_buffer_size : 0u;
+
+    if (value == 0u || value == 0x01010101u || value > (1u << 28)) {
+        if (ctx) {
+            fprintf(stderr,
+                    "MGL WARNING: GL_MAX_TEXTURE_BUFFER_SIZE state value suspicious (%u), using safe fallback %d\n",
+                    value,
+                    (int)kFallback);
+            ctx->state.var.max_texture_buffer_size = (GLuint)kFallback;
+        }
+        return kFallback;
+    }
+
+    return (GLsizei)value;
+}
+
+static GLsizei mglSafeTextureBufferOffsetAlignment(GLMContext ctx)
+{
+    const GLsizei kFallback = 16;
+    GLuint value = ctx ? ctx->state.var.texture_buffer_offset_alignment : 0u;
+
+    if (value == 0u || value == 0x01010101u || value > 4096u) {
+        if (ctx) {
+            fprintf(stderr,
+                    "MGL WARNING: GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT state value suspicious (%u), using safe fallback %d\n",
+                    value,
+                    (int)kFallback);
+            ctx->state.var.texture_buffer_offset_alignment = (GLuint)kFallback;
+        }
+        return kFallback;
+    }
+
+    return (GLsizei)value;
 }
 
 // these cast a void ptr to a type and value
@@ -337,7 +377,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8CA7: RET_TYPE_VAR(type, renderbuffer_binding); break; // GL_RENDERBUFFER_BINDING
         case 0x8CAA: RET_TYPE_VAR(type, read_framebuffer_binding); break; // GL_READ_FRAMEBUFFER_BINDING
         case 0x85B5: RET_TYPE_VAR(type, vertex_array_binding); break; // GL_VERTEX_ARRAY_BINDING
-        case 0x8C2B: RET_TYPE_VAR(type, max_texture_buffer_size); break; // GL_MAX_TEXTURE_BUFFER_SIZE
+        case 0x8C2B: // GL_MAX_TEXTURE_BUFFER_SIZE
+            switch(type) {
+                case kBool: RET_BOOL(mglSafeMaxTextureBufferSize(ctx));
+                case kInt: RET_INT(mglSafeMaxTextureBufferSize(ctx));
+                case kFloat: RET_FLOAT(mglSafeMaxTextureBufferSize(ctx));
+                case kDouble: RET_DOUBLE(mglSafeMaxTextureBufferSize(ctx));
+            }
+            break;
         case 0x8C2C: RET_TYPE_VAR(type, texture_binding_buffer); break; // GL_TEXTURE_BINDING_BUFFER
         case 0x84F6: RET_TYPE_VAR(type, texture_binding_rectangle); break; // GL_TEXTURE_BINDING_RECTANGLE
         case 0x84F8: RET_TYPE_VAR(type, max_rectangle_texture_size); break; // GL_MAX_RECTANGLE_TEXTURE_SIZE
@@ -426,7 +473,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x90DC: RET_TYPE_VAR(type, max_combined_shader_storage_blocks); break; // GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS
         case 0x90DD: RET_TYPE_VAR(type, max_shader_storage_buffer_bindings); break; // GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
         case 0x90DF: RET_TYPE_VAR(type, shader_storage_buffer_offset_alignment); break; // GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT
-        case 0x919F: RET_TYPE_VAR(type, texture_buffer_offset_alignment); break; // GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT
+        case 0x919F: // GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT
+            switch(type) {
+                case kBool: RET_BOOL(mglSafeTextureBufferOffsetAlignment(ctx));
+                case kInt: RET_INT(mglSafeTextureBufferOffsetAlignment(ctx));
+                case kFloat: RET_FLOAT(mglSafeTextureBufferOffsetAlignment(ctx));
+                case kDouble: RET_DOUBLE(mglSafeTextureBufferOffsetAlignment(ctx));
+            }
+            break;
         case 0x82D6: RET_TYPE_VAR(type, vertex_binding_divisor); break; // GL_VERTEX_BINDING_DIVISOR
         case 0x82D7: RET_TYPE_VAR(type, vertex_binding_offset); break; // GL_VERTEX_BINDING_OFFSET
         case 0x82D8: RET_TYPE_VAR(type, vertex_binding_stride); break; // GL_VERTEX_BINDING_STRIDE

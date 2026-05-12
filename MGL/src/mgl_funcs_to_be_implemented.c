@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "spirv_cross_c.h"
 #include "mgl.h"
 
 static void mgl_unimplemented(GLMContext ctx, const char *func)
@@ -35,6 +36,8 @@ ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline);
 // Forward declaration for texture lookup from textures.c
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
+extern Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
+extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
 
 typedef struct QueryObject_t {
 	GLuint name;
@@ -111,7 +114,31 @@ static int mgl_program_interface_to_spvc(GLenum programInterface)
 	}
 }
 
-static GLsizei mgl_program_resource_count(Program *pptr, int res_type)
+static int mgl_program_interface_to_spvc_list(GLenum programInterface, int *types, int max_types)
+{
+	if (!types || max_types <= 0)
+		return 0;
+
+	if (programInterface == GL_UNIFORM)
+	{
+		int n = 0;
+		types[n++] = SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT;
+		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_SAMPLED_IMAGE;
+		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_SEPARATE_IMAGE;
+		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS;
+		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_STORAGE_IMAGE;
+		return n;
+	}
+
+	int type = mgl_program_interface_to_spvc(programInterface);
+	if (type < 0)
+		return 0;
+
+	types[0] = type;
+	return 1;
+}
+
+static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
 {
 	GLsizei total = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
@@ -119,7 +146,15 @@ static GLsizei mgl_program_resource_count(Program *pptr, int res_type)
 	return total;
 }
 
-static SpirvResource *mgl_program_resource_at_index(Program *pptr, int res_type, GLuint index, int *out_stage)
+static GLsizei mgl_program_resource_count(Program *pptr, const int *types, int type_count)
+{
+	GLsizei total = 0;
+	for (int i = 0; i < type_count; i++)
+		total += mgl_program_resource_count_for_type(pptr, types[i]);
+	return total;
+}
+
+static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int res_type, GLuint index, int *out_stage)
 {
 	GLuint offset = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
@@ -136,7 +171,25 @@ static SpirvResource *mgl_program_resource_at_index(Program *pptr, int res_type,
 	return NULL;
 }
 
-static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
+static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *types, int type_count, GLuint index, int *out_stage, int *out_res_type)
+{
+	GLuint offset = 0;
+	for (int t = 0; t < type_count; t++)
+	{
+		GLsizei count = mgl_program_resource_count_for_type(pptr, types[t]);
+		if (index < offset + (GLuint)count)
+		{
+			SpirvResource *res = mgl_program_resource_at_index_for_type(pptr, types[t], index - offset, out_stage);
+			if (res && out_res_type)
+				*out_res_type = types[t];
+			return res;
+		}
+		offset += (GLuint)count;
+	}
+	return NULL;
+}
+
+static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
 {
 	GLuint offset = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
@@ -157,6 +210,54 @@ static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, int res_t
 		offset += count;
 	}
 	return NULL;
+}
+
+static SpirvResource *mgl_program_resource_find_by_name(Program *pptr, const int *types, int type_count, const GLchar *name, GLuint *out_index, int *out_stage, int *out_res_type)
+{
+	GLuint offset = 0;
+	for (int t = 0; t < type_count; t++)
+	{
+		GLuint local_index = 0;
+		SpirvResource *res = mgl_program_resource_find_by_name_for_type(pptr, types[t], name, &local_index, out_stage);
+		if (res)
+		{
+			if (out_index)
+				*out_index = offset + local_index;
+			if (out_res_type)
+				*out_res_type = types[t];
+			return res;
+		}
+		offset += (GLuint)mgl_program_resource_count_for_type(pptr, types[t]);
+	}
+	return NULL;
+}
+
+static GLint mgl_program_resource_gl_type(const SpirvResource *res, int res_type)
+{
+	if (!res)
+		return 0;
+
+	if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+	    res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE)
+	{
+		switch (res->image_dim)
+		{
+			case 0: return res->image_arrayed ? GL_SAMPLER_1D_ARRAY : GL_SAMPLER_1D;
+			case 1: return res->image_arrayed ? GL_SAMPLER_2D_ARRAY : GL_SAMPLER_2D;
+			case 2: return GL_SAMPLER_3D;
+			case 3: return res->image_arrayed ? GL_SAMPLER_CUBE_MAP_ARRAY : GL_SAMPLER_CUBE;
+			case 5: return GL_INT_SAMPLER_BUFFER;
+			default: return GL_SAMPLER_2D;
+		}
+	}
+
+	if (res_type == SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS)
+		return GL_SAMPLER_2D;
+
+	if (res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE)
+		return (res->image_dim == 5) ? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
+
+	return 0;
 }
 
 void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
@@ -825,7 +926,8 @@ GLint  mglGetFragDataLocation(GLMContext ctx, GLuint program, const GLchar *name
 		return -1;
 	}
 
-	res = mgl_program_resource_find_by_name(pptr, _STAGE_OUTPUT_RES, name, NULL, NULL);
+	int output_type = _STAGE_OUTPUT_RES;
+	res = mgl_program_resource_find_by_name(pptr, &output_type, 1, name, NULL, NULL, NULL);
 	return res ? (GLint)res->location : -1;
 }
 
@@ -898,7 +1000,8 @@ void mglGetProgramBinary(GLMContext ctx, GLuint program, GLsizei bufSize, GLsize
 void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInterface, GLenum pname, GLint *params)
 {
 	Program *pptr;
-	int res_type;
+	int res_types[6];
+	int res_type_count;
 
 	if (!params)
 		return;
@@ -910,8 +1013,8 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 		return;
 	}
 
-	res_type = mgl_program_interface_to_spvc(programInterface);
-	if (res_type < 0)
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return;
@@ -920,20 +1023,24 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	switch (pname)
 	{
 		case GL_ACTIVE_RESOURCES:
-			*params = mgl_program_resource_count(pptr, res_type);
+			*params = mgl_program_resource_count(pptr, res_types, res_type_count);
 			break;
 		case GL_MAX_NAME_LENGTH:
 		{
 			GLint max_len = 1;
-			for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+			for (int t = 0; t < res_type_count; t++)
 			{
-				GLuint count = pptr->spirv_resources_list[stage][res_type].count;
-				for (GLuint i = 0; i < count; i++)
+				int res_type = res_types[t];
+				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 				{
-					SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
-					GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
-					if (len > max_len)
-						max_len = len;
+					GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+					for (GLuint i = 0; i < count; i++)
+					{
+						SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+						GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
+						if (len > max_len)
+							max_len = len;
+					}
 				}
 			}
 			*params = max_len;
@@ -965,7 +1072,10 @@ void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLin
 GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
 	Program *pptr;
-	int res_type;
+	int res_types[6];
+	int res_type_count;
+	int found_type = -1;
+	int found_stage = -1;
 	GLuint index = GL_INVALID_INDEX;
 
 	if (!name)
@@ -977,15 +1087,23 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		STATE(error) = GL_INVALID_VALUE;
 		return GL_INVALID_INDEX;
 	}
-	res_type = mgl_program_interface_to_spvc(programInterface);
-	if (res_type < 0)
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return GL_INVALID_INDEX;
 	}
 
-	if (mgl_program_resource_find_by_name(pptr, res_type, name, &index, NULL))
+	if (mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, &index, &found_stage, &found_type))
+	{
+		if (strstr(name, "CloudFaces"))
+			fprintf(stderr, "MGL REFLECT ResourceIndex program=%u iface=0x%x name=%s -> index=%u type=%d stage=%d\n",
+			        program, programInterface, name, index, found_type, found_stage);
 		return index;
+	}
+	if (strstr(name, "CloudFaces"))
+		fprintf(stderr, "MGL REFLECT ResourceIndex MISS program=%u iface=0x%x name=%s\n",
+		        program, programInterface, name);
 	return GL_INVALID_INDEX;
 }
 
@@ -993,7 +1111,10 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 {
 	Program *pptr;
 	SpirvResource *res;
-	int res_type;
+	int res_types[6];
+	int res_type_count;
+	int found_type = -1;
+	int found_stage = -1;
 
 	if (!name)
 		return -1;
@@ -1004,15 +1125,26 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 		STATE(error) = GL_INVALID_VALUE;
 		return -1;
 	}
-	res_type = mgl_program_interface_to_spvc(programInterface);
-	if (res_type < 0)
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return -1;
 	}
 
-	res = mgl_program_resource_find_by_name(pptr, res_type, name, NULL, NULL);
-	return res ? (GLint)res->location : -1;
+	res = mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, NULL, &found_stage, &found_type);
+	if (res)
+	{
+		GLint location = (res->location != 0xffffffffu) ? (GLint)res->location : (GLint)res->binding;
+		if (strstr(name, "CloudFaces"))
+			fprintf(stderr, "MGL REFLECT ResourceLocation program=%u iface=0x%x name=%s -> loc=%d binding=%u type=%d stage=%d dim=%u\n",
+			        program, programInterface, name, location, res->binding, found_type, found_stage, res->image_dim);
+		return location;
+	}
+	if (strstr(name, "CloudFaces"))
+		fprintf(stderr, "MGL REFLECT ResourceLocation MISS program=%u iface=0x%x name=%s\n",
+		        program, programInterface, name);
+	return -1;
 }
 
 GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
@@ -1025,7 +1157,8 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 {
 	Program *pptr;
 	SpirvResource *res;
-	int res_type;
+	int res_types[6];
+	int res_type_count;
 	const char *src;
 	GLsizei src_len;
 	GLsizei copy_len;
@@ -1046,13 +1179,13 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	res_type = mgl_program_interface_to_spvc(programInterface);
-	if (res_type < 0)
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
-	res = mgl_program_resource_at_index(pptr, res_type, index, NULL);
+	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, NULL, NULL);
 	if (!res)
 	{
 		STATE(error) = GL_INVALID_VALUE;
@@ -1076,7 +1209,9 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 	Program *pptr;
 	SpirvResource *res;
 	int stage = 0;
-	int res_type;
+	int res_type = -1;
+	int res_types[6];
+	int res_type_count;
 	GLsizei n;
 
 	if (length)
@@ -1099,13 +1234,13 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	res_type = mgl_program_interface_to_spvc(programInterface);
-	if (res_type < 0)
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
-	res = mgl_program_resource_at_index(pptr, res_type, index, &stage);
+	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, &stage, &res_type);
 	if (!res)
 	{
 		STATE(error) = GL_INVALID_VALUE;
@@ -1118,7 +1253,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		switch (props[i])
 		{
 			case GL_NAME_LENGTH: params[i] = (GLint)(res->name ? strlen(res->name) + 1 : 1); break;
-			case GL_TYPE: params[i] = 0; break;
+			case GL_TYPE: params[i] = mgl_program_resource_gl_type(res, res_type); break;
 			case GL_ARRAY_SIZE: params[i] = 1; break;
 			case GL_OFFSET: params[i] = -1; break;
 			case GL_BLOCK_INDEX: params[i] = -1; break;
@@ -1816,14 +1951,54 @@ void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoin
 
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+    Texture *tex;
+    GLuint active_unit = ctx ? ctx->state.active_texture : 0u;
+
+    ERROR_CHECK_RETURN(target == GL_TEXTURE_BUFFER, GL_INVALID_ENUM);
+
+    tex = (ctx && active_unit < TEXTURE_UNITS)
+        ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
+        : NULL;
+
+    fprintf(stderr,
+            "MGL TRACE mglTexBuffer target=0x%x internal=0x%x buffer=%u activeUnit=%u boundTex=%u tex=%p\n",
+            target,
+            internalformat,
+            buffer,
+            active_unit,
+            tex ? tex->name : 0u,
+            (void *)tex);
+
+    ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
+
+    mglTextureBufferRange(ctx, tex->name, internalformat, buffer, 0, 0);
 }
 
 void mglTexBufferRange(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+    Texture *tex;
+    GLuint active_unit = ctx ? ctx->state.active_texture : 0u;
+
+    ERROR_CHECK_RETURN(target == GL_TEXTURE_BUFFER, GL_INVALID_ENUM);
+
+    tex = (ctx && active_unit < TEXTURE_UNITS)
+        ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
+        : NULL;
+
+    fprintf(stderr,
+            "MGL TRACE mglTexBufferRange target=0x%x internal=0x%x buffer=%u offset=%lld size=%lld activeUnit=%u boundTex=%u tex=%p\n",
+            target,
+            internalformat,
+            buffer,
+            (long long)offset,
+            (long long)size,
+            active_unit,
+            tex ? tex->name : 0u,
+            (void *)tex);
+
+    ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
+
+    mglTextureBufferRange(ctx, tex->name, internalformat, buffer, offset, size);
 }
 
 void mglTexStorage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)

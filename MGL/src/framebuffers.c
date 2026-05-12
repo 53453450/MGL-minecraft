@@ -612,7 +612,15 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                 case GL_TEXTURE_3D:
                     if (level >= ilog2(STATE_VAR(max_texture_size)))
                     {
-                        assert(0);
+                        fprintf(stderr,
+                                "MGL ERROR: framebufferTexture invalid 3D mip level=%d maxTex=%u target=0x%x attachment=0x%x texture=%u textarget=0x%x\n",
+                                level,
+                                STATE_VAR(max_texture_size),
+                                target,
+                                attachment,
+                                texture,
+                                textarget);
+                        STATE(error) = GL_INVALID_VALUE;
                         return;
                     }
                     break;
@@ -629,7 +637,15 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                 break;
                             }
 
-                            assert(0);
+                            fprintf(stderr,
+                                    "MGL ERROR: framebufferTexture invalid cube mip level=%d maxTex=%u target=0x%x attachment=0x%x texture=%u textarget=0x%x\n",
+                                    level,
+                                    STATE_VAR(max_texture_size),
+                                    target,
+                                    attachment,
+                                    texture,
+                                    textarget);
+                            STATE(error) = GL_INVALID_VALUE;
                             return;
                         }
                     }
@@ -638,7 +654,17 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                         // For all other values of textarget, level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_TEXTURE_SIZE.
 
 
-                        assert(0);
+                        fprintf(stderr,
+                                "MGL ERROR: framebufferTexture invalid mip level=%d maxTex=%u target=0x%x attachment=0x%x texture=%u textarget=0x%x texTarget=0x%x texLevels=%u\n",
+                                level,
+                                STATE_VAR(max_texture_size),
+                                target,
+                                attachment,
+                                texture,
+                                textarget,
+                                tex ? tex->target : 0u,
+                                tex ? tex->mipmap_levels : 0u);
+                        STATE(error) = GL_INVALID_VALUE;
                         return;
                     }
                     break;
@@ -729,7 +755,13 @@ void mglFramebufferTexture2D(GLMContext ctx, GLenum target, GLenum attachment, G
                 break;
             }
 
-            assert(0);
+            fprintf(stderr,
+                    "MGL ERROR: mglFramebufferTexture2D invalid textarget=0x%x texture=%u attachment=0x%x level=%d\n",
+                    textarget,
+                    texture,
+                    attachment,
+                    level);
+            ERROR_RETURN(GL_INVALID_ENUM);
 
             return;
     }

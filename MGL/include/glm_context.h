@@ -269,7 +269,9 @@ typedef enum MGLTexLevelInitSource_t {
     kTexImageNull,
     kTexImageCopy,
     kTexSubImageCPU,
-    kTexSubImagePBO
+    kTexSubImagePBO,
+    kTexRenderTargetWrite,
+    kTexMetalFill
 } MGLTexLevelInitSource;
 
 typedef struct TextureLevel_t {
@@ -337,6 +339,9 @@ typedef struct Texture_t {
     GLuint mipmap_levels;
     TextureFace faces[6];
     void    *mtl_data;
+    Buffer  *texture_buffer;
+    GLintptr texture_buffer_offset;
+    GLsizeiptr texture_buffer_size;
     char debug_label[128];
 } Texture;
 
@@ -473,6 +478,7 @@ typedef struct Program_t {
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
+    GLint sampler_units[TEXTURE_UNITS];
     void *mtl_data;
 } Program;
 

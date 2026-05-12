@@ -219,6 +219,14 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&glm_ctx->state.var.read_framebuffer_binding);
     glGetIntegerv(GL_VERTEX_ARRAY_BINDING,&glm_ctx->state.var.vertex_array_binding);
     glGetIntegerv(GL_MAX_TEXTURE_BUFFER_SIZE,&glm_ctx->state.var.max_texture_buffer_size);
+    if (glm_ctx->state.var.max_texture_buffer_size == 0 ||
+        glm_ctx->state.var.max_texture_buffer_size == 0x01010101 ||
+        glm_ctx->state.var.max_texture_buffer_size > (1u << 28)) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired GL_MAX_TEXTURE_BUFFER_SIZE=%u -> 1048576\n",
+                glm_ctx->state.var.max_texture_buffer_size);
+        glm_ctx->state.var.max_texture_buffer_size = 1u << 20;
+    }
     glGetIntegerv(GL_TEXTURE_BINDING_BUFFER,&glm_ctx->state.var.texture_binding_buffer);
     glGetIntegerv(GL_TEXTURE_BINDING_RECTANGLE,&glm_ctx->state.var.texture_binding_rectangle);
     glGetIntegerv(GL_MAX_RECTANGLE_TEXTURE_SIZE,&glm_ctx->state.var.max_rectangle_texture_size);
@@ -312,6 +320,14 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,&glm_ctx->state.var.max_shader_storage_buffer_bindings);
     glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.shader_storage_buffer_offset_alignment);
     glGetIntegerv(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.texture_buffer_offset_alignment);
+    if (glm_ctx->state.var.texture_buffer_offset_alignment == 0 ||
+        glm_ctx->state.var.texture_buffer_offset_alignment == 0x01010101 ||
+        glm_ctx->state.var.texture_buffer_offset_alignment > 4096) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT=%u -> 16\n",
+                glm_ctx->state.var.texture_buffer_offset_alignment);
+        glm_ctx->state.var.texture_buffer_offset_alignment = 16;
+    }
     glGetIntegerv(GL_VERTEX_BINDING_DIVISOR,&glm_ctx->state.var.vertex_binding_divisor);
     glGetIntegerv(GL_VERTEX_BINDING_OFFSET,&glm_ctx->state.var.vertex_binding_offset);
     glGetIntegerv(GL_VERTEX_BINDING_STRIDE,&glm_ctx->state.var.vertex_binding_stride);
