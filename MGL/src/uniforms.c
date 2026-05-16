@@ -37,6 +37,17 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, GLi
         return GL_FALSE;
     }
 
+    // Reflected sampler/image resources often report location 0 even when they
+    // are distinct uniforms. Once we assign a synthetic location, only that
+    // location should match; otherwise unrelated integer uniforms at location 0
+    // can accidentally rewrite sampler units.
+    if (res->uniform_location >= 0 && res->uniform_location == location) {
+        return GL_TRUE;
+    }
+    if (res->uniform_location >= 0) {
+        return GL_FALSE;
+    }
+
     if (res->location != 0xffffffffu && (GLint)res->location == location) {
         return GL_TRUE;
     }
@@ -44,7 +55,7 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, GLi
     return (GLint)res->binding == location ? GL_TRUE : GL_FALSE;
 }
 
-static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, GLuint *binding_out)
+static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, int *stage_out, GLuint *binding_out)
 {
     static const int sampler_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
@@ -68,6 +79,9 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
                 }
 
                 if (res->binding < TEXTURE_UNITS) {
+                    if (stage_out) {
+                        *stage_out = stage;
+                    }
                     *binding_out = res->binding;
                     return GL_TRUE;
                 }
@@ -89,8 +103,9 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         return GL_FALSE;
     }
 
+    int stage = -1;
     GLuint binding = 0;
-    if (!mglFindSamplerUniformBinding(program, location, &binding)) {
+    if (!mglFindSamplerUniformBinding(program, location, &stage, &binding)) {
         return GL_FALSE;
     }
 
@@ -99,7 +114,94 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
     }
 
     program->sampler_units[binding] = unit;
+    if (stage >= 0 && stage < _MAX_SHADER_TYPES) {
+        program->sampler_units_by_stage[stage][binding] = unit;
+    }
     return GL_TRUE;
+}
+
+static size_t mglRoundUpUniformBlockSize(size_t value)
+{
+    return value ? ((value + 15) & ~(size_t)15) : 0;
+}
+
+static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint uniformBlockIndex, int *stage_out)
+{
+    SpirvResource *first_by_ordinal = NULL;
+    GLuint ordinal = 0;
+
+    if (!program || uniformBlockIndex == GL_INVALID_INDEX) {
+        return NULL;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (res->gl_binding == uniformBlockIndex) {
+                if (stage_out) {
+                    *stage_out = stage;
+                }
+                return res;
+            }
+            if (ordinal == uniformBlockIndex && !first_by_ordinal) {
+                first_by_ordinal = res;
+                if (stage_out) {
+                    *stage_out = stage;
+                }
+            }
+            ordinal++;
+        }
+    }
+
+    return first_by_ordinal;
+}
+
+static size_t mglUniformBlockRequiredSize(Program *program, const SpirvResource *block)
+{
+    size_t required_size = 0;
+
+    if (!program || !block) {
+        return 0;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            GLboolean same_block = GL_FALSE;
+
+            if (block->name && res->name && !strcmp(block->name, res->name)) {
+                same_block = GL_TRUE;
+            } else if (res->gl_binding == block->gl_binding) {
+                same_block = GL_TRUE;
+            }
+
+            if (same_block && res->required_size > required_size) {
+                required_size = res->required_size;
+            }
+        }
+    }
+
+    return mglRoundUpUniformBlockSize(required_size);
+}
+
+static GLboolean mglUniformBlockReferencedByStage(Program *program, const SpirvResource *block, int query_stage)
+{
+    if (!program || !block || query_stage < 0 || query_stage >= _MAX_SHADER_TYPES) {
+        return GL_FALSE;
+    }
+
+    SpirvResourceList *resources = &program->spirv_resources_list[query_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+    for (GLuint i = 0; i < resources->count; i++) {
+        SpirvResource *res = &resources->list[i];
+        if ((block->name && res->name && !strcmp(block->name, res->name)) ||
+            res->gl_binding == block->gl_binding) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
 }
 
 GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
@@ -154,7 +256,9 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                 if (!strcmp(str, name))
                 {
                     GLuint binding = list[i].binding;
-                    GLint location = (list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding;
+                    GLint location = (list[i].uniform_location >= 0)
+                        ? list[i].uniform_location
+                        : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding);
 
                     if (strstr(name, "CloudFaces")) {
                         fprintf(stderr,
@@ -211,8 +315,11 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
     if (params) {
         Program *ptr = getProgram(ctx, program);
         GLuint binding = 0;
-        if (ptr && mglFindSamplerUniformBinding(ptr, location, &binding)) {
-            *params = ptr->sampler_units[binding];
+        int stage = -1;
+        if (ptr && mglFindSamplerUniformBinding(ptr, location, &stage, &binding)) {
+            *params = (stage >= 0 && stage < _MAX_SHADER_TYPES)
+                ? ptr->sampler_units_by_stage[stage][binding]
+                : ptr->sampler_units[binding];
         } else {
             *params = 0;
         }
@@ -330,7 +437,7 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
 
             if (!strcmp(str, uniformBlockName))
             {
-                GLuint binding = list[i].binding;
+                GLuint binding = list[i].gl_binding;
 
                 return binding;
             }
@@ -343,15 +450,97 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
 
 void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLenum pname, GLint *params)
 {
-    (void)ctx; (void)program; (void)uniformBlockIndex; (void)pname;
-    if (params) *params = 0;
+    if (!params) {
+        return;
+    }
+    *params = 0;
+
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = getProgram(ctx, program);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    SpirvResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, NULL);
+    if (!block) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname) {
+        case GL_UNIFORM_BLOCK_BINDING:
+            *params = (GLint)block->gl_binding;
+            break;
+        case GL_UNIFORM_BLOCK_DATA_SIZE:
+            *params = (GLint)mglUniformBlockRequiredSize(ptr, block);
+            break;
+        case GL_UNIFORM_BLOCK_NAME_LENGTH:
+            *params = (GLint)(block->name ? strlen(block->name) + 1 : 1);
+            break;
+        case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS:
+            *params = 0;
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_VERTEX_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _VERTEX_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_GEOMETRY_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _GEOMETRY_SHADER);
+            break;
+        case GL_UNIFORM_BLOCK_REFERENCED_BY_FRAGMENT_SHADER:
+            *params = mglUniformBlockReferencedByStage(ptr, block, _FRAGMENT_SHADER);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            break;
+    }
 }
 
 void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformBlockName)
 {
-    (void)ctx; (void)program; (void)uniformBlockIndex;
-    if (length) *length = 0;
-    if (uniformBlockName && bufSize > 0) uniformBlockName[0] = '\0';
+    if (length) {
+        *length = 0;
+    }
+    if (uniformBlockName && bufSize > 0) {
+        uniformBlockName[0] = '\0';
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (isProgram(ctx, program) == GL_FALSE) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = getProgram(ctx, program);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    SpirvResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, NULL);
+    if (!block) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    const char *src = block->name ? block->name : "";
+    GLsizei src_len = (GLsizei)strlen(src);
+    if (length) {
+        *length = src_len;
+    }
+    if (uniformBlockName && bufSize > 0) {
+        GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
+        if (copy_len > 0) {
+            memcpy(uniformBlockName, src, (size_t)copy_len);
+        }
+        uniformBlockName[copy_len] = '\0';
+    }
 }
 
 void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding)

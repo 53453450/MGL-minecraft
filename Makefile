@@ -356,19 +356,13 @@ clean:
 install-pkgdeps: download-pkgdeps compile-pkgdeps
 
 download-pkgdeps:
+
 	brew install glm glslang spirv-tools glfw
-	git submodule init
-	git submodule update --depth 1
-
+	
 compile-pkgdeps:
-	(cd SPIRV-Cross && mkdir -p build && cd build && cmake .. && make)
 
-update-pkdeps:
-	git submodule -q foreach git pull -q origin master
-
-test-make:
-	@echo $(glfw_objs)
-
-.PHONY: default test dbg lib clean insall-pkgdeps test-make 
+	@echo "use /external/.sh"
+	
+.PHONY: default test dbg lib clean insall-pkgdeps test-make
 
 -include $(deps)

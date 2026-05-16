@@ -52,6 +52,11 @@ static GLboolean s_query_table_initialized = GL_FALSE;
 static GLuint s_active_query_by_target[8];
 static GLuint64 s_fake_timestamp_counter = 1;
 
+static size_t mgl_round_up_16(size_t value)
+{
+	return value ? ((value + 15) & ~(size_t)15) : 0;
+}
+
 static void mgl_init_query_table_if_needed(void)
 {
 	if (!s_query_table_initialized)
@@ -1261,8 +1266,8 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			case GL_MATRIX_STRIDE: params[i] = 0; break;
 			case GL_IS_ROW_MAJOR: params[i] = 0; break;
 			case GL_ATOMIC_COUNTER_BUFFER_INDEX: params[i] = -1; break;
-			case GL_BUFFER_BINDING: params[i] = (GLint)res->binding; break;
-			case GL_BUFFER_DATA_SIZE: params[i] = 0; break;
+			case GL_BUFFER_BINDING: params[i] = (GLint)res->gl_binding; break;
+			case GL_BUFFER_DATA_SIZE: params[i] = (GLint)mgl_round_up_16(res->required_size); break;
 			case GL_NUM_ACTIVE_VARIABLES: params[i] = 0; break;
 			case GL_REFERENCED_BY_VERTEX_SHADER: params[i] = (stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE; break;
 			case GL_REFERENCED_BY_FRAGMENT_SHADER: params[i] = (stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE; break;

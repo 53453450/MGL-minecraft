@@ -54,14 +54,6 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     {
         if (fbo)
         {
-            GLuint draw_index = 0;
-            GLuint draw_buffer = ctx->state.draw_buffer;
-            if (draw_buffer >= GL_COLOR_ATTACHMENT0 &&
-                draw_buffer < GL_COLOR_ATTACHMENT0 + ctx->state.max_color_attachments)
-            {
-                draw_index = draw_buffer - GL_COLOR_ATTACHMENT0;
-            }
-
             for (GLuint i = 0; i < ctx->state.max_color_attachments; ++i)
             {
                 if (fbo->color_attachment_bitfield & (1u << i))

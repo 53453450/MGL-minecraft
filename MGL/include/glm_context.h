@@ -433,8 +433,10 @@ typedef struct SpirvResource_t {
     GLuint  type_id;
     const char *name;
     GLuint  set;
+    GLuint  gl_binding;
     GLuint  binding;
     GLuint  location;
+    GLint   uniform_location;
     size_t  required_size;
     GLuint  image_dim;
     GLuint  image_arrayed;
@@ -479,6 +481,8 @@ typedef struct Program_t {
         unsigned x, y, z;
     } local_workgroup_size;
     GLint sampler_units[TEXTURE_UNITS];
+    GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
+    char *attrib_location_names[MAX_ATTRIBS];
     void *mtl_data;
 } Program;
 

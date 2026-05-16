@@ -183,6 +183,39 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_STENCIL_BACK_PASS_DEPTH_PASS,&glm_ctx->state.var.stencil_back_pass_depth_pass);
     glGetIntegerv(GL_MAX_DRAW_BUFFERS,&glm_ctx->state.var.max_draw_buffers);
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA,&glm_ctx->state.var.blend_equation_alpha[0]);
+    if (glm_ctx->state.var.blend_src_rgb[0] == GL_ZERO &&
+        glm_ctx->state.var.blend_src_alpha[0] == GL_ZERO) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired default blend src factors GL_ZERO -> GL_ONE\n");
+        glm_ctx->state.var.blend_src_rgb[0] = GL_ONE;
+        glm_ctx->state.var.blend_src_alpha[0] = GL_ONE;
+    }
+    if (glm_ctx->state.var.blend_dst_rgb[0] == 0 &&
+        glm_ctx->state.var.blend_dst_alpha[0] == 0) {
+        glm_ctx->state.var.blend_dst_rgb[0] = GL_ZERO;
+        glm_ctx->state.var.blend_dst_alpha[0] = GL_ZERO;
+    }
+    if (glm_ctx->state.var.blend_equation_rgb[0] == 0) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired default blend equation rgb 0 -> GL_FUNC_ADD\n");
+        glm_ctx->state.var.blend_equation_rgb[0] = GL_FUNC_ADD;
+    }
+    if (glm_ctx->state.var.blend_equation_alpha[0] == 0) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired default blend equation alpha 0 -> GL_FUNC_ADD\n");
+        glm_ctx->state.var.blend_equation_alpha[0] = GL_FUNC_ADD;
+    }
+    if (!glm_ctx->state.var.color_writemask[0][0] &&
+        !glm_ctx->state.var.color_writemask[0][1] &&
+        !glm_ctx->state.var.color_writemask[0][2] &&
+        !glm_ctx->state.var.color_writemask[0][3]) {
+        fprintf(stderr,
+                "MGL WARNING: init repaired default color writemask 0000 -> 1111\n");
+        glm_ctx->state.var.color_writemask[0][0] = GL_TRUE;
+        glm_ctx->state.var.color_writemask[0][1] = GL_TRUE;
+        glm_ctx->state.var.color_writemask[0][2] = GL_TRUE;
+        glm_ctx->state.var.color_writemask[0][3] = GL_TRUE;
+    }
     glGetIntegerv(GL_MAX_VERTEX_ATTRIBS,&glm_ctx->state.max_vertex_attribs);
     glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_texture_image_units);
     glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_fragment_uniform_components);

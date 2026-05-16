@@ -1,333 +1,186 @@
-# MGL
-# OpenGL 4.6 and ES 3.x on Metal
+```md
 
-This is a start for porting OpenGL 4.6 and ES 3.x on top of Metal, most of it is functional and has been tested. The tests are functional, not coverage tests so they test the functionality of a path not all the possible permutations.
-
-## So far the following parts of OpenGL work
-
-- Vertex Arrays
-- Buffers
-- Textures
-- Programs
-  - Shaders
-    - Vertex
-    - Fragment
-    - Compute
-- Samplers
-- Alpha Blending
-- Depth and Stencil Testing
-- Framebuffer Objects
-- Drawbuffers
-- Most of the draw calls
-- Elements / Instancing and such
-- Uniforms (partially)
-- UBOs
-
-## GLFW support
-I modified a version of GLFW to work with MGL, it replaces the default MacOS OpenGL contexts. The changes are included in the repository and should build correctly with the MGL xcode project.
-
-(additional notes from conversy/MGL repo: the modified GLFW version is not mandatory, see below).
-
-## Mapping OpenGL onto Metal
-I mapped as much of the functionality of Metal I could into OpenGL 4.6, it's surprising how much I was able to map directly from OpenGL state to Metal. But I suppose Metal evolved to meet market requirements and since OpenGL was in place the same features existed just in another form.
-
-Not all of the functionality for OpenGL is available, but I didn't build this for conformance I just wanted to program OpenGL on the MacOS platform.
-
-Metal Hiearchy
-
-    Command Queue
-        Command Buffer
-            Render Pipeline State <- created with RenderPipelineDescriptor
-                Render Encoder  <-- created with RenderPassDescriptor
-                    RenderPassDescriptor
-                        colorAttachments
-                            pixelFormat
-                            sourceRGBBlendFactor
-                            sourceAlphaBlendFactor
-                            destinationRGBBlendFactor
-                            destinationAlphaBlendFactor
-                            alphaBlendOperation
-                            writeMask
-                        depthAttachment
-                            pixelFormat
-                        stencilAttachment
-                            pixelFormat
-                        visibilityResultBuffer
-                        renderTargetArrayLength
-                        defaultRasterSampleCount
-                        samplePositions
-                        renderTargetWidth
-                        renderTargetHeight
-
-                    
-                DirectState for Render Encoder
-                    Vertex Function
-                    Fragment Function
-                    Vertex Descriptor
-                    Vertex Buffers
-                    Vertex Textures
-                    Viewport
-                    FrontFacingWinding
-                    CullMode
-                    DepthClipMode
-                    DepthBias
-                    ScissorRect
-                    TriangleFillMode
-                    Fragment Buffers
-                    Fragment Textures
-                    Fragment Samplers
-                    BlendColor
-                    StencilReferenceValue
-                    VisibilityResultMode
-                    ColorStoreMode
-                    DepthStoreMode
-                    DepthStoreAction
-                    StencilStoreAction
-                    DepthStoreActionOptions
-                    StencilStoreActionOptions
-                    
-                Descriptor State used to change render ecoder
-                    Depth Stencil State <- created with DepthStencil Descriptor
-                        DepthStencilPipeline Descriptor
-                            DepthStencil Descriptor
-                                readMask
-                                writeMask
-                                depthCompareFunction
-                                depthWriteEnabled
-                                stencilCompareFunction
-                                stencilFailureOperation
-                                depthFailureOperation
-                                depthStencilPassOperation
-                                frontFaceStencil <- created wtih StencilDescriptor
-                                backFaceStencil <- created wtih StencilDescriptor
-                                
-                    
-
-## Parsing the OpenGL 4.6 XML spec
-In the beginning I used ezxml to parse the gl.xml file for all the enums and functions, then printed out one giant file with all the functions. I then used the same parser to create the dispatch tables and data structures. As each functional part was built I separated blocks of functions into these functions like buffers / textures / shaders / programs.
-
-## SPIRV to Metal
-I really couldn't have done this project without all the SPIRV support from Khronos, once I found out I could translate GLSL into Metal using some of the SPIRV tools this project became a reality. There are some parts in GLSL that Metal just doesn't support like Geometry Shaders, I think the way forward on support for Geometry Shaders is to translate the vertex and geometry shaders into LLVM from SPIRV then execute the results from processing them on the CPU through a passthrough vertex shader in the pipeline. Some parts of the GLSL spec probably won't map to Metal but more testing and exposure to developers will show what works and what doesn't/
-
-## OpenGL functions and how they work
-Each OpenGL function starts in gl_core.c
-
-```C
-void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels)
-{
-    GLMContext ctx = GET_CONTEXT();
-
-    ctx->dispatch.tex_image2D(ctx, target, level, internalformat, width, height, border, format, type, pixels);
-}
+🌐 Language: 中文 | [English](README_EN.md)
 ```
 
-glTexImage2D calls into a dispatch table which lands on a mgl equivalent 
+# MGL - Metal-GL
 
-```C
-void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels) {
-    Texture *tex;
-    GLuint face;
-    GLboolean is_array;
-    GLboolean proxy;
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS-lightgrey.svg)]()
+[![OpenGL](https://img.shields.io/badge/OpenGL-4.6-green.svg)]()
+[![Metal](https://img.shields.io/badge/Metal-3.0-orange.svg)]()
 
-    face = 0;
-    is_array = false;
-    proxy = false;
+**MGL (Metal-GL)** 是一个将 OpenGL 4.6 和 OpenGL ES 3.x 转译到 Apple Metal 的图形驱动层。它允许现有的 OpenGL 应用无需修改即可在 macOS 上使用 Metal 后端运行。
 
-    switch(target)
-    {
-        case GL_TEXTURE_2D:
-            break;
+## 前言
 
-        case GL_PROXY_TEXTURE_2D:
-        case GL_PROXY_TEXTURE_CUBE_MAP:
-            proxy = true;
-            break;
+### 项目说明
 
-        case GL_PROXY_TEXTURE_1D_ARRAY:
-            is_array = true;
-            proxy = true;
-            break;
+- <span style="color:red;">这是一个纯粹的AI coding项目，如果你反感/厌恶AI代码，你可以离开此仓库</span>
+- 本项目分支于MGL：https://github.com/openglonmetal/MGL
+- Minecraft(以下简称MC)是在mac上为数不多的运行较好的游戏之一，可是，MC可以长盛不衰的原因来至于它庞大的Mod社区，但是Apple 于2018年6 月在 WWDC 2018 上正式宣布弃用OpenGL与OpenCL，macOS的OpenGL支持永远停在了4.1版本，顶点着色器上限（GL_MAX_VERTEX_ATTRIBS）是16，这与现今的Mod社区严重脱节，部分mod与绝大多数的光影无法在macOS上运行。此项目将OpenGL提升至4.6，并将GL_MAX_VERTEX_ATTRIBS=30
 
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-            face = target - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
-            break;
+## 要求
 
-        case GL_PROXY_TEXTURE_RECTANGLE:
-            proxy = true;
-            ERROR_CHECK_RETURN(level==0, GL_INVALID_OPERATION);
-            break;
+**前置**: 
 
-        case GL_TEXTURE_RECTANGLE:
-            ERROR_CHECK_RETURN(level==0, GL_INVALID_OPERATION);
-            break;
+- Xcode Command Line Tools
+- Homebrew
+- Cmake
 
-        default:
-            ERROR_RETURN(GL_INVALID_ENUM);
-    }
+## 快速开始
 
-    ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
+### 1. 克隆仓库
 
-    // verifyFormatType sets the error
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), 0);
-
-    ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(border == 0, GL_INVALID_VALUE);
-
-    tex = getTex(ctx, 0, target);
-
-    ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
-
-    tex->access = GL_READ_ONLY;
-
-    createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
-}
+```bash
+git clone https://github.com/53453450/MGL-minecraft.git
+cd MGL-minecraft
 ```
 
-The mgl function checks input parameters then modifies the OpenGL state and marks it dirty. I use macros for error checking parameters... because I got sick of writing.
+### 2. 构建
 
-```C
-if (expr == false) {
-  set error
-  return;
-}
+```bash
+#安装构建依赖
+make install-pkgdeps
+cd external
+#克隆依赖
+./clone_external.sh
+# 依赖编译
+./build_external.sh
 ```
 
-## Common use of code for most OpenGL calls
-Most functions are like mglTexImage2D, there a lot of common entry points which check parameters then call a function like createTextureLevel() which is used by all the TexImage calls to do the actual work.
+### 3. 编译 MGL
 
-## OpenGL state translated to Metal using glDrawArrays as an example 
-All state changes are evaluated on direct commands, these are commands that will issue a command to the GPU for things like drawing primitives, copying data or executing compute kernels.
-
-Looking at glDrawArrays..
-
-glDrawArrays lands on mglDrawArrays which does parameter testing and calls the Objective C interface through a jump table in the context. This lands you in MGLRenderere.m
-
-```C
-void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
-{
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(count > 1, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(validate_vao(ctx), GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_VALUE);
-
-    ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
-}
+```bash
+#返回主目录
+cd .. 
+make
 ```
 
-Which lands you in Objective C land, we do a C interface call to Objecitve C here
+## 构建产物
 
-```C
-void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawArrays: glm_ctx mode: mode first: first count: count];
-}
+编译完成后，将在 `build/` 目录生成：
+
+| 文件 | 说明 |
+|------|------|
+| `libmgl.dylib` | OpenGL Core 动态库 |
+| `libmgl_es.dylib` | OpenGL ES 动态库 |
+| `libglfw.dylib` | 修改版 GLFW 库 |
+
+## 使用方法
+
+编译完成后在启动器的java参数中添加：
+```JVM
+-Dorg.lwjgl.opengl.libname="/yourpath/to/libmgl.dylib"
+-Dorg.lwjgl.glfw.libname="/yourpath/to/libglfw.dylib"
+-Dorg.lwjgl.opengles.libname="/yourpath/to/libmgl_es.dylib"
+```
+指向MGL-minecraft的产物，让它们接管渲染
+
+##现状
+
+- UI以部分错误的方式渲染（黑块）
+- 文字渲染正常
+- 加载动画渲染正常
+- 世界未渲染
+**注意⚠️**以上于minecraft 1.21.11实例，无mod的情况下测试
+
+## 项目结构
+
+```
+MGL-minecraft/
+├── MGL/                          # 核心库源码
+│   ├── src/                      # C/Objective-C 源文件
+│   │   ├── gl_core.c            # OpenGL Core API 入口
+│   │   ├── gl_es.c              # OpenGL ES API 入口
+│   │   ├── shaders.c            # 着色器管理
+│   │   ├── textures.c           # 纹理管理
+│   │   ├── buffers.c            # 缓冲区管理
+│   │   ├── programs.c           # 着色器程序管理
+│   │   ├── rendering.c          # 渲染状态管理
+│   │   ├── MGLRenderer.m        # Metal 渲染器实现
+│   │   └── MGLTextures.m        # Metal 纹理实现
+│   ├── include/                  # 头文件
+│   │   ├── GL/                  # OpenGL 头文件
+│   │   └── glm/                 # GLM 数学库
+│   └── spirv_cross_c.cpp        # SPIRV-Cross C++ 桥接
+│
+├── external/                     # 外部依赖
+│   ├── SPIRV-Cross/             # SPIR-V 到 MSL 转译器
+│   ├── SPIRV-Tools/             # SPIR-V 工具链
+│   ├── SPIRV-Headers/           # SPIR-V 头文件
+│   ├── glslang/                 # GLSL 编译器
+│   ├── OpenGL-Registry/         # OpenGL 规范
+│   ├── glfw/                    # 修改版 GLFW
+│   └── ezxml/                   # XML 解析器
+│
+├── test_mgl_glfw/               # 测试用例
+├── MGL.xcodeproj/               # Xcode 项目文件
+├── Makefile                     # 构建脚本
+└── LICENSE                      # Apache 2.0 许可证
 ```
 
-And now we speak Objective C
+## 核心模块说明
 
-```C
--(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
-{
-    MTLPrimitiveType primitiveType;
+### 着色器转译 (shaders.c)
 
-    RETURN_ON_FAILURE([self processGLState: true]);
+着色器转译是 MGL 的核心功能，负责将 GLSL 着色器转换为 Metal Shading Language (MSL)：
 
-    primitiveType = getMTLPrimitiveType(mode);
-    assert(primitiveType != 0xFFFFFFFF);
-
-     [_currentRenderEncoder drawPrimitives: primitiveType
-                              vertexStart: first
-                              vertexCount: count];
-}
+```c
+GLSL 源码 (330/420/450)
+    │
+    ▼
+glslang 预处理与编译
+    │
+    ▼
+SPIR-V 中间表示
+    │
+    ▼
+SPIRV-Cross 转译
+    │
+    ▼
+Metal Shading Language
 ```
 
-## processGLState does all the state mapping from OpenGL to Metal
-On OpenGL drawing calls the OpenGL state is processed for any dirty state in processGLState, you have to do this before each draw command to ensure changed state is captured into Metal.
+**关键特性：**
+- 自动升级旧版 GLSL (140/330) 到 420+
+- 自动为 UBO 分配 binding 索引
+- 添加必要的扩展声明 (`GL_ARB_shading_language_420pack`)
 
-State is transferred from OpenGL to Metal state using a Metal command queue with a MTLRenderCommandEncoder. Occasionally a new MTLRenderCommandEncoder will need to be built if the state changes need to modify the MTLRenderPipelineState so neRenderEncoder is called to create a new encoder with the current OpenGL state.
+### 状态管理
 
-Most of the work is done in MGLRenderer.m, at first it can look like a giant piece of code. But it's simple once you figure out the mapping process.
+OpenGL 状态通过脏标记系统同步到 Metal：
 
-# binding buffers and textures from shader layouts
-You have to bind all the buffers and textures to Metal, there are mapping operations you need to do to transfer OpenGL buffers / textures to Metal. Since all of this is driven by the GLSL shader in 4.5 which requires you to map your bindings and locations
+```c
+// 状态变更标记
+STATE(dirty_bits) |= DIRTY_RENDER_STATE;
 
-An example vertex shader defines a vertex buffer object at location 0 and a uniform buffer at binding 0.  These are not the same location, but relative to the type.
+// 在绘制时处理脏状态
+processGLState(ctx, true);
+```
 
-    const char* vertex_shader =
-    GLSL(450 core,
-         layout(location = 0) in vec3 position;
+### Metal 渲染器 (MGLRenderer.m)
 
-         layout(binding = 0) uniform matrices
-         {
-             mat4 rotMatrix;
-         };
+Objective-C 实现的 Metal 渲染器，处理：
+- RenderCommandEncoder 创建与管理
+- 状态映射 (OpenGL → Metal)
+- 绘制命令执行
 
-         void main() {
-            gl_Position = rotMatrix * vec4(position, 1.0);
-         }
-    );
+## tools/java-tex-probe
 
-Each binding point in OpenGL is a 2D array one for each type, like GL_ARRAY_BUFFER
+**这是一个 Java Agent，用于监控 Minecraft (LWJGL) 的 glTexSubImage2D 纹理上传调用。**
 
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+- 拦截 GL11C、GL12C、GL45C 中的 glTexSubImage2D 调用
+- 记录纹理尺寸、格式、缓冲区地址、数据哈希等信息
+- 过滤特定尺寸的纹理（默认 512x512）
+- 输出调用堆栈（过滤 Minecraft 相关帧）
 
-Indexes an array like
+## 致谢
 
-    buffers[GL_ARRAY_BUFFER].buffer = vbo
+- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
+- [GLFW](https://www.glfw.org/) - 窗口管理库
+- [openglonmetal](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
 
-So internal to processGLState the vertex buffer array is taken apart, buffers and attributes mapped then we walk through uniforms / textures through their binding points in the GL state and map these to Metal state.
+## 许可证
 
-Once you walk a glDrawArrays call through processGLState, you will get a jist of how this all works.
-
-## Build
-See BUILD.md
-
-## Where to start
-Use the Xcode MGL project to build your own tests and projects... start by building test_mgl_glfw, this is a chunk of test code I used to get most of the functionality up and running. Xcode has all the debugging tools and won't leave you wondering WTF is that assert about, throwing your hands up and walking away without learning anything about the internals of OpenGL or contributing to this project.
-
-## Performance
-I updated most of the immutible objects to allocate metal object up front, this is how to avoid the deferred allocation used in OpenGL and increase performance. The performance on simple tests using a FBO / draw element instance / uniform update in a simple test I wrote is negligiable.. you had to run the loop over 100,000,000 times to extract any difference.
-So.. it should be good.
-
-## Missing functions
-There are a lot of missing functions, if you open up XCode and look at the project you will see many functions defined and laid out but are just bracketed around an assert(0); If you want functionality just work with the XCode project with test_mgl_glfw.. pick a test like test_2d_array_textures and walk through each function using the debugger and you will get a gist on how it all works.
-This is the best way to start adding functionality, until you open it up it will remain a black box. From there just read the GL spec for the function you need, add it in bits by building a test for it and verifying the functionality.
-
-## Why the focus on 4.6 functionality?
-OpenGL is huge, and the effort was intended capture 4.6 functionality rather than try to implement it all (and that includes a lot of 3.x functionality). This is a good path to embed functionality into the base then add in all the older functionality later using the paths you want rather than hacking apart older paths to make modern OpenGL functionality.
-
-## Why add ES 3.x support?
-Well because people were asking for it, ES 3.x is a subset of the OpenGL core. It builds along side the OpenGL 4.6 core with the ES 3.x restictions in place and a separate library for just ES 3.x functions to live in. I am not a ES 3.x user but I hope to get more testing done on ES 3.x soon.
-
-## Contributing
-If you want to contribute that would be great, it's all written in C.. in the same style all of the OpenGL framework from Apple was written in. If you don't like the coding style, don't change it. Just follow the same coding style and put your efforts into testing and functionality.
-
-We really need people to contribute to the functionality and testing rather than trying to just build MGL and see if it works with their application. If you can write C code you can probably figure out how MGL works and contribute.
-
-Its a great way to learn the internals of OpenGL and Metal at the same time, and if you are a college student.. or even an expirienced coder its going to look great on a resume that you actually did work on OpenGL internals and its not just a black box to you. A typical driver for a graphics driver will have hundreds of thousands of lines of code and its all state driven regardless of what they say about new interfaces like Metal or Vulkan, because hardware doesn't match these interfaces directly you have to evaluate state like OpenGL does but at a more abstract level.
-
-## Future
-I will continue to implement functionality as needed, I had a goal of implementing OpenGL 4.6 functional paths for buffers, textures, shaders (vertex, fragment, and compute shaders) to release it. Now that that is done my own application uses it and it works fine. But more tests and bugs need to written to bring it to a stage that it can be just compiled and distributed with a Makefile.
-
-## Questions?
-You can reach me at sandstormsoftware@gmail.com for more information, it would be great to see this used by others and developed into a full fledged project anyone can use.
-  
-Cheers
-  
-Mike
-  
-  
-
-
+本项目采用 Apache License 2.0 许可证 - 详见 [LICENSE](LICENSE) 文件。

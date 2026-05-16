@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <glslang_c_interface.h>
@@ -34,6 +35,295 @@
 #ifndef MGL_VERBOSE_PROGRAM_LOGS
 #define MGL_VERBOSE_PROGRAM_LOGS 0
 #endif
+
+#define MGL_TEXEL_BUFFER_TEXTURE_WIDTH 4096u
+
+static size_t mglRoundUpSize(size_t value, size_t alignment)
+{
+    return alignment ? ((value + alignment - 1) / alignment) * alignment : value;
+}
+
+static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint max_index, const char *name, GLuint gl_binding)
+{
+    for (int stage = _VERTEX_SHADER; stage <= max_stage && stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        GLuint limit = (stage == max_stage) ? max_index : resources->count;
+        for (GLuint i = 0; i < limit; i++) {
+            SpirvResource *res = &resources->list[i];
+            if ((name && res->name && !strcmp(name, res->name)) || res->gl_binding == gl_binding) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
+}
+
+static GLint mglActiveUniformBlockCount(Program *program)
+{
+    GLint total = 0;
+
+    if (!program) {
+        return 0;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (!mglUniformBlockNameSeen(program, stage, i, res->name, res->gl_binding)) {
+                total++;
+            }
+        }
+    }
+
+    return total;
+}
+
+static GLint mglActiveUniformBlockMaxNameLength(Program *program)
+{
+    GLint max_len = 0;
+
+    if (!program) {
+        return 0;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglUniformBlockNameSeen(program, stage, i, res->name, res->gl_binding)) {
+                continue;
+            }
+            GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
+            if (len > max_len) {
+                max_len = len;
+            }
+        }
+    }
+
+    return max_len;
+}
+
+static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint index)
+{
+    return 0x4000 + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
+}
+
+static bool mglIsSamplerResourceType(int res_type)
+{
+    return res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT ||
+           res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+           res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE ||
+           res_type == SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS ||
+           res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE;
+}
+
+static GLint mglDefaultSamplerUnitForName(const char *name)
+{
+    if (!name || !*name) {
+        return -1;
+    }
+
+    const char *end = name + strlen(name);
+    const char *digits = end;
+    while (digits > name && digits[-1] >= '0' && digits[-1] <= '9') {
+        digits--;
+    }
+
+    if (digits < end) {
+        unsigned long unit = strtoul(digits, NULL, 10);
+        return (unit < TEXTURE_UNITS) ? (GLint)unit : -1;
+    }
+
+    if (!strcmp(name, "DiffuseSampler")) {
+        return 0;
+    }
+    if (!strcmp(name, "OverlaySampler")) {
+        return 1;
+    }
+    if (!strcmp(name, "LightSampler") || !strcmp(name, "LightmapSampler")) {
+        return 2;
+    }
+
+    return -1;
+}
+
+static void mglApplyDefaultSamplerUnit(Program *program, int stage, const SpirvResource *res)
+{
+    if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES || res->binding >= TEXTURE_UNITS) {
+        return;
+    }
+
+    GLint unit = mglDefaultSamplerUnitForName(res->name);
+    if (unit < 0 || unit >= TEXTURE_UNITS) {
+        return;
+    }
+
+    program->sampler_units_by_stage[stage][res->binding] = unit;
+    program->sampler_units[res->binding] = unit;
+}
+
+static bool mglMSLIdentifierChar(char c)
+{
+    return (c == '_') ||
+           (c >= '0' && c <= '9') ||
+           (c >= 'A' && c <= 'Z') ||
+           (c >= 'a' && c <= 'z');
+}
+
+static bool mglFindMSLResourceIndex(const char *msl,
+                                    const char *name,
+                                    const char *attribute,
+                                    GLuint *index_out)
+{
+    if (!msl || !name || !attribute || !index_out) {
+        return false;
+    }
+
+    size_t name_len = strlen(name);
+    size_t attr_len = strlen(attribute);
+    const char *cursor = msl;
+
+    while ((cursor = strstr(cursor, name)) != NULL) {
+        char before = (cursor == msl) ? '\0' : cursor[-1];
+        char after = cursor[name_len];
+        if (mglMSLIdentifierChar(before) || mglMSLIdentifierChar(after)) {
+            cursor += name_len;
+            continue;
+        }
+
+        const char *line_end = strchr(cursor, '\n');
+        if (!line_end) {
+            line_end = cursor + strlen(cursor);
+        }
+
+        const char *attr = strstr(cursor + name_len, attribute);
+        if (!attr || attr > line_end) {
+            cursor += name_len;
+            continue;
+        }
+
+        attr += attr_len;
+        char *end = NULL;
+        unsigned long value = strtoul(attr, &end, 10);
+        if (end != attr && value < TEXTURE_UNITS) {
+            *index_out = (GLuint)value;
+            return true;
+        }
+
+        cursor += name_len;
+    }
+
+    return false;
+}
+
+static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
+{
+    if (!pptr || !msl || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return;
+    }
+
+    const int texture_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
+
+    for (size_t t = 0; t < sizeof(texture_resource_types) / sizeof(texture_resource_types[0]); t++) {
+        int res_type = texture_resource_types[t];
+        SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            GLuint metal_index = 0;
+            if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[texture(", &metal_index)) {
+                continue;
+            }
+
+            if (res->binding != metal_index) {
+                fprintf(stderr,
+                        "MGL RESOURCE FIX: program=%u stage=%d type=%d %s texture binding %u -> %u\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        res->name,
+                        (unsigned)res->binding,
+                        (unsigned)metal_index);
+                res->binding = metal_index;
+            }
+        }
+    }
+
+    const int buffer_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
+        SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
+        SPVC_RESOURCE_TYPE_PUSH_CONSTANT
+    };
+
+    for (size_t t = 0; t < sizeof(buffer_resource_types) / sizeof(buffer_resource_types[0]); t++) {
+        int res_type = buffer_resource_types[t];
+        SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            GLuint metal_index = 0;
+            if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[buffer(", &metal_index)) {
+                continue;
+            }
+
+            if (res->binding != metal_index) {
+                fprintf(stderr,
+                        "MGL RESOURCE FIX: program=%u stage=%d type=%d %s buffer binding %u -> %u (gl=%u)\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        res->name,
+                        (unsigned)res->binding,
+                        (unsigned)metal_index,
+                        (unsigned)res->gl_binding);
+                res->binding = metal_index;
+            }
+        }
+    }
+
+    SpirvResourceList *samplers =
+        &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
+    for (GLuint i = 0; i < samplers->count; i++) {
+        SpirvResource *res = &samplers->list[i];
+        GLuint metal_index = 0;
+        if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[sampler(", &metal_index)) {
+            continue;
+        }
+        if (res->binding != metal_index) {
+            fprintf(stderr,
+                    "MGL RESOURCE FIX: program=%u stage=%d type=%d %s sampler binding %u -> %u\n",
+                    pptr->name,
+                    stage,
+                    SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+                    res->name,
+                    (unsigned)res->binding,
+                    (unsigned)metal_index);
+            res->binding = metal_index;
+        }
+    }
+
+    const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
+
+    for (size_t t = 0; t < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); t++) {
+        int res_type = sampler_resource_types[t];
+        SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; i < resources->count; i++) {
+            mglApplyDefaultSamplerUnit(pptr, stage, &resources->list[i]);
+        }
+    }
+}
 
 // Program Pipeline management
 ProgramPipeline *newProgramPipeline(GLMContext ctx, GLuint pipeline)
@@ -113,6 +403,14 @@ Program *newProgram(GLMContext ctx, GLuint program)
     bzero(ptr, sizeof(Program));
 
     ptr->name = program;
+    for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+        ptr->sampler_units[i] = -1;
+    }
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+            ptr->sampler_units_by_stage[stage][i] = -1;
+        }
+    }
 
     return ptr;
 }
@@ -233,6 +531,13 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             {
                 mglFreeShader(ctx, sptr);
             }
+        }
+    }
+
+    for (int i = 0; i < MAX_ATTRIBS; i++) {
+        if (ptr->attrib_location_names[i]) {
+            free(ptr->attrib_location_names[i]);
+            ptr->attrib_location_names[i] = NULL;
         }
     }
 
@@ -454,6 +759,180 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     *pstr = out;
 }
 
+static GLboolean mglFindMSLUserLocationForName(const char *msl, const char *name, GLuint *location_out)
+{
+    if (!msl || !name || !location_out) {
+        return GL_FALSE;
+    }
+
+    size_t name_len = strlen(name);
+    if (name_len == 0) {
+        return GL_FALSE;
+    }
+
+    const char *cursor = msl;
+    while ((cursor = strstr(cursor, name)) != NULL) {
+        const char *line_start = cursor;
+        const char *line_end = cursor;
+
+        while (line_start > msl && line_start[-1] != '\n' && line_start[-1] != '\r') {
+            line_start--;
+        }
+        while (*line_end && *line_end != '\n' && *line_end != '\r') {
+            line_end++;
+        }
+
+        char before = (cursor == line_start) ? '\0' : cursor[-1];
+        char after = cursor[name_len];
+        GLboolean before_ident = (before == '_') ||
+                                  (before >= '0' && before <= '9') ||
+                                  (before >= 'A' && before <= 'Z') ||
+                                  (before >= 'a' && before <= 'z');
+        GLboolean after_ident = (after == '_') ||
+                                 (after >= '0' && after <= '9') ||
+                                 (after >= 'A' && after <= 'Z') ||
+                                 (after >= 'a' && after <= 'z');
+        if (!before_ident && !after_ident) {
+            const char *loc = strstr(cursor, "[[user(locn");
+            if (loc && loc < line_end) {
+                loc += strlen("[[user(locn");
+                char *end = NULL;
+                unsigned long parsed = strtoul(loc, &end, 10);
+                if (end && end > loc && end <= line_end) {
+                    *location_out = (GLuint)parsed;
+                    return GL_TRUE;
+                }
+            }
+        }
+
+        cursor += name_len;
+    }
+
+    return GL_FALSE;
+}
+
+static bool mglUniformStructName(const char *name)
+{
+    if (!name || !*name) {
+        return false;
+    }
+
+    size_t len = strlen(name);
+    if ((len >= 3 && strcmp(name + len - 3, "_in") == 0) ||
+        (len >= 4 && strcmp(name + len - 4, "_out") == 0)) {
+        return false;
+    }
+
+    return true;
+}
+
+static void applyMSLUniformBufferPacking(Program *pptr, int stage)
+{
+    if (!pptr || !pptr->spirv[stage].msl_str) {
+        return;
+    }
+
+    /*
+     * Uniform buffers use GL/std140 layout. A vec3 member still occupies a
+     * 16-byte slot there, and Metal's float3 struct alignment matches that
+     * requirement. Rewriting uniform float3 fields to packed_float3 shifts
+     * subsequent members, e.g. CloudInfo.CellSize moves from offset 32 to 28.
+     */
+    return;
+
+    const char *src = pptr->spirv[stage].msl_str;
+    size_t len = strlen(src);
+    size_t cap = len + 1;
+    char *out = (char *)malloc(cap);
+    if (!out) {
+        return;
+    }
+
+    size_t out_len = 0;
+    bool in_struct = false;
+    bool patch_struct = false;
+    unsigned patched = 0;
+
+    const char *p = src;
+    while (*p) {
+        const char *line_start = p;
+        const char *line_end = strchr(p, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - line_start + 1) : strlen(line_start);
+        size_t content_len = line_end ? line_len - 1 : line_len;
+
+        if (!in_struct) {
+            char struct_name[128] = {0};
+            if (sscanf(line_start, "struct %127s", struct_name) == 1) {
+                char *brace = strchr(struct_name, '{');
+                if (brace) {
+                    *brace = '\0';
+                }
+                in_struct = true;
+                patch_struct = mglUniformStructName(struct_name);
+            }
+        }
+
+        const char *needle = "float3 ";
+        const char *match = NULL;
+        if (in_struct && patch_struct) {
+            match = strstr(line_start, needle);
+            if (match && match >= line_start + content_len) {
+                match = NULL;
+            }
+        }
+
+        size_t replacement_len = strlen("packed_float3 ");
+        size_t needle_len = strlen(needle);
+        size_t extra = match ? replacement_len - needle_len : 0;
+        if (out_len + line_len + extra + 1 > cap) {
+            while (out_len + line_len + extra + 1 > cap) {
+                cap *= 2;
+            }
+            char *grown = (char *)realloc(out, cap);
+            if (!grown) {
+                free(out);
+                return;
+            }
+            out = grown;
+        }
+
+        if (match) {
+            size_t prefix_len = (size_t)(match - line_start);
+            memcpy(out + out_len, line_start, prefix_len);
+            out_len += prefix_len;
+            memcpy(out + out_len, "packed_float3 ", replacement_len);
+            out_len += replacement_len;
+            size_t suffix_off = prefix_len + needle_len;
+            memcpy(out + out_len, line_start + suffix_off, line_len - suffix_off);
+            out_len += line_len - suffix_off;
+            patched++;
+        } else {
+            memcpy(out + out_len, line_start, line_len);
+            out_len += line_len;
+        }
+
+        if (in_struct && memchr(line_start, '}', content_len)) {
+            in_struct = false;
+            patch_struct = false;
+        }
+
+        p = line_end ? line_end + 1 : line_start + line_len;
+    }
+
+    out[out_len] = '\0';
+    if (patched > 0) {
+        fprintf(stderr,
+                "MGL MSL PACKING FIX: program=%u stage=%d converted %u uniform float3 field(s) to packed_float3\n",
+                pptr->name,
+                stage,
+                patched);
+        free(pptr->spirv[stage].msl_str);
+        pptr->spirv[stage].msl_str = out;
+    } else {
+        free(out);
+    }
+}
+
 char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 {
     const SpvId *spirv;
@@ -512,6 +991,13 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     // ERROR_CHECK_RETURN(spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, SPVC_MAKE_MSL_VERSION(3,1,0)) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, SPVC_MAKE_MSL_VERSION(3,1,0)) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_VERSION) failed\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
+    if (spvc_compiler_options_set_uint(options,
+                                       SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH,
+                                       MGL_TEXEL_BUFFER_TEXTURE_WIDTH) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH) failed\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
@@ -666,8 +1152,13 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].type_id = list[i].type_id;
             ptr->spirv_resources_list[stage][res_type].list[i].name = strdup(list[i].name);
             ptr->spirv_resources_list[stage][res_type].list[i].set = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationDescriptorSet);
-            ptr->spirv_resources_list[stage][res_type].list[i].binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
+            ptr->spirv_resources_list[stage][res_type].list[i].gl_binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
+            ptr->spirv_resources_list[stage][res_type].list[i].binding = ptr->spirv_resources_list[stage][res_type].list[i].gl_binding;
             ptr->spirv_resources_list[stage][res_type].list[i].location = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationLocation);
+            ptr->spirv_resources_list[stage][res_type].list[i].uniform_location =
+                mglIsSamplerResourceType(res_type)
+                    ? mglSyntheticSamplerUniformLocation(stage, res_type, (GLuint)i)
+                    : -1;
             ptr->spirv_resources_list[stage][res_type].list[i].required_size = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_dim = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
@@ -744,6 +1235,10 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     declared_size = active_size;
                 }
 
+                if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER && declared_size > 0) {
+                    declared_size = mglRoundUpSize(declared_size, 16);
+                }
+
                 ptr->spirv_resources_list[stage][res_type].list[i].required_size = declared_size;
             }
         }
@@ -763,6 +1258,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         replace_all_substr(&str_ret,
                            " sampler.sample(samplerSmplr,",
                            " sourceTex.sample(sourceSmplr,");
+        applyMSLResourceBindings(ptr, stage, str_ret);
     }
 
     // Frees all memory we allocated so far.
@@ -803,6 +1299,85 @@ static void clearStageCompileState(Program *pptr, int stage)
     }
 }
 
+static GLint mglDefaultAttribLocationForName(const char *name)
+{
+    if (!name) {
+        return -1;
+    }
+
+    if (strcmp(name, "Position") == 0) return 0;
+    if (strcmp(name, "Color") == 0) return 1;
+    if (strcmp(name, "UV0") == 0) return 2;
+    if (strcmp(name, "UV1") == 0) return 3;
+    if (strcmp(name, "UV2") == 0) return 4;
+    if (strcmp(name, "Normal") == 0) return 5;
+
+    return -1;
+}
+
+static GLint mglDesiredAttribLocationForName(Program *pptr, const char *name)
+{
+    if (!pptr || !name) {
+        return -1;
+    }
+
+    for (int i = 0; i < MAX_ATTRIBS; i++) {
+        if (pptr->attrib_location_names[i] &&
+            strcmp(pptr->attrib_location_names[i], name) == 0) {
+            return i;
+        }
+    }
+
+    return mglDefaultAttribLocationForName(name);
+}
+
+static void applyVertexInputLocations(Program *pptr)
+{
+    if (!pptr || !pptr->spirv[_VERTEX_SHADER].msl_str) {
+        return;
+    }
+
+    SpirvResourceList *vertex_inputs =
+        &pptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+    if (!vertex_inputs->list) {
+        return;
+    }
+
+    for (GLuint i = 0; i < vertex_inputs->count; i++) {
+        SpirvResource *vs_in = &vertex_inputs->list[i];
+        GLint desiredLocation = mglDesiredAttribLocationForName(pptr, vs_in->name);
+        if (desiredLocation < 0 || desiredLocation >= MAX_ATTRIBS ||
+            vs_in->location == (GLuint)desiredLocation) {
+            continue;
+        }
+
+        char from[256];
+        char to[256];
+        snprintf(from, sizeof(from), "%s [[attribute(%u)]]",
+                 vs_in->name, (unsigned)vs_in->location);
+        snprintf(to, sizeof(to), "%s [[attribute(%u)]]",
+                 vs_in->name, (unsigned)desiredLocation);
+
+        if (strstr(pptr->spirv[_VERTEX_SHADER].msl_str, from)) {
+            fprintf(stderr,
+                    "MGL ATTRIB FIX: program=%u vertex input %s loc %u -> %d\n",
+                    pptr->name,
+                    vs_in->name,
+                    (unsigned)vs_in->location,
+                    desiredLocation);
+            replace_all_substr(&pptr->spirv[_VERTEX_SHADER].msl_str, from, to);
+            vs_in->location = (GLuint)desiredLocation;
+        } else {
+            fprintf(stderr,
+                    "MGL ATTRIB WARNING: program=%u wanted %s loc %u -> %d but MSL pattern was not found\n",
+                    pptr->name,
+                    vs_in->name,
+                    (unsigned)vs_in->location,
+                    desiredLocation);
+        }
+    }
+}
+
 static void alignFragmentInputLocationsToVertexOutputs(Program *pptr)
 {
     if (!pptr ||
@@ -832,33 +1407,46 @@ static void alignFragmentInputLocationsToVertexOutputs(Program *pptr)
                 continue;
             }
 
-            if (fs_in->location == vs_out->location) {
+            GLuint desired_location = vs_out->location;
+            GLuint current_location = fs_in->location;
+            if (mglFindMSLUserLocationForName(pptr->spirv[_VERTEX_SHADER].msl_str,
+                                              vs_out->name,
+                                              &desired_location)) {
+                vs_out->location = desired_location;
+            }
+            if (mglFindMSLUserLocationForName(pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                              fs_in->name,
+                                              &current_location)) {
+                fs_in->location = current_location;
+            }
+
+            if (current_location == desired_location) {
                 break;
             }
 
             char from[256];
             char to[256];
             snprintf(from, sizeof(from), "%s [[user(locn%u)]]",
-                     fs_in->name, (unsigned)fs_in->location);
+                     fs_in->name, (unsigned)current_location);
             snprintf(to, sizeof(to), "%s [[user(locn%u)]]",
-                     fs_in->name, (unsigned)vs_out->location);
+                     fs_in->name, (unsigned)desired_location);
 
             if (strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, from)) {
                 fprintf(stderr,
                         "MGL IFACE FIX: program=%u fragment input %s loc %u -> %u to match vertex output\n",
                         pptr->name,
                         fs_in->name,
-                        (unsigned)fs_in->location,
-                        (unsigned)vs_out->location);
+                        (unsigned)current_location,
+                        (unsigned)desired_location);
                 replace_all_substr(&pptr->spirv[_FRAGMENT_SHADER].msl_str, from, to);
-                fs_in->location = vs_out->location;
+                fs_in->location = desired_location;
             } else {
                 fprintf(stderr,
                         "MGL IFACE WARNING: program=%u wanted to align %s loc %u -> %u but MSL pattern was not found\n",
                         pptr->name,
                         fs_in->name,
-                        (unsigned)fs_in->location,
-                        (unsigned)vs_out->location);
+                        (unsigned)current_location,
+                        (unsigned)desired_location);
             }
             break;
         }
@@ -937,6 +1525,7 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
         ERROR_RETURN(GL_INVALID_OPERATION);
         return false;
     }
+    applyMSLUniformBufferPacking(pptr, stage);
 
     return true;
 }
@@ -1026,6 +1615,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    applyVertexInputLocations(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
 
     /* linked_glsl_program is used as a linked-state marker only. */
@@ -1119,12 +1709,29 @@ void mglUseProgram(GLMContext ctx, GLuint program)
 
 void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const GLchar *name)
 {
-    // OpenGL allows pre-link attribute binding. Current pipeline uses auto-mapped
-    // locations via glslang_program_map_io; accept this call as a harmless no-op.
-    (void)ctx;
-    (void)program;
-    (void)index;
-    (void)name;
+    if (index >= MAX_ATTRIBS || !name) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = findProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ptr->attrib_location_names[index]) {
+        free(ptr->attrib_location_names[index]);
+        ptr->attrib_location_names[index] = NULL;
+    }
+
+    ptr->attrib_location_names[index] = strdup(name);
+    if (!ptr->attrib_location_names[index]) {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    ptr->dirty_bits |= DIRTY_PROGRAM;
 }
 
 void mglGetActiveAttrib(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name)
@@ -1227,10 +1834,14 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
         case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
         case GL_ACTIVE_UNIFORMS:
         case GL_ACTIVE_UNIFORM_MAX_LENGTH:
-        case GL_ACTIVE_UNIFORM_BLOCKS:
-        case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH:
             /* These require SPIRV resource reflection - return 0 for now */
             *params = 0;
+            break;
+        case GL_ACTIVE_UNIFORM_BLOCKS:
+            *params = mglActiveUniformBlockCount(pptr);
+            break;
+        case GL_ACTIVE_UNIFORM_BLOCK_MAX_NAME_LENGTH:
+            *params = mglActiveUniformBlockMaxNameLength(pptr);
             break;
         case GL_COMPUTE_WORK_GROUP_SIZE:
             if (pptr->shader_slots[_COMPUTE_SHADER]) {

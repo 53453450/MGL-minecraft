@@ -1218,6 +1218,79 @@ static inline GLuint mglTraceTextureNameC(Texture *tex)
     return tex ? tex->name : 0u;
 }
 
+static GLboolean mglTextureUnitHasAnyBinding(GLMContext ctx, GLuint unit)
+{
+    if (!ctx || unit >= TEXTURE_UNITS) {
+        return GL_FALSE;
+    }
+
+    for (GLuint i = 0; i < _MAX_TEXTURE_TYPES; i++) {
+        if (STATE(texture_units[unit].textures[i])) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static Texture *mglChooseTextureUnitActiveBinding(GLMContext ctx, GLuint unit)
+{
+    if (!ctx || unit >= TEXTURE_UNITS) {
+        return NULL;
+    }
+
+    Texture *active = STATE(active_textures[unit]);
+    if (active) {
+        for (GLuint i = 0; i < _MAX_TEXTURE_TYPES; i++) {
+            if (STATE(texture_units[unit].textures[i]) == active) {
+                return active;
+            }
+        }
+    }
+
+    static const GLuint fallback_order[] = {
+        _TEXTURE_2D,
+        _TEXTURE_2D_ARRAY,
+        _TEXTURE_CUBE_MAP,
+        _TEXTURE_3D,
+        _TEXTURE_1D,
+        _TEXTURE_1D_ARRAY,
+        _TEXTURE_RECTANGLE,
+        _TEXTURE_CUBE_MAP_ARRAY,
+        _TEXTURE_BUFFER_TARGET,
+        _TEXTURE_2D_MULTISAMPLE,
+        _TEXTURE_2D_MULTISAMPLE_ARRAY,
+        _RENDERBUFFER
+    };
+
+    for (size_t i = 0; i < sizeof(fallback_order) / sizeof(fallback_order[0]); i++) {
+        Texture *tex = STATE(texture_units[unit].textures[fallback_order[i]]);
+        if (tex) {
+            return tex;
+        }
+    }
+
+    return NULL;
+}
+
+static void mglUpdateTextureUnitActiveMask(GLMContext ctx, GLuint unit)
+{
+    if (!ctx || unit >= TEXTURE_UNITS) {
+        return;
+    }
+
+    Texture *active = mglChooseTextureUnitActiveBinding(ctx, unit);
+    GLuint mask_index = unit / 32u;
+    GLuint mask = 1u << (unit % 32u);
+
+    STATE(active_textures[unit]) = active;
+    if (mglTextureUnitHasAnyBinding(ctx, unit)) {
+        STATE(active_texture_mask[mask_index]) |= mask;
+    } else {
+        STATE(active_texture_mask[mask_index]) &= ~mask;
+    }
+}
+
 static void mglTraceTextureUnitState(GLMContext ctx,
                                      const char *api,
                                      GLuint unit,
@@ -1469,23 +1542,14 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
         return;
     }
 
-    GLuint mask_index = active_texture / 32;
-    GLuint mask = (1u << (active_texture % 32u));
-
-    if (ptr)
-    {
-        STATE(active_texture_mask[mask_index]) |= mask;
-    }
-    else
-    {
-        STATE(active_texture_mask[mask_index]) &= ~mask;
-    }
-
-    STATE(active_textures[active_texture]) = ptr;
     STATE(texture_units[active_texture].textures[index]) = ptr;
-    STATE(dirty_bits) |= DIRTY_TEX;
+    if (ptr) {
+        STATE(active_textures[active_texture]) = ptr;
+    }
+    mglUpdateTextureUnitActiveMask(ctx, active_texture);
+    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
 
-    mglTraceTextureUnitState(ctx, "BindTexture", active_texture, target, texture, ptr);
+    mglTraceTextureUnitState(ctx, ptr ? "BindTexture" : "BindTexture.unbindTarget", active_texture, target, texture, STATE(active_textures[active_texture]));
 }
 
 void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum internalformat)
@@ -1606,7 +1670,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 }
 
                 if (cleared_unit) {
-                    ctx->state.active_texture_mask[i / 32] &= ~(1u << (i % 32));
+                    mglUpdateTextureUnitActiveMask(ctx, (GLuint)i);
                     ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
                 }
             }
@@ -1743,7 +1807,7 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
 
             STATE(texture_units[unit].textures[index]) = ptr;
             STATE(active_textures[unit]) = ptr;
-            STATE(active_texture_mask[unit / 32]) |= (1u << (unit % 32u));
+            mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures", unit, ptr->target, texture, ptr);
         }
         else
@@ -1753,7 +1817,7 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
                 STATE(texture_units[unit].textures[index]) = NULL;
             }
             STATE(active_textures[unit]) = NULL;
-            STATE(active_texture_mask[unit / 32]) &= ~(1u << (unit % 32u));
+            mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures.unbind", unit, 0, 0, NULL);
         }
     }
@@ -1781,7 +1845,7 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
             STATE(texture_units[unit].textures[index]) = NULL;
         }
         STATE(active_textures[unit]) = NULL;
-        STATE(active_texture_mask[unit / 32]) &= ~(1u << (unit % 32u));
+        mglUpdateTextureUnitActiveMask(ctx, unit);
         STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
         mglTraceTextureUnitState(ctx, "BindTextureUnit.unbind", unit, 0, 0, NULL);
         return;
@@ -1805,7 +1869,7 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
 
     STATE(texture_units[unit].textures[index]) = ptr;
     STATE(active_textures[unit]) = ptr;
-    STATE(active_texture_mask[unit / 32]) |= (1u << (unit % 32u));
+    mglUpdateTextureUnitActiveMask(ctx, unit);
     STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
     mglTraceTextureUnitState(ctx, "BindTextureUnit", unit, ptr->target, texture, ptr);
 }
@@ -2537,7 +2601,8 @@ void unpackTexture(GLMContext ctx, Texture *tex, GLuint face, GLuint level, void
     {
         size_t xoffset_bytes = xoffset * pixel_size; // num pixels
         size_t yoffset_bytes = yoffset * dst_pitch; // num lines (rows * bytes_per_row)
-        size_t zoffset_bytes = zoffset * dst_pitch * height; // num planes
+        size_t level_height = tex->faces[face].levels[level].height;
+        size_t zoffset_bytes = zoffset * dst_pitch * level_height; // num planes
 
         dst += xoffset_bytes;
         dst += yoffset_bytes;
@@ -2547,11 +2612,20 @@ void unpackTexture(GLMContext ctx, Texture *tex, GLuint face, GLuint level, void
     if (depth > 1)
     {
         // 3d texture
-        for(int y=0; y<depth; y++)
+        size_t copy_size = width * pixel_size;
+        size_t dst_image_pitch = dst_pitch * tex->faces[face].levels[level].height;
+        size_t src_image_pitch = src_pitch * height;
+
+        for(size_t z=0; z<depth; z++)
         {
-            memcpy(dst, src, dst_pitch);
-            src += src_pitch;
-            dst += dst_pitch;
+            GLubyte *src_slice = src + z * src_image_pitch;
+            GLubyte *dst_slice = dst + z * dst_image_pitch;
+            for(size_t y=0; y<height; y++)
+            {
+                memcpy(dst_slice, src_slice, copy_size);
+                src_slice += src_pitch;
+                dst_slice += dst_pitch;
+            }
         }
     }
     else if (height > 1)
@@ -3739,7 +3813,27 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         size_t src_image_size;
         size_t src_size;
 
-        src_offset = (size_t)0;
+        const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, buf);
+        if (!pbo_data || resolved_src < pbo_data) {
+            fprintf(stderr,
+                    "MGL ERROR: texSubImage PBO direct upload has invalid source base tex=%u unpack=%u base=%p resolved=%p\n",
+                    tex->name,
+                    buf ? buf->name : 0u,
+                    pbo_data,
+                    resolved_src);
+            break;
+        }
+
+        src_offset = (size_t)(resolved_src - pbo_data);
+        if (src_offset > (size_t)buf->size) {
+            fprintf(stderr,
+                    "MGL ERROR: texSubImage PBO direct upload source offset out of range tex=%u unpack=%u offset=%zu size=%lld\n",
+                    tex->name,
+                    buf ? buf->name : 0u,
+                    src_offset,
+                    (long long)buf->size);
+            break;
+        }
 
         src_image_size = src_pitch * height;
 
@@ -3753,7 +3847,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_init_source = kTexSubImagePBO;
         lvl->last_upload_size = required_bytes;
         lvl->last_src_ptr = resolved_src;
-        lvl->last_src_hash = resolved_src_hash;
+        lvl->last_src_hash = dst_hash;
 
         if (trace_upload) {
             fprintf(stderr,
@@ -3776,7 +3870,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     lvl->last_init_source = resolved_unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
     lvl->last_upload_size = required_bytes;
     lvl->last_src_ptr = resolved_src;
-    lvl->last_src_hash = resolved_src_hash;
+    lvl->last_src_hash = dst_hash;
 
     if (trace_upload) {
         fprintf(stderr,
@@ -4709,6 +4803,40 @@ void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat
     ERROR_CHECK_RETURN(offset <= buf->size, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(attach_size <= buf->size - offset, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(((size_t)attach_size / bytes_per_texel) > 0, GL_INVALID_VALUE);
+
+    /*
+     * Some render paths re-specify the same texel-buffer attachment before
+     * each draw. GL treats that as the same association, so keep the existing
+     * Metal texture alive and let bindMTLTexture refresh it only when the
+     * source buffer itself is dirty.
+     */
+    if (tex->texture_buffer == buf &&
+        tex->texture_buffer_offset == offset &&
+        tex->texture_buffer_size == attach_size &&
+        tex->internalformat == internalformat &&
+        tex->complete == GL_TRUE)
+    {
+        tex->dirty_bits &= ~DIRTY_TEXTURE_LEVEL;
+        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+
+        static uint64_t s_texBufferUnchangedLogs = 0;
+        uint64_t hit = ++s_texBufferUnchangedLogs;
+        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL TRACE TexBuffer unchanged hit=%llu texture=%u internal=0x%x buffer=%u offset=%lld size=%lld texels=%u bpt=%zu dirty=0x%x bufferDirty=0x%x\n",
+                    (unsigned long long)hit,
+                    texture,
+                    internalformat,
+                    buffer,
+                    (long long)offset,
+                    (long long)attach_size,
+                    tex->width,
+                    bytes_per_texel,
+                    tex->dirty_bits,
+                    buf->data.dirty_bits);
+        }
+        return;
+    }
 
     if (tex->mtl_data && ctx->mtl_funcs.mtlDeleteMTLObj)
     {
