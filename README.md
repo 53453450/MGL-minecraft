@@ -1,6 +1,4 @@
-```md
-
-🌐 Language: 中文 | [English](README_EN.md)
+Language: 中文 | [English](README_EN.md)
 
 
 # MGL - Metal-GL
