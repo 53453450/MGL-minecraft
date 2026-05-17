@@ -21,6 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+#include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <glslang_c_interface.h>
 #include <glslang_c_shader_types.h>
@@ -41,6 +43,60 @@
 static size_t mglRoundUpSize(size_t value, size_t alignment)
 {
     return alignment ? ((value + alignment - 1) / alignment) * alignment : value;
+}
+
+static GLboolean mglPointerLooksMallocOwned(const void *ptr)
+{
+    uintptr_t value = (uintptr_t)ptr;
+    if (!ptr || value < 0x10000u) {
+        return GL_FALSE;
+    }
+
+    return malloc_size(ptr) > 0 ? GL_TRUE : GL_FALSE;
+}
+
+static void mglFreeProgramAttribName(Program *program, GLuint index, const char *reason)
+{
+    if (!program || index >= MAX_ATTRIBS) {
+        return;
+    }
+
+    char *name = program->attrib_location_names[index];
+    GLboolean owned = program->attrib_location_name_owned[index];
+    program->attrib_location_names[index] = NULL;
+    program->attrib_location_name_owned[index] = GL_FALSE;
+
+    if (!name) {
+        return;
+    }
+
+    if (owned && mglPointerLooksMallocOwned(name)) {
+        free(name);
+        return;
+    }
+
+    fprintf(stderr,
+            "MGL WARNING: skipped invalid attrib name free program=%u index=%u ptr=%p owned=%d reason=%s\n",
+            program->name,
+            index,
+            (void *)name,
+            owned,
+            reason ? reason : "(unknown)");
+}
+
+static GLboolean mglSetProgramAttribName(Program *program, GLuint index, const char *name)
+{
+    if (!program || index >= MAX_ATTRIBS || !name) {
+        return GL_FALSE;
+    }
+
+    mglFreeProgramAttribName(program, index, "replace");
+    program->attrib_location_names[index] = strdup(name);
+    if (!program->attrib_location_names[index]) {
+        return GL_FALSE;
+    }
+    program->attrib_location_name_owned[index] = GL_TRUE;
+    return GL_TRUE;
 }
 
 static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint max_index, const char *name, GLuint gl_binding)
@@ -111,8 +167,7 @@ static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint 
 
 static bool mglIsSamplerResourceType(int res_type)
 {
-    return res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT ||
-           res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+    return res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
            res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE ||
            res_type == SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS ||
            res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE;
@@ -535,10 +590,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     }
 
     for (int i = 0; i < MAX_ATTRIBS; i++) {
-        if (ptr->attrib_location_names[i]) {
-            free(ptr->attrib_location_names[i]);
-            ptr->attrib_location_names[i] = NULL;
-        }
+        mglFreeProgramAttribName(ptr, (GLuint)i, "program delete");
     }
 
     free(ptr);
@@ -757,6 +809,58 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
 
     free(*pstr);
     *pstr = out;
+}
+
+static size_t count_substr(const char *str, const char *needle)
+{
+    size_t count = 0;
+    size_t needle_len;
+    const char *pos;
+
+    if (!str || !needle) {
+        return 0;
+    }
+
+    needle_len = strlen(needle);
+    if (needle_len == 0) {
+        return 0;
+    }
+
+    pos = str;
+    while ((pos = strstr(pos, needle)) != NULL) {
+        count++;
+        pos += needle_len;
+    }
+
+    return count;
+}
+
+static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int res_type, const char *name)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        res_type < 0 || res_type >= _MAX_SPIRV_RES || !name) {
+        return GL_FALSE;
+    }
+
+    SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+    for (GLuint i = 0; resources->list && i < resources->count; i++) {
+        if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglVertexShaderLooksLikeMinecraftBlitScreen(Program *program)
+{
+    return mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "Position") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "UV") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "Color") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "ModelViewMat") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "ProjMat") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_OUTPUT, "texCoord") &&
+           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_OUTPUT, "vertexColor");
 }
 
 static GLboolean mglFindMSLUserLocationForName(const char *msl, const char *name, GLuint *location_out)
@@ -1001,6 +1105,11 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
+    if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION, SPVC_TRUE) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION) failed\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
     //ERROR_CHECK_RETURN(spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_GLSL_VERSION, 4.5) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     // ERROR_CHECK_RETURN(spvc_compiler_install_compiler_options(compiler_msl, options) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_install_compiler_options(compiler_msl, options) != SPVC_SUCCESS) {
@@ -1203,7 +1312,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                 res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER ||
                 res_type == SPVC_RESOURCE_TYPE_PUSH_CONSTANT) {
                 size_t declared_size = 0;
-                size_t active_size = 0;
                 spvc_type reflected_type = NULL;
 
                 if (list[i].base_type_id) {
@@ -1220,20 +1328,10 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     }
                 }
 
-                const spvc_buffer_range *ranges = NULL;
-                size_t num_ranges = 0;
-                if (spvc_compiler_get_active_buffer_ranges(compiler_msl, list[i].id, &ranges, &num_ranges) == SPVC_SUCCESS && ranges) {
-                    for (size_t r = 0; r < num_ranges; r++) {
-                        size_t end = ranges[r].offset + ranges[r].range;
-                        if (end > active_size) {
-                            active_size = end;
-                        }
-                    }
-                }
-
-                if (active_size > declared_size) {
-                    declared_size = active_size;
-                }
+                /* Some Minecraft 1.21 shaders can make SPIRV-Cross crash while
+                 * traversing active buffer ranges. The declared struct size is
+                 * enough for our uniform buffer sizing, so avoid that fragile
+                 * optional reflection pass. */
 
                 if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER && declared_size > 0) {
                     declared_size = mglRoundUpSize(declared_size, 16);
@@ -1258,6 +1356,69 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         replace_all_substr(&str_ret,
                            " sampler.sample(samplerSmplr,",
                            " sourceTex.sample(sourceSmplr,");
+        replace_all_substr(&str_ret,
+                           "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
+                           "float4x4 end_portal_layer(thread const float& layer, constant const float& GameTime)");
+        if (stage == _VERTEX_SHADER &&
+            strstr(str_ret, "float2 screenPos = (in.Position.xy * 2.0) - float2(1.0);") &&
+            strstr(str_ret, "out.gl_Position = float4(screenPos.x, screenPos.y, 1.0, 1.0);") &&
+            strstr(str_ret, "out.texCoord = in.Position.xy;")) {
+            fprintf(stderr,
+                    "MGL MSL FULLSCREEN FIX: program=%u flips sampled framebuffer texcoord Y\n",
+                    ptr->name);
+            replace_all_substr(&str_ret,
+                               "out.texCoord = in.Position.xy;",
+                               "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);");
+        }
+        if (stage == _VERTEX_SHADER && mglVertexShaderLooksLikeMinecraftBlitScreen(ptr)) {
+            size_t fix_count = 0;
+            static const struct {
+                const char *from;
+                const char *to;
+            } blit_screen_uv_rewrites[] = {
+                { "out.texCoord = in.UV;", "out.texCoord = float2(in.UV.x, 1.0 - in.UV.y);" },
+                { "out.texCoord = in.UV0;", "out.texCoord = float2(in.UV0.x, 1.0 - in.UV0.y);" },
+                { "out.texCoord = in._mgl_in_UV;", "out.texCoord = float2(in._mgl_in_UV.x, 1.0 - in._mgl_in_UV.y);" },
+                { "out.texCoord = in.in_var_UV;", "out.texCoord = float2(in.in_var_UV.x, 1.0 - in.in_var_UV.y);" },
+                { "out.texCoord = in.in_var_TEXCOORD0;", "out.texCoord = float2(in.in_var_TEXCOORD0.x, 1.0 - in.in_var_TEXCOORD0.y);" },
+            };
+
+            for (size_t i = 0; i < sizeof(blit_screen_uv_rewrites) / sizeof(blit_screen_uv_rewrites[0]); i++) {
+                size_t hits = count_substr(str_ret, blit_screen_uv_rewrites[i].from);
+                if (hits > 0) {
+                    replace_all_substr(&str_ret,
+                                       blit_screen_uv_rewrites[i].from,
+                                       blit_screen_uv_rewrites[i].to);
+                    fix_count += hits;
+                }
+            }
+
+            if (fix_count > 0) {
+                fprintf(stderr,
+                        "MGL MSL BLIT_SCREEN FIX: program=%u flips sampled framebuffer texcoord Y hits=%zu\n",
+                        ptr->name,
+                        fix_count);
+            } else {
+                const char *texcoord = strstr(str_ret, "texCoord");
+                char snippet[257] = {0};
+                if (texcoord) {
+                    size_t copy_len = strlen(texcoord);
+                    if (copy_len > sizeof(snippet) - 1) {
+                        copy_len = sizeof(snippet) - 1;
+                    }
+                    memcpy(snippet, texcoord, copy_len);
+                    for (size_t i = 0; i < copy_len; i++) {
+                        if (snippet[i] == '\n' || snippet[i] == '\r' || snippet[i] == '\t') {
+                            snippet[i] = ' ';
+                        }
+                    }
+                }
+                fprintf(stderr,
+                        "MGL MSL BLIT_SCREEN WARNING: program=%u matched resources but no UV assignment pattern; snippet=%s\n",
+                        ptr->name,
+                        snippet[0] ? snippet : "(no texCoord token)");
+            }
+        }
         applyMSLResourceBindings(ptr, stage, str_ret);
     }
 
@@ -1720,13 +1881,7 @@ void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const G
         return;
     }
 
-    if (ptr->attrib_location_names[index]) {
-        free(ptr->attrib_location_names[index]);
-        ptr->attrib_location_names[index] = NULL;
-    }
-
-    ptr->attrib_location_names[index] = strdup(name);
-    if (!ptr->attrib_location_names[index]) {
+    if (!mglSetProgramAttribName(ptr, index, name)) {
         ERROR_RETURN(GL_OUT_OF_MEMORY);
         return;
     }

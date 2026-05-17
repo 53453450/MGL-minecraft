@@ -361,6 +361,71 @@ static volatile uint64_t g_mglProcessDrawCallsSinceSwap = 0;
 static volatile uint64_t g_mglSwapCallCount = 0;
 static volatile double g_mglLastSwapSeconds = 0.0;
 
+static GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *res)
+{
+    if (!res) {
+        return 0u;
+    }
+
+    GLint knownPlainUniformBinding = -1;
+    if (res->name) {
+        if (!strcmp(res->name, "ModelViewMat")) {
+            knownPlainUniformBinding = 0;
+        } else if (!strcmp(res->name, "ProjMat")) {
+            knownPlainUniformBinding = 1;
+        } else if (!strcmp(res->name, "TextureMat")) {
+            knownPlainUniformBinding = 2;
+        } else if (!strcmp(res->name, "ColorModulator")) {
+            knownPlainUniformBinding = 3;
+        } else if (!strcmp(res->name, "FogStart")) {
+            knownPlainUniformBinding = 4;
+        } else if (!strcmp(res->name, "FogEnd")) {
+            knownPlainUniformBinding = 5;
+        } else if (!strcmp(res->name, "FogColor")) {
+            knownPlainUniformBinding = 6;
+        } else if (!strcmp(res->name, "FogShape")) {
+            knownPlainUniformBinding = 7;
+        } else if (!strcmp(res->name, "GameTime")) {
+            knownPlainUniformBinding = 8;
+        } else if (!strcmp(res->name, "ScreenSize")) {
+            knownPlainUniformBinding = 9;
+        } else if (!strcmp(res->name, "LineWidth")) {
+            knownPlainUniformBinding = 10;
+        } else if (!strcmp(res->name, "IViewRotMat")) {
+            knownPlainUniformBinding = 11;
+        } else if (!strcmp(res->name, "ChunkOffset")) {
+            knownPlainUniformBinding = 12;
+        }
+    }
+
+    /*
+     * Plain uniforms are represented internally as one tiny GL buffer per
+     * uniform location. SPIRV-Cross usually reports descriptor binding 0 for
+     * all of them, while the generated MSL assigns distinct [[buffer(n)]]
+     * slots. Use the GL uniform location to find the client-side buffer, then
+     * map that location to the reflected Metal slot later.
+     */
+    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+        if (knownPlainUniformBinding >= 0) {
+            return (GLuint)knownPlainUniformBinding;
+        }
+        if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
+            return (GLuint)res->uniform_location;
+        }
+        if (res->location < MAX_BINDABLE_BUFFERS) {
+            return res->location;
+        }
+        if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
+            return res->gl_binding;
+        }
+        if (res->binding < MAX_BINDABLE_BUFFERS) {
+            return res->binding;
+        }
+    }
+
+    return res->gl_binding;
+}
+
 typedef struct MGLSwapDrawCounters {
     uint64_t draw_arrays;
     uint64_t draw_elements;
@@ -2640,7 +2705,6 @@ void logDirtyBits(GLMContext ctx)
                 }
 
                 // Don't deallocate the original buffer for small sizes to maintain compatibility
-                ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
             }
         }
         else
@@ -2717,8 +2781,15 @@ void logDirtyBits(GLMContext ctx)
         if (count)
         {
             BufferBaseTarget *buffers;
+            BufferBaseTarget *fallbackBuffers = NULL;
 
-            buffers = ctx->state.buffer_base[gl_buffer_type].buffers;
+            Program *activeProgram = mglResolveProgramFromState(ctx);
+            if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT && activeProgram) {
+                buffers = activeProgram->plain_uniform_buffers;
+                fallbackBuffers = ctx->state.buffer_base[gl_buffer_type].buffers;
+            } else {
+                buffers = ctx->state.buffer_base[gl_buffer_type].buffers;
+            }
             
             for (int i = 0; i < count; i++)
             {
@@ -2734,7 +2805,8 @@ void logDirtyBits(GLMContext ctx)
                     i >= (int)program->spirv_resources_list[stage][spvc_type].count) {
                     continue;
                 }
-                spirv_binding = program->spirv_resources_list[stage][spvc_type].list[i].gl_binding;
+                SpirvResource *resource = &program->spirv_resources_list[stage][spvc_type].list[i];
+                spirv_binding = mglClientBufferBindingForResource(spvc_type, resource);
                 if (spirv_binding >= MAX_BINDABLE_BUFFERS)
                 {
                     NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage=%d type=%d binding=%u exceeds MAX_BINDABLE_BUFFERS=%d, skipping",
@@ -2743,6 +2815,12 @@ void logDirtyBits(GLMContext ctx)
                 }
 
                 baseBinding = &buffers[spirv_binding];
+                if (fallbackBuffers && !baseBinding->buf && baseBinding->buffer == 0) {
+                    BufferBaseTarget *fallbackBinding = &fallbackBuffers[spirv_binding];
+                    if (fallbackBinding->buf || fallbackBinding->buffer != 0) {
+                        baseBinding = fallbackBinding;
+                    }
+                }
                 buf = mglRendererGetValidatedBuffer(ctx, baseBinding->buf,
                                                     "mapGLBuffersToMTLBufferMap(base)",
                                                     (NSUInteger)spirv_binding);
@@ -3689,20 +3767,27 @@ void logDirtyBits(GLMContext ctx)
         SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
     };
     for (int t = 0; t < 4; t++) {
-        int count = [self getProgramBindingCount:_VERTEX_SHADER type:resourceTypes[t]];
+        int resourceType = resourceTypes[t];
+        int count = [self getProgramBindingCount:_VERTEX_SHADER type:resourceType];
+        Program *program = mglResolveProgramFromState(ctx);
         for (int i = 0; i < count; i++) {
-            GLuint glBinding = (GLuint)[self getProgramGLBinding:_VERTEX_SHADER type:resourceTypes[t] index:i];
-            if (glBinding >= MAX_BINDABLE_BUFFERS) {
+            if (!program || resourceType < 0 || resourceType >= _MAX_SPIRV_RES ||
+                i >= (int)program->spirv_resources_list[_VERTEX_SHADER][resourceType].count) {
+                continue;
+            }
+            SpirvResource *resource = &program->spirv_resources_list[_VERTEX_SHADER][resourceType].list[i];
+            GLuint clientBinding = mglClientBufferBindingForResource(resourceType, resource);
+            if (clientBinding >= MAX_BINDABLE_BUFFERS) {
                 continue;
             }
             NSInteger metalBinding = [self getProgramMetalBufferIndexForStage:_VERTEX_SHADER
-                                                                       binding:glBinding];
+                                                                       binding:clientBinding];
             if (metalBinding < 0 || metalBinding >= (NSInteger)kMGLMaxMetalVertexBufferCount) {
                 continue;
             }
-            if (!baseBindingPresent[glBinding] && fallbackBindingBuffer) {
+            if (!baseBindingPresent[clientBinding] && fallbackBindingBuffer) {
                 [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:(NSUInteger)metalBinding];
-                baseBindingPresent[glBinding] = true;
+                baseBindingPresent[clientBinding] = true;
                 anyBindingPresent[(NSUInteger)metalBinding] = true;
             }
         }
@@ -4081,20 +4166,27 @@ void logDirtyBits(GLMContext ctx)
         SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
     };
     for (int t = 0; t < 4; t++) {
-        int count = [self getProgramBindingCount:_FRAGMENT_SHADER type:resourceTypes[t]];
+        int resourceType = resourceTypes[t];
+        int count = [self getProgramBindingCount:_FRAGMENT_SHADER type:resourceType];
+        Program *program = mglResolveProgramFromState(ctx);
         for (int i = 0; i < count; i++) {
-            GLuint glBinding = (GLuint)[self getProgramGLBinding:_FRAGMENT_SHADER type:resourceTypes[t] index:i];
-            if (glBinding >= MAX_BINDABLE_BUFFERS) {
+            if (!program || resourceType < 0 || resourceType >= _MAX_SPIRV_RES ||
+                i >= (int)program->spirv_resources_list[_FRAGMENT_SHADER][resourceType].count) {
+                continue;
+            }
+            SpirvResource *resource = &program->spirv_resources_list[_FRAGMENT_SHADER][resourceType].list[i];
+            GLuint clientBinding = mglClientBufferBindingForResource(resourceType, resource);
+            if (clientBinding >= MAX_BINDABLE_BUFFERS) {
                 continue;
             }
             NSInteger metalBinding = [self getProgramMetalBufferIndexForStage:_FRAGMENT_SHADER
-                                                                       binding:glBinding];
+                                                                       binding:clientBinding];
             if (metalBinding < 0 || metalBinding >= (NSInteger)MAX_BINDABLE_BUFFERS) {
                 continue;
             }
-            if (!baseBindingPresent[glBinding] && fallbackBindingBuffer) {
+            if (!baseBindingPresent[clientBinding] && fallbackBindingBuffer) {
                 [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:(NSUInteger)metalBinding];
-                baseBindingPresent[glBinding] = true;
+                baseBindingPresent[clientBinding] = true;
                 anyBindingPresent[(NSUInteger)metalBinding] = true;
             }
         }
@@ -8031,8 +8123,8 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         SpirvResourceList *list = &ptr->spirv_resources_list[stage][type];
         for (GLuint i = 0; i < list->count; i++) {
             SpirvResource *res = &list->list[i];
-            GLuint glBinding = res->gl_binding;
-            if (glBinding == binding) {
+            GLuint clientBinding = mglClientBufferBindingForResource(type, res);
+            if (clientBinding == binding) {
                 if (msl && res->name &&
                     !mglMSLLineDeclaresNamedBufferResource(msl, res->name, res->binding)) {
                     mglLogInactiveStageBufferSkip(ptr,
@@ -8213,8 +8305,10 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 continue;
             }
 
-            GLuint glBinding = program->spirv_resources_list[stage][type].list[i].gl_binding;
-            if (mappedBinding < 0 || glBinding != binding) {
+            GLuint clientBinding =
+                mglClientBufferBindingForResource(type,
+                                                  &program->spirv_resources_list[stage][type].list[i]);
+            if (mappedBinding < 0 || clientBinding != binding) {
                 continue;
             }
 
@@ -8973,7 +9067,18 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         }
     }
 
-    if (ctx->state.caps.cull_face)
+    if (ctx->state.var.front_face != GL_CW && ctx->state.var.front_face != GL_CCW) {
+        mglLogRenderStateRepair("front_face", ctx->state.var.front_face, GL_CCW);
+        ctx->state.var.front_face = GL_CCW;
+        ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    }
+
+    BOOL defaultFramebufferSampledPass =
+        ctx->state.framebuffer == NULL &&
+        !ctx->state.caps.depth_test &&
+        [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE] > 0;
+
+    if (ctx->state.caps.cull_face && !defaultFramebufferSampledPass)
     {
         MTLCullMode cull_mode;
 
@@ -8986,14 +9091,23 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         }
 
         [_currentRenderEncoder setCullMode:cull_mode];
-
-        if (ctx->state.var.front_face != GL_CW && ctx->state.var.front_face != GL_CCW) {
-            mglLogRenderStateRepair("front_face", ctx->state.var.front_face, GL_CCW);
-            ctx->state.var.front_face = GL_CCW;
-            ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
-        }
-
         [_currentRenderEncoder setFrontFacingWinding:mglMTLWindingForGL(ctx->state.var.front_face)];
+    }
+    else
+    {
+        [_currentRenderEncoder setCullMode:MTLCullModeNone];
+        [_currentRenderEncoder setFrontFacingWinding:mglMTLWindingForGL(ctx->state.var.front_face)];
+
+        if (ctx->state.caps.cull_face && defaultFramebufferSampledPass) {
+            static uint64_t s_defaultSampledCullBypassCount = 0;
+            uint64_t hit = ++s_defaultSampledCullBypassCount;
+            if (hit <= 32ull || (hit % 256ull) == 0ull) {
+                NSLog(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
+                      (unsigned long long)hit,
+                      (unsigned)(ctx ? ctx->state.program_name : 0u),
+                      (unsigned)(ctx ? ctx->state.draw_buffer : 0u));
+            }
+        }
     }
 
     if (ctx->state.caps.depth_clamp)
@@ -9014,10 +9128,18 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         [_currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
     }
 
-    if (ctx->state.var.polygon_mode == GL_LINES)
+    MTLTriangleFillMode triangleFillMode = MTLTriangleFillModeFill;
+    if (ctx->state.var.polygon_mode == GL_LINE)
     {
-        [_currentRenderEncoder setTriangleFillMode: MTLTriangleFillModeLines];
+        triangleFillMode = MTLTriangleFillModeLines;
     }
+    else if (ctx->state.var.polygon_mode != GL_FILL &&
+             ctx->state.var.polygon_mode != GL_POINT)
+    {
+        mglLogRenderStateRepair("polygon_mode", ctx->state.var.polygon_mode, GL_FILL);
+        ctx->state.var.polygon_mode = GL_FILL;
+    }
+    [_currentRenderEncoder setTriangleFillMode:triangleFillMode];
 }
 
 - (bool) newRenderEncoder
@@ -9418,7 +9540,7 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
                 MTLClearColorMake(ctx->state.default_clear_color[0],
                                   ctx->state.default_clear_color[1],
                                   ctx->state.default_clear_color[2],
-                                  ctx->state.default_clear_color[3]);
+                                  1.0);
             _renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
             _renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
             ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -9433,6 +9555,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
         } else {
             _renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
+            if (_renderPassDescriptor.depthAttachment.texture) {
+                _renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+            }
         }
 
         if (defaultClearMask & GL_STENCIL_BUFFER_BIT) {
@@ -9442,6 +9567,9 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
             ctx->state.default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
         } else {
             _renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
+            if (_renderPassDescriptor.stencilAttachment.texture) {
+                _renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+            }
         }
     }
 
@@ -15860,6 +15988,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     _layer.pixelFormat = pf;
     NSLog(@"MGL CAMetalLayer pixelFormat=%lu", (unsigned long)_layer.pixelFormat);
+    _layer.opaque = YES;
     _layer.framebufferOnly = NO; // enable blitting to main color buffer
     _layer.allowsNextDrawableTimeout = YES; // avoid indefinite nextDrawable stalls
     _layer.magnificationFilter = kCAFilterNearest;

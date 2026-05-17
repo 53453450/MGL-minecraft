@@ -66,7 +66,7 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
 
 #define ERROR_RETURN(_type_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); } while(0)
 #define ERROR_RETURN_VALUE(_type_, _val_) do { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } while(0)
-#define ERROR_CHECK_RETURN(_expr_, _type_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); } } while(0)
+#define ERROR_CHECK_RETURN(_expr_, _type_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); return; } } while(0)
 #define ERROR_CHECK_RETURN_VALUE(_expr_, _type_, _val_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } } while(0)
 
 enum {
@@ -482,7 +482,9 @@ typedef struct Program_t {
     } local_workgroup_size;
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
+    BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];
+    GLboolean attrib_location_name_owned[MAX_ATTRIBS];
     void *mtl_data;
 } Program;
 

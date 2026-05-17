@@ -677,11 +677,11 @@ void *getBufferData(GLMContext ctx, Buffer *ptr)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
-    ERROR_CHECK_RETURN(ptr->mapped == false, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN_VALUE(ptr->mapped == false, GL_INVALID_OPERATION, NULL);
 
     buffer_data = (void *)(uintptr_t)ptr->data.buffer_data;
 
-    ERROR_CHECK_RETURN(buffer_data, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN_VALUE(buffer_data, GL_INVALID_OPERATION, NULL);
 
     return buffer_data;
 }
@@ -877,13 +877,16 @@ void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
     {
         GLuint name = getNewName(&STATE(buffer_table));
         *buffers++ = name;
-        fprintf(stderr,
-                "MGL TRACE GenBuffers call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu\n",
-                (unsigned long long)call_id,
-                name,
-                STATE(buffer_table).current_name,
-                STATE(buffer_table).count,
-                STATE(buffer_table).size);
+        if (call_id <= 64u || (call_id % 512u) == 0u)
+        {
+            fprintf(stderr,
+                    "MGL TRACE GenBuffers call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu\n",
+                    (unsigned long long)call_id,
+                    name,
+                    STATE(buffer_table).current_name,
+                    STATE(buffer_table).count,
+                    STATE(buffer_table).size);
+        }
     }
 }
 
@@ -1279,11 +1282,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
             {
                 // the mtl buffer has a deallocator for the vm allocate
                 ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
-                
-                if(isUniformConstant)
-                {
-                    ptr->data.mtl_data = NULL;
-                }
+                ptr->data.mtl_data = NULL;
             }
             else
             {
@@ -1298,10 +1297,6 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
             if (ptr->data.mtl_data)
             {
                 ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
-            }
-            
-            if(isUniformConstant)
-            {
                 ptr->data.mtl_data = NULL;
             }
             

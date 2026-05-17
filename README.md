@@ -1,7 +1,7 @@
 ```md
 
 🌐 Language: 中文 | [English](README_EN.md)
-```
+
 
 # MGL - Metal-GL
 
@@ -83,7 +83,7 @@ make
 - 文字渲染正常
 - 加载动画渲染正常
 - 世界未渲染
-**注意⚠️**以上于minecraft 1.21.11实例，无mod的情况下测试
+
 
 ## 项目结构
 

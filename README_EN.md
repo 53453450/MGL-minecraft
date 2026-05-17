@@ -98,7 +98,6 @@ Point them to the built libraries so they can take over rendering.
 - Text rendering works correctly
 - Loading animation renders correctly
 - World is not rendered
-**Note⚠️: Tested on Minecraft 1.21.11 without mods.**
 
 ## Project Structure
 
