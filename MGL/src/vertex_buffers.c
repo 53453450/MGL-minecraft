@@ -73,6 +73,9 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     }
 
     vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
+    if (ctx->state.vao == vao) {
+        ctx->state.dirty_bits |= DIRTY_VAO;
+    }
 
     return true;
 }
@@ -180,4 +183,3 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
         bindVertexBuffer(ctx, vaobj, bindingindex, buffer, offset, stride);
     }
 }
-

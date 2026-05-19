@@ -544,6 +544,9 @@ void mglEnableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
     ptr->enabled_attribs |= (0x1 << index);
 
     ptr->dirty_bits |= DIRTY_VAO_ATTRIB;
+    if (ctx->state.vao == ptr) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
@@ -559,6 +562,9 @@ void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
     ptr->enabled_attribs &= ~(0x1 << index);
 
     VAO_STATE(dirty_bits) |= DIRTY_VAO;
+    if (ctx->state.vao == ptr) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglEnableVertexAttribArray(GLMContext ctx, GLuint index)
@@ -645,6 +651,9 @@ void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex,
     vao->attrib[attribindex].buffer_bindingindex = bindingindex;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
+    if (ctx->state.vao == vao) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglVertexAttribBinding(GLMContext ctx, GLuint attribindex, GLuint bindingindex)
@@ -682,8 +691,11 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
             break;
 
         case GL_BYTE:
+        case GL_UNSIGNED_BYTE:
         case GL_SHORT:
+        case GL_UNSIGNED_SHORT:
         case GL_INT:
+        case GL_UNSIGNED_INT:
         case GL_FIXED:
         case GL_FLOAT:
         case GL_HALF_FLOAT:
@@ -700,6 +712,9 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
+    if (ctx->state.vao == vao) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglVertexAttribFormat(GLMContext ctx, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset)
@@ -730,8 +745,18 @@ void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
 
     switch(type)
     {
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE:
+        case GL_SHORT:
+        case GL_UNSIGNED_SHORT:
+        case GL_INT:
         case GL_UNSIGNED_INT:
             ERROR_CHECK_RETURN((size >= 1 && size <=4), GL_INVALID_VALUE);
+            break;
+
+        case GL_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            ERROR_CHECK_RETURN(size == 1, GL_INVALID_VALUE);
             break;
 
         default:
@@ -744,6 +769,9 @@ void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
+    if (ctx->state.vao == vao) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglVertexAttribIFormat(GLMContext ctx, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
@@ -754,7 +782,7 @@ void mglVertexAttribIFormat(GLMContext ctx, GLuint attribindex, GLint size, GLen
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
-    setAttribIFormat(ctx, VAO(), attribindex, size, type, relativeoffset);
+    setAttribIFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
 
 void mglVertexArrayAttribIFormat(GLMContext ctx, GLuint vaobj, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
@@ -765,7 +793,7 @@ void mglVertexArrayAttribIFormat(GLMContext ctx, GLuint vaobj, GLuint attribinde
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
-    setAttribIFormat(ctx, VAO(), attribindex, size, type, relativeoffset);
+    setAttribIFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
 
 void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
@@ -794,6 +822,9 @@ void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
+    if (ctx->state.vao == vao) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglVertexAttribLFormat(GLMContext ctx, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
@@ -827,6 +858,8 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
     ptr->attrib[index].divisor = divisor;
+    ptr->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
+    STATE(dirty_bits) |= DIRTY_VAO;
 }
 
 void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GLuint divisor)
@@ -836,6 +869,9 @@ void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GL
     vao->attrib[bindingindex].divisor = divisor;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
+    if (ctx->state.vao == vao) {
+        STATE(dirty_bits) |= DIRTY_VAO;
+    }
 }
 
 void mglVertexBindingDivisor(GLMContext ctx, GLuint bindingindex, GLuint divisor)

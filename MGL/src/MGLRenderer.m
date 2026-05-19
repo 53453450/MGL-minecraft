@@ -2255,6 +2255,8 @@ static uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipe
     }
 
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.rasterSampleCount);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToCoverageEnabled);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToOneEnabled);
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.depthAttachmentPixelFormat);
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.stencilAttachmentPixelFormat);
 
@@ -5525,7 +5527,7 @@ void logDirtyBits(GLMContext ctx)
                                 pixel[0] = 0;  // R
                                 if (pixelSize > 1) pixel[1] = 0;  // G
                                 if (pixelSize > 2) pixel[2] = 0;  // B
-                                if (pixelSize > 3) pixel[3] = 255; // A = fully opaque
+                                if (pixelSize > 3) pixel[3] = 0; // A = transparent for uninitialized color data
                             }
                         }
 
@@ -8869,6 +8871,11 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
         }
     }
 
+    [_currentRenderEncoder setBlendColorRed:ctx->state.var.blend_color[0]
+                                      green:ctx->state.var.blend_color[1]
+                                       blue:ctx->state.var.blend_color[2]
+                                      alpha:ctx->state.var.blend_color[3]];
+
     // Metal validates viewport/scissor strictly against the active render pass dimensions.
     // Always derive pass size from the current attachments first (not from window drawable fallback).
     {
@@ -10992,6 +10999,9 @@ create_new_command_buffer:
 
 -(void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
 {
+    pipelineStateDescriptor.alphaToCoverageEnabled = ctx->state.caps.sample_alpha_to_coverage ? YES : NO;
+    pipelineStateDescriptor.alphaToOneEnabled = ctx->state.caps.sample_alpha_to_one ? YES : NO;
+
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
         if (pipelineStateDescriptor.colorAttachments[i].pixelFormat != MTLPixelFormatInvalid)
@@ -11478,6 +11488,12 @@ create_new_command_buffer:
                 [self endRenderEncoding];
                 RETURN_FALSE_ON_FAILURE([self newRenderEncoder]);
             }
+
+            // VAO changes can coincide with GL state changes such as disabling
+            // depth for UI draws. newRenderEncoder applies this for fresh
+            // encoders, but the FBO-rebuild path may have already created one;
+            // apply dynamic state here before clearing the dirty bit.
+            [self updateCurrentRenderEncoder];
 
             // clear dirty render state
             ctx->state.dirty_bits &= ~DIRTY_RENDER_STATE;

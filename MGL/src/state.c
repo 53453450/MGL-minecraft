@@ -67,6 +67,11 @@ void mglDisable(GLMContext ctx, GLenum cap)
     }
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+    if (cap == GL_BLEND ||
+        cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
+        cap == GL_SAMPLE_ALPHA_TO_ONE) {
+        ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
+    }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
         ctx->state.dirty_bits |= DIRTY_FBO;
         if (ctx->state.framebuffer) {
@@ -119,6 +124,11 @@ void mglEnable(GLMContext ctx, GLenum cap)
     }
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+    if (cap == GL_BLEND ||
+        cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
+        cap == GL_SAMPLE_ALPHA_TO_ONE) {
+        ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
+    }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
         ctx->state.dirty_bits |= DIRTY_FBO;
         if (ctx->state.framebuffer) {
