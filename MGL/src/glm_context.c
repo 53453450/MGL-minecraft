@@ -136,13 +136,49 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         STATE(var.max_draw_buffers) = MAX_COLOR_ATTACHMENTS;
     }
 
-    assert(STATE(max_color_attachments) <= MAX_COLOR_ATTACHMENTS);
-    assert(STATE(max_vertex_attribs) <= MAX_ATTRIBS);
+    if (STATE(max_color_attachments) > MAX_COLOR_ATTACHMENTS) {
+        fprintf(stderr,
+                "MGL WARNING: max_color_attachments %u exceeds backend cap %u; clamping\n",
+                STATE(max_color_attachments),
+                MAX_COLOR_ATTACHMENTS);
+        STATE(max_color_attachments) = MAX_COLOR_ATTACHMENTS;
+        STATE(var.max_color_attachments) = MAX_COLOR_ATTACHMENTS;
+    }
+    if (STATE(max_vertex_attribs) > MAX_ATTRIBS) {
+        fprintf(stderr,
+                "MGL WARNING: max_vertex_attribs %u exceeds backend cap %u; clamping\n",
+                STATE(max_vertex_attribs),
+                MAX_ATTRIBS);
+        STATE(max_vertex_attribs) = MAX_ATTRIBS;
+        STATE(var.max_vertex_attribs) = MAX_ATTRIBS;
+    }
+
+    /*
+     * The current Metal backend does not allocate true multisample textures or
+     * renderbuffers. Keep all public MSAA limits at zero so capability probes do
+     * not take paths that would otherwise be silently downgraded to single-sample.
+     */
+    STATE(var.max_sample_mask_words) = 0;
+    STATE(var.max_color_texture_samples) = 0;
+    STATE(var.max_depth_texture_samples) = 0;
+    STATE(var.max_integer_samples) = 0;
+    STATE(var.max_framebuffer_samples) = 0;
 
     // For this Metal backend, default framebuffer rendering targets the current drawable.
     // Keep legacy default as FRONT to avoid routing GL_BACK to an internal offscreen buffer.
     STATE(draw_buffer) = GL_FRONT;
+    STATE(draw_buffer_count) = 1;
+    STATE(draw_buffers[0]) = GL_FRONT;
+    STATE(default_draw_buffer) = GL_FRONT;
+    STATE(default_draw_buffer_count) = 1;
+    STATE(default_draw_buffers[0]) = GL_FRONT;
+    for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(draw_buffers[i]) = GL_NONE;
+        STATE(default_draw_buffers[i]) = GL_NONE;
+    }
     STATE(read_buffer) = GL_FRONT;
+    STATE(default_read_buffer) = GL_FRONT;
     STATE(active_texture) = 0;
 
     STATE(pack.swap_bytes) = false;
@@ -187,9 +223,15 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(caps.texture_cube_map_seamless) = false;
     STATE(caps.sample_mask) = false;
     STATE(caps.sample_shading) = false;
+    STATE(var.sample_coverage_value) = 1.0f;
+    STATE(var.sample_coverage_invert) = GL_FALSE;
     STATE(caps.primitive_restart_fixed_index) = false;
     STATE(caps.debug_output_synchronous) = false;
     STATE(caps.debug_output) = false;
+    for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
+    {
+        STATE(caps.blendi[i]) = false;
+    }
 
     STATE(var.cull_face_mode) = GL_BACK;
     STATE(var.front_face) = GL_CCW;
@@ -202,6 +244,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.line_width) = 1.0f;
     STATE(var.point_size) = 1.0f;
     STATE(var.polygon_mode) = GL_FILL;
+    STATE(var.primitive_restart_index) = 0u;
+    STATE(var.provoking_vertex) = GL_LAST_VERTEX_CONVENTION;
     STATE(var.polygon_offset_factor) = 0.0f;
     STATE(var.polygon_offset_units) = 0.0f;
 
@@ -229,6 +273,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(var.depth_func) = GL_LESS;
     STATE(var.depth_clear_value) = 1.0;
+    STATE(var.clip_origin) = GL_LOWER_LEFT;
+    STATE(var.clip_depth_mode) = GL_NEGATIVE_ONE_TO_ONE;
 
     // Initialize default clear color to opaque black as per OpenGL spec
     STATE(color_clear_value[0]) = 0.0f;
@@ -265,10 +311,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(var.stencil_func) = GL_ALWAYS;
     STATE(var.stencil_ref) = 0;
+    STATE(var.stencil_value_mask) = 0xFFFFFFFF;
     STATE(var.stencil_writemask) = 0xFFFFFFFF;
 
     STATE(var.stencil_back_func) = GL_ALWAYS;
     STATE(var.stencil_back_ref) = 0;
+    STATE(var.stencil_back_value_mask) = 0xFFFFFFFF;
     STATE(var.stencil_back_writemask) = 0xFFFFFFFF;
 
     STATE(var.max_compute_work_group_invocations) = 1024;
@@ -357,7 +405,9 @@ void MGLget(GLMContext ctx, GLenum param, GLuint *data)
         case MGL_STENCIL_TYPE: *data = ctx->stencil_format.type; break;
         case MGL_CONTEXT_FLAGS: *data = ctx->context_flags; break;
         default:
-            assert(0);
+            fprintf(stderr, "MGL WARNING: MGLget unknown param 0x%x\n", param);
+            *data = 0;
+            break;
     }
 }
 

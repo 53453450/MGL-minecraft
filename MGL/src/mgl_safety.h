@@ -23,10 +23,61 @@
 
 #include <stdio.h>
 #include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <mach/mach.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+static inline bool mglObjectPointerLooksPlausible(const void *ptr)
+{
+    return ptr != NULL && (uintptr_t)ptr >= 0x100000000ULL;
+}
+
+static inline bool mglPointerRangeIsReadable(const void *ptr, size_t size)
+{
+    if (size == 0) {
+        return true;
+    }
+    if (!ptr) {
+        return false;
+    }
+
+    uintptr_t start = (uintptr_t)ptr;
+    if (start < 0x10000u || start > UINTPTR_MAX - size + 1u) {
+        return false;
+    }
+
+    vm_address_t address = (vm_address_t)start;
+    vm_size_t regionSize = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t objectName = MACH_PORT_NULL;
+    kern_return_t kr = vm_region_64(mach_task_self(),
+                                    &address,
+                                    &regionSize,
+                                    VM_REGION_BASIC_INFO_64,
+                                    (vm_region_info_t)&info,
+                                    &count,
+                                    &objectName);
+    if (objectName != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), objectName);
+    }
+    if (kr != KERN_SUCCESS || start < (uintptr_t)address) {
+        return false;
+    }
+
+    uintptr_t end = start + size;
+    uintptr_t regionEnd = (uintptr_t)address + (uintptr_t)regionSize;
+    if (regionEnd < (uintptr_t)address || end > regionEnd) {
+        return false;
+    }
+
+    return (info.protection & VM_PROT_READ) != 0;
+}
 
 // CRITICAL SAFETY MACROS - Replace unsafe assert() calls
 // These provide production-safe validation instead of crashes

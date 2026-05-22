@@ -409,22 +409,65 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 {
 	if (!value)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
-	(void)drawbuffer;
+
+	GLuint maxDrawBuffers = STATE(var.max_draw_buffers);
+	if (maxDrawBuffers == 0 || maxDrawBuffers > MAX_COLOR_ATTACHMENTS)
+		maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
+
 	switch (buffer)
 	{
 		case GL_COLOR:
-			mglClearColor(ctx, (GLfloat)value[0], (GLfloat)value[1], (GLfloat)value[2], (GLfloat)value[3]);
-			mglClear(ctx, GL_COLOR_BUFFER_BIT);
+			if (drawbuffer < 0 || drawbuffer >= (GLint)maxDrawBuffers)
+			{
+				ERROR_RETURN(GL_INVALID_VALUE);
+				return;
+			}
+			if (STATE(framebuffer))
+			{
+				Framebuffer *fbo = STATE(framebuffer);
+				GLenum drawBuffer = ((GLsizei)drawbuffer < STATE(draw_buffer_count))
+					? STATE(draw_buffers[drawbuffer])
+					: GL_NONE;
+				if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
+					drawBuffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
+					drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS))
+				{
+					GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
+					if (fbo->color_attachment_bitfield & (1u << attachmentIndex))
+					{
+						FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
+						att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
+						att->clear_color[0] = (GLfloat)value[0];
+						att->clear_color[1] = (GLfloat)value[1];
+						att->clear_color[2] = (GLfloat)value[2];
+						att->clear_color[3] = (GLfloat)value[3];
+					}
+				}
+			}
+			else if (drawbuffer == 0)
+			{
+				STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
+				STATE(default_clear_color[0]) = (GLfloat)value[0];
+				STATE(default_clear_color[1]) = (GLfloat)value[1];
+				STATE(default_clear_color[2]) = (GLfloat)value[2];
+				STATE(default_clear_color[3]) = (GLfloat)value[3];
+			}
+			STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 			break;
 		case GL_STENCIL:
+			if (drawbuffer != 0)
+			{
+				ERROR_RETURN(GL_INVALID_VALUE);
+				return;
+			}
 			mglClearStencil(ctx, value[0]);
 			mglClear(ctx, GL_STENCIL_BUFFER_BIT);
 			break;
 		default:
-			STATE(error) = GL_INVALID_ENUM;
+			ERROR_RETURN(GL_INVALID_ENUM);
 			break;
 	}
 }
@@ -433,25 +476,73 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 {
 	if (!value)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		ERROR_RETURN(GL_INVALID_VALUE);
 		return;
 	}
-	(void)drawbuffer;
+	GLuint maxDrawBuffers = STATE(var.max_draw_buffers);
+	if (maxDrawBuffers == 0 || maxDrawBuffers > MAX_COLOR_ATTACHMENTS)
+		maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
+
 	if (buffer == GL_COLOR)
 	{
-		mglClearColor(ctx, (GLfloat)value[0], (GLfloat)value[1], (GLfloat)value[2], (GLfloat)value[3]);
-		mglClear(ctx, GL_COLOR_BUFFER_BIT);
+		if (drawbuffer < 0 || drawbuffer >= (GLint)maxDrawBuffers)
+		{
+			ERROR_RETURN(GL_INVALID_VALUE);
+			return;
+		}
+		if (STATE(framebuffer))
+		{
+			Framebuffer *fbo = STATE(framebuffer);
+			GLenum drawBuffer = ((GLsizei)drawbuffer < STATE(draw_buffer_count))
+				? STATE(draw_buffers[drawbuffer])
+				: GL_NONE;
+			if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
+				drawBuffer < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) &&
+				drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS))
+			{
+				GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
+				if (fbo->color_attachment_bitfield & (1u << attachmentIndex))
+				{
+					FBOAttachment *att = &fbo->color_attachments[attachmentIndex];
+					att->clear_bitmask |= GL_COLOR_BUFFER_BIT;
+					att->clear_color[0] = (GLfloat)value[0];
+					att->clear_color[1] = (GLfloat)value[1];
+					att->clear_color[2] = (GLfloat)value[2];
+					att->clear_color[3] = (GLfloat)value[3];
+				}
+			}
+		}
+		else if (drawbuffer == 0)
+		{
+			STATE(default_fbo_clear_bitmask) |= GL_COLOR_BUFFER_BIT;
+			STATE(default_clear_color[0]) = (GLfloat)value[0];
+			STATE(default_clear_color[1]) = (GLfloat)value[1];
+			STATE(default_clear_color[2]) = (GLfloat)value[2];
+			STATE(default_clear_color[3]) = (GLfloat)value[3];
+		}
+		STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 		return;
 	}
-	STATE(error) = GL_INVALID_ENUM;
+	ERROR_RETURN(GL_INVALID_ENUM);
 }
 
 void mglClipControl(GLMContext ctx, GLenum origin, GLenum depth)
 {
-	// Clip control - no-op, use default clip control
-	(void)ctx;
-	(void)origin;
-	(void)depth;
+	if (origin != GL_LOWER_LEFT && origin != GL_UPPER_LEFT)
+	{
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
+
+	if (depth != GL_NEGATIVE_ONE_TO_ONE && depth != GL_ZERO_TO_ONE)
+	{
+		ERROR_RETURN(GL_INVALID_ENUM);
+		return;
+	}
+
+	STATE(var.clip_origin) = origin;
+	STATE(var.clip_depth_mode) = depth;
+	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
 }
 
 void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
@@ -464,6 +555,11 @@ void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboo
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
+
+	r = r ? GL_TRUE : GL_FALSE;
+	g = g ? GL_TRUE : GL_FALSE;
+	b = b ? GL_TRUE : GL_FALSE;
+	a = a ? GL_TRUE : GL_FALSE;
 
 	STATE(caps.use_color_mask[index]) = (r == GL_FALSE ||
 	                                     g == GL_FALSE ||
@@ -1697,9 +1793,8 @@ void mglPopDebugGroup(GLMContext ctx)
 
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Set primitive restart index - no-op
-	(void)index;
+	STATE(var.primitive_restart_index) = index;
+	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
 }
 
 void mglProgramBinary(GLMContext ctx, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length)
@@ -1817,12 +1912,12 @@ DEFINE_PROGRAM_UNIFORM_FORWARD(Matrix4x3fv, (GLMContext ctx, GLuint program, GLi
 
 void mglProvokingVertex(GLMContext ctx, GLenum mode)
 {
-	// Set provoking vertex mode - no-op
 	if (mode != GL_FIRST_VERTEX_CONVENTION && mode != GL_LAST_VERTEX_CONVENTION) {
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
-	// State not tracked
+	STATE(var.provoking_vertex) = mode;
+	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
 }
 
 void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length, const GLchar *message)

@@ -129,6 +129,33 @@ static int mglRepairHashTableIfNeeded(HashTable *table, const char *where)
     return mglRehash(table, MGL_HASH_MIN_CAPACITY);
 }
 
+int mglHashTableValidateStorage(HashTable *table, const char *where)
+{
+    return mglRepairHashTableIfNeeded(table, where ? where : "validate");
+}
+
+int mglHashTableContainsData(HashTable *table, const void *data)
+{
+    if (!data || !mglRepairHashTableIfNeeded(table, "contains")) {
+        return 0;
+    }
+
+    if (!table->keys || !table->states || table->size == 0u) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < table->size; i++) {
+        if (table->states[i] != MGL_HASH_STATE_OCCUPIED) {
+            continue;
+        }
+        if (table->keys[i].data == data) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static inline void mglSetStorage(HashTable *table, HashObj *keys, unsigned char *states)
 {
     if (!table) {
@@ -556,7 +583,11 @@ void deleteHashElement(HashTable *table, GLuint name)
     int found = 0;
     size_t slot;
 
-    if (!table || !table->keys || !table->states || table->size == 0) {
+    if (!mglRepairHashTableIfNeeded(table, "delete")) {
+        return;
+    }
+
+    if (!table->keys || !table->states || table->size == 0) {
         return;
     }
 

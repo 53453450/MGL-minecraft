@@ -40,7 +40,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     CGLError (*CGLDestroyPixelFormat)(CGLPixelFormatObj pix);
     CGLError (*CGLCreateContext)(CGLPixelFormatObj pix, CGLContextObj OPENGL_NULLABLE share, CGLContextObj OPENGL_NULLABLE * OPENGL_NONNULL ctx);
     CGLError (*CGLDestroyContext)(CGLContextObj ctx);
-    void (*glGetIntegerv)(GLenum param, GLuint *params);
+    void (*glGetIntegerv)(GLenum param, GLint *params);
     void (*glGetDoublev)(GLenum param, GLdouble *params);
     void (*glGetFloatv)(GLenum param, GLfloat *params);
     void (*glGetBooleanv)(GLenum param, GLboolean *params);
@@ -54,17 +54,35 @@ void getMacOSDefaults(GLMContext glm_ctx)
       (CGLPixelFormatAttribute) 0
     };
 
-    OpenGL = dlopen(OpenGLPath, RTLD_LAZY | RTLD_LOCAL); assert(OpenGL);
-    libGL = dlopen(libGLPath, RTLD_LAZY | RTLD_LOCAL); assert(libGL);
+    OpenGL = dlopen(OpenGLPath, RTLD_LAZY | RTLD_LOCAL);
+    libGL = dlopen(libGLPath, RTLD_LAZY | RTLD_LOCAL);
+    if (!OpenGL || !libGL)
+    {
+        fprintf(stderr,
+                "MGL WARN: failed to load system OpenGL defaults provider OpenGL=%p libGL=%p, using fallback defaults\n",
+                OpenGL,
+                libGL);
+        if (OpenGL) dlclose(OpenGL);
+        if (libGL) dlclose(libGL);
+        return;
+    }
 
-    CGLChoosePixelFormat = dlsym(OpenGL, "CGLChoosePixelFormat"); assert(CGLChoosePixelFormat);
-    CGLDestroyPixelFormat = dlsym(OpenGL, "CGLDestroyPixelFormat"); assert(CGLDestroyPixelFormat);
-    CGLCreateContext = dlsym(OpenGL, "CGLCreateContext"); assert(CGLCreateContext);
-    CGLDestroyContext = dlsym(OpenGL, "CGLDestroyContext"); assert(CGLDestroyContext);
-    glGetIntegerv = dlsym(libGL, "glGetIntegerv"); assert(glGetIntegerv);
-    glGetDoublev = dlsym(libGL, "glGetDoublev"); assert(glGetDoublev);
-    glGetFloatv = dlsym(libGL, "glGetFloatv"); assert(glGetFloatv);
-    glGetBooleanv = dlsym(libGL, "glGetBooleanv"); assert(glGetBooleanv);
+    CGLChoosePixelFormat = dlsym(OpenGL, "CGLChoosePixelFormat");
+    CGLDestroyPixelFormat = dlsym(OpenGL, "CGLDestroyPixelFormat");
+    CGLCreateContext = dlsym(OpenGL, "CGLCreateContext");
+    CGLDestroyContext = dlsym(OpenGL, "CGLDestroyContext");
+    glGetIntegerv = dlsym(libGL, "glGetIntegerv");
+    glGetDoublev = dlsym(libGL, "glGetDoublev");
+    glGetFloatv = dlsym(libGL, "glGetFloatv");
+    glGetBooleanv = dlsym(libGL, "glGetBooleanv");
+    if (!CGLChoosePixelFormat || !CGLDestroyPixelFormat || !CGLCreateContext || !CGLDestroyContext ||
+        !glGetIntegerv || !glGetDoublev || !glGetFloatv || !glGetBooleanv)
+    {
+        fprintf(stderr, "MGL WARN: missing system OpenGL symbols, using fallback defaults\n");
+        dlclose(OpenGL);
+        dlclose(libGL);
+        return;
+    }
 
     CGLPixelFormatObj pix;
     CGLError errorCode;
@@ -156,7 +174,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_SMOOTH_LINE_WIDTH_RANGE,&glm_ctx->state.var.smooth_line_width_range);
     glGetIntegerv(GL_SMOOTH_LINE_WIDTH_GRANULARITY,&glm_ctx->state.var.smooth_line_width_granularity);
     glGetIntegerv(GL_ALIASED_LINE_WIDTH_RANGE,&glm_ctx->state.var.aliased_line_width_range);
-    glGetIntegerv(GL_SAMPLE_COVERAGE_VALUE,&glm_ctx->state.var.sample_coverage_value);
+    glGetFloatv(GL_SAMPLE_COVERAGE_VALUE,&glm_ctx->state.var.sample_coverage_value);
     glGetIntegerv(GL_SAMPLE_COVERAGE_INVERT,&glm_ctx->state.var.sample_coverage_invert);
     glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP,&glm_ctx->state.var.texture_binding_cube_map);
     glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE,&glm_ctx->state.var.max_cube_map_texture_size);

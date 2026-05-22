@@ -13,27 +13,60 @@ public final class TexProbeRuntime {
 
     private TexProbeRuntime() {}
 
+    private static boolean shouldLog(int width, int height) {
+        return TARGET_W <= 0 || TARGET_H <= 0 || (width == TARGET_W && height == TARGET_H);
+    }
+
+    private static synchronized int nextId() {
+        if (seen >= MAX_LOG) return -1;
+        return ++seen;
+    }
+
+    // --- glTexImage2D ---
+
+    public static void logTexImage2DBuffer(String owner, String desc,
+            int target, int level, int internalformat, int width, int height, int border, int format, int type,
+            Buffer pixels) {
+        if (!shouldLog(width, height)) return;
+        int id = nextId();
+        if (id < 0) return;
+        long addr = memAddressSafe(pixels);
+        long hash = hashBufferHead(pixels, 256);
+        boolean zero = looksZero(pixels, 256);
+        String dump = dumpBufferHead(pixels, 64);
+        System.err.printf(
+                "MGLJ TEXIMAGE #%d %s target=0x%x level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
+                id, owner, target, level, internalformat, width, height, border, format, type, addr, hash, zero, dump);
+        logStack(id);
+    }
+
+    public static void logTexImage2DAddress(String owner, String desc,
+            int target, int level, int internalformat, int width, int height, int border, int format, int type,
+            long pixels) {
+        if (!shouldLog(width, height)) return;
+        int id = nextId();
+        if (id < 0) return;
+        System.err.printf(
+                "MGLJ TEXIMAGE #%d %s target=0x%x level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x pboOffset=0x%x%n",
+                id, owner, target, level, internalformat, width, height, border, format, type, pixels);
+        logStack(id);
+    }
+
+    // --- glTexSubImage2D (existing) ---
+
     public static void logTexSubImage2DBuffer(String owner, String desc,
             int target, int level, int xoffset, int yoffset, int width, int height, int format, int type,
             Buffer pixels) {
         if (!shouldLog(width, height)) return;
         int id = nextId();
         if (id < 0) return;
-
         long address = memAddressSafe(pixels);
-        int pos = pixels == null ? -1 : pixels.position();
-        int lim = pixels == null ? -1 : pixels.limit();
-        int cap = pixels == null ? -1 : pixels.capacity();
-        boolean direct = pixels != null && pixels.isDirect();
-        String cls = pixels == null ? "null" : pixels.getClass().getName();
-        String dump = dumpBufferHead(pixels, 32);
         long hash = hashBufferHead(pixels, 256);
         boolean zero = looksZero(pixels, 256);
-
+        String dump = dumpBufferHead(pixels, 32);
         System.err.printf(
-                "MGLJ TEXPROBE #%d %s%s target=0x%x level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x bufferClass=%s direct=%s pos=%d lim=%d cap=%d addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
-                id, owner, desc, target, level, xoffset, yoffset, width, height, format, type,
-                cls, direct, pos, lim, cap, address, hash, zero, dump);
+                "MGLJ TEXPROBE #%d %s%s target=0x%x level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
+                id, owner, desc, target, level, xoffset, yoffset, width, height, format, type, address, hash, zero, dump);
         logStack(id);
     }
 
@@ -49,14 +82,25 @@ public final class TexProbeRuntime {
         logStack(id);
     }
 
-    private static boolean shouldLog(int width, int height) {
-        return TARGET_W <= 0 || TARGET_H <= 0 || (width == TARGET_W && height == TARGET_H);
+    // --- glTexParameter ---
+
+    public static void logTexParameter(String owner, String variant, int target, int pname, int param) {
+        int id = nextId();
+        if (id < 0) return;
+        System.err.printf(
+                "MGLJ TEXPARAM #%d %s target=0x%x pname=0x%x param=0x%x (%d)%n",
+                id, owner, target, pname, param, param);
     }
 
-    private static synchronized int nextId() {
-        if (seen >= MAX_LOG) return -1;
-        return ++seen;
+    public static void logTexParameterF(String owner, String variant, int target, int pname, float param) {
+        int id = nextId();
+        if (id < 0) return;
+        System.err.printf(
+                "MGLJ TEXPARAM #%d %s target=0x%x pname=0x%x param=%f%n",
+                id, owner, target, pname, param);
     }
+
+    // --- helpers ---
 
     private static void logStack(int id) {
         if (!STACK) return;

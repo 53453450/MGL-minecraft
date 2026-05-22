@@ -299,7 +299,12 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     Buffer *ptr;
 
     ptr = (Buffer *)malloc(sizeof(Buffer));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate buffer %u target=0x%x\n", name, target);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(Buffer));
 
@@ -405,26 +410,68 @@ bool checkUsage(GLMContext ctx, GLenum usage)
     return false;
 }
 
+static void mglSetGenericBufferBinding(GLMContext ctx, GLenum target, GLuint name)
+{
+    if (!ctx)
+        return;
+
+    switch(target)
+    {
+        case GL_ARRAY_BUFFER:
+            STATE_VAR(array_buffer_binding) = name;
+            break;
+        case GL_PIXEL_PACK_BUFFER:
+            STATE_VAR(pixel_pack_buffer_binding) = name;
+            break;
+        case GL_PIXEL_UNPACK_BUFFER:
+            STATE_VAR(pixel_unpack_buffer_binding) = name;
+            break;
+        case GL_UNIFORM_BUFFER:
+            STATE_VAR(uniform_buffer_binding) = name;
+            break;
+        case GL_DISPATCH_INDIRECT_BUFFER:
+            STATE_VAR(dispatch_indirect_buffer_binding) = name;
+            break;
+        case GL_SHADER_STORAGE_BUFFER:
+            STATE_VAR(shader_storage_buffer_binding) = name;
+            break;
+        default:
+            break;
+    }
+}
+
+static void mglClearGenericBufferBindingName(GLMContext ctx, GLuint name)
+{
+    if (!ctx || name == 0u)
+        return;
+
+    if (STATE_VAR(array_buffer_binding) == name)
+        STATE_VAR(array_buffer_binding) = 0u;
+    if (STATE_VAR(element_array_buffer_binding) == name)
+        STATE_VAR(element_array_buffer_binding) = 0u;
+    if (STATE_VAR(pixel_pack_buffer_binding) == name)
+        STATE_VAR(pixel_pack_buffer_binding) = 0u;
+    if (STATE_VAR(pixel_unpack_buffer_binding) == name)
+        STATE_VAR(pixel_unpack_buffer_binding) = 0u;
+    if (STATE_VAR(uniform_buffer_binding) == name)
+        STATE_VAR(uniform_buffer_binding) = 0u;
+    if (STATE_VAR(dispatch_indirect_buffer_binding) == name)
+        STATE_VAR(dispatch_indirect_buffer_binding) = 0u;
+    if (STATE_VAR(shader_storage_buffer_binding) == name)
+        STATE_VAR(shader_storage_buffer_binding) = 0u;
+}
+
 static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint index)
 {
     if (target == GL_ELEMENT_ARRAY_BUFFER)
     {
         VertexArray *bound_vao = ctx->state.vao;
-        int vao_is_valid = 0;
-
-        if (bound_vao && STATE(vao_table).keys && STATE(vao_table).size > 0)
-        {
-            for (size_t i = 0; i < STATE(vao_table).size; i++)
-            {
-                if (STATE(vao_table).states && STATE(vao_table).states[i] != 1u)
-                    continue;
-                if (STATE(vao_table).keys[i].data == bound_vao)
-                {
-                    vao_is_valid = 1;
-                    break;
-                }
-            }
-        }
+        int vao_is_valid =
+            bound_vao &&
+            mglObjectPointerLooksPlausible(bound_vao) &&
+            mglHashTableContainsData(&STATE(vao_table), bound_vao) &&
+            mglPointerRangeIsReadable(bound_vao, sizeof(*bound_vao)) &&
+            bound_vao->magic == MGL_VAO_MAGIC;
 
         if (bound_vao && !vao_is_valid)
         {
@@ -456,6 +503,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
         STATE(buffers[index]) = NULL;
         STATE(dirty_bits) |= DIRTY_BUFFER;
     }
+    mglSetGenericBufferBinding(ctx, target, 0u);
 }
 
 static inline bool mgl_range_ok_glsize(GLintptr offset, GLsizeiptr size, GLsizeiptr total)
@@ -570,7 +618,8 @@ static inline void mglClearVAOBufferReferences(GLMContext ctx, Buffer *ptr, GLui
         return;
 
     table = &STATE(vao_table);
-    if (!table->keys || !table->states || table->size == 0)
+    if (!mglHashTableValidateStorage(table, "clearVAOBufferReferences") ||
+        !table->keys || !table->states || table->size == 0)
         return;
 
     for (size_t slot = 0; slot < table->size; slot++)
@@ -579,7 +628,9 @@ static inline void mglClearVAOBufferReferences(GLMContext ctx, Buffer *ptr, GLui
             continue;
 
         VertexArray *vao = (VertexArray *)table->keys[slot].data;
-        if ((uintptr_t)vao < 0x10000u || vao->magic != MGL_VAO_MAGIC)
+        if (!mglObjectPointerLooksPlausible(vao) ||
+            !mglPointerRangeIsReadable(vao, sizeof(*vao)) ||
+            vao->magic != MGL_VAO_MAGIC)
             continue;
 
         if (vao->element_array.buffer == ptr ||
@@ -610,26 +661,33 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
     if (!vao)
         return NULL;
 
-    if (!STATE(vao_table).keys || STATE(vao_table).size == 0)
+    if (!mglObjectPointerLooksPlausible(vao) ||
+        !mglHashTableContainsData(&STATE(vao_table), vao) ||
+        !mglPointerRangeIsReadable(vao, sizeof(*vao)))
     {
-        fprintf(stderr, "MGL WARNING: VAO table unavailable, dropping current VAO pointer %p\n", (void *)vao);
+        fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in a sane VAO table; resetting to VAO 0\n", (void *)vao);
         ctx->state.vao = NULL;
+        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
+        STATE_VAR(element_array_buffer_binding) =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
+        STATE(dirty_bits) |= DIRTY_VAO;
         return NULL;
     }
 
-    for (size_t i = 0; i < STATE(vao_table).size; i++)
+    if (vao->magic != MGL_VAO_MAGIC)
     {
-        if (STATE(vao_table).states && STATE(vao_table).states[i] != 1u)
-            continue;
-        if (STATE(vao_table).keys[i].data == vao)
-        {
-            return vao;
-        }
+        fprintf(stderr, "MGL WARNING: current VAO pointer %p has invalid magic 0x%x; resetting to VAO 0\n",
+                (void *)vao,
+                vao->magic);
+        ctx->state.vao = NULL;
+        STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
+        STATE_VAR(element_array_buffer_binding) =
+            STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
+        STATE(dirty_bits) |= DIRTY_VAO;
+        return NULL;
     }
 
-    fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in VAO table; resetting to VAO 0\n", (void *)vao);
-    ctx->state.vao = NULL;
-    return NULL;
+    return vao;
 }
 
 static Buffer *mglGetBoundBufferForTarget(GLMContext ctx, GLenum target)
@@ -863,14 +921,29 @@ void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
     static uint64_t s_gen_buffers_calls = 0u;
     uint64_t call_id = ++s_gen_buffers_calls;
 
-    if (!ctx || n <= 0 || !buffers) {
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!buffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
         fprintf(stderr,
-                "MGL TRACE GenBuffers.skip call=%llu ctx=%p n=%d buffers=%p\n",
+                "MGL TRACE GenBuffers call=%llu ctx=%p n=%d buffers=%p\n",
                 (unsigned long long)call_id,
                 (void *)ctx,
                 (int)n,
                 (void *)buffers);
-        return;
     }
 
     while(n--)
@@ -896,12 +969,29 @@ void mglCreateBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
 {
     GLuint name;
 
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!buffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
     while(n--)
     {
         name = getNewName(&STATE(buffer_table));
 
         // create an unbound buffer
-        getBuffer(ctx, 0, name);
+        if (!getBuffer(ctx, 0, name))
+            return;
 
         *buffers++ = name;
     }
@@ -972,6 +1062,7 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     STATE(buffers[i]) = NULL;
                 }
             }
+            mglClearGenericBufferBindingName(ctx, buffer);
 
             // remove dangling VAO references (attribute buffers + element buffer)
             mglClearVAOBufferReferences(ctx, ptr, buffer);
@@ -1120,12 +1211,17 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
         STATE(buffers[index]) = ptr;
         STATE(dirty_bits) |= DIRTY_BUFFER;
     }
+    mglSetGenericBufferBinding(ctx, target, ptr ? ptr->name : 0u);
 }
 
 void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffer)
 {
     Buffer  *ptr;
     GLuint buffer_index;
+    if (target == GL_UNIFORM_BUFFER) {
+        fprintf(stderr, "MGL TRACE BindBufferBase GL_UNIFORM_BUFFER index=%u buffer=%u\n",
+                (unsigned)index, (unsigned)buffer);
+    }
 
     switch(target)
     {
@@ -1148,7 +1244,10 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
     {
         ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
         ptr = getBuffer(ctx, target, buffer);
-        assert(ptr);
+        if (!ptr) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
 
         // Bind-by-name semantics: bind succeeds even when storage is not yet initialized.
         // Storage/range validity is validated later at draw/upload time.
@@ -1166,6 +1265,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         bzero(&ctx->state.buffer_base[buffer_index].buffers[index], sizeof(BufferBaseTarget));
     }
 
+    mglSetGenericBufferBinding(ctx, target, buffer);
     ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
 }
 
@@ -1217,7 +1317,10 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     {
         ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
         ptr = getBuffer(ctx, target, buffer);
-        assert(ptr);
+        if (!ptr) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
 
         // GL allows binding ranges before upload; validate against logical size.
         if (!mgl_range_ok_size_t(offset, size, ptr->size)) {
@@ -1238,6 +1341,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         bzero(&ctx->state.buffer_base[buffer_index].buffers[index], sizeof(BufferBaseTarget));
     }
 
+    mglSetGenericBufferBinding(ctx, target, buffer);
     ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
 }
 
@@ -2767,18 +2871,36 @@ void mglGetBufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint 
             break;
 
         case GL_BUFFER_MAP_LENGTH:
-            assert(ptr->mapped_length < INT_MAX);
-            *params = (GLint)ptr->mapped_length;
+            if (ptr->mapped_length > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_MAP_LENGTH exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->mapped_length);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->mapped_length;
+            }
             break;
 
         case GL_BUFFER_MAP_OFFSET:
-            assert(ptr->mapped_offset < INT_MAX);
-            *params = (GLint)ptr->mapped_offset;
+            if (ptr->mapped_offset > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_MAP_OFFSET exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->mapped_offset);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->mapped_offset;
+            }
             break;
 
         case GL_BUFFER_SIZE:
-            assert(ptr->size < INT_MAX);
-            *params = (GLint)ptr->size;
+            if (ptr->size > INT_MAX) {
+                fprintf(stderr,
+                        "MGL WARNING: GL_BUFFER_SIZE exceeds GLint range (%lld), clamping for glGetBufferParameteriv\n",
+                        (long long)ptr->size);
+                *params = INT_MAX;
+            } else {
+                *params = (GLint)ptr->size;
+            }
             break;
 
         case GL_BUFFER_STORAGE_FLAGS:

@@ -240,7 +240,8 @@ const char *getShaderTypeStr(GLuint type)
         "GEOMETRY_SHADER", "TESS_CONTROL_SHADER", "TESS_EVALUATION_SHADER",
         "COMPUTE_SHADER", "MAX_SHADER_TYPES", NULL};
 
-    assert(type < _MAX_SHADER_TYPES);
+    if (type >= _MAX_SHADER_TYPES)
+        return "UNKNOWN_SHADER";
 
     return types[type];
 };
@@ -574,7 +575,12 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
             {
                 strlcat(src, string[i], len+1);
             }
-            assert(strlen(src) == len);
+            if (strlen(src) != (size_t)len) {
+                fprintf(stderr,
+                        "MGL WARNING: shader source length mismatch expected=%zu actual=%zu\n",
+                        (size_t)len,
+                        strlen(src));
+            }
         } else {
             // CRITICAL SECURITY FIX: Prevent buffer overflow in shader source concatenation
             // string[i] may not be null-terminated - we must validate bounds carefully

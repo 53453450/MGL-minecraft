@@ -224,10 +224,13 @@ $(EXT_DIRS):
 	$(call check_and_clone,$@)
 
 
-deps += $(mgl_objs:.o=.d)
+deps += $(mgl_core_objs:.o=.d)
+deps += $(mgl_es_objs:.o=.d)
 deps += $(mgl_core_obj:.o=.d)
 deps += $(mgl_es_obj:.o=.d)
-deps += $(mgl_arc_objs:.o=.d)
+deps += $(mgl_core_arc_objs:.o=.d)
+deps += $(mgl_es_arc_objs:.o=.d)
+deps += $(glfw_objs:.o=.d)
 
 
 mgl_lib := $(build_dir)/libmgl.dylib

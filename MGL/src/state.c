@@ -20,15 +20,101 @@
 
 #include "mgl.h"
 #include "glm_context.h"
+#include "mgl_safety.h"
 
 #define ENABLE_CAP(_cap_)   ctx->state.caps._cap_ = true; break
 #define DISABLE_CAP(_cap_)   ctx->state.caps._cap_ = false; break
 
+static void mglSetAllBlendEnables(GLMContext ctx, GLboolean enabled)
+{
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        ctx->state.caps.blendi[i] = enabled ? GL_TRUE : GL_FALSE;
+    }
+    ctx->state.caps.blend = enabled ? GL_TRUE : GL_FALSE;
+}
+
+static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where)
+{
+    Framebuffer *fbo;
+
+    if (!ctx)
+        return NULL;
+
+    fbo = ctx->state.framebuffer;
+    if (!fbo)
+        return NULL;
+
+    if (!mglObjectPointerLooksPlausible(fbo) ||
+        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo) ||
+        !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))
+    {
+        fprintf(stderr, "MGL WARNING: %s dropping invalid draw framebuffer pointer %p\n",
+                where ? where : "state",
+                (void *)fbo);
+        if (ctx->state.readbuffer == fbo)
+            ctx->state.readbuffer = NULL;
+        ctx->state.framebuffer = NULL;
+        return NULL;
+    }
+
+    return fbo;
+}
+
+static void mglRecomputeGlobalBlendEnable(GLMContext ctx)
+{
+    GLboolean enabled = GL_FALSE;
+
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+    {
+        if (ctx->state.caps.blendi[i])
+        {
+            enabled = GL_TRUE;
+            break;
+        }
+    }
+
+    ctx->state.caps.blend = enabled;
+}
+
+static GLboolean mglClipDistanceIndex(GLMContext ctx, GLenum cap, GLuint *index)
+{
+    if (cap < GL_CLIP_DISTANCE0 || cap > GL_CLIP_DISTANCE7)
+        return GL_FALSE;
+
+    GLuint idx = (GLuint)(cap - GL_CLIP_DISTANCE0);
+    GLuint limit = ctx ? ctx->state.var.max_clip_distances : MAX_CLIP_DISTANCES;
+    if (limit == 0 || limit > MAX_CLIP_DISTANCES)
+        limit = MAX_CLIP_DISTANCES;
+    if (idx >= limit)
+        return GL_FALSE;
+
+    if (index)
+        *index = idx;
+    return GL_TRUE;
+}
+
 void mglDisable(GLMContext ctx, GLenum cap)
 {
+    GLuint clipIndex = 0;
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        ctx->state.caps.clip_distances[clipIndex] = GL_FALSE;
+        ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+        return;
+    }
+
     switch(cap)
     {
-        case GL_BLEND: DISABLE_CAP(blend);
+        case GL_BLEND:
+            mglSetAllBlendEnables(ctx, GL_FALSE);
+            break;
         case GL_LINE_SMOOTH: DISABLE_CAP(line_smooth);
         case GL_POLYGON_SMOOTH: DISABLE_CAP(polygon_smooth);
         case GL_CULL_FACE: DISABLE_CAP(cull_face);
@@ -55,15 +141,9 @@ void mglDisable(GLMContext ctx, GLenum cap)
         case GL_DEBUG_OUTPUT_SYNCHRONOUS: DISABLE_CAP(debug_output_synchronous);
         case GL_DEBUG_OUTPUT: DISABLE_CAP(debug_output);
         case GL_PROGRAM_POINT_SIZE: DISABLE_CAP(program_point_size);
-        case GL_TEXTURE_2D:
-        case GL_TEXTURE_3D:
-        case GL_TEXTURE_CUBE_MAP:
-            // Legacy texture enable/disable - no-op in core profile
-            break;
         default:
-            fprintf(stderr, "MGL WARNING: mglDisable unsupported cap 0x%x\n", cap);
-            // Don't error - just ignore unsupported caps
-            break;
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
     }
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
@@ -74,17 +154,28 @@ void mglDisable(GLMContext ctx, GLenum cap)
     }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
         ctx->state.dirty_bits |= DIRTY_FBO;
-        if (ctx->state.framebuffer) {
-            ctx->state.framebuffer->dirty_bits |= DIRTY_FBO_BINDING;
+        Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
+        if (fbo) {
+            fbo->dirty_bits |= DIRTY_FBO_BINDING;
         }
     }
 }
 
 void mglEnable(GLMContext ctx, GLenum cap)
 {
+    GLuint clipIndex = 0;
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        ctx->state.caps.clip_distances[clipIndex] = GL_TRUE;
+        ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+        return;
+    }
+
     switch(cap)
     {
-        case GL_BLEND: ENABLE_CAP(blend);
+        case GL_BLEND:
+            mglSetAllBlendEnables(ctx, GL_TRUE);
+            break;
         case GL_LINE_SMOOTH: ENABLE_CAP(line_smooth);
         case GL_POLYGON_SMOOTH: ENABLE_CAP(polygon_smooth);
         case GL_CULL_FACE: ENABLE_CAP(cull_face);
@@ -111,16 +202,9 @@ void mglEnable(GLMContext ctx, GLenum cap)
         case GL_PRIMITIVE_RESTART_FIXED_INDEX: ENABLE_CAP(primitive_restart_fixed_index);
         case GL_DEBUG_OUTPUT_SYNCHRONOUS: ENABLE_CAP(debug_output_synchronous);
         case GL_DEBUG_OUTPUT: ENABLE_CAP(debug_output);
-        case GL_TEXTURE_2D:
-        case GL_TEXTURE_3D:
-        case GL_TEXTURE_CUBE_MAP:
-            // Legacy texture enable/disable - no-op in core profile
-            // virglrenderer may call these for compatibility
-            break;
         default:
-            fprintf(stderr, "MGL WARNING: mglEnable unsupported cap 0x%x\n", cap);
-            // Don't error - just ignore unsupported caps
-            break;
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
     }
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
@@ -131,8 +215,9 @@ void mglEnable(GLMContext ctx, GLenum cap)
     }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
         ctx->state.dirty_bits |= DIRTY_FBO;
-        if (ctx->state.framebuffer) {
-            ctx->state.framebuffer->dirty_bits |= DIRTY_FBO_BINDING;
+        Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
+        if (fbo) {
+            fbo->dirty_bits |= DIRTY_FBO_BINDING;
         }
     }
 }
@@ -193,7 +278,7 @@ void mglHint(GLMContext ctx, GLenum target, GLenum mode)
 
 void mglLineWidth(GLMContext ctx, GLfloat width)
 {
-    ERROR_CHECK_RETURN(width <= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(width > 0.0f, GL_INVALID_VALUE);
 
     ctx->state.var.line_width = width;
 
@@ -202,7 +287,7 @@ void mglLineWidth(GLMContext ctx, GLfloat width)
 
 void mglPointSize(GLMContext ctx, GLfloat size)
 {
-    ERROR_CHECK_RETURN(size <= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(size > 0.0f, GL_INVALID_VALUE);
 
     ctx->state.var.point_size = size;
 
@@ -211,7 +296,11 @@ void mglPointSize(GLMContext ctx, GLfloat size)
 
 void mglPolygonMode(GLMContext ctx, GLenum face, GLenum mode)
 {
-    ERROR_CHECK_RETURN(face == GL_FRONT_AND_BACK, GL_INVALID_VALUE);
+    if (face != GL_FRONT_AND_BACK)
+    {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     switch(mode)
     {
@@ -287,8 +376,8 @@ void mglStencilFunc(GLMContext ctx, GLenum func, GLint ref, GLuint mask)
             ctx->state.var.stencil_back_func = func;
             ctx->state.var.stencil_ref = ref;
             ctx->state.var.stencil_back_ref = ref;
-            ctx->state.var.stencil_writemask = mask;
-            ctx->state.var.stencil_back_writemask = mask;
+            ctx->state.var.stencil_value_mask = mask;
+            ctx->state.var.stencil_back_value_mask = mask;
             break;
 
         default:
@@ -325,6 +414,9 @@ void mglStencilOp(GLMContext ctx, GLenum fail, GLenum zfail, GLenum zpass)
     ctx->state.var.stencil_fail = fail;
     ctx->state.var.stencil_pass_depth_fail = zfail;
     ctx->state.var.stencil_pass_depth_pass = zpass;
+    ctx->state.var.stencil_back_fail = fail;
+    ctx->state.var.stencil_back_pass_depth_fail = zfail;
+    ctx->state.var.stencil_back_pass_depth_pass = zpass;
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -332,7 +424,8 @@ void mglStencilOp(GLMContext ctx, GLenum fail, GLenum zfail, GLenum zpass)
 
 void mglStencilMask(GLMContext ctx, GLuint mask)
 {
-    ctx->state.var.stencil_value_mask = mask;
+    ctx->state.var.stencil_writemask = mask;
+    ctx->state.var.stencil_back_writemask = mask;
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -343,7 +436,12 @@ void mglColorMask(GLMContext ctx, GLboolean red, GLboolean green, GLboolean blue
         return;
     }
 
-    if (red == false || green == false  || blue == false  || alpha == false)
+    red = red ? GL_TRUE : GL_FALSE;
+    green = green ? GL_TRUE : GL_FALSE;
+    blue = blue ? GL_TRUE : GL_FALSE;
+    alpha = alpha ? GL_TRUE : GL_FALSE;
+
+    if (red == GL_FALSE || green == GL_FALSE || blue == GL_FALSE || alpha == GL_FALSE)
     {
         for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
         {
@@ -377,7 +475,7 @@ void mglColorMask(GLMContext ctx, GLboolean red, GLboolean green, GLboolean blue
 
 void mglDepthMask(GLMContext ctx, GLboolean flag)
 {
-    ctx->state.var.depth_writemask = flag;
+    ctx->state.var.depth_writemask = flag ? GL_TRUE : GL_FALSE;
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -441,22 +539,22 @@ void mglStencilFuncSeparate(GLMContext ctx, GLenum face, GLenum func, GLint ref,
         case GL_FRONT:
             ctx->state.var.stencil_func = func;
             ctx->state.var.stencil_ref = ref;
-            ctx->state.var.stencil_writemask = mask;
+            ctx->state.var.stencil_value_mask = mask;
             break;
 
         case GL_BACK:
             ctx->state.var.stencil_back_func = func;
             ctx->state.var.stencil_back_ref = ref;
-            ctx->state.var.stencil_back_writemask = mask;
+            ctx->state.var.stencil_back_value_mask = mask;
             break;
 
         case GL_FRONT_AND_BACK:
             ctx->state.var.stencil_func = func;
             ctx->state.var.stencil_ref = ref;
-            ctx->state.var.stencil_writemask = mask;
+            ctx->state.var.stencil_value_mask = mask;
             ctx->state.var.stencil_back_func = func;
             ctx->state.var.stencil_back_ref = ref;
-            ctx->state.var.stencil_back_writemask = mask;
+            ctx->state.var.stencil_back_value_mask = mask;
             break;
 
         default:
@@ -535,8 +633,8 @@ void mglDepthRange(GLMContext ctx, GLdouble n, GLdouble f)
 
 void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
 
     ctx->state.viewport[0] = x;
     ctx->state.viewport[1] = y;
@@ -551,6 +649,12 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
 
 GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
 {
+    GLuint clipIndex = 0;
+    if (mglClipDistanceIndex(ctx, cap, &clipIndex))
+    {
+        return ctx->state.caps.clip_distances[clipIndex];
+    }
+
     switch(cap)
     {
         case GL_BLEND: RET_CAP(blend);
@@ -570,6 +674,7 @@ GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
         case GL_POLYGON_OFFSET_POINT: RET_CAP(polygon_offset_point);
         case GL_PROGRAM_POINT_SIZE: RET_CAP(program_point_size);
         case GL_PRIMITIVE_RESTART: RET_CAP(primitive_restart);
+        case GL_PRIMITIVE_RESTART_FIXED_INDEX: RET_CAP(primitive_restart_fixed_index);
         case GL_SAMPLE_ALPHA_TO_COVERAGE: RET_CAP(sample_alpha_to_coverage);
         case GL_SAMPLE_ALPHA_TO_ONE: RET_CAP(sample_alpha_to_one);
         case GL_SAMPLE_COVERAGE: RET_CAP(sample_coverage);
@@ -587,20 +692,35 @@ GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
 
 void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
 {
-    if (target >= GL_CLIP_DISTANCE0 &&
-        target >= GL_CLIP_DISTANCE7)
-    {
-        if (index >= 0 &&
-            index < ctx->state.var.max_clip_distances)
-        {
-            ctx->state.caps.clip_distances[index] = true;
+    if (!ctx)
+        return;
 
-            ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    if (target == GL_BLEND)
+    {
+        if (index < MAX_COLOR_ATTACHMENTS)
+        {
+            ctx->state.caps.blendi[index] = GL_TRUE;
+            mglRecomputeGlobalBlendEnable(ctx);
+            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
 
             return;
         }
 
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index == 0)
+        {
+            ctx->state.caps.scissor_test = GL_TRUE;
+            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     ERROR_RETURN(GL_INVALID_ENUM);
@@ -608,20 +728,35 @@ void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
 
 void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
 {
-    if (target >= GL_CLIP_DISTANCE0 &&
-        target >= GL_CLIP_DISTANCE7)
-    {
-        if (index >= 0 &&
-            index < ctx->state.var.max_clip_distances)
-        {
-            ctx->state.caps.clip_distances[index] = false;
+    if (!ctx)
+        return;
 
-            ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    if (target == GL_BLEND)
+    {
+        if (index < MAX_COLOR_ATTACHMENTS)
+        {
+            ctx->state.caps.blendi[index] = GL_FALSE;
+            mglRecomputeGlobalBlendEnable(ctx);
+            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
 
             return;
         }
 
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index == 0)
+        {
+            ctx->state.caps.scissor_test = GL_FALSE;
+            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+            return;
+        }
+
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     ERROR_RETURN(GL_INVALID_ENUM);
@@ -629,13 +764,24 @@ void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
 
 GLboolean mglIsEnabledi(GLMContext ctx, GLenum target, GLuint index)
 {
-    if (target >= GL_CLIP_DISTANCE0 &&
-        target >= GL_CLIP_DISTANCE7)
+    if (!ctx)
+        return GL_FALSE;
+
+    if (target == GL_BLEND)
     {
-        if (index >= 0 &&
-            index < ctx->state.var.max_clip_distances)
+        if (index < MAX_COLOR_ATTACHMENTS)
         {
-            return ctx->state.caps.clip_distances[index];
+            return ctx->state.caps.blendi[index];
+        }
+
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    if (target == GL_SCISSOR_TEST)
+    {
+        if (index == 0)
+        {
+            return ctx->state.caps.scissor_test;
         }
 
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
@@ -646,7 +792,8 @@ GLboolean mglIsEnabledi(GLMContext ctx, GLenum target, GLuint index)
 
 void mglClearDepthf(GLMContext ctx, GLfloat d)
 {
-    ctx->state.var.depth_clear_value = d;
+    ctx->state.var.depth_clear_value = _clamp(d);
+    ctx->state.dirty_bits |= DIRTY_STATE;
 }
 
 void mglBlendColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
@@ -1012,8 +1159,22 @@ void mglBlendEquationSeparate(GLMContext ctx, GLenum modeRGB, GLenum modeAlpha)
 
 void mglGetPointerv(GLMContext ctx, GLenum pname, void **params)
 {
-    // Unimplemented function
-    assert(0);
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname)
+    {
+        case GL_DEBUG_CALLBACK_FUNCTION:
+        case GL_DEBUG_CALLBACK_USER_PARAM:
+            *params = NULL;
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglPolygonOffset(GLMContext ctx, GLfloat factor, GLfloat units)
@@ -1135,24 +1296,72 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
 
 void mglPointParameterf(GLMContext ctx, GLenum pname, GLfloat param)
 {
-    // Unimplemented function
-    assert(0);
+    switch (pname)
+    {
+        case GL_POINT_FADE_THRESHOLD_SIZE:
+        case 0x8126: // GL_POINT_SIZE_MIN
+        case 0x8127: // GL_POINT_SIZE_MAX
+            if (param < 0.0f)
+                ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglPointParameterfv(GLMContext ctx, GLenum pname, const GLfloat *params)
 {
-    // Unimplemented function
-    assert(0);
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname)
+    {
+        case 0x8129: // GL_POINT_DISTANCE_ATTENUATION
+            return;
+        default:
+            mglPointParameterf(ctx, pname, *params);
+            return;
+    }
 }
 
 void mglPointParameteri(GLMContext ctx, GLenum pname, GLint param)
 {
-    // Unimplemented function
-    assert(0);
+    switch (pname)
+    {
+        case GL_POINT_FADE_THRESHOLD_SIZE:
+        case 0x8126: // GL_POINT_SIZE_MIN
+        case 0x8127: // GL_POINT_SIZE_MAX
+            if (param < 0)
+                ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        case GL_POINT_SPRITE_COORD_ORIGIN:
+            if (param != GL_LOWER_LEFT && param != GL_UPPER_LEFT)
+                ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglPointParameteriv(GLMContext ctx, GLenum pname, const GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    if (!params)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch (pname)
+    {
+        case 0x8129: // GL_POINT_DISTANCE_ATTENUATION
+            return;
+        default:
+            mglPointParameteri(ctx, pname, *params);
+            return;
+    }
 }

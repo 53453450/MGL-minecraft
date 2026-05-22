@@ -94,10 +94,8 @@ Point them to the built libraries so they can take over rendering.
 
 ## Current Status
 
-- UI renders incorrectly
-- Text rendering works correctly
+- At 1.21.1, most of them are normal, but above that, there is chaos.
 - Loading animation renders correctly
-- World is not rendered
 
 ## Project Structure
 

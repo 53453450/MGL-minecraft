@@ -19,8 +19,10 @@
  */
 
 #include <strings.h>
+#include <stdint.h>
 
 #include "glm_context.h"
+#include "mgl_safety.h"
 
 Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 
@@ -35,6 +37,20 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
     if (!vao)
         return NULL;
 
+    if (!mglObjectPointerLooksPlausible(vao) ||
+        !mglHashTableContainsData(&STATE(vao_table), vao) ||
+        !mglPointerRangeIsReadable(vao, sizeof(*vao)))
+    {
+        fprintf(stderr, "MGL VAO INVALID in %s vao=%p (not found in sane vao_table)\n",
+                func_name, (void *)vao);
+        ctx->state.vao = NULL;
+        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
+        ctx->state.var.element_array_buffer_binding =
+            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(dirty_bits) |= DIRTY_VAO;
+        return NULL;
+    }
+
     if (vao->magic != MGL_VAO_MAGIC)
     {
         fprintf(stderr, "MGL VAO INVALID in %s vao=%p magic=0x%x\n",
@@ -43,6 +59,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
         ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
         ctx->state.var.element_array_buffer_binding =
             ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        STATE(dirty_bits) |= DIRTY_VAO;
         return NULL;
     }
 
@@ -97,7 +114,12 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao)
     VertexArray *ptr;
 
     ptr = (VertexArray *)malloc(sizeof(VertexArray));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate vertex array %u\n", vao);
+        return NULL;
+    }
 
     bzero((void *)ptr, sizeof(VertexArray));
 
@@ -108,6 +130,8 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao)
     {
         ptr->attrib[i].size = 4;
         ptr->attrib[i].type = GL_FLOAT;
+        ptr->attrib[i].integer = 0;
+        ptr->attrib[i].long_attribute = 0;
         ptr->attrib[i].stride = 0;
         ptr->attrib[i].divisor = 0;
         ptr->attrib[i].relativeoffset = 0;
@@ -148,6 +172,8 @@ void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays)
         name = getNewName(&STATE(vao_table));
         *arrays++ = name;
         ptr = newVAO(ctx, name);
+        if (!ptr)
+            return;
         insertHashElement(&STATE(vao_table), name, ptr);
     }
 }
@@ -274,9 +300,23 @@ void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *
             break;
 
         case GL_VERTEX_ATTRIB_ARRAY_INTEGER:
+            *params = vao->attrib[index].integer;
+            break;
+
+        case GL_VERTEX_ATTRIB_ARRAY_LONG:
+            *params = vao->attrib[index].long_attribute;
+            break;
+
         case GL_VERTEX_ATTRIB_ARRAY_DIVISOR:
-            ERROR_RETURN(GL_INVALID_ENUM); // unsupported for now
-            *params = 0;
+            *params = vao->attrib[index].divisor;
+            break;
+
+        case GL_VERTEX_ATTRIB_BINDING:
+            *params = vao->attrib[index].buffer_bindingindex;
+            break;
+
+        case GL_VERTEX_ATTRIB_RELATIVE_OFFSET:
+            *params = vao->attrib[index].relativeoffset;
             break;
 
         case GL_CURRENT_VERTEX_ATTRIB:
@@ -359,6 +399,8 @@ void setVertexAttrib(GLMContext ctx, GLuint index, GLint size, GLenum type, GLbo
     vao->attrib[index].size = size;
     vao->attrib[index].type = type;
     vao->attrib[index].normalized = normalized;
+    vao->attrib[index].integer = 0;
+    vao->attrib[index].long_attribute = (type == GL_DOUBLE);
     vao->attrib[index].stride = stride;
     vao->attrib[index].relativeoffset = (GLubyte *)pointer - (GLubyte *)NULL;
     vao->attrib[index].binding_offset = 0;
@@ -417,6 +459,8 @@ void mglVertexAttribPointer(GLMContext ctx, GLuint index, GLint size, GLenum typ
     }
 
     setVertexAttrib(ctx, index, size, type, normalized, stride, pointer);
+    vao->attrib[index].integer = 0;
+    vao->attrib[index].long_attribute = 0;
 }
 
 void mglVertexAttribIPointer(GLMContext ctx, GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer)
@@ -463,6 +507,8 @@ void mglVertexAttribIPointer(GLMContext ctx, GLuint index, GLint size, GLenum ty
     }
 
     setVertexAttrib(ctx, index, size, type, 0, stride, pointer);
+    vao->attrib[index].integer = 1;
+    vao->attrib[index].long_attribute = 0;
 }
 
 
@@ -498,6 +544,8 @@ void mglVertexAttribLPointer(GLMContext ctx, GLuint index, GLint size, GLenum ty
     }
 
     setVertexAttrib(ctx, index, size, type, 0, stride, pointer);
+    vao->attrib[index].integer = 0;
+    vao->attrib[index].long_attribute = 1;
 }
 
 void mglGetVertexAttribPointerv(GLMContext ctx, GLuint index, GLenum pname, void **pointer)
@@ -561,7 +609,7 @@ void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
 
     ptr->enabled_attribs &= ~(0x1 << index);
 
-    VAO_STATE(dirty_bits) |= DIRTY_VAO;
+    ptr->dirty_bits |= DIRTY_VAO;
     if (ctx->state.vao == ptr) {
         STATE(dirty_bits) |= DIRTY_VAO;
     }
@@ -709,6 +757,8 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
     vao->attrib[attribindex].size = size;
     vao->attrib[attribindex].type = type;
     vao->attrib[attribindex].normalized = normalized;
+    vao->attrib[attribindex].integer = 0;
+    vao->attrib[attribindex].long_attribute = 0;
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
@@ -766,6 +816,8 @@ void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     vao->attrib[attribindex].size = size;
     vao->attrib[attribindex].type = type;
     vao->attrib[attribindex].normalized = 0;
+    vao->attrib[attribindex].integer = 1;
+    vao->attrib[attribindex].long_attribute = 0;
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
@@ -819,6 +871,8 @@ void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
     vao->attrib[attribindex].size = size;
     vao->attrib[attribindex].type = type;
     vao->attrib[attribindex].normalized = 0;
+    vao->attrib[attribindex].integer = 0;
+    vao->attrib[attribindex].long_attribute = 1;
     vao->attrib[attribindex].relativeoffset = relativeoffset;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
@@ -895,23 +949,178 @@ void mglVertexArrayBindingDivisor(GLMContext ctx, GLuint vaobj, GLuint bindingin
 
     setBindingDivisor(ctx, ptr, bindingindex, divisor);
 }
+static VertexAttrib *mglFindVertexBindingAttrib(VertexArray *vao, GLuint bindingindex)
+{
+    if (!vao || bindingindex >= MAX_BINDABLE_BUFFERS) {
+        return NULL;
+    }
 
+    for (GLuint i = 0; i < MAX_ATTRIBS; ++i) {
+        if (vao->attrib[i].buffer_bindingindex == bindingindex) {
+            return &vao->attrib[i];
+        }
+    }
 
+    return NULL;
+}
 
 void mglGetVertexArrayiv(GLMContext ctx, GLuint vaobj, GLenum pname, GLint *param)
 {
-    // Unimplemented function
-    assert(0);
+    VertexArray *ptr = getVAO(ctx, vaobj);
+
+    if (!param) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (vaobj == 0u || !ptr) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    switch (pname) {
+        case GL_ELEMENT_ARRAY_BUFFER_BINDING:
+            *param = ptr->element_array.buffer ? (GLint)ptr->element_array.buffer->name : 0;
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglGetVertexArrayIndexediv(GLMContext ctx, GLuint vaobj, GLuint index, GLenum pname, GLint *param)
 {
-    // Unimplemented function
-    assert(0);
+    VertexArray *ptr = getVAO(ctx, vaobj);
+
+    if (!param) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (vaobj == 0u || !ptr) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    switch (pname) {
+        case GL_VERTEX_ATTRIB_ARRAY_ENABLED:
+        case GL_VERTEX_ATTRIB_ARRAY_SIZE:
+        case GL_VERTEX_ATTRIB_ARRAY_STRIDE:
+        case GL_VERTEX_ATTRIB_ARRAY_TYPE:
+        case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED:
+        case GL_VERTEX_ATTRIB_ARRAY_INTEGER:
+        case GL_VERTEX_ATTRIB_ARRAY_LONG:
+        case GL_VERTEX_ATTRIB_ARRAY_DIVISOR:
+        case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING:
+        case GL_VERTEX_ATTRIB_BINDING:
+        case GL_VERTEX_ATTRIB_RELATIVE_OFFSET:
+            if (index >= MAX_ATTRIBS) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            break;
+
+        case GL_VERTEX_BINDING_BUFFER:
+        case GL_VERTEX_BINDING_OFFSET:
+        case GL_VERTEX_BINDING_STRIDE:
+        case GL_VERTEX_BINDING_DIVISOR:
+            if (index >= MAX_BINDABLE_BUFFERS) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    VertexAttrib *attrib = &ptr->attrib[index < MAX_ATTRIBS ? index : 0];
+    switch (pname) {
+        case GL_VERTEX_ATTRIB_ARRAY_ENABLED:
+            *param = (ptr->enabled_attribs & (1u << index)) ? GL_TRUE : GL_FALSE;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_SIZE:
+            *param = (GLint)attrib->size;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_STRIDE:
+            *param = (GLint)attrib->stride;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_TYPE:
+            *param = (GLint)attrib->type;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_NORMALIZED:
+            *param = (GLint)attrib->normalized;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_INTEGER:
+            *param = (GLint)attrib->integer;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_LONG:
+            *param = (GLint)attrib->long_attribute;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_DIVISOR:
+            *param = (GLint)attrib->divisor;
+            return;
+        case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING:
+            *param = attrib->buffer ? (GLint)attrib->buffer->name : 0;
+            return;
+        case GL_VERTEX_ATTRIB_BINDING:
+            *param = (GLint)attrib->buffer_bindingindex;
+            return;
+        case GL_VERTEX_ATTRIB_RELATIVE_OFFSET:
+            *param = (GLint)attrib->relativeoffset;
+            return;
+
+        case GL_VERTEX_BINDING_BUFFER:
+        case GL_VERTEX_BINDING_OFFSET:
+        case GL_VERTEX_BINDING_STRIDE:
+        case GL_VERTEX_BINDING_DIVISOR:
+        {
+            VertexAttrib *binding = mglFindVertexBindingAttrib(ptr, index);
+            if (!binding) {
+                *param = 0;
+                return;
+            }
+            switch (pname) {
+                case GL_VERTEX_BINDING_BUFFER:
+                    *param = binding->buffer ? (GLint)binding->buffer->name : 0;
+                    return;
+                case GL_VERTEX_BINDING_OFFSET:
+                    *param = (GLint)binding->binding_offset;
+                    return;
+                case GL_VERTEX_BINDING_STRIDE:
+                    *param = (GLint)binding->stride;
+                    return;
+                case GL_VERTEX_BINDING_DIVISOR:
+                    *param = (GLint)binding->divisor;
+                    return;
+            }
+        }
+    }
 }
 
 void mglGetVertexArrayIndexed64iv(GLMContext ctx, GLuint vaobj, GLuint index, GLenum pname, GLint64 *param)
 {
-    // Unimplemented function
-    assert(0);
+    if (!param) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (pname == GL_VERTEX_BINDING_OFFSET) {
+        VertexArray *ptr = getVAO(ctx, vaobj);
+        if (vaobj == 0u || !ptr) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (index >= MAX_BINDABLE_BUFFERS) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+
+        VertexAttrib *binding = mglFindVertexBindingAttrib(ptr, index);
+        *param = binding ? (GLint64)binding->binding_offset : 0;
+        return;
+    }
+
+    GLint value = 0;
+    mglGetVertexArrayIndexediv(ctx, vaobj, index, pname, &value);
+    *param = (GLint64)value;
 }

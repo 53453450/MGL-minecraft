@@ -29,6 +29,7 @@
 #include "programs.h"
 #include "buffers.h"
 #include "glm_context.h"
+#include "mgl_safety.h"
 
 extern GLMContext _ctx;
 
@@ -36,6 +37,8 @@ extern GLMContext _ctx;
 #pragma mark uniforms
 
 #define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
+#define MGL_SAFE_SPIRV_RESOURCE_MAX 4096u
+#define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
 
 static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
 {
@@ -117,58 +120,273 @@ static void mglUniformSetError(GLMContext ctx, GLenum error)
     }
 }
 
+#define MGL_SAFE_CSTRING_MAX 4096u
+
+static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
+{
+    if (length_out) {
+        *length_out = 0u;
+    }
+    if (!str) {
+        return GL_FALSE;
+    }
+
+    for (size_t i = 0; i < MGL_SAFE_CSTRING_MAX; i++) {
+        if (!mglPointerRangeReadable(str + i, 1u)) {
+            return GL_FALSE;
+        }
+        if (str[i] == '\0') {
+            if (length_out) {
+                *length_out = i;
+            }
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglSafeCStringEquals(const char *lhs, const char *rhs)
+{
+    if (!lhs || !rhs) {
+        return GL_FALSE;
+    }
+
+    for (size_t i = 0; i < MGL_SAFE_CSTRING_MAX; i++) {
+        if (!mglPointerRangeReadable(lhs + i, 1u) ||
+            !mglPointerRangeReadable(rhs + i, 1u)) {
+            return GL_FALSE;
+        }
+
+        char a = lhs[i];
+        char b = rhs[i];
+        if (a != b) {
+            return GL_FALSE;
+        }
+        if (a == '\0') {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglSafeCStringContains(const char *haystack, const char *needle)
+{
+    size_t hay_len = 0u;
+    size_t needle_len = 0u;
+
+    if (!mglSafeCStringLength(haystack, &hay_len) ||
+        !mglSafeCStringLength(needle, &needle_len)) {
+        return GL_FALSE;
+    }
+    if (needle_len == 0u) {
+        return GL_TRUE;
+    }
+    if (needle_len > hay_len) {
+        return GL_FALSE;
+    }
+
+    for (size_t i = 0; i <= hay_len - needle_len; i++) {
+        GLboolean match = GL_TRUE;
+        for (size_t j = 0; j < needle_len; j++) {
+            if (haystack[i + j] != needle[j]) {
+                match = GL_FALSE;
+                break;
+            }
+        }
+        if (match) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static const char *mglSafeCStringForLog(const char *str)
+{
+    return mglSafeCStringLength(str, NULL) ? str : "(invalid)";
+}
+
+static SpirvResourceList *mglUniformSafeResourceList(Program *program, int stage, int res_type, const char *func)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        res_type < 0 || res_type >= _MAX_SPIRV_RES) {
+        return NULL;
+    }
+
+    SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+    if (!mglPointerRangeReadable(resources, sizeof(*resources))) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping unreadable resource list program=%p stage=%d type=%d\n",
+                func ? func : "uniform",
+                (void *)program,
+                stage,
+                res_type);
+        return NULL;
+    }
+
+    if (resources->count == 0u) {
+        return resources;
+    }
+    if (resources->count > MGL_SAFE_SPIRV_RESOURCE_MAX) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping suspicious resource list program=%p stage=%d type=%d count=%u\n",
+                func ? func : "uniform",
+                (void *)program,
+                stage,
+                res_type,
+                resources->count);
+        return NULL;
+    }
+    size_t resource_bytes = (size_t)resources->count * sizeof(SpirvResource);
+    if (!resources->list ||
+        !mglPointerRangeReadable(resources->list, resource_bytes)) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping unreadable resource storage program=%p stage=%d type=%d count=%u list=%p\n",
+                func ? func : "uniform",
+                (void *)program,
+                stage,
+                res_type,
+                resources->count,
+                (void *)resources->list);
+        return NULL;
+    }
+
+    return resources;
+}
+
+static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *program, const char *func)
+{
+    if (!ctx || !program) {
+        return NULL;
+    }
+
+    if (!mglObjectPointerLooksPlausible(program) ||
+        !mglHashTableContainsData(&ctx->state.program_table, program) ||
+        !mglPointerRangeReadable(program, sizeof(*program))) {
+        fprintf(stderr,
+                "MGL WARNING: %s dropping invalid program pointer %p\n",
+                func ? func : "uniform",
+                (void *)program);
+        if (ctx->state.program == program) {
+            ctx->state.program = NULL;
+            ctx->state.program_name = 0;
+            ctx->state.var.current_program = 0;
+        }
+        return NULL;
+    }
+
+    return program;
+}
+
+static Program *mglUniformGetCurrentProgram(GLMContext ctx, const char *func)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    return mglUniformValidateProgramPointer(ctx, ctx->state.program, func);
+}
+
+static Program *mglUniformGetNamedProgram(GLMContext ctx, GLuint program, const char *func)
+{
+    if (!ctx || program == 0u) {
+        return NULL;
+    }
+    return mglUniformValidateProgramPointer(ctx, getProgram(ctx, program), func);
+}
+
 static GLint mglKnownPlainUniformLocation(const char *name)
 {
     if (!name) {
         return -1;
     }
 
-    if (!strcmp(name, "ModelViewMat")) {
+    if (!mglSafeCStringLength(name, NULL)) {
+        return -1;
+    }
+
+    if (mglSafeCStringEquals(name, "ModelViewMat")) {
         return 0;
     }
-    if (!strcmp(name, "ProjMat")) {
+    if (mglSafeCStringEquals(name, "ProjMat")) {
         return 1;
     }
-    if (!strcmp(name, "TextureMat")) {
+    if (mglSafeCStringEquals(name, "TextureMat")) {
         return 2;
     }
-    if (!strcmp(name, "ColorModulator")) {
+    if (mglSafeCStringEquals(name, "ColorModulator")) {
         return 3;
     }
-    if (!strcmp(name, "FogStart")) {
+    if (mglSafeCStringEquals(name, "FogStart")) {
         return 4;
     }
-    if (!strcmp(name, "FogEnd")) {
+    if (mglSafeCStringEquals(name, "FogEnd")) {
         return 5;
     }
-    if (!strcmp(name, "FogColor")) {
+    if (mglSafeCStringEquals(name, "FogColor")) {
         return 6;
     }
-    if (!strcmp(name, "FogShape")) {
+    if (mglSafeCStringEquals(name, "FogShape")) {
         return 7;
     }
-    if (!strcmp(name, "GameTime")) {
+    if (mglSafeCStringEquals(name, "GameTime")) {
         return 8;
     }
-    if (!strcmp(name, "ScreenSize")) {
+    if (mglSafeCStringEquals(name, "ScreenSize")) {
         return 9;
     }
-    if (!strcmp(name, "LineWidth")) {
+    if (mglSafeCStringEquals(name, "LineWidth")) {
         return 10;
     }
-    if (!strcmp(name, "IViewRotMat")) {
+    if (mglSafeCStringEquals(name, "IViewRotMat")) {
         return 11;
     }
-    if (!strcmp(name, "ChunkOffset")) {
+    if (mglSafeCStringEquals(name, "ChunkOffset")) {
         return 12;
     }
 
     return -1;
 }
 
+static GLboolean mglUniformNameLooksSamplerLike(const char *name)
+{
+    if (!name || !mglSafeCStringLength(name, NULL)) {
+        return GL_FALSE;
+    }
+
+    return (mglSafeCStringContains(name, "Sampler") ||
+            mglSafeCStringEquals(name, "CloudFaces")) ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglUniformResourceLooksSamplerLike(const SpirvResource *res, int res_type)
+{
+    if (!res) {
+        return GL_FALSE;
+    }
+
+    switch (res_type) {
+        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
+        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+            return GL_TRUE;
+        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
+            return (res->image_dim != 0u ||
+                    res->uniform_location >= MGL_SYNTHETIC_SAMPLER_LOCATION_BASE ||
+                    mglUniformNameLooksSamplerLike(res->name)) ? GL_TRUE : GL_FALSE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 static GLint mglPlainUniformResourceLocation(const SpirvResource *res)
 {
     if (!res) {
+        return -1;
+    }
+
+    if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
         return -1;
     }
 
@@ -202,6 +420,10 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, int
     // are distinct uniforms. Once we assign a synthetic location, only that
     // location should match; otherwise unrelated integer uniforms at location 0
     // can accidentally rewrite sampler units.
+    if (mglUniformResourceLooksSamplerLike(res, res_type)) {
+        return (res->uniform_location >= 0 && res->uniform_location == location) ? GL_TRUE : GL_FALSE;
+    }
+
     if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
         GLint plain_location = mglPlainUniformResourceLocation(res);
         if (plain_location >= 0 && plain_location == location) {
@@ -239,9 +461,15 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
             int res_type = sampler_resource_types[rt];
-            SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
             for (GLuint i = 0; i < resources->count; i++) {
                 SpirvResource *res = &resources->list[i];
+                if (!mglUniformResourceLooksSamplerLike(res, res_type)) {
+                    continue;
+                }
                 if (!mglUniformLocationMatchesResource(res, res_type, location)) {
                     continue;
                 }
@@ -262,19 +490,20 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
 
 static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint unit)
 {
+    static const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+    };
+
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
     if (!ctx || location < 0) {
         return GL_FALSE;
     }
 
-    Program *program = ctx->state.program;
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
     if (!program) {
-        return GL_FALSE;
-    }
-
-    int stage = -1;
-    GLuint binding = 0;
-    if (!mglFindSamplerUniformBinding(program, location, &stage, &binding)) {
         return GL_FALSE;
     }
 
@@ -282,22 +511,76 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
     }
 
-    GLboolean changed = (program->sampler_units[binding] != unit);
-    program->sampler_units[binding] = unit;
-    if (stage >= 0 && stage < _MAX_SHADER_TYPES) {
-        changed = changed || (program->sampler_units_by_stage[stage][binding] != unit);
-        program->sampler_units_by_stage[stage][binding] = unit;
-    } else {
-        for (int shader_stage = 0; shader_stage < _MAX_SHADER_TYPES; shader_stage++) {
-            if (program->sampler_units_by_stage[shader_stage][binding] >= 0 &&
-                program->sampler_units_by_stage[shader_stage][binding] != unit) {
-                changed = GL_TRUE;
-                program->sampler_units_by_stage[shader_stage][binding] = unit;
+    GLboolean matched = GL_FALSE;
+    GLboolean changed = GL_FALSE;
+    GLboolean explicit_changed = GL_FALSE;
+
+    const char *firstMatchedName = NULL;
+    GLuint firstMatchedBinding = 0u;
+    int firstMatchedStage = -1;
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglUniformResourceLooksSamplerLike(res, res_type) ||
+                    !mglUniformLocationMatchesResource(res, res_type, location) ||
+                    res->binding >= TEXTURE_UNITS) {
+                    continue;
+                }
+
+                matched = GL_TRUE;
+                if (!firstMatchedName) {
+                    firstMatchedName = res->name;
+                    firstMatchedBinding = res->binding;
+                    firstMatchedStage = stage;
+                }
+                if (program->sampler_units[res->binding] != unit) {
+                    changed = GL_TRUE;
+                    program->sampler_units[res->binding] = unit;
+                }
+                if (!program->sampler_units_explicit[res->binding]) {
+                    explicit_changed = GL_TRUE;
+                    program->sampler_units_explicit[res->binding] = GL_TRUE;
+                }
+                if (program->sampler_units_by_stage[stage][res->binding] != unit) {
+                    changed = GL_TRUE;
+                    program->sampler_units_by_stage[stage][res->binding] = unit;
+                }
+                if (!program->sampler_units_explicit_by_stage[stage][res->binding]) {
+                    explicit_changed = GL_TRUE;
+                    program->sampler_units_explicit_by_stage[stage][res->binding] = GL_TRUE;
+                }
             }
         }
     }
 
-    if (changed) {
+    if (!matched) {
+        return GL_FALSE;
+    }
+
+    if (changed || explicit_changed) {
+        static unsigned long long s_sampler_uniform_update_count = 0;
+        unsigned long long hit = ++s_sampler_uniform_update_count;
+        if (hit <= 128ull || (hit % 1024ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL SAMPLER UNIFORM set program=%u location=%d unit=%d firstStage=%d firstBinding=%u firstName=%s changed=%d explicitChanged=%d hit=%llu\n",
+                    (unsigned)program->name,
+                    (int)location,
+                    (int)unit,
+                    firstMatchedStage,
+                    (unsigned)firstMatchedBinding,
+                    mglSafeCStringForLog(firstMatchedName),
+                    changed ? 1 : 0,
+                    explicit_changed ? 1 : 0,
+                    hit);
+        }
         ctx->state.dirty_bits |= DIRTY_TEX_BINDING | DIRTY_SAMPLER;
     }
     return GL_TRUE;
@@ -318,7 +601,10 @@ static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint unifor
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
             if (res->gl_binding == uniformBlockIndex) {
@@ -349,12 +635,15 @@ static size_t mglUniformBlockRequiredSize(Program *program, const SpirvResource 
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
             GLboolean same_block = GL_FALSE;
 
-            if (block->name && res->name && !strcmp(block->name, res->name)) {
+            if (mglSafeCStringEquals(block->name, res->name)) {
                 same_block = GL_TRUE;
             } else if (res->gl_binding == block->gl_binding) {
                 same_block = GL_TRUE;
@@ -375,10 +664,13 @@ static GLboolean mglUniformBlockReferencedByStage(Program *program, const SpirvR
         return GL_FALSE;
     }
 
-    SpirvResourceList *resources = &program->spirv_resources_list[query_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+    SpirvResourceList *resources = mglUniformSafeResourceList(program, query_stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+    if (!resources) {
+        return GL_FALSE;
+    }
     for (GLuint i = 0; i < resources->count; i++) {
         SpirvResource *res = &resources->list[i];
-        if ((block->name && res->name && !strcmp(block->name, res->name)) ||
+        if (mglSafeCStringEquals(block->name, res->name) ||
             res->gl_binding == block->gl_binding) {
             return GL_TRUE;
         }
@@ -393,7 +685,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
         return -1;
     }
 
-    if (!name) {
+    if (!name || !mglSafeCStringLength(name, NULL)) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
     }
 
@@ -401,7 +693,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
     }
 
-    Program *ptr = getProgram(ctx, program);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
     }
@@ -423,33 +715,36 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
         int res_type = resource_types[rt];
         for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
         {
-            int count = ptr->spirv_resources_list[stage][res_type].count;
-            SpirvResource *list = ptr->spirv_resources_list[stage][res_type].list;
-            if (count <= 0 || !list) {
+            SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, res_type, __FUNCTION__);
+            if (!resources || resources->count == 0u) {
                 continue;
             }
 
-            for (int i=0; i<count; i++)
+            for (GLuint i=0; i<resources->count; i++)
             {
+                SpirvResource *list = resources->list;
                 const char *str = list[i].name;
-                if (!str) {
+                if (!mglSafeCStringLength(str, NULL)) {
                     continue;
                 }
 
-                if (!strcmp(str, name))
+                if (mglSafeCStringEquals(str, name))
                 {
                     GLuint binding = list[i].binding;
-                    GLint location = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)
-                        ? mglPlainUniformResourceLocation(&list[i])
-                        : ((list[i].uniform_location >= 0)
-                            ? list[i].uniform_location
-                            : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding));
+                    GLboolean sampler_like = mglUniformResourceLooksSamplerLike(&list[i], res_type);
+                    GLint location = sampler_like
+                        ? list[i].uniform_location
+                        : ((res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)
+                            ? mglPlainUniformResourceLocation(&list[i])
+                            : ((list[i].uniform_location >= 0)
+                                ? list[i].uniform_location
+                                : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding)));
 
-                    if (strstr(name, "CloudFaces")) {
+                    if (mglSafeCStringContains(name, "CloudFaces")) {
                         fprintf(stderr,
                                 "MGL REFLECT UniformLocation program=%u name=%s -> loc=%d binding=%u type=%d stage=%d dim=%u\n",
                                 program,
-                                name,
+                                mglSafeCStringForLog(name),
                                 location,
                                 binding,
                                 res_type,
@@ -463,11 +758,11 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
         }
     }
 
-    if (strstr(name, "CloudFaces")) {
+    if (mglSafeCStringContains(name, "CloudFaces")) {
         fprintf(stderr,
                 "MGL REFLECT UniformLocation MISS program=%u name=%s\n",
                 program,
-                name);
+                mglSafeCStringForLog(name));
     }
     
     return -1;
@@ -498,7 +793,7 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
         return;
     }
     if (params) {
-        Program *ptr = getProgram(ctx, program);
+        Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
         GLuint binding = 0;
         int stage = -1;
         if (ptr && mglFindSamplerUniformBinding(ptr, location, &stage, &binding)) {
@@ -588,7 +883,7 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         return (GLuint)-1;
     }
 
-    if (!uniformBlockName) {
+    if (!uniformBlockName || !mglSafeCStringLength(uniformBlockName, NULL)) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
     }
 
@@ -596,7 +891,7 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
     }
 
-    Program *ptr = getProgram(ctx, program);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, (GLuint)-1);
     }
@@ -607,20 +902,20 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
 
     for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
     {
-        int count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].count;
-        SpirvResource *list = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER].list;
-        if (count <= 0 || !list) {
+        SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!resources || resources->count == 0u) {
             continue;
         }
 
-        for (int i=0; i<count; i++)
+        for (GLuint i=0; i<resources->count; i++)
         {
+            SpirvResource *list = resources->list;
             const char *str = list[i].name;
-            if (!str) {
+            if (!mglSafeCStringLength(str, NULL)) {
                 continue;
             }
 
-            if (!strcmp(str, uniformBlockName))
+            if (mglSafeCStringEquals(str, uniformBlockName))
             {
                 GLuint binding = list[i].gl_binding;
 
@@ -629,7 +924,8 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         }
     }
 
-    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, returning GL_INVALID_INDEX\n", uniformBlockName ? uniformBlockName : "(null)");
+    fprintf(stderr, "MGL WARNING: uniform block '%s' binding not found, returning GL_INVALID_INDEX\n",
+            mglSafeCStringForLog(uniformBlockName));
     return (GLuint)-1;
 }
 
@@ -640,12 +936,16 @@ void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBl
     }
     *params = 0;
 
+    if (!ctx) {
+        return;
+    }
+
     if (isProgram(ctx, program) == GL_FALSE) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 
-    Program *ptr = getProgram(ctx, program);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr || ptr->linked_glsl_program == NULL) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -665,7 +965,10 @@ void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBl
             *params = (GLint)mglUniformBlockRequiredSize(ptr, block);
             break;
         case GL_UNIFORM_BLOCK_NAME_LENGTH:
-            *params = (GLint)(block->name ? strlen(block->name) + 1 : 1);
+            {
+                size_t block_name_len = 0u;
+                *params = (GLint)(mglSafeCStringLength(block->name, &block_name_len) ? block_name_len + 1u : 1u);
+            }
             break;
         case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS:
             *params = 0;
@@ -693,6 +996,9 @@ void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniform
     if (uniformBlockName && bufSize > 0) {
         uniformBlockName[0] = '\0';
     }
+    if (!ctx) {
+        return;
+    }
     if (bufSize < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -702,7 +1008,7 @@ void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniform
         return;
     }
 
-    Program *ptr = getProgram(ctx, program);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr || ptr->linked_glsl_program == NULL) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -714,8 +1020,9 @@ void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniform
         return;
     }
 
-    const char *src = block->name ? block->name : "";
-    GLsizei src_len = (GLsizei)strlen(src);
+    size_t safe_src_len = 0u;
+    const char *src = mglSafeCStringLength(block->name, &safe_src_len) ? block->name : "";
+    GLsizei src_len = (GLsizei)safe_src_len;
     if (length) {
         *length = src_len;
     }
@@ -736,25 +1043,34 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
 
     if (uniformBlockBinding >= MAX_BINDABLE_BUFFERS) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     if (isProgram(ctx, program) == GL_FALSE) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
-    Program *ptr = getProgram(ctx, program);
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
     if (!ptr || ptr->linked_glsl_program == NULL) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     int block_stage = -1;
     SpirvResource *block = mglFindUniformBlockByIndex(ptr, uniformBlockIndex, &block_stage);
     if (!block) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
-    const char *block_name = block->name;
+    const char *block_name = mglSafeCStringLength(block->name, NULL) ? block->name : NULL;
     GLuint old_binding = block->gl_binding;
+
+    fprintf(stderr, "MGL TRACE UniformBlockBinding program=%u blockIndex=%u blockName=%s oldBinding=%u newBinding=%u\n",
+            (unsigned)program, (unsigned)uniformBlockIndex,
+            block_name ? block_name : "(invalid)",
+            (unsigned)old_binding, (unsigned)uniformBlockBinding);
 
     /*
      * `binding` is the Metal argument slot after MSL reflection/repair.
@@ -762,10 +1078,13 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
      * glBindBufferRange state. glUniformBlockBinding changes only the latter.
      */
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources = &ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+        SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
-            if ((block_name && res->name && !strcmp(block_name, res->name)) ||
+            if (mglSafeCStringEquals(block_name, res->name) ||
                 res->gl_binding == old_binding) {
                 res->gl_binding = uniformBlockBinding;
             }
@@ -782,7 +1101,7 @@ bool checkUniformParams(GLMContext ctx, GLint location)
         return false;
     }
 
-    Program* ptr = ctx->state.program;
+    Program* ptr = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
     
     if (!ptr) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
@@ -869,7 +1188,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         return;
     }
     
-    Program *program = ctx->state.program;
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
     if (!program) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return;
@@ -952,7 +1271,8 @@ void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
 
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    if (count > 0 && value && mglSetSamplerUniformUnit(ctx, location, value[0])) {
+    if (count > 0 && value && mglPointerRangeReadable(value, sizeof(*value)) &&
+        mglSetSamplerUniformUnit(ctx, location, value[0])) {
         return;
     }
 
@@ -970,7 +1290,8 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    if (count > 0 && value && value[0] <= (GLuint)INT_MAX &&
+    if (count > 0 && value && mglPointerRangeReadable(value, sizeof(*value)) &&
+        value[0] <= (GLuint)INT_MAX &&
         mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
         return;
     }

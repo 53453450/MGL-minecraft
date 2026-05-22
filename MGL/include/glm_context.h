@@ -268,6 +268,7 @@ typedef enum MGLTexLevelInitSource_t {
     kTexInitNone = 0,
     kTexImageNull,
     kTexImageCopy,
+    kTexImagePBO,
     kTexSubImageCPU,
     kTexSubImagePBO,
     kTexRenderTargetWrite,
@@ -372,6 +373,8 @@ typedef struct VertexAttrib_t {
     GLuint  size;
     GLenum  type;
     GLuint  normalized;
+    GLuint  integer;
+    GLuint  long_attribute;
     GLuint  stride;
     GLuint  divisor;
     GLintptr  relativeoffset;
@@ -482,6 +485,8 @@ typedef struct Program_t {
     } local_workgroup_size;
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
+    GLboolean sampler_units_explicit[TEXTURE_UNITS];
+    GLboolean sampler_units_explicit_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
@@ -515,6 +520,7 @@ typedef struct FBOAttachment_t {
     GLuint texture;
     GLuint level;
     GLuint layer;
+    GLboolean layered;
     GLbitfield clear_bitmask;
     GLfloat clear_color[4];
     union {
@@ -527,6 +533,10 @@ typedef struct Framebuffer_t {
     GLuint dirty_bits;
     GLuint  name;
     GLbitfield color_attachment_bitfield;
+    GLuint draw_buffer;
+    GLsizei draw_buffer_count;
+    GLenum draw_buffers[MAX_COLOR_ATTACHMENTS];
+    GLuint read_buffer;
     FBOAttachment color_attachments[MAX_COLOR_ATTACHMENTS];
     FBOAttachment depth;
     FBOAttachment stencil;
@@ -625,11 +635,17 @@ typedef struct {
 
     GLenum error;   // glGetError
 
-    GLuint draw_buffer; // GL_DRAW_BUFFER
+    GLuint draw_buffer; // GL_DRAW_BUFFER / GL_DRAW_BUFFER0
+    GLsizei draw_buffer_count;
+    GLenum draw_buffers[MAX_COLOR_ATTACHMENTS];
     GLuint read_buffer; // GL_READ_BUFFER
+    GLuint default_draw_buffer;
+    GLsizei default_draw_buffer_count;
+    GLenum default_draw_buffers[MAX_COLOR_ATTACHMENTS];
+    GLuint default_read_buffer;
     GLuint max_color_attachments; // GL_MAX_COLOR_ATTACHMENTS
     GLuint max_vertex_attribs; // GL_MAX_VERTEX_ATTRIBS
-    GLuint viewport[4]; // GL_VIEWPORT
+    GLint viewport[4]; // GL_VIEWPORT
     GLfloat color_clear_value[4]; // GL_COLOR_CLEAR_VALUE
 
     Buffer *buffers[MAX_BINDABLE_BUFFERS];
@@ -713,6 +729,7 @@ struct GLMMetalFuncs {
 
     void (*mtlFlush)(GLMContext glm_ctx, bool finish);
     void (*mtlSwapBuffers)(GLMContext glm_ctx);
+    void (*mtlInvalidateRenderPass)(GLMContext glm_ctx);
     
     void (*mtlClearBuffer)(GLMContext glm_ctx, GLuint type, GLbitfield mask);
     void (*mtlBlitFramebuffer)(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter);

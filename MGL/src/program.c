@@ -33,12 +33,14 @@
 #include "glm_context.h"
 #include "shaders.h"
 #include "buffers.h"
+#include "mgl_safety.h"
 
 #ifndef MGL_VERBOSE_PROGRAM_LOGS
 #define MGL_VERBOSE_PROGRAM_LOGS 0
 #endif
 
 #define MGL_TEXEL_BUFFER_TEXTURE_WIDTH 4096u
+#define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
 
 static size_t mglRoundUpSize(size_t value, size_t alignment)
 {
@@ -173,6 +175,23 @@ static bool mglIsSamplerResourceType(int res_type)
            res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE;
 }
 
+static bool mglUniformNameLooksSamplerLike(const char *name)
+{
+    if (!name || !*name) {
+        return false;
+    }
+
+    return strstr(name, "Sampler") != NULL ||
+           strcmp(name, "CloudFaces") == 0;
+}
+
+static bool mglUniformConstantBaseTypeIsSamplerLike(spvc_basetype basetype)
+{
+    return basetype == SPVC_BASETYPE_IMAGE ||
+           basetype == SPVC_BASETYPE_SAMPLED_IMAGE ||
+           basetype == SPVC_BASETYPE_SAMPLER;
+}
+
 static GLint mglDefaultSamplerUnitForName(const char *name)
 {
     if (!name || !*name) {
@@ -232,6 +251,7 @@ static bool mglProgramHasSamplerNamed(Program *program, const char *name)
     }
 
     static const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
         SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
         SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
         SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
@@ -246,6 +266,75 @@ static bool mglProgramHasSamplerNamed(Program *program, const char *name)
     return false;
 }
 
+static bool mglProgramResourceLooksSamplerLike(const SpirvResource *res, int res_type)
+{
+    if (!res) {
+        return false;
+    }
+
+    switch (res_type) {
+        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
+        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+            return true;
+        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
+            return res->image_dim != 0u ||
+                   res->uniform_location >= MGL_SYNTHETIC_SAMPLER_LOCATION_BASE ||
+                   mglUniformNameLooksSamplerLike(res->name);
+        default:
+            return false;
+    }
+}
+
+static void mglUnifySamplerUniformLocations(Program *program)
+{
+    if (!program) {
+        return;
+    }
+
+    static const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
+
+    for (int leader_stage = _VERTEX_SHADER; leader_stage < _MAX_SHADER_TYPES; leader_stage++) {
+        for (size_t leader_rt = 0; leader_rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); leader_rt++) {
+            int leader_type = sampler_resource_types[leader_rt];
+            SpirvResourceList *leaders = &program->spirv_resources_list[leader_stage][leader_type];
+            for (GLuint leader_i = 0; leaders->list && leader_i < leaders->count; leader_i++) {
+                SpirvResource *leader = &leaders->list[leader_i];
+                if (!mglProgramResourceLooksSamplerLike(leader, leader_type) ||
+                    !leader->name ||
+                    leader->uniform_location < 0) {
+                    continue;
+                }
+
+                for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+                    for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+                        int res_type = sampler_resource_types[rt];
+                        SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+                        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+                            SpirvResource *res = &resources->list[i];
+                            if (res == leader ||
+                                !mglProgramResourceLooksSamplerLike(res, res_type) ||
+                                !res->name ||
+                                strcmp(res->name, leader->name) != 0) {
+                                continue;
+                            }
+
+                            res->uniform_location = leader->uniform_location;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 static bool mglProgramLooksLikeModernRenderPipeline(Program *program)
 {
     return mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "Projection") ||
@@ -256,6 +345,13 @@ static bool mglProgramLooksLikeModernRenderPipeline(Program *program)
 
 static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res)
 {
+    const bool useNamedSamplerDefaults = false;
+    if (!useNamedSamplerDefaults) {
+        (void)program;
+        (void)res;
+        return 0;
+    }
+
     GLint named_unit = mglDefaultSamplerUnitForName(res ? res->name : NULL);
 
     /*
@@ -456,7 +552,12 @@ ProgramPipeline *newProgramPipeline(GLMContext ctx, GLuint pipeline)
     ProgramPipeline *ptr;
 
     ptr = (ProgramPipeline *)malloc(sizeof(ProgramPipeline));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate program pipeline %u\n", pipeline);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(ProgramPipeline));
     ptr->name = pipeline;
@@ -476,6 +577,8 @@ ProgramPipeline *getProgramPipeline(GLMContext ctx, GLuint pipeline)
     if (!ptr)
     {
         ptr = newProgramPipeline(ctx, pipeline);
+        if (!ptr)
+            return NULL;
         insertHashElement(&STATE(program_pipeline_table), pipeline, ptr);
     }
 
@@ -488,7 +591,12 @@ TransformFeedback *newTransformFeedback(GLMContext ctx, GLuint name)
     TransformFeedback *ptr;
 
     ptr = (TransformFeedback *)malloc(sizeof(TransformFeedback));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate transform feedback %u\n", name);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(TransformFeedback));
     ptr->name = name;
@@ -512,6 +620,8 @@ TransformFeedback *getTransformFeedback(GLMContext ctx, GLuint name)
     if (!ptr)
     {
         ptr = newTransformFeedback(ctx, name);
+        if (!ptr)
+            return NULL;
         insertHashElement(&STATE(transform_feedback_table), name, ptr);
     }
 
@@ -523,7 +633,12 @@ Program *newProgram(GLMContext ctx, GLuint program)
     Program *ptr;
 
     ptr = (Program *)malloc(sizeof(Program));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate program %u\n", program);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(Program));
 
@@ -554,6 +669,8 @@ Program *getProgram(GLMContext ctx, GLuint program)
     if (!ptr)
     {
         ptr = newProgram(ctx, program);
+        if (!ptr)
+            return NULL;
 
         insertHashElement(&STATE(program_table), program, ptr);
     }
@@ -598,7 +715,8 @@ GLuint mglCreateProgram(GLMContext ctx)
 
     program = getNewName(&STATE(program_table));
 
-    getProgram(ctx, program);
+    if (!getProgram(ctx, program))
+        return 0;
 
     return program;
 }
@@ -789,7 +907,8 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
 void error_callback(void *userdata, const char *error)
 {
-    assert(error);
+    if (!error)
+        return;
     DEBUG_PRINT("parseSPIRVShader error:%s\n", error);
 }
 
@@ -813,7 +932,15 @@ void addShadersToProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_
         if(ptr)
         {
             // should have glsl shader here
-            assert(ptr->compiled_glsl_shader);
+            if (!ptr->compiled_glsl_shader) {
+                fprintf(stderr,
+                        "MGL ERROR: program %u shader stage %d has no compiled GLSL shader\n",
+                        pptr ? pptr->name : 0u,
+                        i);
+                if (ctx)
+                    STATE(error) = GL_INVALID_OPERATION;
+                continue;
+            }
 
             glslang_program_add_shader(glsl_program, ptr->compiled_glsl_shader);
         }
@@ -920,6 +1047,18 @@ static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int
     }
 
     return GL_FALSE;
+}
+
+static void applyMSLCloudVertexIDFix(Program *pptr, int stage, char **msl_ptr)
+{
+    /* In Metal, [[vertex_id]] for indexed draws equals the index-buffer value, not the
+     * draw-call ordinal.  The cloud shader was written for non-indexed drawing where
+     * gl_VertexID is sequential (0,1,2,3 per quad).  With indexed drawing the index
+     * buffer is {0,1,2,2,3,0, 4,5,6,6,7,4, ...} so [[vertex_id]] is still 0,1,2,3 per
+     * quad (unique values only, with duplicates handled by the GPU's post-transform cache).
+     * The original "% 4 / 4" arithmetic therefore remains correct and no fix is needed.
+     * This function is intentionally a no-op. */
+    (void)pptr; (void)stage; (void)msl_ptr;
 }
 
 static GLboolean mglVertexShaderLooksLikeMinecraftBlitScreen(Program *program)
@@ -1124,67 +1263,98 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     size_t count;
     size_t i;
 
+    if (!ptr || stage < 0 || stage >= _MAX_SHADER_TYPES || !ptr->shader_slots[stage]) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
     spirv = ptr->spirv[stage].ir;
-    assert(spirv);
     word_count = ptr->spirv[stage].size;
-    assert(spirv);
+    if (!spirv || word_count == 0) {
+        fprintf(stderr,
+                "MGL ERROR: parseSPIRVShaderToMetal missing SPIR-V program=%u stage=%d words=%zu\n",
+                ptr->name,
+                stage,
+                word_count);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
 
     // Create context.
-    spvc_context_create(&context);
-    assert(context);
+    if (spvc_context_create(&context) != SPVC_SUCCESS || !context) {
+        fprintf(stderr, "MGL ERROR: spvc_context_create failed\n");
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
 
     // Set debug callback.
     spvc_context_set_error_callback(context, error_callback, ctx);
 
     // Parse the SPIR-V.
     parse_res = spvc_context_parse_spirv(context, spirv, word_count, &ir);
-    assert(parse_res == SPVC_SUCCESS);
+    if (parse_res != SPVC_SUCCESS || !ir) {
+        fprintf(stderr,
+                "MGL ERROR: spvc_context_parse_spirv failed program=%u stage=%d err=%d\n",
+                ptr->name,
+                stage,
+                parse_res);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
 
     // Hand it off to a compiler instance and give it ownership of the IR.
-    spvc_context_create_compiler(context, SPVC_BACKEND_MSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler_msl);
-    assert(compiler_msl);
+    if (spvc_context_create_compiler(context, SPVC_BACKEND_MSL, ir, SPVC_CAPTURE_MODE_TAKE_OWNERSHIP, &compiler_msl) != SPVC_SUCCESS ||
+        !compiler_msl) {
+        fprintf(stderr, "MGL ERROR: spvc_context_create_compiler failed program=%u stage=%d\n", ptr->name, stage);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
     // ERROR_CHECK_RETURN(spvc_compiler_msl_add_discrete_descriptor_set(compiler_msl, 3) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_msl_add_discrete_descriptor_set(compiler_msl, 3) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_msl_add_discrete_descriptor_set failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     // Modify options.
     // ERROR_CHECK_RETURN(spvc_compiler_create_compiler_options(compiler_msl, &options) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_create_compiler_options(compiler_msl, &options) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_create_compiler_options failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     // ERROR_CHECK_RETURN(spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS, SPVC_FALSE) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS, SPVC_FALSE) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS) failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     // ERROR_CHECK_RETURN(spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, SPVC_MAKE_MSL_VERSION(3,1,0)) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_MSL_VERSION, SPVC_MAKE_MSL_VERSION(3,1,0)) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_VERSION) failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     if (spvc_compiler_options_set_uint(options,
                                        SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH,
                                        MGL_TEXEL_BUFFER_TEXTURE_WIDTH) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_TEXEL_BUFFER_TEXTURE_WIDTH) failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION, SPVC_TRUE) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION) failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     //ERROR_CHECK_RETURN(spvc_compiler_options_set_uint(options, SPVC_COMPILER_OPTION_GLSL_VERSION, 4.5) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     // ERROR_CHECK_RETURN(spvc_compiler_install_compiler_options(compiler_msl, options) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_install_compiler_options(compiler_msl, options) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_install_compiler_options failed\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
     
@@ -1226,7 +1396,15 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 
     spvc_result err;
     err = spvc_compiler_rename_entry_point(compiler_msl, cleansed_entry_point, entry_point, model);
-    assert(err == SPVC_SUCCESS);
+    if (err != SPVC_SUCCESS) {
+        fprintf(stderr,
+                "MGL ERROR: spvc_compiler_rename_entry_point failed program=%u stage=%d err=%d\n",
+                ptr->name,
+                stage,
+                err);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
 
     // set the entry point for metal
     ptr->shader_slots[stage]->entry_point = strdup(entry_point);
@@ -1240,7 +1418,14 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         size_t num_entry_points;
 
         res = spvc_compiler_get_entry_points(compiler_msl, &entry_points, &num_entry_points);
-        assert(res);
+        if (res != SPVC_SUCCESS) {
+            fprintf(stderr,
+                    "MGL ERROR: spvc_compiler_get_entry_points failed program=%u err=%d\n",
+                    ptr->name,
+                    res);
+            spvc_context_destroy(context);
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+        }
         
         for(int i=0; i<num_entry_points; i++)
         {
@@ -1253,7 +1438,14 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     }
     
     // Do some basic reflection.
-    spvc_compiler_create_shader_resources(compiler_msl, &resources);
+    if (spvc_compiler_create_shader_resources(compiler_msl, &resources) != SPVC_SUCCESS || !resources) {
+        fprintf(stderr,
+                "MGL ERROR: spvc_compiler_create_shader_resources failed program=%u stage=%d\n",
+                ptr->name,
+                stage);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
     for (int res_type=SPVC_RESOURCE_TYPE_UNIFORM_BUFFER; res_type < SPVC_RESOURCE_TYPE_ACCELERATION_STRUCTURE; res_type++)
     {
 #if DEBUG
@@ -1270,14 +1462,20 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         // Check if count * sizeof(SpirvResource) would overflow size_t
         if (count > SIZE_MAX / sizeof(SpirvResource)) {
             fprintf(stderr, "MGL SECURITY ERROR: Resource count %zu would cause allocation overflow\n", count);
-            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            spvc_context_destroy(context);
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
         }
 
         size_t alloc_size = count * sizeof(SpirvResource);
-        ptr->spirv_resources_list[stage][res_type].list = (SpirvResource *)malloc(alloc_size);
-        if (!ptr->spirv_resources_list[stage][res_type].list) {
+        if (count == 0) {
+            ptr->spirv_resources_list[stage][res_type].list = NULL;
+        } else {
+            ptr->spirv_resources_list[stage][res_type].list = (SpirvResource *)malloc(alloc_size);
+        }
+        if (count != 0 && !ptr->spirv_resources_list[stage][res_type].list) {
             fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate %zu bytes for resource list\n", alloc_size);
-            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            spvc_context_destroy(context);
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
         }
 
         for (i = 0; i < count; i++)
@@ -1326,6 +1524,23 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     break;
             }
             
+            spvc_type reflected_type = NULL;
+            spvc_basetype reflected_basetype = SPVC_BASETYPE_UNKNOWN;
+            if (list[i].type_id) {
+                reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].type_id);
+            }
+            if (!reflected_type && list[i].base_type_id) {
+                reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].base_type_id);
+            }
+            if (reflected_type) {
+                reflected_basetype = spvc_type_get_basetype(reflected_type);
+            }
+
+            bool uniform_constant_sampler_like =
+                (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) &&
+                (mglUniformConstantBaseTypeIsSamplerLike(reflected_basetype) ||
+                 mglUniformNameLooksSamplerLike(list[i].name));
+
             ptr->spirv_resources_list[stage][res_type].list[i]._id = list[i].id;
             ptr->spirv_resources_list[stage][res_type].list[i].base_type_id = list[i].base_type_id;
             ptr->spirv_resources_list[stage][res_type].list[i].type_id = list[i].type_id;
@@ -1335,7 +1550,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].binding = ptr->spirv_resources_list[stage][res_type].list[i].gl_binding;
             ptr->spirv_resources_list[stage][res_type].list[i].location = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationLocation);
             ptr->spirv_resources_list[stage][res_type].list[i].uniform_location =
-                mglIsSamplerResourceType(res_type)
+                (mglIsSamplerResourceType(res_type) || uniform_constant_sampler_like)
                     ? mglSyntheticSamplerUniformLocation(stage, res_type, (GLuint)i)
                     : -1;
             ptr->spirv_resources_list[stage][res_type].list[i].required_size = 0;
@@ -1343,16 +1558,16 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled = 0;
 
-            if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+            bool resource_has_image_type =
+                res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
                 res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE ||
-                res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE) {
-                spvc_type image_type = NULL;
-                if (list[i].type_id) {
-                    image_type = spvc_compiler_get_type_handle(compiler_msl, list[i].type_id);
-                }
-                if (!image_type && list[i].base_type_id) {
-                    image_type = spvc_compiler_get_type_handle(compiler_msl, list[i].base_type_id);
-                }
+                res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE ||
+                (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+                 (reflected_basetype == SPVC_BASETYPE_IMAGE ||
+                  reflected_basetype == SPVC_BASETYPE_SAMPLED_IMAGE));
+
+            if (resource_has_image_type) {
+                spvc_type image_type = reflected_type;
 
                 if (image_type) {
                     ptr->spirv_resources_list[stage][res_type].list[i].image_dim =
@@ -1382,14 +1597,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                 res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER ||
                 res_type == SPVC_RESOURCE_TYPE_PUSH_CONSTANT) {
                 size_t declared_size = 0;
-                spvc_type reflected_type = NULL;
-
-                if (list[i].base_type_id) {
-                    reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].base_type_id);
-                }
-                if (!reflected_type && list[i].type_id) {
-                    reflected_type = spvc_compiler_get_type_handle(compiler_msl, list[i].type_id);
-                }
 
                 if (reflected_type && spvc_type_get_basetype(reflected_type) == SPVC_BASETYPE_STRUCT) {
                     size_t struct_size = 0;
@@ -1412,7 +1619,14 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
     }
 
-    spvc_compiler_compile(compiler_msl, &result);
+    if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
+        fprintf(stderr,
+                "MGL ERROR: spvc_compiler_compile failed program=%u stage=%d\n",
+                ptr->name,
+                stage);
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
     DEBUG_PRINT("\n%s\n", result);
 
     str_ret = strdup(result);
@@ -1489,6 +1703,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                         snippet[0] ? snippet : "(no texCoord token)");
             }
         }
+        applyMSLCloudVertexIDFix(ptr, stage, &str_ret);
         applyMSLResourceBindings(ptr, stage, str_ret);
     }
 
@@ -1848,6 +2063,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     applyVertexInputLocations(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
+    mglUnifySamplerUniformLocations(pptr);
 
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
@@ -1873,9 +2089,12 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     {
         pptr = findProgram(ctx, program);
 
-        if (!pptr)
+        if (!pptr ||
+            !mglObjectPointerLooksPlausible(pptr) ||
+            !mglHashTableContainsData(&STATE(program_table), pptr) ||
+            !mglPointerRangeIsReadable(pptr, sizeof(*pptr)))
         {
-            fprintf(stderr, "MGL Error: mglUseProgram program %u not found\n", program);
+            fprintf(stderr, "MGL Error: mglUseProgram program %u not found or invalid\n", program);
             // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
         STATE(error) = GL_INVALID_OPERATION;
@@ -1904,20 +2123,32 @@ void mglUseProgram(GLMContext ctx, GLuint program)
 
     if (ctx->state.program != pptr)
     {
-        if (ctx->state.program)
+        Program *oldProgram = ctx->state.program;
+        if (oldProgram &&
+            (!mglObjectPointerLooksPlausible(oldProgram) ||
+             !mglHashTableContainsData(&STATE(program_table), oldProgram) ||
+             !mglPointerRangeIsReadable(oldProgram, sizeof(*oldProgram))))
         {
-            ctx->state.program->refcount--;
-            if (ctx->state.program->refcount == 0 && ctx->state.program->delete_status)
+            fprintf(stderr, "MGL WARNING: mglUseProgram dropping invalid cached program pointer %p\n",
+                    (void *)oldProgram);
+            oldProgram = NULL;
+            ctx->state.program = NULL;
+        }
+
+        if (oldProgram)
+        {
+            oldProgram->refcount--;
+            if (oldProgram->refcount == 0 && oldProgram->delete_status)
             {
-                mglFreeProgram(ctx, ctx->state.program);
+                mglFreeProgram(ctx, oldProgram);
             }
         }
 
         ctx->state.program = pptr;
 
-        if (ctx->state.program)
+        if (pptr)
         {
-            ctx->state.program->refcount++;
+            pptr->refcount++;
             // Only mark dirty when binding a valid program
             // Don't mark dirty when unbinding (pptr=NULL) to preserve existing pipeline
             ctx->state.dirty_bits |= DIRTY_PROGRAM;
@@ -1995,7 +2226,11 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 	Program *ptr;
 
 	ptr = getProgram(ctx, program);
-	assert(program);
+	if (!ptr)
+	{
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return -1;
+	}
 
 	if (ptr->linked_glsl_program == NULL)
 	{

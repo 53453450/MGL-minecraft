@@ -80,6 +80,7 @@ typedef struct GLMCaps_t {
     GLboolean primitive_restart;
     GLboolean primitive_restart_fixed_index;
     
+    GLboolean blendi[MAX_COLOR_ATTACHMENTS];
     GLboolean clip_distances[MAX_CLIP_DISTANCES];
 
     // local enables
@@ -114,7 +115,7 @@ typedef struct GLMParams_t {
     GLuint logic_op_mode;
     GLuint draw_buffer;
     GLuint read_buffer;
-    GLuint scissor_box[4];
+    GLint scissor_box[4];
     GLuint color_clear_value;
     GLboolean color_writemask[MAX_COLOR_ATTACHMENTS][4];
     GLuint max_texture_size;
@@ -227,7 +228,7 @@ typedef struct GLMParams_t {
     GLuint aliased_line_width_range;
     GLuint aliased_point_size_range;
     GLuint active_texture;
-    GLuint sample_coverage_value;
+    GLfloat sample_coverage_value;
     GLuint sample_coverage_invert;
     GLuint texture_binding_cube_map;
     GLuint max_cube_map_texture_size;
@@ -332,6 +333,8 @@ typedef struct GLMParams_t {
     GLuint viewport_bounds_range;
     GLuint layer_provoking_vertex;
     GLuint viewport_index_provoking_vertex;
+    GLuint clip_origin;
+    GLuint clip_depth_mode;
     GLuint min_map_buffer_alignment;
     GLuint max_vertex_atomic_counters;
     GLuint max_tess_control_atomic_counters;

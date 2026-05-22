@@ -21,8 +21,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "glm_context.h"
+#include "mgl_safety.h"
 #include "pixel_utils.h"
 #include "utils.h"
 
@@ -37,6 +39,11 @@ extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture);
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget);
+void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei n, const GLenum *bufs);
+extern void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLint *value);
+extern void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLuint *value);
+extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
+extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
 
 static GLubyte mglClampClearComponentToByte(GLfloat value)
 {
@@ -211,7 +218,12 @@ static Renderbuffer *newRenderbuffer(GLMContext ctx, GLuint renderbuffer)
     Renderbuffer *ptr;
 
     ptr = (Renderbuffer *)malloc(sizeof(Renderbuffer));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate renderbuffer %u\n", renderbuffer);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(Renderbuffer));
 
@@ -229,6 +241,8 @@ static Renderbuffer *getRenderbuffer(GLMContext ctx, GLuint renderbuffer)
     if (!ptr)
     {
         ptr = newRenderbuffer(ctx, renderbuffer);
+        if (!ptr)
+            return NULL;
 
         insertHashElement(&STATE(renderbuffer_table), renderbuffer, ptr);
     }
@@ -270,7 +284,8 @@ Framebuffer *currentFBOForType(GLMContext ctx, GLenum target)
             return ctx->state.readbuffer;
             break;
 
-        default: assert(0); break;
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, NULL);
     }
 }
 
@@ -280,11 +295,23 @@ static Framebuffer *newFramebuffer(GLMContext ctx, GLuint framebuffer)
     Framebuffer *ptr;
 
     ptr = (Framebuffer *)malloc(sizeof(Framebuffer));
-    assert(ptr);
+    if (!ptr) {
+        if (ctx)
+            STATE(error) = GL_OUT_OF_MEMORY;
+        fprintf(stderr, "MGL ERROR: failed to allocate framebuffer %u\n", framebuffer);
+        return NULL;
+    }
 
     bzero(ptr, sizeof(Framebuffer));
 
     ptr->name = framebuffer;
+    ptr->draw_buffer = GL_COLOR_ATTACHMENT0;
+    ptr->draw_buffer_count = 1;
+    ptr->draw_buffers[0] = GL_COLOR_ATTACHMENT0;
+    for (GLuint i = 1; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        ptr->draw_buffers[i] = GL_NONE;
+    }
+    ptr->read_buffer = GL_COLOR_ATTACHMENT0;
 
     return ptr;
 }
@@ -298,6 +325,8 @@ static Framebuffer *getFramebuffer(GLMContext ctx, GLuint framebuffer)
     if (!ptr)
     {
         ptr = newFramebuffer(ctx, framebuffer);
+        if (!ptr)
+            return NULL;
 
         insertHashElement(&STATE(framebuffer_table), framebuffer, ptr);
     }
@@ -326,6 +355,167 @@ Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer)
     return ptr;
 }
 
+static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum buffer)
+{
+    return ctx &&
+           buffer >= GL_COLOR_ATTACHMENT0 &&
+           buffer < (GL_COLOR_ATTACHMENT0 + ctx->state.max_color_attachments) &&
+           buffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS);
+}
+
+static GLuint mglFramebufferMaxDrawBuffers(GLMContext ctx)
+{
+    GLuint maxDrawBuffers = ctx ? ctx->state.var.max_draw_buffers : 0u;
+    if (maxDrawBuffers == 0u || maxDrawBuffers > MAX_COLOR_ATTACHMENTS) {
+        maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
+    }
+    return maxDrawBuffers;
+}
+
+static void mglFramebufferSetSingleDrawBuffer(GLMContext ctx, GLenum buffer)
+{
+    ctx->state.draw_buffer = buffer;
+    ctx->state.draw_buffer_count = 1;
+    ctx->state.draw_buffers[0] = buffer;
+    for (GLuint i = 1; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        ctx->state.draw_buffers[i] = GL_NONE;
+    }
+}
+
+static void mglFramebufferStoreCurrentDrawBuffer(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
+    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
+    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+
+    *drawBuffer = ctx->state.draw_buffer;
+    *drawBufferCount = ctx->state.draw_buffer_count;
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        drawBuffers[i] = ctx->state.draw_buffers[i];
+    }
+}
+
+static void mglFramebufferStoreCurrentReadBuffer(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    if (fbo) {
+        fbo->read_buffer = ctx->state.read_buffer;
+    } else {
+        ctx->state.default_read_buffer = ctx->state.read_buffer;
+    }
+}
+
+static void mglFramebufferLoadDrawBuffer(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    const GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
+    GLsizei drawBufferCount = fbo ? fbo->draw_buffer_count : ctx->state.default_draw_buffer_count;
+    GLenum drawBuffer = fbo ? fbo->draw_buffer : ctx->state.default_draw_buffer;
+
+    if (drawBufferCount <= 0 || drawBufferCount > (GLsizei)MAX_COLOR_ATTACHMENTS) {
+        drawBufferCount = 1;
+        drawBuffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_FRONT;
+    }
+
+    ctx->state.draw_buffer = drawBuffer;
+    ctx->state.draw_buffer_count = drawBufferCount;
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        ctx->state.draw_buffers[i] = (i < (GLuint)drawBufferCount) ? drawBuffers[i] : GL_NONE;
+    }
+}
+
+static void mglFramebufferLoadReadBuffer(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    GLenum readBuffer = fbo ? fbo->read_buffer : ctx->state.default_read_buffer;
+    if (readBuffer == 0u) {
+        readBuffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_FRONT;
+    }
+    ctx->state.read_buffer = readBuffer;
+}
+
+typedef struct MGLFramebufferBindingSnapshot_t {
+    Framebuffer *draw_fbo;
+    Framebuffer *read_fbo;
+    GLuint draw_buffer;
+    GLsizei draw_buffer_count;
+    GLenum draw_buffers[MAX_COLOR_ATTACHMENTS];
+    GLuint read_buffer;
+} MGLFramebufferBindingSnapshot;
+
+static void mglFramebufferCaptureBindingSnapshot(GLMContext ctx, MGLFramebufferBindingSnapshot *snapshot)
+{
+    if (!ctx || !snapshot) {
+        return;
+    }
+
+    snapshot->draw_fbo = ctx->state.framebuffer;
+    snapshot->read_fbo = ctx->state.readbuffer;
+    snapshot->draw_buffer = ctx->state.draw_buffer;
+    snapshot->draw_buffer_count = ctx->state.draw_buffer_count;
+    snapshot->read_buffer = ctx->state.read_buffer;
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        snapshot->draw_buffers[i] = ctx->state.draw_buffers[i];
+    }
+}
+
+static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFramebufferBindingSnapshot *snapshot)
+{
+    if (!ctx || !snapshot) {
+        return;
+    }
+
+    ctx->state.framebuffer = snapshot->draw_fbo;
+    ctx->state.readbuffer = snapshot->read_fbo;
+    ctx->state.draw_buffer = snapshot->draw_buffer;
+    ctx->state.draw_buffer_count = snapshot->draw_buffer_count;
+    ctx->state.read_buffer = snapshot->read_buffer;
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        ctx->state.draw_buffers[i] = snapshot->draw_buffers[i];
+    }
+}
+
+static void mglNormalizeDrawBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
+{
+    GLboolean drawBufferIsColorAttachment =
+        mglFramebufferBufferIsColorAttachment(ctx, ctx->state.draw_buffer);
+
+    if (fbo && !drawBufferIsColorAttachment && ctx->state.draw_buffer != GL_NONE) {
+        mglFramebufferSetSingleDrawBuffer(ctx, GL_COLOR_ATTACHMENT0);
+    } else if (!fbo && drawBufferIsColorAttachment) {
+        mglFramebufferSetSingleDrawBuffer(ctx, GL_FRONT);
+    }
+
+    mglFramebufferStoreCurrentDrawBuffer(ctx, fbo);
+}
+
+static void mglNormalizeReadBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
+{
+    GLboolean readBufferIsColorAttachment =
+        mglFramebufferBufferIsColorAttachment(ctx, ctx->state.read_buffer);
+
+    if (fbo && !readBufferIsColorAttachment && ctx->state.read_buffer != GL_NONE) {
+        ctx->state.read_buffer = GL_COLOR_ATTACHMENT0;
+    } else if (!fbo && readBufferIsColorAttachment) {
+        ctx->state.read_buffer = GL_FRONT;
+    }
+
+    mglFramebufferStoreCurrentReadBuffer(ctx, fbo);
+}
+
 #pragma mark Framebuffer calls
 GLboolean mglIsFramebuffer(GLMContext ctx, GLuint framebuffer)
 {
@@ -334,7 +524,21 @@ GLboolean mglIsFramebuffer(GLMContext ctx, GLuint framebuffer)
 
 void mglGenFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
 {
-    assert(framebuffers);
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!framebuffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     while(n--)
     {
@@ -345,18 +549,59 @@ void mglGenFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
 void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 {
     Framebuffer *ptr;
+    Framebuffer *oldDrawFbo;
+    Framebuffer *oldReadFbo;
+    GLboolean drawTargetChanged = GL_FALSE;
+    GLboolean readTargetChanged = GL_FALSE;
 
-    if (ctx && ctx->state.vao && ctx->state.vao->magic != MGL_VAO_MAGIC)
+    if (!ctx)
+        return;
+
+    switch(target) {
+        case GL_DRAW_FRAMEBUFFER:
+        case GL_READ_FRAMEBUFFER:
+        case GL_FRAMEBUFFER:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    oldDrawFbo = ctx->state.framebuffer;
+    oldReadFbo = ctx->state.readbuffer;
+
+    VertexArray *currentVAO = ctx->state.vao;
+    if (currentVAO &&
+        (!mglObjectPointerLooksPlausible(currentVAO) ||
+         !mglHashTableContainsData(&ctx->state.vao_table, currentVAO) ||
+         !mglPointerRangeIsReadable(currentVAO, sizeof(*currentVAO))))
+    {
+        fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p not in sane VAO table, resetting\n",
+                (void *)currentVAO);
+        ctx->state.vao = NULL;
+        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
+        ctx->state.var.element_array_buffer_binding =
+            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        ctx->state.dirty_bits |= DIRTY_VAO;
+        currentVAO = NULL;
+    }
+    else if (currentVAO && currentVAO->magic != MGL_VAO_MAGIC)
     {
         fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p magic=0x%x, resetting\n",
-                (void *)ctx->state.vao,
-                ctx->state.vao->magic);
+                (void *)currentVAO,
+                currentVAO->magic);
         ctx->state.vao = NULL;
+        ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
+        ctx->state.var.element_array_buffer_binding =
+            ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
+        ctx->state.dirty_bits |= DIRTY_VAO;
     }
 
     if(framebuffer)
     {
         ptr = getFramebuffer(ctx, framebuffer);
+        if (!ptr)
+            return;
         if (MGL_VERBOSE_FBO_LOGS) {
             fprintf(stderr, "MGL: glBindFramebuffer target=%x fbo=%u ptr=%p\n", target, framebuffer, ptr);
         }
@@ -369,22 +614,66 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         }
     }
 
+    if ((target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
+        oldDrawFbo != ptr &&
+        ctx->mtl_funcs.mtlInvalidateRenderPass)
+    {
+        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+    }
+
     switch(target) {
         case GL_DRAW_FRAMEBUFFER:
+            mglFramebufferStoreCurrentDrawBuffer(ctx, oldDrawFbo);
             ctx->state.framebuffer = ptr;
+            mglFramebufferLoadDrawBuffer(ctx, ptr);
+            drawTargetChanged = GL_TRUE;
             break;
 
         case GL_READ_FRAMEBUFFER:
+            mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
             ctx->state.readbuffer = ptr;
+            mglFramebufferLoadReadBuffer(ctx, ptr);
+            readTargetChanged = GL_TRUE;
             break;
 
         case GL_FRAMEBUFFER:
+            mglFramebufferStoreCurrentDrawBuffer(ctx, oldDrawFbo);
+            mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
             ctx->state.framebuffer = ptr;
             ctx->state.readbuffer = ptr;
+            mglFramebufferLoadDrawBuffer(ctx, ptr);
+            mglFramebufferLoadReadBuffer(ctx, ptr);
+            drawTargetChanged = GL_TRUE;
+            readTargetChanged = GL_TRUE;
             break;
+
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    if (drawTargetChanged)
+    {
+        mglNormalizeDrawBufferForFramebufferBinding(ctx, ptr);
+    }
+
+    if (readTargetChanged)
+    {
+        mglNormalizeReadBufferForFramebufferBinding(ctx, ptr);
     }
     
-    STATE(dirty_bits) |= DIRTY_FBO;
+    if (drawTargetChanged)
+    {
+        if (ptr)
+        {
+            ptr->dirty_bits |= DIRTY_FBO_BINDING;
+        }
+        STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE | DIRTY_PROGRAM;
+    }
+    else
+    {
+        STATE(dirty_bits) |= DIRTY_FBO;
+    }
 }
 
 void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers)
@@ -414,50 +703,169 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
     STATE(dirty_bits) |= DIRTY_FBO;
 }
 
-GLenum  mglCheckFramebufferStatus(GLMContext ctx, GLenum target)
+static Texture *mglFramebufferAttachmentTextureObject(GLMContext ctx, FBOAttachment *att)
 {
-    Framebuffer *fbo;
-    Texture *tex;
-    GLuint level;
-    GLuint width, height;
-
-    fbo = currentFBOForType(ctx, target);
-
-    if (fbo->color_attachments[0].textarget == GL_RENDERBUFFER)
-    {
-        tex = fbo->color_attachments[0].buf.rbo->tex;
-    }
-    else
-    {
-        tex = fbo->color_attachments[0].buf.tex;
+    if (!ctx || !att || att->texture == 0u) {
+        return NULL;
     }
 
-    level = fbo->color_attachments[0].level;
-    width = tex->faces[0].levels[level].width;
-    height = tex->faces[0].levels[level].height;
+    if (att->textarget == GL_RENDERBUFFER) {
+        return (att->buf.rbo != NULL) ? att->buf.rbo->tex : NULL;
+    }
 
-    for(int i=1; i<STATE(max_color_attachments);i++)
-    {
-        if (fbo->color_attachments[i].textarget == GL_RENDERBUFFER)
-        {
-            tex = fbo->color_attachments[i].buf.rbo->tex;
+    if (!att->buf.tex) {
+        att->buf.tex = findTexture(ctx, att->texture);
+    }
+    return att->buf.tex;
+}
+
+static GLboolean mglFramebufferAttachmentHasStorage(GLMContext ctx, FBOAttachment *att)
+{
+    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
+    GLuint face = 0u;
+
+    if (!tex) {
+        return GL_FALSE;
+    }
+
+    if (isCubeMapTarget(ctx, att->textarget)) {
+        face = textureIndexFromTarget(ctx, att->textarget);
+    }
+
+    if (face >= _CUBE_MAP_MAX_FACE ||
+        !tex->faces[face].levels ||
+        att->level >= tex->mipmap_levels ||
+        att->level >= tex->num_levels) {
+        return GL_FALSE;
+    }
+
+    TextureLevel *level = &tex->faces[face].levels[att->level];
+    return level->complete &&
+           level->width > 0u &&
+           level->height > 0u &&
+           level->depth > 0u;
+}
+
+static GLboolean mglFramebufferHasAnyAttachment(Framebuffer *fbo)
+{
+    if (!fbo) {
+        return GL_FALSE;
+    }
+
+    if (fbo->color_attachment_bitfield != 0u ||
+        fbo->depth.texture != 0u ||
+        fbo->stencil.texture != 0u) {
+        return GL_TRUE;
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglFramebufferDrawBufferReferencesMissingAttachment(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx || !fbo) {
+        return GL_FALSE;
+    }
+
+    GLsizei count = fbo->draw_buffer_count;
+    if (count < 0 || count > (GLsizei)MAX_COLOR_ATTACHMENTS) {
+        return GL_TRUE;
+    }
+
+    for (GLsizei i = 0; i < count; ++i) {
+        GLenum drawBuffer = fbo->draw_buffers[i];
+        if (drawBuffer == GL_NONE) {
+            continue;
         }
-        else
-        {
-            tex = fbo->color_attachments[i].buf.tex;
+        if (!mglFramebufferBufferIsColorAttachment(ctx, drawBuffer)) {
+            return GL_TRUE;
         }
 
-        if (tex)
-        {
-            level = fbo->color_attachments[i].level;
-            width = tex->faces[0].levels[level].width;
-            height = tex->faces[0].levels[level].height;
+        GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
+        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+            return GL_TRUE;
         }
     }
 
-    DEBUG_PRINT("%s need to fix this function %d, %d, %d\n", __FUNCTION__, width, height, level);
+    return GL_FALSE;
+}
+
+static GLboolean mglFramebufferReadBufferReferencesMissingAttachment(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx || !fbo || fbo->read_buffer == GL_NONE) {
+        return GL_FALSE;
+    }
+
+    if (!mglFramebufferBufferIsColorAttachment(ctx, fbo->read_buffer)) {
+        return GL_TRUE;
+    }
+
+    GLuint attachmentIndex = (GLuint)(fbo->read_buffer - GL_COLOR_ATTACHMENT0);
+    return ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u;
+}
+
+static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!fbo) {
+        return GL_FRAMEBUFFER_COMPLETE;
+    }
+
+    if (!mglFramebufferHasAnyAttachment(fbo)) {
+        if (fbo->default_width > 0 && fbo->default_height > 0) {
+            return GL_FRAMEBUFFER_COMPLETE;
+        }
+        return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
+    }
+
+    for (GLuint i = 0; i < STATE(max_color_attachments) && i < MAX_COLOR_ATTACHMENTS; ++i) {
+        if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) {
+            continue;
+        }
+        if (!mglFramebufferAttachmentHasStorage(ctx, &fbo->color_attachments[i])) {
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        }
+    }
+
+    if (fbo->depth.texture != 0u &&
+        !mglFramebufferAttachmentHasStorage(ctx, &fbo->depth)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+    }
+
+    if (fbo->stencil.texture != 0u &&
+        !mglFramebufferAttachmentHasStorage(ctx, &fbo->stencil)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+    }
+
+    if (mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
+    }
+
+    if (mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
+    }
 
     return GL_FRAMEBUFFER_COMPLETE;
+}
+
+GLenum  mglCheckFramebufferStatus(GLMContext ctx, GLenum target)
+{
+    Framebuffer *fbo = NULL;
+
+    switch (target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+            fbo = ctx->state.framebuffer;
+            break;
+
+        case GL_READ_FRAMEBUFFER:
+            fbo = ctx->state.readbuffer;
+            break;
+
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, 0);
+    }
+
+    return mglCheckFramebufferStatusForObject(ctx, fbo);
 }
 
 #pragma mark Renderbuffer calls
@@ -468,7 +876,21 @@ GLboolean mglIsRenderbuffer(GLMContext ctx, GLuint renderbuffer)
 
 void mglGenRenderbuffers(GLMContext ctx, GLsizei n, GLuint *renderbuffers)
 {
-    assert(renderbuffers);
+    if (!ctx)
+        return;
+
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (n == 0)
+        return;
+
+    if (!renderbuffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     while(n--)
     {
@@ -487,12 +909,16 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
     //     assert(0);
     // }
 
-    assert(target == GL_RENDERBUFFER);
+    if (target != GL_RENDERBUFFER) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     if (renderbuffer)
     {
         ptr = getRenderbuffer(ctx, renderbuffer);
-        assert(ptr);
+        if (!ptr)
+            return;
     }
     else
     {
@@ -502,7 +928,8 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
     index = textureIndexFromTarget(ctx, target);
     if (index == _MAX_TEXTURE_TYPES)
     {
-        assert(0);
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     ctx->state.renderbuffer = ptr;
@@ -511,27 +938,65 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
 
 void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffers)
 {
-    // Unimplemented function
-    assert(0);
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (n > 0 && !renderbuffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < n; ++i) {
+        GLuint name = renderbuffers[i];
+        if (name == 0u) {
+            continue;
+        }
+
+        Renderbuffer *rbo = findRenderbuffer(ctx, name);
+        if (!rbo) {
+            continue;
+        }
+
+        if (ctx->state.renderbuffer == rbo) {
+            ctx->state.renderbuffer = NULL;
+        }
+
+        deleteHashElement(&STATE(renderbuffer_table), name);
+        free(rbo);
+    }
+
+    STATE(dirty_bits) |= DIRTY_FBO;
 }
 
 void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat, GLsizei width, GLsizei height)
 {
     Texture *tex;
 
-    assert(target == GL_RENDERBUFFER);
+    if (target != GL_RENDERBUFFER) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     if(ctx->state.renderbuffer == NULL)
     {
-        assert(0);
-        // no renderbuffer bound
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     tex = newTexObj(ctx, target);
-    assert(tex);
+    if (!tex) {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
+    }
 
     //bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLboolean is_array, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, void *pixels, GLboolean proxy)
-    createTextureLevel(ctx, tex, 0, 0, false, internalformat, width, height, 1, 0, 0, NULL, false);
+    if (!createTextureLevel(ctx, tex, 0, 0, false, internalformat, width, height, 1, 0, 0, NULL, false))
+        return;
 
     tex->access = GL_READ_WRITE;
     tex->is_render_target = true;
@@ -541,23 +1006,29 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
 
 void mglGetRenderbufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
-    assert(target == GL_RENDERBUFFER);
-
-    assert(params);
-
-    // cant get here without a storage call
-    assert(RENDBUF_STATE(tex));
+    if (target != GL_RENDERBUFFER) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (!params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ctx->state.renderbuffer) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
     switch(pname)
     {
         case GL_RENDERBUFFER_WIDTH:
-            *params = RENDBUF_STATE(tex->width); break;
+            *params = RENDBUF_STATE(tex) ? (GLint)RENDBUF_STATE(tex->width) : 0; break;
 
         case GL_RENDERBUFFER_HEIGHT:
-            *params = RENDBUF_STATE(tex->height); break;
+            *params = RENDBUF_STATE(tex) ? (GLint)RENDBUF_STATE(tex->height) : 0; break;
 
         case GL_RENDERBUFFER_INTERNAL_FORMAT:
-            *params = RENDBUF_STATE(tex->internalformat); break;
+            *params = RENDBUF_STATE(tex) ? (GLint)RENDBUF_STATE(tex->internalformat) : GL_RGBA; break;
 
         // for now renderbuffers inherit the pixel format from the context..
         case GL_RENDERBUFFER_RED_SIZE:
@@ -573,15 +1044,17 @@ void mglGetRenderbufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, 
             *params = bicountForFormatType(ctx->pixel_format.format, ctx->pixel_format.type, GL_ALPHA); break;
 
         case GL_RENDERBUFFER_DEPTH_SIZE:
-            assert(0); break;
+            *params = RENDBUF_STATE(tex) ? (GLint)bitcountForInternalFormat(RENDBUF_STATE(tex->internalformat), GL_DEPTH) : 0; break;
 
         case GL_RENDERBUFFER_STENCIL_SIZE:
-            assert(0); break;
+            *params = RENDBUF_STATE(tex) ? (GLint)bitcountForInternalFormat(RENDBUF_STATE(tex->internalformat), GL_STENCIL) : 0; break;
 
         case GL_RENDERBUFFER_SAMPLES:
-            assert(0); break;
+            *params = 0; break;
 
-        default: assert(0); break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            break;
     }
 
 }
@@ -646,11 +1119,27 @@ bool isCubeMapTarget(GLMContext ctx, GLuint textarget)
             (textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z));
 }
 
+static GLboolean mglFramebufferWholeTextureAttachmentIsLayered(GLenum textarget)
+{
+    switch (textarget) {
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint layer)
 {
     Framebuffer *fbo;
     Texture *tex;
     FBOAttachment *fbo_attachment_ptr;
+    GLenum effective_textarget = textarget;
 
     fbo = currentFBOForType(ctx, target);
     
@@ -716,7 +1205,12 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
             }
         }
 
-        switch(textarget)
+        if (effective_textarget == GL_NONE && tex)
+        {
+            effective_textarget = tex->target;
+        }
+
+        switch(effective_textarget)
         {
             case GL_TEXTURE_BUFFER:
             case GL_TEXTURE_1D:
@@ -738,7 +1232,8 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
                 if (tex->target == GL_TEXTURE_CUBE_MAP)
                 {
-                    if (isCubeMapTarget(ctx, textarget))
+                    if (isCubeMapTarget(ctx, effective_textarget) ||
+                        effective_textarget == GL_TEXTURE_CUBE_MAP)
                     {
                         break;
                     }
@@ -766,7 +1261,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
         if (level > 0)
         {
-            switch(textarget)
+            switch(effective_textarget)
             {
                 // If textarget is GL_TEXTURE_RECTANGLE, GL_TEXTURE_2D_MULTISAMPLE, or GL_TEXTURE_2D_MULTISAMPLE_ARRAY, then level must be zero.
                 case GL_TEXTURE_RECTANGLE:
@@ -786,7 +1281,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                 target,
                                 attachment,
                                 texture,
-                                textarget);
+                                effective_textarget);
                         STATE(error) = GL_INVALID_VALUE;
                         return;
                     }
@@ -797,7 +1292,8 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                     {
                         // if textarget is one of GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_POSITIVE_Y, GL_TEXTURE_CUBE_MAP_POSITIVE_Z, GL_TEXTURE_CUBE_MAP_NEGATIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_Y, or GL_TEXTURE_CUBE_MAP_NEGATIVE_Z, then level must be greater than or equal to zero and less than or equal to $log_2$ of the value of GL_MAX_CUBE_MAP_TEXTURE_SIZE.
 
-                        if (isCubeMapTarget(ctx, textarget))
+                        if (isCubeMapTarget(ctx, effective_textarget) ||
+                            effective_textarget == GL_TEXTURE_CUBE_MAP)
                         {
                             if (level >=0 && level <= ilog2(STATE_VAR(max_texture_size)))
                             {
@@ -811,7 +1307,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                     target,
                                     attachment,
                                     texture,
-                                    textarget);
+                                    effective_textarget);
                             STATE(error) = GL_INVALID_VALUE;
                             return;
                         }
@@ -828,7 +1324,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
                                 target,
                                 attachment,
                                 texture,
-                                textarget,
+                                effective_textarget,
                                 tex ? tex->target : 0u,
                                 tex ? tex->mipmap_levels : 0u);
                         STATE(error) = GL_INVALID_VALUE;
@@ -854,14 +1350,17 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         return;
     }
 
-    if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr, texture, textarget, level, layer)) {
+    if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr, texture, effective_textarget, level, layer)) {
         mglFlushPendingColorClearToTexture(ctx, fbo_attachment_ptr, "framebufferTexture attachment change");
     }
 
     fbo_attachment_ptr->texture = texture;
-    fbo_attachment_ptr->textarget = textarget;
+    fbo_attachment_ptr->textarget = effective_textarget;
     fbo_attachment_ptr->level = level;
     fbo_attachment_ptr->layer = layer;
+    fbo_attachment_ptr->layered = (texture != 0u &&
+                                   attachment_type == GL_NONE &&
+                                   mglFramebufferWholeTextureAttachmentIsLayered(effective_textarget));
     fbo_attachment_ptr->clear_bitmask = 0;
     fbo_attachment_ptr->clear_color[0] = 0.f;
     fbo_attachment_ptr->clear_color[1] = 0.f;
@@ -906,7 +1405,10 @@ void mglFramebufferTexture(GLMContext ctx, GLenum target, GLenum attachment, GLu
 
 void mglFramebufferTexture1D(GLMContext ctx, GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level)
 {
-    assert(textarget == GL_TEXTURE_1D);
+    if (textarget != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     framebufferTexture(ctx, target, GL_TEXTURE_1D, attachment, textarget, texture, level, 0);
 }
@@ -942,14 +1444,19 @@ void mglFramebufferTexture2D(GLMContext ctx, GLenum target, GLenum attachment, G
 
 void mglFramebufferTexture3D(GLMContext ctx, GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint zoffset)
 {
-    assert(textarget == GL_TEXTURE_3D);
+    if (textarget != GL_TEXTURE_3D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     framebufferTexture(ctx, target, GL_TEXTURE_3D, attachment, textarget, texture, level, zoffset);
 }
 
 void mglFramebufferTextureLayer(GLMContext ctx, GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer)
 {
-    framebufferTexture(ctx, target, GL_TEXTURE_3D, attachment, GL_TEXTURE_3D, texture, level, layer);
+    Texture *tex = texture ? findTexture(ctx, texture) : NULL;
+    GLenum textarget = tex ? tex->target : GL_TEXTURE_3D;
+    framebufferTexture(ctx, target, GL_TEXTURE_3D, attachment, textarget, texture, level, layer);
 }
 
 
@@ -998,7 +1505,10 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     if (renderbuffer)
     {
         rbo = findRenderbuffer(ctx, renderbuffer);
-        (assert(rbo));
+        if (!rbo) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
     else
     {
@@ -1010,6 +1520,8 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     fbo_attachment_ptr->textarget = GL_RENDERBUFFER;
     fbo_attachment_ptr->texture = renderbuffer;
     fbo_attachment_ptr->level = 0;
+    fbo_attachment_ptr->layer = 0;
+    fbo_attachment_ptr->layered = GL_FALSE;
     fbo_attachment_ptr->buf.rbo = rbo;
     if (fbo_attachment_ptr->buf.rbo)
     {
@@ -1027,10 +1539,335 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
 
 #pragma mark =====
 
+static GLuint mglFramebufferAttachmentBits(GLenum internalformat, GLenum component)
+{
+    if (internalformat == 0u) {
+        return 0u;
+    }
+
+    switch (internalformat) {
+        case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R8I:
+        case GL_R8UI:
+            return component == GL_RED ? 8u : 0u;
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R16I:
+        case GL_R16UI:
+            return component == GL_RED ? 16u : 0u;
+        case GL_R32F:
+        case GL_R32I:
+        case GL_R32UI:
+            return component == GL_RED ? 32u : 0u;
+
+        case GL_RG8:
+        case GL_RG8_SNORM:
+        case GL_RG8I:
+        case GL_RG8UI:
+            return (component == GL_RED || component == GL_GREEN) ? 8u : 0u;
+        case GL_RG16:
+        case GL_RG16_SNORM:
+        case GL_RG16F:
+        case GL_RG16I:
+        case GL_RG16UI:
+            return (component == GL_RED || component == GL_GREEN) ? 16u : 0u;
+        case GL_RG32F:
+        case GL_RG32I:
+        case GL_RG32UI:
+            return (component == GL_RED || component == GL_GREEN) ? 32u : 0u;
+
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE) ? 8u : 0u;
+        case GL_RGB16:
+        case GL_RGB16_SNORM:
+        case GL_RGB16F:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE) ? 16u : 0u;
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE) ? 32u : 0u;
+
+        case GL_RGBA8:
+        case GL_SRGB8_ALPHA8:
+        case GL_RGBA8_SNORM:
+        case GL_RGBA8I:
+        case GL_RGBA8UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE || component == GL_ALPHA) ? 8u : 0u;
+        case GL_RGBA16:
+        case GL_RGBA16_SNORM:
+        case GL_RGBA16F:
+        case GL_RGBA16I:
+        case GL_RGBA16UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE || component == GL_ALPHA) ? 16u : 0u;
+        case GL_RGBA32F:
+        case GL_RGBA32I:
+        case GL_RGBA32UI:
+            return (component == GL_RED || component == GL_GREEN || component == GL_BLUE || component == GL_ALPHA) ? 32u : 0u;
+
+        case GL_RGB565:
+            switch (component) {
+                case GL_RED: return 5u;
+                case GL_GREEN: return 6u;
+                case GL_BLUE: return 5u;
+                default: return 0u;
+            }
+        case GL_RGB5_A1:
+            switch (component) {
+                case GL_RED:
+                case GL_GREEN:
+                case GL_BLUE: return 5u;
+                case GL_ALPHA: return 1u;
+                default: return 0u;
+            }
+        case GL_RGB10_A2:
+        case GL_RGB10_A2UI:
+            switch (component) {
+                case GL_RED:
+                case GL_GREEN:
+                case GL_BLUE: return 10u;
+                case GL_ALPHA: return 2u;
+                default: return 0u;
+            }
+
+        case GL_DEPTH_COMPONENT16:
+            return component == GL_DEPTH ? 16u : 0u;
+        case GL_DEPTH_COMPONENT24:
+            return component == GL_DEPTH ? 24u : 0u;
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+            return component == GL_DEPTH ? 32u : 0u;
+        case GL_DEPTH24_STENCIL8:
+            return component == GL_DEPTH ? 24u : (component == GL_STENCIL ? 8u : 0u);
+        case GL_DEPTH32F_STENCIL8:
+            return component == GL_DEPTH ? 32u : (component == GL_STENCIL ? 8u : 0u);
+        case GL_STENCIL_INDEX1:
+            return component == GL_STENCIL ? 1u : 0u;
+        case GL_STENCIL_INDEX4:
+            return component == GL_STENCIL ? 4u : 0u;
+        case GL_STENCIL_INDEX8:
+            return component == GL_STENCIL ? 8u : 0u;
+        case GL_STENCIL_INDEX16:
+            return component == GL_STENCIL ? 16u : 0u;
+
+        default:
+            return bitcountForInternalFormat(internalformat, component);
+    }
+}
+
+static GLenum mglFramebufferAttachmentComponentType(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_R8I:
+        case GL_R16I:
+        case GL_R32I:
+        case GL_RG8I:
+        case GL_RG16I:
+        case GL_RG32I:
+        case GL_RGB8I:
+        case GL_RGB16I:
+        case GL_RGB32I:
+        case GL_RGBA8I:
+        case GL_RGBA16I:
+        case GL_RGBA32I:
+        case GL_STENCIL_INDEX1:
+        case GL_STENCIL_INDEX4:
+        case GL_STENCIL_INDEX8:
+        case GL_STENCIL_INDEX16:
+            return GL_INT;
+
+        case GL_R8UI:
+        case GL_R16UI:
+        case GL_R32UI:
+        case GL_RG8UI:
+        case GL_RG16UI:
+        case GL_RG32UI:
+        case GL_RGB8UI:
+        case GL_RGB16UI:
+        case GL_RGB32UI:
+        case GL_RGBA8UI:
+        case GL_RGBA16UI:
+        case GL_RGBA32UI:
+        case GL_RGB10_A2UI:
+            return GL_UNSIGNED_INT;
+
+        case GL_R16F:
+        case GL_R32F:
+        case GL_RG16F:
+        case GL_RG32F:
+        case GL_RGB16F:
+        case GL_RGB32F:
+        case GL_RGBA16F:
+        case GL_RGBA32F:
+        case GL_R11F_G11F_B10F:
+        case GL_RGB9_E5:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH32F_STENCIL8:
+            return GL_FLOAT;
+
+        case GL_R8_SNORM:
+        case GL_R16_SNORM:
+        case GL_RG8_SNORM:
+        case GL_RG16_SNORM:
+        case GL_RGB8_SNORM:
+        case GL_RGB16_SNORM:
+        case GL_RGBA8_SNORM:
+        case GL_RGBA16_SNORM:
+            return GL_SIGNED_NORMALIZED;
+
+        default:
+            return GL_UNSIGNED_NORMALIZED;
+    }
+}
+
+static GLenum mglFramebufferAttachmentColorEncoding(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_SRGB:
+        case GL_SRGB8:
+        case GL_SRGB_ALPHA:
+        case GL_SRGB8_ALPHA8:
+        case GL_COMPRESSED_SRGB:
+        case GL_COMPRESSED_SRGB_ALPHA:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB8_ETC2:
+        case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+            return GL_SRGB;
+        default:
+            return GL_LINEAR;
+    }
+}
+
+static GLboolean mglDefaultFramebufferAttachmentIsColor(GLenum attachment)
+{
+    switch (attachment) {
+        case GL_FRONT:
+        case GL_BACK:
+        case GL_FRONT_LEFT:
+        case GL_FRONT_RIGHT:
+        case GL_BACK_LEFT:
+        case GL_BACK_RIGHT:
+        case GL_LEFT:
+        case GL_RIGHT:
+        case GL_COLOR:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
+static GLboolean mglDefaultFramebufferAttachmentIsValid(GLenum attachment)
+{
+    return mglDefaultFramebufferAttachmentIsColor(attachment) ||
+           attachment == GL_DEPTH ||
+           attachment == GL_STENCIL ||
+           attachment == GL_DEPTH_ATTACHMENT ||
+           attachment == GL_STENCIL_ATTACHMENT;
+}
+
+static GLuint mglDefaultFramebufferColorBits(GLMContext ctx, GLenum component)
+{
+    GLenum format = ctx ? ctx->pixel_format.format : GL_RGBA;
+    GLenum type = ctx ? ctx->pixel_format.type : GL_UNSIGNED_BYTE;
+
+    switch (format) {
+        case GL_RED:
+            if (component != GL_RED) return 0u;
+            break;
+        case GL_RG:
+            if (component != GL_RED && component != GL_GREEN) return 0u;
+            break;
+        case GL_RGB:
+        case GL_BGR:
+            if (component == GL_ALPHA) return 0u;
+            break;
+        default:
+            break;
+    }
+
+    return bicountForFormatType(format, type, component);
+}
+
+static void mglGetDefaultFramebufferAttachmentParameteriv(GLMContext ctx, GLenum attachment, GLenum pname, GLint *params)
+{
+    if (!mglDefaultFramebufferAttachmentIsValid(attachment)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    GLboolean colorAttachment = mglDefaultFramebufferAttachmentIsColor(attachment);
+    GLboolean depthAttachment = (attachment == GL_DEPTH || attachment == GL_DEPTH_ATTACHMENT);
+    GLboolean stencilAttachment = (attachment == GL_STENCIL || attachment == GL_STENCIL_ATTACHMENT);
+
+    switch (pname) {
+        case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE:
+            *params = GL_FRAMEBUFFER_DEFAULT;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME:
+        case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL:
+        case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER:
+        case GL_FRAMEBUFFER_ATTACHMENT_LAYERED:
+            *params = 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
+            *params = GL_NONE;
+            return;
+
+        case GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE:
+            *params = colorAttachment ? (GLint)mglDefaultFramebufferColorBits(ctx, GL_RED) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE:
+            *params = colorAttachment ? (GLint)mglDefaultFramebufferColorBits(ctx, GL_GREEN) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE:
+            *params = colorAttachment ? (GLint)mglDefaultFramebufferColorBits(ctx, GL_BLUE) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE:
+            *params = colorAttachment ? (GLint)mglDefaultFramebufferColorBits(ctx, GL_ALPHA) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE:
+            *params = depthAttachment ? (GLint)mglFramebufferAttachmentBits(ctx->depth_format.format, GL_DEPTH) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE:
+            *params = stencilAttachment ? (GLint)mglFramebufferAttachmentBits(ctx->stencil_format.format, GL_STENCIL) : 0;
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
+            if (colorAttachment) {
+                *params = GL_UNSIGNED_NORMALIZED;
+            } else if (depthAttachment) {
+                *params = mglFramebufferAttachmentComponentType(ctx->depth_format.format);
+            } else if (stencilAttachment) {
+                *params = GL_INT;
+            } else {
+                *params = GL_NONE;
+            }
+            return;
+        case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
+            *params = colorAttachment ? GL_LINEAR : GL_LINEAR;
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+}
+
 void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLenum target, GLenum attachment, GLenum pname, GLint *params)
 {
-    Framebuffer *fbo;
-    FBOAttachment *fbo_attachment_ptr;
+    Framebuffer *fbo = NULL;
+    FBOAttachment *fbo_attachment_ptr = NULL;
+
+    if (!params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     switch(target)
     {
@@ -1044,108 +1881,125 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
             break;
 
         default:
-            // target will be zero for mglGetNamedFramebufferAttachmentParameteriv
-            fbo = findFrameBuffer(ctx, framebuffer);
-            assert(0);
+            if (target != 0u) {
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+            }
+            if (framebuffer != 0u) {
+                fbo = findFrameBuffer(ctx, framebuffer);
+                if (!fbo) {
+                    ERROR_RETURN(GL_INVALID_OPERATION);
+                    return;
+                }
+            }
             break;
     }
 
     if (fbo)
     {
-        GLuint level __attribute__((unused));
-        Texture *tex;
-        GLenum target;
-
-        if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
-        {
-            FBOAttachment *depth_attachment_ptr;
-            FBOAttachment *stencil_attachment_ptr;
-
-            depth_attachment_ptr = getFBOAttachment(ctx, fbo, GL_DEPTH_ATTACHMENT);
-            stencil_attachment_ptr = getFBOAttachment(ctx, fbo, GL_STENCIL_ATTACHMENT);
-
-            if ((depth_attachment_ptr != NULL) &&
-                (stencil_attachment_ptr != NULL) &&
-                (depth_attachment_ptr == stencil_attachment_ptr))
-            {
-                *params = GL_NONE;
-
-                return;
-            }
-
-        }
+        Texture *tex = NULL;
+        GLenum object_type = GL_NONE;
+        GLenum attachment_target;
 
         fbo_attachment_ptr = getFBOAttachment(ctx, fbo, attachment);
 
         if (fbo_attachment_ptr == NULL)
         {
-            *params = GL_NONE;
+            ERROR_RETURN(GL_INVALID_ENUM);
             return;
         }
 
-        level = fbo_attachment_ptr->level;
-        target = fbo_attachment_ptr->textarget;
+        attachment_target = fbo_attachment_ptr->textarget;
+        if (fbo_attachment_ptr->texture != 0u) {
+            if (attachment_target == GL_RENDERBUFFER) {
+                object_type = GL_RENDERBUFFER;
+                tex = (fbo_attachment_ptr->buf.rbo != NULL) ? fbo_attachment_ptr->buf.rbo->tex : NULL;
+            } else {
+                object_type = GL_TEXTURE;
+                tex = fbo_attachment_ptr->buf.tex;
+                if (!tex) {
+                    tex = findTexture(ctx, fbo_attachment_ptr->texture);
+                    fbo_attachment_ptr->buf.tex = tex;
+                }
+            }
+        }
 
-        if (target == GL_RENDERBUFFER)
-        {
-            tex = fbo_attachment_ptr->buf.rbo->tex;
-        }
-        else
-        {
-            tex = fbo_attachment_ptr->buf.tex;
-        }
+        GLenum internalformat = tex ? tex->internalformat : 0u;
 
         switch(pname)
         {
+            case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE:
+                *params = object_type;
+                return;
+
+            case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME:
+                *params = (GLint)fbo_attachment_ptr->texture;
+                return;
+
             case GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE:
-                *params = bitcountForInternalFormat(tex->internalformat, GL_RED);
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_RED);
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE:
-                *params = bitcountForInternalFormat(tex->internalformat, GL_GREEN);
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_GREEN);
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE:
-                *params = bitcountForInternalFormat(tex->internalformat, GL_BLUE);
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_BLUE);
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_ALPHA_SIZE:
-                *params = bitcountForInternalFormat(tex->internalformat, GL_ALPHA);
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_ALPHA);
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE:
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_DEPTH);
+                return;
+
             case GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE:
-                *params = bitcountForInternalFormat(tex->internalformat, GL_NONE);
+                *params = (GLint)mglFramebufferAttachmentBits(internalformat, GL_STENCIL);
                 return;
 
             case GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE:
+                *params = (object_type == GL_NONE) ? GL_NONE : mglFramebufferAttachmentComponentType(internalformat);
+                return;
+
             case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
-            case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE:
-                assert(0);
-                // need to fill these in
+                *params = (object_type == GL_NONE) ? GL_LINEAR : mglFramebufferAttachmentColorEncoding(internalformat);
+                return;
+
+            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL:
+                *params = (object_type == GL_TEXTURE) ? (GLint)fbo_attachment_ptr->level : 0;
+                return;
+
+            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE:
+                *params = (object_type == GL_TEXTURE && isCubeMapTarget(ctx, attachment_target)) ? (GLint)attachment_target : GL_NONE;
+                return;
+
+            case GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER:
+                *params = (object_type == GL_TEXTURE &&
+                           (fbo_attachment_ptr->layered ||
+                            attachment_target == GL_TEXTURE_3D ||
+                            attachment_target == GL_TEXTURE_1D_ARRAY ||
+                            attachment_target == GL_TEXTURE_2D_ARRAY ||
+                            attachment_target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+                            attachment_target == GL_TEXTURE_CUBE_MAP_ARRAY))
+                    ? (GLint)fbo_attachment_ptr->layer
+                    : 0;
+                return;
+
+            case GL_FRAMEBUFFER_ATTACHMENT_LAYERED:
+                *params = (object_type == GL_TEXTURE && fbo_attachment_ptr->layered) ? GL_TRUE : GL_FALSE;
+                return;
 
             default:
+                ERROR_RETURN(GL_INVALID_ENUM);
                 return;
         }
     }
     else
     {
-        // default framebuffer
-        switch(attachment)
-        {
-            case GL_FRONT_LEFT:
-            case GL_FRONT_RIGHT:
-            case GL_BACK_LEFT:
-            case GL_BACK_RIGHT:
-            case GL_DEPTH:
-            case GL_STENCIL:
-                assert(0);
-                break;
-
-            default:
-                assert(0);
-                return;
-        }
+        mglGetDefaultFramebufferAttachmentParameteriv(ctx, attachment, pname, params);
     }
 }
 
@@ -1166,18 +2020,55 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
         fprintf(stderr, "MGL: glBlitFramebuffer src(%d,%d)-(%d,%d) dst(%d,%d)-(%d,%d) mask=0x%x\n",
                 srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask);
     }
+
+    const GLbitfield validMask = GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
+    if ((mask & ~validMask) != 0u) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (filter != GL_NEAREST && filter != GL_LINEAR) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u && filter != GL_NEAREST) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u) {
+        fprintf(stderr,
+                "MGL WARNING: glBlitFramebuffer depth/stencil mask=0x%x is unsupported by the Metal blit path\n",
+                mask);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     ctx->mtl_funcs.mtlBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 
 void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height)
 {
-    // Unimplemented function
-    assert(0);
+    if (target != GL_RENDERBUFFER) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (samples < 0 || width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (samples > 0) {
+        fprintf(stderr,
+                "MGL WARNING: glRenderbufferStorageMultisample unsupported samples=%d internalformat=0x%x %dx%d\n",
+                samples, internalformat, width, height);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglRenderbufferStorage(ctx, target, internalformat, width, height);
 }
 
 void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
 {
-    Framebuffer *fbo;
+    Framebuffer *fbo = NULL;
     
     // Get the appropriate framebuffer based on target
     switch(target) {
@@ -1190,11 +2081,13 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
             break;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
+            return;
     }
     
     if (!fbo) {
         // Default framebuffer - these parameters don't apply
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
     
     switch(pname) {
@@ -1232,147 +2125,588 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
 
 void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = NULL;
+
+    if (!params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    switch(target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+            fbo = STATE(framebuffer);
+            break;
+        case GL_READ_FRAMEBUFFER:
+            fbo = STATE(readbuffer);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    switch (pname) {
+        case GL_FRAMEBUFFER_DEFAULT_WIDTH:
+            *params = fbo ? fbo->default_width : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
+            *params = fbo ? fbo->default_height : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_LAYERS:
+            *params = fbo ? fbo->default_layers : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
+            *params = fbo ? fbo->default_samples : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
+            *params = fbo ? fbo->default_fixed_sample_locations : GL_TRUE;
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglInvalidateFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments)
 {
-    // Unimplemented function
-    assert(0);
+    switch (target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+        case GL_READ_FRAMEBUFFER:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    if (numAttachments < 0 || (numAttachments > 0 && !attachments)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 }
 
 void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    // Unimplemented function
-    assert(0);
+    switch (target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+        case GL_READ_FRAMEBUFFER:
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    if (numAttachments < 0 || (numAttachments > 0 && !attachments) || width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    (void)x;
+    (void)y;
 }
 
 void mglCreateFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
 {
-    // Unimplemented function
-    assert(0);
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (n > 0 && !framebuffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < n; ++i) {
+        GLuint name = getNewName(&STATE(framebuffer_table));
+        Framebuffer *fbo = newFramebuffer(ctx, name);
+        insertHashElement(&STATE(framebuffer_table), name, fbo);
+        framebuffers[i] = name;
+    }
 }
 
 void mglNamedFramebufferRenderbuffer(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *savedDraw = ctx->state.framebuffer;
+    Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
+
+    if (framebuffer == 0u || !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ctx->state.framebuffer = fbo;
+    mglFramebufferRenderbuffer(ctx, GL_DRAW_FRAMEBUFFER, attachment, renderbuffertarget, renderbuffer);
+    ctx->state.framebuffer = savedDraw;
 }
 
 void mglNamedFramebufferParameteri(GLMContext ctx, GLuint framebuffer, GLenum pname, GLint param)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
+
+    if (framebuffer == 0u || !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    switch(pname) {
+        case GL_FRAMEBUFFER_DEFAULT_WIDTH:
+            if (param < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            fbo->default_width = param;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
+            if (param < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            fbo->default_height = param;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_LAYERS:
+            if (param < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            fbo->default_layers = param;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
+            if (param < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            fbo->default_samples = param;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
+            fbo->default_fixed_sample_locations = param ? GL_TRUE : GL_FALSE;
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+
+    fbo->dirty_bits |= DIRTY_FBO_BINDING;
+    STATE(dirty_bits) |= DIRTY_FBO;
 }
 
 void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLuint texture, GLint level)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *savedDraw = ctx->state.framebuffer;
+    Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
+
+    if (framebuffer == 0u || !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ctx->state.framebuffer = fbo;
+    framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, 0);
+    ctx->state.framebuffer = savedDraw;
 }
 
 void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLuint texture, GLint level, GLint layer)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *savedDraw = ctx->state.framebuffer;
+    Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
+
+    if (framebuffer == 0u || !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ctx->state.framebuffer = fbo;
+    framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, layer);
+    ctx->state.framebuffer = savedDraw;
 }
 
 void mglNamedFramebufferDrawBuffer(GLMContext ctx, GLuint framebuffer, GLenum buf)
 {
-    // Unimplemented function
-    assert(0);
+    mglNamedFramebufferDrawBuffers(ctx, framebuffer, 1, &buf);
 }
 
 void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei n, const GLenum *bufs)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (n < 0 || n > (GLsizei)mglFramebufferMaxDrawBuffers(ctx)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (n > 0 && !bufs) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    GLbitfield seenColorAttachments = 0u;
+    for (GLsizei i = 0; i < n; ++i) {
+        GLenum buf = bufs[i];
+        if (buf == GL_NONE) {
+            continue;
+        }
+
+        if (fbo) {
+            if (!mglFramebufferBufferIsColorAttachment(ctx, buf)) {
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+            }
+            GLuint attachmentIndex = (GLuint)(buf - GL_COLOR_ATTACHMENT0);
+            GLbitfield attachmentBit = (GLbitfield)(1u << attachmentIndex);
+            if (seenColorAttachments & attachmentBit) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            seenColorAttachments |= attachmentBit;
+            continue;
+        }
+
+        switch (buf) {
+            case GL_FRONT:
+            case GL_BACK:
+            case GL_FRONT_LEFT:
+            case GL_FRONT_RIGHT:
+            case GL_BACK_LEFT:
+            case GL_BACK_RIGHT:
+            case GL_LEFT:
+            case GL_RIGHT:
+            case GL_FRONT_AND_BACK:
+                break;
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+        }
+    }
+
+    GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
+    GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
+    GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+
+    for (GLsizei i = 0; i < n; ++i) {
+        drawBuffers[i] = bufs[i];
+    }
+    for (GLsizei i = n; i < (GLsizei)MAX_COLOR_ATTACHMENTS; ++i) {
+        drawBuffers[i] = GL_NONE;
+    }
+    *drawBufferCount = n;
+    *drawBuffer = (n > 0) ? bufs[0] : GL_NONE;
+
+    if (fbo == ctx->state.framebuffer) {
+        ctx->state.draw_buffer = *drawBuffer;
+        ctx->state.draw_buffer_count = *drawBufferCount;
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
+            ctx->state.draw_buffers[i] = drawBuffers[i];
+        }
+    }
+
+    if (fbo) {
+        fbo->dirty_bits |= DIRTY_FBO_BINDING;
+    }
+    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
 }
 
 void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum src)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (fbo) {
+        if (src != GL_NONE && !mglFramebufferBufferIsColorAttachment(ctx, src)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        fbo->read_buffer = src;
+    } else {
+        switch (src) {
+            case GL_FRONT:
+            case GL_BACK:
+            case GL_NONE:
+            case GL_FRONT_LEFT:
+            case GL_FRONT_RIGHT:
+            case GL_BACK_LEFT:
+            case GL_BACK_RIGHT:
+            case GL_LEFT:
+            case GL_RIGHT:
+                ctx->state.default_read_buffer = src;
+                break;
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+        }
+    }
+
+    if (fbo == ctx->state.readbuffer) {
+        ctx->state.read_buffer = src;
+    } else if (!fbo && !ctx->state.readbuffer) {
+        ctx->state.read_buffer = src;
+    }
+
+    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 }
 
 void mglInvalidateNamedFramebufferData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments)
 {
-    // Unimplemented function
-    assert(0);
+    if (framebuffer != 0u && !findFrameBuffer(ctx, framebuffer)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (numAttachments < 0 || (numAttachments > 0 && !attachments)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 }
 
 void mglInvalidateNamedFramebufferSubData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    // Unimplemented function
-    assert(0);
+    if (framebuffer != 0u && !findFrameBuffer(ctx, framebuffer)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (numAttachments < 0 || (numAttachments > 0 && !attachments) || width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    (void)x;
+    (void)y;
 }
 
 void mglClearNamedFramebufferiv(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLint *value)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
+    ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglClearBufferiv(ctx, buffer, drawbuffer, value);
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglClearNamedFramebufferuiv(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLuint *value)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
+    ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglClearBufferuiv(ctx, buffer, drawbuffer, value);
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglClearNamedFramebufferfv(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, const GLfloat *value)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
+    ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglClearBufferfv(ctx, buffer, drawbuffer, value);
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglClearNamedFramebufferfi(GLMContext ctx, GLuint framebuffer, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    if (framebuffer != 0u && !fbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
+    ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglClearBufferfi(ctx, buffer, drawbuffer, depth, stencil);
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglBlitNamedFramebuffer(GLMContext ctx, GLuint readFramebuffer, GLuint drawFramebuffer, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *readFbo = readFramebuffer ? findFrameBuffer(ctx, readFramebuffer) : NULL;
+    Framebuffer *drawFbo = drawFramebuffer ? findFrameBuffer(ctx, drawFramebuffer) : NULL;
+
+    if ((readFramebuffer != 0u && !readFbo) ||
+        (drawFramebuffer != 0u && !drawFbo)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
+    ctx->state.readbuffer = readFbo;
+    ctx->state.framebuffer = drawFbo;
+    mglFramebufferLoadReadBuffer(ctx, readFbo);
+    mglFramebufferLoadDrawBuffer(ctx, drawFbo);
+    mglBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 GLenum  mglCheckNamedFramebufferStatus(GLMContext ctx, GLuint framebuffer, GLenum target)
 {
-    GLenum ret = (GLenum)0;
+    Framebuffer *fbo = NULL;
 
-    // Unimplemented function
-    assert(0);
-    return ret;
+    switch (target) {
+        case GL_FRAMEBUFFER:
+        case GL_DRAW_FRAMEBUFFER:
+        case GL_READ_FRAMEBUFFER:
+            break;
+        default:
+            ERROR_RETURN_VALUE(GL_INVALID_ENUM, 0);
+    }
+
+    if (framebuffer != 0u) {
+        fbo = findFrameBuffer(ctx, framebuffer);
+        if (!fbo) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, 0);
+        }
+    }
+
+    return mglCheckFramebufferStatusForObject(ctx, fbo);
 }
 
 void mglGetNamedFramebufferParameteriv(GLMContext ctx, GLuint framebuffer, GLenum pname, GLint *param)
 {
-    // Unimplemented function
-    assert(0);
+    Framebuffer *fbo = NULL;
+
+    if (!param) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (framebuffer != 0u) {
+        fbo = findFrameBuffer(ctx, framebuffer);
+        if (!fbo) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
+
+    switch (pname) {
+        case GL_FRAMEBUFFER_DEFAULT_WIDTH:
+            *param = fbo ? fbo->default_width : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_HEIGHT:
+            *param = fbo ? fbo->default_height : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_LAYERS:
+            *param = fbo ? fbo->default_layers : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_SAMPLES:
+            *param = fbo ? fbo->default_samples : 0;
+            break;
+        case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
+            *param = fbo ? fbo->default_fixed_sample_locations : GL_TRUE;
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglCreateRenderbuffers(GLMContext ctx, GLsizei n, GLuint *renderbuffers)
 {
-    // Unimplemented function
-    assert(0);
+    if (n < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (n > 0 && !renderbuffers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    for (GLsizei i = 0; i < n; ++i) {
+        GLuint name = getNewName(&STATE(renderbuffer_table));
+        Renderbuffer *rbo = newRenderbuffer(ctx, name);
+        insertHashElement(&STATE(renderbuffer_table), name, rbo);
+        renderbuffers[i] = name;
+    }
 }
 
 void mglNamedRenderbufferStorage(GLMContext ctx, GLuint renderbuffer, GLenum internalformat, GLsizei width, GLsizei height)
 {
-    // Unimplemented function
-    assert(0);
+    Renderbuffer *rbo = findRenderbuffer(ctx, renderbuffer);
+    if (renderbuffer == 0u || !rbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Texture *tex = newTexObj(ctx, GL_RENDERBUFFER);
+    if (!tex) {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    createTextureLevel(ctx, tex, 0, 0, false, internalformat, width, height, 1, 0, 0, NULL, false);
+    tex->access = GL_READ_WRITE;
+    tex->is_render_target = true;
+    rbo->tex = tex;
+    rbo->dirty_bits |= DIRTY_RENDBUF_TEX;
+    STATE(dirty_bits) |= DIRTY_FBO;
 }
 
 void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height)
 {
-    // Unimplemented function
-    assert(0);
+    if (samples < 0 || width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (renderbuffer == 0u || !findRenderbuffer(ctx, renderbuffer)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (samples > 0) {
+        fprintf(stderr,
+                "MGL WARNING: glNamedRenderbufferStorageMultisample unsupported renderbuffer=%u samples=%d internalformat=0x%x %dx%d\n",
+                renderbuffer, samples, internalformat, width, height);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglNamedRenderbufferStorage(ctx, renderbuffer, internalformat, width, height);
 }
 
 void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLenum pname, GLint *params)
 {
-    // Unimplemented function
-    assert(0);
+    Renderbuffer *saved = ctx->state.renderbuffer;
+    Renderbuffer *rbo = findRenderbuffer(ctx, renderbuffer);
+
+    if (!params) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (renderbuffer == 0u || !rbo) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    ctx->state.renderbuffer = rbo;
+    mglGetRenderbufferParameteriv(ctx, GL_RENDERBUFFER, pname, params);
+    ctx->state.renderbuffer = saved;
 }

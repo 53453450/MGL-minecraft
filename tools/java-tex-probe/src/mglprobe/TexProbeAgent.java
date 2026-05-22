@@ -28,7 +28,7 @@ public final class TexProbeAgent {
             try {
                 ClassReader cr = new ClassReader(classfileBuffer);
                 ClassWriter cw = new ClassWriter(cr, ClassWriter.COMPUTE_MAXS);
-                ClassVisitor cv = new ClassVisitor(Opcodes.ASM9, cw) {
+                ClassVisitor cv = new ClassVisitor(Opcodes.ASM7, cw) {
                     @Override
                     public MethodVisitor visitMethod(int access, String name, String desc, String signature, String[] exceptions) {
                         MethodVisitor mv = super.visitMethod(access, name, desc, signature, exceptions);
@@ -38,11 +38,29 @@ public final class TexProbeAgent {
                                     || "(IIIIIIIILjava/nio/IntBuffer;)V".equals(desc)
                                     || "(IIIIIIIILjava/nio/FloatBuffer;)V".equals(desc)
                                     || "(IIIIIIIILjava/nio/DoubleBuffer;)V".equals(desc)) {
-                                return new BufferProbeMethodVisitor(mv, className, desc);
+                                return new SubImageBufferProbe(mv, className, desc);
                             }
                             if ("(IIIIIIIIJ)V".equals(desc)) {
-                                return new LongProbeMethodVisitor(mv, className, desc);
+                                return new SubImageLongProbe(mv, className, desc);
                             }
+                        }
+                        if ("glTexImage2D".equals(name)) {
+                            if ("(IIIIIIIILjava/nio/ByteBuffer;)V".equals(desc)
+                                    || "(IIIIIIIILjava/nio/ShortBuffer;)V".equals(desc)
+                                    || "(IIIIIIIILjava/nio/IntBuffer;)V".equals(desc)
+                                    || "(IIIIIIIILjava/nio/FloatBuffer;)V".equals(desc)
+                                    || "(IIIIIIIILjava/nio/DoubleBuffer;)V".equals(desc)) {
+                                return new TexImageBufferProbe(mv, className, desc);
+                            }
+                            if ("(IIIIIIIIJ)V".equals(desc)) {
+                                return new TexImageLongProbe(mv, className, desc);
+                            }
+                        }
+                        if ("glTexParameteri".equals(name) && "(III)V".equals(desc)) {
+                            return new TexParamProbe(mv, className, "i");
+                        }
+                        if ("glTexParameterf".equals(name) && "(IIF)V".equals(desc)) {
+                            return new TexParamProbe(mv, className, "f");
                         }
                         return mv;
                     }
@@ -58,51 +76,106 @@ public final class TexProbeAgent {
         }
     }
 
-    static final class BufferProbeMethodVisitor extends MethodVisitor implements Opcodes {
-        private final String owner;
-        private final String desc;
+    // --- glTexSubImage2D probes ---
 
-        BufferProbeMethodVisitor(MethodVisitor mv, String owner, String desc) {
-            super(ASM9, mv);
-            this.owner = owner;
-            this.desc = desc;
+    static final class SubImageBufferProbe extends MethodVisitor implements Opcodes {
+        private final String owner, desc;
+        SubImageBufferProbe(MethodVisitor mv, String owner, String desc) {
+            super(ASM7, mv);
+            this.owner = owner; this.desc = desc;
         }
-
         @Override
         public void visitCode() {
             super.visitCode();
             mv.visitLdcInsn(owner.replace('/', '.'));
             mv.visitLdcInsn(desc);
-            for (int i = 0; i < 8; i++) {
-                mv.visitVarInsn(ILOAD, i);
-            }
+            for (int i = 0; i < 8; i++) mv.visitVarInsn(ILOAD, i);
             mv.visitVarInsn(ALOAD, 8);
             mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexSubImage2DBuffer",
                     "(Ljava/lang/String;Ljava/lang/String;IIIIIIIILjava/nio/Buffer;)V", false);
         }
     }
 
-    static final class LongProbeMethodVisitor extends MethodVisitor implements Opcodes {
-        private final String owner;
-        private final String desc;
-
-        LongProbeMethodVisitor(MethodVisitor mv, String owner, String desc) {
-            super(ASM9, mv);
-            this.owner = owner;
-            this.desc = desc;
+    static final class SubImageLongProbe extends MethodVisitor implements Opcodes {
+        private final String owner, desc;
+        SubImageLongProbe(MethodVisitor mv, String owner, String desc) {
+            super(ASM7, mv);
+            this.owner = owner; this.desc = desc;
         }
-
         @Override
         public void visitCode() {
             super.visitCode();
             mv.visitLdcInsn(owner.replace('/', '.'));
             mv.visitLdcInsn(desc);
-            for (int i = 0; i < 8; i++) {
-                mv.visitVarInsn(ILOAD, i);
-            }
+            for (int i = 0; i < 8; i++) mv.visitVarInsn(ILOAD, i);
             mv.visitVarInsn(LLOAD, 8);
             mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexSubImage2DAddress",
                     "(Ljava/lang/String;Ljava/lang/String;IIIIIIIIJ)V", false);
+        }
+    }
+
+    // --- glTexImage2D probes ---
+
+    static final class TexImageBufferProbe extends MethodVisitor implements Opcodes {
+        private final String owner, desc;
+        TexImageBufferProbe(MethodVisitor mv, String owner, String desc) {
+            super(ASM7, mv);
+            this.owner = owner; this.desc = desc;
+        }
+        @Override
+        public void visitCode() {
+            super.visitCode();
+            mv.visitLdcInsn(owner.replace('/', '.'));
+            mv.visitLdcInsn(desc);
+            for (int i = 0; i < 8; i++) mv.visitVarInsn(ILOAD, i);
+            mv.visitVarInsn(ALOAD, 8); // pixels is arg index 8 (target,level,internal,w,h,border,fmt,type,pixels)
+            mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexImage2DBuffer",
+                    "(Ljava/lang/String;Ljava/lang/String;IIIIIIIILjava/nio/Buffer;)V", false);
+        }
+    }
+
+    static final class TexImageLongProbe extends MethodVisitor implements Opcodes {
+        private final String owner, desc;
+        TexImageLongProbe(MethodVisitor mv, String owner, String desc) {
+            super(ASM7, mv);
+            this.owner = owner; this.desc = desc;
+        }
+        @Override
+        public void visitCode() {
+            super.visitCode();
+            mv.visitLdcInsn(owner.replace('/', '.'));
+            mv.visitLdcInsn(desc);
+            for (int i = 0; i < 8; i++) mv.visitVarInsn(ILOAD, i);
+            mv.visitVarInsn(LLOAD, 8); // pixels is arg index 8 (long takes slots 8+9)
+            mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexImage2DAddress",
+                    "(Ljava/lang/String;Ljava/lang/String;IIIIIIIIJ)V", false);
+        }
+    }
+
+    // --- glTexParameter probes ---
+
+    static final class TexParamProbe extends MethodVisitor implements Opcodes {
+        private final String owner, variant;
+        TexParamProbe(MethodVisitor mv, String owner, String variant) {
+            super(ASM7, mv);
+            this.owner = owner; this.variant = variant;
+        }
+        @Override
+        public void visitCode() {
+            super.visitCode();
+            mv.visitLdcInsn(owner.replace('/', '.'));
+            mv.visitLdcInsn(variant);
+            mv.visitVarInsn(ILOAD, 0); // target
+            mv.visitVarInsn(ILOAD, 1); // pname
+            if ("f".equals(variant)) {
+                mv.visitVarInsn(FLOAD, 2); // param (float)
+                mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexParameterF",
+                        "(Ljava/lang/String;Ljava/lang/String;IIF)V", false);
+            } else {
+                mv.visitVarInsn(ILOAD, 2); // param (int)
+                mv.visitMethodInsn(INVOKESTATIC, "mglprobe/TexProbeRuntime", "logTexParameter",
+                        "(Ljava/lang/String;Ljava/lang/String;III)V", false);
+            }
         }
     }
 }
