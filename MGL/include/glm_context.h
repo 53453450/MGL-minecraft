@@ -396,6 +396,7 @@ typedef struct VertexArray_t {
     GLuint dirty_bits;
     unsigned name;
     unsigned enabled_attribs;
+    BufferBinding bindings[MAX_BINDABLE_BUFFERS];
     VertexAttrib attrib[MAX_ATTRIBS];
     VertexElementArray element_array;
     void *mtl_data;
@@ -440,6 +441,8 @@ typedef struct SpirvResource_t {
     GLuint  binding;
     GLuint  location;
     GLint   uniform_location;
+    GLint   sampler_unit;
+    GLboolean sampler_unit_explicit;
     size_t  required_size;
     GLuint  image_dim;
     GLuint  image_arrayed;

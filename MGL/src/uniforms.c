@@ -557,6 +557,14 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                     explicit_changed = GL_TRUE;
                     program->sampler_units_explicit_by_stage[stage][res->binding] = GL_TRUE;
                 }
+                if (res->sampler_unit != unit) {
+                    changed = GL_TRUE;
+                    res->sampler_unit = unit;
+                }
+                if (!res->sampler_unit_explicit) {
+                    explicit_changed = GL_TRUE;
+                    res->sampler_unit_explicit = GL_TRUE;
+                }
             }
         }
     }

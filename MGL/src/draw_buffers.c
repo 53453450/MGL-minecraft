@@ -64,6 +64,14 @@ static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
             vao->attrib[i].buffer_bindingindex = 0;
         }
 
+        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++)
+        {
+            vao->bindings[i].buffer = NULL;
+            vao->bindings[i].offset = 0;
+            vao->bindings[i].stride = 0;
+            vao->bindings[i].divisor = 0;
+        }
+
         insertHashElement(&STATE(vao_table), 0, vao);
     }
 

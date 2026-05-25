@@ -139,6 +139,14 @@ VertexArray *newVAO(GLMContext ctx, GLuint vao)
         ptr->attrib[i].buffer_bindingindex = 0;
     }
 
+    for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++)
+    {
+        ptr->bindings[i].buffer = NULL;
+        ptr->bindings[i].offset = 0;
+        ptr->bindings[i].stride = 0;
+        ptr->bindings[i].divisor = 0;
+    }
+
     return ptr;
 }
 
@@ -696,6 +704,10 @@ void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex,
     ERROR_CHECK_RETURN(bindingindex < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
 
     vao->attrib[attribindex].buffer_bindingindex = bindingindex;
+    vao->attrib[attribindex].buffer = vao->bindings[bindingindex].buffer;
+    vao->attrib[attribindex].stride = vao->bindings[bindingindex].stride;
+    vao->attrib[attribindex].binding_offset = vao->bindings[bindingindex].offset;
+    vao->attrib[attribindex].divisor = vao->bindings[bindingindex].divisor;
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
@@ -919,7 +931,12 @@ void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GL
 {
     ERROR_CHECK_RETURN(bindingindex < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
 
-    vao->attrib[bindingindex].divisor = divisor;
+    vao->bindings[bindingindex].divisor = divisor;
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        if (vao->attrib[i].buffer_bindingindex == bindingindex) {
+            vao->attrib[i].divisor = divisor;
+        }
+    }
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
@@ -947,20 +964,6 @@ void mglVertexArrayBindingDivisor(GLMContext ctx, GLuint vaobj, GLuint bindingin
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
     setBindingDivisor(ctx, ptr, bindingindex, divisor);
-}
-static VertexAttrib *mglFindVertexBindingAttrib(VertexArray *vao, GLuint bindingindex)
-{
-    if (!vao || bindingindex >= MAX_BINDABLE_BUFFERS) {
-        return NULL;
-    }
-
-    for (GLuint i = 0; i < MAX_ATTRIBS; ++i) {
-        if (vao->attrib[i].buffer_bindingindex == bindingindex) {
-            return &vao->attrib[i];
-        }
-    }
-
-    return NULL;
 }
 
 void mglGetVertexArrayiv(GLMContext ctx, GLuint vaobj, GLenum pname, GLint *param)
@@ -1073,17 +1076,13 @@ void mglGetVertexArrayIndexediv(GLMContext ctx, GLuint vaobj, GLuint index, GLen
         case GL_VERTEX_BINDING_STRIDE:
         case GL_VERTEX_BINDING_DIVISOR:
         {
-            VertexAttrib *binding = mglFindVertexBindingAttrib(ptr, index);
-            if (!binding) {
-                *param = 0;
-                return;
-            }
+            BufferBinding *binding = &ptr->bindings[index];
             switch (pname) {
                 case GL_VERTEX_BINDING_BUFFER:
                     *param = binding->buffer ? (GLint)binding->buffer->name : 0;
                     return;
                 case GL_VERTEX_BINDING_OFFSET:
-                    *param = (GLint)binding->binding_offset;
+                    *param = (GLint)binding->offset;
                     return;
                 case GL_VERTEX_BINDING_STRIDE:
                     *param = (GLint)binding->stride;
@@ -1114,8 +1113,7 @@ void mglGetVertexArrayIndexed64iv(GLMContext ctx, GLuint vaobj, GLuint index, GL
             return;
         }
 
-        VertexAttrib *binding = mglFindVertexBindingAttrib(ptr, index);
-        *param = binding ? (GLint64)binding->binding_offset : 0;
+        *param = (GLint64)ptr->bindings[index].offset;
         return;
     }
 

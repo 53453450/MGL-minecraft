@@ -66,8 +66,13 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
         ERROR_CHECK_RETURN_VALUE(buf, GL_INVALID_VALUE, false);
     }
 
-    // AGX Driver Compatibility: Store buffer binding information
-    // Find all attributes that use this binding index and update their buffer pointer and stride
+    vao->bindings[bindingindex].buffer = buf;
+    vao->bindings[bindingindex].offset = offset;
+    vao->bindings[bindingindex].stride = stride;
+
+    // Mirror binding state into attributes for the existing Metal path. This
+    // also covers DSA ordering where the binding is established before an
+    // attribute is pointed at that binding index.
     int matched = 0;
     for (int i = 0; i < ctx->state.max_vertex_attribs; i++)
     {
@@ -76,6 +81,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
             vao->attrib[i].buffer = buf;
             vao->attrib[i].stride = stride;
             vao->attrib[i].binding_offset = offset;
+            vao->attrib[i].divisor = vao->bindings[bindingindex].divisor;
             matched++;
         }
     }
@@ -168,7 +174,14 @@ void mglVertexArrayVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindinginde
 
 void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLsizei count, const GLuint *buffers, const GLintptr *offsets, const GLsizei *strides)
 {
-    ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+    if (vaobj)
+    {
+        ERROR_CHECK_RETURN(isVAO(ctx, vaobj), GL_INVALID_OPERATION);
+    }
+    else
+    {
+        ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
+    }
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(first + count <= MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
     if (buffers)

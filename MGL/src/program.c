@@ -192,6 +192,29 @@ static bool mglUniformConstantBaseTypeIsSamplerLike(spvc_basetype basetype)
            basetype == SPVC_BASETYPE_SAMPLER;
 }
 
+static GLint mglKnownPlainUniformLocationForName(const char *name)
+{
+    if (!name || !*name) {
+        return -1;
+    }
+
+    if (!strcmp(name, "ModelViewMat")) return 0;
+    if (!strcmp(name, "ProjMat")) return 1;
+    if (!strcmp(name, "TextureMat")) return 2;
+    if (!strcmp(name, "ColorModulator")) return 3;
+    if (!strcmp(name, "FogStart")) return 4;
+    if (!strcmp(name, "FogEnd")) return 5;
+    if (!strcmp(name, "FogColor")) return 6;
+    if (!strcmp(name, "FogShape")) return 7;
+    if (!strcmp(name, "GameTime")) return 8;
+    if (!strcmp(name, "ScreenSize")) return 9;
+    if (!strcmp(name, "LineWidth")) return 10;
+    if (!strcmp(name, "IViewRotMat")) return 11;
+    if (!strcmp(name, "ChunkOffset")) return 12;
+
+    return -1;
+}
+
 static GLint mglDefaultSamplerUnitForName(const char *name)
 {
     if (!name || !*name) {
@@ -335,6 +358,122 @@ static void mglUnifySamplerUniformLocations(Program *program)
     }
 }
 
+static SpirvResource *mglFindAssignedPlainUniformResource(Program *program, const char *name)
+{
+    if (!program || !name || !*name) {
+        return NULL;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (res->uniform_location < 0 ||
+                mglProgramResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) ||
+                !res->name ||
+                strcmp(res->name, name) != 0) {
+                continue;
+            }
+            return res;
+        }
+    }
+
+    return NULL;
+}
+
+static GLint mglFirstFreePlainUniformLocation(const bool used[MAX_BINDABLE_BUFFERS])
+{
+    for (GLint location = 0; location < MAX_BINDABLE_BUFFERS; location++) {
+        if (!used[location]) {
+            return location;
+        }
+    }
+
+    return -1;
+}
+
+static void mglAssignPlainUniformLocations(Program *program)
+{
+    if (!program) {
+        return;
+    }
+
+    bool used[MAX_BINDABLE_BUFFERS] = {false};
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglProgramResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
+                continue;
+            }
+
+            GLint known = mglKnownPlainUniformLocationForName(res->name);
+            if (known >= 0 && known < MAX_BINDABLE_BUFFERS) {
+                res->uniform_location = known;
+                used[known] = true;
+            } else if (res->uniform_location >= 0 &&
+                       res->uniform_location < MAX_BINDABLE_BUFFERS) {
+                used[res->uniform_location] = true;
+            }
+        }
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglProgramResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
+                continue;
+            }
+            if (res->uniform_location >= 0 &&
+                res->uniform_location < MAX_BINDABLE_BUFFERS) {
+                continue;
+            }
+
+            SpirvResource *assigned = mglFindAssignedPlainUniformResource(program, res->name);
+            if (assigned && assigned->uniform_location >= 0 &&
+                assigned->uniform_location < MAX_BINDABLE_BUFFERS) {
+                res->uniform_location = assigned->uniform_location;
+                continue;
+            }
+
+            GLint preferred = -1;
+            if (res->location < MAX_BINDABLE_BUFFERS && !used[res->location]) {
+                preferred = (GLint)res->location;
+            } else if (res->gl_binding < MAX_BINDABLE_BUFFERS && !used[res->gl_binding]) {
+                preferred = (GLint)res->gl_binding;
+            } else if (res->binding < MAX_BINDABLE_BUFFERS && !used[res->binding]) {
+                preferred = (GLint)res->binding;
+            } else {
+                preferred = mglFirstFreePlainUniformLocation(used);
+            }
+
+            if (preferred < 0) {
+                fprintf(stderr,
+                        "MGL WARNING: no plain uniform location left program=%u name=%s stage=%d\n",
+                        program->name,
+                        res->name ? res->name : "(null)",
+                        stage);
+                continue;
+            }
+
+            res->uniform_location = preferred;
+            used[preferred] = true;
+            fprintf(stderr,
+                    "MGL PLAIN UNIFORM FIX: program=%u stage=%d name=%s loc=%d metal=%u\n",
+                    program->name,
+                    stage,
+                    res->name ? res->name : "(null)",
+                    preferred,
+                    (unsigned)res->binding);
+        }
+    }
+}
+
 static bool mglProgramLooksLikeModernRenderPipeline(Program *program)
 {
     return mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "Projection") ||
@@ -345,13 +484,6 @@ static bool mglProgramLooksLikeModernRenderPipeline(Program *program)
 
 static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res)
 {
-    const bool useNamedSamplerDefaults = false;
-    if (!useNamedSamplerDefaults) {
-        (void)program;
-        (void)res;
-        return 0;
-    }
-
     GLint named_unit = mglDefaultSamplerUnitForName(res ? res->name : NULL);
 
     /*
@@ -369,7 +501,7 @@ static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const Spi
     return named_unit;
 }
 
-static void mglApplyDefaultSamplerUnit(Program *program, int stage, const SpirvResource *res)
+static void mglApplyDefaultSamplerUnit(Program *program, int stage, SpirvResource *res)
 {
     if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES || res->binding >= TEXTURE_UNITS) {
         return;
@@ -382,6 +514,8 @@ static void mglApplyDefaultSamplerUnit(Program *program, int stage, const SpirvR
 
     program->sampler_units_by_stage[stage][res->binding] = unit;
     program->sampler_units[res->binding] = unit;
+    res->sampler_unit = unit;
+    res->sampler_unit_explicit = GL_FALSE;
 }
 
 static bool mglMSLIdentifierChar(char c)
@@ -1553,6 +1687,8 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                 (mglIsSamplerResourceType(res_type) || uniform_constant_sampler_like)
                     ? mglSyntheticSamplerUniformLocation(stage, res_type, (GLuint)i)
                     : -1;
+            ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit = -1;
+            ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit_explicit = GL_FALSE;
             ptr->spirv_resources_list[stage][res_type].list[i].required_size = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_dim = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
@@ -2063,6 +2199,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     applyVertexInputLocations(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
+    mglAssignPlainUniformLocations(pptr);
     mglUnifySamplerUniformLocations(pptr);
 
     /* linked_glsl_program is used as a linked-state marker only. */

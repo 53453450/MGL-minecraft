@@ -2057,14 +2057,17 @@ static BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
 
 static BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
 {
-    if (!program || attribute >= MAX_ATTRIBS) {
-        return YES;
+    if (attribute >= MAX_ATTRIBS) {
+        return NO;
+    }
+    if (!program) {
+        return NO;
     }
 
     SpirvResourceList *inputs =
         &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
     if (!inputs->list || inputs->count == 0) {
-        return YES;
+        return NO;
     }
 
     for (GLuint i = 0; i < inputs->count; i++) {
@@ -2122,7 +2125,9 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         return -1;
     }
 
-    if ((vao->enabled_attribs & (0x1u << attribute)) == 0u) {
+    // In legacy mode, require glEnableVertexAttribArray. In DSA mode (enabled_attribs==0),
+    // Sodium sets up attribs via bindVertexBuffer+attribFormat without calling enable.
+    if (vao->enabled_attribs != 0u && (vao->enabled_attribs & (0x1u << attribute)) == 0u) {
         return -1;
     }
 
@@ -2150,8 +2155,9 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         maxAttribs = MAX_ATTRIBS;
     }
 
+    bool vaoHasExplicitAttribs = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++) {
-        if ((vao->enabled_attribs & (0x1u << i)) == 0u) {
+        if (vaoHasExplicitAttribs && (vao->enabled_attribs & (0x1u << i)) == 0u) {
             continue;
         }
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
@@ -2199,7 +2205,7 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
         }
 
         // Early out once there are no higher enabled attributes.
-        if ((vao->enabled_attribs >> (i + 1)) == 0u) {
+        if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (i + 1)) == 0u) {
             break;
         }
     }
@@ -4447,12 +4453,18 @@ void logDirtyBits(GLMContext ctx)
         //
         // we need to cache this mapping, its called on each draw command
         //
+        bool vaoHasExplicitAttribs = (vao->enabled_attribs != 0u);
         for(int att=0;att<ctx->state.max_vertex_attribs; att++)
         {
-            if (vao->enabled_attribs & (0x1 << att))
+            if (vaoHasExplicitAttribs && !(vao->enabled_attribs & (0x1 << att)))
+            {
+                if ((vao->enabled_attribs >> (att+1)) == 0)
+                    break;
+                continue;
+            }
             {
                 if (!mglRendererProgramUsesVertexAttrib(activeProgram, (GLuint)att)) {
-                    if ((vao->enabled_attribs >> (att+1)) == 0)
+                    if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
                         break;
                     continue;
                 }
@@ -4547,7 +4559,7 @@ void logDirtyBits(GLMContext ctx)
                 }
             }
 
-            if ((vao->enabled_attribs >> (att+1)) == 0)
+            if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
                 break;
         }
 
@@ -4841,14 +4853,14 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
-            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
             continue;
         }
         // When enabled_attribs tracking is empty, fall through if a valid buffer exists
         if (!attribsEnabledByApp && !vao->attrib[attrib].buffer) {
-            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
             continue;
@@ -4863,13 +4875,13 @@ void logDirtyBits(GLMContext ctx)
         attribBindingIndex[attrib] = mappedIndex;
         attribBindingReserved[mappedIndex] = true;
 
-        if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+        if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
             break;
         }
     }
 
     for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
-        BOOL enabled = ((vao->enabled_attribs >> i) & 0x1u) != 0;
+        BOOL enabled = attribsEnabledByApp && ((vao->enabled_attribs >> i) & 0x1u) != 0;
         Buffer *attribBuffer = mglRendererGetValidatedBuffer(ctx, vao->attrib[i].buffer, __FUNCTION__, i);
         GLuint attribBufferName = attribBuffer ? attribBuffer->name : 0;
         if (kMGLVerboseBindLogs) {
@@ -5146,7 +5158,7 @@ void logDirtyBits(GLMContext ctx)
         // When enabled_attribs tracking is empty but the program uses this attribute,
         // fall through and bind if a valid buffer exists (Sodium DSA path compatibility).
         if (!attribsEnabledByApp && !vao->attrib[attrib].buffer) {
-            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
             continue;
@@ -5160,7 +5172,7 @@ void logDirtyBits(GLMContext ctx)
 
         bindingIndex = (NSUInteger)mappedIndex;
         if (anyBindingPresent[bindingIndex]) {
-            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
             continue;
@@ -5222,15 +5234,20 @@ void logDirtyBits(GLMContext ctx)
         GLintptr attrEnd = attrOffset + ((attrSpan > 0) ? attrSpan : 1);
         if (attribBuffer->written_min >= 0 && attribBuffer->written_max >= 0) {
             if (attrOffset < attribBuffer->written_min || attrEnd > attribBuffer->written_max) {
-                NSLog(@"MGL VBIND WARNING draw: attrib=%u buffer=%u attrRange=[%lld,%lld) outside written range [%lld,%lld) (type=0x%x size=%u) - allowing, Sodium arena buffers use sub-ranges",
-                      attrib,
-                      attribBuffer->name,
-                      (long long)attrOffset,
-                      (long long)attrEnd,
-                      (long long)attribBuffer->written_min,
-                      (long long)attribBuffer->written_max,
-                      (unsigned)vao->attrib[attrib].type,
-                      (unsigned)vao->attrib[attrib].size);
+                static uint64_t s_vbindWrittenRangeWarningCount = 0;
+                uint64_t hit = ++s_vbindWrittenRangeWarningCount;
+                if (hit <= 128ull || (hit % 1024ull) == 0ull) {
+                    NSLog(@"MGL VBIND WARNING draw: attrib=%u buffer=%u attrRange=[%lld,%lld) outside written range [%lld,%lld) (type=0x%x size=%u) - allowing, Sodium arena buffers use sub-ranges hit=%llu",
+                          attrib,
+                          attribBuffer->name,
+                          (long long)attrOffset,
+                          (long long)attrEnd,
+                          (long long)attribBuffer->written_min,
+                          (long long)attribBuffer->written_max,
+                          (unsigned)vao->attrib[attrib].type,
+                          (unsigned)vao->attrib[attrib].size,
+                          (unsigned long long)hit);
+                }
                 // Continue instead of blocking: MGL's write tracking uses the union of
                 // all mapped ranges. Sodium arena-allocates large buffers and writes
                 // vertex data at varying sub-range offsets. The Metal backing has the
@@ -5291,7 +5308,7 @@ void logDirtyBits(GLMContext ctx)
                   attribBuffer->data.mtl_data);
         }
 
-        if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+        if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
             break;
         }
     }
@@ -6305,8 +6322,21 @@ void logDirtyBits(GLMContext ctx)
     // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
     tex_desc.cpuCacheMode = MTLCPUCacheModeWriteCombined;  // More stable than DefaultCache
 
-    // CONSERVATIVE: Always use private storage to avoid compression/caching conflicts
-    tex_desc.storageMode = MTLStorageModePrivate;
+    // Use shared storage for textures that need CPU upload (blit/replaceRegion).
+    // Private storage is only safe for pure GPU render targets on Apple Silicon.
+    bool needsCpuUpload = ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0);
+    if (!needsCpuUpload) {
+        for (int f = 0; f < num_faces && !needsCpuUpload; f++) {
+            for (int lvl = 0; lvl < (int)upload_level_count && !needsCpuUpload; lvl++) {
+                if (tex->faces[f].levels[lvl].data &&
+                    tex->faces[f].levels[lvl].data_size > 0 &&
+                    tex->faces[f].levels[lvl].complete) {
+                    needsCpuUpload = true;
+                }
+            }
+        }
+    }
+    tex_desc.storageMode = needsCpuUpload ? MTLStorageModeShared : MTLStorageModePrivate;
 
     // Normalize depth/array semantics per Metal texture type.
     if (tex_type == MTLTextureTypeCube) {
@@ -8167,6 +8197,7 @@ static bool mglIsLightmapSamplerName(const char *name)
     }
 
     const char *sampledName = NULL;
+    SpirvResource *sampledResource = NULL;
     if (stage >= 0 && stage < _MAX_SHADER_TYPES) {
         SpirvResourceList *resources =
             &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
@@ -8174,19 +8205,28 @@ static bool mglIsLightmapSamplerName(const char *name)
             SpirvResource *res = &resources->list[i];
             if (res->binding == metalBinding) {
                 sampledName = res->name;
+                sampledResource = res;
                 break;
             }
         }
     }
 
     /*
-     * Minecraft assigns sampler texture units from the RenderPipeline sampler
-     * list, not from the numeric suffix in names like Sampler2. For example,
-     * chunk rendering declares Sampler0 and Sampler2, so Sampler2 is uploaded
-     * through glUniform1i(..., 1). Trust the captured GL uniform value first;
-     * use semantic names only as a last resort for shaders that never uploaded
-     * a sampler uniform.
+     * Minecraft usually assigns sampler texture units from the RenderPipeline
+     * sampler list, not from numeric suffixes like Sampler2. For example, chunk
+     * rendering declares Sampler0 and Sampler2, so Sampler2 can be uploaded
+     * through glUniform1i(..., 1). Keep sampler units on the exact reflected
+     * resource instead of only the Metal binding: vertex and fragment resources
+     * commonly share binding numbers, and binding-level state can make entity,
+     * hand, and text textures bleed into each other.
      */
+    if (sampledResource &&
+        sampledResource->sampler_unit_explicit &&
+        sampledResource->sampler_unit >= 0 &&
+        sampledResource->sampler_unit < TEXTURE_UNITS) {
+        return (GLuint)sampledResource->sampler_unit;
+    }
+
     bool stageExplicit = (stage >= 0 && stage < _MAX_SHADER_TYPES)
         ? (program->sampler_units_explicit_by_stage[stage][metalBinding] == GL_TRUE)
         : false;
@@ -8195,6 +8235,15 @@ static bool mglIsLightmapSamplerName(const char *name)
     GLint unit = (stage >= 0 && stage < _MAX_SHADER_TYPES)
         ? program->sampler_units_by_stage[stage][metalBinding]
         : program->sampler_units[metalBinding];
+    GLint namedUnit = mglNamedSamplerTextureUnitForProgram(program, sampledName);
+
+    if (sampledResource &&
+        !sampledResource->sampler_unit_explicit &&
+        sampledResource->sampler_unit >= 0 &&
+        sampledResource->sampler_unit < TEXTURE_UNITS) {
+        return (GLuint)sampledResource->sampler_unit;
+    }
+
     if (stageExplicit && unit >= 0 && unit < TEXTURE_UNITS) {
         return (GLuint)unit;
     }
@@ -8218,7 +8267,6 @@ static bool mglIsLightmapSamplerName(const char *name)
      * exactly; otherwise allow stable numeric sampler names to recover the unit
      * that the original GLSL interface advertised.
      */
-    GLint namedUnit = mglNamedSamplerTextureUnitForProgram(program, sampledName);
     if (namedUnit >= 0 && namedUnit < TEXTURE_UNITS) {
         if (defaultUnit < 0 || defaultUnit >= TEXTURE_UNITS || namedUnit != defaultUnit) {
             static uint64_t s_namedSamplerUnitFallbackLogs = 0;
@@ -11695,6 +11743,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
         } else {
             _renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+            static uint64_t s_defaultFboLoadLogCount = 0;
+            uint64_t hit = ++s_defaultFboLoadLogCount;
+            if (hit <= 32ull || (hit % 256ull) == 0ull) {
+                NSLog(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
+                      (unsigned long long)hit,
+                      ctx->state.draw_buffer,
+                      fbo ? (unsigned)fbo->name : 0u);
+            }
         }
 
         if (defaultClearMask & GL_DEPTH_BUFFER_BIT) {
@@ -12868,14 +12924,14 @@ create_new_command_buffer:
             continue;
         }
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
-            if ((vao->enabled_attribs >> (i + 1)) == 0u)
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (i + 1)) == 0u)
                 break;
             continue;
         }
         // When enabled_attribs tracking is empty but the program uses this attribute,
         // validate the buffer and proceed (Sodium DSA path compatibility).
         if (!attribsEnabledByApp && !vao->attrib[i].buffer) {
-            if ((vao->enabled_attribs >> (i + 1)) == 0u)
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (i + 1)) == 0u)
                 break;
             continue;
         }
@@ -12962,8 +13018,9 @@ create_new_command_buffer:
             }
         }
 
-        // early out
-        if ((vao->enabled_attribs >> (i + 1)) == 0u)
+        // Early out only when the app has explicitly enabled attribs (non-DSA path).
+        // In Sodium DSA mode enabled_attribs is 0 so the mask-based check always fails.
+        if (attribsEnabledByApp && (vao->enabled_attribs >> (i + 1)) == 0u)
             break;
     }
 
