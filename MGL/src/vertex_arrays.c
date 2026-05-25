@@ -403,7 +403,6 @@ void setVertexAttrib(GLMContext ctx, GLuint index, GLint size, GLenum type, GLbo
     vao->attrib[index].long_attribute = (type == GL_DOUBLE);
     vao->attrib[index].stride = stride;
     vao->attrib[index].relativeoffset = (GLubyte *)pointer - (GLubyte *)NULL;
-    vao->attrib[index].binding_offset = 0;
 
     // bind current array buffer to attrib
     array_buffer = STATE(buffers[_ARRAY_BUFFER]);

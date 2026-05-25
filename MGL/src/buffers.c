@@ -1535,7 +1535,7 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
     ptr->index = index;
     ptr->target = target;
     ptr->usage = usage;
-    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_DYNAMIC_STORAGE_BIT;
+    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_DYNAMIC_STORAGE_BIT;
 
     if (trace) {
         const void *dst_data = (const void *)(uintptr_t)ptr->data.buffer_data;
@@ -1596,7 +1596,7 @@ void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const vo
 
     // init fields local to buffer data
     ptr->usage = usage;
-    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_DYNAMIC_STORAGE_BIT;
+    ptr->storage_flags = GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_DYNAMIC_STORAGE_BIT;
 }
 
 void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr size, const void *data)
@@ -2665,6 +2665,9 @@ void mglFlushMappedBufferRange(GLMContext ctx, GLenum target, GLintptr offset, G
             ERROR_RETURN(GL_INVALID_OPERATION);
         }
         ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, offset, length);
+        mglBufferMarkWrite(ptr, kInitMapWrite, offset, length,
+                           (const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset,
+                           mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset, (size_t)length));
     }
     else
     {

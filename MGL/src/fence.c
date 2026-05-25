@@ -173,64 +173,53 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
     {
         // CRITICAL FIX: Handle invalid sync gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Invalid sync object %p passed to get sync iv\n", sync);
+        if (length) *length = 0;
         return;
     }
 
-    // CRITICAL FIX: Add parameter validation with graceful handling
+    // CRITICAL FIX: count is the number of elements the caller allocated in values.
+    // Per OpenGL spec, only one value is returned per pname. length is an OUTPUT parameter.
     if (!count || count < 0) {
         fprintf(stderr, "MGL ERROR: Invalid count %d in get sync iv\n", count);
-        return;
-    }
-    if (!length) {
-        fprintf(stderr, "MGL ERROR: NULL length pointer in get sync iv\n");
+        if (length) *length = 0;
         return;
     }
     if (!values) {
         fprintf(stderr, "MGL ERROR: NULL values pointer in get sync iv\n");
+        if (length) *length = 0;
         return;
     }
 
-    if (*length < count * sizeof(GLuint))
+    // Only write one value per pname per the OpenGL spec
+    switch(pname)
     {
-        // CRITICAL FIX: Handle insufficient buffer size gracefully
-        fprintf(stderr, "MGL ERROR: Insufficient buffer size %d for %d values in get sync iv\n", *length, count);
-        *length = count * sizeof(GLuint);
-        return;
+        case GL_OBJECT_TYPE:
+            *values = GL_SYNC_FENCE;
+            break;
+
+        case GL_SYNC_STATUS:
+            if (sync->mtl_event)
+                *values = GL_UNSIGNALED;
+            else
+                *values = GL_SIGNALED;
+            break;
+
+        case GL_SYNC_CONDITION:
+            *values = GL_SYNC_GPU_COMMANDS_COMPLETE;
+            break;
+
+        case GL_SYNC_FLAGS:
+            *values = 0;
+            break;
+
+        default:
+            // CRITICAL FIX: Handle unknown sync parameters gracefully instead of crashing
+            fprintf(stderr, "MGL ERROR: Unknown sync parameter 0x%x in get sync iv\n", pname);
+            *values = 0;
+            break;
     }
 
-    while(count--)
-    {
-        switch(pname)
-        {
-            case GL_OBJECT_TYPE:
-                *values = GL_SYNC_FENCE;
-                break;
-
-            case GL_SYNC_STATUS:
-                if (sync->mtl_event)
-                    *values = GL_UNSIGNALED;
-                else
-                    *values = GL_SIGNALED;
-                break;
-
-            case GL_SYNC_CONDITION:
-                if (sync->mtl_event == NULL)
-                    *values = GL_SYNC_GPU_COMMANDS_COMPLETE;
-                break;
-
-            case GL_SYNC_FLAGS:
-                *values = 0;
-                break;
-
-            default:
-                // CRITICAL FIX: Handle unknown sync parameters gracefully instead of crashing
-                fprintf(stderr, "MGL ERROR: Unknown sync parameter 0x%x in get sync iv\n", pname);
-                *values = 0; // Return safe default value
-                break;
-        }
-
-        values++;
-    }
+    if (length) *length = 1;
 }
 
 void mglTextureBarrier(GLMContext ctx)

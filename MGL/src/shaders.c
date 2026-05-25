@@ -809,7 +809,7 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
             break;
 
         case GL_INFO_LOG_LENGTH:
-            *params = (GLint)strlen(ptr->log);
+            *params = ptr->log ? (GLint)strlen(ptr->log) : 0;
             break;
 
         case GL_SHADER_SOURCE_LENGTH:
@@ -864,7 +864,7 @@ void mglGetShaderSource(GLMContext ctx, GLuint shader, GLsizei bufSize, GLsizei 
 
         if (source)
         {
-            if (bufSize >= strlen(ptr->log))
+            if (bufSize >= (GLsizei)ptr->src_len)
             {
                 memcpy(source, ptr->src, ptr->src_len);
             }

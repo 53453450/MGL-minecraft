@@ -46,6 +46,12 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
         ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_VALUE, false);
     }
 
+    static int s_bindVBCallCount = 0;
+    if (++s_bindVBCallCount <= 32 || (s_bindVBCallCount % 256 == 0)) {
+        fprintf(stderr, "MGL DIAG BindVertexBuffer #%d vaobj=%u binding=%u buffer=%u offset=%lld stride=%d vao=%p maxAttribs=%u\n",
+                s_bindVBCallCount, vaobj, bindingindex, buffer, (long long)offset, (int)stride, vao, ctx->state.max_vertex_attribs);
+    }
+
     ERROR_CHECK_RETURN_VALUE(offset >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(stride >= 0, GL_INVALID_VALUE, false);
 
@@ -62,6 +68,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
 
     // AGX Driver Compatibility: Store buffer binding information
     // Find all attributes that use this binding index and update their buffer pointer and stride
+    int matched = 0;
     for (int i = 0; i < ctx->state.max_vertex_attribs; i++)
     {
         if (vao->attrib[i].buffer_bindingindex == bindingindex)
@@ -69,7 +76,12 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
             vao->attrib[i].buffer = buf;
             vao->attrib[i].stride = stride;
             vao->attrib[i].binding_offset = offset;
+            matched++;
         }
+    }
+    if (matched == 0) {
+        fprintf(stderr, "MGL DIAG BindVertexBuffer bindingindex=%u buffer=%u offset=%lld stride=%d maxAttribs=%u NO_MATCH\n",
+                bindingindex, buffer, (long long)offset, (int)stride, ctx->state.max_vertex_attribs);
     }
 
     vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;

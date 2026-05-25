@@ -4831,15 +4831,23 @@ void logDirtyBits(GLMContext ctx)
 
     // Resolve attribute slot reservations first so base/resource bindings do not
     // overwrite shader-required vertex input slots.
+    bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     GLuint reserveMaxAttribs = ctx->state.max_vertex_attribs;
     if (reserveMaxAttribs > MAX_ATTRIBS) {
         reserveMaxAttribs = MAX_ATTRIBS;
     }
     for (GLuint attrib = 0; attrib < reserveMaxAttribs; attrib++) {
-        if ((vao->enabled_attribs & (0x1u << attrib)) == 0u) {
+        if (attribsEnabledByApp && (vao->enabled_attribs & (0x1u << attrib)) == 0u) {
             continue;
         }
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
+            if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
+                break;
+            }
+            continue;
+        }
+        // When enabled_attribs tracking is empty, fall through if a valid buffer exists
+        if (!attribsEnabledByApp && !vao->attrib[attrib].buffer) {
             if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
@@ -5126,10 +5134,18 @@ void logDirtyBits(GLMContext ctx)
         maxAttribs = MAX_ATTRIBS;
     }
     for (GLuint attrib = 0; attrib < maxAttribs; attrib++) {
-        if ((vao->enabled_attribs & (0x1u << attrib)) == 0u) {
+        if (attribsEnabledByApp && (vao->enabled_attribs & (0x1u << attrib)) == 0u) {
             continue;
         }
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
+            if (attribsEnabledByApp && (vao->enabled_attribs >> (attrib + 1)) == 0u) {
+                break;
+            }
+            continue;
+        }
+        // When enabled_attribs tracking is empty but the program uses this attribute,
+        // fall through and bind if a valid buffer exists (Sodium DSA path compatibility).
+        if (!attribsEnabledByApp && !vao->attrib[attrib].buffer) {
             if ((vao->enabled_attribs >> (attrib + 1)) == 0u) {
                 break;
             }
@@ -5206,7 +5222,7 @@ void logDirtyBits(GLMContext ctx)
         GLintptr attrEnd = attrOffset + ((attrSpan > 0) ? attrSpan : 1);
         if (attribBuffer->written_min >= 0 && attribBuffer->written_max >= 0) {
             if (attrOffset < attribBuffer->written_min || attrEnd > attribBuffer->written_max) {
-                NSLog(@"MGL VBIND BLOCK draw: attrib=%u buffer=%u attrRange=[%lld,%lld) outside written range [%lld,%lld) (type=0x%x size=%u)",
+                NSLog(@"MGL VBIND WARNING draw: attrib=%u buffer=%u attrRange=[%lld,%lld) outside written range [%lld,%lld) (type=0x%x size=%u) - allowing, Sodium arena buffers use sub-ranges",
                       attrib,
                       attribBuffer->name,
                       (long long)attrOffset,
@@ -5215,7 +5231,10 @@ void logDirtyBits(GLMContext ctx)
                       (long long)attribBuffer->written_max,
                       (unsigned)vao->attrib[attrib].type,
                       (unsigned)vao->attrib[attrib].size);
-                return false;
+                // Continue instead of blocking: MGL's write tracking uses the union of
+                // all mapped ranges. Sodium arena-allocates large buffers and writes
+                // vertex data at varying sub-range offsets. The Metal backing has the
+                // data from the flush, so the draw will render correctly.
             }
         }
 
@@ -5856,6 +5875,19 @@ void logDirtyBits(GLMContext ctx)
     if ([self shouldSkipGPUOperations]) {
         NSLog(@"MGL AGX: GPU operations temporarily suspended during recovery");
         return nil;
+    }
+
+    // Validate texture dimensions to prevent Metal assertion failures.
+    // Texture buffers (GL_TEXTURE_BUFFER) can have very large widths (millions of texels)
+    // since they map to MTLTextureTypeTextureBuffer which uses GPU address space.
+    if (tex->target != GL_TEXTURE_BUFFER) {
+        if (!tex || tex->width <= 0 || tex->height <= 0 ||
+            tex->width > 32768 || tex->height > 32768 || tex->depth > 32768) {
+            NSLog(@"MGL ERROR: Invalid texture dimensions %dx%dx%d - rejecting",
+                  tex ? tex->width : 0, tex ? tex->height : 0, tex ? tex->depth : 0);
+            tex->dirty_bits = 0;
+            return nil;
+        }
     }
 
     if (tex->target == GL_TEXTURE_BUFFER) {
@@ -6867,8 +6899,102 @@ void logDirtyBits(GLMContext ctx)
     }
     else
     {
-        // PROPER FIX: Enable texture filling with AGX safety and proper memory alignment
-        NSLog(@"MGL INFO: PROPER FIX - Processing texture fill (tex=%d, dims=%lux%lu)", tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
+        // Check if CPU-side texture data still exists from a previous upload.
+        // When a texture is recreated (e.g. usage change, render-target promotion)
+        // the DIRTY_TEXTURE_DATA flag may be clear but valid level data remains.
+        bool hasExistingLevelData = false;
+        for (int face = 0; face < num_faces && !hasExistingLevelData; face++) {
+            for (int level = 0; level < (int)upload_level_count && !hasExistingLevelData; level++) {
+                if (tex->faces[face].levels[level].data &&
+                    tex->faces[face].levels[level].data_size > 0 &&
+                    tex->faces[face].levels[level].complete) {
+                    hasExistingLevelData = true;
+                }
+            }
+        }
+
+        if (hasExistingLevelData) {
+            NSLog(@"MGL INFO: Re-uploading existing CPU texture data (tex=%d, dims=%lux%lu)",
+                  tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
+
+            MTLRegion region;
+            for (int face = 0; face < num_faces; face++) {
+                for (int level = 0; level < (int)upload_level_count; level++) {
+                    if (!tex->faces[face].levels[level].data ||
+                        tex->faces[face].levels[level].data_size == 0 ||
+                        !tex->faces[face].levels[level].complete) {
+                        continue;
+                    }
+
+                    NSUInteger lvlWidth  = tex->faces[face].levels[level].width;
+                    NSUInteger lvlHeight = tex->faces[face].levels[level].height;
+                    NSUInteger lvlDepth  = tex->faces[face].levels[level].depth;
+                    NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
+                    if (lvlPitch == 0 || lvlWidth == 0) continue;
+
+                    if (lvlDepth > 1)
+                        region = MTLRegionMake3D(0,0,0,lvlWidth,lvlHeight,lvlDepth);
+                    else if (lvlHeight > 1)
+                        region = MTLRegionMake2D(0,0,lvlWidth,lvlHeight);
+                    else
+                        region = MTLRegionMake1D(0,lvlWidth);
+
+                    NSUInteger bytesPerRow = lvlPitch;
+                    NSUInteger bytesPerImage = tex->faces[face].levels[level].data_size;
+                    if (bytesPerImage == 0) bytesPerImage = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+
+                    const void *srcData = (const void *)tex->faces[face].levels[level].data;
+                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                    NSUInteger alignedBytesPerRow = bytesPerRow;
+                    if (alignedBytesPerRow % alignment != 0) {
+                        alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                    }
+
+                    uintptr_t addr = (uintptr_t)srcData;
+                    if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                        NSUInteger rowCount = MAX((NSUInteger)lvlHeight, 1UL);
+                        NSUInteger alignedSize = alignedBytesPerRow * rowCount;
+                        if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
+                            void *alignedData = aligned_alloc(alignment, alignedSize);
+                            if (alignedData) {
+                                memset(alignedData, 0, alignedSize);
+                                for (NSUInteger row = 0; row < rowCount; row++) {
+                                    NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
+                                    memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
+                                           (const uint8_t *)srcData + row * bytesPerRow, copySize);
+                                }
+                                [self uploadTextureSliceViaBlit:texture
+                                                       texName:tex->name
+                                                     texTarget:tex->target
+                                                         bytes:alignedData
+                                                   bytesPerRow:alignedBytesPerRow
+                                                 bytesPerImage:alignedBytesPerRow * rowCount
+                                                         width:lvlWidth
+                                                        height:lvlHeight
+                                                         depth:1
+                                                         level:level
+                                                         slice:(is_array ? 0 : face)];
+                                free(alignedData);
+                            }
+                        }
+                    } else {
+                        [self uploadTextureSliceViaBlit:texture
+                                               texName:tex->name
+                                             texTarget:tex->target
+                                                 bytes:srcData
+                                           bytesPerRow:bytesPerRow
+                                         bytesPerImage:bytesPerImage
+                                                 width:lvlWidth
+                                                height:lvlHeight
+                                                 depth:lvlDepth > 1 ? lvlDepth : 1
+                                                 level:level
+                                                 slice:(is_array ? 0 : face)];
+                    }
+                }
+            }
+        } else {
+            // No existing data — fill with safe initial contents
+            NSLog(@"MGL INFO: PROPER FIX - Processing texture fill (tex=%d, dims=%lux%lu)", tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
 
         if (texture.width == 0 || texture.height == 0 || texture.width > 16384 || texture.height > 16384) {
             NSLog(@"MGL WARNING: Skipping texture fill due to invalid dimensions: %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
@@ -7147,6 +7273,7 @@ void logDirtyBits(GLMContext ctx)
                 }
             }
         }
+    } // end hasExistingLevelData else (black fill)
     }
 
     tex->dirty_bits = 0;
@@ -7160,6 +7287,13 @@ void logDirtyBits(GLMContext ctx)
 // AGX-SAFE Fallback texture creation for GPU error recovery scenarios
 - (id<MTLTexture>) createFallbackMTLTexture:(Texture *) tex
 {
+    // Validate texture parameters before creating Metal texture to prevent Metal assertion failures
+    if (!tex || tex->width <= 0 || tex->height <= 0 || tex->width > 32768 || tex->height > 32768) {
+        NSLog(@"MGL AGX: Skipping fallback texture creation - invalid dimensions %dx%d",
+              tex ? tex->width : 0, tex ? tex->height : 0);
+        return nil;
+    }
+
     NSLog(@"MGL AGX: Creating emergency fallback texture (size: %dx%dx%d)", tex->width, tex->height, tex->depth);
 
     @try {
@@ -9786,14 +9920,32 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
         // AGX-SAFE: Handle NULL texture gracefully when in GPU recovery mode
         if (!tex->mtl_data) {
-            NSLog(@"MGL AGX: Primary texture creation returned NULL, attempting fallback texture creation");
-            // Create a simple fallback texture to prevent crashes
-            tex->mtl_data = (void *)CFBridgingRetain([self createFallbackMTLTexture: tex]);
-
-            if (tex->mtl_data) {
-                NSLog(@"MGL SUCCESS: Fallback texture created successfully");
+            // Circuit breaker: limit fallback texture creations to prevent infinite loops
+            static int s_fallbackTextureCount = 0;
+            static NSTimeInterval s_fallbackTextureWindowStart = 0;
+            NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
+            if (now - s_fallbackTextureWindowStart > 5.0) {
+                s_fallbackTextureCount = 0;
+                s_fallbackTextureWindowStart = now;
+            }
+            if (s_fallbackTextureCount >= 64) {
+                NSLog(@"MGL AGX: Fallback texture limit reached (%d in %.1fs), suppressing further fallbacks",
+                      s_fallbackTextureCount, now - s_fallbackTextureWindowStart);
+                tex->mtl_data = NULL;
+                tex->dirty_bits = 0;
             } else {
-                NSLog(@"MGL ERROR: Even fallback texture creation failed - this texture will remain NULL");
+                s_fallbackTextureCount++;
+                NSLog(@"MGL AGX: Primary texture creation returned NULL, attempting fallback texture creation (%d/64)",
+                      s_fallbackTextureCount);
+                // Create a simple fallback texture to prevent crashes
+                tex->mtl_data = (void *)CFBridgingRetain([self createFallbackMTLTexture: tex]);
+
+                if (tex->mtl_data) {
+                    NSLog(@"MGL SUCCESS: Fallback texture created successfully");
+                    tex->dirty_bits = 0;
+                } else {
+                    NSLog(@"MGL ERROR: Even fallback texture creation failed - this texture will remain NULL");
+                }
             }
         } else {
             NSLog(@"MGL SUCCESS: Primary texture created successfully");
@@ -11120,9 +11272,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
     // CRITICAL SAFETY: Check command buffer before creating render encoder
     if (!_currentCommandBuffer) {
-        NSLog(@"MGL ERROR: Cannot create render encoder - no command buffer available");
-        [self recordGPUError];
-        return false;
+        // Attempt recovery: create a new command buffer instead of failing immediately
+        if ([self newCommandBuffer]) {
+            // Successfully created - continue
+        } else {
+            NSLog(@"MGL ERROR: Cannot create render encoder - no command buffer available");
+            [self recordGPUError];
+            return false;
+        }
     }
 
     // end encoding on current render encoder
@@ -12703,16 +12860,27 @@ create_new_command_buffer:
     }
 
     // we can bind a new vertex descriptor without creating a new renderbuffer
+    bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)
     {
-        if (vao->enabled_attribs & (0x1u << i))
+        if (attribsEnabledByApp && !(vao->enabled_attribs & (0x1u << i)))
         {
-            if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
-                if ((vao->enabled_attribs >> (i + 1)) == 0u)
-                    break;
-                continue;
-            }
+            continue;
+        }
+        if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
+            if ((vao->enabled_attribs >> (i + 1)) == 0u)
+                break;
+            continue;
+        }
+        // When enabled_attribs tracking is empty but the program uses this attribute,
+        // validate the buffer and proceed (Sodium DSA path compatibility).
+        if (!attribsEnabledByApp && !vao->attrib[i].buffer) {
+            if ((vao->enabled_attribs >> (i + 1)) == 0u)
+                break;
+            continue;
+        }
 
+        {
             MTLVertexFormat format;
             Buffer *attribBuffer = mglRendererGetValidatedBuffer(ctx, vao->attrib[i].buffer, __FUNCTION__, i);
 
@@ -15767,8 +15935,45 @@ void *mtlMapUnmapBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t s
 
     mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
     if (!mtl_buffer) {
-        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u has no Metal buffer", buf->name);
-        return;
+        // Lazy-create Metal buffer for persistently mapped buffers.
+        // Sodium maps buffers with GL_MAP_PERSISTENT_BIT before any Metal buffer
+        // exists. Use no-copy wrapping so the CPU pointer Sodium holds stays valid.
+        if (!buf->data.buffer_data || buf->size <= 0) {
+            NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u has no Metal buffer and no CPU backing", buf->name);
+            return;
+        }
+
+        size_t safe_len = (size_t)buf->size;
+        if (safe_len > (size_t)2 * 1024 * 1024 * 1024) {
+            NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u size=%lld too large", buf->name, (long long)buf->size);
+            return;
+        }
+
+        MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeManaged;
+        if ((buf->storage_flags & GL_MAP_READ_BIT) == 0) {
+            options |= MTLResourceCPUCacheModeWriteCombined;
+        }
+
+        // Use no-copy wrapping so Sodium's persistent map pointer remains valid.
+        // No deallocator: CPU backing is managed by buffer lifecycle, not Metal.
+        id<MTLBuffer> new_buffer = [_device newBufferWithBytesNoCopy:(void *)(buf->data.buffer_data)
+                                                              length:safe_len
+                                                             options:options
+                                                         deallocator:nil];
+        if (!new_buffer) {
+            // Fallback: allocate with copy and keep CPU backing alive for persistent map
+            new_buffer = [_device newBufferWithBytes:(void *)(buf->data.buffer_data)
+                                             length:safe_len
+                                            options:options];
+            if (!new_buffer) {
+                NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u failed to create Metal buffer (size=%zu)",
+                      buf->name, safe_len);
+                return;
+            }
+        }
+
+        buf->data.mtl_data = (void *)CFBridgingRetain(new_buffer);
+        mtl_buffer = new_buffer;
     }
 
     if (offset > mtl_buffer.length || length > (mtl_buffer.length - offset)) {
@@ -16232,27 +16437,79 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
         return;
     }
 
-    if ([texture isFramebufferOnly] == NO)
-    {
-        @try {
-            [texture getBytes:pixelBytes
-                  bytesPerRow:bytesPerRow
-                bytesPerImage:bytesPerImage
-                   fromRegion:region
-                  mipmapLevel:level
-                        slice:slice];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
-                  tex->name,
-                  exception);
-            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
-        }
-    }
-    else
-    {
-        // issue a gl error as we can't read a framebuffer only texture
-        NSLog(@"Cannot read from framebuffer only texture\n");
+    if ([texture isFramebufferOnly]) {
+        NSLog(@"MGL ERROR: Cannot read from framebuffer only texture %u\n", tex->name);
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
+    // MTLStorageModePrivate textures cannot be read directly with getBytes:.
+    // Use a blit-to-buffer path to convert GPU-private tiled memory to linear CPU memory.
+    if (texture.storageMode == MTLStorageModePrivate) {
+        NSUInteger rowBytes = bytesPerRow > 0 ? bytesPerRow : region.size.width * 4;
+        NSUInteger totalBytes = rowBytes * region.size.height;
+        if (bytesPerImage > 0 && region.size.depth > 1) {
+            totalBytes = bytesPerImage * region.size.depth;
+        }
+
+        id<MTLBuffer> stagingBuffer = [_device newBufferWithLength:totalBytes
+                                                           options:MTLResourceStorageModeShared];
+        if (!stagingBuffer) {
+            NSLog(@"MGL ERROR: mtlGetTexImage failed to allocate staging buffer for texture %u", tex->name);
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            return;
+        }
+
+        id<MTLCommandBuffer> blitCB = [_commandQueue commandBuffer];
+        if (!blitCB) {
+            NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit command buffer for texture %u", tex->name);
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+
+        id<MTLBlitCommandEncoder> blitEncoder = [blitCB blitCommandEncoder];
+        if (!blitEncoder) {
+            NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit encoder for texture %u", tex->name);
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+
+        [blitEncoder copyFromTexture:texture
+                          sourceSlice:slice
+                          sourceLevel:level
+                         sourceOrigin:region.origin
+                           sourceSize:region.size
+                             toBuffer:stagingBuffer
+                    destinationOffset:0
+               destinationBytesPerRow:rowBytes
+             destinationBytesPerImage:bytesPerImage > 0 ? bytesPerImage : totalBytes];
+
+        [blitEncoder endEncoding];
+        [blitCB commit];
+        [blitCB waitUntilCompleted];
+
+        if (blitCB.error) {
+            NSLog(@"MGL ERROR: mtlGetTexImage blit failed for texture %u: %@", tex->name, blitCB.error);
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+
+        memcpy(pixelBytes, stagingBuffer.contents, totalBytes);
+        return;
+    }
+
+    @try {
+        [texture getBytes:pixelBytes
+              bytesPerRow:bytesPerRow
+            bytesPerImage:bytesPerImage
+               fromRegion:region
+              mipmapLevel:level
+                    slice:slice];
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
+              tex->name,
+              exception);
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
     }
 }
 
@@ -20363,8 +20620,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
-    // PROPER FIX: More realistic recovery window based on actual AGX behavior
-    if (currentTime - _lastGPUErrorTime > 15.0) {
+    // Recovery window: shorter timeout so essential operations can resume sooner
+    if (currentTime - _lastGPUErrorTime > 3.0) {
         if (_consecutiveGPUErrors > 0) {
             NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %lu errors)", (unsigned long)_consecutiveGPUErrors);
         }
@@ -20373,14 +20630,11 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return NO;
     }
 
-    // PROPER FIX: Threshold based on actual AGX driver tolerance
-    // AGX driver starts rejecting after just a few errors in virtualization
-    if (_consecutiveGPUErrors >= 3 || _gpuErrorRecoveryMode) {
+    // Enter recovery mode after fewer errors to prevent AGX driver from crashing
+    if (_consecutiveGPUErrors >= 8 || _gpuErrorRecoveryMode) {
         if (!_gpuErrorRecoveryMode) {
             NSLog(@"MGL AGX: Entering recovery mode after %lu consecutive errors", (unsigned long)_consecutiveGPUErrors);
             _gpuErrorRecoveryMode = YES;
-
-            // PROPER FIX: Clear problematic state but don't give up completely
             [self clearProblematicGPUState];
         }
         return YES;

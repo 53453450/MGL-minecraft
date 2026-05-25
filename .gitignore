@@ -16,3 +16,4 @@ external/glslang/
 *.dylib
 *.dylib
 *.dylib
+/claude

@@ -199,7 +199,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_STENCIL_BACK_FAIL,&glm_ctx->state.var.stencil_back_fail);
     glGetIntegerv(GL_STENCIL_BACK_PASS_DEPTH_FAIL,&glm_ctx->state.var.stencil_back_pass_depth_fail);
     glGetIntegerv(GL_STENCIL_BACK_PASS_DEPTH_PASS,&glm_ctx->state.var.stencil_back_pass_depth_pass);
-    glGetIntegerv(GL_MAX_DRAW_BUFFERS,&glm_ctx->state.var.max_draw_buffers);
+    glm_ctx->state.var.max_draw_buffers = 8; // OpenGL minimum; MGL supports up to MAX_COLOR_ATTACHMENTS
     glGetIntegerv(GL_BLEND_EQUATION_ALPHA,&glm_ctx->state.var.blend_equation_alpha[0]);
     if (glm_ctx->state.var.blend_src_rgb[0] == GL_ZERO &&
         glm_ctx->state.var.blend_src_alpha[0] == GL_ZERO) {
@@ -234,13 +234,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.color_writemask[0][2] = GL_TRUE;
         glm_ctx->state.var.color_writemask[0][3] = GL_TRUE;
     }
-    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS,&glm_ctx->state.max_vertex_attribs);
-    glGetIntegerv(GL_MAX_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_texture_image_units);
-    glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_fragment_uniform_components);
-    glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_vertex_uniform_components);
-    glGetIntegerv(GL_MAX_VARYING_FLOATS,&glm_ctx->state.var.max_varying_floats);
-    glGetIntegerv(GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_vertex_texture_image_units);
-    glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_combined_texture_image_units);
+    glm_ctx->state.max_vertex_attribs = 32; // OpenGL minimum is 16; MGL supports up to MAX_ATTRIBS
+    glm_ctx->state.var.max_texture_image_units = 32; // OpenGL minimum 16; Metal supports more
+    glm_ctx->state.var.max_fragment_uniform_components = 4096;
+    glm_ctx->state.var.max_vertex_uniform_components = 4096;
+    glm_ctx->state.var.max_varying_floats = 64;
+    glm_ctx->state.var.max_vertex_texture_image_units = 32;
+    glm_ctx->state.var.max_combined_texture_image_units = 192;
     glGetIntegerv(GL_CURRENT_PROGRAM,&glm_ctx->state.var.current_program);
     glGetIntegerv(GL_STENCIL_BACK_REF,&glm_ctx->state.var.stencil_back_ref);
     glGetIntegerv(GL_STENCIL_BACK_VALUE_MASK,&glm_ctx->state.var.stencil_back_value_mask);
