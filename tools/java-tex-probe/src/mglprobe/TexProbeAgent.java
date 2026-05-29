@@ -1,8 +1,11 @@
 package mglprobe;
 
+import java.io.FileOutputStream;
+import java.io.PrintStream;
 import java.lang.instrument.ClassFileTransformer;
 import java.lang.instrument.Instrumentation;
 import java.security.ProtectionDomain;
+import java.util.jar.JarFile;
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassVisitor;
 import org.objectweb.asm.ClassWriter;
@@ -11,8 +14,123 @@ import org.objectweb.asm.Opcodes;
 
 public final class TexProbeAgent {
     public static void premain(String args, Instrumentation inst) {
-        System.err.println("MGLJ TEXPROBE agent loaded args=" + args);
+        install("premain", args, inst, false);
+    }
+
+    public static void agentmain(String args, Instrumentation inst) {
+        install("agentmain", args, inst, true);
+    }
+
+    private static synchronized void install(String phase, String args, Instrumentation inst, boolean retransformLoaded) {
+        applyArgs(args);
+        exposeRuntimeToBootstrap(inst);
+        log("MGLJ TEXPROBE agent loaded args=" + args
+                + " phase=" + phase
+                + " command=" + System.getProperty("sun.java.command", "-"));
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override
+            public void uncaughtException(Thread thread, Throwable error) {
+                log("MGLJ TEXPROBE uncaught thread=" + thread.getName() + " error=" + error, error);
+            }
+        });
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                log("MGLJ TEXPROBE shutdown");
+            }
+        }, "mgl-tex-probe-shutdown"));
         inst.addTransformer(new Transformer(), false);
+        if (retransformLoaded && inst.isRetransformClassesSupported()) {
+            retransformIfLoaded(inst);
+        }
+    }
+
+    private static void exposeRuntimeToBootstrap(Instrumentation inst) {
+        String path = System.getProperty("mgl.texprobe.agentJar",
+                System.getProperty("mgl.texprobe.agent"));
+        if (path == null || path.isEmpty()) {
+            return;
+        }
+        try {
+            inst.appendToBootstrapClassLoaderSearch(new JarFile(path));
+            log("MGLJ TEXPROBE bootstrap append " + path);
+        } catch (Throwable t) {
+            log("MGLJ TEXPROBE bootstrap append failed path=" + path + " error=" + t, t);
+        }
+    }
+
+    private static void applyArgs(String args) {
+        if (args == null || args.trim().isEmpty()) {
+            return;
+        }
+        String[] entries = args.split("[,;]");
+        for (String entry : entries) {
+            int eq = entry.indexOf('=');
+            if (eq <= 0) {
+                continue;
+            }
+            String key = entry.substring(0, eq).trim();
+            String value = entry.substring(eq + 1).trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            if (!key.startsWith("mgl.texprobe.")) {
+                key = "mgl.texprobe." + key;
+            }
+            System.setProperty(key, value);
+        }
+    }
+
+    private static void retransformIfLoaded(Instrumentation inst) {
+        for (Class<?> klass : inst.getAllLoadedClasses()) {
+            String name = klass.getName();
+            if (!"org.lwjgl.opengl.GL11C".equals(name)
+                    && !"org.lwjgl.opengl.GL12C".equals(name)
+                    && !"org.lwjgl.opengl.GL45C".equals(name)) {
+                continue;
+            }
+            try {
+                if (inst.isModifiableClass(klass)) {
+                    log("MGLJ TEXPROBE retransform " + name);
+                    inst.retransformClasses(klass);
+                } else {
+                    log("MGLJ TEXPROBE cannot retransform " + name + " modifiable=false");
+                }
+            } catch (Throwable t) {
+                log("MGLJ TEXPROBE retransform failed class=" + name + " error=" + t, t);
+            }
+        }
+    }
+
+    private static synchronized void log(String message) {
+        String path = System.getProperty("mgl.texprobe.log",
+                System.getProperty("user.home") + "/Documents/java-tex-probe.log");
+        try {
+            PrintStream out = new PrintStream(new FileOutputStream(path, true), true, "UTF-8");
+            try {
+                out.println(message);
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
+            // Keep the launcher protocol clean even if the side log cannot be opened.
+        }
+    }
+
+    private static synchronized void log(String message, Throwable error) {
+        String path = System.getProperty("mgl.texprobe.log",
+                System.getProperty("user.home") + "/Documents/java-tex-probe.log");
+        try {
+            PrintStream out = new PrintStream(new FileOutputStream(path, true), true, "UTF-8");
+            try {
+                out.println(message);
+                error.printStackTrace(out);
+            } finally {
+                out.close();
+            }
+        } catch (Throwable ignored) {
+            // Keep the launcher protocol clean even if the side log cannot be opened.
+        }
     }
 
     static final class Transformer implements ClassFileTransformer {
@@ -66,11 +184,10 @@ public final class TexProbeAgent {
                     }
                 };
                 cr.accept(cv, 0);
-                System.err.println("MGLJ TEXPROBE transformed " + className);
+                log("MGLJ TEXPROBE transformed " + className);
                 return cw.toByteArray();
             } catch (Throwable t) {
-                System.err.println("MGLJ TEXPROBE transform failed class=" + className + " error=" + t);
-                t.printStackTrace(System.err);
+                log("MGLJ TEXPROBE transform failed class=" + className + " error=" + t, t);
                 return null;
             }
         }

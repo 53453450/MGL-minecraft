@@ -234,6 +234,62 @@ static void mgl_upgrade_version_for_bindings(char *src)
     }
 }
 
+static int mgl_is_identifier_char(int c)
+{
+    return c == '_' || isalnum((unsigned char)c);
+}
+
+static void mgl_replace_glsl_identifier_with_shorter(char *src,
+                                                     const char *needle,
+                                                     const char *replacement)
+{
+    size_t needle_len;
+    size_t replacement_len;
+    char *cursor;
+
+    if (!src || !needle || !replacement) {
+        return;
+    }
+
+    needle_len = strlen(needle);
+    replacement_len = strlen(replacement);
+    if (needle_len == 0 || replacement_len > needle_len) {
+        return;
+    }
+
+    cursor = src;
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        int before = cursor == src ? 0 : cursor[-1];
+        int after = cursor[needle_len];
+        if (mgl_is_identifier_char(before) || mgl_is_identifier_char(after)) {
+            cursor += needle_len;
+            continue;
+        }
+
+        memcpy(cursor, replacement, replacement_len);
+        if (replacement_len < needle_len) {
+            memmove(cursor + replacement_len,
+                    cursor + needle_len,
+                    strlen(cursor + needle_len) + 1);
+        }
+        cursor += replacement_len;
+    }
+}
+
+static void mgl_downgrade_derivative_control_intrinsics(char *src)
+{
+    if (!src || (!strstr(src, "Fine") && !strstr(src, "Coarse"))) {
+        return;
+    }
+
+    mgl_replace_glsl_identifier_with_shorter(src, "dFdxFine", "dFdx");
+    mgl_replace_glsl_identifier_with_shorter(src, "dFdyFine", "dFdy");
+    mgl_replace_glsl_identifier_with_shorter(src, "fwidthFine", "fwidth");
+    mgl_replace_glsl_identifier_with_shorter(src, "dFdxCoarse", "dFdx");
+    mgl_replace_glsl_identifier_with_shorter(src, "dFdyCoarse", "dFdy");
+    mgl_replace_glsl_identifier_with_shorter(src, "fwidthCoarse", "fwidth");
+}
+
 const char *getShaderTypeStr(GLuint type)
 {
     static const char *types[] = {"VERTEX_SHADER", "FRAGMENT_SHADER",
@@ -378,6 +434,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         mgl_patch_uniform_block_bindings(modified_src, modified_src_size);
         mgl_upgrade_version_for_bindings(modified_src);
         mgl_ensure_420pack_extension(modified_src, modified_src_size);
+        mgl_downgrade_derivative_control_intrinsics(modified_src);
 
         if (strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
             glsl_version = 420;

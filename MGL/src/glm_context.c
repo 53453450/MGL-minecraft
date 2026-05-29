@@ -374,6 +374,9 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     
     _ctx = save;
 
+    mglInitCommandBuffer(&ctx->draw_command_buffer);
+    ctx->draw_defer_enabled = true;
+
     return ctx;
 }
 

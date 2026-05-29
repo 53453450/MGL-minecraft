@@ -56,13 +56,26 @@ static GLubyte mglClampClearComponentToByte(GLfloat value)
     return (GLubyte)(value * 255.0f + 0.5f);
 }
 
+static Texture *mglPendingClearAttachmentTexture(FBOAttachment *att)
+{
+    if (!att) {
+        return NULL;
+    }
+    if (att->textarget == GL_RENDERBUFFER) {
+        return (att->buf.rbo && att->buf.rbo->tex) ? att->buf.rbo->tex : NULL;
+    }
+    return att->buf.tex;
+}
+
 static GLboolean mglAttachmentChangeNeedsPendingClearFlush(FBOAttachment *att,
                                                            GLuint texture,
                                                            GLenum textarget,
                                                            GLint level,
                                                            GLint layer)
 {
-    if (!att || !(att->clear_bitmask & GL_COLOR_BUFFER_BIT) || !att->buf.tex) {
+    if (!att ||
+        !(att->clear_bitmask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) ||
+        !mglPendingClearAttachmentTexture(att)) {
         return GL_FALSE;
     }
 
@@ -110,11 +123,35 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     GLubyte pixel[4];
     GLboolean bgra;
 
-    if (!ctx || !att || !(att->clear_bitmask & GL_COLOR_BUFFER_BIT) || !att->buf.tex) {
+    GLbitfield pendingMask =
+        att ? (att->clear_bitmask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) : 0u;
+    Texture *attachedTexture = mglPendingClearAttachmentTexture(att);
+    if (!ctx || !att || pendingMask == 0u || !attachedTexture) {
         return GL_FALSE;
     }
 
-    tex = att->buf.tex;
+    if (!ctx->state.caps.scissor_test && ctx->mtl_funcs.mtlClearBuffer) {
+        static unsigned s_immediate_flush_logs = 0u;
+        if (s_immediate_flush_logs < 64u) {
+            fprintf(stderr,
+                    "MGL TRACE fbo.clear.flush.immediate tex=%u mask=0x%x attachment-change reason=%s\n",
+                    attachedTexture ? attachedTexture->name : 0u,
+                    pendingMask,
+                    reason ? reason : "unknown");
+            s_immediate_flush_logs++;
+        }
+
+        ctx->mtl_funcs.mtlClearBuffer(ctx, 0, pendingMask);
+        if (!(att->clear_bitmask & pendingMask)) {
+            return GL_TRUE;
+        }
+    }
+
+    if (!(att->clear_bitmask & GL_COLOR_BUFFER_BIT)) {
+        return GL_FALSE;
+    }
+
+    tex = attachedTexture;
     face = isCubeMapTarget(ctx, att->textarget) ? textureIndexFromTarget(ctx, att->textarget) : 0u;
     if (face >= _CUBE_MAP_MAX_FACE ||
         att->level >= tex->mipmap_levels ||
@@ -556,6 +593,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 
     if (!ctx)
         return;
+
+    /* Flush pending draws before FBO changes */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
 
     switch(target) {
         case GL_DRAW_FRAMEBUFFER:
@@ -1140,6 +1182,8 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     Texture *tex;
     FBOAttachment *fbo_attachment_ptr;
     GLenum effective_textarget = textarget;
+    GLboolean is_color_attachment = GL_FALSE;
+    GLuint color_attachment_index = 0u;
 
     fbo = currentFBOForType(ctx, target);
     
@@ -1164,14 +1208,8 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
             GLuint index;
             if (mglColorAttachmentIndex(ctx, attachment, &index))
             {
-                if (texture)
-                {
-                    fbo->color_attachment_bitfield |= (0x1 << index);
-                }
-                else
-                {
-                    fbo->color_attachment_bitfield &= ~(0x1 << index);
-                }
+                is_color_attachment = GL_TRUE;
+                color_attachment_index = index;
                 break;
             }
 
@@ -1352,6 +1390,14 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
 
     if (mglAttachmentChangeNeedsPendingClearFlush(fbo_attachment_ptr, texture, effective_textarget, level, layer)) {
         mglFlushPendingColorClearToTexture(ctx, fbo_attachment_ptr, "framebufferTexture attachment change");
+    }
+
+    if (is_color_attachment) {
+        if (texture) {
+            fbo->color_attachment_bitfield |= (0x1u << color_attachment_index);
+        } else {
+            fbo->color_attachment_bitfield &= ~(0x1u << color_attachment_index);
+        }
     }
 
     fbo_attachment_ptr->texture = texture;
@@ -2292,7 +2338,6 @@ void mglNamedFramebufferParameteri(GLMContext ctx, GLuint framebuffer, GLenum pn
 
 void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLuint texture, GLint level)
 {
-    Framebuffer *savedDraw = ctx->state.framebuffer;
     Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
 
     if (framebuffer == 0u || !fbo) {
@@ -2300,14 +2345,16 @@ void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attac
         return;
     }
 
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
     ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, 0);
-    ctx->state.framebuffer = savedDraw;
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLuint texture, GLint level, GLint layer)
 {
-    Framebuffer *savedDraw = ctx->state.framebuffer;
     Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
 
     if (framebuffer == 0u || !fbo) {
@@ -2315,9 +2362,12 @@ void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum 
         return;
     }
 
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
     ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, layer);
-    ctx->state.framebuffer = savedDraw;
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglNamedFramebufferDrawBuffer(GLMContext ctx, GLuint framebuffer, GLenum buf)

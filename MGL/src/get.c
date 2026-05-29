@@ -394,7 +394,16 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x80E9: RET_TYPE_VAR(type, max_elements_indices); break; // GL_MAX_ELEMENTS_INDICES
         case 0x846E: RET_TYPE_VAR(type, aliased_line_width_range); break; // GL_ALIASED_LINE_WIDTH_RANGE
         case 0x846D: RET_TYPE_VAR(type, aliased_point_size_range); break; // GL_ALIASED_POINT_SIZE_RANGE
-        case 0x84E0: RET_TYPE(type, active_texture); break; // GL_ACTIVE_TEXTURE
+        case 0x84E0: { // GL_ACTIVE_TEXTURE
+            GLenum activeTexture = GL_TEXTURE0 + (ctx ? ctx->state.active_texture : 0u);
+            switch(type) {
+                case kBool: RET_BOOL(activeTexture)
+                case kInt: RET_INT(activeTexture)
+                case kFloat: RET_FLOAT(activeTexture)
+                case kDouble: RET_DOUBLE(activeTexture)
+            }
+            break;
+        }
         case 0x80AA: RET_TYPE_VAR(type, sample_coverage_value); break; // GL_SAMPLE_COVERAGE_VALUE
         case 0x80AB: RET_TYPE_VAR(type, sample_coverage_invert); break; // GL_SAMPLE_COVERAGE_INVERT
         case 0x8514: RET_TYPE_VAR(type, texture_binding_cube_map); break; // GL_TEXTURE_BINDING_CUBE_MAP

@@ -189,6 +189,34 @@ static GLboolean mglColorMaskAllowsAnyWrite(GLMContext ctx, GLuint drawBufferInd
            ctx->state.var.color_writemask[drawBufferIndex][3];
 }
 
+static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const char *source, uint64_t callCount)
+{
+    static uint64_t s_immediateClearCount = 0;
+
+    if (!ctx ||
+        !ctx->mtl_funcs.mtlClearBuffer ||
+        ctx->state.caps.scissor_test ||
+        (mask & (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) == 0)
+    {
+        return;
+    }
+
+    uint64_t hit = ++s_immediateClearCount;
+    if (hit <= 64ull || (hit % 512ull) == 0ull) {
+        fprintf(stderr,
+                "MGL TRACE clear.immediate source=%s call=%llu mask=0x%x fbo=%p(%u) hit=%llu\n",
+                source ? source : "unknown",
+                (unsigned long long)callCount,
+                (unsigned)mask,
+                (void *)ctx->state.framebuffer,
+                (unsigned)mglSafeDrawFramebufferName(ctx),
+                (unsigned long long)hit);
+    }
+
+    ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
+    ctx->state.clear_bitmask &= ~mask;
+}
+
 static void mglStoreCurrentDrawBufferSelection(GLMContext ctx)
 {
     if (!ctx) {
@@ -223,12 +251,34 @@ static void mglStoreCurrentReadBufferSelection(GLMContext ctx)
 void mglClear(GLMContext ctx, GLbitfield mask)
 {
     static uint64_t s_mglClearCallCount = 0;
+    static uint64_t s_scissoredClearCount = 0;
     uint64_t callCount = ++s_mglClearCallCount;
 
     if (mask & ~(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT))
     {
         fprintf(stderr, "MGL Error: mglClear: invalid mask 0x%x\n", mask);
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (ctx->state.caps.scissor_test) {
+        uint64_t hit = ++s_scissoredClearCount;
+        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL INFO: immediate scissored glClear mask=0x%x box=(%d,%d,%d,%d) hit=%llu\n",
+                    (unsigned)mask,
+                    (int)ctx->state.var.scissor_box[0],
+                    (int)ctx->state.var.scissor_box[1],
+                    (int)ctx->state.var.scissor_box[2],
+                    (int)ctx->state.var.scissor_box[3],
+                    (unsigned long long)hit);
+        }
+        if (ctx->mtl_funcs.mtlClearBuffer) {
+            ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
+        }
+        ctx->state.clear_bitmask = 0;
+        ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+        return;
     }
 
     Framebuffer *fbo = ctx->state.framebuffer;
@@ -322,6 +372,8 @@ clear_done:
                 (unsigned)mglSafeDrawFramebufferName(ctx),
                 (unsigned)ctx->state.dirty_bits);
     }
+
+    mglMaterializeImmediateClear(ctx, mask, "glClear", callCount);
 }
 
 void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
@@ -426,7 +478,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
         default:
             fprintf(stderr, "MGL Error: mglClearBufferfv: invalid buffer 0x%x\n", buffer);
             ERROR_RETURN(GL_INVALID_ENUM);
-            break;
+            return;
     }
 
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
@@ -444,6 +496,14 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                 value ? value[2] : 0.0f,
                 value ? value[3] : 0.0f);
     }
+
+    GLbitfield clearMask = 0;
+    if (buffer == GL_COLOR) {
+        clearMask = GL_COLOR_BUFFER_BIT;
+    } else if (buffer == GL_DEPTH) {
+        clearMask = GL_DEPTH_BUFFER_BIT;
+    }
+    mglMaterializeImmediateClear(ctx, clearMask, "glClearBufferfv", callCount);
 }
 
 void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil)
@@ -477,7 +537,7 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
         default:
             fprintf(stderr, "MGL Error: mglClearBufferfi: invalid buffer 0x%x\n", buffer);
             ERROR_RETURN(GL_INVALID_ENUM);
-            break;
+            return;
     }
 
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
@@ -493,16 +553,23 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                 depth,
                 stencil);
     }
+
+    mglMaterializeImmediateClear(ctx,
+                                 buffer == GL_DEPTH_STENCIL ? (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT) : 0,
+                                 "glClearBufferfi",
+                                 callCount);
 }
 
 void mglFinish(GLMContext ctx)
 {
     fprintf(stderr, "MGL: mglFinish called - flushing and waiting for GPU\n");
+    mglFlushCommandBuffer(ctx);
     ctx->mtl_funcs.mtlFlush(ctx, true);
 }
 
 void mglFlush(GLMContext ctx)
 {
+    mglFlushCommandBuffer(ctx);
     ctx->mtl_funcs.mtlFlush(ctx, false);
 }
 
@@ -1289,6 +1356,8 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                 height);
         ERROR_RETURN(GL_OUT_OF_MEMORY);
     }
+
+    mglFlushCommandBuffer(ctx);
 
     kern_return_t err;
     vm_address_t buffer_data;

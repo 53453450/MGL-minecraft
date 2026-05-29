@@ -31,6 +31,7 @@
 
 #include "glm_dispatch.h"
 
+#include "draw_command.h"
 #include "hash_table.h"
 
 // defines above set sizes in glm_params
@@ -732,6 +733,7 @@ struct GLMMetalFuncs {
 
     void (*mtlFlush)(GLMContext glm_ctx, bool finish);
     void (*mtlSwapBuffers)(GLMContext glm_ctx);
+    void (*mtlFlushDrawBuffer)(GLMContext glm_ctx);
     void (*mtlInvalidateRenderPass)(GLMContext glm_ctx);
     
     void (*mtlClearBuffer)(GLMContext glm_ctx, GLuint type, GLbitfield mask);
@@ -807,6 +809,9 @@ typedef struct GLMContextRec_t {
     PixelFormat stencil_format;
 
     BufferData  *temp_element_buffer;
+
+    MGLCommandBuffer draw_command_buffer;
+    bool            draw_defer_enabled;
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;

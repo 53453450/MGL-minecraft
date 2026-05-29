@@ -7,11 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		FF2DC2602D2C9A830040B838 /* uniforms.c in Sources */ = {isa = PBXBuildFile; fileRef = FF2DC25F2D2C9A830040B838 /* uniforms.c */; };
-		FF2DC2612D2C9A830040B838 /* uniforms.c in Sources */ = {isa = PBXBuildFile; fileRef = FF2DC25F2D2C9A830040B838 /* uniforms.c */; };
-		FF2DC2632D2C9B040040B838 /* programs.h in Headers */ = {isa = PBXBuildFile; fileRef = FF2DC2622D2C9B040040B838 /* programs.h */; };
-		FF2DC2642D2C9B040040B838 /* programs.h in Headers */ = {isa = PBXBuildFile; fileRef = FF2DC2622D2C9B040040B838 /* programs.h */; };
-		FF4810152772B23400BBF7C7 /* libMGL.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = FFA83000276F97DE003F1EA0 /* libMGL.dylib */; };
+			FF2DC2602D2C9A830040B838 /* uniforms.c in Sources */ = {isa = PBXBuildFile; fileRef = FF2DC25F2D2C9A830040B838 /* uniforms.c */; };
+			FF2DC2612D2C9A830040B838 /* uniforms.c in Sources */ = {isa = PBXBuildFile; fileRef = FF2DC25F2D2C9A830040B838 /* uniforms.c */; };
+			FF2DC2632D2C9B040040B838 /* programs.h in Headers */ = {isa = PBXBuildFile; fileRef = FF2DC2622D2C9B040040B838 /* programs.h */; };
+			FF2DC2642D2C9B040040B838 /* programs.h in Headers */ = {isa = PBXBuildFile; fileRef = FF2DC2622D2C9B040040B838 /* programs.h */; };
+			FFCD00012F18000100DCC001 /* draw_command.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCD00032F18000100DCC001 /* draw_command.c */; };
+			FFCD00022F18000100DCC001 /* draw_command.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCD00032F18000100DCC001 /* draw_command.c */; };
+			FF4810152772B23400BBF7C7 /* libMGL.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = FFA83000276F97DE003F1EA0 /* libMGL.dylib */; };
 		FF4811722776963E00BBF7C7 /* tex_param.c in Sources */ = {isa = PBXBuildFile; fileRef = FF4811712776963E00BBF7C7 /* tex_param.c */; };
 		FF7B77A52771054F00C2028F /* ezxml.c in Sources */ = {isa = PBXBuildFile; fileRef = FF7B77A32771054F00C2028F /* ezxml.c */; };
 		FF7B77AF2771056B00C2028F /* enum_parser.c in Sources */ = {isa = PBXBuildFile; fileRef = FFA83037276F9D10003F1EA0 /* enum_parser.c */; };
@@ -416,8 +418,10 @@
 		FFA83037276F9D10003F1EA0 /* enum_parser.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = enum_parser.c; sourceTree = "<group>"; };
 		FFA83044276F9EBE003F1EA0 /* test_mgl_glfw */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = test_mgl_glfw; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFA83046276F9EBF003F1EA0 /* main.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = main.cpp; sourceTree = "<group>"; };
-		FFA83091277026B6003F1EA0 /* gl.xml */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; name = gl.xml; path = "external/OpenGL-Registry/xml/gl.xml"; sourceTree = SOURCE_ROOT; };
-		FFD4EE2B2F1429700023B6C3 /* hash_table.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = hash_table.m; sourceTree = "<group>"; };
+			FFA83091277026B6003F1EA0 /* gl.xml */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xml; name = gl.xml; path = "external/OpenGL-Registry/xml/gl.xml"; sourceTree = SOURCE_ROOT; };
+			FFCD00032F18000100DCC001 /* draw_command.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = draw_command.c; sourceTree = "<group>"; };
+			FFCD00042F18000100DCC001 /* draw_command.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = draw_command.h; sourceTree = "<group>"; };
+			FFD4EE2B2F1429700023B6C3 /* hash_table.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = hash_table.m; sourceTree = "<group>"; };
 		FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_safety.h; sourceTree = "<group>"; };
 		FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mgl_toolchain.c; sourceTree = "<group>"; };
 		FFD4EE322F1454E70023B6C3 /* gl_es.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = gl_es.c; sourceTree = "<group>"; };
@@ -582,10 +586,11 @@
 				FF7B7A8627728C1D00C2028F /* program.c */,
 				FF2DC25F2D2C9A830040B838 /* uniforms.c */,
 				FF99BF6C2ADF27ED008AE33A /* vertex_arrays.h */,
-				FF7B7A9227728C1D00C2028F /* vertex_arrays.c */,
-				FF7B7A9927728C1D00C2028F /* vertex_buffers.c */,
-				FF7B7A9027728C1D00C2028F /* draw_buffers.c */,
-				FF7B7A9427728C1D00C2028F /* rendering.c */,
+					FF7B7A9227728C1D00C2028F /* vertex_arrays.c */,
+					FF7B7A9927728C1D00C2028F /* vertex_buffers.c */,
+					FFCD00032F18000100DCC001 /* draw_command.c */,
+					FF7B7A9027728C1D00C2028F /* draw_buffers.c */,
+					FF7B7A9427728C1D00C2028F /* rendering.c */,
 				FF7B7A8927728C1D00C2028F /* framebuffers.c */,
 				FF7B7A8527728C1D00C2028F /* MGLTextures.m */,
 				FF7B7A9A27728C1D00C2028F /* MGLRenderer.m */,
@@ -605,10 +610,11 @@
 				FF7B7AC227728C3100C2028F /* enums.h */,
 				FF7B7AC427728C3100C2028F /* mgl.h */,
 				FF7B7AC527728C3100C2028F /* pixel_utils.h */,
-				FF7B7AC727728C3100C2028F /* glm_params.h */,
-				FF7B7AC827728C3100C2028F /* glm_limits.h */,
-				FF7B7AC327728C3100C2028F /* MGLContext.h */,
-				FF7B7ABC27728C3100C2028F /* MGLRenderer.h */,
+					FF7B7AC727728C3100C2028F /* glm_params.h */,
+					FF7B7AC827728C3100C2028F /* glm_limits.h */,
+					FF7B7AC327728C3100C2028F /* MGLContext.h */,
+					FFCD00042F18000100DCC001 /* draw_command.h */,
+					FF7B7ABC27728C3100C2028F /* MGLRenderer.h */,
 			);
 			path = include;
 			sourceTree = "<group>";
@@ -1073,8 +1079,9 @@
 				FF7B7AF7277290EB00C2028F /* gl_core.c in Sources */,
 				FF7B7AA127728C1D00C2028F /* get.c in Sources */,
 				FF7B7AAC27728C1D00C2028F /* mgl_funcs_to_be_implemented.c in Sources */,
-				FF7B7AB227728C1D00C2028F /* vertex_buffers.c in Sources */,
-				FF7B7AA827728C1D00C2028F /* error.c in Sources */,
+					FF7B7AB227728C1D00C2028F /* vertex_buffers.c in Sources */,
+					FFCD00012F18000100DCC001 /* draw_command.c in Sources */,
+					FF7B7AA827728C1D00C2028F /* error.c in Sources */,
 				FF7B7AA627728C1D00C2028F /* textures.c in Sources */,
 				FF7B7AAD27728C1D00C2028F /* rendering.c in Sources */,
 				FF7B7AAB27728C1D00C2028F /* vertex_arrays.c in Sources */,
@@ -1125,8 +1132,9 @@
 				FFD4EE4E2F14585E0023B6C3 /* utils.c in Sources */,
 				FFD4EE502F14585E0023B6C3 /* get.c in Sources */,
 				FFD4EE512F14585E0023B6C3 /* mgl_funcs_to_be_implemented.c in Sources */,
-				FFD4EE522F14585E0023B6C3 /* vertex_buffers.c in Sources */,
-				FFD4EE532F14585E0023B6C3 /* error.c in Sources */,
+					FFD4EE522F14585E0023B6C3 /* vertex_buffers.c in Sources */,
+					FFCD00022F18000100DCC001 /* draw_command.c in Sources */,
+					FFD4EE532F14585E0023B6C3 /* error.c in Sources */,
 				FFD4EE542F14585E0023B6C3 /* textures.c in Sources */,
 				FFD4EE552F14585E0023B6C3 /* rendering.c in Sources */,
 				FFD4EE562F14585E0023B6C3 /* vertex_arrays.c in Sources */,

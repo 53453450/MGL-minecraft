@@ -1,5 +1,7 @@
 package mglprobe;
 
+import java.io.FileOutputStream;
+import java.io.PrintStream;
 import java.lang.reflect.Method;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
@@ -9,6 +11,8 @@ public final class TexProbeRuntime {
     private static final int MAX_LOG = Integer.getInteger("mgl.texprobe.max", 80);
     private static final int TARGET_W = Integer.getInteger("mgl.texprobe.width", 512);
     private static final int TARGET_H = Integer.getInteger("mgl.texprobe.height", 512);
+    private static final boolean LOG_PARAMS = !"0".equals(System.getProperty("mgl.texprobe.params", "1"));
+    private static final PrintStream OUT = openLog();
     private static int seen;
 
     private TexProbeRuntime() {}
@@ -34,9 +38,10 @@ public final class TexProbeRuntime {
         long hash = hashBufferHead(pixels, 256);
         boolean zero = looksZero(pixels, 256);
         String dump = dumpBufferHead(pixels, 64);
-        System.err.printf(
-                "MGLJ TEXIMAGE #%d %s target=0x%x level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
-                id, owner, target, level, internalformat, width, height, border, format, type, addr, hash, zero, dump);
+        GLTextureState state = readTextureState();
+        OUT.printf(
+                "MGLJ TEXIMAGE #%d %s target=0x%x activeUnit=%d bound2D=%d level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
+                id, owner, target, state.activeUnit, state.bound2D, level, internalformat, width, height, border, format, type, addr, hash, zero, dump);
         logStack(id);
     }
 
@@ -46,9 +51,10 @@ public final class TexProbeRuntime {
         if (!shouldLog(width, height)) return;
         int id = nextId();
         if (id < 0) return;
-        System.err.printf(
-                "MGLJ TEXIMAGE #%d %s target=0x%x level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x pboOffset=0x%x%n",
-                id, owner, target, level, internalformat, width, height, border, format, type, pixels);
+        GLTextureState state = readTextureState();
+        OUT.printf(
+                "MGLJ TEXIMAGE #%d %s target=0x%x activeUnit=%d bound2D=%d level=%d internal=0x%x size=%dx%d border=%d format=0x%x type=0x%x pboOffset=0x%x%n",
+                id, owner, target, state.activeUnit, state.bound2D, level, internalformat, width, height, border, format, type, pixels);
         logStack(id);
     }
 
@@ -64,9 +70,10 @@ public final class TexProbeRuntime {
         long hash = hashBufferHead(pixels, 256);
         boolean zero = looksZero(pixels, 256);
         String dump = dumpBufferHead(pixels, 32);
-        System.err.printf(
-                "MGLJ TEXPROBE #%d %s%s target=0x%x level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
-                id, owner, desc, target, level, xoffset, yoffset, width, height, format, type, address, hash, zero, dump);
+        GLTextureState state = readTextureState();
+        OUT.printf(
+                "MGLJ TEXPROBE #%d %s%s target=0x%x activeUnit=%d bound2D=%d level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x addr=0x%x hash256=0x%016x zero256=%s head=%s%n",
+                id, owner, desc, target, state.activeUnit, state.bound2D, level, xoffset, yoffset, width, height, format, type, address, hash, zero, dump);
         logStack(id);
     }
 
@@ -76,36 +83,49 @@ public final class TexProbeRuntime {
         if (!shouldLog(width, height)) return;
         int id = nextId();
         if (id < 0) return;
-        System.err.printf(
-                "MGLJ TEXPROBE #%d %s%s target=0x%x level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x rawAddressOrPboOffset=0x%x%n",
-                id, owner, desc, target, level, xoffset, yoffset, width, height, format, type, pixels);
+        GLTextureState state = readTextureState();
+        OUT.printf(
+                "MGLJ TEXPROBE #%d %s%s target=0x%x activeUnit=%d bound2D=%d level=%d off=(%d,%d) size=%dx%d format=0x%x type=0x%x rawAddressOrPboOffset=0x%x%n",
+                id, owner, desc, target, state.activeUnit, state.bound2D, level, xoffset, yoffset, width, height, format, type, pixels);
         logStack(id);
     }
 
     // --- glTexParameter ---
 
     public static void logTexParameter(String owner, String variant, int target, int pname, int param) {
+        if (!LOG_PARAMS) return;
         int id = nextId();
         if (id < 0) return;
-        System.err.printf(
+        OUT.printf(
                 "MGLJ TEXPARAM #%d %s target=0x%x pname=0x%x param=0x%x (%d)%n",
                 id, owner, target, pname, param, param);
     }
 
     public static void logTexParameterF(String owner, String variant, int target, int pname, float param) {
+        if (!LOG_PARAMS) return;
         int id = nextId();
         if (id < 0) return;
-        System.err.printf(
+        OUT.printf(
                 "MGLJ TEXPARAM #%d %s target=0x%x pname=0x%x param=%f%n",
                 id, owner, target, pname, param);
     }
 
     // --- helpers ---
 
+    private static PrintStream openLog() {
+        String path = System.getProperty("mgl.texprobe.log",
+                System.getProperty("user.home") + "/Documents/java-tex-probe.log");
+        try {
+            return new PrintStream(new FileOutputStream(path, true), true, "UTF-8");
+        } catch (Throwable ignored) {
+            return System.err;
+        }
+    }
+
     private static void logStack(int id) {
         if (!STACK) return;
         StackTraceElement[] stack = Thread.currentThread().getStackTrace();
-        System.err.println("MGLJ TEXPROBE #" + id + " stack:");
+        OUT.println("MGLJ TEXPROBE #" + id + " stack:");
         for (int i = 2; i < Math.min(stack.length, 28); i++) {
             String s = stack[i].toString();
             if (s.startsWith("org.lwjgl.opengl.GL11C.") ||
@@ -114,21 +134,55 @@ public final class TexProbeRuntime {
                 s.startsWith("com.mojang.") ||
                 s.startsWith("net.minecraft.") ||
                 s.matches("^[a-z]{2,4}\\..*|^[a-z]{2,4}\\(.*")) {
-                System.err.println("  at " + s);
+                OUT.println("  at " + s);
             }
         }
+        OUT.flush();
     }
 
     private static long memAddressSafe(Buffer b) {
         if (b == null) return 0L;
         try {
-            Class<?> mu = Class.forName("org.lwjgl.system.MemoryUtil");
+            Class<?> mu = classForName("org.lwjgl.system.MemoryUtil");
             Method m = mu.getMethod("memAddressSafe", Buffer.class);
             Object v = m.invoke(null, b);
             return ((Long)v).longValue();
         } catch (Throwable ignored) {
             return 0L;
         }
+    }
+
+    private static GLTextureState readTextureState() {
+        GLTextureState state = new GLTextureState();
+        try {
+            Class<?> gl11 = classForName("org.lwjgl.opengl.GL11C");
+            Method getInteger = gl11.getMethod("glGetInteger", int.class);
+            int active = ((Integer)getInteger.invoke(null, 0x84e0)).intValue(); // GL_ACTIVE_TEXTURE
+            int bound2D = ((Integer)getInteger.invoke(null, 0x8069)).intValue(); // GL_TEXTURE_BINDING_2D
+            state.activeUnit = active >= 0x84c0 ? active - 0x84c0 : active;
+            state.bound2D = bound2D;
+        } catch (Throwable ignored) {
+            state.activeUnit = -1;
+            state.bound2D = -1;
+        }
+        return state;
+    }
+
+    private static Class<?> classForName(String name) throws ClassNotFoundException {
+        ClassLoader loader = Thread.currentThread().getContextClassLoader();
+        if (loader != null) {
+            try {
+                return Class.forName(name, false, loader);
+            } catch (ClassNotFoundException ignored) {
+                // Fall through to the defining loader.
+            }
+        }
+        return Class.forName(name);
+    }
+
+    private static final class GLTextureState {
+        int activeUnit = -1;
+        int bound2D = -1;
     }
 
     private static String dumpBufferHead(Buffer b, int maxBytes) {

@@ -103,6 +103,12 @@ static GLboolean mglClipDistanceIndex(GLMContext ctx, GLenum cap, GLuint *index)
 void mglDisable(GLMContext ctx, GLenum cap)
 {
     GLuint clipIndex = 0;
+
+    /* Flush pending draws before caps change */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
+
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
         ctx->state.caps.clip_distances[clipIndex] = GL_FALSE;
@@ -164,6 +170,12 @@ void mglDisable(GLMContext ctx, GLenum cap)
 void mglEnable(GLMContext ctx, GLenum cap)
 {
     GLuint clipIndex = 0;
+
+    /* Flush pending draws before caps change */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
+
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
         ctx->state.caps.clip_distances[clipIndex] = GL_TRUE;
@@ -322,6 +334,11 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
 {
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+
+    /* Flush pending draws before scissor changes */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
 
     ctx->state.var.scissor_box[0] = x;
     ctx->state.var.scissor_box[1] = y;
@@ -635,6 +652,11 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
 {
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+
+    /* Flush pending draws before viewport changes */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
 
     ctx->state.viewport[0] = x;
     ctx->state.viewport[1] = y;

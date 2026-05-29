@@ -14,7 +14,7 @@ Language: 中文 | [English](README_EN.md)
 
 ### 项目说明
 
-- <span style="color:red;">这是一个纯粹的AI coding项目，如果你反感/厌恶AI代码，你可以离开此仓库</span>
+- 这是一个纯粹的AI coding项目，如果你反感/厌恶AI代码，你可以离开此仓库
 - 本项目分支于MGL：https://github.com/openglonmetal/MGL
 - Minecraft(以下简称MC)是在mac上为数不多的运行较好的游戏之一，可是，MC可以长盛不衰的原因来至于它庞大的Mod社区，但是Apple 于2018年6 月在 WWDC 2018 上正式宣布弃用OpenGL与OpenCL，macOS的OpenGL支持永远停在了4.1版本，顶点着色器上限（GL_MAX_VERTEX_ATTRIBS）是16，这与现今的Mod社区严重脱节，部分mod与绝大多数的光影无法在macOS上运行。此项目将OpenGL提升至4.6，并将GL_MAX_VERTEX_ATTRIBS=30
 
@@ -77,9 +77,9 @@ make
 
 ## 现状
 
-- 在1.21.1 大多正常，而在此之上则是一片混乱
-- 加载动画渲染正常
-
+- 已知bug:1.21.8的实体纹理乱入，破坏动画错位,玩家物品栏物品图标未渲染，（在1.21.7，没有破坏动画错位问题）1.21.11，1.21.10的世界亮度问题，1.21.11的UI选框消失，1.21.1与1.20.1的存档预览图颠倒（可能在其他版本有其他未知bug，但我并未测试）
+- Forge modloader 的启动渲染动画不被加载，neoforge modloader 会崩溃，fabric modloader 不会有影响（在1.21.7测试）
+- sodium 在与fabric modloader 一起加载时被支持（在以上所有被提及的版本）
 
 ## 项目结构
 
@@ -176,6 +176,7 @@ Objective-C 实现的 Metal 渲染器，处理：
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
 - [GLFW](https://www.glfw.org/) - 窗口管理库
 - [openglonmetal](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
+- [MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) - Minecraft源码，以查验MC的GL实现进行debug
 
 ## 许可证
 

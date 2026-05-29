@@ -190,6 +190,11 @@ void mglBindVertexArray(GLMContext ctx, GLuint array)
 {
     VertexArray *ptr;
 
+    /* Flush pending draws before VAO changes */
+    if (ctx->draw_defer_enabled) {
+        mglFlushCommandBuffer(ctx);
+    }
+
     if (array == 0)
     {
         ptr = NULL;

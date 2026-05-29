@@ -211,82 +211,15 @@ static GLint mglKnownPlainUniformLocationForName(const char *name)
     if (!strcmp(name, "LineWidth")) return 10;
     if (!strcmp(name, "IViewRotMat")) return 11;
     if (!strcmp(name, "ChunkOffset")) return 12;
+    if (!strcmp(name, "u_ProjectionMatrix")) return 0;
+    if (!strcmp(name, "u_ModelViewMatrix")) return 1;
+    if (!strcmp(name, "u_RegionOffset")) return 2;
+    if (!strcmp(name, "u_TexCoordShrink")) return 3;
+    if (!strcmp(name, "u_FogColor")) return 4;
+    if (!strcmp(name, "u_EnvironmentFog")) return 5;
+    if (!strcmp(name, "u_RenderFog")) return 6;
 
     return -1;
-}
-
-static GLint mglDefaultSamplerUnitForName(const char *name)
-{
-    if (!name || !*name) {
-        return -1;
-    }
-
-    const char *end = name + strlen(name);
-    const char *digits = end;
-    while (digits > name && digits[-1] >= '0' && digits[-1] <= '9') {
-        digits--;
-    }
-
-    if (digits < end) {
-        unsigned long unit = strtoul(digits, NULL, 10);
-        return (unit < TEXTURE_UNITS) ? (GLint)unit : -1;
-    }
-
-    if (!strcmp(name, "DiffuseSampler")) {
-        return 0;
-    }
-    if (!strcmp(name, "OverlaySampler")) {
-        return 1;
-    }
-    if (!strcmp(name, "LightSampler") || !strcmp(name, "LightmapSampler")) {
-        return 2;
-    }
-
-    return -1;
-}
-
-static bool mglProgramHasResourceNamed(Program *program, int res_type, const char *name)
-{
-    if (!program || !name) {
-        return false;
-    }
-
-    if (res_type < 0 || res_type >= _MAX_SPIRV_RES) {
-        return false;
-    }
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
-        for (GLuint i = 0; resources->list && i < resources->count; i++) {
-            if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool mglProgramHasSamplerNamed(Program *program, const char *name)
-{
-    if (!program || !name) {
-        return false;
-    }
-
-    static const int sampler_resource_types[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
-    };
-
-    for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
-        if (mglProgramHasResourceNamed(program, sampler_resource_types[rt], name)) {
-            return true;
-        }
-    }
-
-    return false;
 }
 
 static bool mglProgramResourceLooksSamplerLike(const SpirvResource *res, int res_type)
@@ -474,31 +407,19 @@ static void mglAssignPlainUniformLocations(Program *program)
     }
 }
 
-static bool mglProgramLooksLikeModernRenderPipeline(Program *program)
-{
-    return mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "Projection") ||
-           mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "ChunkSection") ||
-           mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "DynamicTransforms") ||
-           mglProgramHasResourceNamed(program, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, "Globals");
-}
-
 static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res)
 {
-    GLint named_unit = mglDefaultSamplerUnitForName(res ? res->name : NULL);
+    (void)program;
+    (void)res;
 
     /*
-     * Newer Mojang RenderPipeline code assigns sampler units from the pipeline
-     * sampler list, not from the numeric suffix. Classic ShaderInstance
-     * pipelines, including 1.21.1 terrain, still use Sampler2 as unit 2.
+     * OpenGL initializes sampler uniforms to texture unit 0. Minecraft 1.20+
+     * then uploads the real units from ShaderInstance/RenderPipeline sampler
+     * lists via glUniform1i. Guessing from names such as Sampler1/Sampler2
+     * corrupts pipelines where a shader declares an optional sampler that the
+     * pipeline intentionally does not bind.
      */
-    if (res && res->name && strcmp(res->name, "Sampler2") == 0 &&
-        mglProgramLooksLikeModernRenderPipeline(program) &&
-        mglProgramHasSamplerNamed(program, "Sampler0") &&
-        !mglProgramHasSamplerNamed(program, "Sampler1")) {
-        return 1;
-    }
-
-    return named_unit;
+    return 0;
 }
 
 static void mglApplyDefaultSamplerUnit(Program *program, int stage, SpirvResource *res)
@@ -526,50 +447,220 @@ static bool mglMSLIdentifierChar(char c)
            (c >= 'a' && c <= 'z');
 }
 
-static bool mglFindMSLResourceIndex(const char *msl,
-                                    const char *name,
-                                    const char *attribute,
-                                    GLuint *index_out)
+typedef enum MGLMSLBindingKind {
+    MGL_MSL_BINDING_TEXTURE,
+    MGL_MSL_BINDING_BUFFER,
+    MGL_MSL_BINDING_SAMPLER
+} MGLMSLBindingKind;
+
+typedef struct MGLMSLBindingEntry {
+    MGLMSLBindingKind kind;
+    GLuint index;
+    const char *segment;
+    size_t segment_len;
+} MGLMSLBindingEntry;
+
+#define MGL_MSL_BINDING_MAP_MAX 512u
+
+typedef struct MGLMSLBindingMap {
+    MGLMSLBindingEntry entries[MGL_MSL_BINDING_MAP_MAX];
+    size_t count;
+} MGLMSLBindingMap;
+
+static GLboolean mglSegmentContainsIdentifier(const char *segment,
+                                              size_t segment_len,
+                                              const char *name)
 {
-    if (!msl || !name || !attribute || !index_out) {
-        return false;
+    if (!segment || !name) {
+        return GL_FALSE;
     }
 
     size_t name_len = strlen(name);
-    size_t attr_len = strlen(attribute);
-    const char *cursor = msl;
-
-    while ((cursor = strstr(cursor, name)) != NULL) {
-        char before = (cursor == msl) ? '\0' : cursor[-1];
-        char after = cursor[name_len];
-        if (mglMSLIdentifierChar(before) || mglMSLIdentifierChar(after)) {
-            cursor += name_len;
-            continue;
-        }
-
-        const char *line_end = strchr(cursor, '\n');
-        if (!line_end) {
-            line_end = cursor + strlen(cursor);
-        }
-
-        const char *attr = strstr(cursor + name_len, attribute);
-        if (!attr || attr > line_end) {
-            cursor += name_len;
-            continue;
-        }
-
-        attr += attr_len;
-        char *end = NULL;
-        unsigned long value = strtoul(attr, &end, 10);
-        if (end != attr && value < TEXTURE_UNITS) {
-            *index_out = (GLuint)value;
-            return true;
-        }
-
-        cursor += name_len;
+    if (name_len == 0 || name_len > segment_len) {
+        return GL_FALSE;
     }
 
-    return false;
+    const char *end = segment + segment_len;
+    for (const char *cursor = segment; cursor + name_len <= end; cursor++) {
+        if (memcmp(cursor, name, name_len) != 0) {
+            continue;
+        }
+
+        char before = (cursor == segment) ? '\0' : cursor[-1];
+        char after = (cursor + name_len == end) ? '\0' : cursor[name_len];
+        if (!mglMSLIdentifierChar(before) && !mglMSLIdentifierChar(after)) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static const char *mglPreviousMSLArgumentBoundary(const char *msl, const char *attribute)
+{
+    const char *cursor = attribute;
+    unsigned angle_depth = 0;
+
+    while (cursor > msl) {
+        char c = cursor[-1];
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        if (c == '>') {
+            angle_depth++;
+        } else if (c == '<') {
+            if (angle_depth > 0) {
+                angle_depth--;
+            }
+        } else if (c == ',' && angle_depth == 0) {
+            break;
+        }
+        cursor--;
+    }
+
+    while (*cursor == ' ' || *cursor == '\t') {
+        cursor++;
+    }
+
+    return cursor;
+}
+
+static const char *mglNextMSLArgumentBoundary(const char *attribute)
+{
+    const char *cursor = attribute;
+    unsigned angle_depth = 0;
+
+    while (*cursor) {
+        char c = *cursor;
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        if (c == '<') {
+            angle_depth++;
+        } else if (c == '>') {
+            if (angle_depth > 0) {
+                angle_depth--;
+            }
+        } else if (c == ',' && angle_depth == 0) {
+            break;
+        }
+        cursor++;
+    }
+
+    return cursor;
+}
+
+static GLboolean mglParseMSLBindingAttribute(const char *attribute,
+                                             const char *prefix,
+                                             GLuint *index_out)
+{
+    if (!attribute || !prefix || !index_out) {
+        return GL_FALSE;
+    }
+
+    size_t prefix_len = strlen(prefix);
+    if (strncmp(attribute, prefix, prefix_len) != 0) {
+        return GL_FALSE;
+    }
+
+    const char *index_start = attribute + prefix_len;
+    char *end = NULL;
+    unsigned long value = strtoul(index_start, &end, 10);
+    if (end == index_start || value >= TEXTURE_UNITS) {
+        return GL_FALSE;
+    }
+
+    *index_out = (GLuint)value;
+    return GL_TRUE;
+}
+
+static void mglMSLBindingMapAdd(MGLMSLBindingMap *map,
+                                MGLMSLBindingKind kind,
+                                GLuint index,
+                                const char *segment_start,
+                                const char *segment_end)
+{
+    if (!map || !segment_start || !segment_end || segment_end < segment_start ||
+        map->count >= MGL_MSL_BINDING_MAP_MAX) {
+        return;
+    }
+
+    while (segment_end > segment_start &&
+           (segment_end[-1] == ' ' || segment_end[-1] == '\t')) {
+        segment_end--;
+    }
+
+    MGLMSLBindingEntry *entry = &map->entries[map->count++];
+    entry->kind = kind;
+    entry->index = index;
+    entry->segment = segment_start;
+    entry->segment_len = (size_t)(segment_end - segment_start);
+}
+
+static void mglBuildMSLBindingMap(const char *msl, MGLMSLBindingMap *map)
+{
+    if (!map) {
+        return;
+    }
+
+    memset(map, 0, sizeof(*map));
+    if (!msl) {
+        return;
+    }
+
+    const char *cursor = msl;
+    while (*cursor) {
+        const char *texture_attr = strstr(cursor, "[[texture(");
+        const char *buffer_attr = strstr(cursor, "[[buffer(");
+        const char *sampler_attr = strstr(cursor, "[[sampler(");
+        const char *attribute = texture_attr;
+        const char *prefix = "[[texture(";
+        MGLMSLBindingKind kind = MGL_MSL_BINDING_TEXTURE;
+
+        if (!attribute || (buffer_attr && buffer_attr < attribute)) {
+            attribute = buffer_attr;
+            prefix = "[[buffer(";
+            kind = MGL_MSL_BINDING_BUFFER;
+        }
+        if (!attribute || (sampler_attr && sampler_attr < attribute)) {
+            attribute = sampler_attr;
+            prefix = "[[sampler(";
+            kind = MGL_MSL_BINDING_SAMPLER;
+        }
+        if (!attribute) {
+            break;
+        }
+
+        GLuint index = 0;
+        if (mglParseMSLBindingAttribute(attribute, prefix, &index)) {
+            const char *segment_start = mglPreviousMSLArgumentBoundary(msl, attribute);
+            const char *segment_end = mglNextMSLArgumentBoundary(attribute);
+            mglMSLBindingMapAdd(map, kind, index, segment_start, segment_end);
+        }
+
+        cursor = attribute + 2;
+    }
+}
+
+static GLboolean mglFindMSLResourceIndexInMap(const MGLMSLBindingMap *map,
+                                              MGLMSLBindingKind kind,
+                                              const char *name,
+                                              GLuint *index_out)
+{
+    if (!map || !name || !index_out) {
+        return GL_FALSE;
+    }
+
+    for (size_t i = 0; i < map->count; i++) {
+        const MGLMSLBindingEntry *entry = &map->entries[i];
+        if (entry->kind == kind &&
+            mglSegmentContainsIdentifier(entry->segment, entry->segment_len, name)) {
+            *index_out = entry->index;
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
 }
 
 static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
@@ -577,6 +668,9 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
     if (!pptr || !msl || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return;
     }
+
+    MGLMSLBindingMap binding_map;
+    mglBuildMSLBindingMap(msl, &binding_map);
 
     const int texture_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
@@ -591,7 +685,8 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
             GLuint metal_index = 0;
-            if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[texture(", &metal_index)) {
+            if (!res->name ||
+                !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_TEXTURE, res->name, &metal_index)) {
                 continue;
             }
 
@@ -623,7 +718,8 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
             GLuint metal_index = 0;
-            if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[buffer(", &metal_index)) {
+            if (!res->name ||
+                !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_BUFFER, res->name, &metal_index)) {
                 continue;
             }
 
@@ -647,7 +743,8 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
     for (GLuint i = 0; i < samplers->count; i++) {
         SpirvResource *res = &samplers->list[i];
         GLuint metal_index = 0;
-        if (!res->name || !mglFindMSLResourceIndex(msl, res->name, "[[sampler(", &metal_index)) {
+        if (!res->name ||
+            !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_SAMPLER, res->name, &metal_index)) {
             continue;
         }
         if (res->binding != metal_index) {
@@ -1115,7 +1212,11 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     }
 
     src_len = strlen(src);
-    new_len = src_len + count * (to_len - from_len);
+    if (to_len >= from_len) {
+        new_len = src_len + count * (to_len - from_len);
+    } else {
+        new_len = src_len - count * (from_len - to_len);
+    }
     out = (char *)malloc(new_len + 1);
     if (!out) {
         return;
@@ -1185,13 +1286,8 @@ static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int
 
 static void applyMSLCloudVertexIDFix(Program *pptr, int stage, char **msl_ptr)
 {
-    /* In Metal, [[vertex_id]] for indexed draws equals the index-buffer value, not the
-     * draw-call ordinal.  The cloud shader was written for non-indexed drawing where
-     * gl_VertexID is sequential (0,1,2,3 per quad).  With indexed drawing the index
-     * buffer is {0,1,2,2,3,0, 4,5,6,6,7,4, ...} so [[vertex_id]] is still 0,1,2,3 per
-     * quad (unique values only, with duplicates handled by the GPU's post-transform cache).
-     * The original "% 4 / 4" arithmetic therefore remains correct and no fix is needed.
-     * This function is intentionally a no-op. */
+    /* Metal's [[vertex_id]] for indexed draws already carries the index-buffer
+     * value, matching OpenGL gl_VertexID for the CloudFaces shader. */
     (void)pptr; (void)stage; (void)msl_ptr;
 }
 
@@ -1776,9 +1872,24 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         replace_all_substr(&str_ret,
                            " sampler.sample(samplerSmplr,",
                            " sourceTex.sample(sourceSmplr,");
+        replace_all_substr(&str_ret, "thread const bool&", "bool");
+        replace_all_substr(&str_ret, "thread const int&", "int");
+        replace_all_substr(&str_ret, "thread const uint&", "uint");
+        replace_all_substr(&str_ret, "thread const float&", "float");
+        replace_all_substr(&str_ret, "thread const float2&", "float2");
+        replace_all_substr(&str_ret, "thread const float3&", "float3");
+        replace_all_substr(&str_ret, "thread const float4&", "float4");
+        replace_all_substr(&str_ret, "thread const int2&", "int2");
+        replace_all_substr(&str_ret, "thread const int3&", "int3");
+        replace_all_substr(&str_ret, "thread const int4&", "int4");
+        replace_all_substr(&str_ret, "thread const uint2&", "uint2");
+        replace_all_substr(&str_ret, "thread const uint3&", "uint3");
+        replace_all_substr(&str_ret, "thread const uint4&", "uint4");
+        replace_all_substr(&str_ret, "thread const float3x3&", "float3x3");
+        replace_all_substr(&str_ret, "thread const float4x4&", "float4x4");
         replace_all_substr(&str_ret,
                            "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
-                           "float4x4 end_portal_layer(thread const float& layer, constant const float& GameTime)");
+                           "float4x4 end_portal_layer(float layer, float GameTime)");
         if (stage == _VERTEX_SHADER &&
             strstr(str_ret, "float2 screenPos = (in.Position.xy * 2.0) - float2(1.0);") &&
             strstr(str_ret, "out.gl_Position = float4(screenPos.x, screenPos.y, 1.0, 1.0);") &&
@@ -2221,6 +2332,11 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     Program *pptr = NULL;
     static GLuint s_last_unlinked_program = 0;
     static unsigned int s_unlinked_program_hits = 0;
+
+    /* Flush pending draws before program changes so batches replay with correct state */
+    if (ctx->draw_defer_enabled && ctx->state.program_name != program) {
+        mglFlushCommandBuffer(ctx);
+    }
 
     if (program)
     {

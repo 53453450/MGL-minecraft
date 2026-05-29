@@ -17,3 +17,5 @@ external/glslang/
 *.dylib
 *.dylib
 /claude
+tools/mc-src
+tools/MCP-Reborn

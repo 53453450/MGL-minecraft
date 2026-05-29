@@ -345,6 +345,27 @@ static GLint mglKnownPlainUniformLocation(const char *name)
     if (mglSafeCStringEquals(name, "ChunkOffset")) {
         return 12;
     }
+    if (mglSafeCStringEquals(name, "u_ProjectionMatrix")) {
+        return 0;
+    }
+    if (mglSafeCStringEquals(name, "u_ModelViewMatrix")) {
+        return 1;
+    }
+    if (mglSafeCStringEquals(name, "u_RegionOffset")) {
+        return 2;
+    }
+    if (mglSafeCStringEquals(name, "u_TexCoordShrink")) {
+        return 3;
+    }
+    if (mglSafeCStringEquals(name, "u_FogColor")) {
+        return 4;
+    }
+    if (mglSafeCStringEquals(name, "u_EnvironmentFog")) {
+        return 5;
+    }
+    if (mglSafeCStringEquals(name, "u_RenderFog")) {
+        return 6;
+    }
 
     return -1;
 }
@@ -451,7 +472,8 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
         SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
         SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
     };
 
     if (!program || location < 0 || !binding_out) {
@@ -488,13 +510,54 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
     return GL_FALSE;
 }
 
+static GLboolean mglSamplerBindingSharedAcrossResources(Program *program, GLuint binding)
+{
+    static const int sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
+
+    if (!program || binding >= TEXTURE_UNITS) {
+        return GL_FALSE;
+    }
+
+    unsigned hits = 0u;
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (res->binding != binding ||
+                    !mglUniformResourceLooksSamplerLike(res, res_type)) {
+                    continue;
+                }
+
+                if (++hits > 1u) {
+                    return GL_TRUE;
+                }
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
 static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint unit)
 {
     static const int sampler_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
         SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
         SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
     };
 
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
@@ -541,13 +604,16 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                     firstMatchedBinding = res->binding;
                     firstMatchedStage = stage;
                 }
-                if (program->sampler_units[res->binding] != unit) {
-                    changed = GL_TRUE;
-                    program->sampler_units[res->binding] = unit;
-                }
-                if (!program->sampler_units_explicit[res->binding]) {
-                    explicit_changed = GL_TRUE;
-                    program->sampler_units_explicit[res->binding] = GL_TRUE;
+                GLboolean shared_binding = mglSamplerBindingSharedAcrossResources(program, res->binding);
+                if (!shared_binding) {
+                    if (program->sampler_units[res->binding] != unit) {
+                        changed = GL_TRUE;
+                        program->sampler_units[res->binding] = unit;
+                    }
+                    if (!program->sampler_units_explicit[res->binding]) {
+                        explicit_changed = GL_TRUE;
+                        program->sampler_units_explicit[res->binding] = GL_TRUE;
+                    }
                 }
                 if (program->sampler_units_by_stage[stage][res->binding] != unit) {
                     changed = GL_TRUE;

@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include "glm_context.h"
+#include "draw_command.h"
 #include "mgl_safety.h"
 
 static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
@@ -376,6 +377,18 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
         return;
     }
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ARRAYS;
+        cmd.mode = mode;
+        cmd.first = first;
+        cmd.count = count;
+        cmd.instanceCount = 1;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
 }
 
@@ -405,6 +418,19 @@ void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, co
 
     if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = 1;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawElements(ctx, mode, count, type, indices);
 }
 
@@ -430,6 +456,19 @@ void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end,
     }
 
     if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
+
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = 1;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
 
     ctx->mtl_funcs.mtlDrawRangeElements(ctx, mode, start, end, count, type, indices);
 }
@@ -464,6 +503,18 @@ void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei co
 
     if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ARRAYS_INSTANCED;
+        cmd.mode = mode;
+        cmd.first = first;
+        cmd.count = count;
+        cmd.instanceCount = instancecount;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawArraysInstanced(ctx, mode, first, count, instancecount);
 }
 
@@ -493,6 +544,19 @@ void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum
 
     if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = instancecount;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawElementsInstanced(ctx, mode, count, type, indices, instancecount);
 }
 
@@ -516,6 +580,20 @@ void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenu
     }
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.baseVertex = basevertex;
+        cmd.instanceCount = 1;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
 
     ctx->mtl_funcs.mtlDrawElementsBaseVertex(ctx, mode, count, type, indices, basevertex);
 }
@@ -543,6 +621,20 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.baseVertex = basevertex;
+        cmd.instanceCount = 1;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawRangeElementsBaseVertex(ctx, mode, start, end, count, type, indices, basevertex);
 }
 
@@ -567,6 +659,20 @@ void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei cou
     }
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = instancecount;
+        cmd.baseVertex = basevertex;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
 
     ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(ctx, mode, count, type, indices, instancecount, basevertex);
 }
@@ -627,6 +733,19 @@ void mglDrawArraysInstancedBaseInstance(GLMContext ctx, GLenum mode, GLint first
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE;
+        cmd.mode = mode;
+        cmd.first = first;
+        cmd.count = count;
+        cmd.instanceCount = instancecount;
+        cmd.baseInstance = baseinstance;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(ctx, mode, first, count, instancecount, baseinstance);
 }
 
@@ -652,6 +771,20 @@ void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei c
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = instancecount;
+        cmd.baseInstance = baseinstance;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
+
     ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(ctx, mode, count, type, indices, instancecount, baseinstance);
 }
 
@@ -676,6 +809,21 @@ void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode,
     }
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+
+    if (ctx->draw_defer_enabled) {
+        MGLDrawCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+        cmd.mode = mode;
+        cmd.count = count;
+        cmd.indexType = type;
+        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+        cmd.instanceCount = instancecount;
+        cmd.baseVertex = basevertex;
+        cmd.baseInstance = baseinstance;
+        mglAppendDrawCommand(ctx, &cmd);
+        return;
+    }
 
     ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(ctx, mode, count, type, indices, instancecount, basevertex, baseinstance);
 }

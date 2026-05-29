@@ -2221,6 +2221,7 @@ void mglActiveTexture(GLMContext ctx, GLenum texture)
     if (texture < GL_TEXTURE0)
     {
         ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     unit = (GLuint)(texture - GL_TEXTURE0);
@@ -2228,6 +2229,7 @@ void mglActiveTexture(GLMContext ctx, GLenum texture)
     if (unit >= TEXTURE_UNITS || unit >= STATE_VAR(max_combined_texture_image_units))
     {
         ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     STATE(active_texture) = unit;
@@ -2361,6 +2363,7 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
 void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
 {
     Texture *ptr;
+    GLboolean needs_storage_update;
 
     ptr = getTex(ctx, texture, target);
 
@@ -2369,10 +2372,14 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
     // level 0 needs to be filled out for mipmap geneation
     ERROR_CHECK_RETURN(ptr->faces[0].levels[0].complete, GL_INVALID_OPERATION);
 
+    needs_storage_update = (!ptr->mtl_data || !ptr->mipmapped || !ptr->genmipmaps);
+
     ptr->mipmapped = true;
     ptr->genmipmaps = true;
 
-    ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+    if (needs_storage_update) {
+        ptr->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+    }
 
     ctx->mtl_funcs.mtlGenerateMipmaps(ctx, ptr);
 }
