@@ -30,6 +30,7 @@
 #include "buffers.h"
 #include "glm_context.h"
 #include "mgl_safety.h"
+#include "draw_command.h"
 
 extern GLMContext _ctx;
 
@@ -401,6 +402,286 @@ static GLboolean mglUniformResourceLooksSamplerLike(const SpirvResource *res, in
     }
 }
 
+static const int mglActiveUniformResourceTypes[] = {
+    SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+    SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+    SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+    SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+    SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+};
+
+static GLboolean mglActiveUniformResourceHasName(const SpirvResource *res)
+{
+    return res && mglSafeCStringLength(res->name, NULL);
+}
+
+static GLboolean mglActiveUniformNamesMatch(const char *resource_name, const char *query_name)
+{
+    size_t resource_len = 0u;
+    size_t query_len = 0u;
+
+    if (!mglSafeCStringLength(resource_name, &resource_len) ||
+        !mglSafeCStringLength(query_name, &query_len)) {
+        return GL_FALSE;
+    }
+
+    if (resource_len == query_len && memcmp(resource_name, query_name, resource_len) == 0) {
+        return GL_TRUE;
+    }
+
+    if (query_len == resource_len + 3u &&
+        query_name[resource_len] == '[' &&
+        query_name[resource_len + 1u] == '0' &&
+        query_name[resource_len + 2u] == ']' &&
+        memcmp(resource_name, query_name, resource_len) == 0) {
+        return GL_TRUE;
+    }
+
+    if (resource_len == query_len + 3u &&
+        resource_name[query_len] == '[' &&
+        resource_name[query_len + 1u] == '0' &&
+        resource_name[query_len + 2u] == ']' &&
+        memcmp(resource_name, query_name, query_len) == 0) {
+        return GL_TRUE;
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglActiveUniformNameSeenBefore(Program *program,
+                                                GLint target_type_ordinal,
+                                                int target_stage,
+                                                GLuint target_index,
+                                                const char *name)
+{
+    if (!program || target_type_ordinal < 0 || !mglSafeCStringLength(name, NULL)) {
+        return GL_FALSE;
+    }
+
+    for (GLint type_ordinal = 0;
+         type_ordinal <= target_type_ordinal &&
+         type_ordinal < (GLint)(sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]));
+         type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+            for (GLuint i = 0; i < resources->count; i++) {
+                if (type_ordinal == target_type_ordinal &&
+                    stage == target_stage &&
+                    i >= target_index) {
+                    return GL_FALSE;
+                }
+                if (mglActiveUniformNamesMatch(resources->list[i].name, name)) {
+                    return GL_TRUE;
+                }
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
+SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out)
+{
+    if (stage_out) {
+        *stage_out = -1;
+    }
+    if (res_type_out) {
+        *res_type_out = -1;
+    }
+    if (!program) {
+        return NULL;
+    }
+
+    GLuint ordinal = 0u;
+    const size_t type_count = sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]);
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (ordinal == index) {
+                    if (stage_out) {
+                        *stage_out = stage;
+                    }
+                    if (res_type_out) {
+                        *res_type_out = res_type;
+                    }
+                    return res;
+                }
+                ordinal++;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+GLint mglProgramActiveUniformCount(Program *program)
+{
+    if (!program) {
+        return 0;
+    }
+
+    GLint count = 0;
+    while (mglProgramActiveUniformAt(program, (GLuint)count, NULL, NULL)) {
+        count++;
+    }
+    return count;
+}
+
+GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name)
+{
+    if (!program || !mglSafeCStringLength(name, NULL)) {
+        return -1;
+    }
+
+    GLint count = mglProgramActiveUniformCount(program);
+    for (GLint i = 0; i < count; i++) {
+        SpirvResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, NULL);
+        if (res && mglActiveUniformNamesMatch(res->name, name)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static GLint mglKnownPlainUniformType(const char *name)
+{
+    if (!name || !mglSafeCStringLength(name, NULL)) {
+        return GL_FLOAT;
+    }
+
+    if (mglSafeCStringEquals(name, "ModelViewMat") ||
+        mglSafeCStringEquals(name, "ProjMat") ||
+        mglSafeCStringEquals(name, "TextureMat") ||
+        mglSafeCStringEquals(name, "u_ProjectionMatrix") ||
+        mglSafeCStringEquals(name, "u_ModelViewMatrix")) {
+        return GL_FLOAT_MAT4;
+    }
+    if (mglSafeCStringEquals(name, "IViewRotMat")) {
+        return GL_FLOAT_MAT3;
+    }
+    if (mglSafeCStringEquals(name, "ColorModulator") ||
+        mglSafeCStringEquals(name, "FogColor") ||
+        mglSafeCStringEquals(name, "u_FogColor") ||
+        mglSafeCStringEquals(name, "u_TexCoordShrink")) {
+        return GL_FLOAT_VEC4;
+    }
+    if (mglSafeCStringEquals(name, "ScreenSize")) {
+        return GL_FLOAT_VEC2;
+    }
+    if (mglSafeCStringEquals(name, "ChunkOffset") ||
+        mglSafeCStringEquals(name, "u_RegionOffset")) {
+        return GL_FLOAT_VEC3;
+    }
+    if (mglSafeCStringEquals(name, "FogShape") ||
+        mglSafeCStringEquals(name, "u_EnvironmentFog") ||
+        mglSafeCStringEquals(name, "u_RenderFog")) {
+        return GL_INT;
+    }
+
+    return GL_FLOAT;
+}
+
+static GLint mglSamplerUniformGLType(const SpirvResource *res, int res_type)
+{
+    if (!res) {
+        return 0;
+    }
+
+    if (res_type == SPVC_RESOURCE_TYPE_STORAGE_IMAGE) {
+        return (res->image_dim == 5u) ? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
+    }
+
+    if (res_type == SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS) {
+        return GL_SAMPLER_2D;
+    }
+
+    if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
+        res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE ||
+        mglUniformResourceLooksSamplerLike(res, res_type)) {
+        switch (res->image_dim) {
+            case 0: return res->image_arrayed ? GL_SAMPLER_1D_ARRAY : GL_SAMPLER_1D;
+            case 1: return res->image_arrayed ? GL_SAMPLER_2D_ARRAY : GL_SAMPLER_2D;
+            case 2: return GL_SAMPLER_3D;
+            case 3: return res->image_arrayed ? GL_SAMPLER_CUBE_MAP_ARRAY : GL_SAMPLER_CUBE;
+            case 5: return GL_INT_SAMPLER_BUFFER;
+            default: return GL_SAMPLER_2D;
+        }
+    }
+
+    return 0;
+}
+
+GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type)
+{
+    GLint sampler_type = mglSamplerUniformGLType(res, res_type);
+    if (sampler_type != 0) {
+        return sampler_type;
+    }
+    return mglKnownPlainUniformType(res ? res->name : NULL);
+}
+
+GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type)
+{
+    (void)res;
+    (void)res_type;
+    return 1;
+}
+
+GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res)
+{
+    size_t len = 0u;
+    if (!res || !mglSafeCStringLength(res->name, &len)) {
+        return 0;
+    }
+    return (GLsizei)len;
+}
+
+GLint mglProgramActiveUniformMaxNameLength(Program *program)
+{
+    GLint max_len = 0;
+    GLint count = mglProgramActiveUniformCount(program);
+    for (GLint i = 0; i < count; i++) {
+        SpirvResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, NULL);
+        GLsizei len = mglProgramActiveUniformNameLength(res);
+        if ((GLint)len + 1 > max_len) {
+            max_len = (GLint)len + 1;
+        }
+    }
+    return max_len;
+}
+
+void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, GLsizei *length, GLchar *name)
+{
+    GLsizei src_len = mglProgramActiveUniformNameLength(res);
+    const char *src = (src_len > 0 && res) ? res->name : "";
+
+    if (length) {
+        *length = src_len;
+    }
+    if (name && bufSize > 0) {
+        GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
+        if (copy_len > 0) {
+            memcpy(name, src, (size_t)copy_len);
+        }
+        name[copy_len] = '\0';
+    }
+}
+
 static GLint mglPlainUniformResourceLocation(const SpirvResource *res)
 {
     if (!res) {
@@ -570,14 +851,8 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         return GL_FALSE;
     }
 
-    if (unit < 0 || unit >= TEXTURE_UNITS) {
-        ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
-    }
-
     GLboolean matched = GL_FALSE;
-    GLboolean changed = GL_FALSE;
-    GLboolean explicit_changed = GL_FALSE;
-
+    GLboolean needs_update = GL_FALSE;
     const char *firstMatchedName = NULL;
     GLuint firstMatchedBinding = 0u;
     int firstMatchedStage = -1;
@@ -604,6 +879,61 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                     firstMatchedBinding = res->binding;
                     firstMatchedStage = stage;
                 }
+
+                if (unit < 0 || unit >= TEXTURE_UNITS) {
+                    continue;
+                }
+
+                GLboolean shared_binding = mglSamplerBindingSharedAcrossResources(program, res->binding);
+                if (!shared_binding &&
+                    (program->sampler_units[res->binding] != unit ||
+                     !program->sampler_units_explicit[res->binding])) {
+                    needs_update = GL_TRUE;
+                }
+                if (program->sampler_units_by_stage[stage][res->binding] != unit ||
+                    !program->sampler_units_explicit_by_stage[stage][res->binding] ||
+                    res->sampler_unit != unit ||
+                    !res->sampler_unit_explicit) {
+                    needs_update = GL_TRUE;
+                }
+            }
+        }
+    }
+
+    if (!matched) {
+        return GL_FALSE;
+    }
+
+    if (unit < 0 || unit >= TEXTURE_UNITS) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
+    }
+
+    if (needs_update) {
+        mglFlushPendingDraws(ctx);
+    }
+
+    GLboolean changed = GL_FALSE;
+    GLboolean explicit_changed = GL_FALSE;
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglUniformResourceLooksSamplerLike(res, res_type) ||
+                    res->binding >= TEXTURE_UNITS) {
+                    continue;
+                }
+
+                if (!mglUniformLocationMatchesResource(res, res_type, location)) {
+                    continue;
+                }
+
                 GLboolean shared_binding = mglSamplerBindingSharedAcrossResources(program, res->binding);
                 if (!shared_binding) {
                     if (program->sampler_units[res->binding] != unit) {
@@ -635,10 +965,6 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         }
     }
 
-    if (!matched) {
-        return GL_FALSE;
-    }
-
     if (changed || explicit_changed) {
         static unsigned long long s_sampler_uniform_update_count = 0;
         unsigned long long hit = ++s_sampler_uniform_update_count;
@@ -665,9 +991,51 @@ static size_t mglRoundUpUniformBlockSize(size_t value)
     return value ? ((value + 15) & ~(size_t)15) : 0;
 }
 
+static GLboolean mglUniformBlockHasName(const SpirvResource *block)
+{
+    return block && mglSafeCStringLength(block->name, NULL);
+}
+
+static GLboolean mglUniformBlockSameIdentity(const SpirvResource *a, const SpirvResource *b)
+{
+    if (!a || !b) {
+        return GL_FALSE;
+    }
+
+    if (mglUniformBlockHasName(a) && mglUniformBlockHasName(b)) {
+        return mglSafeCStringEquals(a->name, b->name);
+    }
+
+    return a == b;
+}
+
+static GLboolean mglUniformBlockNameSeenBefore(Program *program, int block_stage, GLuint block_index, const char *name)
+{
+    if (!program || !mglSafeCStringLength(name, NULL)) {
+        return GL_FALSE;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+
+        for (GLuint i = 0; i < resources->count; i++) {
+            if (stage > block_stage || (stage == block_stage && i >= block_index)) {
+                return GL_FALSE;
+            }
+            if (mglSafeCStringEquals(name, resources->list[i].name)) {
+                return GL_TRUE;
+            }
+        }
+    }
+
+    return GL_FALSE;
+}
+
 static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint uniformBlockIndex, int *stage_out)
 {
-    SpirvResource *first_by_ordinal = NULL;
     GLuint ordinal = 0;
 
     if (!program || uniformBlockIndex == GL_INVALID_INDEX) {
@@ -681,23 +1049,20 @@ static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint unifor
         }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
-            if (res->gl_binding == uniformBlockIndex) {
+            if (mglUniformBlockNameSeenBefore(program, stage, i, res->name)) {
+                continue;
+            }
+            if (ordinal == uniformBlockIndex) {
                 if (stage_out) {
                     *stage_out = stage;
                 }
                 return res;
             }
-            if (ordinal == uniformBlockIndex && !first_by_ordinal) {
-                first_by_ordinal = res;
-                if (stage_out) {
-                    *stage_out = stage;
-                }
-            }
             ordinal++;
         }
     }
 
-    return first_by_ordinal;
+    return NULL;
 }
 
 static size_t mglUniformBlockRequiredSize(Program *program, const SpirvResource *block)
@@ -715,15 +1080,7 @@ static size_t mglUniformBlockRequiredSize(Program *program, const SpirvResource 
         }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
-            GLboolean same_block = GL_FALSE;
-
-            if (mglSafeCStringEquals(block->name, res->name)) {
-                same_block = GL_TRUE;
-            } else if (res->gl_binding == block->gl_binding) {
-                same_block = GL_TRUE;
-            }
-
-            if (same_block && res->required_size > required_size) {
+            if (mglUniformBlockSameIdentity(block, res) && res->required_size > required_size) {
                 required_size = res->required_size;
             }
         }
@@ -744,8 +1101,7 @@ static GLboolean mglUniformBlockReferencedByStage(Program *program, const SpirvR
     }
     for (GLuint i = 0; i < resources->count; i++) {
         SpirvResource *res = &resources->list[i];
-        if (mglSafeCStringEquals(block->name, res->name) ||
-            res->gl_binding == block->gl_binding) {
+        if (mglUniformBlockSameIdentity(block, res)) {
             return GL_TRUE;
         }
     }
@@ -814,31 +1170,12 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                 ? list[i].uniform_location
                                 : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding)));
 
-                    if (mglSafeCStringContains(name, "CloudFaces")) {
-                        fprintf(stderr,
-                                "MGL REFLECT UniformLocation program=%u name=%s -> loc=%d binding=%u type=%d stage=%d dim=%u\n",
-                                program,
-                                mglSafeCStringForLog(name),
-                                location,
-                                binding,
-                                res_type,
-                                stage,
-                                list[i].image_dim);
-                    }
-
                     return location;
                 }
             }
         }
     }
 
-    if (mglSafeCStringContains(name, "CloudFaces")) {
-        fprintf(stderr,
-                "MGL REFLECT UniformLocation MISS program=%u name=%s\n",
-                program,
-                mglSafeCStringForLog(name));
-    }
-    
     return -1;
 }
 
@@ -899,15 +1236,20 @@ void mglGetUniformIndices(GLMContext ctx, GLuint program, GLsizei uniformCount, 
         return;
     }
 
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     for (GLsizei i = 0; i < uniformCount; i++) {
-        uniformIndices[i] = (GLuint)-1;
+        GLint index = mglProgramActiveUniformIndexByName(ptr, uniformNames[i]);
+        uniformIndices[i] = (index >= 0) ? (GLuint)index : GL_INVALID_INDEX;
     }
 }
 
 void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount, const GLuint *uniformIndices, GLenum pname, GLint *params)
 {
-    (void)uniformIndices;
-    (void)pname;
     if (!ctx) {
         return;
     }
@@ -923,15 +1265,56 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    if (uniformCount > 0 && !uniformIndices) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
     for (GLsizei i = 0; i < uniformCount; i++) {
-        params[i] = 0;
+        int stage = -1;
+        int res_type = -1;
+        SpirvResource *res = mglProgramActiveUniformAt(ptr, uniformIndices[i], &stage, &res_type);
+        (void)stage;
+        if (!res) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+
+        switch (pname) {
+            case GL_UNIFORM_TYPE:
+                params[i] = mglProgramActiveUniformGLType(res, res_type);
+                break;
+            case GL_UNIFORM_SIZE:
+                params[i] = mglProgramActiveUniformSize(res, res_type);
+                break;
+            case GL_UNIFORM_NAME_LENGTH:
+                params[i] = (GLint)mglProgramActiveUniformNameLength(res) + 1;
+                break;
+            case GL_UNIFORM_BLOCK_INDEX:
+            case GL_UNIFORM_OFFSET:
+            case GL_UNIFORM_ARRAY_STRIDE:
+            case GL_UNIFORM_MATRIX_STRIDE:
+            case GL_UNIFORM_ATOMIC_COUNTER_BUFFER_INDEX:
+                params[i] = -1;
+                break;
+            case GL_UNIFORM_IS_ROW_MAJOR:
+                params[i] = GL_FALSE;
+                break;
+            default:
+                ERROR_RETURN(GL_INVALID_ENUM);
+                return;
+        }
     }
 }
 
 void mglGetActiveUniformName(GLMContext ctx, GLuint program, GLuint uniformIndex, GLsizei bufSize, GLsizei *length, GLchar *uniformName)
 {
-    (void)uniformIndex;
     if (!ctx) {
         return;
     }
@@ -949,6 +1332,20 @@ void mglGetActiveUniformName(GLMContext ctx, GLuint program, GLuint uniformIndex
     if (uniformName && bufSize > 0) {
         uniformName[0] = '\0';
     }
+
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    SpirvResource *res = mglProgramActiveUniformAt(ptr, uniformIndex, NULL, NULL);
+    if (!res) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    mglProgramCopyActiveUniformName(res, bufSize, length, uniformName);
 }
 
 GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *uniformBlockName)
@@ -974,6 +1371,7 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, (GLuint)-1);
     }
 
+    GLuint block_index = 0;
     for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
     {
         SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
@@ -988,13 +1386,15 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
             if (!mglSafeCStringLength(str, NULL)) {
                 continue;
             }
+            if (mglUniformBlockNameSeenBefore(ptr, stage, i, str)) {
+                continue;
+            }
 
             if (mglSafeCStringEquals(str, uniformBlockName))
             {
-                GLuint binding = list[i].gl_binding;
-
-                return binding;
+                return block_index;
             }
+            block_index++;
         }
     }
 
@@ -1140,6 +1540,9 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
 
     const char *block_name = mglSafeCStringLength(block->name, NULL) ? block->name : NULL;
     GLuint old_binding = block->gl_binding;
+    if (old_binding != uniformBlockBinding) {
+        mglFlushPendingDraws(ctx);
+    }
 
     fprintf(stderr, "MGL TRACE UniformBlockBinding program=%u blockIndex=%u blockName=%s oldBinding=%u newBinding=%u\n",
             (unsigned)program, (unsigned)uniformBlockIndex,
@@ -1150,6 +1553,11 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
      * `binding` is the Metal argument slot after MSL reflection/repair.
      * `gl_binding` is the client-side UBO binding point used to find
      * glBindBufferRange state. glUniformBlockBinding changes only the latter.
+     *
+     * Match the block identity, not the old binding number. Minecraft's 1.21.x
+     * shaders legitimately remap blocks through occupied binding points during
+     * setup (for example Fog 3->2 followed by Lighting 2->3). Updating every
+     * resource with the old binding makes those blocks alias the same UBO.
      */
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
@@ -1158,8 +1566,13 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
         }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
-            if (mglSafeCStringEquals(block_name, res->name) ||
-                res->gl_binding == old_binding) {
+            GLboolean same_named_block =
+                block_name &&
+                mglSafeCStringLength(res->name, NULL) &&
+                mglSafeCStringEquals(block_name, res->name);
+            GLboolean same_resource =
+                !block_name && stage == block_stage && res == block;
+            if (same_named_block || same_resource) {
                 res->gl_binding = uniformBlockBinding;
             }
         }
@@ -1193,6 +1606,23 @@ bool checkUniformParams(GLMContext ctx, GLint location)
     }
 
     return true;
+}
+
+static GLboolean mglUniformBufferDataWouldChange(Buffer *buf, GLsizeiptr size, const void *data)
+{
+    if (!buf) {
+        return GL_FALSE;
+    }
+    if (buf->size != size) {
+        return GL_TRUE;
+    }
+    if (size <= 0) {
+        return GL_FALSE;
+    }
+    if (!buf->data.buffer_data || !data) {
+        return GL_TRUE;
+    }
+    return memcmp((const void *)(uintptr_t)buf->data.buffer_data, data, (size_t)size) != 0;
 }
 
 static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void *ptr, GLsizei count, size_t element_size, GLsizeiptr *size_out)
@@ -1268,8 +1698,18 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         return;
     }
 
+    /*
+     * Deferred draws snapshot the GL state struct, but Program-owned uniform
+     * storage is mutable shared state. Match Apple OpenGL call ordering by
+     * submitting queued draws before this glUniform* changes that storage.
+     */
+    mglFlushPendingDraws(ctx);
+
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
+    if (mglUniformBufferDataWouldChange(buf, size, ptr)) {
+        mglFlushPendingDrawsForBuffer(ctx, buf);
+    }
     
     if(buf == NULL)
     {
@@ -1305,6 +1745,9 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         }
     }
     if (globalSlot->buf) {
+        if (mglUniformBufferDataWouldChange(globalSlot->buf, size, ptr)) {
+            mglFlushPendingDrawsForBuffer(ctx, globalSlot->buf);
+        }
         initBufferData(ctx, globalSlot->buf, size, ptr, true);
         globalSlot->buffer = globalSlot->buf->name;
         globalSlot->offset = 0;
@@ -1449,7 +1892,7 @@ void mglUniform3i(GLMContext ctx, GLint location, GLint v0, GLint v1, GLint v2)
 {
     GLint data[] = {v0, v1, v2};
     
-    mglUniform(ctx, location, data, 3 * sizeof(GLfloat));
+    mglUniform(ctx, location, data, 3 * sizeof(GLint));
 }
 
 void mglUniform3iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
@@ -1596,9 +2039,9 @@ void mglUniformMatrix2fv(GLMContext ctx, GLint location, GLsizei count, GLboolea
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat2x3dv)       // 2x3 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat2x3dvTrans) // Transposed matrix type (same dimensions for 2x3)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 3, Mat2x3dv, Mat2x3dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat2x3dv)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat2x3dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 2, Mat2x3dv, Mat2x3dvTrans)
 
 void mglUniformMatrix2x3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
@@ -1610,9 +2053,9 @@ void mglUniformMatrix2x3dv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat2x3fv)       // 2x3 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat2x3fvTrans) // Transposed matrix type (same dimensions for 2x3)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 3, Mat2x3fv, Mat2x3fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat2x3fv)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat2x3fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 2, Mat2x3fv, Mat2x3fvTrans)
 
 void mglUniformMatrix2x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -1624,9 +2067,9 @@ void mglUniformMatrix2x3fv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat2x4dv)       // 2x4 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat2x4dvTrans) // Transposed matrix type (same dimensions for 2x4)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 4, Mat2x4dv, Mat2x4dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat2x4dv)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat2x4dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 2, Mat2x4dv, Mat2x4dvTrans)
 
 void mglUniformMatrix2x4dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
@@ -1638,9 +2081,9 @@ void mglUniformMatrix2x4dv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat2x4fv)       // 2x4 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat2x4fvTrans) // Transposed matrix type (same dimensions for 2x4)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 4, Mat2x4fv, Mat2x4fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat2x4fv)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat2x4fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 2, Mat2x4fv, Mat2x4fvTrans)
 
 void mglUniformMatrix2x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -1680,9 +2123,9 @@ void mglUniformMatrix3fv(GLMContext ctx, GLint location, GLsizei count, GLboolea
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat3x2dv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat3x2dvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 2, Mat3x2dv, Mat3x2dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat3x2dv)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 2, Mat3x2dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 3, Mat3x2dv, Mat3x2dvTrans)
 
 void mglUniformMatrix3x2dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
@@ -1694,9 +2137,9 @@ void mglUniformMatrix3x2dv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat3x2fv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat3x2fvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 2, Mat3x2fv, Mat3x2fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 3, Mat3x2fv)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 2, Mat3x2fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 3, Mat3x2fv, Mat3x2fvTrans)
 
 void mglUniformMatrix3x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -1708,9 +2151,9 @@ void mglUniformMatrix3x2fv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat3x4dv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat3x4dvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 4, Mat3x4dv, Mat3x4dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat3x4dv)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat3x4dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 3, Mat3x4dv, Mat3x4dvTrans)
 
 void mglUniformMatrix3x4dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
@@ -1722,9 +2165,9 @@ void mglUniformMatrix3x4dv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat3x4fv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat3x4fvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 4, Mat3x4fv, Mat3x4fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat3x4fv)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat3x4fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 3, Mat3x4fv, Mat3x4fvTrans)
 
 void mglUniformMatrix3x4fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -1764,23 +2207,23 @@ void mglUniformMatrix4fv(GLMContext ctx, GLint location, GLsizei count, GLboolea
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat4x2dv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat4x2dvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 2, Mat4x2dv, Mat4x2dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 2, 4, Mat4x2dv)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 2, Mat4x2dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 2, 4, Mat4x2dv, Mat4x2dvTrans)
 
 void mglUniformMatrix4x2dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
     HANDLE_MATRIX_TRANSPOSE(
                             GLdouble,        // Element type
-                            Mat4x4dv,          // Source matrix type
-                            Mat4x4dvTrans,     // Destination matrix type
-                            Mat4x4dvTranspose  // Transpose function
+                            Mat4x2dv,          // Source matrix type
+                            Mat4x2dvTrans,     // Destination matrix type
+                            Mat4x2dvTranspose  // Transpose function
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat4x2fv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat4x2fvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 2, Mat4x2fv, Mat4x2fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 2, 4, Mat4x2fv)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 2, Mat4x2fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 2, 4, Mat4x2fv, Mat4x2fvTrans)
 
 void mglUniformMatrix4x2fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
@@ -1792,9 +2235,9 @@ void mglUniformMatrix4x2fv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat4x3dv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat4x3dvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLdouble, 4, 3, Mat4x3dv, Mat4x3dvTrans)
+DEFINE_MATRIX_TYPE(GLdouble, 3, 4, Mat4x3dv)
+DEFINE_MATRIX_TYPE(GLdouble, 4, 3, Mat4x3dvTrans)
+DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 4, Mat4x3dv, Mat4x3dvTrans)
 
 void mglUniformMatrix4x3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
@@ -1806,9 +2249,9 @@ void mglUniformMatrix4x3dv(GLMContext ctx, GLint location, GLsizei count, GLbool
         );
 }
 
-DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat4x3fv)       // 3x3 matrix type
-DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat4x3fvTrans) // Transposed matrix type (same dimensions for 3x3)
-DEFINE_TRANSPOSE_FUNC(GLfloat, 4, 3, Mat4x3fv, Mat4x3fvTrans)
+DEFINE_MATRIX_TYPE(GLfloat, 3, 4, Mat4x3fv)
+DEFINE_MATRIX_TYPE(GLfloat, 4, 3, Mat4x3fvTrans)
+DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 4, Mat4x3fv, Mat4x3fvTrans)
 
 void mglUniformMatrix4x3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {

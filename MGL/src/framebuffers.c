@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include "glm_context.h"
+#include "draw_command.h"
 #include "mgl_safety.h"
 #include "pixel_utils.h"
 #include "utils.h"
@@ -38,6 +39,7 @@ extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture);
+extern void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex);
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget);
 void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei n, const GLenum *bufs);
 extern void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLint *value);
@@ -392,6 +394,94 @@ Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer)
     return ptr;
 }
 
+GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuint *outWidth, GLuint *outHeight)
+{
+    FBOAttachment *color0;
+    Texture *tex;
+
+    if (outWidth) {
+        *outWidth = 0u;
+    }
+    if (outHeight) {
+        *outHeight = 0u;
+    }
+    if (!ctx || !fbo || !outWidth || !outHeight) {
+        return GL_FALSE;
+    }
+
+    if ((fbo->color_attachment_bitfield & 1u) == 0u) {
+        return GL_FALSE;
+    }
+
+    color0 = &fbo->color_attachments[0];
+    tex = NULL;
+    if (color0->textarget == GL_RENDERBUFFER && color0->buf.rbo) {
+        tex = color0->buf.rbo->tex;
+    } else {
+        tex = color0->buf.tex;
+        if (!tex && color0->texture != 0u) {
+            tex = findTexture(ctx, color0->texture);
+        }
+    }
+
+    if (!tex || tex->width == 0u || tex->height == 0u) {
+        return GL_FALSE;
+    }
+
+    *outWidth = tex->width;
+    *outHeight = tex->height;
+    return GL_TRUE;
+}
+
+GLboolean mglFramebufferIsSmallIconTarget(GLMContext ctx, Framebuffer *fbo)
+{
+    (void)ctx;
+    (void)fbo;
+
+    /*
+     * Minecraft 1.21.8 renders the lightmap into a 16x16 texture. Treating any
+     * tiny framebuffer as a GUI item icon target redirects real lightmap draws
+     * and leaks that state into GUI/entity rendering.
+     */
+    return GL_FALSE;
+}
+
+void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
+{
+    GLuint width = 0u;
+    GLuint height = 0u;
+
+    if (!ctx) {
+        return;
+    }
+
+    if (fbo && mglFramebufferPrimaryColorSize(ctx, fbo, &width, &height)) {
+        ctx->state.viewport[0] = 0;
+        ctx->state.viewport[1] = 0;
+        ctx->state.viewport[2] = (GLint)width;
+        ctx->state.viewport[3] = (GLint)height;
+        ctx->state.viewport_array[0][0] = 0.0f;
+        ctx->state.viewport_array[0][1] = 0.0f;
+        ctx->state.viewport_array[0][2] = (GLfloat)width;
+        ctx->state.viewport_array[0][3] = (GLfloat)height;
+        ctx->state.viewport_binding_fbo_name = fbo->name;
+        ctx->state.viewport_binding_width = (GLsizei)width;
+        ctx->state.viewport_binding_height = (GLsizei)height;
+        if (mglFramebufferIsSmallIconTarget(ctx, fbo)) {
+            ctx->state.pending_icon_bake_fbo_name = fbo->name;
+        } else {
+            ctx->state.pending_icon_bake_fbo_name = 0u;
+        }
+    } else if (!fbo) {
+        ctx->state.viewport_binding_fbo_name = 0u;
+        ctx->state.viewport_binding_width = ctx->state.viewport[2];
+        ctx->state.viewport_binding_height = ctx->state.viewport[3];
+        ctx->state.pending_icon_bake_fbo_name = 0u;
+    }
+
+    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+}
+
 static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum buffer)
 {
     return ctx &&
@@ -482,6 +572,25 @@ static void mglFramebufferLoadReadBuffer(GLMContext ctx, Framebuffer *fbo)
         readBuffer = fbo ? GL_COLOR_ATTACHMENT0 : GL_FRONT;
     }
     ctx->state.read_buffer = readBuffer;
+}
+
+void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    if (fbo) {
+        fbo->dirty_bits |= DIRTY_FBO_BINDING;
+    }
+    if (fbo && mglFramebufferIsSmallIconTarget(ctx, fbo)) {
+        ctx->state.pending_icon_bake_fbo_name = fbo->name;
+    } else {
+        ctx->state.pending_icon_bake_fbo_name = 0u;
+    }
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
 }
 
 typedef struct MGLFramebufferBindingSnapshot_t {
@@ -594,7 +703,6 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     if (!ctx)
         return;
 
-    /* Flush pending draws before FBO changes */
     if (ctx->draw_defer_enabled) {
         mglFlushCommandBuffer(ctx);
     }
@@ -706,6 +814,12 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     
     if (drawTargetChanged)
     {
+        if (ptr && mglFramebufferIsSmallIconTarget(ctx, ptr)) {
+            STATE(pending_icon_bake_fbo_name) = ptr->name;
+        } else {
+            STATE(pending_icon_bake_fbo_name) = 0u;
+        }
+
         if (ptr)
         {
             ptr->dirty_bits |= DIRTY_FBO_BINDING;
@@ -720,6 +834,8 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
 
 void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers)
 {
+    mglFlushPendingDraws(ctx);
+
     for (GLsizei i = 0; i < n; i++)
     {
         if (framebuffers[i] == 0)
@@ -989,6 +1105,8 @@ void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffe
         return;
     }
 
+    mglFlushPendingDraws(ctx);
+
     for (GLsizei i = 0; i < n; ++i) {
         GLuint name = renderbuffers[i];
         if (name == 0u) {
@@ -1029,6 +1147,8 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+
+    mglFlushPendingDraws(ctx);
 
     tex = newTexObj(ctx, target);
     if (!tex) {
@@ -1186,6 +1306,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     GLuint color_attachment_index = 0u;
 
     fbo = currentFBOForType(ctx, target);
+    mglFlushPendingDraws(ctx);
     
     // Log FBO texture attachments for large textures (framebuffer size)
     if (MGL_VERBOSE_FBO_LOGS && texture != 0) {
@@ -1413,6 +1534,9 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     fbo_attachment_ptr->clear_color[2] = 0.f;
     fbo_attachment_ptr->clear_color[3] = 0.f;
     fbo_attachment_ptr->buf.tex = tex;
+    if (tex) {
+        mglClearLastSampled2DTextureIfMatches(ctx, tex);
+    }
 
     if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
     {
@@ -1513,6 +1637,7 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     FBOAttachment *fbo_attachment_ptr;
 
     fbo = currentFBOForType(ctx, target);
+    mglFlushPendingDraws(ctx);
 
     switch(attachment)
     {
@@ -1897,7 +2022,9 @@ static void mglGetDefaultFramebufferAttachmentParameteriv(GLMContext ctx, GLenum
             }
             return;
         case GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING:
-            *params = colorAttachment ? GL_LINEAR : GL_LINEAR;
+            *params = (colorAttachment && ctx && ctx->default_framebuffer_srgb_capable)
+                ? GL_SRGB
+                : GL_LINEAR;
             return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
@@ -2273,7 +2400,6 @@ void mglCreateFramebuffers(GLMContext ctx, GLsizei n, GLuint *framebuffers)
 
 void mglNamedFramebufferRenderbuffer(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer)
 {
-    Framebuffer *savedDraw = ctx->state.framebuffer;
     Framebuffer *fbo = findFrameBuffer(ctx, framebuffer);
 
     if (framebuffer == 0u || !fbo) {
@@ -2281,9 +2407,12 @@ void mglNamedFramebufferRenderbuffer(GLMContext ctx, GLuint framebuffer, GLenum 
         return;
     }
 
+    MGLFramebufferBindingSnapshot snapshot;
+    mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
     ctx->state.framebuffer = fbo;
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
     mglFramebufferRenderbuffer(ctx, GL_DRAW_FRAMEBUFFER, attachment, renderbuffertarget, renderbuffer);
-    ctx->state.framebuffer = savedDraw;
+    mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 
 void mglNamedFramebufferParameteri(GLMContext ctx, GLuint framebuffer, GLenum pname, GLint param)

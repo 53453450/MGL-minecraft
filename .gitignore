@@ -14,8 +14,4 @@ external/glslang/
 /MGL.gputrace
 /Info.plist
 *.dylib
-*.dylib
-*.dylib
-/claude
-tools/mc-src
-tools/MCP-Reborn
+/.claude

@@ -94,7 +94,9 @@ Point them to the built libraries so they can take over rendering.
 
 ## Current Status
 
-- Known bug: 1.21.8's entity texture intrusion, destruction animation misalignment, player's item bar item icon is not rendered, (in 1.21.7, there is no destruction animation misalignment problem) 1.21.11, 1.21.10's world brightness problem, 1.21.11's UI box disappears, 1.21.1 and 1.20.1's archive previews are reversed (there may be other unknown bugs in other versions, but I haven't tested it) - Forge modloader's startup rendering animation is not loaded, neoforge modloader will crash, and fabric modloader will not have an impact (tested in 1.21.7) - sodium is supported when loading with fabric modloader (in all the versions mentioned above)
+- Known bug: 1.21.8's physical texture infring, the player's item bar icon is not rendered, 1.21.11, 1.21.10's world brightness problem, 1.21.11's UI selection box disappears (there may be other unknown bugs in other versions, but I haven't tested it)
+- Forge modloader's startup rendering animation is not loaded, neoforge modloader will crash, and fabric modloader will not have an impact (tested in 1.21.7) 
+- sodium is supported when loading with fabric modloader (in all the versions mentioned above)
 
 ## Project Structure
 
@@ -183,20 +185,13 @@ Implemented in Objective-C, responsible for:
 - State mapping (OpenGL → Metal)
 - Draw call execution
 
-## tools/java-tex-probe
-
-**A Java Agent used to monitor glTexSubImage2D calls in Minecraft (LWJGL):**
-- Intercepts calls in GL11C, GL12C, GL45C
-- Logs texture size, format, buffer address, data hash, etc.
-- Filters specific texture sizes (default: 512x512)
-- Outputs call stack (filters Minecraft-related frames)
-
 ## Acknowledgements
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
 - [GLFW](https://www.glfw.org/) - Window management library
 - [openglonmetal](https://github.com/openglonmetal/MGL) - Original MGL framework
-- [MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) - Minecraft source code, to check MC's GL implementation for debug
+- [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
+- [apitrace](https://github.com/apitrace/apitrace)
 
 ## License
 

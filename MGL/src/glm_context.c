@@ -38,6 +38,14 @@ extern void init_dispatch(GLMContext ctx);
 
 GLMContext _ctx = NULL;
 
+enum {
+    kMGLMTLPixelFormatInvalid = 0,
+    kMGLMTLPixelFormatRGBA8Unorm = 70,
+    kMGLMTLPixelFormatRGBA8Unorm_sRGB = 71,
+    kMGLMTLPixelFormatBGRA8Unorm = 80,
+    kMGLMTLPixelFormatBGRA8Unorm_sRGB = 81
+};
+
 /* Declared in MGLRenderer.m */
 extern void* CppCreateMGLRendererHeadless(void *glm_ctx);
 
@@ -73,6 +81,89 @@ GLMContext mglGetContext(void)
     return _ctx;
 }
 
+static GLuint mglLinearDefaultFramebufferFormat(GLuint mtl_format)
+{
+    switch (mtl_format) {
+        case kMGLMTLPixelFormatRGBA8Unorm_sRGB:
+            return kMGLMTLPixelFormatRGBA8Unorm;
+        case kMGLMTLPixelFormatBGRA8Unorm_sRGB:
+            return kMGLMTLPixelFormatBGRA8Unorm;
+        default:
+            return mtl_format;
+    }
+}
+
+static GLuint mglSRGBDefaultFramebufferFormat(GLuint mtl_format)
+{
+    switch (mtl_format) {
+        case kMGLMTLPixelFormatRGBA8Unorm:
+        case kMGLMTLPixelFormatRGBA8Unorm_sRGB:
+            return kMGLMTLPixelFormatRGBA8Unorm_sRGB;
+        case kMGLMTLPixelFormatBGRA8Unorm:
+        case kMGLMTLPixelFormatBGRA8Unorm_sRGB:
+            return kMGLMTLPixelFormatBGRA8Unorm_sRGB;
+        default:
+            return mtl_format;
+    }
+}
+
+static GLuint mglDefaultFramebufferFormatForGLFormatType(GLenum format, GLenum type)
+{
+    GLuint mtl_format = mtlPixelFormatForGLFormatType(format, type);
+    if (mtl_format != kMGLMTLPixelFormatInvalid) {
+        return mtl_format;
+    }
+
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+            if (format == GL_BGRA) {
+                return kMGLMTLPixelFormatBGRA8Unorm;
+            }
+            if (format == GL_RGBA) {
+                return kMGLMTLPixelFormatRGBA8Unorm;
+            }
+            break;
+        case GL_UNSIGNED_INT_8_8_8_8:
+            if (format == GL_RGBA || format == GL_BGRA) {
+                return kMGLMTLPixelFormatRGBA8Unorm;
+            }
+            break;
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+            if (format == GL_RGBA || format == GL_BGRA) {
+                return kMGLMTLPixelFormatBGRA8Unorm;
+            }
+            break;
+        default:
+            break;
+    }
+
+    return mtl_format;
+}
+
+void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable)
+{
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->default_framebuffer_linear_mtl_pixel_format == 0u ||
+        ctx->default_framebuffer_linear_mtl_pixel_format == kMGLMTLPixelFormatInvalid) {
+        ctx->default_framebuffer_linear_mtl_pixel_format =
+            mglLinearDefaultFramebufferFormat(ctx->pixel_format.mtl_pixel_format);
+    }
+    if (ctx->default_framebuffer_srgb_mtl_pixel_format == 0u ||
+        ctx->default_framebuffer_srgb_mtl_pixel_format == kMGLMTLPixelFormatInvalid) {
+        ctx->default_framebuffer_srgb_mtl_pixel_format =
+            mglSRGBDefaultFramebufferFormat(ctx->default_framebuffer_linear_mtl_pixel_format);
+    }
+
+    ctx->default_framebuffer_srgb_capable = capable ? GL_TRUE : GL_FALSE;
+    ctx->pixel_format.mtl_pixel_format = ctx->default_framebuffer_srgb_capable
+        ? ctx->default_framebuffer_srgb_mtl_pixel_format
+        : ctx->default_framebuffer_linear_mtl_pixel_format;
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE | DIRTY_DRAWABLE;
+}
+
 GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,
                             GLenum stencil_format, GLenum stencil_type)
@@ -85,16 +176,19 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     _ctx = ctx;
 
-    ctx->pixel_format.format = format;
-    ctx->pixel_format.type = type;
-
     if ((format == 0) && (type == 0))
     {
-        format = GL_UNSIGNED_INT;
+        format = GL_BGRA;
         type = GL_UNSIGNED_INT_8_8_8_8_REV;
     }
 
-    ctx->pixel_format.mtl_pixel_format = mtlPixelFormatForGLFormatType(format, type);
+    ctx->pixel_format.format = format;
+    ctx->pixel_format.type = type;
+    ctx->pixel_format.mtl_pixel_format = mglDefaultFramebufferFormatForGLFormatType(format, type);
+    ctx->default_framebuffer_linear_mtl_pixel_format =
+        mglLinearDefaultFramebufferFormat(ctx->pixel_format.mtl_pixel_format);
+    ctx->default_framebuffer_srgb_mtl_pixel_format =
+        mglSRGBDefaultFramebufferFormat(ctx->default_framebuffer_linear_mtl_pixel_format);
 
     if (depth_format)
     {
@@ -232,6 +326,10 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     {
         STATE(caps.blendi[i]) = false;
     }
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
+    {
+        STATE(caps.scissor_testi[i]) = false;
+    }
 
     STATE(var.cull_face_mode) = GL_BACK;
     STATE(var.front_face) = GL_CCW;
@@ -260,6 +358,23 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(viewport[1]) = 0;
     STATE(viewport[2]) = 1024;  // Default width - should be updated when window is bound
     STATE(viewport[3]) = 768;   // Default height - should be updated when window is bound
+    STATE(viewport_binding_fbo_name) = 0u;
+    STATE(viewport_binding_width) = 0;
+    STATE(viewport_binding_height) = 0;
+    STATE(pending_icon_bake_fbo_name) = 0u;
+    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
+    {
+        STATE(viewport_array[i][0]) = 0.0f;
+        STATE(viewport_array[i][1]) = 0.0f;
+        STATE(viewport_array[i][2]) = 1024.0f;
+        STATE(viewport_array[i][3]) = 768.0f;
+        STATE(scissor_box_array[i][0]) = 0;
+        STATE(scissor_box_array[i][1]) = 0;
+        STATE(scissor_box_array[i][2]) = 1024;
+        STATE(scissor_box_array[i][3]) = 768;
+        STATE(depth_range_array[i][0]) = 0.0;
+        STATE(depth_range_array[i][1]) = 1.0;
+    }
 
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
@@ -290,6 +405,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(default_clear_color[3]) = 1.0f;
 
     STATE(var.logic_op) = GL_COPY;
+    STATE(var.logic_op_mode) = GL_COPY;
     STATE(var.stencil_func) = GL_ALWAYS;
 
     STATE(var.stencil_fail) = GL_KEEP;
@@ -375,7 +491,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     _ctx = save;
 
     mglInitCommandBuffer(&ctx->draw_command_buffer);
-    ctx->draw_defer_enabled = true;
+    ctx->draw_defer_enabled = (getenv("MGL_DISABLE_DRAW_DEFER") == NULL);
 
     return ctx;
 }

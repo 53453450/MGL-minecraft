@@ -24,6 +24,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "glm_context.h"
 #include "buffers.h"
@@ -750,6 +751,8 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     vm_address_t buffer_data;
     size_t buffer_size;
 
+    mglFlushPendingDrawsForBuffer(ctx, ptr);
+
     buffer_size = page_size_align(size);
 
     // Allocate directly from VM
@@ -879,6 +882,8 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
     if (!data) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
+
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
     size_t pixel_size = sizeForInternalFormat(internalformat, format, type);
     if (!pixel_size) {
@@ -1017,6 +1022,16 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
+    }
+
+    for (GLsizei i = 0; i < n; i++)
+    {
+        Buffer *pending_ptr = findBuffer(ctx, buffers[i]);
+        if (pending_ptr && mglPendingDrawsReadBufferRange(ctx, pending_ptr, 0, -1))
+        {
+            mglFlushCommandBuffer(ctx);
+            break;
+        }
     }
 
     while(n--)
@@ -1351,6 +1366,20 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
     kern_return_t err;
     vm_address_t buffer_data;
     size_t buffer_size;
+    bool uniform_data_unchanged = false;
+
+    if (isUniformConstant && ptr && ptr->size == size) {
+        if (size <= 0) {
+            uniform_data_unchanged = true;
+        } else if (data && ptr->data.buffer_data) {
+            uniform_data_unchanged =
+                memcmp((const void *)(uintptr_t)ptr->data.buffer_data, data, (size_t)size) == 0;
+        }
+    }
+
+    if (!uniform_data_unchanged) {
+        mglFlushPendingDrawsForBuffer(ctx, ptr);
+    }
 
     if (ptr->data.buffer_data)
     {
@@ -1672,6 +1701,8 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
     {
         bool trace = mglShouldTraceBufferMutation(call, target, size);
@@ -1825,6 +1856,8 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
+    mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
     src_hash_for_meta = (size > 0 && data) ? mglTraceHashBytes(data, (size_t)size) : 0ull;
 
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
@@ -1884,6 +1917,8 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     uint8_t *src_data = NULL;
     uint8_t *dst_data = NULL;
     bool used_map_callback = false;
+
+    mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
 
     if (size < 0)
     {
@@ -2242,15 +2277,17 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
 
     ERROR_CHECK_RETURN_VALUE((ptr != NULL), GL_INVALID_OPERATION, GL_FALSE);
 
-    fprintf(stderr,
-            "MGL TRACE UnmapBuffer.begin target=0x%x buffer=%u mapped=%u access=0x%x accessFlags=0x%x mapRange=(%lld,%lld)\n",
-            target,
-            ptr->name,
-            (unsigned)ptr->mapped,
-            ptr->access,
-            ptr->access_flags,
-            (long long)ptr->mapped_offset,
-            (long long)ptr->mapped_length);
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE UnmapBuffer.begin target=0x%x buffer=%u mapped=%u access=0x%x accessFlags=0x%x mapRange=(%lld,%lld)\n",
+                target,
+                ptr->name,
+                (unsigned)ptr->mapped,
+                ptr->access,
+                ptr->access_flags,
+                (long long)ptr->mapped_offset,
+                (long long)ptr->mapped_length);
+    }
 
     GLintptr unmap_offset = ptr->mapped_offset;
     GLsizeiptr unmap_length = ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size;
@@ -2273,11 +2310,13 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
         ptr->mapped_length = 0;
         ptr->mapped_ptr = NULL;
 
-        fprintf(stderr,
-                "MGL TRACE UnmapBuffer.end persistent target=0x%x buffer=%u dirty=0x%x\n",
-                target,
-                ptr->name,
-                ptr->data.dirty_bits);
+        if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+            fprintf(stderr,
+                    "MGL TRACE UnmapBuffer.end persistent target=0x%x buffer=%u dirty=0x%x\n",
+                    target,
+                    ptr->name,
+                    ptr->data.dirty_bits);
+        }
 
         return GL_TRUE;
     }
@@ -2296,12 +2335,14 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     ptr->mapped_length = 0;
     ptr->mapped_ptr = NULL;
 
-    fprintf(stderr,
-            "MGL TRACE UnmapBuffer.end target=0x%x buffer=%u dirty=0x%x mapped=%u\n",
-            target,
-            ptr->name,
-            ptr->data.dirty_bits,
-            (unsigned)ptr->mapped);
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE UnmapBuffer.end target=0x%x buffer=%u dirty=0x%x mapped=%u\n",
+                target,
+                ptr->name,
+                ptr->data.dirty_bits,
+                (unsigned)ptr->mapped);
+    }
 
     return GL_TRUE;
 }
@@ -2431,6 +2472,14 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
+    if (access_flags & (GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) {
+        if (access_flags & GL_MAP_INVALIDATE_BUFFER_BIT) {
+            mglFlushPendingDrawsForBuffer(ctx, ptr);
+        } else {
+            mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, length);
+        }
+    }
+
     ptr->access = 0;
     ptr->mapped_offset = offset;
     ptr->mapped_length = length;
@@ -2556,6 +2605,14 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
     if (ptr->mapped)
     {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (access & (GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT)) {
+        if (access & GL_MAP_INVALIDATE_BUFFER_BIT) {
+            mglFlushPendingDrawsForBuffer(ctx, ptr);
+        } else {
+            mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, length);
+        }
     }
 
     ptr->access = 0;

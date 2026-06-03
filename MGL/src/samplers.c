@@ -198,6 +198,8 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
         return;
     }
 
+    mglFlushPendingDraws(ctx);
+
     while(count--)
     {
         GLuint sampler;
@@ -282,6 +284,7 @@ void mglSamplerParameterf(GLMContext ctx, GLuint sampler, GLenum pname, GLfloat 
 {
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setParam(ctx, &ptr->params, pname, 0, param))
     {
@@ -302,6 +305,7 @@ void mglSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, const G
 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsf(ctx, &ptr->params, pname, param))
     {
@@ -324,6 +328,7 @@ void mglSamplerParameteri(GLMContext ctx, GLuint sampler, GLenum pname, GLint pa
 {
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setParam(ctx, &ptr->params, pname, param, 0.0f))
     {
@@ -345,6 +350,7 @@ void mglSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, const G
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsi(ctx, &ptr->params, pname, param))
     {
@@ -373,6 +379,7 @@ void mglSamplerParameterIiv(GLMContext ctx, GLuint sampler, GLenum pname, const 
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIiv(ctx, &ptr->params, pname, param))
     {
@@ -408,6 +415,7 @@ void mglSamplerParameterIuiv(GLMContext ctx, GLuint sampler, GLenum pname, const
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIuiv(ctx, &ptr->params, pname, param))
     {

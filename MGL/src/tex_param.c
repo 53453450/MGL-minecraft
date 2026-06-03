@@ -842,6 +842,7 @@ void mglTexParameterf(GLMContext ctx, GLenum target, GLenum pname, GLfloat param
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setParam(ctx, &tex->params, pname, 0, param))
     {
@@ -863,6 +864,7 @@ void mglTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, const GLfloa
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
    // more than one param... try setTexParamsf
     if (setTexParamsf(ctx, &tex->params, pname, params))
@@ -888,6 +890,7 @@ void mglTexParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setParam(ctx, &tex->params, pname, param, fparam))
     {
@@ -911,6 +914,7 @@ void mglTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, const GLint 
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, params))
@@ -940,6 +944,7 @@ void mglTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, const GLint
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
@@ -977,6 +982,7 @@ void mglTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, const GLui
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {
@@ -1008,6 +1014,7 @@ void mglTextureParameterf(GLMContext ctx, GLuint texture, GLenum pname, GLfloat 
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if(setParam(ctx, &tex->params, pname, 0, param))
     {
@@ -1029,6 +1036,7 @@ void mglTextureParameterfv(GLMContext ctx, GLuint texture, GLenum pname, const G
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if(setTexParamsf(ctx, &tex->params, pname, param))
     {
@@ -1055,6 +1063,7 @@ void mglTextureParameteri(GLMContext ctx, GLuint texture, GLenum pname, GLint pa
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if(setParam(ctx, &tex->params, pname, param, 0.0f))
     {
@@ -1076,6 +1085,7 @@ void mglTextureParameteriv(GLMContext ctx, GLuint texture, GLenum pname, const G
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if(setTexParamsi(ctx, &tex->params, pname, param))
     {
@@ -1108,6 +1118,7 @@ void mglTextureParameterIiv(GLMContext ctx, GLuint texture, GLenum pname, const 
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
@@ -1145,6 +1156,7 @@ void mglTextureParameterIuiv(GLMContext ctx, GLuint texture, GLenum pname, const
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+    mglFlushPendingDraws(ctx);
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {

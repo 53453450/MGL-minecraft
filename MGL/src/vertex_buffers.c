@@ -66,6 +66,26 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
         ERROR_CHECK_RETURN_VALUE(buf, GL_INVALID_VALUE, false);
     }
 
+    GLboolean changed =
+        vao->bindings[bindingindex].buffer != buf ||
+        vao->bindings[bindingindex].offset != offset ||
+        vao->bindings[bindingindex].stride != stride;
+    for (int i = 0; !changed && i < ctx->state.max_vertex_attribs; i++)
+    {
+        if (vao->attrib[i].buffer_bindingindex == bindingindex &&
+            (vao->attrib[i].buffer != buf ||
+             vao->attrib[i].stride != (GLuint)stride ||
+             vao->attrib[i].binding_offset != offset ||
+             vao->attrib[i].divisor != vao->bindings[bindingindex].divisor))
+        {
+            changed = GL_TRUE;
+        }
+    }
+    if (!changed)
+        return true;
+
+    mglFlushPendingDrawsForVertexArray(ctx, vao);
+
     vao->bindings[bindingindex].buffer = buf;
     vao->bindings[bindingindex].offset = offset;
     vao->bindings[bindingindex].stride = stride;

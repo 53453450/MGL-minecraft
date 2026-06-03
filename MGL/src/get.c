@@ -121,6 +121,15 @@ static GLsizei mglSafeTextureBufferOffsetAlignment(GLMContext ctx)
     return (GLsizei)value;
 }
 
+static GLuint mglSafeMaxViewports(GLMContext ctx)
+{
+    GLuint value = ctx ? ctx->state.var.max_viewports : 1u;
+    if (value == 0u || value > MGL_MAX_VIEWPORTS) {
+        value = MGL_MAX_VIEWPORTS;
+    }
+    return value ? value : 1u;
+}
+
 // these cast a void ptr to a type and value
 #define RET_BOOL(__value__) *((GLboolean *)data) = (GLboolean)__value__; break;
 #define RET_INT(__value__) *((GLint *)data) = (GLint)__value__; break;
@@ -719,6 +728,43 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
         return;
 
     switch (target) {
+        case GL_VIEWPORT:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            for (int i = 0; i < 4; i++) {
+                data[i] = (GLint64)ctx->state.viewport_array[index][i];
+            }
+            return;
+
+        case GL_SCISSOR_BOX:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            for (int i = 0; i < 4; i++) {
+                data[i] = (GLint64)ctx->state.scissor_box_array[index][i];
+            }
+            return;
+
+        case GL_DEPTH_RANGE:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            data[0] = (GLint64)ctx->state.depth_range_array[index][0];
+            data[1] = (GLint64)ctx->state.depth_range_array[index][1];
+            return;
+
+        case GL_SCISSOR_TEST:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
+            return;
+
         case GL_UNIFORM_BUFFER_BINDING:
         case GL_UNIFORM_BUFFER_START:
         case GL_UNIFORM_BUFFER_SIZE:
@@ -783,9 +829,12 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
         }
     }
 
-    GLint value = 0;
-    mglGetIntegeri_v(ctx, target, index, &value);
-    *data = (GLint64)value;
+    GLint tmp[4] = {0};
+    GLsizei count = (target == GL_COLOR_WRITEMASK) ? 4 : 1;
+    mglGetIntegeri_v(ctx, target, index, tmp);
+    for (GLsizei i = 0; i < count; i++) {
+        data[i] = (GLint64)tmp[i];
+    }
 }
 
 const GLubyte  *mglGetStringi(GLMContext ctx, GLenum name, GLuint index)
@@ -818,6 +867,43 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
 
     switch(target)
     {
+        case GL_VIEWPORT:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            for (int i = 0; i < 4; i++) {
+                data[i] = (GLint)ctx->state.viewport_array[index][i];
+            }
+            break;
+
+        case GL_SCISSOR_BOX:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            for (int i = 0; i < 4; i++) {
+                data[i] = ctx->state.scissor_box_array[index][i];
+            }
+            break;
+
+        case GL_DEPTH_RANGE:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            data[0] = (GLint)ctx->state.depth_range_array[index][0];
+            data[1] = (GLint)ctx->state.depth_range_array[index][1];
+            break;
+
+        case GL_SCISSOR_TEST:
+            if (index >= mglSafeMaxViewports(ctx)) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
+            break;
+
         case GL_UNIFORM_BUFFER_BINDING:
         case GL_UNIFORM_BUFFER_START:
         case GL_UNIFORM_BUFFER_SIZE:

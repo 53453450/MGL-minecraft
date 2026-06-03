@@ -81,6 +81,7 @@ typedef struct GLMCaps_t {
     GLboolean primitive_restart_fixed_index;
     
     GLboolean blendi[MAX_COLOR_ATTACHMENTS];
+    GLboolean scissor_testi[MGL_MAX_VIEWPORTS];
     GLboolean clip_distances[MAX_CLIP_DISTANCES];
 
     // local enables

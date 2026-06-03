@@ -325,6 +325,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_PROGRAM_BINARY_FORMATS,&glm_ctx->state.var.program_binary_formats);
     glGetIntegerv(GL_PROGRAM_PIPELINE_BINDING,&glm_ctx->state.var.program_pipeline_binding);
     glGetIntegerv(GL_MAX_VIEWPORTS,&glm_ctx->state.var.max_viewports);
+    if (glm_ctx->state.var.max_viewports == 0 || glm_ctx->state.var.max_viewports > MGL_MAX_VIEWPORTS) {
+        glm_ctx->state.var.max_viewports = MGL_MAX_VIEWPORTS;
+    }
     glGetIntegerv(GL_VIEWPORT_SUBPIXEL_BITS,&glm_ctx->state.var.viewport_subpixel_bits);
     glGetIntegerv(GL_VIEWPORT_BOUNDS_RANGE,&glm_ctx->state.var.viewport_bounds_range);
     glGetIntegerv(GL_LAYER_PROVOKING_VERTEX,&glm_ctx->state.var.layer_provoking_vertex);

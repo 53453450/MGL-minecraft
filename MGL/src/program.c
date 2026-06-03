@@ -162,6 +162,116 @@ static GLint mglActiveUniformBlockMaxNameLength(Program *program)
     return max_len;
 }
 
+static SpirvResourceList *mglProgramActiveAttribList(Program *program)
+{
+    if (!program) {
+        return NULL;
+    }
+
+    return &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+}
+
+static GLboolean mglProgramActiveAttribHasName(const SpirvResource *res)
+{
+    return (res && res->name && res->name[0] != '\0') ? GL_TRUE : GL_FALSE;
+}
+
+static GLint mglProgramActiveAttribCount(Program *program)
+{
+    SpirvResourceList *resources = mglProgramActiveAttribList(program);
+    if (!resources || !resources->list) {
+        return 0;
+    }
+
+    GLint count = 0;
+    for (GLuint i = 0; i < resources->count; i++) {
+        if (mglProgramActiveAttribHasName(&resources->list[i])) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+static SpirvResource *mglProgramActiveAttribAt(Program *program, GLuint index)
+{
+    SpirvResourceList *resources = mglProgramActiveAttribList(program);
+    if (!resources || !resources->list) {
+        return NULL;
+    }
+
+    GLuint ordinal = 0;
+    for (GLuint i = 0; i < resources->count; i++) {
+        SpirvResource *res = &resources->list[i];
+        if (!mglProgramActiveAttribHasName(res)) {
+            continue;
+        }
+        if (ordinal == index) {
+            return res;
+        }
+        ordinal++;
+    }
+
+    return NULL;
+}
+
+static GLint mglProgramActiveAttribMaxNameLength(Program *program)
+{
+    GLint max_len = 0;
+    GLint count = mglProgramActiveAttribCount(program);
+
+    for (GLint i = 0; i < count; i++) {
+        SpirvResource *res = mglProgramActiveAttribAt(program, (GLuint)i);
+        GLint len = (GLint)(res && res->name ? strlen(res->name) + 1 : 1);
+        if (len > max_len) {
+            max_len = len;
+        }
+    }
+
+    return max_len;
+}
+
+static GLenum mglProgramActiveAttribType(const SpirvResource *res)
+{
+    const char *name = res ? res->name : NULL;
+
+    if (!name || !name[0]) {
+        return GL_FLOAT;
+    }
+
+    if (!strcmp(name, "Position") ||
+        !strcmp(name, "Normal")) {
+        return GL_FLOAT_VEC3;
+    }
+    if (!strcmp(name, "Color")) {
+        return GL_FLOAT_VEC4;
+    }
+    if (!strcmp(name, "UV") ||
+        !strcmp(name, "UV0") ||
+        !strcmp(name, "TexCoord") ||
+        !strcmp(name, "texCoord")) {
+        return GL_FLOAT_VEC2;
+    }
+    if (!strcmp(name, "UV1") ||
+        !strcmp(name, "UV2")) {
+        return GL_INT_VEC2;
+    }
+
+    if (strstr(name, "Color")) {
+        return GL_FLOAT_VEC4;
+    }
+    if (strstr(name, "UV") ||
+        strstr(name, "TexCoord") ||
+        strstr(name, "texCoord")) {
+        return GL_FLOAT_VEC2;
+    }
+    if (strstr(name, "Normal")) {
+        return GL_FLOAT_VEC3;
+    }
+
+    return GL_FLOAT_VEC4;
+}
+
 static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint index)
 {
     return 0x4000 + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
@@ -1030,6 +1140,8 @@ void mglDeleteProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    mglFlushPendingDraws(ctx);
+
     deleteHashElement(&STATE(program_table), program);
     
     ptr->delete_status = GL_TRUE;
@@ -1076,6 +1188,8 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
     }
 
     index = sptr->glm_type;
+
+    mglFlushPendingDraws(ctx);
 
     pptr->shader_slots[index] = sptr;
     sptr->refcount++;
@@ -1124,6 +1238,8 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         return;
     }
+
+    mglFlushPendingDraws(ctx);
 
     pptr->shader_slots[index] = NULL;
     sptr->refcount--;
@@ -2008,6 +2124,83 @@ static GLint mglDefaultAttribLocationForName(const char *name)
     return -1;
 }
 
+static GLint mglProgramVertexInputOrdinal(Program *pptr, const char *name)
+{
+    if (!pptr || !name) {
+        return -1;
+    }
+
+    SpirvResourceList *vertex_inputs =
+        &pptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+    if (!vertex_inputs->list) {
+        return -1;
+    }
+
+    for (GLuint i = 0; i < vertex_inputs->count; i++) {
+        const char *input_name = vertex_inputs->list[i].name;
+        if (input_name && strcmp(input_name, name) == 0) {
+            return (GLint)i;
+        }
+    }
+
+    return -1;
+}
+
+static GLboolean mglProgramHasVertexInputNamed(Program *pptr, const char *name)
+{
+    return mglProgramVertexInputOrdinal(pptr, name) >= 0 ? GL_TRUE : GL_FALSE;
+}
+
+static GLint mglContextualDefaultAttribLocationForName(Program *pptr, const char *name)
+{
+    if (!pptr || !name) {
+        return -1;
+    }
+
+    /*
+     * Mojang's shader names are stable, but the set of inputs is not. Newer
+     * GUI/item shaders often omit UV0 or UV1, so the vanilla fallback table
+     * must collapse around the attributes that are actually present.
+     */
+    GLboolean has_color = mglProgramHasVertexInputNamed(pptr, "Color");
+    GLboolean has_uv0 = mglProgramHasVertexInputNamed(pptr, "UV0");
+    GLboolean has_uv1 = mglProgramHasVertexInputNamed(pptr, "UV1");
+    GLboolean has_uv2 = mglProgramHasVertexInputNamed(pptr, "UV2");
+
+    if (strcmp(name, "UV2") == 0) {
+        if (!has_uv0 && !has_uv1) {
+            return 2;
+        }
+        if (has_uv0 && !has_uv1) {
+            return 3;
+        }
+        return 4;
+    }
+
+    if (strcmp(name, "Normal") == 0) {
+        if (has_uv2 && !has_uv1) {
+            return has_uv0 ? 4 : 3;
+        }
+        return 5;
+    }
+
+    if (has_color && has_uv0 && !has_uv1 && !has_uv2) {
+        GLint color_ordinal = mglProgramVertexInputOrdinal(pptr, "Color");
+        GLint uv0_ordinal = mglProgramVertexInputOrdinal(pptr, "UV0");
+        if (uv0_ordinal >= 0 && color_ordinal >= 0 &&
+            uv0_ordinal < color_ordinal) {
+            if (strcmp(name, "UV0") == 0) {
+                return 1;
+            }
+            if (strcmp(name, "Color") == 0) {
+                return 2;
+            }
+        }
+    }
+
+    return mglDefaultAttribLocationForName(name);
+}
+
 static GLint mglDesiredAttribLocationForName(Program *pptr, const char *name)
 {
     if (!pptr || !name) {
@@ -2021,7 +2214,7 @@ static GLint mglDesiredAttribLocationForName(Program *pptr, const char *name)
         }
     }
 
-    return mglDefaultAttribLocationForName(name);
+    return mglContextualDefaultAttribLocationForName(pptr, name);
 }
 
 static void applyVertexInputLocations(Program *pptr)
@@ -2242,6 +2435,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    mglFlushPendingDraws(ctx);
+
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if (pptr->shader_slots[stage]) {
             has_any_shader = true;
@@ -2332,11 +2527,6 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     Program *pptr = NULL;
     static GLuint s_last_unlinked_program = 0;
     static unsigned int s_unlinked_program_hits = 0;
-
-    /* Flush pending draws before program changes so batches replay with correct state */
-    if (ctx->draw_defer_enabled && ctx->state.program_name != program) {
-        mglFlushCommandBuffer(ctx);
-    }
 
     if (program)
     {
@@ -2445,26 +2635,148 @@ void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const G
 
 void mglGetActiveAttrib(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name)
 {
-    (void)ctx; (void)program; (void)index;
-    if (length) *length = 0;
-    if (size) *size = 0;
-    if (type) *type = 0;
-    if (name && bufSize > 0) name[0] = '\0';
+    if (length) {
+        *length = 0;
+    }
+    if (size) {
+        *size = 0;
+    }
+    if (type) {
+        *type = 0;
+    }
+    if (name && bufSize > 0) {
+        name[0] = '\0';
+    }
+
+    if (!ctx) {
+        return;
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = findProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    SpirvResource *res = mglProgramActiveAttribAt(ptr, index);
+    if (!res) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (size) {
+        *size = 1;
+    }
+    if (type) {
+        *type = mglProgramActiveAttribType(res);
+    }
+
+    const char *src = res->name ? res->name : "";
+    GLsizei src_len = (GLsizei)strlen(src);
+    if (length) {
+        *length = src_len;
+    }
+    if (name && bufSize > 0) {
+        GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
+        if (copy_len > 0) {
+            memcpy(name, src, (size_t)copy_len);
+        }
+        name[copy_len] = '\0';
+    }
 }
 
 void mglGetActiveUniform(GLMContext ctx, GLuint program, GLuint index, GLsizei bufSize, GLsizei *length, GLint *size, GLenum *type, GLchar *name)
 {
-    (void)ctx; (void)program; (void)index;
-    if (length) *length = 0;
-    if (size) *size = 0;
-    if (type) *type = 0;
-    if (name && bufSize > 0) name[0] = '\0';
+    if (length) {
+        *length = 0;
+    }
+    if (size) {
+        *size = 0;
+    }
+    if (type) {
+        *type = 0;
+    }
+    if (name && bufSize > 0) {
+        name[0] = '\0';
+    }
+
+    if (!ctx) {
+        return;
+    }
+    if (bufSize < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = findProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    int stage = -1;
+    int res_type = -1;
+    SpirvResource *res = mglProgramActiveUniformAt(ptr, index, &stage, &res_type);
+    (void)stage;
+    if (!res) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (size) {
+        *size = mglProgramActiveUniformSize(res, res_type);
+    }
+    if (type) {
+        *type = (GLenum)mglProgramActiveUniformGLType(res, res_type);
+    }
+    mglProgramCopyActiveUniformName(res, bufSize, length, name);
 }
 
 void mglGetAttachedShaders(GLMContext ctx, GLuint program, GLsizei maxCount, GLsizei *count, GLuint *shaders)
 {
-    (void)ctx; (void)program; (void)maxCount; (void)shaders;
-    if (count) *count = 0;
+    if (count) {
+        *count = 0;
+    }
+    if (!ctx) {
+        return;
+    }
+    if (maxCount < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    Program *ptr = findProgram(ctx, program);
+    if (!ptr) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    GLsizei written = 0;
+    for (int i = 0; i < _MAX_SHADER_TYPES; i++) {
+        Shader *shader = ptr->shader_slots[i];
+        if (!shader) {
+            continue;
+        }
+        if (shaders && written < maxCount) {
+            shaders[written++] = shader->name;
+        }
+    }
+
+    if (count) {
+        *count = written;
+    }
 }
 
 GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
@@ -2492,26 +2804,17 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 		return -1;
 	}
 
-	for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
-	{
-		int count;
+    SpirvResourceList *vertex_inputs =
+        &ptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+    for (GLuint i = 0; vertex_inputs->list && i < vertex_inputs->count; i++)
+    {
+        const char *str = vertex_inputs->list[i].name;
 
-		count = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STAGE_INPUT].count;
-
-		for (int i=0; i<count; i++)
-		{
-			const char *str = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STAGE_INPUT].list[i].name;
-
-			if (!strcmp(str, name))
-			{
-				GLuint location;
-
-				location = ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STAGE_INPUT].list[i].location;
-
-				return location;
-			}
-		}
-	}
+        if (str && !strcmp(str, name))
+        {
+            return (GLint)vertex_inputs->list[i].location;
+        }
+    }
 	
 	return -1;
 }
@@ -2544,11 +2847,16 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             }
             break;
         case GL_ACTIVE_ATTRIBUTES:
+            *params = mglProgramActiveAttribCount(pptr);
+            break;
         case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
+            *params = mglProgramActiveAttribMaxNameLength(pptr);
+            break;
         case GL_ACTIVE_UNIFORMS:
+            *params = mglProgramActiveUniformCount(pptr);
+            break;
         case GL_ACTIVE_UNIFORM_MAX_LENGTH:
-            /* These require SPIRV resource reflection - return 0 for now */
-            *params = 0;
+            *params = mglProgramActiveUniformMaxNameLength(pptr);
             break;
         case GL_ACTIVE_UNIFORM_BLOCKS:
             *params = mglActiveUniformBlockCount(pptr);
@@ -2607,6 +2915,8 @@ GLboolean mglIsProgramPipeline(GLMContext ctx, GLuint pipeline)
 
 void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipelines)
 {
+    mglFlushPendingDraws(ctx);
+
     for (GLsizei i = 0; i < n; i++)
     {
         if (pipelines[i] == 0)
@@ -2650,7 +2960,9 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
         STATE(error) = GL_INVALID_OPERATION;
         return;
     }
-    
+
+    mglFlushPendingDraws(ctx);
+
     Program *prog_ptr = NULL;
     if (program != 0)
     {

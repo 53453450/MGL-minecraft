@@ -170,6 +170,8 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
                                                GL_DEPTH_COMPONENT, GL_FLOAT,
                                                0, 0);
     assert(window->context.mgl.ctx);
+    MGLsetDefaultFramebufferSRGBCapable(window->context.mgl.ctx,
+                                        fbconfig && fbconfig->sRGB ? GL_TRUE : GL_FALSE);
 
     if (window->context.mgl.ctx == nil)
     {

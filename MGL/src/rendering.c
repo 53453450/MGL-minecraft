@@ -30,6 +30,7 @@
 
 #include "pixel_utils.h"
 #include "glm_context.h"
+#include "draw_command.h"
 #include "mgl_safety.h"
 
 static inline bool mglShouldTraceClearCall(uint64_t callCount)
@@ -261,6 +262,9 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         return;
     }
 
+    // glClear mutates framebuffer contents, so deferred draws must land first.
+    mglFlushCommandBuffer(ctx);
+
     if (ctx->state.caps.scissor_test) {
         uint64_t hit = ++s_scissoredClearCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -437,6 +441,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
+            mglFlushCommandBuffer(ctx);
             if (fbo) {
                 GLuint attachmentIndex = 0u;
                 if (mglResolveDrawBufferSlotToColorAttachment(ctx, drawbuffer, &attachmentIndex) &&
@@ -466,6 +471,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
+            mglFlushCommandBuffer(ctx);
             if (fbo) {
                 fboa = &fbo->depth;
                 fboa->clear_bitmask |= GL_DEPTH_BUFFER_BIT;
@@ -520,6 +526,7 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                 ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
+            mglFlushCommandBuffer(ctx);
             if (fbo) {
                 fboa = &fbo->depth;
                 fboa->clear_bitmask |= GL_DEPTH_BUFFER_BIT;

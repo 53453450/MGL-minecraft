@@ -12,6 +12,11 @@
 
 #include "spirv_cross_c.h"
 #include "mgl.h"
+#include "draw_command.h"
+
+#ifndef MGL_VERBOSE_TEXBUFFER_LOGS
+#define MGL_VERBOSE_TEXBUFFER_LOGS 0
+#endif
 
 static void mgl_unimplemented(GLMContext ctx, const char *func)
 {
@@ -55,6 +60,24 @@ static GLuint64 s_fake_timestamp_counter = 1;
 static size_t mgl_round_up_16(size_t value)
 {
 	return value ? ((value + 15) & ~(size_t)15) : 0;
+}
+
+static GLuint mgl_effective_max_viewports(GLMContext ctx)
+{
+	GLuint max_viewports = ctx ? ctx->state.var.max_viewports : 1;
+	if (max_viewports == 0 || max_viewports > MGL_MAX_VIEWPORTS) {
+		max_viewports = MGL_MAX_VIEWPORTS;
+	}
+	return max_viewports ? max_viewports : 1;
+}
+
+static GLboolean mgl_validate_viewport_range(GLMContext ctx, GLuint first, GLsizei count)
+{
+	ERROR_CHECK_RETURN_VALUE(count >= 0, GL_INVALID_VALUE, GL_FALSE);
+	GLuint max_viewports = mgl_effective_max_viewports(ctx);
+	ERROR_CHECK_RETURN_VALUE(first <= max_viewports, GL_INVALID_VALUE, GL_FALSE);
+	ERROR_CHECK_RETURN_VALUE((GLuint)count <= max_viewports - first, GL_INVALID_VALUE, GL_FALSE);
+	return GL_TRUE;
 }
 
 static void mgl_init_query_table_if_needed(void)
@@ -143,11 +166,99 @@ static int mgl_program_interface_to_spvc_list(GLenum programInterface, int *type
 	return 1;
 }
 
+static GLboolean mgl_program_uniform_block_identity_matches(const SpirvResource *a, const SpirvResource *b)
+{
+	if (!a || !b)
+		return GL_FALSE;
+
+	if (a->name && b->name && a->name[0] != '\0' && b->name[0] != '\0')
+		return strcmp(a->name, b->name) == 0 ? GL_TRUE : GL_FALSE;
+
+	return a->gl_binding == b->gl_binding ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mgl_program_uniform_block_seen_before(Program *pptr, int target_stage, GLuint target_index)
+{
+	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+		return GL_FALSE;
+
+	SpirvResourceList *target_resources =
+		&pptr->spirv_resources_list[target_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+	if (!target_resources->list || target_index >= target_resources->count)
+		return GL_FALSE;
+
+	SpirvResource *target = &target_resources->list[target_index];
+	for (int stage = 0; stage <= target_stage && stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *resources =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+		GLuint limit = (stage == target_stage) ? target_index : resources->count;
+		for (GLuint i = 0; resources->list && i < limit; i++)
+		{
+			if (mgl_program_uniform_block_identity_matches(&resources->list[i], target))
+				return GL_TRUE;
+		}
+	}
+
+	return GL_FALSE;
+}
+
+static GLboolean mgl_program_uniform_block_referenced_by_stage(Program *pptr, const SpirvResource *block, int query_stage)
+{
+	if (!pptr || !block || query_stage < 0 || query_stage >= _MAX_SHADER_TYPES)
+		return GL_FALSE;
+
+	SpirvResourceList *resources =
+		&pptr->spirv_resources_list[query_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+	for (GLuint i = 0; resources->list && i < resources->count; i++)
+	{
+		if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]))
+			return GL_TRUE;
+	}
+
+	return GL_FALSE;
+}
+
+static size_t mgl_program_uniform_block_required_size(Program *pptr, const SpirvResource *block)
+{
+	size_t required_size = 0;
+
+	if (!pptr || !block)
+		return 0;
+
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *resources =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+		for (GLuint i = 0; resources->list && i < resources->count; i++)
+		{
+			if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]) &&
+			    resources->list[i].required_size > required_size)
+				required_size = resources->list[i].required_size;
+		}
+	}
+
+	return mgl_round_up_16(required_size);
+}
+
 static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
 {
 	GLsizei total = 0;
-	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
-		total += (GLsizei)pptr->spirv_resources_list[stage][res_type].count;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
+			continue;
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+			continue;
+		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
+		if (res_type != SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+			total += (GLsizei)count;
+			continue;
+		}
+		for (GLuint i = 0; i < count; i++) {
+			if (!mgl_program_uniform_block_seen_before(pptr, stage, i))
+				total++;
+		}
+	}
 	return total;
 }
 
@@ -161,17 +272,27 @@ static GLsizei mgl_program_resource_count(Program *pptr, const int *types, int t
 
 static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int res_type, GLuint index, int *out_stage)
 {
-	GLuint offset = 0;
+	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
+			continue;
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+			continue;
 		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
-		if (index < offset + count)
+		for (GLuint i = 0; i < count; i++)
 		{
-			if (out_stage)
-				*out_stage = stage;
-			return &pptr->spirv_resources_list[stage][res_type].list[index - offset];
+			if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+			    mgl_program_uniform_block_seen_before(pptr, stage, i))
+				continue;
+			if (ordinal == index)
+			{
+				if (out_stage)
+					*out_stage = stage;
+				return &pptr->spirv_resources_list[stage][res_type].list[i];
+			}
+			ordinal++;
 		}
-		offset += count;
 	}
 	return NULL;
 }
@@ -196,23 +317,30 @@ static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *ty
 
 static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
 {
-	GLuint offset = 0;
+	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
+			continue;
+		if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+			continue;
 		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
 		for (GLuint i = 0; i < count; i++)
 		{
 			SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
+			if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+			    mgl_program_uniform_block_seen_before(pptr, stage, i))
+				continue;
 			if (res->name && !strcmp(res->name, name))
 			{
 				if (out_index)
-					*out_index = offset + i;
+					*out_index = ordinal;
 				if (out_stage)
 					*out_stage = stage;
 				return res;
 			}
+			ordinal++;
 		}
-		offset += count;
 	}
 	return NULL;
 }
@@ -242,6 +370,29 @@ static GLint mgl_program_resource_gl_type(const SpirvResource *res, int res_type
 	if (!res)
 		return 0;
 
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT)
+	{
+		const char *name = res->name;
+		if (!name || !name[0])
+			return GL_FLOAT;
+		if (!strcmp(name, "Position") || !strcmp(name, "Normal"))
+			return GL_FLOAT_VEC3;
+		if (!strcmp(name, "Color"))
+			return GL_FLOAT_VEC4;
+		if (!strcmp(name, "UV") || !strcmp(name, "UV0") ||
+		    !strcmp(name, "TexCoord") || !strcmp(name, "texCoord"))
+			return GL_FLOAT_VEC2;
+		if (!strcmp(name, "UV1") || !strcmp(name, "UV2"))
+			return GL_INT_VEC2;
+		if (strstr(name, "Color"))
+			return GL_FLOAT_VEC4;
+		if (strstr(name, "UV") || strstr(name, "TexCoord") || strstr(name, "texCoord"))
+			return GL_FLOAT_VEC2;
+		if (strstr(name, "Normal"))
+			return GL_FLOAT_VEC3;
+		return GL_FLOAT_VEC4;
+	}
+
 	if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
 	    res_type == SPVC_RESOURCE_TYPE_SEPARATE_IMAGE)
 	{
@@ -263,6 +414,166 @@ static GLint mgl_program_resource_gl_type(const SpirvResource *res, int res_type
 		return (res->image_dim == 5) ? GL_INT_IMAGE_BUFFER : GL_INT_IMAGE_2D;
 
 	return 0;
+}
+
+static GLboolean mgl_program_resource_names_match(const char *resource_name, const char *query_name)
+{
+	size_t resource_len;
+	size_t query_len;
+
+	if (!resource_name || !query_name)
+		return GL_FALSE;
+
+	resource_len = strlen(resource_name);
+	query_len = strlen(query_name);
+	if (resource_len == 0 || query_len == 0)
+		return GL_FALSE;
+
+	if (resource_len == query_len && memcmp(resource_name, query_name, resource_len) == 0)
+		return GL_TRUE;
+
+	if (query_len == resource_len + 3 &&
+	    query_name[resource_len] == '[' &&
+	    query_name[resource_len + 1] == '0' &&
+	    query_name[resource_len + 2] == ']' &&
+	    memcmp(resource_name, query_name, resource_len) == 0)
+		return GL_TRUE;
+
+	if (resource_len == query_len + 3 &&
+	    resource_name[query_len] == '[' &&
+	    resource_name[query_len + 1] == '0' &&
+	    resource_name[query_len + 2] == ']' &&
+	    memcmp(resource_name, query_name, query_len) == 0)
+		return GL_TRUE;
+
+	return GL_FALSE;
+}
+
+static GLboolean mgl_program_uniform_referenced_by_stage(Program *pptr, const char *name, int target_stage)
+{
+	static const int uniform_resource_types[] = {
+		SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+		SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+		SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+		SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+		SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+	};
+
+	if (!pptr || !name || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
+		return GL_FALSE;
+
+	for (size_t t = 0; t < sizeof(uniform_resource_types) / sizeof(uniform_resource_types[0]); t++)
+	{
+		int res_type = uniform_resource_types[t];
+		SpirvResourceList *resources = &pptr->spirv_resources_list[target_stage][res_type];
+		for (GLuint i = 0; resources->list && i < resources->count; i++)
+		{
+			if (mgl_program_resource_names_match(resources->list[i].name, name))
+				return GL_TRUE;
+		}
+	}
+
+	return GL_FALSE;
+}
+
+static GLint mgl_program_uniform_resource_location(GLMContext ctx, GLuint program, const SpirvResource *res)
+{
+	if (!ctx || !res || !res->name)
+		return -1;
+
+	GLint location = mglGetUniformLocation(ctx, program, res->name);
+	if (location >= 0)
+		return location;
+
+	if (res->uniform_location >= 0)
+		return res->uniform_location;
+
+	return -1;
+}
+
+static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
+                                                    GLuint program,
+                                                    Program *pptr,
+                                                    GLuint index,
+                                                    GLsizei propCount,
+                                                    const GLenum *props,
+                                                    GLsizei count,
+                                                    GLsizei *length,
+                                                    GLint *params)
+{
+	int stage = -1;
+	int res_type = -1;
+	SpirvResource *res = mglProgramActiveUniformAt(pptr, index, &stage, &res_type);
+	if (!res)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return GL_FALSE;
+	}
+
+	GLsizei n = (propCount < count) ? propCount : count;
+	for (GLsizei i = 0; i < n; i++)
+	{
+		switch (props[i])
+		{
+			case GL_NAME_LENGTH:
+				params[i] = (GLint)mglProgramActiveUniformNameLength(res) + 1;
+				break;
+			case GL_TYPE:
+				params[i] = mglProgramActiveUniformGLType(res, res_type);
+				break;
+			case GL_ARRAY_SIZE:
+				params[i] = mglProgramActiveUniformSize(res, res_type);
+				break;
+			case GL_OFFSET:
+			case GL_BLOCK_INDEX:
+			case GL_ATOMIC_COUNTER_BUFFER_INDEX:
+				params[i] = -1;
+				break;
+			case GL_ARRAY_STRIDE:
+			case GL_MATRIX_STRIDE:
+			case GL_BUFFER_DATA_SIZE:
+			case GL_NUM_ACTIVE_VARIABLES:
+				params[i] = 0;
+				break;
+			case GL_IS_ROW_MAJOR:
+				params[i] = GL_FALSE;
+				break;
+			case GL_BUFFER_BINDING:
+				params[i] = -1;
+				break;
+			case GL_REFERENCED_BY_VERTEX_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _VERTEX_SHADER);
+				break;
+			case GL_REFERENCED_BY_FRAGMENT_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _FRAGMENT_SHADER);
+				break;
+			case GL_REFERENCED_BY_GEOMETRY_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _GEOMETRY_SHADER);
+				break;
+			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _TESS_CONTROL_SHADER);
+				break;
+			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _TESS_EVALUATION_SHADER);
+				break;
+			case GL_REFERENCED_BY_COMPUTE_SHADER:
+				params[i] = mgl_program_uniform_referenced_by_stage(pptr, res->name, _COMPUTE_SHADER);
+				break;
+			case GL_LOCATION:
+				params[i] = mgl_program_uniform_resource_location(ctx, program, res);
+				break;
+			case GL_LOCATION_INDEX:
+				params[i] = (mgl_program_uniform_resource_location(ctx, program, res) >= 0) ? 0 : -1;
+				break;
+			default:
+				STATE(error) = GL_INVALID_ENUM;
+				return GL_FALSE;
+		}
+	}
+
+	if (length)
+		*length = n;
+	return GL_TRUE;
 }
 
 void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
@@ -425,6 +736,7 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;
 			}
+			mglFlushCommandBuffer(ctx);
 			if (STATE(framebuffer))
 			{
 				Framebuffer *fbo = STATE(framebuffer);
@@ -490,6 +802,7 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 			ERROR_RETURN(GL_INVALID_VALUE);
 			return;
 		}
+		mglFlushCommandBuffer(ctx);
 		if (STATE(framebuffer))
 		{
 			Framebuffer *fbo = STATE(framebuffer);
@@ -776,17 +1089,37 @@ void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
 
 void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdouble *v)
 {
-	// Depth range array - use first value for global depth range
-	if (count > 0)
-		mglDepthRange(ctx, v[0], v[1]);
-	(void)first;
+	if (!mgl_validate_viewport_range(ctx, first, count))
+		return;
+	ERROR_CHECK_RETURN(count == 0 || v, GL_INVALID_VALUE);
+
+	// MGL tracks viewport/depth-range state for viewport 0. Indexed ranges that
+	// do not include 0 are retained for GL queries, but are not consumed by the
+	// current Metal draw path.
+	for (GLsizei i = 0; i < count; i++) {
+		GLuint index = first + (GLuint)i;
+		GLdouble n = v[i * 2 + 0];
+		GLdouble f = v[i * 2 + 1];
+		if (index == 0) {
+			mglDepthRange(ctx, n, f);
+		} else if (index < MGL_MAX_VIEWPORTS) {
+			ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+			ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+			ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+		}
+	}
 }
 
 void mglDepthRangeIndexed(GLMContext ctx, GLuint index, GLdouble n, GLdouble f)
 {
-	// Indexed depth range - use global depth range
-	(void)index;
-	mglDepthRange(ctx, n, f);
+	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+	if (index == 0) {
+		mglDepthRange(ctx, n, f);
+	} else if (index < MGL_MAX_VIEWPORTS) {
+		ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
+		ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
+		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+	}
 }
 
 void mglDepthRangef(GLMContext ctx, GLfloat n, GLfloat f)
@@ -952,11 +1285,16 @@ void mglGetActiveSubroutineUniformiv(GLMContext ctx, GLuint program, GLenum shad
 
 void mglGetBooleani_v(GLMContext ctx, GLenum target, GLuint index, GLboolean *data)
 {
-	GLint tmp = 0;
-	if (!data)
-		return;
-	mglGetIntegeri_v(ctx, target, index, &tmp);
-	*data = (tmp != 0) ? GL_TRUE : GL_FALSE;
+	GLint tmp[4] = {0};
+	GLsizei count = (target == GL_COLOR_WRITEMASK || target == GL_VIEWPORT || target == GL_SCISSOR_BOX) ? 4 : 1;
+	if (target == GL_DEPTH_RANGE) {
+		count = 2;
+	}
+	ERROR_CHECK_RETURN(data, GL_INVALID_VALUE);
+	mglGetIntegeri_v(ctx, target, index, tmp);
+	for (GLsizei i = 0; i < count; i++) {
+		data[i] = (tmp[i] != 0) ? GL_TRUE : GL_FALSE;
+	}
 }
 
 void mglGetBufferParameteri64v(GLMContext ctx, GLenum target, GLenum pname, GLint64 *params)
@@ -985,20 +1323,68 @@ GLuint  mglGetDebugMessageLog(GLMContext ctx, GLuint count, GLsizei bufSize, GLe
 
 void mglGetDoublei_v(GLMContext ctx, GLenum target, GLuint index, GLdouble *data)
 {
-	GLint tmp = 0;
-	if (!data)
-		return;
-	mglGetIntegeri_v(ctx, target, index, &tmp);
-	*data = (GLdouble)tmp;
+	ERROR_CHECK_RETURN(data, GL_INVALID_VALUE);
+	switch (target) {
+		case GL_VIEWPORT:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			for (int i = 0; i < 4; i++) {
+				data[i] = (GLdouble)ctx->state.viewport_array[index][i];
+			}
+			return;
+		case GL_SCISSOR_BOX:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			for (int i = 0; i < 4; i++) {
+				data[i] = (GLdouble)ctx->state.scissor_box_array[index][i];
+			}
+			return;
+		case GL_DEPTH_RANGE:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			data[0] = ctx->state.depth_range_array[index][0];
+			data[1] = ctx->state.depth_range_array[index][1];
+			return;
+		default:
+			break;
+	}
+
+	GLint tmp[4] = {0};
+	GLsizei count = (target == GL_COLOR_WRITEMASK) ? 4 : 1;
+	mglGetIntegeri_v(ctx, target, index, tmp);
+	for (GLsizei i = 0; i < count; i++) {
+		data[i] = (GLdouble)tmp[i];
+	}
 }
 
 void mglGetFloati_v(GLMContext ctx, GLenum target, GLuint index, GLfloat *data)
 {
-	GLint tmp = 0;
-	if (!data)
-		return;
-	mglGetIntegeri_v(ctx, target, index, &tmp);
-	*data = (GLfloat)tmp;
+	ERROR_CHECK_RETURN(data, GL_INVALID_VALUE);
+	switch (target) {
+		case GL_VIEWPORT:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			for (int i = 0; i < 4; i++) {
+				data[i] = ctx->state.viewport_array[index][i];
+			}
+			return;
+		case GL_SCISSOR_BOX:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			for (int i = 0; i < 4; i++) {
+				data[i] = (GLfloat)ctx->state.scissor_box_array[index][i];
+			}
+			return;
+		case GL_DEPTH_RANGE:
+			ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+			data[0] = (GLfloat)ctx->state.depth_range_array[index][0];
+			data[1] = (GLfloat)ctx->state.depth_range_array[index][1];
+			return;
+		default:
+			break;
+	}
+
+	GLint tmp[4] = {0};
+	GLsizei count = (target == GL_COLOR_WRITEMASK) ? 4 : 1;
+	mglGetIntegeri_v(ctx, target, index, tmp);
+	for (GLsizei i = 0; i < count; i++) {
+		data[i] = (GLfloat)tmp[i];
+	}
 }
 
 GLint  mglGetFragDataIndex(GLMContext ctx, GLuint program, const GLchar *name)
@@ -1124,19 +1510,34 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	switch (pname)
 	{
 		case GL_ACTIVE_RESOURCES:
-			*params = mgl_program_resource_count(pptr, res_types, res_type_count);
+			*params = (programInterface == GL_UNIFORM)
+				? mglProgramActiveUniformCount(pptr)
+				: mgl_program_resource_count(pptr, res_types, res_type_count);
 			break;
 		case GL_MAX_NAME_LENGTH:
 		{
+			if (programInterface == GL_UNIFORM)
+			{
+				*params = mglProgramActiveUniformMaxNameLength(pptr);
+				break;
+			}
+
 			GLint max_len = 1;
 			for (int t = 0; t < res_type_count; t++)
 			{
 				int res_type = res_types[t];
 				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 				{
+					if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
+						continue;
+					if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+						continue;
 					GLuint count = pptr->spirv_resources_list[stage][res_type].count;
 					for (GLuint i = 0; i < count; i++)
 					{
+						if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+						    mgl_program_uniform_block_seen_before(pptr, stage, i))
+							continue;
 						SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
 						GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
 						if (len > max_len)
@@ -1195,6 +1596,12 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		return GL_INVALID_INDEX;
 	}
 
+	if (programInterface == GL_UNIFORM)
+	{
+		GLint active_index = mglProgramActiveUniformIndexByName(pptr, name);
+		return (active_index >= 0) ? (GLuint)active_index : GL_INVALID_INDEX;
+	}
+
 	if (mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, &index, &found_stage, &found_type))
 	{
 		if (strstr(name, "CloudFaces"))
@@ -1231,6 +1638,15 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	{
 		STATE(error) = GL_INVALID_ENUM;
 		return -1;
+	}
+
+	if (programInterface == GL_UNIFORM)
+	{
+		GLint active_index = mglProgramActiveUniformIndexByName(pptr, name);
+		if (active_index < 0)
+			return -1;
+		res = mglProgramActiveUniformAt(pptr, (GLuint)active_index, NULL, NULL);
+		return mgl_program_uniform_resource_location(ctx, program, res);
 	}
 
 	res = mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, NULL, &found_stage, &found_type);
@@ -1286,6 +1702,20 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
+
+	if (programInterface == GL_UNIFORM)
+	{
+		res = mglProgramActiveUniformAt(pptr, index, NULL, NULL);
+		if (!res)
+		{
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+
+		mglProgramCopyActiveUniformName(res, bufSize, length, name);
+		return;
+	}
+
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, NULL, NULL);
 	if (!res)
 	{
@@ -1341,6 +1771,21 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
+
+	if (programInterface == GL_UNIFORM)
+	{
+		mgl_get_program_uniform_resourceiv(ctx,
+		                                   program,
+		                                   pptr,
+		                                   index,
+		                                   propCount,
+		                                   props,
+		                                   count,
+		                                   length,
+		                                   params);
+		return;
+	}
+
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, &stage, &res_type);
 	if (!res)
 	{
@@ -1363,14 +1808,42 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 			case GL_IS_ROW_MAJOR: params[i] = 0; break;
 			case GL_ATOMIC_COUNTER_BUFFER_INDEX: params[i] = -1; break;
 			case GL_BUFFER_BINDING: params[i] = (GLint)res->gl_binding; break;
-			case GL_BUFFER_DATA_SIZE: params[i] = (GLint)mgl_round_up_16(res->required_size); break;
+			case GL_BUFFER_DATA_SIZE:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? (GLint)mgl_program_uniform_block_required_size(pptr, res)
+					: (GLint)mgl_round_up_16(res->required_size);
+				break;
 			case GL_NUM_ACTIVE_VARIABLES: params[i] = 0; break;
-			case GL_REFERENCED_BY_VERTEX_SHADER: params[i] = (stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE; break;
-			case GL_REFERENCED_BY_FRAGMENT_SHADER: params[i] = (stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE; break;
-			case GL_REFERENCED_BY_GEOMETRY_SHADER: params[i] = (stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE; break;
-			case GL_REFERENCED_BY_TESS_CONTROL_SHADER: params[i] = (stage == _TESS_CONTROL_SHADER) ? GL_TRUE : GL_FALSE; break;
-			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER: params[i] = (stage == _TESS_EVALUATION_SHADER) ? GL_TRUE : GL_FALSE; break;
-			case GL_REFERENCED_BY_COMPUTE_SHADER: params[i] = (stage == _COMPUTE_SHADER) ? GL_TRUE : GL_FALSE; break;
+			case GL_REFERENCED_BY_VERTEX_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _VERTEX_SHADER)
+					: ((stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
+			case GL_REFERENCED_BY_FRAGMENT_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _FRAGMENT_SHADER)
+					: ((stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
+			case GL_REFERENCED_BY_GEOMETRY_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _GEOMETRY_SHADER)
+					: ((stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
+			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _TESS_CONTROL_SHADER)
+					: ((stage == _TESS_CONTROL_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
+			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _TESS_EVALUATION_SHADER)
+					: ((stage == _TESS_EVALUATION_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
+			case GL_REFERENCED_BY_COMPUTE_SHADER:
+				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? mgl_program_uniform_block_referenced_by_stage(pptr, res, _COMPUTE_SHADER)
+					: ((stage == _COMPUTE_SHADER) ? GL_TRUE : GL_FALSE);
+				break;
 			case GL_LOCATION: params[i] = (GLint)res->location; break;
 			case GL_LOCATION_INDEX: params[i] = 0; break;
 			default:
@@ -2003,20 +2476,49 @@ void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (!mgl_validate_viewport_range(ctx, first, count))
+		return;
+	ERROR_CHECK_RETURN(count == 0 || v, GL_INVALID_VALUE);
+	for (GLsizei i = 0; i < count; i++) {
+		ERROR_CHECK_RETURN(v[i * 4 + 2] >= 0, GL_INVALID_VALUE);
+		ERROR_CHECK_RETURN(v[i * 4 + 3] >= 0, GL_INVALID_VALUE);
+	}
+
+	for (GLsizei i = 0; i < count; i++) {
+		GLuint index = first + (GLuint)i;
+		const GLint *box = &v[i * 4];
+		if (index == 0) {
+			mglScissor(ctx, box[0], box[1], (GLsizei)box[2], (GLsizei)box[3]);
+		} else if (index < MGL_MAX_VIEWPORTS) {
+			ctx->state.scissor_box_array[index][0] = box[0];
+			ctx->state.scissor_box_array[index][1] = box[1];
+			ctx->state.scissor_box_array[index][2] = box[2];
+			ctx->state.scissor_box_array[index][3] = box[3];
+			ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+		}
+	}
 }
 
 void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
+	if (index == 0) {
+		mglScissor(ctx, left, bottom, width, height);
+	} else if (index < MGL_MAX_VIEWPORTS) {
+		ctx->state.scissor_box_array[index][0] = left;
+		ctx->state.scissor_box_array[index][1] = bottom;
+		ctx->state.scissor_box_array[index][2] = width;
+		ctx->state.scissor_box_array[index][3] = height;
+		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+	}
 }
 
 void mglScissorIndexedv(GLMContext ctx, GLuint index, const GLint *v)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglScissorIndexed(ctx, index, v[0], v[1], (GLsizei)v[2], (GLsizei)v[3]);
 }
 
 void mglSecondaryColorP3ui(GLMContext ctx, GLenum type, GLuint color)
@@ -2060,14 +2562,16 @@ void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint b
         ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
         : NULL;
 
-    fprintf(stderr,
-            "MGL TRACE mglTexBuffer target=0x%x internal=0x%x buffer=%u activeUnit=%u boundTex=%u tex=%p\n",
-            target,
-            internalformat,
-            buffer,
-            active_unit,
-            tex ? tex->name : 0u,
-            (void *)tex);
+    if (MGL_VERBOSE_TEXBUFFER_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE mglTexBuffer target=0x%x internal=0x%x buffer=%u activeUnit=%u boundTex=%u tex=%p\n",
+                target,
+                internalformat,
+                buffer,
+                active_unit,
+                tex ? tex->name : 0u,
+                (void *)tex);
+    }
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
@@ -2085,16 +2589,18 @@ void mglTexBufferRange(GLMContext ctx, GLenum target, GLenum internalformat, GLu
         ? ctx->state.texture_units[active_unit].textures[_TEXTURE_BUFFER_TARGET]
         : NULL;
 
-    fprintf(stderr,
-            "MGL TRACE mglTexBufferRange target=0x%x internal=0x%x buffer=%u offset=%lld size=%lld activeUnit=%u boundTex=%u tex=%p\n",
-            target,
-            internalformat,
-            buffer,
-            (long long)offset,
-            (long long)size,
-            active_unit,
-            tex ? tex->name : 0u,
-            (void *)tex);
+    if (MGL_VERBOSE_TEXBUFFER_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE mglTexBufferRange target=0x%x internal=0x%x buffer=%u offset=%lld size=%lld activeUnit=%u boundTex=%u tex=%p\n",
+                target,
+                internalformat,
+                buffer,
+                (long long)offset,
+                (long long)size,
+                active_unit,
+                tex ? tex->name : 0u,
+                (void *)tex);
+    }
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
@@ -2571,20 +3077,44 @@ void mglVertexP4uiv(GLMContext ctx, GLenum type, const GLuint *value)
 
 void mglViewportArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLfloat *v)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (!mgl_validate_viewport_range(ctx, first, count))
+		return;
+	ERROR_CHECK_RETURN(count == 0 || v, GL_INVALID_VALUE);
+	for (GLsizei i = 0; i < count; i++) {
+		ERROR_CHECK_RETURN(v[i * 4 + 2] >= 0.0f, GL_INVALID_VALUE);
+		ERROR_CHECK_RETURN(v[i * 4 + 3] >= 0.0f, GL_INVALID_VALUE);
+	}
+
+	for (GLsizei i = 0; i < count; i++) {
+		mglViewportIndexedf(ctx,
+		                    first + (GLuint)i,
+		                    v[i * 4 + 0],
+		                    v[i * 4 + 1],
+		                    v[i * 4 + 2],
+		                    v[i * 4 + 3]);
+	}
 }
 
 void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	ERROR_CHECK_RETURN(index < mgl_effective_max_viewports(ctx), GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(w >= 0.0f, GL_INVALID_VALUE);
+	ERROR_CHECK_RETURN(h >= 0.0f, GL_INVALID_VALUE);
+	if (index == 0) {
+		mglViewport(ctx, (GLint)x, (GLint)y, (GLsizei)w, (GLsizei)h);
+	} else if (index < MGL_MAX_VIEWPORTS) {
+		ctx->state.viewport_array[index][0] = x;
+		ctx->state.viewport_array[index][1] = y;
+		ctx->state.viewport_array[index][2] = w;
+		ctx->state.viewport_array[index][3] = h;
+		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+	}
 }
 
 void mglViewportIndexedfv(GLMContext ctx, GLuint index, const GLfloat *v)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	ERROR_CHECK_RETURN(v, GL_INVALID_VALUE);
+	mglViewportIndexedf(ctx, index, v[0], v[1], v[2], v[3]);
 }
 
 #ifdef MGL_GL_ES

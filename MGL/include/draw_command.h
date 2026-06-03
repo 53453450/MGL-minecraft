@@ -34,7 +34,9 @@ typedef struct GLMContextRec_t *GLMContext;
 
 #define MGL_MAX_DRAWS_PER_BATCH   1024
 #define MGL_MAX_BATCHES           64
-#define MGL_MDI_MIN_BATCH_SIZE    4
+#define MGL_MDI_MIN_BATCH_SIZE    2
+#define MGL_MAX_PENDING_BUFFER_RANGES 4096
+#define MGL_MAX_PENDING_TEXTURE_WRITES 256
 
 typedef enum {
     MGL_CMD_DRAW_ARRAYS = 0,
@@ -58,6 +60,7 @@ typedef struct {
     GLuint   baseInstance;
     GLenum   indexType;
     GLuint   indexBufferOffset;
+    void    *elementBuffer;
 } MGLDrawCommand;
 
 typedef struct {
@@ -77,9 +80,25 @@ typedef struct {
     MGLStateKey     key;
     uint32_t        command_count;
     MGLDrawCommand *commands;
+    void           *state_snapshot;
+    void           *vao_snapshot;
+    void           *stream_vertex_buffer;
+    void           *stream_index_buffer;
+    size_t          stream_vertex_bytes;
+    size_t          stream_index_bytes;
+    size_t          stream_index_count;
+    size_t          stream_vertex_stride;
+    uint64_t        stream_layout_hash;
     bool            mdi_compatible;
     bool            uses_elements;
+    bool            stream_merged;
 } MGLDrawBatch;
+
+typedef struct {
+    void     *buffer;
+    uint64_t  start;
+    uint64_t  end;
+} MGLBufferReadRange;
 
 typedef struct {
     MGLDrawBatch batches[MGL_MAX_BATCHES];
@@ -89,14 +108,29 @@ typedef struct {
     size_t       mdi_scratch_capacity;
     uint32_t     array_cmd_count;
     uint32_t     element_cmd_count;
+    MGLBufferReadRange buffer_read_ranges[MGL_MAX_PENDING_BUFFER_RANGES];
+    uint32_t     buffer_read_range_count;
+    bool         buffer_read_range_overflow;
+    void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
+    uint32_t     texture_write_count;
+    bool         texture_write_overflow;
 } MGLCommandBuffer;
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBuffer(MGLCommandBuffer *cb);
+void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb);
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out);
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b);
 void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd);
 void mglFlushCommandBuffer(GLMContext ctx);
+void mglFlushPendingDraws(GLMContext ctx);
+bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size);
+bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture);
+void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer);
+void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size);
+void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao);
+void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture);
+void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
 
 #ifdef __cplusplus
 }

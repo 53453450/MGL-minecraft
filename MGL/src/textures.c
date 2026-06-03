@@ -158,6 +158,18 @@ typedef struct MGLTextureUnpackLayout_t {
     size_t compact_upload_bytes;
 } MGLTextureUnpackLayout;
 
+typedef struct MGLTexturePackLayout_t {
+    size_t pixel_size;
+    size_t row_copy_bytes;
+    size_t row_length_pixels;
+    size_t dst_pitch;
+    size_t dst_image_rows;
+    size_t dst_image_size;
+    size_t skip_offset_bytes;
+    size_t write_span_bytes;
+    size_t required_bytes;
+} MGLTexturePackLayout;
+
 static void mglDumpTextureUploadRowSamples(const char *prefix,
                                            const uint8_t *bytes,
                                            size_t total_length,
@@ -905,6 +917,141 @@ static bool mglAddSizeT(size_t a, size_t b, size_t *out)
     return true;
 }
 
+static bool mglComputeTexturePackLayout(GLMContext ctx,
+                                        GLsizei width,
+                                        GLsizei height,
+                                        GLsizei depth,
+                                        size_t pixel_size,
+                                        const char *op,
+                                        MGLTexturePackLayout *layout)
+{
+    if (!ctx || !layout || pixel_size == 0u || width <= 0 || height <= 0 || depth <= 0) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    memset(layout, 0, sizeof(*layout));
+    layout->pixel_size = pixel_size;
+
+    if (ctx->state.pack.row_length < 0 ||
+        ctx->state.pack.image_height < 0 ||
+        ctx->state.pack.skip_pixels < 0 ||
+        ctx->state.pack.skip_rows < 0 ||
+        ctx->state.pack.skip_images < 0) {
+        fprintf(stderr,
+                "MGL ERROR: %s invalid negative pack state rowLength=%d imageHeight=%d skipPixels=%d skipRows=%d skipImages=%d\n",
+                op ? op : "texture readback",
+                ctx->state.pack.row_length,
+                ctx->state.pack.image_height,
+                ctx->state.pack.skip_pixels,
+                ctx->state.pack.skip_rows,
+                ctx->state.pack.skip_images);
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    layout->row_length_pixels = ctx->state.pack.row_length > 0 ?
+                                (size_t)ctx->state.pack.row_length :
+                                (size_t)width;
+
+    if (!mglMulSizeT((size_t)width, pixel_size, &layout->row_copy_bytes) ||
+        !mglMulSizeT(layout->row_length_pixels, pixel_size, &layout->dst_pitch)) {
+        fprintf(stderr,
+                "MGL ERROR: %s pack row computation overflow width=%d rowLength=%zu pixelSize=%zu\n",
+                op ? op : "texture readback",
+                width,
+                layout->row_length_pixels,
+                pixel_size);
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    size_t alignment = (size_t)(ctx->state.pack.alignment > 0 ? ctx->state.pack.alignment : 1);
+    size_t align_rem = layout->dst_pitch % alignment;
+    if (align_rem) {
+        size_t pad = alignment - align_rem;
+        if (!mglAddSizeT(layout->dst_pitch, pad, &layout->dst_pitch)) {
+            fprintf(stderr,
+                    "MGL ERROR: %s pack row alignment overflow dstPitch=%zu alignment=%zu\n",
+                    op ? op : "texture readback",
+                    layout->dst_pitch,
+                    alignment);
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+        }
+    }
+
+    layout->dst_image_rows = ctx->state.pack.image_height > 0 ?
+                             (size_t)ctx->state.pack.image_height :
+                             (size_t)height;
+    if (!mglMulSizeT(layout->dst_pitch, layout->dst_image_rows, &layout->dst_image_size)) {
+        fprintf(stderr,
+                "MGL ERROR: %s pack image stride overflow dstPitch=%zu imageRows=%zu\n",
+                op ? op : "texture readback",
+                layout->dst_pitch,
+                layout->dst_image_rows);
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    size_t skip_pixels_bytes = 0u;
+    size_t skip_rows_bytes = 0u;
+    size_t skip_images_bytes = 0u;
+    GLint skip_images = depth > 1 ? ctx->state.pack.skip_images : 0;
+    if (!mglMulSizeT((size_t)ctx->state.pack.skip_pixels, pixel_size, &skip_pixels_bytes) ||
+        !mglMulSizeT((size_t)ctx->state.pack.skip_rows, layout->dst_pitch, &skip_rows_bytes) ||
+        !mglMulSizeT((size_t)skip_images, layout->dst_image_size, &skip_images_bytes) ||
+        !mglAddSizeT(skip_pixels_bytes, skip_rows_bytes, &layout->skip_offset_bytes) ||
+        !mglAddSizeT(layout->skip_offset_bytes, skip_images_bytes, &layout->skip_offset_bytes)) {
+        fprintf(stderr,
+                "MGL ERROR: %s pack skip computation overflow skipPixels=%d skipRows=%d skipImages=%d dstPitch=%zu imageSize=%zu pixelSize=%zu\n",
+                op ? op : "texture readback",
+                ctx->state.pack.skip_pixels,
+                ctx->state.pack.skip_rows,
+                skip_images,
+                layout->dst_pitch,
+                layout->dst_image_size,
+                pixel_size);
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    size_t image_span = layout->row_copy_bytes;
+    if (height > 1) {
+        size_t trailing_row_bytes = 0u;
+        if (!mglMulSizeT(layout->dst_pitch, (size_t)(height - 1), &trailing_row_bytes) ||
+            !mglAddSizeT(image_span, trailing_row_bytes, &image_span)) {
+            fprintf(stderr,
+                    "MGL ERROR: %s pack image span overflow dstPitch=%zu height=%d rowBytes=%zu\n",
+                    op ? op : "texture readback",
+                    layout->dst_pitch,
+                    height,
+                    layout->row_copy_bytes);
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+        }
+    }
+
+    layout->write_span_bytes = image_span;
+    if (depth > 1) {
+        size_t trailing_image_bytes = 0u;
+        if (!mglMulSizeT(layout->dst_image_size, (size_t)(depth - 1), &trailing_image_bytes) ||
+            !mglAddSizeT(layout->write_span_bytes, trailing_image_bytes, &layout->write_span_bytes)) {
+            fprintf(stderr,
+                    "MGL ERROR: %s pack depth span overflow imageSize=%zu depth=%d imageSpan=%zu\n",
+                    op ? op : "texture readback",
+                    layout->dst_image_size,
+                    depth,
+                    image_span);
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+        }
+    }
+
+    if (!mglAddSizeT(layout->skip_offset_bytes, layout->write_span_bytes, &layout->required_bytes)) {
+        fprintf(stderr,
+                "MGL ERROR: %s pack required byte overflow skip=%zu span=%zu\n",
+                op ? op : "texture readback",
+                layout->skip_offset_bytes,
+                layout->write_span_bytes);
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    return true;
+}
+
 static bool mglComputeTextureUnpackLayout(GLMContext ctx,
                                           GLsizei width,
                                           GLsizei height,
@@ -1552,6 +1699,80 @@ static inline GLuint mglTraceTextureNameC(Texture *tex)
     return tex ? tex->name : 0u;
 }
 
+static bool mglTextureFormatLooksDepthOrStencil(GLenum internalformat)
+{
+    switch (internalformat) {
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_STENCIL_INDEX:
+        case GL_STENCIL_INDEX8:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool mglTextureIsSampleableColor2D(Texture *tex)
+{
+    if (!tex ||
+        tex->target != GL_TEXTURE_2D ||
+        tex->index != _TEXTURE_2D ||
+        tex->is_render_target ||
+        tex->internalformat == 0 ||
+        mglTextureFormatLooksDepthOrStencil(tex->internalformat) ||
+        tex->num_levels == 0 ||
+        !tex->faces[0].levels) {
+        return false;
+    }
+
+    TextureLevel *level0 = &tex->faces[0].levels[0];
+    return level0->complete &&
+           (level0->ever_written || level0->has_initialized_data);
+}
+
+static void mglRecordLastSampled2DTexture(GLMContext ctx, GLuint unit, Texture *tex)
+{
+    if (!ctx || unit >= TEXTURE_UNITS) {
+        return;
+    }
+
+    if (mglTextureIsSampleableColor2D(tex)) {
+        STATE(last_sampled_2d_textures[unit]) = tex;
+    }
+}
+
+static void mglRecordBoundSampled2DTextureIfReady(GLMContext ctx, Texture *tex)
+{
+    if (!ctx || !tex) {
+        return;
+    }
+
+    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+        if (STATE(texture_units[unit].textures[_TEXTURE_2D]) == tex) {
+            mglRecordLastSampled2DTexture(ctx, unit, tex);
+        }
+    }
+}
+
+void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex)
+{
+    if (!ctx || !tex) {
+        return;
+    }
+
+    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+        if (STATE(last_sampled_2d_textures[unit]) == tex) {
+            STATE(last_sampled_2d_textures[unit]) = NULL;
+        }
+    }
+}
+
 static GLboolean mglTextureUnitHasAnyBinding(GLMContext ctx, GLuint unit)
 {
     if (!ctx || unit >= TEXTURE_UNITS) {
@@ -1642,6 +1863,13 @@ static void mglTraceTextureUnitState(GLMContext ctx,
     Texture *unit_buffer = STATE(texture_units[unit].textures[_TEXTURE_BUFFER_TARGET]);
     Texture *unit_2d = STATE(texture_units[unit].textures[_TEXTURE_2D]);
     Texture *unit_cube = STATE(texture_units[unit].textures[_TEXTURE_CUBE_MAP]);
+    Texture *observed = bound ? bound : unit_active;
+    GLenum observed_format = observed ? observed->internalformat : 0u;
+    bool depth_or_stencil = mglTextureFormatLooksDepthOrStencil(observed_format);
+    bool dynamic_render_target_texture =
+        (texture >= 50u && texture <= 100u) ||
+        (mglTraceTextureNameC(unit_active) >= 50u && mglTraceTextureNameC(unit_active) <= 100u) ||
+        (mglTraceTextureNameC(unit_2d) >= 50u && mglTraceTextureNameC(unit_2d) <= 100u);
 
     bool interesting =
         unit == 0 ||
@@ -1650,6 +1878,8 @@ static void mglTraceTextureUnitState(GLMContext ctx,
         texture == 10 ||
         texture == 13 ||
         texture == 4231 ||
+        dynamic_render_target_texture ||
+        depth_or_stencil ||
         mglTraceTextureNameC(unit_active) == 4231 ||
         mglTraceTextureNameC(unit_buffer) != 0 ||
         mglTraceTextureNameC(unit_2d) == 4231 ||
@@ -1660,13 +1890,14 @@ static void mglTraceTextureUnitState(GLMContext ctx,
     }
 
     uint64_t hit = ++s_texture_unit_trace_count;
-    if (hit > 512 && (hit % 512) != 0) {
+    if (!dynamic_render_target_texture && !depth_or_stencil &&
+        hit > 512 && (hit % 512) != 0) {
         return;
     }
 
     fprintf(stderr,
             "MGL TRACE TexUnit.%s hit=%llu unit=%u activeUnit=%u target=0x%x texture=%u bound=%u "
-            "state(active=%u texBuffer=%u tex2D=%u cube=%u maskWord=0x%x)\n",
+            "state(active=%u texBuffer=%u tex2D=%u cube=%u maskWord=0x%x internal=0x%x depthStencil=%d dynamicRT=%d)\n",
             api ? api : "?",
             (unsigned long long)hit,
             unit,
@@ -1678,7 +1909,10 @@ static void mglTraceTextureUnitState(GLMContext ctx,
             mglTraceTextureNameC(unit_buffer),
             mglTraceTextureNameC(unit_2d),
             mglTraceTextureNameC(unit_cube),
-            STATE(active_texture_mask[unit / 32]));
+            STATE(active_texture_mask[unit / 32]),
+            observed_format,
+            depth_or_stencil ? 1 : 0,
+            dynamic_render_target_texture ? 1 : 0);
 }
 
 Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
@@ -1924,10 +2158,18 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
         return;
     }
 
+    Texture *old_typed_ptr = STATE(texture_units[active_texture].textures[index]);
+    Texture *old_active_ptr = STATE(active_textures[active_texture]);
+    if (old_typed_ptr != ptr || (ptr && old_active_ptr != ptr) ||
+        (ptr && mglPendingDrawsWriteTexture(ctx, ptr))) {
+        mglFlushPendingDraws(ctx);
+    }
+
     STATE(texture_units[active_texture].textures[index]) = ptr;
     if (ptr) {
         STATE(active_textures[active_texture]) = ptr;
     }
+    mglRecordLastSampled2DTexture(ctx, active_texture, ptr);
     mglUpdateTextureUnitActiveMask(ctx, active_texture);
     STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
 
@@ -2040,6 +2282,8 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
     if (!ctx || n <= 0 || !textures)
         return;
 
+    mglFlushPendingDraws(ctx);
+
     while(n--)
     {
         GLuint name;
@@ -2060,6 +2304,10 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 
                 if(ctx->state.active_textures[i] == tex) {
                     ctx->state.active_textures[i] = NULL;
+                    cleared_unit = GL_TRUE;
+                }
+                if(ctx->state.last_sampled_2d_textures[i] == tex) {
+                    ctx->state.last_sampled_2d_textures[i] = NULL;
                     cleared_unit = GL_TRUE;
                 }
 
@@ -2291,13 +2539,34 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
                 return;
             }
 
+            Texture *old_typed_ptr = STATE(texture_units[unit].textures[index]);
+            Texture *old_active_ptr = STATE(active_textures[unit]);
+            if (old_typed_ptr != ptr || old_active_ptr != ptr ||
+                mglPendingDrawsWriteTexture(ctx, ptr)) {
+                mglFlushPendingDraws(ctx);
+            }
+
             STATE(texture_units[unit].textures[index]) = ptr;
             STATE(active_textures[unit]) = ptr;
+            mglRecordLastSampled2DTexture(ctx, unit, ptr);
             mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures", unit, ptr->target, texture, ptr);
         }
         else
         {
+            GLboolean had_binding = GL_FALSE;
+            for(GLuint index=0; index<_MAX_TEXTURE_TYPES; index++)
+            {
+                if (STATE(texture_units[unit].textures[index]) != NULL) {
+                    had_binding = GL_TRUE;
+                }
+            }
+            if (STATE(active_textures[unit]) != NULL) {
+                had_binding = GL_TRUE;
+            }
+            if (had_binding) {
+                mglFlushPendingDraws(ctx);
+            }
             for(GLuint index=0; index<_MAX_TEXTURE_TYPES; index++)
             {
                 STATE(texture_units[unit].textures[index]) = NULL;
@@ -2327,6 +2596,18 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
     }
 
     if (texture == 0) {
+        GLboolean had_binding = GL_FALSE;
+        for (index = 0; index < _MAX_TEXTURE_TYPES; index++) {
+            if (STATE(texture_units[unit].textures[index]) != NULL) {
+                had_binding = GL_TRUE;
+            }
+        }
+        if (STATE(active_textures[unit]) != NULL) {
+            had_binding = GL_TRUE;
+        }
+        if (had_binding) {
+            mglFlushPendingDraws(ctx);
+        }
         for (index = 0; index < _MAX_TEXTURE_TYPES; index++) {
             STATE(texture_units[unit].textures[index]) = NULL;
         }
@@ -2353,8 +2634,16 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
         return;
     }
 
+    Texture *old_typed_ptr = STATE(texture_units[unit].textures[index]);
+    Texture *old_active_ptr = STATE(active_textures[unit]);
+    if (old_typed_ptr != ptr || old_active_ptr != ptr ||
+        mglPendingDrawsWriteTexture(ctx, ptr)) {
+        mglFlushPendingDraws(ctx);
+    }
+
     STATE(texture_units[unit].textures[index]) = ptr;
     STATE(active_textures[unit]) = ptr;
+    mglRecordLastSampled2DTexture(ctx, unit, ptr);
     mglUpdateTextureUnitActiveMask(ctx, unit);
     STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
     mglTraceTextureUnitState(ctx, "BindTextureUnit", unit, ptr->target, texture, ptr);
@@ -2371,6 +2660,8 @@ void generateMipmaps(GLMContext ctx, GLuint texture, GLenum target)
 
     // level 0 needs to be filled out for mipmap geneation
     ERROR_CHECK_RETURN(ptr->faces[0].levels[0].complete, GL_INVALID_OPERATION);
+
+    mglFlushPendingDraws(ctx);
 
     needs_storage_update = (!ptr->mtl_data || !ptr->mipmapped || !ptr->genmipmaps);
 
@@ -2451,6 +2742,8 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
             tex->index,
             level_count,
             tex->mtl_data);
+
+    mglClearLastSampled2DTextureIfMatches(ctx, tex);
 
     if (tex->mtl_data)
     {
@@ -3188,6 +3481,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
+    if (!proxy) {
+        mglFlushPendingDraws(ctx);
+    }
+
     // all the levels are created on a tex storage call.. if we get here we should just assert
     if (tex->immutable_storage)
     {
@@ -3556,6 +3853,10 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
     STATE(dirty_bits) |= DIRTY_TEX;
 
+    if (!proxy) {
+        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
+    }
+
     return true;
 }
 
@@ -3846,6 +4147,8 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                                     height,
                                                     depth,
                                                     0u);
+    mglFlushPendingDraws(ctx);
+
     // Debug: Log large texture uploads (VM framebuffer size)
     if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS && width >= 640 && height >= 400) {
         fprintf(stderr, "MGL DEBUG: texSubImage tex_id=%u face=%u level=%d %dx%dx%d at (%d,%d,%d) pixels=%p\n",
@@ -4326,6 +4629,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_upload_size = required_bytes;
         lvl->last_src_ptr = resolved_src;
         lvl->last_src_hash = dst_hash;
+        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
         if (trace_upload) {
             fprintf(stderr,
@@ -4349,6 +4653,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     lvl->last_upload_size = required_bytes;
     lvl->last_src_ptr = resolved_src;
     lvl->last_src_hash = dst_hash;
+    mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
     if (trace_upload) {
         fprintf(stderr,
@@ -5076,6 +5381,33 @@ void mglCompressedTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLin
 }
 
 #pragma mark copy tex
+static bool mglCopyTex2DFaceForTarget(GLenum target, GLuint *face_out)
+{
+    if (face_out) {
+        *face_out = 0u;
+    }
+
+    switch (target) {
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_RECTANGLE:
+            return true;
+
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+            if (face_out) {
+                *face_out = (GLuint)(target - GL_TEXTURE_CUBE_MAP_POSITIVE_X);
+            }
+            return true;
+
+        default:
+            return false;
+    }
+}
+
 void mglCopyTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLint border)
 {
     // Stub - not commonly used
@@ -5086,21 +5418,55 @@ void mglCopyTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum intern
 void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border)
 {
     fprintf(stderr, "MGL: glCopyTexImage2D called - target=0x%x level=%d %dx%d\n", target, level, width, height);
-    
+    GLuint face = 0u;
+
+    if (!mglCopyTex2DFaceForTarget(target, &face)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (level < 0 || width < 0 || height < 0 || border != 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (target == GL_TEXTURE_RECTANGLE && level != 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!checkInternalFormatForMetal(ctx, internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
     // Get or create texture
     Texture *tex = getTex(ctx, 0, target);
     if (!tex) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    
-    // Initialize texture storage if needed
-    if (tex->mipmap_levels == 0) {
-        initBaseTexLevel(ctx, tex, internalformat, width, height, 1);
+
+    if (!createTextureLevel(ctx,
+                            tex,
+                            face,
+                            level,
+                            false,
+                            internalformat,
+                            width,
+                            height,
+                            1,
+                            GL_BGRA,
+                            GL_UNSIGNED_BYTE,
+                            NULL,
+                            false)) {
+        return;
     }
-    
+
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     // Copy from framebuffer to texture
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, level, 0, 0, x, y, width, height);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
 }
 
 void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
@@ -5114,7 +5480,24 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
 {
     fprintf(stderr, "MGL: glCopyTexSubImage2D called - target=0x%x %dx%d at (%d,%d) from (%d,%d)\n",
             target, width, height, xoffset, yoffset, x, y);
-    
+    GLuint face = 0u;
+
+    if (!mglCopyTex2DFaceForTarget(target, &face)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (level < 0 || xoffset < 0 || yoffset < 0 || width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (target == GL_TEXTURE_RECTANGLE && level != 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (width == 0 || height == 0) {
+        return;
+    }
+
     // Get the bound texture
     Texture *tex = getTex(ctx, 0, target);
     if (!tex) {
@@ -5122,10 +5505,30 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    
+
+    if (level >= (GLint)tex->num_levels ||
+        !tex->faces[face].levels ||
+        !tex->faces[face].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[face].levels[level];
+    if ((GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     // This copies from the current read framebuffer to the texture
-    // For now, use the Metal blit function
-    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, level, xoffset, yoffset, x, y, width, height);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, xoffset, yoffset, x, y, width, height);
 }
 
 void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -5143,9 +5546,35 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
 void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
 {
     fprintf(stderr, "MGL: glCopyTextureSubImage2D called - texture=%u %dx%d\n", texture, width, height);
+    if (texture == 0 || level < 0 || xoffset < 0 || yoffset < 0 || width < 0 || height < 0) {
+        ERROR_RETURN(texture == 0 ? GL_INVALID_OPERATION : GL_INVALID_VALUE);
+        return;
+    }
+    if (width == 0 || height == 0) {
+        return;
+    }
+
     Texture *tex = getTex(ctx, texture, 0);
     if (tex) {
-        ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, level, xoffset, yoffset, x, y, width, height);
+        if (level >= (GLint)tex->num_levels ||
+            !tex->faces[0].levels ||
+            !tex->faces[0].levels[level].complete) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        TextureLevel *lvl = &tex->faces[0].levels[level];
+        if ((GLuint)xoffset > lvl->width ||
+            (GLuint)yoffset > lvl->height ||
+            (GLuint)width > lvl->width - (GLuint)xoffset ||
+            (GLuint)height > lvl->height - (GLuint)yoffset) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, yoffset, x, y, width, height);
     } else {
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
@@ -5228,15 +5657,40 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
     if (width < 1) width = 1;
     if (height < 1) height = 1;
     
-    // Calculate bytes per row
     size_t pixel_size = sizeForFormatType(format, type);
-    GLuint bytesPerRow = width * pixel_size;
-    GLuint bytesPerImage = bytesPerRow * height;
-    
-    fprintf(stderr, "MGL: glGetTexImage - reading %dx%d, bytesPerRow=%u\n", width, height, bytesPerRow);
+    MGLTexturePackLayout pack_layout;
+    if (!mglComputeTexturePackLayout(ctx,
+                                     width,
+                                     height,
+                                     1,
+                                     pixel_size,
+                                     "glGetTexImage",
+                                     &pack_layout)) {
+        return;
+    }
+    if (pack_layout.dst_pitch > UINT_MAX ||
+        pack_layout.dst_image_size > UINT_MAX) {
+        ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    fprintf(stderr, "MGL: glGetTexImage - reading %dx%d, bytesPerRow=%zu\n", width, height, pack_layout.dst_pitch);
     
     // Use the Metal function to read the texture
-    ctx->mtl_funcs.mtlGetTexImage(ctx, tex, pixels, bytesPerRow, bytesPerImage, 0, 0, width, height, level, slice);
+    mglFlushCommandBuffer(ctx);
+    ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                  tex,
+                                  (uint8_t *)pixels + pack_layout.skip_offset_bytes,
+                                  (GLuint)pack_layout.dst_pitch,
+                                  (GLuint)pack_layout.dst_image_size,
+                                  0,
+                                  0,
+                                  width,
+                                  height,
+                                  format,
+                                  type,
+                                  level,
+                                  slice);
 }
 
 void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
@@ -5292,15 +5746,39 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
-    GLuint bytesPerRow = width * pixel_size;
-    GLuint bytesPerImage = bytesPerRow * height;
-    
-    if (bytesPerImage > (GLuint)bufSize) {
+
+    MGLTexturePackLayout pack_layout;
+    if (!mglComputeTexturePackLayout(ctx,
+                                     width,
+                                     height,
+                                     1,
+                                     pixel_size,
+                                     "glGetTextureImage",
+                                     &pack_layout)) {
+        return;
+    }
+
+    if (pack_layout.required_bytes > (size_t)bufSize ||
+        pack_layout.dst_pitch > UINT_MAX ||
+        pack_layout.dst_image_size > UINT_MAX) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     
-    ctx->mtl_funcs.mtlGetTexImage(ctx, tex, pixels, bytesPerRow, bytesPerImage, 0, 0, width, height, level, 0);
+    mglFlushCommandBuffer(ctx);
+    ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                  tex,
+                                  (uint8_t *)pixels + pack_layout.skip_offset_bytes,
+                                  (GLuint)pack_layout.dst_pitch,
+                                  (GLuint)pack_layout.dst_image_size,
+                                  0,
+                                  0,
+                                  width,
+                                  height,
+                                  format,
+                                  type,
+                                  level,
+                                  0);
 }
 
 void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
@@ -5363,21 +5841,37 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
-    size_t bytesPerRowSize = 0u;
-    size_t bytesPerImageSize = 0u;
-    if (!mglMulSizeT((size_t)width, pixel_size, &bytesPerRowSize) ||
-        !mglMulSizeT(bytesPerRowSize, (size_t)height, &bytesPerImageSize) ||
-        bytesPerRowSize > UINT_MAX ||
-        bytesPerImageSize > UINT_MAX) {
-        ERROR_RETURN(GL_OUT_OF_MEMORY);
+    MGLTexturePackLayout pack_layout;
+    if (!mglComputeTexturePackLayout(ctx,
+                                     width,
+                                     height,
+                                     depth,
+                                     pixel_size,
+                                     "glGetTextureSubImage",
+                                     &pack_layout)) {
         return;
     }
-    if (bytesPerImageSize > (size_t)bufSize) {
+    if (pack_layout.required_bytes > (size_t)bufSize ||
+        pack_layout.dst_pitch > UINT_MAX ||
+        pack_layout.dst_image_size > UINT_MAX) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     
-    ctx->mtl_funcs.mtlGetTexImage(ctx, tex, pixels, (GLuint)bytesPerRowSize, (GLuint)bytesPerImageSize, xoffset, yoffset, width, height, level, zoffset);
+    mglFlushCommandBuffer(ctx);
+    ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                  tex,
+                                  (uint8_t *)pixels + pack_layout.skip_offset_bytes,
+                                  (GLuint)pack_layout.dst_pitch,
+                                  (GLuint)pack_layout.dst_image_size,
+                                  xoffset,
+                                  yoffset,
+                                  width,
+                                  height,
+                                  format,
+                                  type,
+                                  level,
+                                  zoffset);
 }
 
 void mglGetCompressedTexImage(GLMContext ctx, GLenum target, GLint level, void *img)
@@ -5423,6 +5917,8 @@ void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat
     tex = findTexture(ctx, texture);
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(tex->target == GL_TEXTURE_BUFFER, GL_INVALID_OPERATION);
+
+    mglFlushPendingDraws(ctx);
 
     if (buffer == 0)
     {

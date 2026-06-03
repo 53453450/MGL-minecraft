@@ -25,6 +25,8 @@
 #define ENABLE_CAP(_cap_)   ctx->state.caps._cap_ = true; break
 #define DISABLE_CAP(_cap_)   ctx->state.caps._cap_ = false; break
 
+static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where);
+
 static void mglSetAllBlendEnables(GLMContext ctx, GLboolean enabled)
 {
     if (!ctx)
@@ -35,6 +37,88 @@ static void mglSetAllBlendEnables(GLMContext ctx, GLboolean enabled)
         ctx->state.caps.blendi[i] = enabled ? GL_TRUE : GL_FALSE;
     }
     ctx->state.caps.blend = enabled ? GL_TRUE : GL_FALSE;
+}
+
+static GLuint mglEffectiveMaxViewports(GLMContext ctx)
+{
+    GLuint max_viewports = ctx ? ctx->state.var.max_viewports : 1u;
+    if (max_viewports == 0u || max_viewports > MGL_MAX_VIEWPORTS)
+        max_viewports = MGL_MAX_VIEWPORTS;
+    return max_viewports ? max_viewports : 1u;
+}
+
+static void mglSetAllScissorEnables(GLMContext ctx, GLboolean enabled)
+{
+    if (!ctx)
+        return;
+
+    for (GLuint i = 0; i < MGL_MAX_VIEWPORTS; i++)
+    {
+        ctx->state.caps.scissor_testi[i] = enabled ? GL_TRUE : GL_FALSE;
+    }
+    ctx->state.caps.scissor_test = enabled ? GL_TRUE : GL_FALSE;
+}
+
+static void mglUpdateGlobalScissorEnableFromIndexZero(GLMContext ctx)
+{
+    if (!ctx)
+        return;
+
+    ctx->state.caps.scissor_test = ctx->state.caps.scissor_testi[0] ? GL_TRUE : GL_FALSE;
+}
+
+static void mglLogMinecraftOffscreenViewport(GLMContext ctx,
+                                             GLint x,
+                                             GLint y,
+                                             GLsizei width,
+                                             GLsizei height)
+{
+    if (!ctx || width <= 0 || height <= 0)
+        return;
+
+    if (!((width == 392 && height == 560) ||
+          (width == 1024 && height == 1024) ||
+          (width <= 560 && height <= 1024 && ctx->state.framebuffer != NULL)))
+        return;
+
+    static uint64_t s_offscreenViewportLogCount = 0;
+    uint64_t hit = ++s_offscreenViewportLogCount;
+    if (hit > 96ull && (hit % 512ull) != 0ull)
+        return;
+
+    Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, "Viewport.offscreen");
+    FBOAttachment *color0 = fbo ? &fbo->color_attachments[0] : NULL;
+    Texture *colorTex = NULL;
+    if (color0) {
+        colorTex = (color0->textarget == GL_RENDERBUFFER && color0->buf.rbo)
+            ? color0->buf.rbo->tex
+            : color0->buf.tex;
+    }
+
+    Texture *depthTex = NULL;
+    if (fbo) {
+        depthTex = (fbo->depth.textarget == GL_RENDERBUFFER && fbo->depth.buf.rbo)
+            ? fbo->depth.buf.rbo->tex
+            : fbo->depth.buf.tex;
+    }
+
+    fprintf(stderr,
+            "MGL VIEWPORT CALL offscreen hit=%llu fbo=%u drawBuf=0x%x viewport=(%d,%d,%d,%d) "
+            "color0=%u(%ux%u target=0x%x) depth=%u(%ux%u target=0x%x) dirty=0x%x pendingDraws=%u\n",
+            (unsigned long long)hit,
+            fbo ? fbo->name : 0u,
+            ctx->state.draw_buffer,
+            x, y, width, height,
+            colorTex ? colorTex->name : 0u,
+            colorTex ? colorTex->width : 0u,
+            colorTex ? colorTex->height : 0u,
+            colorTex ? colorTex->target : 0u,
+            depthTex ? depthTex->name : 0u,
+            depthTex ? depthTex->width : 0u,
+            depthTex ? depthTex->height : 0u,
+            depthTex ? depthTex->target : 0u,
+            ctx->state.dirty_bits,
+            ctx->draw_command_buffer.total_commands);
 }
 
 static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where)
@@ -104,11 +188,6 @@ void mglDisable(GLMContext ctx, GLenum cap)
 {
     GLuint clipIndex = 0;
 
-    /* Flush pending draws before caps change */
-    if (ctx->draw_defer_enabled) {
-        mglFlushCommandBuffer(ctx);
-    }
-
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
         ctx->state.caps.clip_distances[clipIndex] = GL_FALSE;
@@ -127,7 +206,9 @@ void mglDisable(GLMContext ctx, GLenum cap)
         case GL_DEPTH_TEST: DISABLE_CAP(depth_test);
         case GL_STENCIL_TEST: DISABLE_CAP(stencil_test);
         case GL_DITHER: DISABLE_CAP(dither);
-        case GL_SCISSOR_TEST: DISABLE_CAP(scissor_test);
+        case GL_SCISSOR_TEST:
+            mglSetAllScissorEnables(ctx, GL_FALSE);
+            break;
         case GL_COLOR_LOGIC_OP: DISABLE_CAP(color_logic_op);
         case GL_POLYGON_OFFSET_POINT: DISABLE_CAP(polygon_offset_point);
         case GL_POLYGON_OFFSET_LINE: DISABLE_CAP(polygon_offset_line);
@@ -154,11 +235,12 @@ void mglDisable(GLMContext ctx, GLenum cap)
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
     if (cap == GL_BLEND ||
+        cap == GL_COLOR_LOGIC_OP ||
         cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
         cap == GL_SAMPLE_ALPHA_TO_ONE) {
         ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
     }
-    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
+    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
         ctx->state.dirty_bits |= DIRTY_FBO;
         Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
         if (fbo) {
@@ -170,11 +252,6 @@ void mglDisable(GLMContext ctx, GLenum cap)
 void mglEnable(GLMContext ctx, GLenum cap)
 {
     GLuint clipIndex = 0;
-
-    /* Flush pending draws before caps change */
-    if (ctx->draw_defer_enabled) {
-        mglFlushCommandBuffer(ctx);
-    }
 
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
@@ -194,7 +271,9 @@ void mglEnable(GLMContext ctx, GLenum cap)
         case GL_DEPTH_TEST: ENABLE_CAP(depth_test);
         case GL_STENCIL_TEST: ENABLE_CAP(stencil_test);
         case GL_DITHER: ENABLE_CAP(dither);
-        case GL_SCISSOR_TEST: ENABLE_CAP(scissor_test);
+        case GL_SCISSOR_TEST:
+            mglSetAllScissorEnables(ctx, GL_TRUE);
+            break;
         case GL_COLOR_LOGIC_OP: ENABLE_CAP(color_logic_op);
         case GL_POLYGON_OFFSET_POINT: ENABLE_CAP(polygon_offset_point);
         case GL_POLYGON_OFFSET_LINE: ENABLE_CAP(polygon_offset_line);
@@ -221,11 +300,12 @@ void mglEnable(GLMContext ctx, GLenum cap)
 
     ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
     if (cap == GL_BLEND ||
+        cap == GL_COLOR_LOGIC_OP ||
         cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
         cap == GL_SAMPLE_ALPHA_TO_ONE) {
         ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
     }
-    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST) {
+    if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
         ctx->state.dirty_bits |= DIRTY_FBO;
         Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
         if (fbo) {
@@ -335,15 +415,14 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
 
-    /* Flush pending draws before scissor changes */
-    if (ctx->draw_defer_enabled) {
-        mglFlushCommandBuffer(ctx);
-    }
-
     ctx->state.var.scissor_box[0] = x;
     ctx->state.var.scissor_box[1] = y;
     ctx->state.var.scissor_box[2] = width;
     ctx->state.var.scissor_box[3] = height;
+    ctx->state.scissor_box_array[0][0] = x;
+    ctx->state.scissor_box_array[0][1] = y;
+    ctx->state.scissor_box_array[0][2] = width;
+    ctx->state.scissor_box_array[0][3] = height;
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -367,6 +446,7 @@ void mglLogicOp(GLMContext ctx, GLenum opcode)
         case GL_AND_INVERTED:
         case GL_OR_REVERSE:
         case GL_OR_INVERTED:
+            ctx->state.var.logic_op_mode = opcode;
             ctx->state.var.logic_op = opcode;
             break;
 
@@ -644,6 +724,8 @@ void mglDepthRange(GLMContext ctx, GLdouble n, GLdouble f)
 
     ctx->state.var.depth_range[0] = n;
     ctx->state.var.depth_range[1] = f;
+    ctx->state.depth_range_array[0][0] = n;
+    ctx->state.depth_range_array[0][1] = f;
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -653,15 +735,28 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
 
-    /* Flush pending draws before viewport changes */
-    if (ctx->draw_defer_enabled) {
-        mglFlushCommandBuffer(ctx);
-    }
-
     ctx->state.viewport[0] = x;
     ctx->state.viewport[1] = y;
     ctx->state.viewport[2] = width;
     ctx->state.viewport[3] = height;
+    ctx->state.viewport_array[0][0] = (GLfloat)x;
+    ctx->state.viewport_array[0][1] = (GLfloat)y;
+    ctx->state.viewport_array[0][2] = (GLfloat)width;
+    ctx->state.viewport_array[0][3] = (GLfloat)height;
+
+    {
+        Framebuffer *drawFbo = ctx->state.framebuffer;
+        ctx->state.viewport_binding_fbo_name = drawFbo ? drawFbo->name : 0u;
+        ctx->state.viewport_binding_width = width;
+        ctx->state.viewport_binding_height = height;
+        if (drawFbo && mglFramebufferIsSmallIconTarget(ctx, drawFbo)) {
+            ctx->state.pending_icon_bake_fbo_name = drawFbo->name;
+        } else {
+            ctx->state.pending_icon_bake_fbo_name = 0u;
+        }
+    }
+
+    mglLogMinecraftOffscreenViewport(ctx, x, y, width, height);
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }
@@ -734,9 +829,11 @@ void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
 
     if (target == GL_SCISSOR_TEST)
     {
-        if (index == 0)
+        if (index < mglEffectiveMaxViewports(ctx))
         {
-            ctx->state.caps.scissor_test = GL_TRUE;
+            ctx->state.caps.scissor_testi[index] = GL_TRUE;
+            if (index == 0)
+                mglUpdateGlobalScissorEnableFromIndexZero(ctx);
             ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
             return;
         }
@@ -770,9 +867,11 @@ void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
 
     if (target == GL_SCISSOR_TEST)
     {
-        if (index == 0)
+        if (index < mglEffectiveMaxViewports(ctx))
         {
-            ctx->state.caps.scissor_test = GL_FALSE;
+            ctx->state.caps.scissor_testi[index] = GL_FALSE;
+            if (index == 0)
+                mglUpdateGlobalScissorEnableFromIndexZero(ctx);
             ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
             return;
         }
@@ -801,9 +900,9 @@ GLboolean mglIsEnabledi(GLMContext ctx, GLenum target, GLuint index)
 
     if (target == GL_SCISSOR_TEST)
     {
-        if (index == 0)
+        if (index < mglEffectiveMaxViewports(ctx))
         {
-            return ctx->state.caps.scissor_test;
+            return ctx->state.caps.scissor_testi[index];
         }
 
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);

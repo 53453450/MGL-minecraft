@@ -77,7 +77,7 @@ make
 
 ## 现状
 
-- 已知bug:1.21.8的实体纹理乱入，破坏动画错位,玩家物品栏物品图标未渲染，（在1.21.7，没有破坏动画错位问题）1.21.11，1.21.10的世界亮度问题，1.21.11的UI选框消失，1.21.1与1.20.1的存档预览图颠倒（可能在其他版本有其他未知bug，但我并未测试）
+- 已知bug:1.21.8的实体纹理乱入，玩家物品栏物品图标未渲染，1.21.11，1.21.10的世界亮度问题，1.21.11的UI选框消失（可能在其他版本有其他未知bug，但我并未测试）
 - Forge modloader 的启动渲染动画不被加载，neoforge modloader 会崩溃，fabric modloader 不会有影响（在1.21.7测试）
 - sodium 在与fabric modloader 一起加载时被支持（在以上所有被提及的版本）
 
@@ -161,22 +161,14 @@ Objective-C 实现的 Metal 渲染器，处理：
 - RenderCommandEncoder 创建与管理
 - 状态映射 (OpenGL → Metal)
 - 绘制命令执行
-
-## tools/java-tex-probe
-
-**这是一个 Java Agent，用于监控 Minecraft (LWJGL) 的 glTexSubImage2D 纹理上传调用。**
-
-- 拦截 GL11C、GL12C、GL45C 中的 glTexSubImage2D 调用
-- 记录纹理尺寸、格式、缓冲区地址、数据哈希等信息
-- 过滤特定尺寸的纹理（默认 512x512）
-- 输出调用堆栈（过滤 Minecraft 相关帧）
-
+- 
 ## 致谢
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
 - [GLFW](https://www.glfw.org/) - 窗口管理库
-- [openglonmetal](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
-- [MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) - Minecraft源码，以查验MC的GL实现进行debug
+- [openglonmetal/MGL](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
+- [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 
+- [apitrace](https://github.com/apitrace/apitrace)
 
 ## 许可证
 
