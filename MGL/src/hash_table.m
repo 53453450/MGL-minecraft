@@ -635,6 +635,13 @@ void deleteHashElement(HashTable *table, GLuint name)
                 // The memory will be automatically released
                 texture->mtl_data = NULL;
             }
+            if (texture->mtl_gl_sampled_data) {
+                texture->mtl_gl_sampled_data = NULL;
+                texture->mtl_gl_sampled_width = 0;
+                texture->mtl_gl_sampled_height = 0;
+                texture->mtl_gl_sampled_format = 0;
+                texture->mtl_gl_sampled_write_version = 0;
+            }
         }
         // Check if this is a buffer object
         else if (table == &_ctx->state.buffer_table) {

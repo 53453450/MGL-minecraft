@@ -2327,6 +2327,10 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     }
 
     mglBufferMarkMapWrite(ptr);
+    if (mglBufferMapAllowsWrite(ptr)) {
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        ctx->state.dirty_bits |= DIRTY_BUFFER;
+    }
 
     ptr->mapped = GL_FALSE;
     ptr->access = 0;
@@ -2378,6 +2382,10 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
     }
 
     mglBufferMarkMapWrite(ptr);
+    if (mglBufferMapAllowsWrite(ptr)) {
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        ctx->state.dirty_bits |= DIRTY_BUFFER;
+    }
 
     ptr->mapped = GL_FALSE;
     ptr->access = 0;

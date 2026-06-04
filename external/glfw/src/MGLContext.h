@@ -31,7 +31,6 @@ extern "C" {
 GLMContext createGLMContext(GLenum format, GLenum type,
                             GLenum depth_format, GLenum depth_type,
                             GLenum stencil_format, GLenum stencil_type);
-void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
 
 GLuint sizeForFormatType(GLenum format, GLenum type);
 GLuint bicountForFormatType(GLenum format, GLenum type, GLenum component);

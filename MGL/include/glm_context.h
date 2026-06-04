@@ -342,6 +342,12 @@ typedef struct Texture_t {
     GLuint mipmap_levels;
     TextureFace faces[6];
     void    *mtl_data;
+    void    *mtl_gl_sampled_data;
+    GLuint  mtl_gl_sampled_width;
+    GLuint  mtl_gl_sampled_height;
+    GLuint  mtl_gl_sampled_format;
+    GLuint  mtl_gl_sampled_write_version;
+    GLuint  mtl_render_target_write_version;
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;

@@ -774,7 +774,7 @@ static BOOL mglShouldLogSmallBaseBinding(GLuint programName,
 __attribute__((constructor))
 static void mglRendererDiagnosticBuildMarker(void)
 {
-    NSLog(@"MGL DIAG BUILD marker=itemicon-fbo-redirect-v2-20260603 built=%s %s renderer-loaded",
+    NSLog(@"MGL DIAG BUILD marker=lightmap-copy-orientation-v1-20260604 built=%s %s renderer-loaded",
           __DATE__,
           __TIME__);
 }
@@ -820,6 +820,7 @@ static const BOOL kMGLDrawSubmitDiagnostics = NO;
 // Narrow breadcrumbs for Minecraft item/icon GUI draws. This stays capped at the
 // call sites and is meant for the 16x16 icon path that differs from Apple GL.
 static const BOOL kMGLItemIconDiagnostics = YES;
+static const BOOL kMGLEnableMinecraftGuiDepthOverride = NO;
 // Dedicated upload buffers should not block the render thread by default.
 static const BOOL kMGLSynchronizeTextureUploads = NO;
 static const NSTimeInterval kMGLTextureUploadWaitTimeoutSeconds = 0.25;
@@ -1392,6 +1393,25 @@ static bool mglProgramLooksLikeMinecraftGuiNoDepth(Program *program)
     return true;
 }
 
+static bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
+{
+    if (!program) {
+        return false;
+    }
+
+    const char *msl = program->spirv[_VERTEX_SHADER].msl_str;
+    if (!msl) {
+        return false;
+    }
+
+    return strstr(msl, "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);") ||
+           strstr(msl, "out.texCoord = float2(in.UV.x, 1.0 - in.UV.y);") ||
+           strstr(msl, "out.texCoord = float2(in.UV0.x, 1.0 - in.UV0.y);") ||
+           strstr(msl, "out.texCoord = float2(in._mgl_in_UV.x, 1.0 - in._mgl_in_UV.y);") ||
+           strstr(msl, "out.texCoord = float2(in.in_var_UV.x, 1.0 - in.in_var_UV.y);") ||
+           strstr(msl, "out.texCoord = float2(in.in_var_TEXCOORD0.x, 1.0 - in.in_var_TEXCOORD0.y);");
+}
+
 static void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t detail)
 {
     if (programName == 0) {
@@ -1510,6 +1530,8 @@ static inline void mglMarkTextureLevelRenderTargetWritten(Texture *tex, GLuint l
     texLevel->last_src_ptr = NULL;
     texLevel->last_src_hash = 0ull;
 
+    tex->mtl_render_target_write_version++;
+
     /*
      * Once Metal has rendered into a texture, the CPU-side backing copy is stale.
      * Keeping DIRTY_TEXTURE_DATA set lets a later sampler bind recreate the Metal
@@ -1534,6 +1556,10 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
     texLevel->last_upload_size = uploadSize;
     texLevel->last_src_ptr = NULL;
     texLevel->last_src_hash = 0ull;
+
+    if (tex->is_render_target) {
+        tex->mtl_render_target_write_version++;
+    }
 }
 
 static inline bool mglTextureLevelHasUploadableCPUData(const TextureLevel *level)
@@ -1593,6 +1619,84 @@ static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
 static inline GLuint mglTraceTextureName(Texture *tex)
 {
     return tex ? tex->name : 0u;
+}
+
+extern Texture *findTexture(GLMContext ctx, GLuint texture);
+
+static inline bool mglTextureLooksLikeMinecraftGuiAtlas(Texture *tex)
+{
+    return tex &&
+           tex->target == GL_TEXTURE_2D &&
+           tex->width == 2048u &&
+           tex->height == 2048u;
+}
+
+static inline bool mglTextureLooksLikeMinecraftLightmapTarget(Texture *tex, id<MTLTexture> source)
+{
+    if (!tex || !source || tex->target != GL_TEXTURE_2D) {
+        return false;
+    }
+
+    /*
+     * Minecraft's dynamic lightmap is a 16x16 render target sampled by terrain
+     * vertex shaders through UV2. It shares the sampled-copy path with GUI
+     * atlas targets, but its shader expects the original vertical orientation.
+     */
+    return tex->width == 16u &&
+           tex->height == 16u &&
+           source.width == 16u &&
+           source.height == 16u &&
+           !mglTextureLooksLikeMinecraftGuiAtlas(tex);
+}
+
+static bool mglFramebufferLooksLikeMinecraftGuiAtlas(GLMContext glctx,
+                                                     Framebuffer *fbo,
+                                                     Texture **outColor,
+                                                     Texture **outDepth)
+{
+    if (outColor) {
+        *outColor = NULL;
+    }
+    if (outDepth) {
+        *outDepth = NULL;
+    }
+    if (!glctx || !fbo || ((fbo->color_attachment_bitfield & 1u) == 0u)) {
+        return false;
+    }
+
+    FBOAttachment *color0 = &fbo->color_attachments[0];
+    Texture *color = NULL;
+    if (color0->textarget == GL_RENDERBUFFER) {
+        color = color0->buf.rbo ? color0->buf.rbo->tex : NULL;
+    } else {
+        color = color0->buf.tex;
+        if (!color && color0->texture != 0u) {
+            color = findTexture(glctx, color0->texture);
+        }
+    }
+    if (!mglTextureLooksLikeMinecraftGuiAtlas(color)) {
+        return false;
+    }
+
+    Texture *depth = NULL;
+    if (fbo->depth.texture) {
+        if (fbo->depth.textarget == GL_RENDERBUFFER) {
+            depth = fbo->depth.buf.rbo ? fbo->depth.buf.rbo->tex : NULL;
+        } else {
+            depth = fbo->depth.buf.tex;
+            if (!depth && fbo->depth.texture != 0u) {
+                depth = findTexture(glctx, fbo->depth.texture);
+            }
+        }
+    }
+
+    if (outColor) {
+        *outColor = color;
+    }
+    if (outDepth) {
+        *outDepth = depth;
+    }
+    return true;
 }
 
 typedef NS_ENUM(NSUInteger, MGLTextureDataKind) {
@@ -7466,7 +7570,7 @@ void logDirtyBits(GLMContext ctx)
 
     if (tex->is_render_target)
     {
-        tex_desc.usage |= MTLTextureUsageRenderTarget;
+        tex_desc.usage |= MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     }
 
     // Allow safe same-memory format reinterpretation (e.g. RGBA8 <-> BGRA8)
@@ -9147,6 +9251,216 @@ void logDirtyBits(GLMContext ctx)
     return pipeline;
 }
 
+- (BOOL)textureCanUseGLSampledRenderTargetCopy:(Texture *)tex
+                                        source:(id<MTLTexture>)source
+{
+    if (!tex || !source || !tex->is_render_target) {
+        return NO;
+    }
+
+    if (tex->target != GL_TEXTURE_2D ||
+        tex->width == 0u ||
+        tex->height == 0u ||
+        source.textureType != MTLTextureType2D ||
+        source.mipmapLevelCount == 0u ||
+        source.width == 0u ||
+        source.height == 0u ||
+        mglMetalPixelFormatIsDepthOrStencil(source.pixelFormat) ||
+        mglTextureDataKindForPixelFormat(source.pixelFormat) != MGLTextureDataKindFloat) {
+        return NO;
+    }
+
+    /*
+     * This copy exists to make Minecraft's GL-rendered offscreen targets readable
+     * after Metal render-target writes. Minecraft's GUI atlas is 2048x2048; a few
+     * picture-in-picture/small dynamic targets can be smaller. Keep depth and
+     * non-float formats out above, and don't route arbitrary large world targets
+     * through this path.
+     */
+    BOOL likelyGuiOrPipTarget =
+        mglTextureLooksLikeMinecraftGuiAtlas(tex) ||
+        ((NSUInteger)tex->width <= 1024u && (NSUInteger)tex->height <= 1024u);
+    if (!likelyGuiOrPipTarget) {
+        return NO;
+    }
+
+    return YES;
+}
+
+- (void)releaseGLSampledRenderTargetCopyForTexture:(Texture *)tex
+{
+    if (!tex) {
+        return;
+    }
+
+    if (tex->mtl_gl_sampled_data) {
+        CFBridgingRelease(tex->mtl_gl_sampled_data);
+        tex->mtl_gl_sampled_data = NULL;
+    }
+
+    tex->mtl_gl_sampled_width = 0u;
+    tex->mtl_gl_sampled_height = 0u;
+    tex->mtl_gl_sampled_format = 0u;
+    tex->mtl_gl_sampled_write_version = 0u;
+}
+
+- (BOOL)updateGLSampledRenderTargetCopyForTexture:(Texture *)tex
+                                           source:(id<MTLTexture>)source
+                                           reason:(const char *)reason
+{
+    if (![self textureCanUseGLSampledRenderTargetCopy:tex source:source]) {
+        [self releaseGLSampledRenderTargetCopyForTexture:tex];
+        return NO;
+    }
+
+    if (tex->mtl_render_target_write_version == 0u) {
+        return NO;
+    }
+
+    if (tex->mtl_gl_sampled_data &&
+        tex->mtl_gl_sampled_width == (GLuint)source.width &&
+        tex->mtl_gl_sampled_height == (GLuint)source.height &&
+        tex->mtl_gl_sampled_format == (GLuint)source.pixelFormat &&
+        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
+        return YES;
+    }
+
+    BOOL needsNewCopy =
+        tex->mtl_gl_sampled_data == NULL ||
+        tex->mtl_gl_sampled_width != (GLuint)source.width ||
+        tex->mtl_gl_sampled_height != (GLuint)source.height ||
+        tex->mtl_gl_sampled_format != (GLuint)source.pixelFormat;
+    if (needsNewCopy) {
+        [self releaseGLSampledRenderTargetCopyForTexture:tex];
+
+        MTLTextureDescriptor *desc =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
+                                                               width:source.width
+                                                              height:source.height
+                                                           mipmapped:NO];
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        desc.storageMode = MTLStorageModePrivate;
+
+        id<MTLTexture> copy = [_device newTextureWithDescriptor:desc];
+        if (!copy) {
+            static uint64_t s_copyCreateFailCount = 0;
+            uint64_t hit = ++s_copyCreateFailCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY create failed tex=%u size=%lux%lu fmt=%lu reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      (unsigned long)source.width,
+                      (unsigned long)source.height,
+                      (unsigned long)source.pixelFormat,
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
+            }
+            return NO;
+        }
+
+        tex->mtl_gl_sampled_data = (void *)CFBridgingRetain(copy);
+        tex->mtl_gl_sampled_width = (GLuint)source.width;
+        tex->mtl_gl_sampled_height = (GLuint)source.height;
+        tex->mtl_gl_sampled_format = (GLuint)source.pixelFormat;
+    }
+
+    id<MTLTexture> destination = (__bridge id<MTLTexture>)(tex->mtl_gl_sampled_data);
+    id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:destination.pixelFormat];
+    id<MTLSamplerState> sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+    if (!destination || !pipeline || !sampler) {
+        static uint64_t s_copySetupFailCount = 0;
+        uint64_t hit = ++s_copySetupFailCount;
+        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            NSLog(@"MGL RT-SAMPLE-COPY setup failed tex=%u dst=%p pipeline=%p sampler=%p reason=%s hit=%llu",
+                  (unsigned)tex->name,
+                  destination,
+                  pipeline,
+                  sampler,
+                  reason ? reason : "(null)",
+                  (unsigned long long)hit);
+        }
+        return NO;
+    }
+
+    if (![self ensureWritableCommandBuffer:reason ? reason : "rt_sample_copy"]) {
+        return NO;
+    }
+
+    BOOL isGuiAtlas = mglTextureLooksLikeMinecraftGuiAtlas(tex);
+    BOOL isLightmap = mglTextureLooksLikeMinecraftLightmapTarget(tex, source);
+    BOOL yFlipCopy = !isLightmap;
+
+    MGLScaledBlitParams params;
+    params.uvRect = yFlipCopy
+        ? (vector_float4){0.0f, 1.0f, 1.0f, 0.0f}
+        : (vector_float4){0.0f, 0.0f, 1.0f, 1.0f};
+    params.forceOpaqueAlpha = 0.0f;
+    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+    MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
+    copyPass.colorAttachments[0].texture = destination;
+    copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    copyPass.renderTargetWidth = destination.width;
+    copyPass.renderTargetHeight = destination.height;
+
+    id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+    if (!copyEncoder) {
+        static uint64_t s_copyEncoderFailCount = 0;
+        uint64_t hit = ++s_copyEncoderFailCount;
+        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u reason=%s hit=%llu",
+                  (unsigned)tex->name,
+                  reason ? reason : "(null)",
+                  (unsigned long long)hit);
+        }
+        return NO;
+    }
+
+    [copyEncoder setRenderPipelineState:pipeline];
+    [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+    [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+    [copyEncoder setFragmentTexture:source atIndex:0];
+    [copyEncoder setFragmentSamplerState:sampler atIndex:0];
+    [copyEncoder setViewport:(MTLViewport){
+        .originX = 0.0,
+        .originY = 0.0,
+        .width = (double)destination.width,
+        .height = (double)destination.height,
+        .znear = 0.0,
+        .zfar = 1.0
+    }];
+    [copyEncoder setScissorRect:(MTLScissorRect){
+        .x = 0,
+        .y = 0,
+        .width = destination.width,
+        .height = destination.height
+    }];
+    [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    [copyEncoder endEncoding];
+
+    tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
+
+    static uint64_t s_rtSampleCopyLogCount = 0;
+    uint64_t hit = ++s_rtSampleCopyLogCount;
+    if (isGuiAtlas || isLightmap || hit <= 32ull || (hit % 512ull) == 0ull) {
+        NSLog(@"MGL RT-SAMPLE-COPY updated tex=%u guiAtlas=%d lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu writeVersion=%u reason=%s hit=%llu",
+              (unsigned)tex->name,
+              isGuiAtlas ? 1 : 0,
+              isLightmap ? 1 : 0,
+              yFlipCopy ? 1 : 0,
+              source,
+              destination,
+              (unsigned long)destination.width,
+              (unsigned long)destination.height,
+              (unsigned long)destination.pixelFormat,
+              (unsigned)tex->mtl_gl_sampled_write_version,
+              reason ? reason : "(null)",
+              (unsigned long long)hit);
+    }
+
+    return YES;
+}
+
 - (id<MTLRenderPipelineState>)clearRectPipelineForColorFormat:(MTLPixelFormat)colorFormat
                                                   depthFormat:(MTLPixelFormat)depthFormat
                                                   writesColor:(BOOL)writesColor
@@ -9931,6 +10245,53 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
             }
         }
 
+        if (!usedTypeFallback &&
+            ptr &&
+            ptr->is_render_target &&
+            ptr->mtl_gl_sampled_data &&
+            ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+            !mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
+            id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
+            if (sampledCopy &&
+                (expectedType == 0 || sampledCopy.textureType == expectedType) &&
+                mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                BOOL guiAtlasSample = mglTextureLooksLikeMinecraftGuiAtlas(ptr);
+                static uint64_t s_vertexRTSampleCopyBindLogCount = 0;
+                uint64_t hit = ++s_vertexRTSampleCopyBindLogCount;
+                if (guiAtlasSample || hit <= 64ull || (hit % 512ull) == 0ull) {
+                    NSLog(@"MGL RT-SAMPLE-COPY bind hit=%llu stage=vertex program=%u name=%s binding=%u unit=%u tex=%u guiAtlas=%d original=%p copy=%p size=%lux%lu version=%u",
+                          (unsigned long long)hit,
+                          ctx ? (unsigned)ctx->state.program_name : 0u,
+                          sampledName ? sampledName : "",
+                          (unsigned)spirvBinding,
+                          (unsigned)textureUnit,
+                          (unsigned)ptr->name,
+                          guiAtlasSample ? 1 : 0,
+                          texture,
+                          sampledCopy,
+                          (unsigned long)sampledCopy.width,
+                          (unsigned long)sampledCopy.height,
+                          (unsigned)ptr->mtl_gl_sampled_write_version);
+                }
+                texture = sampledCopy;
+            }
+        } else if (!usedTypeFallback &&
+                   ptr &&
+                   ptr->is_render_target &&
+                   ptr->mtl_gl_sampled_data &&
+                   mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
+            static uint64_t s_vertexRTSampleCopySkipExistingFlipLogCount = 0;
+            uint64_t hit = ++s_vertexRTSampleCopySkipExistingFlipLogCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY skip existing shader y-flip hit=%llu stage=vertex program=%u name=%s binding=%u tex=%u",
+                      (unsigned long long)hit,
+                      ctx ? (unsigned)ctx->state.program_name : 0u,
+                      sampledName ? sampledName : "",
+                      (unsigned)spirvBinding,
+                      (unsigned)(ptr ? ptr->name : 0u));
+            }
+        }
+
         if (!texture) {
             texture = (missingLightmapSampler || preferNeutralLightmapFallback)
                 ? [self fallbackLightmapSampledTexture]
@@ -10320,6 +10681,53 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
                     }
                 }
             }
+            if (texture &&
+                !usedFallbackTexture &&
+                ptr &&
+                ptr->is_render_target &&
+                ptr->mtl_gl_sampled_data &&
+                ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+                !mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
+                id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
+                if (sampledCopy &&
+                    (expectedType == 0 || sampledCopy.textureType == expectedType) &&
+                    mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                    BOOL guiAtlasSample = mglTextureLooksLikeMinecraftGuiAtlas(ptr);
+                    static uint64_t s_rtSampleCopyBindLogCount = 0;
+                    uint64_t hit = ++s_rtSampleCopyBindLogCount;
+                    if (guiAtlasSample || hit <= 64ull || (hit % 512ull) == 0ull) {
+                        NSLog(@"MGL RT-SAMPLE-COPY bind hit=%llu program=%u name=%s binding=%u unit=%u tex=%u guiAtlas=%d original=%p copy=%p size=%lux%lu version=%u",
+                              (unsigned long long)hit,
+                              ctx ? (unsigned)ctx->state.program_name : 0u,
+                              sampledName ? sampledName : "",
+                              (unsigned)spirvBinding,
+                              (unsigned)textureUnit,
+                              (unsigned)ptr->name,
+                              guiAtlasSample ? 1 : 0,
+                              texture,
+                              sampledCopy,
+                              (unsigned long)sampledCopy.width,
+                              (unsigned long)sampledCopy.height,
+                              (unsigned)ptr->mtl_gl_sampled_write_version);
+                    }
+                    texture = sampledCopy;
+                }
+            } else if (texture &&
+                       ptr &&
+                       ptr->is_render_target &&
+                       ptr->mtl_gl_sampled_data &&
+                       mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
+                static uint64_t s_rtSampleCopySkipExistingFlipLogCount = 0;
+                uint64_t hit = ++s_rtSampleCopySkipExistingFlipLogCount;
+                if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                    NSLog(@"MGL RT-SAMPLE-COPY skip existing shader y-flip hit=%llu program=%u name=%s binding=%u tex=%u",
+                          (unsigned long long)hit,
+                          ctx ? (unsigned)ctx->state.program_name : 0u,
+                          sampledName ? sampledName : "",
+                          (unsigned)spirvBinding,
+                          (unsigned)(ptr ? ptr->name : 0u));
+                }
+            }
             if (texture && expectedType != 0 && texture.textureType != expectedType) {
                 static uint64_t s_fragmentTypeMismatchLogCount = 0;
                 uint64_t hit = ++s_fragmentTypeMismatchLogCount;
@@ -10410,9 +10818,11 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
 		        BOOL focusedSample =
 		            mglIsFocusedLoadingProgram(sampleProgramName) &&
 		            (bindCall <= 2048ull || ((bindCall % 512ull) == 0ull));
+                BOOL guiAtlasSample = ptr && mglTextureLooksLikeMinecraftGuiAtlas(ptr);
 		        BOOL suspiciousSample =
 		            usedFallbackTexture ||
 		            (ptr && ptr->name == 13u) ||
+                    guiAtlasSample ||
                     itemIconSample ||
 		            focusedSample ||
 		            (sampleLevel0 &&
@@ -10472,6 +10882,56 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
 	                      (unsigned long long)(sampleLevel0 ? sampleLevel0->last_src_hash : 0ull),
 	                      (unsigned long long)levelDataHash);
 	            }
+
+                if (guiAtlasSample) {
+                    static uint64_t s_guiAtlasSampleLogCount = 0;
+	                    uint64_t atlasHit = ++s_guiAtlasSampleLogCount;
+	                    if (atlasHit <= 128ull || (atlasHit % 256ull) == 0ull) {
+                            int atlasExpectedIndex = [self textureIndexForExpectedMetalType:expectedType];
+                            Texture *atlasUnitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+                            Texture *atlasUnitExpected = (atlasExpectedIndex >= 0 && atlasExpectedIndex < _MAX_TEXTURE_TYPES)
+                                ? STATE(texture_units[textureUnit].textures[atlasExpectedIndex])
+                                : NULL;
+                            Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
+                            Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP]) : NULL;
+	                        id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
+	                        id<MTLTexture> rpDepth = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+                        NSLog(@"MGL GUIATLAS SAMPLE hit=%llu bindCall=%llu program=%u name=%s binding=%u unit=%u "
+                              "atlasTex=%u fallback=%d ptr=%p mtl=%p fmt=%lu type=%lu size=%lux%lu "
+                              "unit(active=%u expected=%u tex2D=%u cube=%u) "
+                              "l0(ever=%u full=%u zero=%u source=%u upload=%lu) "
+                              "drawFbo=%u rpFbo=%u rpColor=%p rpDepth=%p depthTest=%d blend=%d",
+                              (unsigned long long)atlasHit,
+                              (unsigned long long)bindCall,
+                              sampleProgramName,
+                              sampledName ? sampledName : "",
+                              (unsigned)spirvBinding,
+                              (unsigned)textureUnit,
+                              (unsigned)mglTraceTextureName(ptr),
+                              usedFallbackTexture ? 1 : 0,
+                              ptr,
+                              texture,
+                              (unsigned long)(texture ? texture.pixelFormat : MTLPixelFormatInvalid),
+                              (unsigned long)(texture ? texture.textureType : 0),
+                              (unsigned long)(texture ? texture.width : 0),
+                              (unsigned long)(texture ? texture.height : 0),
+	                              mglTraceTextureName(atlasUnitActive),
+	                              mglTraceTextureName(atlasUnitExpected),
+	                              mglTraceTextureName(atlasUnit2D),
+	                              mglTraceTextureName(atlasUnitCube),
+                              sampleLevel0 ? (unsigned)sampleLevel0->ever_written : 0u,
+                              sampleLevel0 ? (unsigned)sampleLevel0->has_initialized_data : 0u,
+                              sampleLevel0 ? (unsigned)sampleLevel0->suspicious_zero_upload : 0u,
+                              sampleLevel0 ? (unsigned)sampleLevel0->last_init_source : 0u,
+                              (unsigned long)(sampleLevel0 ? sampleLevel0->last_upload_size : 0u),
+                              (unsigned)(ctx && ctx->state.framebuffer ? ctx->state.framebuffer->name : 0u),
+                              (unsigned)_renderPassFramebufferName,
+                              rpColor0,
+                              rpDepth,
+                              ctx && ctx->state.caps.depth_test ? 1 : 0,
+                              ctx && ctx->state.caps.blend ? 1 : 0);
+                    }
+                }
 
 	            if (texture && sampleLevel0 &&
 	                (sampleLevel0->suspicious_zero_upload ||
@@ -11104,6 +11564,9 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
         [encoder endEncoding];
         if (drawTextureObject && drawFBOAttachment) {
             mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
+            [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
+                                                     source:drawtexid
+                                                     reason:"blit_framebuffer_scaled"];
         }
         return;
     }
@@ -11139,6 +11602,9 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
     [blitCommandEncoder endEncoding];
     if (drawTextureObject && drawFBOAttachment) {
         mglMarkTextureLevelRenderTargetWritten(drawTextureObject, drawFBOAttachment->level);
+        [self updateGLSampledRenderTargetCopyForTexture:drawTextureObject
+                                                 source:drawtexid
+                                                 reason:"blit_framebuffer_copy"];
     }
 
 }
@@ -11245,6 +11711,64 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
     Texture *tex = [self framebufferAttachmentTexture:attachment];
     mglMarkTextureLevelRenderTargetWritten(tex, attachment->level);
+
+    if (attachmentIndex == 0u && mglTextureLooksLikeMinecraftGuiAtlas(tex)) {
+        static uint64_t s_guiAtlasWriteMarkCount = 0;
+        uint64_t hit = ++s_guiAtlasWriteMarkCount;
+        if (hit <= 128ull || (hit % 256ull) == 0ull) {
+            Program *program = mglResolveProgramFromState(ctx);
+            Texture *atlasColor = NULL;
+            Texture *atlasDepth = NULL;
+            (void)mglFramebufferLooksLikeMinecraftGuiAtlas(ctx, fbo, &atlasColor, &atlasDepth);
+            id<MTLTexture> colorMTL = tex->mtl_data ? (__bridge id<MTLTexture>)(tex->mtl_data) : nil;
+            id<MTLTexture> depthMTL = (atlasDepth && atlasDepth->mtl_data)
+                ? (__bridge id<MTLTexture>)(atlasDepth->mtl_data)
+                : nil;
+            id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
+            id<MTLTexture> rpDepth = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+            NSLog(@"MGL GUIATLAS WRITE-MARK hit=%llu fbo=%u program=%u atlasTex=%u depthTex=%u "
+                  "viewport=%d,%d,%d,%d scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) "
+                  "blend=%d cull=%d colorMask=%d%d%d%d level=%u texInit(ever=%u full=%u source=%u) "
+                  "mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
+                  (unsigned long long)hit,
+                  (unsigned)fbo->name,
+                  program ? (unsigned)program->name : (unsigned)(ctx ? ctx->state.program_name : 0u),
+                  (unsigned)mglTraceTextureName(tex),
+                  (unsigned)mglTraceTextureName(atlasDepth),
+                  (int)ctx->state.viewport[0],
+                  (int)ctx->state.viewport[1],
+                  (int)ctx->state.viewport[2],
+                  (int)ctx->state.viewport[3],
+                  ctx->state.caps.scissor_test ? 1 : 0,
+                  (int)ctx->state.var.scissor_box[0],
+                  (int)ctx->state.var.scissor_box[1],
+                  (int)ctx->state.var.scissor_box[2],
+                  (int)ctx->state.var.scissor_box[3],
+                  ctx->state.caps.depth_test ? 1 : 0,
+                  ctx->state.var.depth_writemask ? 1 : 0,
+                  (unsigned)ctx->state.var.depth_func,
+                  ctx->state.caps.blend ? 1 : 0,
+                  ctx->state.caps.cull_face ? 1 : 0,
+                  ctx->state.var.color_writemask[0][0] ? 1 : 0,
+                  ctx->state.var.color_writemask[0][1] ? 1 : 0,
+                  ctx->state.var.color_writemask[0][2] ? 1 : 0,
+                  ctx->state.var.color_writemask[0][3] ? 1 : 0,
+                  (unsigned)attachment->level,
+                  mglTextureAttachmentLevel(tex, attachment->level)
+                      ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)->ever_written : 0u,
+                  mglTextureAttachmentLevel(tex, attachment->level)
+                      ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)->has_initialized_data : 0u,
+                  mglTextureAttachmentLevel(tex, attachment->level)
+                      ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)->last_init_source : 0u,
+                  colorMTL,
+                  (unsigned long)(colorMTL ? colorMTL.pixelFormat : MTLPixelFormatInvalid),
+                  (unsigned long)(colorMTL ? colorMTL.width : 0),
+                  (unsigned long)(colorMTL ? colorMTL.height : 0),
+                  rpColor0,
+                  rpDepth,
+                  depthMTL);
+        }
+    }
 }
 
 - (void)markCurrentFramebufferDrawAttachmentsWritten
@@ -11419,6 +11943,13 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 - (bool)repairItemIconFramebufferForDraw
 {
+    /*
+     * Disabled: Minecraft 1.21.8 GUI item icons are baked into a 2048x2048
+     * atlas using 128x128 scissors, not a 16x16 viewport/FBO path. Redirecting
+     * here can steal unrelated lightmap/entity draws.
+     */
+    return false;
+
     if (!ctx) {
         return false;
     }
@@ -11515,6 +12046,12 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 - (bool)resetStaleOffscreenViewportForDrawIfNeeded
 {
+    /*
+     * Disabled with the item-icon redirect above. Small viewports on large FBOs
+     * are not the current GUI atlas path and should not be rewritten globally.
+     */
+    return false;
+
     if (!ctx) {
         return false;
     }
@@ -11674,11 +12211,13 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     // without render-target usage, force a recreate with proper usage flags.
     if (tex->mtl_data && tex->is_render_target) {
         id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
-        if (existingTexture && ((existingTexture.usage & MTLTextureUsageRenderTarget) == 0)) {
-            NSLog(@"MGL WARNING: Recreating texture %u with RenderTarget usage (old usage=0x%lx)",
+        MTLTextureUsage requiredRenderTargetUsage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        if (existingTexture && ((existingTexture.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage)) {
+            NSLog(@"MGL WARNING: Recreating texture %u with RenderTarget+ShaderRead usage (old usage=0x%lx)",
                   tex->name, (unsigned long)existingTexture.usage);
             CFBridgingRelease(tex->mtl_data);
             tex->mtl_data = NULL;
+            [self releaseGLSampledRenderTargetCopyForTexture:tex];
             tex->dirty_bits |= DIRTY_TEXTURE_DATA;
         }
     }
@@ -11699,6 +12238,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             if (textureNeedsRebuild) {
                 CFBridgingRelease(tex->mtl_data);
                 tex->mtl_data = NULL;
+                [self releaseGLSampledRenderTargetCopyForTexture:tex];
             }
         }
 
@@ -12611,7 +13151,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     // Guard against stale depth state carried over from world/hand rendering into GUI passes.
     // 1.21.7+ GlCommandEncoder caches lastPipeline and may skip glDisable(GL_DEPTH_TEST) when
     // the same pipeline object is reused, leaving caps.depth_test=1 while drawing GUI elements.
-    if (useDepthState) {
+    if (kMGLEnableMinecraftGuiDepthOverride && useDepthState) {
         Program *currentProgram = mglResolveProgramFromState(ctx);
         if (mglProgramLooksLikeMinecraftGuiNoDepth(currentProgram)) {
             static uint64_t s_guiDepthOverrideCount = 0;
@@ -12947,6 +13487,56 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 metalVy = (GLdouble)passHeight - (vy + vh);
                 if (metalVy < 0.0) {
                     metalVy = 0.0;
+                }
+            }
+
+            Texture *guiAtlasColor = NULL;
+            Texture *guiAtlasDepth = NULL;
+            BOOL guiAtlasPass =
+                mglFramebufferLooksLikeMinecraftGuiAtlas(ctx,
+                                                         ctx->state.framebuffer,
+                                                         &guiAtlasColor,
+                                                         &guiAtlasDepth);
+            if (guiAtlasPass) {
+                static uint64_t s_guiAtlasEncoderStateLogCount = 0;
+                uint64_t hit = ++s_guiAtlasEncoderStateLogCount;
+                if (hit <= 128ull || (hit % 256ull) == 0ull) {
+                    Program *program = mglResolveProgramFromState(ctx);
+                    id<MTLTexture> c0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
+                    id<MTLTexture> d0 = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+                    NSLog(@"MGL GUIATLAS ENCODER hit=%llu fbo=%u rpFbo=%u program=%u atlasTex=%u depthTex=%u "
+                          "pass=%lux%lu c0=%p fmt=%lu depth=%p fmt=%lu "
+                          "loadStore(c=%s/%s d=%s/%s) clipOrigin=0x%x "
+                          "scissor(en=%d raw=%d,%d,%d,%d metal=%d,%d,%d,%d) "
+                          "viewport(raw=%.1f,%.1f,%.1f,%.1f metal=%.1f,%.1f,%.1f,%.1f) "
+                          "depth(test=%d write=%d func=0x%x) blend=%d cull=%d",
+                          (unsigned long long)hit,
+                          ctx->state.framebuffer ? (unsigned)ctx->state.framebuffer->name : 0u,
+                          (unsigned)_renderPassFramebufferName,
+                          program ? (unsigned)program->name : (unsigned)ctx->state.program_name,
+                          (unsigned)mglTraceTextureName(guiAtlasColor),
+                          (unsigned)mglTraceTextureName(guiAtlasDepth),
+                          (unsigned long)passWidth,
+                          (unsigned long)passHeight,
+                          c0,
+                          (unsigned long)(c0 ? c0.pixelFormat : MTLPixelFormatInvalid),
+                          d0,
+                          (unsigned long)(d0 ? d0.pixelFormat : MTLPixelFormatInvalid),
+                          mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare),
+                          mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare),
+                          mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
+                          mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
+                          ctx->state.var.clip_origin,
+                          ctx->state.caps.scissor_test ? 1 : 0,
+                          rawSx, rawSy, rawSw, rawSh,
+                          sx, metalSy, sw, sh,
+                          rawVx, rawVy, rawVw, rawVh,
+                          vx, metalVy, vw, vh,
+                          ctx->state.caps.depth_test ? 1 : 0,
+                          ctx->state.var.depth_writemask ? 1 : 0,
+                          (unsigned)ctx->state.var.depth_func,
+                          ctx->state.caps.blend ? 1 : 0,
+                          ctx->state.caps.cull_face ? 1 : 0);
                 }
             }
 
@@ -15214,10 +15804,57 @@ create_new_command_buffer:
     return true;
 }
 
+- (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
+                                                  drawCount:(GLsizei)drawCount
+                                               drawBuffers:(const GLenum *)drawBuffers
+                                                    reason:(const char *)reason
+{
+    if (!ctx || !fbo || drawCount <= 0 || !drawBuffers) {
+        return;
+    }
+
+    for (GLsizei slot = 0; slot < drawCount; slot++) {
+        GLuint attachmentIndex = 0u;
+        if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
+                                                   drawBuffers[slot],
+                                                   &attachmentIndex) ||
+            attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
+            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+            continue;
+        }
+
+        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
+        if (attachment->level != 0) {
+            continue;
+        }
+
+        Texture *tex = [self framebufferAttachmentTexture:attachment];
+        if (!tex || !tex->mtl_data) {
+            continue;
+        }
+
+        id<MTLTexture> source = (__bridge id<MTLTexture>)(tex->mtl_data);
+        if (![self textureCanUseGLSampledRenderTargetCopy:tex source:source]) {
+            continue;
+        }
+
+        [self updateGLSampledRenderTargetCopyForTexture:tex
+                                                 source:source
+                                                 reason:reason ? reason : "end_render_pass"];
+    }
+}
+
 - (void) endRenderEncoding
 {
     if (_currentRenderEncoder)
     {
+        Framebuffer *endedFramebuffer = _renderPassFramebuffer;
+        GLsizei endedDrawBufferCount = _renderPassDrawBufferCount;
+        GLenum endedDrawBuffers[MAX_COLOR_ATTACHMENTS];
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            endedDrawBuffers[i] = _renderPassDrawBuffers[i];
+        }
+
         static uint64_t s_renderPassEndLogCount = 0;
         uint64_t hit = ++s_renderPassEndLogCount;
         if (hit <= 128ull || (hit % 1024ull) == 0ull) {
@@ -15260,6 +15897,13 @@ create_new_command_buffer:
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
                 _renderPassDrawBuffers[i] = GL_NONE;
             }
+        }
+
+        if (endedFramebuffer) {
+            [self updateGLSampledCopiesForEndedRenderPassFramebuffer:endedFramebuffer
+                                                            drawCount:endedDrawBufferCount
+                                                         drawBuffers:endedDrawBuffers
+                                                              reason:"end_render_pass"];
         }
     }
 }
@@ -19500,6 +20144,9 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     }
 
     mglMarkTextureLevelMetalFilled(tex, (GLuint)level, bgraSize);
+    [self updateGLSampledRenderTargetCopyForTexture:tex
+                                             source:texture
+                                             reason:"copy_tex_sub_image"];
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     if (glm_ctx) {
         glm_ctx->state.dirty_bits |= DIRTY_TEX | DIRTY_TEX_BINDING;

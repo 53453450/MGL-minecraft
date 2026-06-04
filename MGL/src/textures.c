@@ -2757,6 +2757,18 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->mtl_data = NULL;
     }
 
+    if (tex->mtl_gl_sampled_data)
+    {
+        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_gl_sampled_data);
+        } else {
+            fprintf(stderr,
+                    "MGL WARNING: invalidateTexture cannot release GL-sampled Metal texture tex=%u because mtlDeleteMTLObj is NULL\n",
+                    tex->name);
+        }
+        tex->mtl_gl_sampled_data = NULL;
+    }
+
     if (tex->params.mtl_data)
     {
         if (ctx->mtl_funcs.mtlDeleteMTLObj) {
@@ -2836,6 +2848,12 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->complete = GL_FALSE;
     tex->num_levels = 0;
     tex->mipmap_levels = 0;
+    tex->mtl_gl_sampled_data = NULL;
+    tex->mtl_gl_sampled_width = 0;
+    tex->mtl_gl_sampled_height = 0;
+    tex->mtl_gl_sampled_format = 0;
+    tex->mtl_gl_sampled_write_version = 0;
+    tex->mtl_render_target_write_version = 0;
     tex->texture_buffer = NULL;
     tex->texture_buffer_offset = 0;
     tex->texture_buffer_size = 0;

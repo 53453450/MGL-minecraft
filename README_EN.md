@@ -94,7 +94,7 @@ Point them to the built libraries so they can take over rendering.
 
 ## Current Status
 
-- Known bug: 1.21.8's physical texture infring, the player's item bar icon is not rendered, 1.21.11, 1.21.10's world brightness problem, 1.21.11's UI selection box disappears (there may be other unknown bugs in other versions, but I haven't tested it)
+- Known bug:  1.21.11, 1.21.10's world brightness problem(there may be other unknown bugs in other versions, but I haven't tested it)
 - Forge modloader's startup rendering animation is not loaded, neoforge modloader will crash, and fabric modloader will not have an impact (tested in 1.21.7) 
 - sodium is supported when loading with fabric modloader (in all the versions mentioned above)
 
