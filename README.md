@@ -164,7 +164,7 @@ Objective-C 实现的 Metal 渲染器，处理：
 - 
 ## 致谢
 
-- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
+- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS
 - [GLFW](https://www.glfw.org/) - 窗口管理库
 - [openglonmetal/MGL](https://github.com/openglonmetal/MGL) - MGL框架，没有它就没有MGL-minecraft
 - [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 

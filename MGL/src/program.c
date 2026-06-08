@@ -108,7 +108,13 @@ static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint
         GLuint limit = (stage == max_stage) ? max_index : resources->count;
         for (GLuint i = 0; i < limit; i++) {
             SpirvResource *res = &resources->list[i];
-            if ((name && res->name && !strcmp(name, res->name)) || res->gl_binding == gl_binding) {
+            if (name && name[0] != '\0') {
+                if (res->name && !strcmp(name, res->name)) {
+                    return GL_TRUE;
+                }
+                continue;
+            }
+            if ((!res->name || res->name[0] == '\0') && res->gl_binding == gl_binding) {
                 return GL_TRUE;
             }
         }
@@ -489,8 +495,6 @@ static void mglAssignPlainUniformLocations(Program *program)
                 preferred = (GLint)res->location;
             } else if (res->gl_binding < MAX_BINDABLE_BUFFERS && !used[res->gl_binding]) {
                 preferred = (GLint)res->gl_binding;
-            } else if (res->binding < MAX_BINDABLE_BUFFERS && !used[res->binding]) {
-                preferred = (GLint)res->binding;
             } else {
                 preferred = mglFirstFreePlainUniformLocation(used);
             }
@@ -532,9 +536,12 @@ static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const Spi
     return 0;
 }
 
-static void mglApplyDefaultSamplerUnit(Program *program, int stage, SpirvResource *res)
+static void mglApplyDefaultSamplerUnit(Program *program, int stage, int res_type, SpirvResource *res)
 {
-    if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES || res->binding >= TEXTURE_UNITS) {
+    if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return;
+    }
+    if (!mglProgramResourceLooksSamplerLike(res, res_type)) {
         return;
     }
 
@@ -543,8 +550,11 @@ static void mglApplyDefaultSamplerUnit(Program *program, int stage, SpirvResourc
         return;
     }
 
-    program->sampler_units_by_stage[stage][res->binding] = unit;
-    program->sampler_units[res->binding] = unit;
+    /*
+     * Store the OpenGL sampler uniform default on the resource itself. The
+     * resource binding is now the Metal argument slot and can be shared by
+     * unrelated resources such as vertex Sampler2 and fragment Sampler0.
+     */
     res->sampler_unit = unit;
     res->sampler_unit_explicit = GL_FALSE;
 }
@@ -882,7 +892,7 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
         int res_type = sampler_resource_types[t];
         SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
         for (GLuint i = 0; i < resources->count; i++) {
-            mglApplyDefaultSamplerUnit(pptr, stage, &resources->list[i]);
+            mglApplyDefaultSamplerUnit(pptr, stage, res_type, &resources->list[i]);
         }
     }
 }
@@ -1123,6 +1133,72 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
     }
 
     free(ptr);
+}
+
+GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuint expectedName)
+{
+    if (!ctx || !program || expectedName == 0u) {
+        return GL_FALSE;
+    }
+
+    if (!mglObjectPointerLooksPlausible(program) ||
+        !mglPointerRangeIsReadable(program, sizeof(*program)) ||
+        program->name != expectedName) {
+        return GL_FALSE;
+    }
+
+    if (mglHashTableContainsData(&STATE(program_table), program)) {
+        return GL_TRUE;
+    }
+
+    /*
+     * glDeleteProgram removes the name immediately, but the current program
+     * and any deferred draws that captured it must keep using the object until
+     * their references are released.
+     */
+    if (program->delete_status &&
+        program->refcount > 0 &&
+        program->linked_glsl_program != NULL) {
+        return GL_TRUE;
+    }
+
+    return GL_FALSE;
+}
+
+void mglRetainProgramReference(GLMContext ctx, Program *program)
+{
+    if (!ctx || !program) {
+        return;
+    }
+
+    GLuint programName = 0u;
+    if (mglObjectPointerLooksPlausible(program) &&
+        mglPointerRangeIsReadable(program, sizeof(*program))) {
+        programName = program->name;
+    }
+
+    if (programName == 0u ||
+        !mglProgramPointerUsableForName(ctx, program, programName)) {
+        return;
+    }
+
+    program->refcount++;
+}
+
+void mglReleaseProgramReference(GLMContext ctx, Program *program)
+{
+    if (!ctx || !program ||
+        !mglObjectPointerLooksPlausible(program) ||
+        !mglPointerRangeIsReadable(program, sizeof(*program))) {
+        return;
+    }
+
+    if (program->refcount > 0) {
+        program->refcount--;
+    }
+    if (program->refcount == 0 && program->delete_status) {
+        mglFreeProgram(ctx, program);
+    }
 }
 
 void mglDeleteProgram(GLMContext ctx, GLuint program)
@@ -2564,13 +2640,18 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         pptr = NULL;
     }
 
-    if (ctx->state.program != pptr)
+    bool bindingChanged =
+        ctx->state.program != pptr ||
+        ctx->state.program_name != program ||
+        ctx->state.var.current_program != program;
+
+    if (bindingChanged)
     {
         Program *oldProgram = ctx->state.program;
         if (oldProgram &&
-            (!mglObjectPointerLooksPlausible(oldProgram) ||
-             !mglHashTableContainsData(&STATE(program_table), oldProgram) ||
-             !mglPointerRangeIsReadable(oldProgram, sizeof(*oldProgram))))
+            !mglProgramPointerUsableForName(ctx,
+                                            oldProgram,
+                                            oldProgram->name ? oldProgram->name : ctx->state.program_name))
         {
             fprintf(stderr, "MGL WARNING: mglUseProgram dropping invalid cached program pointer %p\n",
                     (void *)oldProgram);
@@ -2592,11 +2673,8 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         if (pptr)
         {
             pptr->refcount++;
-            // Only mark dirty when binding a valid program
-            // Don't mark dirty when unbinding (pptr=NULL) to preserve existing pipeline
-            ctx->state.dirty_bits |= DIRTY_PROGRAM;
         }
-        // When unbinding (pptr=NULL), don't mark dirty - keep existing pipeline state
+        ctx->state.dirty_bits |= DIRTY_PROGRAM;
     }
 
     /*
@@ -2930,6 +3008,8 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
         if (STATE(program_pipeline) && STATE(program_pipeline)->name == pipelines[i])
         {
             STATE(program_pipeline) = NULL;
+            STATE(var.program_pipeline_binding) = 0;
+            STATE(dirty_bits) |= DIRTY_PROGRAM;
         }
         
         // Remove from hash table and free
@@ -2943,12 +3023,14 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
     if (pipeline == 0)
     {
         STATE(program_pipeline) = NULL;
+        STATE(var.program_pipeline_binding) = 0;
         STATE(dirty_bits) |= DIRTY_PROGRAM;
         return;
     }
     
     ProgramPipeline *ptr = getProgramPipeline(ctx, pipeline);
     STATE(program_pipeline) = ptr;
+    STATE(var.program_pipeline_binding) = ptr ? pipeline : 0;
     STATE(dirty_bits) |= DIRTY_PROGRAM;
 }
 

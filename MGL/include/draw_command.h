@@ -37,6 +37,7 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MDI_MIN_BATCH_SIZE    2
 #define MGL_MAX_PENDING_BUFFER_RANGES 4096
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
+#define MGL_MAX_PENDING_TEXTURE_READS 512
 
 typedef enum {
     MGL_CMD_DRAW_ARRAYS = 0,
@@ -65,6 +66,9 @@ typedef struct {
 
 typedef struct {
     uint32_t program_name;
+    uint32_t program_pipeline_name;
+    uint32_t vertex_program_name;
+    uint32_t fragment_program_name;
     uint32_t vao_name;
     uint32_t fbo_name;
     int16_t  viewport[4];
@@ -82,6 +86,10 @@ typedef struct {
     MGLDrawCommand *commands;
     void           *state_snapshot;
     void           *vao_snapshot;
+    void           *source_vao;
+    void           *retained_program;
+    void           *retained_vertex_program;
+    void           *retained_fragment_program;
     void           *stream_vertex_buffer;
     void           *stream_index_buffer;
     size_t          stream_vertex_bytes;
@@ -114,6 +122,9 @@ typedef struct {
     void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
     uint32_t     texture_write_count;
     bool         texture_write_overflow;
+    void        *texture_read_objects[MGL_MAX_PENDING_TEXTURE_READS];
+    uint32_t     texture_read_count;
+    bool         texture_read_overflow;
 } MGLCommandBuffer;
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb);
@@ -126,10 +137,12 @@ void mglFlushCommandBuffer(GLMContext ctx);
 void mglFlushPendingDraws(GLMContext ctx);
 bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size);
 bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture);
+bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer);
 void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size);
 void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao);
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture);
+void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
 
 #ifdef __cplusplus

@@ -27,6 +27,48 @@
 #include "draw_command.h"
 #include "mgl_safety.h"
 
+static void mglInitVertexArrayDefaultsForDraw(VertexArray *vao)
+{
+    if (!vao)
+        return;
+
+    for (int i = 0; i < MAX_ATTRIBS; i++)
+    {
+        vao->attrib[i].size = 4;
+        vao->attrib[i].type = GL_FLOAT;
+        vao->attrib[i].integer = 0;
+        vao->attrib[i].long_attribute = 0;
+        vao->attrib[i].stride = 0;
+        vao->attrib[i].divisor = 0;
+        vao->attrib[i].relativeoffset = 0;
+        vao->attrib[i].binding_offset = 0;
+        vao->attrib[i].buffer_bindingindex = 0;
+        vao->attrib[i].buffer = NULL;
+    }
+
+    for (int i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++)
+    {
+        vao->bindings[i].buffer = NULL;
+        vao->bindings[i].offset = 0;
+        vao->bindings[i].stride = 16;
+        vao->bindings[i].divisor = 0;
+    }
+}
+
+static Buffer *mglResolveVertexAttribBufferForDraw(VertexArray *vao, GLuint attrib)
+{
+    if (!vao || attrib >= MAX_ATTRIBS)
+        return NULL;
+
+    VertexAttrib *a = &vao->attrib[attrib];
+    if (a->buffer_bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
+        vao->bindings[a->buffer_bindingindex].buffer) {
+        return vao->bindings[a->buffer_bindingindex].buffer;
+    }
+
+    return a->buffer;
+}
+
 static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
 {
     VertexArray *vao;
@@ -54,24 +96,7 @@ static VertexArray *mglGetOrCreateDefaultVAO(GLMContext ctx)
         vao->magic = MGL_VAO_MAGIC;
         vao->name = 0;
 
-        for (int i = 0; i < MAX_ATTRIBS; i++)
-        {
-            vao->attrib[i].size = 4;
-            vao->attrib[i].type = GL_FLOAT;
-            vao->attrib[i].stride = 0;
-            vao->attrib[i].divisor = 0;
-            vao->attrib[i].relativeoffset = 0;
-            vao->attrib[i].binding_offset = 0;
-            vao->attrib[i].buffer_bindingindex = 0;
-        }
-
-        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++)
-        {
-            vao->bindings[i].buffer = NULL;
-            vao->bindings[i].offset = 0;
-            vao->bindings[i].stride = 0;
-            vao->bindings[i].divisor = 0;
-        }
+        mglInitVertexArrayDefaultsForDraw(vao);
 
         insertHashElement(&STATE(vao_table), 0, vao);
     }
@@ -217,7 +242,7 @@ bool processVAO(GLMContext ctx)
         {
             if (vao->enabled_attribs & (0x1 << i))
             {
-                if (vao->attrib[i].buffer == NULL)
+                if (mglResolveVertexAttribBufferForDraw(vao, (GLuint)i) == NULL)
                 {
                     // no buffer bound to active attrib...
                     return false;
@@ -280,10 +305,13 @@ bool validate_vao(GLMContext ctx, bool uses_elements)
     {
         if (enabled_attribs & 0x1)
         {
-            // mapped buffers cannot be used during draw calls
-            Buffer *attrib_buffer = vao->attrib[i].buffer;
-            if (!attrib_buffer || attrib_buffer->mapped) {
-                fprintf(stderr, "MGL Error: validate_vao: attrib %d buffer mapped\n", i);
+            // Mapped buffers cannot be used during draw calls unless
+            // mapped persistently (GL_MAP_PERSISTENT_BIT), which GL 4.5
+            // explicitly allows for simultaneous mapping and rendering.
+            Buffer *attrib_buffer = mglResolveVertexAttribBufferForDraw(vao, (GLuint)i);
+            if (!attrib_buffer || (attrib_buffer->mapped &&
+                !(attrib_buffer->access_flags & GL_MAP_PERSISTENT_BIT))) {
+                fprintf(stderr, "MGL Error: validate_vao: attrib %d buffer mapped (non-persistent)\n", i);
                 return false;
             }
         }
@@ -306,17 +334,24 @@ bool validate_program(GLMContext ctx)
 {
     Program *program = ctx ? ctx->state.program : NULL;
 
-    if (program &&
-        (!mglObjectPointerLooksPlausible(program) ||
-         !mglHashTableContainsData(&STATE(program_table), program) ||
-         !mglPointerRangeIsReadable(program, sizeof(*program))))
-    {
-        fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
-                (void *)program);
-        ctx->state.program = NULL;
-        ctx->state.program_name = 0;
-        ctx->state.var.current_program = 0;
-        program = NULL;
+    if (program) {
+        GLuint expectedName = 0u;
+        GLboolean pointerReadable =
+            mglObjectPointerLooksPlausible(program) &&
+            mglPointerRangeIsReadable(program, sizeof(*program));
+        if (pointerReadable) {
+            expectedName = ctx->state.program_name ? ctx->state.program_name : program->name;
+        }
+
+        if (!pointerReadable ||
+            !mglProgramPointerUsableForName(ctx, program, expectedName)) {
+            fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
+                    (void *)program);
+            ctx->state.program = NULL;
+            ctx->state.program_name = 0;
+            ctx->state.var.current_program = 0;
+            program = NULL;
+        }
     }
 
     if (program) {

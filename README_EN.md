@@ -187,7 +187,7 @@ Implemented in Objective-C, responsible for:
 
 ## Acknowledgements
 
-- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools
+- [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS
 - [GLFW](https://www.glfw.org/) - Window management library
 - [openglonmetal](https://github.com/openglonmetal/MGL) - Original MGL framework
 - [Hexeption/MCP-Reborn](https://github.com/Hexeption/MCP-Reborn) 

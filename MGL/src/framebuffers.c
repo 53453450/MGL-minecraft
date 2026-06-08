@@ -46,6 +46,7 @@ extern void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, co
 extern void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLuint *value);
 extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
 extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
+extern void mglTraceLogExternal(const char *fmt, ...);
 
 static GLubyte mglClampClearComponentToByte(GLfloat value)
 {
@@ -56,6 +57,55 @@ static GLubyte mglClampClearComponentToByte(GLfloat value)
         return 255;
     }
     return (GLubyte)(value * 255.0f + 0.5f);
+}
+
+static GLuint mglTraceSafeFramebufferName(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx || !fbo ||
+        !mglObjectPointerLooksPlausible(fbo) ||
+        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo) ||
+        !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
+        return 0u;
+    }
+    return fbo->name;
+}
+
+static Texture *mglTraceAttachmentTexture(GLMContext ctx, FBOAttachment *att)
+{
+    if (!ctx || !att) {
+        return NULL;
+    }
+    if (att->textarget == GL_RENDERBUFFER) {
+        return (att->buf.rbo && att->buf.rbo->tex) ? att->buf.rbo->tex : NULL;
+    }
+    if (att->buf.tex) {
+        return att->buf.tex;
+    }
+    if (att->texture != 0u) {
+        return findTexture(ctx, att->texture);
+    }
+    return NULL;
+}
+
+static void mglTraceTextureInitSummary(Texture *tex,
+                                       GLuint level,
+                                       GLuint *ever,
+                                       GLuint *full,
+                                       GLuint *source)
+{
+    TextureLevel *tex_level = NULL;
+    if (tex && tex->num_levels > 0u && tex->faces[0].levels && level < tex->num_levels) {
+        tex_level = &tex->faces[0].levels[level];
+    }
+    if (ever) {
+        *ever = tex_level ? (GLuint)tex_level->ever_written : 0u;
+    }
+    if (full) {
+        *full = tex_level ? (GLuint)tex_level->has_initialized_data : 0u;
+    }
+    if (source) {
+        *source = tex_level ? (GLuint)tex_level->last_init_source : 0u;
+    }
 }
 
 static Texture *mglPendingClearAttachmentTexture(FBOAttachment *att)
@@ -433,19 +483,6 @@ GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuin
     return GL_TRUE;
 }
 
-GLboolean mglFramebufferIsSmallIconTarget(GLMContext ctx, Framebuffer *fbo)
-{
-    (void)ctx;
-    (void)fbo;
-
-    /*
-     * Minecraft 1.21.8 renders the lightmap into a 16x16 texture. Treating any
-     * tiny framebuffer as a GUI item icon target redirects real lightmap draws
-     * and leaks that state into GUI/entity rendering.
-     */
-    return GL_FALSE;
-}
-
 void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
 {
     GLuint width = 0u;
@@ -464,19 +501,6 @@ void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
         ctx->state.viewport_array[0][1] = 0.0f;
         ctx->state.viewport_array[0][2] = (GLfloat)width;
         ctx->state.viewport_array[0][3] = (GLfloat)height;
-        ctx->state.viewport_binding_fbo_name = fbo->name;
-        ctx->state.viewport_binding_width = (GLsizei)width;
-        ctx->state.viewport_binding_height = (GLsizei)height;
-        if (mglFramebufferIsSmallIconTarget(ctx, fbo)) {
-            ctx->state.pending_icon_bake_fbo_name = fbo->name;
-        } else {
-            ctx->state.pending_icon_bake_fbo_name = 0u;
-        }
-    } else if (!fbo) {
-        ctx->state.viewport_binding_fbo_name = 0u;
-        ctx->state.viewport_binding_width = ctx->state.viewport[2];
-        ctx->state.viewport_binding_height = ctx->state.viewport[3];
-        ctx->state.pending_icon_bake_fbo_name = 0u;
     }
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
@@ -574,6 +598,44 @@ static void mglFramebufferLoadReadBuffer(GLMContext ctx, Framebuffer *fbo)
     ctx->state.read_buffer = readBuffer;
 }
 
+static void mglFramebufferSyncBindingNames(GLMContext ctx)
+{
+    if (!ctx) {
+        return;
+    }
+
+    ctx->state.var.draw_framebuffer_binding =
+        ctx->state.framebuffer ? ctx->state.framebuffer->name : 0u;
+    ctx->state.var.read_framebuffer_binding =
+        ctx->state.readbuffer ? ctx->state.readbuffer->name : 0u;
+}
+
+static void mglFramebufferUseTemporaryDrawBinding(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    ctx->state.framebuffer = fbo;
+    mglFramebufferSyncBindingNames(ctx);
+    mglFramebufferLoadDrawBuffer(ctx, fbo);
+}
+
+static void mglFramebufferUseTemporaryReadDrawBinding(GLMContext ctx,
+                                                      Framebuffer *readFbo,
+                                                      Framebuffer *drawFbo)
+{
+    if (!ctx) {
+        return;
+    }
+
+    ctx->state.readbuffer = readFbo;
+    ctx->state.framebuffer = drawFbo;
+    mglFramebufferSyncBindingNames(ctx);
+    mglFramebufferLoadReadBuffer(ctx, readFbo);
+    mglFramebufferLoadDrawBuffer(ctx, drawFbo);
+}
+
 void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
 {
     if (!ctx) {
@@ -581,14 +643,10 @@ void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
     }
 
     ctx->state.framebuffer = fbo;
+    mglFramebufferSyncBindingNames(ctx);
     mglFramebufferLoadDrawBuffer(ctx, fbo);
     if (fbo) {
         fbo->dirty_bits |= DIRTY_FBO_BINDING;
-    }
-    if (fbo && mglFramebufferIsSmallIconTarget(ctx, fbo)) {
-        ctx->state.pending_icon_bake_fbo_name = fbo->name;
-    } else {
-        ctx->state.pending_icon_bake_fbo_name = 0u;
     }
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
 }
@@ -626,6 +684,7 @@ static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFrameb
 
     ctx->state.framebuffer = snapshot->draw_fbo;
     ctx->state.readbuffer = snapshot->read_fbo;
+    mglFramebufferSyncBindingNames(ctx);
     ctx->state.draw_buffer = snapshot->draw_buffer;
     ctx->state.draw_buffer_count = snapshot->draw_buffer_count;
     ctx->state.read_buffer = snapshot->read_buffer;
@@ -703,10 +762,6 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     if (!ctx)
         return;
 
-    if (ctx->draw_defer_enabled) {
-        mglFlushCommandBuffer(ctx);
-    }
-
     switch(target) {
         case GL_DRAW_FRAMEBUFFER:
         case GL_READ_FRAMEBUFFER:
@@ -765,6 +820,12 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     }
 
     if ((target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
+        oldDrawFbo != ptr)
+    {
+        mglFlushPendingDraws(ctx);
+    }
+
+    if ((target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
         oldDrawFbo != ptr &&
         ctx->mtl_funcs.mtlInvalidateRenderPass)
     {
@@ -775,6 +836,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         case GL_DRAW_FRAMEBUFFER:
             mglFramebufferStoreCurrentDrawBuffer(ctx, oldDrawFbo);
             ctx->state.framebuffer = ptr;
+            mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadDrawBuffer(ctx, ptr);
             drawTargetChanged = GL_TRUE;
             break;
@@ -782,6 +844,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         case GL_READ_FRAMEBUFFER:
             mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
             ctx->state.readbuffer = ptr;
+            mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadReadBuffer(ctx, ptr);
             readTargetChanged = GL_TRUE;
             break;
@@ -791,6 +854,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
             mglFramebufferStoreCurrentReadBuffer(ctx, oldReadFbo);
             ctx->state.framebuffer = ptr;
             ctx->state.readbuffer = ptr;
+            mglFramebufferSyncBindingNames(ctx);
             mglFramebufferLoadDrawBuffer(ctx, ptr);
             mglFramebufferLoadReadBuffer(ctx, ptr);
             drawTargetChanged = GL_TRUE;
@@ -811,24 +875,103 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     {
         mglNormalizeReadBufferForFramebufferBinding(ctx, ptr);
     }
+
+    if (drawTargetChanged || readTargetChanged)
+    {
+        static uint64_t s_fbindTraceCount = 0;
+        uint64_t hit = ++s_fbindTraceCount;
+        FBOAttachment *color0 = (ctx->state.framebuffer &&
+                                 (ctx->state.framebuffer->color_attachment_bitfield & 1u))
+            ? &ctx->state.framebuffer->color_attachments[0]
+            : NULL;
+        FBOAttachment *depth = ctx->state.framebuffer ? &ctx->state.framebuffer->depth : NULL;
+        Texture *color_tex = mglTraceAttachmentTexture(ctx, color0);
+        Texture *depth_tex = mglTraceAttachmentTexture(ctx, depth);
+        GLuint c_ever = 0u, c_full = 0u, c_source = 0u;
+        GLuint d_ever = 0u, d_full = 0u, d_source = 0u;
+        mglTraceTextureInitSummary(color_tex,
+                                   color0 ? color0->level : 0u,
+                                   &c_ever,
+                                   &c_full,
+                                   &c_source);
+        mglTraceTextureInitSummary(depth_tex,
+                                   depth ? depth->level : 0u,
+                                   &d_ever,
+                                   &d_full,
+                                   &d_source);
+        GLboolean small_box = ctx->state.var.scissor_box[2] > 0 &&
+                              ctx->state.var.scissor_box[3] > 0 &&
+                              ctx->state.var.scissor_box[2] <= 128 &&
+                              ctx->state.var.scissor_box[3] <= 128;
+        if (hit <= 256ull ||
+            (hit % 512ull) == 0ull ||
+            small_box ||
+            (color_tex && color_tex->width <= 1024u && color_tex->height <= 1024u)) {
+            mglTraceLogExternal("FBIND_GL hit=%llu target=0x%x new=%u oldDraw=%u oldRead=%u "
+                                "drawChanged=%d readChanged=%d state(draw=%u read=%u drawBuf=0x%x readBuf=0x%x drawCount=%d pendingBatches=%u pendingCmds=%u dirty=0x%x) "
+                                "color0(tex=%u target=0x%x level=%u ptr=%p size=%ux%u isRT=%d init=%u/%u/%u rtVer=%u sampledVer=%u clearMask=0x%x) "
+                                "depth(tex=%u target=0x%x level=%u ptr=%p size=%ux%u isRT=%d init=%u/%u/%u rtVer=%u sampledVer=%u clearMask=0x%x) "
+                                "viewport=%d,%d,%d,%d scissor(test=%d box=%d,%d,%d,%d)",
+                                (unsigned long long)hit,
+                                (unsigned)target,
+                                (unsigned)framebuffer,
+                                (unsigned)mglTraceSafeFramebufferName(ctx, oldDrawFbo),
+                                (unsigned)mglTraceSafeFramebufferName(ctx, oldReadFbo),
+                                drawTargetChanged ? 1 : 0,
+                                readTargetChanged ? 1 : 0,
+                                (unsigned)mglTraceSafeFramebufferName(ctx, ctx->state.framebuffer),
+                                (unsigned)mglTraceSafeFramebufferName(ctx, ctx->state.readbuffer),
+                                (unsigned)ctx->state.draw_buffer,
+                                (unsigned)ctx->state.read_buffer,
+                                (int)ctx->state.draw_buffer_count,
+                                (unsigned)ctx->draw_command_buffer.batch_count,
+                                (unsigned)ctx->draw_command_buffer.total_commands,
+                                (unsigned)ctx->state.dirty_bits,
+                                color0 ? (unsigned)color0->texture : 0u,
+                                color0 ? (unsigned)color0->textarget : 0u,
+                                color0 ? (unsigned)color0->level : 0u,
+                                color_tex,
+                                color_tex ? (unsigned)color_tex->width : 0u,
+                                color_tex ? (unsigned)color_tex->height : 0u,
+                                color_tex ? (int)color_tex->is_render_target : 0,
+                                (unsigned)c_ever,
+                                (unsigned)c_full,
+                                (unsigned)c_source,
+                                color_tex ? (unsigned)color_tex->mtl_render_target_write_version : 0u,
+                                color_tex ? (unsigned)color_tex->mtl_gl_sampled_write_version : 0u,
+                                color0 ? (unsigned)color0->clear_bitmask : 0u,
+                                depth ? (unsigned)depth->texture : 0u,
+                                depth ? (unsigned)depth->textarget : 0u,
+                                depth ? (unsigned)depth->level : 0u,
+                                depth_tex,
+                                depth_tex ? (unsigned)depth_tex->width : 0u,
+                                depth_tex ? (unsigned)depth_tex->height : 0u,
+                                depth_tex ? (int)depth_tex->is_render_target : 0,
+                                (unsigned)d_ever,
+                                (unsigned)d_full,
+                                (unsigned)d_source,
+                                depth_tex ? (unsigned)depth_tex->mtl_render_target_write_version : 0u,
+                                depth_tex ? (unsigned)depth_tex->mtl_gl_sampled_write_version : 0u,
+                                depth ? (unsigned)depth->clear_bitmask : 0u,
+                                (int)ctx->state.viewport[0],
+                                (int)ctx->state.viewport[1],
+                                (int)ctx->state.viewport[2],
+                                (int)ctx->state.viewport[3],
+                                ctx->state.caps.scissor_test ? 1 : 0,
+                                (int)ctx->state.var.scissor_box[0],
+                                (int)ctx->state.var.scissor_box[1],
+                                (int)ctx->state.var.scissor_box[2],
+                                (int)ctx->state.var.scissor_box[3]);
+        }
+    }
     
     if (drawTargetChanged)
     {
-        if (ptr && mglFramebufferIsSmallIconTarget(ctx, ptr)) {
-            STATE(pending_icon_bake_fbo_name) = ptr->name;
-        } else {
-            STATE(pending_icon_bake_fbo_name) = 0u;
-        }
-
         if (ptr)
         {
             ptr->dirty_bits |= DIRTY_FBO_BINDING;
         }
         STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE | DIRTY_PROGRAM;
-    }
-    else
-    {
-        STATE(dirty_bits) |= DIRTY_FBO;
     }
 }
 
@@ -850,6 +993,7 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
             ctx->state.framebuffer = NULL;
         if (ctx->state.readbuffer == fbo)
             ctx->state.readbuffer = NULL;
+        mglFramebufferSyncBindingNames(ctx);
             
         // Remove from hash table
         deleteHashElement(&STATE(framebuffer_table), framebuffers[i]);
@@ -2189,6 +2333,26 @@ void mglGetNamedFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuf
 
 void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
 {
+    static uint64_t s_blitTraceCount = 0;
+    uint64_t blitHit = ++s_blitTraceCount;
+    if (blitHit <= 128ull ||
+        (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u ||
+        (blitHit % 512ull) == 0ull) {
+        Framebuffer *drawFbo = ctx ? ctx->state.framebuffer : NULL;
+        Framebuffer *readFbo = ctx ? ctx->state.readbuffer : NULL;
+        mglTraceLogExternal("BLIT_FRAMEBUFFER call=%llu src=(%d,%d)-(%d,%d) dst=(%d,%d)-(%d,%d) mask=0x%x filter=0x%x drawFbo=%u readFbo=%u drawBuf=0x%x readBuf=0x%x depthStencil=%d",
+                            (unsigned long long)blitHit,
+                            srcX0, srcY0, srcX1, srcY1,
+                            dstX0, dstY0, dstX1, dstY1,
+                            (unsigned)mask,
+                            (unsigned)filter,
+                            (unsigned)mglTraceSafeFramebufferName(ctx, drawFbo),
+                            (unsigned)mglTraceSafeFramebufferName(ctx, readFbo),
+                            (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
+                            (unsigned)(ctx ? ctx->state.read_buffer : 0u),
+                            (mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u ? 1 : 0);
+    }
+
     if (MGL_VERBOSE_FBO_LOGS) {
         fprintf(stderr, "MGL: glBlitFramebuffer src(%d,%d)-(%d,%d) dst(%d,%d)-(%d,%d) mask=0x%x\n",
                 srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask);
@@ -2409,8 +2573,8 @@ void mglNamedFramebufferRenderbuffer(GLMContext ctx, GLuint framebuffer, GLenum 
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglFramebufferRenderbuffer(ctx, GL_DRAW_FRAMEBUFFER, attachment, renderbuffertarget, renderbuffer);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2476,8 +2640,8 @@ void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attac
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, 0);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2493,8 +2657,8 @@ void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum 
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, layer);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2563,6 +2727,22 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
     GLenum *drawBuffers = fbo ? fbo->draw_buffers : ctx->state.default_draw_buffers;
     GLsizei *drawBufferCount = fbo ? &fbo->draw_buffer_count : &ctx->state.default_draw_buffer_count;
     GLuint *drawBuffer = fbo ? &fbo->draw_buffer : &ctx->state.default_draw_buffer;
+    GLboolean changed = (*drawBufferCount != n);
+
+    for (GLsizei i = 0; !changed && i < n; ++i) {
+        if (drawBuffers[i] != bufs[i]) {
+            changed = GL_TRUE;
+        }
+    }
+    for (GLsizei i = n; !changed && i < (GLsizei)MAX_COLOR_ATTACHMENTS; ++i) {
+        if (drawBuffers[i] != GL_NONE) {
+            changed = GL_TRUE;
+        }
+    }
+
+    if (changed) {
+        mglFlushPendingDraws(ctx);
+    }
 
     for (GLsizei i = 0; i < n; ++i) {
         drawBuffers[i] = bufs[i];
@@ -2590,6 +2770,7 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
 void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum src)
 {
     Framebuffer *fbo = framebuffer ? findFrameBuffer(ctx, framebuffer) : NULL;
+    GLenum *readBuffer = NULL;
 
     if (framebuffer != 0u && !fbo) {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -2601,7 +2782,7 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
-        fbo->read_buffer = src;
+        readBuffer = &fbo->read_buffer;
     } else {
         switch (src) {
             case GL_FRONT:
@@ -2613,12 +2794,16 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
             case GL_BACK_RIGHT:
             case GL_LEFT:
             case GL_RIGHT:
-                ctx->state.default_read_buffer = src;
+                readBuffer = &ctx->state.default_read_buffer;
                 break;
             default:
                 ERROR_RETURN(GL_INVALID_ENUM);
                 return;
         }
+    }
+
+    if (readBuffer && *readBuffer != src) {
+        *readBuffer = src;
     }
 
     if (fbo == ctx->state.readbuffer) {
@@ -2627,7 +2812,6 @@ void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum sr
         ctx->state.read_buffer = src;
     }
 
-    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
 }
 
 void mglInvalidateNamedFramebufferData(GLMContext ctx, GLuint framebuffer, GLsizei numAttachments, const GLenum *attachments)
@@ -2667,8 +2851,8 @@ void mglClearNamedFramebufferiv(GLMContext ctx, GLuint framebuffer, GLenum buffe
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglClearBufferiv(ctx, buffer, drawbuffer, value);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2683,8 +2867,8 @@ void mglClearNamedFramebufferuiv(GLMContext ctx, GLuint framebuffer, GLenum buff
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglClearBufferuiv(ctx, buffer, drawbuffer, value);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2699,8 +2883,8 @@ void mglClearNamedFramebufferfv(GLMContext ctx, GLuint framebuffer, GLenum buffe
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglClearBufferfv(ctx, buffer, drawbuffer, value);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2715,8 +2899,8 @@ void mglClearNamedFramebufferfi(GLMContext ctx, GLuint framebuffer, GLenum buffe
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.framebuffer = fbo;
-    mglFramebufferLoadDrawBuffer(ctx, fbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
     mglClearBufferfi(ctx, buffer, drawbuffer, depth, stencil);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
@@ -2734,10 +2918,8 @@ void mglBlitNamedFramebuffer(GLMContext ctx, GLuint readFramebuffer, GLuint draw
 
     MGLFramebufferBindingSnapshot snapshot;
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
-    ctx->state.readbuffer = readFbo;
-    ctx->state.framebuffer = drawFbo;
-    mglFramebufferLoadReadBuffer(ctx, readFbo);
-    mglFramebufferLoadDrawBuffer(ctx, drawFbo);
+    mglFlushPendingDraws(ctx);
+    mglFramebufferUseTemporaryReadDrawBinding(ctx, readFbo, drawFbo);
     mglBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }

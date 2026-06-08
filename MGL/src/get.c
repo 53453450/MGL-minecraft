@@ -36,8 +36,11 @@ static const char *kMglExtensions[] = {
     "GL_ARB_uniform_buffer_object",
     "GL_ARB_draw_buffers",
     "GL_ARB_debug_output",
+    "GL_KHR_debug",
     "GL_ARB_texture_buffer_object",
-    "GL_ARB_texture_buffer_range"
+    "GL_ARB_texture_buffer_range",
+    "GL_ARB_buffer_storage",
+    "GL_ARB_direct_state_access"
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -128,6 +131,55 @@ static GLuint mglSafeMaxViewports(GLMContext ctx)
         value = MGL_MAX_VIEWPORTS;
     }
     return value ? value : 1u;
+}
+
+static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
+{
+    GLuint value = ctx ? ctx->state.var.max_vertex_attrib_bindings : 0u;
+    if (value < MAX_ATTRIBS || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        value = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+        if (ctx) {
+            ctx->state.var.max_vertex_attrib_bindings = value;
+        }
+    }
+    return value;
+}
+
+static GLuint mglSafeMaxVertexAttribRelativeOffset(GLMContext ctx)
+{
+    const GLuint kFallback = 2047u;
+    GLuint value = ctx ? ctx->state.var.max_vertex_attrib_relative_offset : 0u;
+    if (value < kFallback || value == 0x01010101u) {
+        value = kFallback;
+        if (ctx) {
+            ctx->state.var.max_vertex_attrib_relative_offset = value;
+        }
+    }
+    return value;
+}
+
+static GLuint mglSafeMaxVertexAttribStride(GLMContext ctx)
+{
+    (void)ctx;
+    return 2048u;
+}
+
+static GLuint mglCurrentDrawFramebufferBinding(GLMContext ctx)
+{
+    GLuint name = (ctx && ctx->state.framebuffer) ? ctx->state.framebuffer->name : 0u;
+    if (ctx) {
+        ctx->state.var.draw_framebuffer_binding = name;
+    }
+    return name;
+}
+
+static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
+{
+    GLuint name = (ctx && ctx->state.readbuffer) ? ctx->state.readbuffer->name : 0u;
+    if (ctx) {
+        ctx->state.var.read_framebuffer_binding = name;
+    }
+    return name;
 }
 
 // these cast a void ptr to a type and value
@@ -494,9 +546,23 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8C1C: RET_TYPE_VAR(type, texture_binding_1d_array); break; // GL_TEXTURE_BINDING_1D_ARRAY
         case 0x8C1D: RET_TYPE_VAR(type, texture_binding_2d_array); break; // GL_TEXTURE_BINDING_2D_ARRAY
         case 0x84E8: RET_TYPE_VAR(type, max_renderbuffer_size); break; // GL_MAX_RENDERBUFFER_SIZE
-        case 0x8CA6: RET_TYPE_VAR(type, draw_framebuffer_binding); break; // GL_DRAW_FRAMEBUFFER_BINDING
+        case 0x8CA6: // GL_DRAW_FRAMEBUFFER_BINDING / GL_FRAMEBUFFER_BINDING
+            switch(type) {
+                case kBool: RET_BOOL(mglCurrentDrawFramebufferBinding(ctx));
+                case kInt: RET_INT(mglCurrentDrawFramebufferBinding(ctx));
+                case kFloat: RET_FLOAT(mglCurrentDrawFramebufferBinding(ctx));
+                case kDouble: RET_DOUBLE(mglCurrentDrawFramebufferBinding(ctx));
+            }
+            break;
         case 0x8CA7: RET_TYPE_VAR(type, renderbuffer_binding); break; // GL_RENDERBUFFER_BINDING
-        case 0x8CAA: RET_TYPE_VAR(type, read_framebuffer_binding); break; // GL_READ_FRAMEBUFFER_BINDING
+        case 0x8CAA: // GL_READ_FRAMEBUFFER_BINDING
+            switch(type) {
+                case kBool: RET_BOOL(mglCurrentReadFramebufferBinding(ctx));
+                case kInt: RET_INT(mglCurrentReadFramebufferBinding(ctx));
+                case kFloat: RET_FLOAT(mglCurrentReadFramebufferBinding(ctx));
+                case kDouble: RET_DOUBLE(mglCurrentReadFramebufferBinding(ctx));
+            }
+            break;
         case 0x85B5: RET_TYPE_VAR(type, vertex_array_binding); break; // GL_VERTEX_ARRAY_BINDING
         case 0x8C2B: // GL_MAX_TEXTURE_BUFFER_SIZE
             switch(type) {
@@ -608,8 +674,30 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x82D6: RET_TYPE_VAR(type, vertex_binding_divisor); break; // GL_VERTEX_BINDING_DIVISOR
         case 0x82D7: RET_TYPE_VAR(type, vertex_binding_offset); break; // GL_VERTEX_BINDING_OFFSET
         case 0x82D8: RET_TYPE_VAR(type, vertex_binding_stride); break; // GL_VERTEX_BINDING_STRIDE
-        case 0x82D9: RET_TYPE_VAR(type, max_vertex_attrib_relative_offset); break; // GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET
-        case 0x82DA: RET_TYPE_VAR(type, max_vertex_attrib_bindings); break; // GL_MAX_VERTEX_ATTRIB_BINDINGS
+        case 0x82D9: // GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET
+            switch(type) {
+                case kBool: RET_BOOL(mglSafeMaxVertexAttribRelativeOffset(ctx));
+                case kInt: RET_INT(mglSafeMaxVertexAttribRelativeOffset(ctx));
+                case kFloat: RET_FLOAT(mglSafeMaxVertexAttribRelativeOffset(ctx));
+                case kDouble: RET_DOUBLE(mglSafeMaxVertexAttribRelativeOffset(ctx));
+            }
+            break;
+        case 0x82DA: // GL_MAX_VERTEX_ATTRIB_BINDINGS
+            switch(type) {
+                case kBool: RET_BOOL(mglSafeMaxVertexAttribBindings(ctx));
+                case kInt: RET_INT(mglSafeMaxVertexAttribBindings(ctx));
+                case kFloat: RET_FLOAT(mglSafeMaxVertexAttribBindings(ctx));
+                case kDouble: RET_DOUBLE(mglSafeMaxVertexAttribBindings(ctx));
+            }
+            break;
+        case 0x82E5: // GL_MAX_VERTEX_ATTRIB_STRIDE
+            switch(type) {
+                case kBool: RET_BOOL(mglSafeMaxVertexAttribStride(ctx));
+                case kInt: RET_INT(mglSafeMaxVertexAttribStride(ctx));
+                case kFloat: RET_FLOAT(mglSafeMaxVertexAttribStride(ctx));
+                case kDouble: RET_DOUBLE(mglSafeMaxVertexAttribStride(ctx));
+            }
+            break;
     }
 }
 
@@ -827,6 +915,40 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
             }
             return;
         }
+
+        case GL_VERTEX_BINDING_BUFFER:
+        case GL_VERTEX_BINDING_OFFSET:
+        case GL_VERTEX_BINDING_STRIDE:
+        case GL_VERTEX_BINDING_DIVISOR:
+        {
+            GLuint maxBindings = mglSafeMaxVertexAttribBindings(ctx);
+            if (index >= maxBindings || index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            VertexArray *vao = ctx->state.vao;
+            if (!vao) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+
+            BufferBinding *binding = &vao->bindings[index];
+            switch (target) {
+                case GL_VERTEX_BINDING_BUFFER:
+                    *data = binding->buffer ? (GLint64)binding->buffer->name : 0;
+                    break;
+                case GL_VERTEX_BINDING_OFFSET:
+                    *data = (GLint64)binding->offset;
+                    break;
+                case GL_VERTEX_BINDING_STRIDE:
+                    *data = (GLint64)binding->stride;
+                    break;
+                case GL_VERTEX_BINDING_DIVISOR:
+                    *data = (GLint64)binding->divisor;
+                    break;
+            }
+            return;
+        }
     }
 
     GLint tmp[4] = {0};
@@ -962,6 +1084,40 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
                     break;
                 default:
                     *data = mglClampGetInteger64ToInt((GLint64)binding->size, "indexed buffer size");
+                    break;
+            }
+            break;
+        }
+
+        case GL_VERTEX_BINDING_BUFFER:
+        case GL_VERTEX_BINDING_OFFSET:
+        case GL_VERTEX_BINDING_STRIDE:
+        case GL_VERTEX_BINDING_DIVISOR:
+        {
+            GLuint maxBindings = mglSafeMaxVertexAttribBindings(ctx);
+            if (index >= maxBindings || index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            VertexArray *vao = ctx->state.vao;
+            if (!vao) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+
+            BufferBinding *binding = &vao->bindings[index];
+            switch (target) {
+                case GL_VERTEX_BINDING_BUFFER:
+                    *data = binding->buffer ? (GLint)binding->buffer->name : 0;
+                    break;
+                case GL_VERTEX_BINDING_OFFSET:
+                    *data = mglClampGetInteger64ToInt((GLint64)binding->offset, "vertex binding offset");
+                    break;
+                case GL_VERTEX_BINDING_STRIDE:
+                    *data = (GLint)binding->stride;
+                    break;
+                case GL_VERTEX_BINDING_DIVISOR:
+                    *data = (GLint)binding->divisor;
                     break;
             }
             break;

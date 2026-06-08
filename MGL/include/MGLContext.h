@@ -37,6 +37,7 @@ GLuint bicountForFormatType(GLenum format, GLenum type, GLenum component);
 
 GLMContext MGLgetCurrentContext(void);
 void MGLsetCurrentContext(GLMContext ctx);
+void destroyGLMContext(GLMContext ctx);
 
 // MGLswapBuffers can take NULL for the ctx, in this case it will use the current ctx
 void MGLswapBuffers(GLMContext ctx);

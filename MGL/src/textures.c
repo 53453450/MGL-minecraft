@@ -39,12 +39,14 @@
 #include "pixel_utils.h"
 #include "utils.h"
 #include "glm_context.h"
+#include "draw_command.h"
 
 extern void *getBufferData(GLMContext ctx, Buffer *ptr);
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *iparam, GLfloat *fparam);
+extern void mglTraceLogExternal(const char *fmt, ...);
 
 #ifndef MGL_VERBOSE_TEXTURE_UPLOAD_LOGS
 #define MGL_VERBOSE_TEXTURE_UPLOAD_LOGS 0
@@ -392,6 +394,7 @@ static const char *mglBufferInitSourceName(MGLBufferInitSource source)
         case kInitBufferDataCopy: return "BufferData(copy)";
         case kInitBufferSubData: return "BufferSubData";
         case kInitCopyBufferSubData: return "CopyBufferSubData";
+        case kInitReadPixels: return "ReadPixels";
         case kInitMapWrite: return "MapWrite";
         default: return "unknown";
     }
@@ -1699,6 +1702,37 @@ static inline GLuint mglTraceTextureNameC(Texture *tex)
     return tex ? tex->name : 0u;
 }
 
+static void mglReleaseGLSampledTextureCopy(GLMContext ctx, Texture *tex, const char *reason)
+{
+    if (!tex) {
+        return;
+    }
+
+    if (tex->mtl_gl_sampled_data) {
+        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_gl_sampled_data);
+        }
+        tex->mtl_gl_sampled_data = NULL;
+    }
+    tex->mtl_gl_sampled_width = 0u;
+    tex->mtl_gl_sampled_height = 0u;
+    tex->mtl_gl_sampled_format = 0u;
+    tex->mtl_gl_sampled_write_version = 0u;
+
+    if (reason && tex->is_render_target) {
+        static uint64_t s_release_sampled_copy_logs = 0u;
+        uint64_t hit = ++s_release_sampled_copy_logs;
+        if (hit <= 32u || (hit % 512u) == 0u) {
+            fprintf(stderr,
+                    "MGL RT-SAMPLE-COPY release tex=%u reason=%s rtVersion=%u hit=%" PRIu64 "\n",
+                    tex->name,
+                    reason,
+                    tex->mtl_render_target_write_version,
+                    hit);
+        }
+    }
+}
+
 static bool mglTextureFormatLooksDepthOrStencil(GLenum internalformat)
 {
     switch (internalformat) {
@@ -1736,6 +1770,55 @@ static bool mglTextureIsSampleableColor2D(Texture *tex)
            (level0->ever_written || level0->has_initialized_data);
 }
 
+static bool mglTextureCanEnterRecentSampled2DHistory(Texture *tex)
+{
+    if (!tex ||
+        tex->target != GL_TEXTURE_2D ||
+        tex->index != _TEXTURE_2D) {
+        return false;
+    }
+
+    /*
+     * Render-target textures are often bound as sampler inputs before their
+     * Metal backing is created. Keep them as candidates and validate the final
+     * Metal format at draw time; known depth/stencil formats never qualify.
+     */
+    if (tex->internalformat != 0 &&
+        mglTextureFormatLooksDepthOrStencil(tex->internalformat)) {
+        return false;
+    }
+
+    return true;
+}
+
+static void mglPushRecentSampled2DTexture(GLMContext ctx, GLuint unit, Texture *tex)
+{
+    if (!ctx || unit >= TEXTURE_UNITS ||
+        !mglTextureCanEnterRecentSampled2DHistory(tex)) {
+        return;
+    }
+
+    Texture **history = STATE(recent_sampled_2d_textures[unit]);
+    if (history[0] == tex) {
+        return;
+    }
+
+    for (GLuint i = 1; i < MGL_RECENT_SAMPLED_2D_HISTORY; i++) {
+        if (history[i] == tex) {
+            memmove(&history[1],
+                    &history[0],
+                    sizeof(Texture *) * i);
+            history[0] = tex;
+            return;
+        }
+    }
+
+    memmove(&history[1],
+            &history[0],
+            sizeof(Texture *) * (MGL_RECENT_SAMPLED_2D_HISTORY - 1u));
+    history[0] = tex;
+}
+
 static void mglRecordLastSampled2DTexture(GLMContext ctx, GLuint unit, Texture *tex)
 {
     if (!ctx || unit >= TEXTURE_UNITS) {
@@ -1745,6 +1828,7 @@ static void mglRecordLastSampled2DTexture(GLMContext ctx, GLuint unit, Texture *
     if (mglTextureIsSampleableColor2D(tex)) {
         STATE(last_sampled_2d_textures[unit]) = tex;
     }
+    mglPushRecentSampled2DTexture(ctx, unit, tex);
 }
 
 static void mglRecordBoundSampled2DTextureIfReady(GLMContext ctx, Texture *tex)
@@ -1769,6 +1853,11 @@ void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex)
     for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
         if (STATE(last_sampled_2d_textures[unit]) == tex) {
             STATE(last_sampled_2d_textures[unit]) = NULL;
+        }
+        for (GLuint i = 0; i < MGL_RECENT_SAMPLED_2D_HISTORY; i++) {
+            if (STATE(recent_sampled_2d_textures[unit][i]) == tex) {
+                STATE(recent_sampled_2d_textures[unit][i]) = NULL;
+            }
         }
     }
 }
@@ -1895,24 +1984,43 @@ static void mglTraceTextureUnitState(GLMContext ctx,
         return;
     }
 
-    fprintf(stderr,
-            "MGL TRACE TexUnit.%s hit=%llu unit=%u activeUnit=%u target=0x%x texture=%u bound=%u "
-            "state(active=%u texBuffer=%u tex2D=%u cube=%u maskWord=0x%x internal=0x%x depthStencil=%d dynamicRT=%d)\n",
-            api ? api : "?",
-            (unsigned long long)hit,
-            unit,
-            STATE(active_texture),
-            target,
-            texture,
-            mglTraceTextureNameC(bound),
-            mglTraceTextureNameC(unit_active),
-            mglTraceTextureNameC(unit_buffer),
-            mglTraceTextureNameC(unit_2d),
-            mglTraceTextureNameC(unit_cube),
-            STATE(active_texture_mask[unit / 32]),
-            observed_format,
-            depth_or_stencil ? 1 : 0,
-            dynamic_render_target_texture ? 1 : 0);
+    if (MGL_VERBOSE_TEXTURE_BIND_LOGS) {
+        fprintf(stderr,
+                "MGL TRACE TexUnit.%s hit=%llu unit=%u activeUnit=%u target=0x%x texture=%u bound=%u "
+                "state(active=%u texBuffer=%u tex2D=%u cube=%u maskWord=0x%x internal=0x%x depthStencil=%d dynamicRT=%d)\n",
+                api ? api : "?",
+                (unsigned long long)hit,
+                unit,
+                STATE(active_texture),
+                target,
+                texture,
+                mglTraceTextureNameC(bound),
+                mglTraceTextureNameC(unit_active),
+                mglTraceTextureNameC(unit_buffer),
+                mglTraceTextureNameC(unit_2d),
+                mglTraceTextureNameC(unit_cube),
+                STATE(active_texture_mask[unit / 32]),
+                observed_format,
+                depth_or_stencil ? 1 : 0,
+                dynamic_render_target_texture ? 1 : 0);
+    } else {
+        mglTraceLogExternal("TEX_UNIT_%s hit=%llu unit=%u activeUnit=%u target=0x%x texture=%u bound=%u state(active=%u texBuffer=%u tex2D=%u cube=%u maskWord=0x%x internal=0x%x depthStencil=%d dynamicRT=%d)",
+                            api ? api : "?",
+                            (unsigned long long)hit,
+                            unit,
+                            STATE(active_texture),
+                            target,
+                            texture,
+                            mglTraceTextureNameC(bound),
+                            mglTraceTextureNameC(unit_active),
+                            mglTraceTextureNameC(unit_buffer),
+                            mglTraceTextureNameC(unit_2d),
+                            mglTraceTextureNameC(unit_cube),
+                            STATE(active_texture_mask[unit / 32]),
+                            observed_format,
+                            depth_or_stencil ? 1 : 0,
+                            dynamic_render_target_texture ? 1 : 0);
+    }
 }
 
 Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
@@ -2334,8 +2442,8 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 }
             }
 
-            deleteHashElement(&STATE(texture_table), name);
             invalidateTexture(ctx, tex);
+            deleteHashElement(&STATE(texture_table), name);
             free(tex);
         }
     }
@@ -3500,7 +3608,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
 
     if (!proxy) {
-        mglFlushPendingDraws(ctx);
+        mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     }
 
     // all the levels are created on a tex storage call.. if we get here we should just assert
@@ -3869,6 +3977,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     }
 
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+    mglReleaseGLSampledTextureCopy(ctx, tex, "texImage");
     STATE(dirty_bits) |= DIRTY_TEX;
 
     if (!proxy) {
@@ -4165,7 +4274,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                                     height,
                                                     depth,
                                                     0u);
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
     // Debug: Log large texture uploads (VM framebuffer size)
     if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS && width >= 640 && height >= 400) {
@@ -4647,6 +4756,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         lvl->last_upload_size = required_bytes;
         lvl->last_src_ptr = resolved_src;
         lvl->last_src_hash = dst_hash;
+        mglReleaseGLSampledTextureCopy(ctx, tex, "texSubImage-PBO");
         mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
         if (trace_upload) {
@@ -4662,8 +4772,6 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         return true;
     } while(false);
 
-    // use process gl to upload texture data
-    tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     lvl->ever_written = GL_TRUE;
     lvl->suspicious_zero_upload = GL_FALSE;
     lvl->has_initialized_data = GL_TRUE;
@@ -4671,15 +4779,73 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     lvl->last_upload_size = required_bytes;
     lvl->last_src_ptr = resolved_src;
     lvl->last_src_hash = dst_hash;
-    mglRecordBoundSampled2DTextureIfReady(ctx, tex);
 
-    if (trace_upload) {
+    bool uploaded_direct = false;
+    bool had_pending_texture_data_before_direct = (tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0;
+    if (!resolved_unpack_buf &&
+        ctx->mtl_funcs.mtlTexSubImageBytes &&
+        tex->mtl_data &&
+        (tex->dirty_bits & DIRTY_TEXTURE_LEVEL) == 0 &&
+        upload_rect_valid) {
+        size_t upload_src_image_size = dst_pitch * (size_t)MAX(height, 1);
+        if (depth > 1) {
+            upload_src_image_size = dst_image_pitch;
+        }
+        uploaded_direct = ctx->mtl_funcs.mtlTexSubImageBytes(ctx,
+                                                             tex,
+                                                             texture_data,
+                                                             lvl->data_size,
+                                                             upload_dst_offset,
+                                                             dst_pitch,
+                                                             upload_src_image_size,
+                                                             face,
+                                                             (GLuint)level,
+                                                             (size_t)width,
+                                                             (size_t)height,
+                                                             (size_t)depth,
+                                                             (size_t)xoffset,
+                                                             (size_t)yoffset,
+                                                             (size_t)zoffset);
+        if (trace_upload) {
+            fprintf(stderr,
+                    "MGL TRACE texSubImage.directMTL call=%" PRIu64 " tex=%u face=%u level=%d uploaded=%d offset=%zu pitch=%zu image=%zu elapsed=%.3fms\n",
+                    call_id,
+                    tex->name,
+                    face,
+                    level,
+                    uploaded_direct ? 1 : 0,
+                    upload_dst_offset,
+                    dst_pitch,
+                    dst_image_pitch,
+                    mglTextureNowMs() - start_ms);
+        }
+    } else if (trace_upload && (tex->dirty_bits & DIRTY_TEXTURE_LEVEL) != 0) {
         fprintf(stderr,
-                "MGL TRACE texSubImage.end call=%" PRIu64 " tex=%u face=%u level=%d upload=DEFER ok=1 elapsed=%.3fms\n",
+                "MGL TRACE texSubImage.directMTL skip call=%" PRIu64 " tex=%u face=%u level=%d reason=dirty-level dirty=0x%x pendingData=%d\n",
                 call_id,
                 tex->name,
                 face,
                 level,
+                tex->dirty_bits,
+                had_pending_texture_data_before_direct ? 1 : 0);
+    }
+
+    if (uploaded_direct && !had_pending_texture_data_before_direct) {
+        tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+    } else {
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+    }
+    mglReleaseGLSampledTextureCopy(ctx, tex, resolved_unpack_buf ? "texSubImage-PBO" : "texSubImage-CPU");
+    mglRecordBoundSampled2DTextureIfReady(ctx, tex);
+
+    if (trace_upload) {
+        fprintf(stderr,
+                "MGL TRACE texSubImage.end call=%" PRIu64 " tex=%u face=%u level=%d upload=%s ok=1 elapsed=%.3fms\n",
+                call_id,
+                tex->name,
+                face,
+                level,
+                uploaded_direct ? "DIRECT-MTL" : "DEFER",
                 mglTextureNowMs() - start_ms);
     }
     
@@ -5267,7 +5433,9 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     Texture *tex = getTex(ctx, texture, 0);
     if (!tex) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     
     // For now, use texSubImage to clear - fill with the clear data
     GLsizei width = tex->width >> level;
@@ -5324,7 +5492,9 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
     Texture *tex = getTex(ctx, texture, 0);
     if (!tex) {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     
     size_t pixel_size = sizeForFormatType(format, type);
 
@@ -5484,6 +5654,7 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
     }
 
     // Copy from framebuffer to texture
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
 }
 
@@ -5546,6 +5717,7 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     }
 
     // This copies from the current read framebuffer to the texture
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, xoffset, yoffset, x, y, width, height);
 }
 
@@ -5592,6 +5764,7 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
+        mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
         ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, yoffset, x, y, width, height);
     } else {
         ERROR_RETURN(GL_INVALID_OPERATION);

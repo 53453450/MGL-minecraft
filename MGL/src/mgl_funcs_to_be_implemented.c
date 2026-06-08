@@ -43,6 +43,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 extern Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
 extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
+extern void mglTraceLogExternal(const char *fmt, ...);
 
 typedef struct QueryObject_t {
 	GLuint name;
@@ -173,6 +174,9 @@ static GLboolean mgl_program_uniform_block_identity_matches(const SpirvResource 
 
 	if (a->name && b->name && a->name[0] != '\0' && b->name[0] != '\0')
 		return strcmp(a->name, b->name) == 0 ? GL_TRUE : GL_FALSE;
+
+	if ((a->name && a->name[0] != '\0') || (b->name && b->name[0] != '\0'))
+		return GL_FALSE;
 
 	return a->gl_binding == b->gl_binding ? GL_TRUE : GL_FALSE;
 }
@@ -855,7 +859,7 @@ void mglClipControl(GLMContext ctx, GLenum origin, GLenum depth)
 
 	STATE(var.clip_origin) = origin;
 	STATE(var.clip_depth_mode) = depth;
-	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
+	STATE(dirty_bits) |= DIRTY_RENDER_STATE | DIRTY_PROGRAM;
 }
 
 void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
@@ -1652,10 +1656,10 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	res = mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, NULL, &found_stage, &found_type);
 	if (res)
 	{
-		GLint location = (res->location != 0xffffffffu) ? (GLint)res->location : (GLint)res->binding;
+		GLint location = (res->location != 0xffffffffu) ? (GLint)res->location : (GLint)res->gl_binding;
 		if (strstr(name, "CloudFaces"))
-			fprintf(stderr, "MGL REFLECT ResourceLocation program=%u iface=0x%x name=%s -> loc=%d binding=%u type=%d stage=%d dim=%u\n",
-			        program, programInterface, name, location, res->binding, found_type, found_stage, res->image_dim);
+			fprintf(stderr, "MGL REFLECT ResourceLocation program=%u iface=0x%x name=%s -> loc=%d glBinding=%u metalBinding=%u type=%d stage=%d dim=%u\n",
+			        program, programInterface, name, location, res->gl_binding, res->binding, found_type, found_stage, res->image_dim);
 		return location;
 	}
 	if (strstr(name, "CloudFaces"))
@@ -2212,12 +2216,11 @@ void mglObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei leng
 		}
 	}
 	tex->debug_label[copy_len] = '\0';
-	fprintf(stderr,
-	        "MGL TRACE ObjectLabel texture=%u label=\"%s\" length=%d stored=%zu\n",
-	        name,
-	        tex->debug_label,
-	        length,
-	        copy_len);
+	mglTraceLogExternal("OBJECT_LABEL texture=%u label=\"%s\" length=%d stored=%zu",
+	                    name,
+	                    tex->debug_label,
+	                    length,
+	                    copy_len);
 }
 
 void mglObjectPtrLabel(GLMContext ctx, const void *ptr, GLsizei length, const GLchar *label)

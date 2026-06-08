@@ -24,6 +24,7 @@
 
 #include "glm_context.h"
 #include "draw_command.h"
+#include "mgl_safety.h"
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
@@ -64,6 +65,19 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
         free(batch->vao_snapshot);
         batch->vao_snapshot = NULL;
     }
+    batch->source_vao = NULL;
+    if (batch->retained_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_program);
+        batch->retained_program = NULL;
+    }
+    if (batch->retained_vertex_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_vertex_program);
+        batch->retained_vertex_program = NULL;
+    }
+    if (batch->retained_fragment_program) {
+        mglReleaseProgramReference(ctx, (Program *)batch->retained_fragment_program);
+        batch->retained_fragment_program = NULL;
+    }
     if (batch->stream_vertex_buffer) {
         mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_vertex_buffer);
         batch->stream_vertex_buffer = NULL;
@@ -72,6 +86,91 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
         mglDestroyTransientBuffer(ctx, (Buffer *)batch->stream_index_buffer);
         batch->stream_index_buffer = NULL;
     }
+}
+
+static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Program *program, GLuint expectedName, void **slot)
+{
+    if (!ctx || !batch || !program || !slot) {
+        return NULL;
+    }
+
+    if (!mglObjectPointerLooksPlausible(program) ||
+        !mglPointerRangeIsReadable(program, sizeof(*program))) {
+        return NULL;
+    }
+
+    if (expectedName == 0u) {
+        expectedName = program->name;
+    }
+    if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
+        return NULL;
+    }
+
+    mglRetainProgramReference(ctx, program);
+    *slot = program;
+    return program;
+}
+
+static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
+{
+    if (!ctx || !batch) {
+        return;
+    }
+
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                ctx->state.program,
+                                ctx->state.program_name,
+                                &batch->retained_program);
+
+    if (ctx->state.program_name != 0u || !ctx->state.program_pipeline) {
+        return;
+    }
+
+    ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    if (!mglObjectPointerLooksPlausible(pipeline) ||
+        !mglPointerRangeIsReadable(pipeline, sizeof(*pipeline))) {
+        return;
+    }
+
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_VERTEX_SHADER],
+                                pipeline->stage_programs[_VERTEX_SHADER]
+                                    ? pipeline->stage_programs[_VERTEX_SHADER]->name
+                                    : 0u,
+                                &batch->retained_vertex_program);
+    (void)mglRetainBatchProgram(ctx,
+                                batch,
+                                pipeline->stage_programs[_FRAGMENT_SHADER],
+                                pipeline->stage_programs[_FRAGMENT_SHADER]
+                                    ? pipeline->stage_programs[_FRAGMENT_SHADER]->name
+                                    : 0u,
+                                &batch->retained_fragment_program);
+}
+
+static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
+{
+    if (!ctx || !batch) return false;
+
+    batch->state_snapshot = malloc(sizeof(ctx->state));
+    batch->vao_snapshot = malloc(sizeof(VertexArray));
+    if (!batch->state_snapshot || !batch->vao_snapshot) {
+        return false;
+    }
+    memcpy(batch->state_snapshot, &ctx->state, sizeof(ctx->state));
+    batch->source_vao = ctx->state.vao;
+    if (ctx->state.vao) {
+        memcpy(batch->vao_snapshot, ctx->state.vao, sizeof(VertexArray));
+        ((VertexArray *)batch->vao_snapshot)->transient_batch_vao = GL_TRUE;
+        ((GLMState *)batch->state_snapshot)->vao = (VertexArray *)batch->vao_snapshot;
+    } else {
+        free(batch->vao_snapshot);
+        batch->vao_snapshot = NULL;
+    }
+
+    mglRetainBatchProgramReferences(ctx, batch);
+    return true;
 }
 
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb)
@@ -201,6 +300,20 @@ static bool mglDrawBufferToColorAttachmentIndex(GLMContext ctx, GLenum buffer, G
     return true;
 }
 
+static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture);
+
+static void mglTrackPendingFramebufferDepthStencilWrites(GLMContext ctx, Framebuffer *fbo)
+{
+    if (!ctx || !fbo) return;
+
+    mglTrackPendingTextureWrite(ctx, mglPendingDrawAttachmentTexture(&fbo->depth));
+    if (fbo->stencil.buf.tex != fbo->depth.buf.tex ||
+        fbo->stencil.buf.rbo != fbo->depth.buf.rbo ||
+        fbo->stencil.textarget != fbo->depth.textarget) {
+        mglTrackPendingTextureWrite(ctx, mglPendingDrawAttachmentTexture(&fbo->stencil));
+    }
+}
+
 static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
 {
     if (!ctx || !texture) return;
@@ -218,6 +331,56 @@ static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
     }
 
     cb->texture_write_objects[cb->texture_write_count++] = texture;
+}
+
+static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
+{
+    if (!ctx || !texture) return;
+
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    for (uint32_t i = 0; i < cb->texture_read_count; i++) {
+        if (cb->texture_read_objects[i] == texture) {
+            return;
+        }
+    }
+
+    if (cb->texture_read_count >= MGL_MAX_PENDING_TEXTURE_READS) {
+        cb->texture_read_overflow = true;
+        return;
+    }
+
+    cb->texture_read_objects[cb->texture_read_count++] = texture;
+}
+
+static void mglTrackPendingSampledTextureReads(GLMContext ctx)
+{
+    if (!ctx) return;
+
+    unsigned *mask = ctx->state.active_texture_mask;
+    for (int w = 0; w < 4; w++) {
+        unsigned bits = mask[w];
+        while (bits) {
+            int bit = __builtin_ctz(bits);
+            bits &= bits - 1;
+            int unit = (w * 32) + bit;
+            if (unit >= TEXTURE_UNITS) {
+                continue;
+            }
+
+            Texture *active = ctx->state.active_textures[unit];
+            if (active) {
+                mglTrackPendingTextureRead(ctx, active);
+            }
+
+            TextureUnit *textureUnit = &ctx->state.texture_units[unit];
+            for (int target = 0; target < _MAX_TEXTURE_TYPES; target++) {
+                Texture *bound = textureUnit->textures[target];
+                if (bound) {
+                    mglTrackPendingTextureRead(ctx, bound);
+                }
+            }
+        }
+    }
 }
 
 static void mglTrackPendingFramebufferTextureWrites(GLMContext ctx)
@@ -248,6 +411,87 @@ static void mglTrackPendingFramebufferTextureWrites(GLMContext ctx)
 
         mglTrackPendingTextureWrite(ctx,
                                     mglPendingDrawAttachmentTexture(&fbo->color_attachments[attachmentIndex]));
+    }
+
+    mglTrackPendingFramebufferDepthStencilWrites(ctx, fbo);
+}
+
+static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
+{
+    if (!ctx || !ctx->draw_defer_enabled) return;
+
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    if (cb->batch_count == 0 || cb->total_commands == 0) return;
+    if (cb->texture_read_overflow) {
+        mglFlushCommandBuffer(ctx);
+        return;
+    }
+
+    Framebuffer *fbo = ctx->state.framebuffer;
+    if (!fbo) return;
+
+    GLsizei drawBufferCount = ctx->state.draw_buffer_count;
+    if (drawBufferCount <= 0 || drawBufferCount > (GLsizei)MAX_COLOR_ATTACHMENTS) {
+        drawBufferCount = 1;
+    }
+
+    for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
+        GLenum drawBuffer = ctx->state.draw_buffers[slot];
+        if (drawBuffer == GL_NONE) {
+            continue;
+        }
+
+        GLuint attachmentIndex = 0u;
+        if (!mglDrawBufferToColorAttachmentIndex(ctx, drawBuffer, &attachmentIndex)) {
+            continue;
+        }
+        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+            continue;
+        }
+
+        Texture *texture =
+            mglPendingDrawAttachmentTexture(&fbo->color_attachments[attachmentIndex]);
+        if (texture && mglPendingDrawsReadTexture(ctx, texture)) {
+            static uint64_t s_framebufferWriteHazardFlushCount = 0;
+            uint64_t hit = ++s_framebufferWriteHazardFlushCount;
+            if (hit <= 64ull || (hit % 512ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL TRACE pending framebuffer write hazard flush hit=%llu tex=%u attachment=%u batches=%u commands=%u\n",
+                        (unsigned long long)hit,
+                        texture ? texture->name : 0u,
+                        (unsigned)attachmentIndex,
+                        ctx->draw_command_buffer.batch_count,
+                        ctx->draw_command_buffer.total_commands);
+            }
+            mglFlushCommandBuffer(ctx);
+            return;
+        }
+    }
+
+    const struct {
+        const char *name;
+        FBOAttachment *attachment;
+    } depthStencilAttachments[] = {
+        { "depth", &fbo->depth },
+        { "stencil", &fbo->stencil }
+    };
+    for (size_t i = 0; i < sizeof(depthStencilAttachments) / sizeof(depthStencilAttachments[0]); i++) {
+        Texture *texture = mglPendingDrawAttachmentTexture(depthStencilAttachments[i].attachment);
+        if (texture && mglPendingDrawsReadTexture(ctx, texture)) {
+            static uint64_t s_framebufferDepthStencilWriteHazardFlushCount = 0;
+            uint64_t hit = ++s_framebufferDepthStencilWriteHazardFlushCount;
+            if (hit <= 64ull || (hit % 512ull) == 0ull) {
+                fprintf(stderr,
+                        "MGL TRACE pending framebuffer %s write hazard flush hit=%llu tex=%u batches=%u commands=%u\n",
+                        depthStencilAttachments[i].name,
+                        (unsigned long long)hit,
+                        texture ? texture->name : 0u,
+                        ctx->draw_command_buffer.batch_count,
+                        ctx->draw_command_buffer.total_commands);
+            }
+            mglFlushCommandBuffer(ctx);
+            return;
+        }
     }
 }
 
@@ -290,6 +534,23 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
     return false;
 }
 
+bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
+{
+    if (!ctx || !texture || !ctx->draw_defer_enabled) return false;
+
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    if (cb->batch_count == 0 || cb->total_commands == 0) return false;
+    if (cb->texture_read_overflow) return true;
+
+    for (uint32_t i = 0; i < cb->texture_read_count; i++) {
+        if (cb->texture_read_objects[i] == texture) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 {
     if (mglPendingDrawsReadBufferRange(ctx, buffer, 0, -1)) {
@@ -324,7 +585,7 @@ static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao
 
         if (batch->state_snapshot) {
             GLMState *snapshot = (GLMState *)batch->state_snapshot;
-            if (snapshot->vao == vao) {
+            if (batch->source_vao == vao || snapshot->vao == vao) {
                 return true;
             }
             continue;
@@ -347,7 +608,27 @@ void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao)
 
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
 {
-    if (mglPendingDrawsWriteTexture(ctx, texture)) {
+    if (mglPendingDrawsWriteTexture(ctx, texture) ||
+        mglPendingDrawsReadTexture(ctx, texture)) {
+        mglFlushCommandBuffer(ctx);
+    }
+}
+
+void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
+{
+    if (mglPendingDrawsReadTexture(ctx, texture) ||
+        mglPendingDrawsWriteTexture(ctx, texture)) {
+        static uint64_t s_textureWriteHazardFlushCount = 0;
+        uint64_t hit = ++s_textureWriteHazardFlushCount;
+        if (hit <= 64ull || (hit % 512ull) == 0ull) {
+            Texture *tex = (Texture *)texture;
+            fprintf(stderr,
+                    "MGL TRACE pending texture write hazard flush hit=%llu tex=%u batches=%u commands=%u\n",
+                    (unsigned long long)hit,
+                    tex ? tex->name : 0u,
+                    ctx ? ctx->draw_command_buffer.batch_count : 0u,
+                    ctx ? ctx->draw_command_buffer.total_commands : 0u);
+        }
         mglFlushCommandBuffer(ctx);
     }
 }
@@ -468,6 +749,60 @@ static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
     return hash;
 }
 
+static void mglHashBufferPointerName(uint64_t *hash, const Buffer *buffer, uint64_t salt)
+{
+    if (!hash) return;
+
+    uint64_t ptr = buffer ? (uint64_t)(uintptr_t)buffer : 0u;
+    uint64_t name = buffer ? (uint64_t)buffer->name : 0u;
+    *hash ^= mglRotateLeft64(ptr ^ (name << 1), salt & 63);
+}
+
+static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_elements)
+{
+    VertexArray *vao = ctx ? ctx->state.vao : NULL;
+    if (!vao) return 0u;
+
+    uint64_t hash = 0x56414f5354415445ULL;
+    hash ^= mglRotateLeft64((uint64_t)vao->name, 3);
+    hash ^= mglRotateLeft64((uint64_t)vao->enabled_attribs, 7);
+
+    GLuint maxAttribs = MAX_ATTRIBS;
+    for (GLuint i = 0; i < maxAttribs; i++) {
+        const VertexAttrib *attrib = &vao->attrib[i];
+        uint64_t salt = 0x100u + (uint64_t)i * 17u;
+        mglHashBufferPointerName(&hash, attrib->buffer, salt);
+        hash ^= mglRotateLeft64((uint64_t)attrib->size, (salt + 1u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->type, (salt + 2u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->normalized, (salt + 3u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->integer, (salt + 4u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->long_attribute, (salt + 5u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->stride, (salt + 6u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->divisor, (salt + 7u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->relativeoffset, (salt + 8u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->binding_offset, (salt + 9u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)attrib->buffer_bindingindex, (salt + 10u) & 63);
+    }
+
+    for (GLuint i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
+        const BufferBinding *binding = &vao->bindings[i];
+        uint64_t salt = 0x500u + (uint64_t)i * 19u;
+        mglHashBufferPointerName(&hash, binding->buffer, salt);
+        hash ^= mglRotateLeft64((uint64_t)binding->offset, (salt + 1u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)binding->stride, (salt + 2u) & 63);
+        hash ^= mglRotateLeft64((uint64_t)binding->divisor, (salt + 3u) & 63);
+    }
+
+    if (uses_elements) {
+        mglHashBufferPointerName(&hash, vao->element_array.buffer, 0x900u);
+        hash ^= mglRotateLeft64((uint64_t)vao->element_array.type, 11);
+        hash ^= mglRotateLeft64((uint64_t)vao->element_array.size, 13);
+        hash ^= mglRotateLeft64((uint64_t)(uintptr_t)vao->element_array.ptr, 17);
+    }
+
+    return hash;
+}
+
 static uint64_t mglComputeRenderStateHash(GLMContext ctx)
 {
     uint64_t hash = mglHashBytes64(&ctx->state.caps,
@@ -563,6 +898,23 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     memset(out, 0, sizeof(*out));
 
     out->program_name = ctx->state.program_name;
+    out->program_pipeline_name = ctx->state.var.program_pipeline_binding;
+    if (out->program_pipeline_name == 0 && ctx->state.program_pipeline) {
+        out->program_pipeline_name = ctx->state.program_pipeline->name;
+    }
+    if (ctx->state.program_name == 0 && out->program_pipeline_name != 0) {
+        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+        if (!pipeline || pipeline->name != out->program_pipeline_name) {
+            pipeline = (ProgramPipeline *)searchHashTable(&ctx->state.program_pipeline_table,
+                                                          out->program_pipeline_name);
+        }
+        out->vertex_program_name = pipeline && pipeline->stage_programs[_VERTEX_SHADER]
+            ? pipeline->stage_programs[_VERTEX_SHADER]->name
+            : 0u;
+        out->fragment_program_name = pipeline && pipeline->stage_programs[_FRAGMENT_SHADER]
+            ? pipeline->stage_programs[_FRAGMENT_SHADER]->name
+            : 0u;
+    }
     out->vao_name = ctx->state.vao ? ctx->state.vao->name : 0;
     out->fbo_name = ctx->state.framebuffer ? ctx->state.framebuffer->name : 0;
 
@@ -582,9 +934,8 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     out->texture_hash = mglComputeTextureHash(ctx);
     out->render_state_hash = mglComputeRenderStateHash(ctx) ^
                              mglComputeDrawBufferBindingHash(ctx) ^
+                             mglComputeVertexArrayStateHash(ctx, uses_elements) ^
                              mglRotateLeft64((uint64_t)mode, 21);
-
-    (void)uses_elements;
 }
 
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b)
@@ -668,6 +1019,59 @@ static size_t mglCommandAttribElementBytes(GLenum type, GLuint size)
             return component * (size_t)size;
         }
     }
+}
+
+typedef struct {
+    VertexAttrib *attrib;
+    Buffer       *buffer;
+    GLintptr      binding_offset;
+    GLuint        stride;
+    GLuint        divisor;
+    GLintptr      relativeoffset;
+    GLuint        binding_index;
+    bool          uses_binding_table;
+} MGLCommandResolvedAttrib;
+
+static bool mglCommandResolveVertexAttrib(VertexArray *vao,
+                                          GLuint attribute,
+                                          MGLCommandResolvedAttrib *out)
+{
+    if (!vao || attribute >= MAX_ATTRIBS || !out) {
+        return false;
+    }
+
+    VertexAttrib *attrib = &vao->attrib[attribute];
+    Buffer *buffer = attrib->buffer;
+    GLintptr bindingOffset = attrib->binding_offset;
+    GLuint stride = attrib->stride;
+    GLuint divisor = attrib->divisor;
+    GLuint bindingIndex = attrib->buffer_bindingindex;
+    bool usesBindingTable = false;
+
+    if (bindingIndex < MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        BufferBinding *binding = &vao->bindings[bindingIndex];
+        if (binding->buffer) {
+            buffer = binding->buffer;
+            bindingOffset = binding->offset;
+            stride = (binding->stride > 0) ? (GLuint)binding->stride : attrib->stride;
+            divisor = binding->divisor;
+            usesBindingTable = true;
+        }
+    }
+
+    if (!buffer) {
+        return false;
+    }
+
+    out->attrib = attrib;
+    out->buffer = buffer;
+    out->binding_offset = bindingOffset;
+    out->stride = stride;
+    out->divisor = divisor;
+    out->relativeoffset = attrib->relativeoffset;
+    out->binding_index = bindingIndex;
+    out->uses_binding_table = usesBindingTable;
+    return true;
 }
 
 static bool mglCommandPrimitiveRestartIndex(GLMContext ctx, GLenum type, uint64_t *restart)
@@ -793,47 +1197,48 @@ static bool mglCommandComputeArrayVertexRange(const MGLDrawCommand *cmd,
 }
 
 static void mglTrackPendingAttribRead(GLMContext ctx,
-                                      VertexAttrib *attrib,
+                                      const MGLCommandResolvedAttrib *resolved,
                                       uint64_t minVertex,
                                       uint64_t maxVertex,
                                       GLsizei instanceCount,
                                       GLuint baseInstance)
 {
-    if (!ctx || !attrib || !attrib->buffer) return;
+    if (!ctx || !resolved || !resolved->attrib || !resolved->buffer) return;
 
+    VertexAttrib *attrib = resolved->attrib;
     size_t elemBytes = mglCommandAttribElementBytes(attrib->type, attrib->size);
-    uint64_t stride = attrib->stride > 0 ? (uint64_t)attrib->stride : (uint64_t)elemBytes;
+    uint64_t stride = resolved->stride > 0 ? (uint64_t)resolved->stride : (uint64_t)elemBytes;
     if (elemBytes == 0 || stride == 0 ||
-        attrib->binding_offset < 0 || attrib->relativeoffset < 0) {
-        mglTrackPendingReadWholeBuffer(ctx, attrib->buffer);
+        resolved->binding_offset < 0 || resolved->relativeoffset < 0) {
+        mglTrackPendingReadWholeBuffer(ctx, resolved->buffer);
         return;
     }
 
     uint64_t firstIndex = minVertex;
     uint64_t lastIndex = maxVertex;
-    if (attrib->divisor != 0) {
+    if (resolved->divisor != 0) {
         uint64_t instances = instanceCount > 0 ? (uint64_t)instanceCount : 1u;
         uint64_t base = (uint64_t)baseInstance;
-        firstIndex = base / (uint64_t)attrib->divisor;
-        lastIndex = (base + instances - 1u) / (uint64_t)attrib->divisor;
+        firstIndex = base / (uint64_t)resolved->divisor;
+        lastIndex = (base + instances - 1u) / (uint64_t)resolved->divisor;
     }
 
-    uint64_t baseOffset = (uint64_t)attrib->binding_offset + (uint64_t)attrib->relativeoffset;
+    uint64_t baseOffset = (uint64_t)resolved->binding_offset + (uint64_t)resolved->relativeoffset;
     if (baseOffset > UINT64_MAX - ((uint64_t)elemBytes) ||
         firstIndex > UINT64_MAX / stride ||
         lastIndex > UINT64_MAX / stride) {
-        mglTrackPendingReadWholeBuffer(ctx, attrib->buffer);
+        mglTrackPendingReadWholeBuffer(ctx, resolved->buffer);
         return;
     }
 
     uint64_t start = baseOffset + firstIndex * stride;
     uint64_t end = baseOffset + lastIndex * stride + (uint64_t)elemBytes;
     if (end <= start) {
-        mglTrackPendingReadWholeBuffer(ctx, attrib->buffer);
+        mglTrackPendingReadWholeBuffer(ctx, resolved->buffer);
         return;
     }
 
-    mglTrackPendingReadRange(ctx, attrib->buffer, start, end);
+    mglTrackPendingReadRange(ctx, resolved->buffer, start, end);
 }
 
 static void mglTrackPendingBaseBufferReads(GLMContext ctx)
@@ -963,19 +1368,24 @@ static void mglMarkTransientBufferWritten(Buffer *buffer, size_t bytes)
     buffer->last_write_src_hash = 0;
 }
 
-static uint64_t mglStreamHashAttrib(uint64_t hash, const VertexAttrib *attrib, GLuint index)
+static uint64_t mglStreamHashAttrib(uint64_t hash,
+                                    const MGLCommandResolvedAttrib *resolved,
+                                    GLuint index)
 {
-    if (!attrib) return hash;
+    if (!resolved || !resolved->attrib) return hash;
 
+    const VertexAttrib *attrib = resolved->attrib;
     hash ^= mglRotateLeft64((uint64_t)index, 3);
     hash ^= mglRotateLeft64((uint64_t)attrib->size, 7);
     hash ^= mglRotateLeft64((uint64_t)attrib->type, 11);
     hash ^= mglRotateLeft64((uint64_t)attrib->normalized, 13);
     hash ^= mglRotateLeft64((uint64_t)attrib->integer, 17);
     hash ^= mglRotateLeft64((uint64_t)attrib->long_attribute, 19);
-    hash ^= mglRotateLeft64((uint64_t)attrib->stride, 23);
-    hash ^= mglRotateLeft64((uint64_t)attrib->relativeoffset, 29);
-    hash ^= mglRotateLeft64((uint64_t)attrib->buffer_bindingindex, 31);
+    hash ^= mglRotateLeft64((uint64_t)resolved->stride, 23);
+    hash ^= mglRotateLeft64((uint64_t)resolved->relativeoffset, 29);
+    hash ^= mglRotateLeft64((uint64_t)resolved->binding_index, 31);
+    hash ^= mglRotateLeft64((uint64_t)resolved->binding_offset, 41);
+    hash ^= mglRotateLeft64((uint64_t)resolved->divisor, 47);
     return hash;
 }
 
@@ -1019,6 +1429,31 @@ static bool mglLooksLikeWeatherParticleStream(GLMContext ctx,
            light->integer == GL_TRUE && light->relativeoffset == 24;
 }
 
+static bool mglLooksLikeMinecraftChunkTerrainStream(const VertexArray *vao,
+                                                    uint32_t attribMask,
+                                                    size_t vertexStride)
+{
+    if (!vao) return false;
+    if (vertexStride != 32u || (attribMask & 0x1fu) != 0x1fu) return false;
+
+    const VertexAttrib *pos = &vao->attrib[0];
+    const VertexAttrib *color = &vao->attrib[1];
+    const VertexAttrib *uv = &vao->attrib[2];
+    const VertexAttrib *light = &vao->attrib[3];
+    const VertexAttrib *normal = &vao->attrib[4];
+
+    return pos->type == GL_FLOAT && pos->size == 3 &&
+           pos->relativeoffset == 0 &&
+           color->type == GL_UNSIGNED_BYTE && color->size == 4 &&
+           color->normalized == GL_TRUE && color->relativeoffset == 12 &&
+           uv->type == GL_FLOAT && uv->size == 2 &&
+           uv->relativeoffset == 16 &&
+           light->type == GL_SHORT && light->size == 2 &&
+           light->integer == GL_TRUE && light->relativeoffset == 24 &&
+           normal->type == GL_BYTE && normal->size == 3 &&
+           normal->normalized == GL_TRUE && normal->relativeoffset == 28;
+}
+
 static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
                                            const MGLDrawCommand *cmd,
                                            bool uses_elements,
@@ -1055,8 +1490,7 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         return false;
     }
 
-    GLuint maxAttribs = ctx->state.max_vertex_attribs;
-    if (maxAttribs > MAX_ATTRIBS) maxAttribs = MAX_ATTRIBS;
+    GLuint maxAttribs = MAX_ATTRIBS;
 
     bool explicitAttribs = (vao->enabled_attribs != 0u);
     Buffer *vertexBuffer = NULL;
@@ -1075,32 +1509,34 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
             continue;
         }
 
-        VertexAttrib *attrib = &vao->attrib[i];
-        if (!attrib->buffer || attrib->divisor != 0u ||
-            attrib->binding_offset < 0 || attrib->relativeoffset < 0) {
+        MGLCommandResolvedAttrib resolved = {0};
+        if (!mglCommandResolveVertexAttrib(vao, i, &resolved) ||
+            resolved.divisor != 0u ||
+            resolved.binding_offset < 0 || resolved.relativeoffset < 0) {
             return false;
         }
 
+        VertexAttrib *attrib = resolved.attrib;
         size_t elemBytes = mglCommandAttribElementBytes(attrib->type, attrib->size);
-        size_t stride = attrib->stride > 0 ? (size_t)attrib->stride : elemBytes;
+        size_t stride = resolved.stride > 0 ? (size_t)resolved.stride : elemBytes;
         if (elemBytes == 0u || stride == 0u) return false;
-        if ((size_t)attrib->relativeoffset > SIZE_MAX - elemBytes) return false;
-        size_t attribEnd = (size_t)attrib->relativeoffset + elemBytes;
+        if ((size_t)resolved.relativeoffset > SIZE_MAX - elemBytes) return false;
+        size_t attribEnd = (size_t)resolved.relativeoffset + elemBytes;
         if (attribEnd > stride) return false;
 
         if (!vertexBuffer) {
-            vertexBuffer = attrib->buffer;
+            vertexBuffer = resolved.buffer;
             vertexStride = stride;
-            bindingOffset = attrib->binding_offset;
-        } else if (vertexBuffer != attrib->buffer ||
+            bindingOffset = resolved.binding_offset;
+        } else if (vertexBuffer != resolved.buffer ||
                    vertexStride != stride ||
-                   bindingOffset != attrib->binding_offset) {
+                   bindingOffset != resolved.binding_offset) {
             return false;
         }
 
         attribMask |= (1u << i);
         if (attribEnd > maxAttribEnd) maxAttribEnd = attribEnd;
-        layoutHash = mglStreamHashAttrib(layoutHash, attrib, i);
+        layoutHash = mglStreamHashAttrib(layoutHash, &resolved, i);
     }
 
     if (!vertexBuffer || vertexBuffer->mapped ||
@@ -1114,6 +1550,9 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         return false;
     }
     if (mglLooksLikeWeatherParticleStream(ctx, vao, vertexBuffer, attribMask, vertexStride)) {
+        return false;
+    }
+    if (mglLooksLikeMinecraftChunkTerrainStream(vao, attribMask, vertexStride)) {
         return false;
     }
 
@@ -1184,7 +1623,7 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
         GLuint binding = vao->attrib[i].buffer_bindingindex;
         vao->attrib[i].buffer = vertexBuffer;
         vao->attrib[i].binding_offset = 0;
-        if (binding < MAX_BINDABLE_BUFFERS &&
+        if (binding < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
             vao->bindings[binding].buffer == candidate->vertex_buffer) {
             vao->bindings[binding].buffer = vertexBuffer;
             vao->bindings[binding].offset = 0;
@@ -1203,6 +1642,7 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->stream_layout_hash = candidate->layout_hash;
     batch->stream_vertex_stride = candidate->vertex_stride;
     batch->mdi_compatible = false;
+    mglRetainBatchProgramReferences(ctx, batch);
     return true;
 }
 
@@ -1312,22 +1752,30 @@ static void mglTrackPendingDrawBufferReads(GLMContext ctx,
 
     VertexArray *vao = ctx->state.vao;
     if (vao) {
-        GLuint maxAttribs = ctx->state.max_vertex_attribs;
-        if (maxAttribs > MAX_ATTRIBS) maxAttribs = MAX_ATTRIBS;
+        GLuint maxAttribs = MAX_ATTRIBS;
 
+        bool explicitAttribs = (vao->enabled_attribs != 0u);
         for (GLuint i = 0; i < maxAttribs; i++) {
-            VertexAttrib *attrib = &vao->attrib[i];
-            if (!attrib->buffer) continue;
+            bool useAttrib = explicitAttribs
+                ? ((vao->enabled_attribs & (1u << i)) != 0u)
+                : (mglCommandResolveVertexAttrib(vao, i, &(MGLCommandResolvedAttrib){0}));
+            if (!useAttrib) {
+                if (explicitAttribs && (vao->enabled_attribs >> (i + 1u)) == 0u) break;
+                continue;
+            }
+
+            MGLCommandResolvedAttrib resolved = {0};
+            if (!mglCommandResolveVertexAttrib(vao, i, &resolved)) continue;
 
             if (rangeKnown) {
                 mglTrackPendingAttribRead(ctx,
-                                          attrib,
+                                          &resolved,
                                           minVertex,
                                           maxVertex,
                                           cmd->instanceCount,
                                           cmd->baseInstance);
             } else {
-                mglTrackPendingReadWholeBuffer(ctx, attrib->buffer);
+                mglTrackPendingReadWholeBuffer(ctx, resolved.buffer);
             }
         }
     }
@@ -1340,22 +1788,31 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     if (!ctx || !cmd) return;
 
     mglFlushPendingDrawsForActiveTextures(ctx);
+    mglFlushPendingDrawsBeforeFramebufferTextureWrites(ctx);
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     bool cmd_uses_elements =
         (cmd->type != MGL_CMD_DRAW_ARRAYS &&
          cmd->type != MGL_CMD_DRAW_ARRAYS_INSTANCED &&
          cmd->type != MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE);
+
     MGLStateKey key;
     mglComputeStateKey(ctx, cmd->mode, cmd_uses_elements, &key);
 
     MGLStreamMergeCandidate streamCandidate;
     bool can_stream_merge =
         mglPrepareStreamMergeCandidate(ctx, cmd, cmd_uses_elements, &streamCandidate);
+    /*
+     * A normal deferred batch replays one captured GL state with many Metal
+     * draws. That is only correct after stream-merge has copied all varying
+     * vertex/index data into transient buffers. Otherwise per-draw VAO, UBO
+     * range, texture, or render-state changes must keep their own snapshot.
+     */
+    bool can_reuse_batch = can_stream_merge;
 
     /* Find matching batch (check last first for spatial locality) */
     MGLDrawBatch *batch = NULL;
-    if (cb->batch_count > 0) {
+    if (can_reuse_batch && cb->batch_count > 0) {
         MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
         if (mglStateKeysEqual(&last->key, &key) &&
             last->uses_elements == cmd_uses_elements &&
@@ -1368,11 +1825,15 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     if (!batch) {
         if (cb->batch_count >= MGL_MAX_BATCHES) {
             mglFlushCommandBuffer(ctx);
+            if (cb->batch_count >= MGL_MAX_BATCHES) {
+                fprintf(stderr, "MGL Error: mglAppendDrawCommand: batch buffer full after flush\n");
+                return;
+            }
         }
         batch = &cb->batches[cb->batch_count];
         memset(batch, 0, sizeof(*batch));
         batch->key = key;
-        batch->mdi_compatible = true;
+        batch->mdi_compatible = can_stream_merge;
         batch->uses_elements = cmd_uses_elements;
 
         if (can_stream_merge) {
@@ -1381,19 +1842,19 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
                 batch->key = key;
-                batch->mdi_compatible = true;
+                batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
                 can_stream_merge = false;
             }
         }
 
         if (!can_stream_merge) {
-            batch->state_snapshot = malloc(sizeof(ctx->state));
-            if (!batch->state_snapshot) {
+            if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: state snapshot alloc failed\n");
+                mglReleaseBatch(ctx, batch);
+                memset(batch, 0, sizeof(*batch));
                 return;
             }
-            memcpy(batch->state_snapshot, &ctx->state, sizeof(ctx->state));
         }
 
         cb->batch_count++;
@@ -1403,32 +1864,34 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     if (can_stream_merge) {
         if (!mglAppendStreamMergedData(batch, &streamCandidate, cmd, &stored_cmd)) {
             fprintf(stderr, "MGL Warning: stream merged append failed; falling back to normal deferred draw\n");
+            if (batch->command_count == 0 &&
+                cb->batch_count > 0 &&
+                batch == &cb->batches[cb->batch_count - 1]) {
+                mglReleaseBatch(ctx, batch);
+                memset(batch, 0, sizeof(*batch));
+                cb->batch_count--;
+            }
             can_stream_merge = false;
             batch = NULL;
-            if (cb->batch_count > 0) {
-                MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
-                if (mglStateKeysEqual(&last->key, &key) &&
-                    last->uses_elements == cmd_uses_elements &&
-                    !last->stream_merged &&
-                    last->command_count < MGL_MAX_DRAWS_PER_BATCH) {
-                    batch = last;
-                }
-            }
             if (!batch) {
                 if (cb->batch_count >= MGL_MAX_BATCHES) {
                     mglFlushCommandBuffer(ctx);
+                    if (cb->batch_count >= MGL_MAX_BATCHES) {
+                        fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback batch buffer full after flush\n");
+                        return;
+                    }
                 }
                 batch = &cb->batches[cb->batch_count];
                 memset(batch, 0, sizeof(*batch));
                 batch->key = key;
-                batch->mdi_compatible = true;
+                batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                batch->state_snapshot = malloc(sizeof(ctx->state));
-                if (!batch->state_snapshot) {
+                if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
+                    mglReleaseBatch(ctx, batch);
+                    memset(batch, 0, sizeof(*batch));
                     return;
                 }
-                memcpy(batch->state_snapshot, &ctx->state, sizeof(ctx->state));
                 cb->batch_count++;
             }
             stored_cmd = *cmd;
@@ -1440,6 +1903,13 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         (batch->command_count + 1) * sizeof(MGLDrawCommand));
     if (!new_cmds) {
         fprintf(stderr, "MGL Error: mglAppendDrawCommand: realloc failed\n");
+        if (batch->command_count == 0 &&
+            cb->batch_count > 0 &&
+            batch == &cb->batches[cb->batch_count - 1]) {
+            mglReleaseBatch(ctx, batch);
+            memset(batch, 0, sizeof(*batch));
+            cb->batch_count--;
+        }
         return;
     }
     batch->commands = new_cmds;
@@ -1447,7 +1917,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     batch->command_count++;
     cb->total_commands++;
 
-    if (!can_stream_merge && !mglBatchIsMDICompatible(batch, &stored_cmd)) {
+    if (!can_stream_merge || !mglBatchIsMDICompatible(batch, &stored_cmd)) {
         batch->mdi_compatible = false;
     }
 
@@ -1462,6 +1932,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     } else {
         mglTrackPendingDrawBufferReads(ctx, cmd, cmd_uses_elements);
     }
+    mglTrackPendingSampledTextureReads(ctx);
     mglTrackPendingFramebufferTextureWrites(ctx);
 }
 

@@ -27,16 +27,26 @@
 #include <stdint.h>
 
 #include <assert.h>
+#include <CoreFoundation/CoreFoundation.h>
+#include <mach/mach_init.h>
+#include <mach/vm_map.h>
 
 #include "glm_context.h"
 #include "vertex_arrays.h"
+#include "buffers.h"
+#include "shaders.h"
 #include "MGLRenderer.h"
 #include "error.h"
+#include "mgl_safety.h"
 
 extern void getMacOSDefaults(GLMContext glm_ctx);
 extern void init_dispatch(GLMContext ctx);
+extern void invalidateTexture(GLMContext ctx, Texture *tex);
+extern void mglFreeProgram(GLMContext ctx, Program *ptr);
+extern void mglTraceLogExternal(const char *fmt, ...);
 
-GLMContext _ctx = NULL;
+static _Thread_local GLMContext _ctx = NULL;
+static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
 
 enum {
     kMGLMTLPixelFormatInvalid = 0,
@@ -53,20 +63,20 @@ extern void* CppCreateMGLRendererHeadless(void *glm_ctx);
  * Loading via dlopen must never crash if runtime dependencies are not ready.
  */
 static void mgl_auto_init(void) {
-    if (_ctx == NULL) {
-        _ctx = createGLMContext(GL_RGBA, GL_UNSIGNED_BYTE,
-                               GL_DEPTH_COMPONENT24, GL_UNSIGNED_INT,
-                               GL_STENCIL_INDEX8, GL_UNSIGNED_BYTE);
-        CppCreateMGLRendererHeadless(_ctx);
+    if (_ctx == NULL && !_ctx_explicitly_unbound) {
+        GLMContext ctx = createGLMContext(GL_RGBA, GL_UNSIGNED_BYTE,
+                                          GL_DEPTH_COMPONENT24, GL_UNSIGNED_INT,
+                                          GL_STENCIL_INDEX8, GL_UNSIGNED_BYTE);
+        _ctx = ctx;
+        CppCreateMGLRendererHeadless(ctx);
         fprintf(stderr, "MGL: Initialized headless Metal renderer\n");
     }
 }
 
 /* Lazy-initialize MGL context on first GL API call if auto-init didn't run */
 void mgl_lazy_init(void) {
-    // If `_ctx` ever gets corrupted (e.g. memory stomp), it can become a small
-    // non-NULL value and crash immediately on dereference. Detect and recover.
-    if (_ctx != NULL && (uintptr_t)_ctx < 0x10000u) {
+    // If `_ctx` ever gets corrupted (e.g. memory stomp), avoid dereferencing it.
+    if (_ctx != NULL && !mglPointerRangeIsReadable(_ctx, sizeof(*_ctx))) {
         fprintf(stderr, "MGL ERROR: current context pointer looks corrupted (%p); reinitializing\n", (void *)_ctx);
         _ctx = NULL;
     }
@@ -358,10 +368,6 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(viewport[1]) = 0;
     STATE(viewport[2]) = 1024;  // Default width - should be updated when window is bound
     STATE(viewport[3]) = 768;   // Default height - should be updated when window is bound
-    STATE(viewport_binding_fbo_name) = 0u;
-    STATE(viewport_binding_width) = 0;
-    STATE(viewport_binding_height) = 0;
-    STATE(pending_icon_bake_fbo_name) = 0u;
     for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
     {
         STATE(viewport_array[i][0]) = 0.0f;
@@ -499,6 +505,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 void MGLsetCurrentContext(GLMContext ctx)
 {
     _ctx = ctx;
+    _ctx_explicitly_unbound = (ctx == NULL) ? GL_TRUE : GL_FALSE;
 }
 
 GLMContext MGLgetCurrentContext(void)
@@ -540,24 +547,190 @@ void MGLswapBuffers(GLMContext ctx)
 
     if (ctx == NULL) {
         if (call <= 20 || (call % 60) == 0) {
-            fprintf(stderr, "MGL TRACE MGLswapBuffers.entry call=%llu ctx=NULL\n",
-                    (unsigned long long)call);
+            mglTraceLogExternal("SWAP_ENTRY call=%llu ctx=NULL",
+                                (unsigned long long)call);
         }
         return;
     }
 
     if (call <= 20 || (call % 60) == 0) {
-        fprintf(stderr,
-                "MGL TRACE MGLswapBuffers.entry call=%llu ctx=%p mtlSwap=%p drawBuf=0x%x fbo=%p program=%u\n",
-                (unsigned long long)call,
-                (void *)ctx,
-                (void *)ctx->mtl_funcs.mtlSwapBuffers,
-                (unsigned)ctx->state.draw_buffer,
-                (void *)ctx->state.framebuffer,
-                (unsigned)ctx->state.program_name);
+        mglTraceLogExternal("SWAP_ENTRY call=%llu ctx=%p mtlSwap=%p drawBuf=0x%x fbo=%p program=%u",
+                            (unsigned long long)call,
+                            (void *)ctx,
+                            (void *)ctx->mtl_funcs.mtlSwapBuffers,
+                            (unsigned)ctx->state.draw_buffer,
+                            (void *)ctx->state.framebuffer,
+                            (unsigned)ctx->state.program_name);
     }
 
     ctx->mtl_funcs.mtlSwapBuffers(ctx);
+}
+
+static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Buffer *buffer = (Buffer *)data;
+
+    if (!buffer) {
+        return;
+    }
+
+    GLboolean had_mtl_data = buffer->data.mtl_data ? GL_TRUE : GL_FALSE;
+
+    if (buffer->data.mtl_data) {
+        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, buffer->data.mtl_data);
+        } else {
+            CFRelease(buffer->data.mtl_data);
+        }
+        buffer->data.mtl_data = NULL;
+    }
+
+    if (buffer->data.buffer_data && buffer->data.buffer_size > 0) {
+        GLboolean release_cpu_backing = !had_mtl_data;
+
+        if (had_mtl_data && !(buffer->storage_flags & GL_CLIENT_STORAGE_BIT)) {
+            release_cpu_backing =
+                (buffer->storage_flags & GL_MAP_PERSISTENT_BIT) ||
+                buffer->size <= 4095;
+        }
+
+        if (release_cpu_backing) {
+            kern_return_t kr = vm_deallocate((vm_map_t)mach_task_self(),
+                                             (vm_address_t)buffer->data.buffer_data,
+                                             (vm_size_t)buffer->data.buffer_size);
+            if (kr != KERN_SUCCESS) {
+                fprintf(stderr,
+                        "MGL WARNING: context destroy failed to release buffer CPU backing name=%u ptr=%p size=%zu kr=%d\n",
+                        buffer->name,
+                        (void *)(uintptr_t)buffer->data.buffer_data,
+                        buffer->data.buffer_size,
+                        kr);
+            }
+            buffer->data.buffer_data = 0;
+            buffer->data.buffer_size = 0;
+        }
+    }
+
+    free(buffer);
+}
+
+static void mglDestroyContextTexture(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Texture *texture = (Texture *)data;
+
+    if (!texture) {
+        return;
+    }
+
+    invalidateTexture(ctx, texture);
+    free(texture);
+}
+
+static void mglDestroyContextShader(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Shader *shader = (Shader *)data;
+
+    if (!shader) {
+        return;
+    }
+
+    shader->refcount = 0;
+    mglFreeShader(ctx, shader);
+}
+
+static void mglDestroyContextProgram(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Program *program = (Program *)data;
+
+    if (!program) {
+        return;
+    }
+
+    mglFreeProgram(ctx, program);
+}
+
+static void mglDestroyContextSampler(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Sampler *sampler = (Sampler *)data;
+
+    if (!sampler) {
+        return;
+    }
+
+    if (sampler->mtl_data) {
+        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, sampler->mtl_data);
+        } else {
+            CFRelease(sampler->mtl_data);
+        }
+        sampler->mtl_data = NULL;
+    }
+
+    free(sampler);
+}
+
+static void mglDestroyContextRenderbuffer(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Renderbuffer *renderbuffer = (Renderbuffer *)data;
+
+    if (renderbuffer && renderbuffer->tex) {
+        invalidateTexture(ctx, renderbuffer->tex);
+        free(renderbuffer->tex);
+        renderbuffer->tex = NULL;
+    }
+
+    free(renderbuffer);
+}
+
+static void mglDestroyContextFramebuffer(GLuint name, void *data, void *user)
+{
+    (void)name;
+    (void)user;
+    Framebuffer *framebuffer = (Framebuffer *)data;
+
+    free(framebuffer);
+}
+
+static void mglDestroyContextVertexArray(GLuint name, void *data, void *user)
+{
+    (void)name;
+    (void)user;
+    VertexArray *vao = (VertexArray *)data;
+
+    if (vao) {
+        vao->magic = 0;
+    }
+    free(vao);
+}
+
+static void mglDestroyContextProgramPipeline(GLuint name, void *data, void *user)
+{
+    (void)name;
+    (void)user;
+    ProgramPipeline *pipeline = (ProgramPipeline *)data;
+
+    free(pipeline);
+}
+
+static void mglDestroyContextTransformFeedback(GLuint name, void *data, void *user)
+{
+    (void)name;
+    (void)user;
+    TransformFeedback *tf = (TransformFeedback *)data;
+
+    free(tf);
 }
 
 // CRITICAL FIX: Proper context destruction to prevent memory leaks
@@ -567,6 +740,35 @@ void destroyGLMContext(GLMContext ctx)
         return;
 
     fprintf(stderr, "MGL INFO: Destroying GLMContext\n");
+
+    GLMContext save = _ctx;
+    _ctx = ctx;
+    _ctx_explicitly_unbound = GL_FALSE;
+
+    mglFlushPendingDraws(ctx);
+    mglResetCommandBufferForContext(ctx, &ctx->draw_command_buffer);
+
+    mglHashTableForEach(&ctx->state.program_table, mglDestroyContextProgram, ctx);
+    mglHashTableForEach(&ctx->state.shader_table, mglDestroyContextShader, ctx);
+    mglHashTableForEach(&ctx->state.texture_table, mglDestroyContextTexture, ctx);
+    mglHashTableForEach(&ctx->state.buffer_table, mglDestroyContextBuffer, ctx);
+    mglHashTableForEach(&ctx->state.sampler_table, mglDestroyContextSampler, ctx);
+    mglHashTableForEach(&ctx->state.renderbuffer_table, mglDestroyContextRenderbuffer, ctx);
+    mglHashTableForEach(&ctx->state.framebuffer_table, mglDestroyContextFramebuffer, ctx);
+    mglHashTableForEach(&ctx->state.vao_table, mglDestroyContextVertexArray, ctx);
+    mglHashTableForEach(&ctx->state.program_pipeline_table, mglDestroyContextProgramPipeline, ctx);
+    mglHashTableForEach(&ctx->state.transform_feedback_table, mglDestroyContextTransformFeedback, ctx);
+
+    mglHashTableClearEntries(&ctx->state.program_table);
+    mglHashTableClearEntries(&ctx->state.shader_table);
+    mglHashTableClearEntries(&ctx->state.texture_table);
+    mglHashTableClearEntries(&ctx->state.buffer_table);
+    mglHashTableClearEntries(&ctx->state.sampler_table);
+    mglHashTableClearEntries(&ctx->state.renderbuffer_table);
+    mglHashTableClearEntries(&ctx->state.framebuffer_table);
+    mglHashTableClearEntries(&ctx->state.vao_table);
+    mglHashTableClearEntries(&ctx->state.program_pipeline_table);
+    mglHashTableClearEntries(&ctx->state.transform_feedback_table);
 
     // CRITICAL FIX: Use hash-table owned cleanup to avoid freeing non-owned/corrupted pointers.
     #define MGL_FREE_HASH_TABLE(_tbl_) destroyHashTable(&(_tbl_))
@@ -591,10 +793,25 @@ void destroyGLMContext(GLMContext ctx)
 
     #undef MGL_FREE_HASH_TABLE
 
-    // 12. The MGLRenderer dealloc will handle Metal resource cleanup
-    ctx->mtl_funcs.mtlObj = NULL;
+    if (ctx->mtl_funcs.mtlView) {
+        CFRelease(ctx->mtl_funcs.mtlView);
+        ctx->mtl_funcs.mtlView = NULL;
+    }
+    if (ctx->mtl_funcs.mtlObj) {
+        CFRelease(ctx->mtl_funcs.mtlObj);
+        ctx->mtl_funcs.mtlObj = NULL;
+    }
+
+    if (save == ctx) {
+        _ctx = NULL;
+        _ctx_explicitly_unbound = GL_TRUE;
+    } else {
+        _ctx = save;
+        _ctx_explicitly_unbound = (save == NULL) ? GL_TRUE : GL_FALSE;
+    }
 
     printf("MGL INFO: Context cleanup completed successfully\n");
+    free(ctx);
 }
 
 // CRITICAL FIX: Library destructor for proper cleanup

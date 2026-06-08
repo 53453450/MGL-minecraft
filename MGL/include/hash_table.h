@@ -46,6 +46,9 @@ GLuint getNewName(HashTable *table);
 void insertHashElement(HashTable *table, GLuint name, void *data);
 void *searchHashTable(HashTable *table, GLuint name);
 void deleteHashElement(HashTable *table, GLuint name);
+typedef void (*MGLHashTableForEachFunc)(GLuint name, void *data, void *user);
+void mglHashTableForEach(HashTable *table, MGLHashTableForEachFunc func, void *user);
+void mglHashTableClearEntries(HashTable *table);
 int mglHashTableValidateStorage(HashTable *table, const char *where);
 int mglHashTableContainsData(HashTable *table, const void *data);
 

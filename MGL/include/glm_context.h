@@ -198,6 +198,7 @@ typedef enum MGLBufferInitSource_t {
     kInitBufferDataCopy,
     kInitBufferSubData,
     kInitCopyBufferSubData,
+    kInitReadPixels,
     kInitMapWrite
 } MGLBufferInitSource;
 
@@ -236,6 +237,7 @@ typedef struct BufferBaseTarget_t {
 } BufferBaseTarget;
 
 #define MAX_BINDABLE_BUFFERS    16
+#define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
 typedef struct BufferBase_t {
     BufferBaseTarget    buffers[MAX_BINDABLE_BUFFERS];
 } BufferBase;
@@ -358,6 +360,8 @@ typedef struct TextureUnit_t {
     Texture *textures[_MAX_TEXTURE_TYPES];
 } TextureUnit;
 
+#define MGL_RECENT_SAMPLED_2D_HISTORY 8
+
 typedef struct ImageUnit_t {
     GLuint unit;
     GLuint texture;
@@ -404,7 +408,7 @@ typedef struct VertexArray_t {
     GLuint dirty_bits;
     unsigned name;
     unsigned enabled_attribs;
-    BufferBinding bindings[MAX_BINDABLE_BUFFERS];
+    BufferBinding bindings[MGL_MAX_VERTEX_ATTRIB_BINDINGS];
     VertexAttrib attrib[MAX_ATTRIBS];
     VertexElementArray element_array;
     void *mtl_data;
@@ -427,6 +431,12 @@ typedef struct Shader_t {
     struct {
         void *function;
         void *library;
+        void *zero_to_one_function;
+        void *zero_to_one_library;
+        void *upper_left_function;
+        void *upper_left_library;
+        void *upper_left_zero_to_one_function;
+        void *upper_left_zero_to_one_library;
     } mtl_data;
 } Shader;
 
@@ -446,7 +456,9 @@ typedef struct SpirvResource_t {
     GLuint  type_id;
     const char *name;
     GLuint  set;
+    /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
+    /* Metal argument slot parsed from generated MSL after resource repair. */
     GLuint  binding;
     GLuint  location;
     GLint   uniform_location;
@@ -466,6 +478,10 @@ typedef struct SpirvResourceList_t {
 typedef struct BufferMap_t {
     GLuint      buffer_base_index;
     GLuint      attribute_mask;
+    GLuint      resource_type;
+    GLuint      resource_index;
+    GLuint      metal_binding_index;
+    GLboolean   has_metal_binding;
     Buffer      *buf;
     GLintptr    offset;
     GLsizeiptr  size;
@@ -513,6 +529,9 @@ GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type);
 GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type);
 GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res);
 void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, GLsizei *length, GLchar *name);
+GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuint expectedName);
+void mglRetainProgramReference(GLMContext ctx, Program *program);
+void mglReleaseProgramReference(GLMContext ctx, Program *program);
 
 typedef struct ProgramPipeline_t {
     GLuint name;
@@ -667,12 +686,6 @@ typedef struct {
     GLuint max_color_attachments; // GL_MAX_COLOR_ATTACHMENTS
     GLuint max_vertex_attribs; // GL_MAX_VERTEX_ATTRIBS
     GLint viewport[4]; // GL_VIEWPORT
-    /* Draw FBO + viewport size recorded at last glViewport (0 = default framebuffer). */
-    GLuint viewport_binding_fbo_name;
-    GLsizei viewport_binding_width;
-    GLsizei viewport_binding_height;
-    /* Active small (<=32) offscreen FBO used for item-icon baking. */
-    GLuint pending_icon_bake_fbo_name;
     GLfloat viewport_array[MGL_MAX_VIEWPORTS][4];
     GLint scissor_box_array[MGL_MAX_VIEWPORTS][4];
     GLdouble depth_range_array[MGL_MAX_VIEWPORTS][2];
@@ -695,6 +708,7 @@ typedef struct {
     Texture     *active_textures[TEXTURE_UNITS];
     TextureUnit texture_units[TEXTURE_UNITS];
     Texture     *last_sampled_2d_textures[TEXTURE_UNITS];
+    Texture     *recent_sampled_2d_textures[TEXTURE_UNITS][MGL_RECENT_SAMPLED_2D_HISTORY];
     Sampler     *texture_samplers[TEXTURE_UNITS];
     ImageUnit   image_units[TEXTURE_UNITS];
 
@@ -772,10 +786,12 @@ struct GLMMetalFuncs {
     void (*mtlFlushBufferRange)(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length);
 
     void (*mtlReadDrawable)(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height);
+    void (*mtlReadDepthPixels)(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height);
     void (*mtlGetTexImage)(GLMContext glm_ctx, Texture *tex, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLuint level, GLuint slice);
 
     void (*mtlGenerateMipmaps)(GLMContext glm_ctx, Texture *tex);
     void (*mtlTexSubImage)(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_offset, size_t src_pitch, size_t src_image_size, size_t src_size, GLuint slice, GLuint level, size_t width, size_t height, size_t depth, size_t xoffset, size_t yoffset, size_t zoffset);
+    bool (*mtlTexSubImageBytes)(GLMContext glm_ctx, Texture *tex, const void *bytes, size_t bytes_size, size_t src_offset, size_t src_pitch, size_t src_image_size, GLuint slice, GLuint level, size_t width, size_t height, size_t depth, size_t xoffset, size_t yoffset, size_t zoffset);
     void (*mtlCopyTexSubImage)(GLMContext glm_ctx, Texture *tex, GLuint slice, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height);
     void (*mtlCopyImageSubData)(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, Texture *dstTex, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth);
 
@@ -855,6 +871,7 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
 void mgl_lazy_init(void);
 
 void MGLsetCurrentContext(GLMContext ctx);
+void destroyGLMContext(GLMContext ctx);
 
 enum {
     MGL_PIXEL_FORMAT,
@@ -880,7 +897,6 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
 Framebuffer *findFrameBuffer(GLMContext ctx, GLuint framebuffer);
 GLboolean mglFramebufferPrimaryColorSize(GLMContext ctx, Framebuffer *fbo, GLuint *outWidth, GLuint *outHeight);
-GLboolean mglFramebufferIsSmallIconTarget(GLMContext ctx, Framebuffer *fbo);
 void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo);
 void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo);
 

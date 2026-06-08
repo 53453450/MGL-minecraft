@@ -12,10 +12,9 @@
 
 #include "glm_context.h"
 
-extern GLMContext _ctx;
 extern void mgl_lazy_init(void);
 
-#define GET_CONTEXT()   (mgl_lazy_init(), _ctx)
+#define GET_CONTEXT()   (mgl_lazy_init(), MGLgetCurrentContext())
 
 #ifndef MGL_VERBOSE_TEXBUFFER_LOGS
 #define MGL_VERBOSE_TEXBUFFER_LOGS 0

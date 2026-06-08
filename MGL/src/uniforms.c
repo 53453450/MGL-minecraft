@@ -32,14 +32,13 @@
 #include "mgl_safety.h"
 #include "draw_command.h"
 
-extern GLMContext _ctx;
-
-
 #pragma mark uniforms
 
 #define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
 #define MGL_SAFE_SPIRV_RESOURCE_MAX 4096u
 #define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
+
+extern void mglTraceLogExternal(const char *fmt, ...);
 
 static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
 {
@@ -85,7 +84,7 @@ static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
 
 static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
 {
-    GLMContext current = _ctx;
+    GLMContext current = MGLgetCurrentContext();
     if (!current || !mglPointerRangeReadable(current, sizeof(*current))) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update in %s with invalid current ctx=%p arg=%p\n",
@@ -263,9 +262,13 @@ static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *progra
         return NULL;
     }
 
-    if (!mglObjectPointerLooksPlausible(program) ||
-        !mglHashTableContainsData(&ctx->state.program_table, program) ||
-        !mglPointerRangeReadable(program, sizeof(*program))) {
+    GLboolean pointerReadable =
+        mglObjectPointerLooksPlausible(program) &&
+        mglPointerRangeReadable(program, sizeof(*program));
+    GLuint expectedName = pointerReadable ? program->name : 0u;
+
+    if (!pointerReadable ||
+        !mglProgramPointerUsableForName(ctx, program, expectedName)) {
         fprintf(stderr,
                 "MGL WARNING: %s dropping invalid program pointer %p\n",
                 func ? func : "uniform",
@@ -705,9 +708,6 @@ static GLint mglPlainUniformResourceLocation(const SpirvResource *res)
     if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
         return (GLint)res->gl_binding;
     }
-    if (res->binding < MAX_BINDABLE_BUFFERS) {
-        return (GLint)res->binding;
-    }
 
     return -1;
 }
@@ -744,10 +744,13 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, int
         return GL_TRUE;
     }
 
-    return (GLint)res->binding == location ? GL_TRUE : GL_FALSE;
+    return (GLint)res->gl_binding == location ? GL_TRUE : GL_FALSE;
 }
 
-static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, int *stage_out, GLuint *binding_out)
+static SpirvResource *mglFindSamplerUniformResource(Program *program,
+                                                    GLint location,
+                                                    int *stage_out,
+                                                    GLuint *metal_binding_out)
 {
     static const int sampler_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
@@ -757,8 +760,15 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
         SPVC_RESOURCE_TYPE_STORAGE_IMAGE
     };
 
-    if (!program || location < 0 || !binding_out) {
-        return GL_FALSE;
+    if (stage_out) {
+        *stage_out = -1;
+    }
+    if (metal_binding_out) {
+        *metal_binding_out = 0u;
+    }
+
+    if (!program || location < 0) {
+        return NULL;
     }
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
@@ -777,21 +787,62 @@ static GLboolean mglFindSamplerUniformBinding(Program *program, GLint location, 
                     continue;
                 }
 
-                if (res->binding < TEXTURE_UNITS) {
-                    if (stage_out) {
-                        *stage_out = stage;
-                    }
-                    *binding_out = res->binding;
-                    return GL_TRUE;
+                if (stage_out) {
+                    *stage_out = stage;
                 }
+                if (metal_binding_out) {
+                    *metal_binding_out = res->binding;
+                }
+                return res;
             }
         }
+    }
+
+    return NULL;
+}
+
+static GLboolean mglSamplerResourcesShareUniform(const SpirvResource *a, int a_type,
+                                                 const SpirvResource *b, int b_type)
+{
+    if (!a || !b ||
+        !mglUniformResourceLooksSamplerLike(a, a_type) ||
+        !mglUniformResourceLooksSamplerLike(b, b_type)) {
+        return GL_FALSE;
+    }
+
+    if (mglSafeCStringLength(a->name, NULL) &&
+        mglSafeCStringLength(b->name, NULL) &&
+        mglSafeCStringEquals(a->name, b->name)) {
+        return GL_TRUE;
+    }
+
+    if (a->uniform_location >= 0 &&
+        b->uniform_location >= 0 &&
+        a->uniform_location == b->uniform_location) {
+        return GL_TRUE;
     }
 
     return GL_FALSE;
 }
 
-static GLboolean mglSamplerBindingSharedAcrossResources(Program *program, GLuint binding)
+static GLboolean mglSamplerResourceMatchesUniformWrite(SpirvResource *res,
+                                                       int res_type,
+                                                       GLint location,
+                                                       SpirvResource *primary,
+                                                       int primary_type)
+{
+    if (!res || !mglUniformResourceLooksSamplerLike(res, res_type)) {
+        return GL_FALSE;
+    }
+
+    if (mglUniformLocationMatchesResource(res, res_type, location)) {
+        return GL_TRUE;
+    }
+
+    return mglSamplerResourcesShareUniform(res, res_type, primary, primary_type);
+}
+
+static GLboolean mglMetalSamplerSlotSharedAcrossResources(Program *program, GLuint metal_binding)
 {
     static const int sampler_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
@@ -801,7 +852,7 @@ static GLboolean mglSamplerBindingSharedAcrossResources(Program *program, GLuint
         SPVC_RESOURCE_TYPE_STORAGE_IMAGE
     };
 
-    if (!program || binding >= TEXTURE_UNITS) {
+    if (!program || metal_binding >= TEXTURE_UNITS) {
         return GL_FALSE;
     }
 
@@ -816,7 +867,7 @@ static GLboolean mglSamplerBindingSharedAcrossResources(Program *program, GLuint
 
             for (GLuint i = 0; i < resources->count; i++) {
                 SpirvResource *res = &resources->list[i];
-                if (res->binding != binding ||
+                if (res->binding != metal_binding ||
                     !mglUniformResourceLooksSamplerLike(res, res_type)) {
                     continue;
                 }
@@ -856,6 +907,8 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
     const char *firstMatchedName = NULL;
     GLuint firstMatchedBinding = 0u;
     int firstMatchedStage = -1;
+    SpirvResource *primaryResource = NULL;
+    int primaryResourceType = -1;
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
@@ -868,8 +921,7 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
             for (GLuint i = 0; i < resources->count; i++) {
                 SpirvResource *res = &resources->list[i];
                 if (!mglUniformResourceLooksSamplerLike(res, res_type) ||
-                    !mglUniformLocationMatchesResource(res, res_type, location) ||
-                    res->binding >= TEXTURE_UNITS) {
+                    !mglUniformLocationMatchesResource(res, res_type, location)) {
                     continue;
                 }
 
@@ -879,22 +931,9 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                     firstMatchedBinding = res->binding;
                     firstMatchedStage = stage;
                 }
-
-                if (unit < 0 || unit >= TEXTURE_UNITS) {
-                    continue;
-                }
-
-                GLboolean shared_binding = mglSamplerBindingSharedAcrossResources(program, res->binding);
-                if (!shared_binding &&
-                    (program->sampler_units[res->binding] != unit ||
-                     !program->sampler_units_explicit[res->binding])) {
-                    needs_update = GL_TRUE;
-                }
-                if (program->sampler_units_by_stage[stage][res->binding] != unit ||
-                    !program->sampler_units_explicit_by_stage[stage][res->binding] ||
-                    res->sampler_unit != unit ||
-                    !res->sampler_unit_explicit) {
-                    needs_update = GL_TRUE;
+                if (!primaryResource) {
+                    primaryResource = res;
+                    primaryResourceType = res_type;
                 }
             }
         }
@@ -908,12 +947,50 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, GL_TRUE);
     }
 
+    GLuint matchedResourceCount = 0u;
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+            int res_type = sampler_resource_types[rt];
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) {
+                continue;
+            }
+
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglSamplerResourceMatchesUniformWrite(res,
+                                                           res_type,
+                                                           location,
+                                                           primaryResource,
+                                                           primaryResourceType)) {
+                    continue;
+                }
+
+                matchedResourceCount++;
+                if (res->sampler_unit != unit || !res->sampler_unit_explicit) {
+                    needs_update = GL_TRUE;
+                } else if (res->binding < TEXTURE_UNITS) {
+                    GLboolean shared_slot =
+                        mglMetalSamplerSlotSharedAcrossResources(program, res->binding);
+                    if (program->sampler_units_by_stage[stage][res->binding] != unit ||
+                        !program->sampler_units_explicit_by_stage[stage][res->binding] ||
+                        (!shared_slot &&
+                         (program->sampler_units[res->binding] != unit ||
+                          !program->sampler_units_explicit[res->binding]))) {
+                        needs_update = GL_TRUE;
+                    }
+                }
+            }
+        }
+    }
+
     if (needs_update) {
         mglFlushPendingDraws(ctx);
     }
 
     GLboolean changed = GL_FALSE;
     GLboolean explicit_changed = GL_FALSE;
+    GLuint updatedResourceCount = 0u;
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
@@ -925,34 +1002,15 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
 
             for (GLuint i = 0; i < resources->count; i++) {
                 SpirvResource *res = &resources->list[i];
-                if (!mglUniformResourceLooksSamplerLike(res, res_type) ||
-                    res->binding >= TEXTURE_UNITS) {
+                if (!mglSamplerResourceMatchesUniformWrite(res,
+                                                           res_type,
+                                                           location,
+                                                           primaryResource,
+                                                           primaryResourceType)) {
                     continue;
                 }
 
-                if (!mglUniformLocationMatchesResource(res, res_type, location)) {
-                    continue;
-                }
-
-                GLboolean shared_binding = mglSamplerBindingSharedAcrossResources(program, res->binding);
-                if (!shared_binding) {
-                    if (program->sampler_units[res->binding] != unit) {
-                        changed = GL_TRUE;
-                        program->sampler_units[res->binding] = unit;
-                    }
-                    if (!program->sampler_units_explicit[res->binding]) {
-                        explicit_changed = GL_TRUE;
-                        program->sampler_units_explicit[res->binding] = GL_TRUE;
-                    }
-                }
-                if (program->sampler_units_by_stage[stage][res->binding] != unit) {
-                    changed = GL_TRUE;
-                    program->sampler_units_by_stage[stage][res->binding] = unit;
-                }
-                if (!program->sampler_units_explicit_by_stage[stage][res->binding]) {
-                    explicit_changed = GL_TRUE;
-                    program->sampler_units_explicit_by_stage[stage][res->binding] = GL_TRUE;
-                }
+                updatedResourceCount++;
                 if (res->sampler_unit != unit) {
                     changed = GL_TRUE;
                     res->sampler_unit = unit;
@@ -961,6 +1019,27 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                     explicit_changed = GL_TRUE;
                     res->sampler_unit_explicit = GL_TRUE;
                 }
+
+                if (res->binding < TEXTURE_UNITS) {
+                    GLboolean shared_slot =
+                        mglMetalSamplerSlotSharedAcrossResources(program, res->binding);
+                    if (!shared_slot && program->sampler_units[res->binding] != unit) {
+                        changed = GL_TRUE;
+                        program->sampler_units[res->binding] = unit;
+                    }
+                    if (!shared_slot && !program->sampler_units_explicit[res->binding]) {
+                        explicit_changed = GL_TRUE;
+                        program->sampler_units_explicit[res->binding] = GL_TRUE;
+                    }
+                    if (program->sampler_units_by_stage[stage][res->binding] != unit) {
+                        changed = GL_TRUE;
+                        program->sampler_units_by_stage[stage][res->binding] = unit;
+                    }
+                    if (!program->sampler_units_explicit_by_stage[stage][res->binding]) {
+                        explicit_changed = GL_TRUE;
+                        program->sampler_units_explicit_by_stage[stage][res->binding] = GL_TRUE;
+                    }
+                }
             }
         }
     }
@@ -968,19 +1047,18 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
     if (changed || explicit_changed) {
         static unsigned long long s_sampler_uniform_update_count = 0;
         unsigned long long hit = ++s_sampler_uniform_update_count;
-        if (hit <= 128ull || (hit % 1024ull) == 0ull) {
-            fprintf(stderr,
-                    "MGL SAMPLER UNIFORM set program=%u location=%d unit=%d firstStage=%d firstBinding=%u firstName=%s changed=%d explicitChanged=%d hit=%llu\n",
-                    (unsigned)program->name,
-                    (int)location,
-                    (int)unit,
-                    firstMatchedStage,
-                    (unsigned)firstMatchedBinding,
-                    mglSafeCStringForLog(firstMatchedName),
-                    changed ? 1 : 0,
-                    explicit_changed ? 1 : 0,
-                    hit);
-        }
+        mglTraceLogExternal("SAMPLER_UNIFORM_SET program=%u location=%d unit=%d firstStage=%d firstBinding=%u firstName=%s resources=%u/%u changed=%d explicitChanged=%d hit=%llu",
+                            (unsigned)program->name,
+                            (int)location,
+                            (int)unit,
+                            firstMatchedStage,
+                            (unsigned)firstMatchedBinding,
+                            mglSafeCStringForLog(firstMatchedName),
+                            (unsigned)updatedResourceCount,
+                            (unsigned)matchedResourceCount,
+                            changed ? 1 : 0,
+                            explicit_changed ? 1 : 0,
+                            hit);
         ctx->state.dirty_bits |= DIRTY_TEX_BINDING | DIRTY_SAMPLER;
     }
     return GL_TRUE;
@@ -1160,7 +1238,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 
                 if (mglSafeCStringEquals(str, name))
                 {
-                    GLuint binding = list[i].binding;
+                    GLuint gl_binding = list[i].gl_binding;
                     GLboolean sampler_like = mglUniformResourceLooksSamplerLike(&list[i], res_type);
                     GLint location = sampler_like
                         ? list[i].uniform_location
@@ -1168,7 +1246,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                             ? mglPlainUniformResourceLocation(&list[i])
                             : ((list[i].uniform_location >= 0)
                                 ? list[i].uniform_location
-                                : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)binding)));
+                                : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)gl_binding)));
 
                     return location;
                 }
@@ -1205,12 +1283,19 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
     }
     if (params) {
         Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
-        GLuint binding = 0;
+        GLuint metal_binding = 0;
         int stage = -1;
-        if (ptr && mglFindSamplerUniformBinding(ptr, location, &stage, &binding)) {
-            *params = (stage >= 0 && stage < _MAX_SHADER_TYPES)
-                ? ptr->sampler_units_by_stage[stage][binding]
-                : ptr->sampler_units[binding];
+        SpirvResource *res =
+            ptr ? mglFindSamplerUniformResource(ptr, location, &stage, &metal_binding) : NULL;
+        if (res && res->sampler_unit >= 0 && res->sampler_unit < TEXTURE_UNITS) {
+            *params = res->sampler_unit;
+        } else if (ptr && metal_binding < TEXTURE_UNITS &&
+                   stage >= 0 && stage < _MAX_SHADER_TYPES &&
+                   ptr->sampler_units_by_stage[stage][metal_binding] >= 0) {
+            *params = ptr->sampler_units_by_stage[stage][metal_binding];
+        } else if (ptr && metal_binding < TEXTURE_UNITS &&
+                   ptr->sampler_units[metal_binding] >= 0) {
+            *params = ptr->sampler_units[metal_binding];
         } else {
             *params = 0;
         }
@@ -1544,10 +1629,12 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
         mglFlushPendingDraws(ctx);
     }
 
-    fprintf(stderr, "MGL TRACE UniformBlockBinding program=%u blockIndex=%u blockName=%s oldBinding=%u newBinding=%u\n",
-            (unsigned)program, (unsigned)uniformBlockIndex,
-            block_name ? block_name : "(invalid)",
-            (unsigned)old_binding, (unsigned)uniformBlockBinding);
+    mglTraceLogExternal("UNIFORM_BLOCK_BINDING program=%u blockIndex=%u blockName=%s oldBinding=%u newBinding=%u",
+                        (unsigned)program,
+                        (unsigned)uniformBlockIndex,
+                        block_name ? block_name : "(invalid)",
+                        (unsigned)old_binding,
+                        (unsigned)uniformBlockBinding);
 
     /*
      * `binding` is the Metal argument slot after MSL reflection/repair.

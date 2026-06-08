@@ -600,22 +600,31 @@ void deleteHashElement(HashTable *table, GLuint name)
 
     // Perform Metal cleanup for different object types
     if (obj_data) {
-        extern GLMContext _ctx;
+        GLMContext current = MGLgetCurrentContext();
 
         // Check if this is a shader object
-        if (table == &_ctx->state.shader_table) {
+        if (current && table == &current->state.shader_table) {
             // Shader-specific Metal cleanup
             Shader *shader = (Shader *)obj_data;
-            if (shader->mtl_data.function || shader->mtl_data.library) {
+            if (shader->mtl_data.function || shader->mtl_data.library ||
+                shader->mtl_data.zero_to_one_function || shader->mtl_data.zero_to_one_library ||
+                shader->mtl_data.upper_left_function || shader->mtl_data.upper_left_library ||
+                shader->mtl_data.upper_left_zero_to_one_function || shader->mtl_data.upper_left_zero_to_one_library) {
                 fprintf(stderr, "MGL: Metal cleanup for shader object %u\n", name);
                 // In ARC mode, we just need to set the pointers to nil
                 // The memory will be automatically released
                 shader->mtl_data.function = NULL;
                 shader->mtl_data.library = NULL;
+                shader->mtl_data.zero_to_one_function = NULL;
+                shader->mtl_data.zero_to_one_library = NULL;
+                shader->mtl_data.upper_left_function = NULL;
+                shader->mtl_data.upper_left_library = NULL;
+                shader->mtl_data.upper_left_zero_to_one_function = NULL;
+                shader->mtl_data.upper_left_zero_to_one_library = NULL;
             }
         }
         // Check if this is a program object
-        else if (table == &_ctx->state.program_table) {
+        else if (current && table == &current->state.program_table) {
             // Program-specific Metal cleanup
             Program *program = (Program *)obj_data;
             if (program->mtl_data) {
@@ -626,7 +635,7 @@ void deleteHashElement(HashTable *table, GLuint name)
             }
         }
         // Check if this is a texture object
-        else if (table == &_ctx->state.texture_table) {
+        else if (current && table == &current->state.texture_table) {
             // Texture-specific Metal cleanup
             Texture *texture = (Texture *)obj_data;
             if (texture->mtl_data) {
@@ -636,15 +645,19 @@ void deleteHashElement(HashTable *table, GLuint name)
                 texture->mtl_data = NULL;
             }
             if (texture->mtl_gl_sampled_data) {
+                if (current->mtl_funcs.mtlDeleteMTLObj) {
+                    current->mtl_funcs.mtlDeleteMTLObj(current, texture->mtl_gl_sampled_data);
+                }
                 texture->mtl_gl_sampled_data = NULL;
                 texture->mtl_gl_sampled_width = 0;
                 texture->mtl_gl_sampled_height = 0;
                 texture->mtl_gl_sampled_format = 0;
                 texture->mtl_gl_sampled_write_version = 0;
+                texture->mtl_render_target_write_version = 0;
             }
         }
         // Check if this is a buffer object
-        else if (table == &_ctx->state.buffer_table) {
+        else if (current && table == &current->state.buffer_table) {
             // Buffer-specific Metal cleanup
             Buffer *buffer = (Buffer *)obj_data;
             if (buffer->data.mtl_data) {
@@ -670,4 +683,41 @@ void deleteHashElement(HashTable *table, GLuint name)
     if (table->count == 0u && table->states) {
         memset(table->states, MGL_HASH_STATE_EMPTY, table->size * sizeof(unsigned char));
     }
+}
+
+void mglHashTableForEach(HashTable *table, MGLHashTableForEachFunc func, void *user)
+{
+    if (!func || !mglRepairHashTableIfNeeded(table, "foreach")) {
+        return;
+    }
+
+    if (!table->keys || !table->states || table->size == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < table->size; i++) {
+        if (table->states[i] == MGL_HASH_STATE_OCCUPIED &&
+            table->keys[i].name != 0u &&
+            table->keys[i].data != NULL) {
+            func(table->keys[i].name, table->keys[i].data, user);
+        }
+    }
+}
+
+void mglHashTableClearEntries(HashTable *table)
+{
+    if (!mglRepairHashTableIfNeeded(table, "clear-entries")) {
+        return;
+    }
+
+    if (!table->keys || !table->states || table->size == 0) {
+        return;
+    }
+
+    for (size_t i = 0; i < table->size; i++) {
+        table->keys[i].name = 0u;
+        table->keys[i].data = NULL;
+        table->states[i] = MGL_HASH_STATE_EMPTY;
+    }
+    table->count = 0u;
 }

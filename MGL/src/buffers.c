@@ -25,6 +25,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <string.h>
+#include <CoreFoundation/CoreFoundation.h>
 
 #include "glm_context.h"
 #include "buffers.h"
@@ -33,7 +34,7 @@
 
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
-extern GLMContext _ctx;
+extern void mglTraceLogExternal(const char *fmt, ...);
 
 void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
 
@@ -484,6 +485,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
 
         if (bound_vao)
         {
+            mglFlushPendingDrawsForVertexArray(ctx, bound_vao);
             bound_vao->element_array.buffer = NULL;
             bound_vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
             STATE(dirty_bits) |= DIRTY_VAO;
@@ -546,9 +548,10 @@ static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
     // Public GL entrypoints are backed by the process-global current context.
     // If a stale/corrupt dispatch passes some other non-small pointer, touching
     // ctx->state can still fault; prefer the known current context.
-    if (_ctx != NULL && (uintptr_t)_ctx >= 0x10000u)
+    GLMContext current = MGLgetCurrentContext();
+    if (current != NULL && (uintptr_t)current >= 0x10000u)
     {
-        if (ctx == _ctx)
+        if (ctx == current)
             return ctx;
 
         if (ctx != NULL)
@@ -557,9 +560,9 @@ static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
                     "MGL WARNING: %s received non-current ctx=%p; using current ctx=%p\n",
                     func,
                     (void *)ctx,
-                    (void *)_ctx);
+                    (void *)current);
         }
-        return _ctx;
+        return current;
     }
 
     // A valid heap pointer will never be a tiny value like 0x2f.
@@ -570,8 +573,9 @@ static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
 
     mgl_lazy_init();
 
-    if (_ctx != NULL && (uintptr_t)_ctx >= 0x10000u)
-        return _ctx;
+    current = MGLgetCurrentContext();
+    if (current != NULL && (uintptr_t)current >= 0x10000u)
+        return current;
 
     fprintf(stderr, "MGL ERROR: %s recovery failed; dropping call\n", func);
     return NULL;
@@ -765,14 +769,18 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
         ERROR_RETURN(GL_OUT_OF_MEMORY);
     }
 
-    ptr->data.buffer_data = buffer_data;
-
-    // copy to new buffer
-    if (data)
-    {
-        memcpy((void *)ptr->data.buffer_data, data, size);
-
-        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    if (ptr->data.mtl_data) {
+        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
+        } else {
+            CFRelease(ptr->data.mtl_data);
+        }
+        ptr->data.mtl_data = NULL;
+    }
+    if (ptr->data.buffer_data && ptr->data.buffer_size > 0) {
+        vm_deallocate((vm_map_t)mach_task_self(),
+                      (vm_address_t)ptr->data.buffer_data,
+                      (vm_size_t)ptr->data.buffer_size);
     }
 
     // init
@@ -795,20 +803,16 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     ptr->mapped = GL_FALSE;
     ptr->access = 0;
     ptr->access_flags = 0;
+    ptr->mapped_offset = 0;
+    ptr->mapped_length = 0;
+    ptr->mapped_ptr = NULL;
     ptr->storage_flags = storage_flags;
 
-    ptr->data.dirty_bits |= DIRTY_BUFFER_ADDR;
+    ptr->data.dirty_bits = DIRTY_BUFFER_ADDR;
 
     if (data)
     {
-        if (storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
-        {
-            memcpy((void *)ptr->data.buffer_data, data, ptr->size);
-        }
-        else
-        {
-            ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, 0, ptr->size, data);
-        }
+        memcpy((void *)ptr->data.buffer_data, data, ptr->size);
 
         mglBufferMarkWrite(ptr,
                            kInitBufferDataCopy,
@@ -816,6 +820,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
                            ptr->size,
                            data,
                            mglTraceHashBytes(data, (size_t)ptr->size));
+        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
     }
     else
     {
@@ -949,6 +954,12 @@ void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
                 (void *)ctx,
                 (int)n,
                 (void *)buffers);
+    } else {
+        mglTraceLogExternal("GEN_BUFFERS call=%llu ctx=%p n=%d buffers=%p",
+                            (unsigned long long)call_id,
+                            (void *)ctx,
+                            (int)n,
+                            (void *)buffers);
     }
 
     while(n--)
@@ -957,7 +968,7 @@ void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
         *buffers++ = name;
         if (call_id <= 64u || (call_id % 512u) == 0u)
         {
-        if (MGL_VERBOSE_BUFFER_MAP_LOGS || call_id <= 32ull || (call_id % 4096ull) == 0ull) {
+        if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
             fprintf(stderr,
                     "MGL TRACE GenBuffers call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu\n",
                     (unsigned long long)call_id,
@@ -965,6 +976,13 @@ void mglGenBuffers(GLMContext ctx, GLsizei n, GLuint *buffers)
                     STATE(buffer_table).current_name,
                     STATE(buffer_table).count,
                     STATE(buffer_table).size);
+        } else if (call_id <= 32ull || (call_id % 4096ull) == 0ull) {
+            mglTraceLogExternal("GEN_BUFFERS call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu",
+                                (unsigned long long)call_id,
+                                name,
+                                STATE(buffer_table).current_name,
+                                STATE(buffer_table).count,
+                                STATE(buffer_table).size);
         }
         }
     }
@@ -1205,6 +1223,7 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
         {
             if (vao->element_array.buffer != ptr)
             {
+                mglFlushPendingDrawsForVertexArray(ctx, vao);
                 vao->element_array.buffer = ptr;
                 vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
                 STATE(dirty_bits) |= DIRTY_VAO;
@@ -1255,6 +1274,8 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
+    BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+
     if (buffer)
     {
         ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
@@ -1268,16 +1289,27 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         // Storage/range validity is validated later at draw/upload time.
         ERROR_CHECK_RETURN(ptr->size >= 0, GL_INVALID_VALUE);
 
-        ctx->state.buffer_base[buffer_index].buffers[index].buffer = buffer;
-        ctx->state.buffer_base[buffer_index].buffers[index].offset = 0;
-        ctx->state.buffer_base[buffer_index].buffers[index].size = ptr->size;
-        ctx->state.buffer_base[buffer_index].buffers[index].buf = ptr;
+        if (base_slot->buffer != buffer ||
+            base_slot->offset != 0 ||
+            base_slot->size != ptr->size ||
+            base_slot->buf != ptr) {
+            mglFlushPendingDraws(ctx);
+        }
+
+        base_slot->buffer = buffer;
+        base_slot->offset = 0;
+        base_slot->size = ptr->size;
+        base_slot->buf = ptr;
 
         ptr->target = target;
     }
     else
     {
-        bzero(&ctx->state.buffer_base[buffer_index].buffers[index], sizeof(BufferBaseTarget));
+        if (base_slot->buffer != 0 || base_slot->buf != NULL ||
+            base_slot->offset != 0 || base_slot->size != 0) {
+            mglFlushPendingDraws(ctx);
+        }
+        bzero(base_slot, sizeof(BufferBaseTarget));
     }
 
     mglSetGenericBufferBinding(ctx, target, buffer);
@@ -1328,6 +1360,8 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
 
     buffer_index = bufferIndexFromTarget(ctx, target);
 
+    BufferBaseTarget *base_slot = &ctx->state.buffer_base[buffer_index].buffers[index];
+
     if (buffer)
     {
         ERROR_CHECK_RETURN(isBuffer(ctx, buffer), GL_INVALID_VALUE);
@@ -1344,16 +1378,27 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             ERROR_RETURN(GL_INVALID_VALUE);
         }
 
-        ctx->state.buffer_base[buffer_index].buffers[index].buffer = buffer;
-        ctx->state.buffer_base[buffer_index].buffers[index].offset = offset;
-        ctx->state.buffer_base[buffer_index].buffers[index].size = size;
-        ctx->state.buffer_base[buffer_index].buffers[index].buf = ptr;
+        if (base_slot->buffer != buffer ||
+            base_slot->offset != offset ||
+            base_slot->size != size ||
+            base_slot->buf != ptr) {
+            mglFlushPendingDraws(ctx);
+        }
+
+        base_slot->buffer = buffer;
+        base_slot->offset = offset;
+        base_slot->size = size;
+        base_slot->buf = ptr;
 
         ptr->target = target;
     }
     else
     {
-        bzero(&ctx->state.buffer_base[buffer_index].buffers[index], sizeof(BufferBaseTarget));
+        if (base_slot->buffer != 0 || base_slot->buf != NULL ||
+            base_slot->offset != 0 || base_slot->size != 0) {
+            mglFlushPendingDraws(ctx);
+        }
+        bzero(base_slot, sizeof(BufferBaseTarget));
     }
 
     mglSetGenericBufferBinding(ctx, target, buffer);
@@ -1604,7 +1649,8 @@ void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const vo
 
     if (size < 0)
     {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     // GL_INVALID_ENUM is generated if target is not one of the allowable values.
@@ -1619,6 +1665,7 @@ void mglNamedBufferData(GLMContext ctx, GLuint buffer, GLsizeiptr size, const vo
     if (ptr->storage_flags)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     initBufferData(ctx, ptr, size, data,false);
@@ -1826,7 +1873,6 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
     {
         ERROR_RETURN(GL_INVALID_VALUE);
     }
-
     if (size < 0)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -2789,6 +2835,9 @@ void mglFlushMappedNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offs
     }
 
     ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, offset, length);
+    mglBufferMarkWrite(ptr, kInitMapWrite, offset, length,
+                       (const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset,
+                       mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset, (size_t)length));
 }
 
 void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei count, const GLuint *buffers, const GLintptr *offsets, const GLsizeiptr *sizes)
@@ -2849,13 +2898,21 @@ void mglBufferStorage(GLMContext ctx, GLenum target, GLsizeiptr size, const void
     // GL_INVALID_ENUM is generated if target is not supported.
     ERROR_CHECK_RETURN(checkTarget(ctx, target), GL_INVALID_ENUM);
 
-    if (size < 0)
+    if (size <= 0)
     {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        ERROR_RETURN(GL_INVALID_VALUE);
     }
 
     if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
                   GL_CLIENT_STORAGE_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+    if ((storage_flags & GL_MAP_PERSISTENT_BIT) && !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+    if ((storage_flags & GL_MAP_COHERENT_BIT) && !(storage_flags & GL_MAP_PERSISTENT_BIT))
     {
         ERROR_RETURN(GL_INVALID_VALUE);
     }
@@ -2877,13 +2934,21 @@ void mglNamedBufferStorage(GLMContext ctx, GLuint buffer, GLsizeiptr size, const
 
     ERROR_CHECK_RETURN((ptr != NULL), GL_INVALID_OPERATION);
 
-    if (size < 0)
+    if (size <= 0)
     {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        ERROR_RETURN(GL_INVALID_VALUE);
     }
 
     if (storage_flags & ~(GL_DYNAMIC_STORAGE_BIT | GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT |
                   GL_CLIENT_STORAGE_BIT))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+    if ((storage_flags & GL_MAP_PERSISTENT_BIT) && !(storage_flags & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT)))
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+    }
+    if ((storage_flags & GL_MAP_COHERENT_BIT) && !(storage_flags & GL_MAP_PERSISTENT_BIT))
     {
         ERROR_RETURN(GL_INVALID_VALUE);
     }

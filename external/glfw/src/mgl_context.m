@@ -16,6 +16,7 @@
 #include <math.h>
 #include <dlfcn.h>
 #include <limits.h>
+#include <string.h>
 
 #define GL_BGRA                           0x80E1
 #define GL_UNSIGNED_INT_8_8_8_8_REV       0x8367
@@ -27,8 +28,12 @@ GLMContext createGLMContext(GLenum format, GLenum type,
                         GLenum depth_format, GLenum depth_type,
                         GLenum stencil_format, GLenum stencil_type);
 
+void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
+
 void MGLsetCurrentContext(GLMContext ctx);
+GLMContext MGLgetCurrentContext(void);
 void MGLswapBuffers(GLMContext ctx);
+void destroyGLMContext(GLMContext ctx);
 
 static void makeContextCurrentMGL(_GLFWwindow* window)
 {
@@ -42,10 +47,7 @@ static void makeContextCurrentMGL(_GLFWwindow* window)
     }
     else
     {
-        // just so we have jump tables
-        MGLsetCurrentContext(createGLMContext(0, 0,
-                                              0, 0,
-                                              0, 0));
+        MGLsetCurrentContext(NULL);
         _glfwPlatformSetTls(&_glfw.contextSlot, NULL);
     }
 
@@ -64,7 +66,30 @@ static void swapIntervalMGL(int interval)
 
 static int extensionSupportedMGL(const char* extension)
 {
-    // There are no MGL extensions
+    if (!extension) {
+        return GLFW_FALSE;
+    }
+
+    static const char* supportedExtensions[] = {
+        "GL_ARB_vertex_array_object",
+        "GL_ARB_framebuffer_object",
+        "GL_ARB_texture_storage",
+        "GL_ARB_sampler_objects",
+        "GL_ARB_uniform_buffer_object",
+        "GL_ARB_draw_buffers",
+        "GL_ARB_debug_output",
+        "GL_ARB_texture_buffer_object",
+        "GL_ARB_texture_buffer_range",
+        "GL_ARB_buffer_storage",
+        "GL_ARB_direct_state_access"
+    };
+
+    for (size_t i = 0; i < sizeof(supportedExtensions) / sizeof(supportedExtensions[0]); i++) {
+        if (strcmp(extension, supportedExtensions[i]) == 0) {
+            return GLFW_TRUE;
+        }
+    }
+
     return GLFW_FALSE;
 }
 
@@ -81,7 +106,16 @@ static GLFWglproc getProcAddressMGL(const char* procname)
 static void destroyContextMGL(_GLFWwindow* window)
 {
     @autoreleasepool {
+        if (!window)
+            return;
 
+        if (window->context.mgl.ctx)
+        {
+            destroyGLMContext(window->context.mgl.ctx);
+            window->context.mgl.ctx = NULL;
+        }
+
+        window->context.mgl.renderer = nil;
 
     } // autoreleasepool
 }
@@ -155,14 +189,13 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
         return GLFW_FALSE;
     }
 
-    // MGL internally targets a modern core feature set, but callers like
-    // Minecraft commonly request a 3.2 core profile context on macOS.
-    // Accept 3.2+ requests and provide the MGL-backed context.
+    // MGL internally targets a modern core feature set, but the OpenGL CTS
+    // covers GL 3.0/3.1 packages before moving to 3.2+ core profile contexts.
     if (ctxconfig->major < 3 ||
-        (ctxconfig->major == 3 && ctxconfig->minor < 2))
+        (ctxconfig->major == 3 && ctxconfig->minor < 0))
     {
         _glfwInputError(GLFW_VERSION_UNAVAILABLE,
-                        "MGL: OpenGL 3.2+ required");
+                        "MGL: OpenGL 3.0+ required");
         return GLFW_FALSE;
     }
 
@@ -170,6 +203,13 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
                                                GL_DEPTH_COMPONENT, GL_FLOAT,
                                                0, 0);
     assert(window->context.mgl.ctx);
+    
+    // Apply GLFW_SRGB_CAPABLE hint to the default framebuffer.
+    // When enabled, the Metal drawable will use _sRGB pixel format so that
+    // fragment shader outputs are automatically encoded to sRGB on write.
+    if (fbconfig && fbconfig->sRGB) {
+        MGLsetDefaultFramebufferSRGBCapable(window->context.mgl.ctx, GLFW_TRUE);
+    }
     
     if (window->context.mgl.ctx == nil)
     {
@@ -183,7 +223,7 @@ GLFWbool _glfwCreateContextMGL(_GLFWwindow* window,
     MGLRenderer *renderer = [[MGLRenderer alloc] init];
     assert(renderer);
 
-    window->context.mgl.renderer = renderer;
+    window->context.mgl.renderer = (id)CFBridgingRetain(renderer);
 
     [window->context.mgl.renderer createMGLRendererAndBindToContext: window->context.mgl.ctx view: window->ns.view];
 

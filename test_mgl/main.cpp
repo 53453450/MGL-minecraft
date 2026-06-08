@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <stdarg.h>
+#include <string.h>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/glcorearb.h>
@@ -518,6 +519,25 @@ GLuint createTexture(GLenum target, GLsizei width, GLsizei height=1, GLsizei dep
 
     }
     glBindTexture(target, 0);
+
+    return tex;
+}
+
+static GLuint createSolidTexture2D(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+{
+    uint8_t pixel[4] = { r, g, b, a };
+    GLuint tex = 0;
+
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     return tex;
 }
@@ -1330,6 +1350,800 @@ int test_uniform_buffer(GLFWwindow* window, int width, int height)
     }
     
     return 0;
+}
+
+int test_ubo_sampler_binding_semantics(GLFWwindow* window, int width, int height)
+{
+    const char* vertex_shader =
+    GLSL(450 core,
+        layout(location = 0) in vec2 position;
+        layout(location = 0) out vec2 uv;
+
+        layout(binding = 7) uniform ChunkSection
+        {
+            vec4 chunkColor;
+        };
+        layout(binding = 4) uniform Globals
+        {
+            vec4 globalsColor;
+        };
+        layout(binding = 1) uniform Projection
+        {
+            vec4 projectionColor;
+        };
+
+        uniform sampler2D Sampler2;
+
+        void main() {
+            vec4 light = texture(Sampler2, vec2(0.5, 0.5));
+            vec2 shifted = position + chunkColor.xy + projectionColor.xy;
+            gl_Position = vec4(shifted, 0.0, globalsColor.w);
+            uv = light.gb;
+        }
+    );
+
+    const char* fragment_shader =
+    GLSL(450 core,
+        layout(location = 0) in vec2 uv;
+        layout(location = 0) out vec4 frag_colour;
+
+        layout(binding = 4) uniform Globals
+        {
+            vec4 globalsColor;
+        };
+        layout(binding = 7) uniform ChunkSection
+        {
+            vec4 chunkColor;
+        };
+        layout(binding = 2) uniform Fog
+        {
+            vec4 fogColor;
+        };
+
+        uniform sampler2D Sampler0;
+
+        void main() {
+            vec4 atlas = texture(Sampler0, vec2(0.5, 0.5));
+            frag_colour = vec4(chunkColor.r, globalsColor.g, fogColor.b, 1.0) *
+                          vec4(atlas.r, atlas.g, uv.y, 1.0);
+        }
+    );
+
+    float points[] = {
+       -1.0f, -1.0f,
+        3.0f, -1.0f,
+       -1.0f,  3.0f
+    };
+
+    GLuint vao = bindVAO();
+    GLuint vbo = bindDataToVBO(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+    bindAttribute(0, GL_ARRAY_BUFFER, vbo, 2, GL_FLOAT, false, 0, NULL);
+
+    GLuint shader_program =
+        compileGLSLProgram(2, GL_VERTEX_SHADER, vertex_shader,
+                           GL_FRAGMENT_SHADER, fragment_shader);
+    glUseProgram(shader_program);
+
+    GLuint chunkBlock = glGetUniformBlockIndex(shader_program, "ChunkSection");
+    GLuint globalsBlock = glGetUniformBlockIndex(shader_program, "Globals");
+    GLuint projectionBlock = glGetUniformBlockIndex(shader_program, "Projection");
+    GLuint fogBlock = glGetUniformBlockIndex(shader_program, "Fog");
+    if (chunkBlock == GL_INVALID_INDEX ||
+        globalsBlock == GL_INVALID_INDEX ||
+        projectionBlock == GL_INVALID_INDEX ||
+        fogBlock == GL_INVALID_INDEX) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: missing uniform block ChunkSection=%u Globals=%u Projection=%u Fog=%u\n",
+                chunkBlock, globalsBlock, projectionBlock, fogBlock);
+        return 1;
+    }
+
+    glUniformBlockBinding(shader_program, fogBlock, 0);
+    glUniformBlockBinding(shader_program, projectionBlock, 1);
+    glUniformBlockBinding(shader_program, chunkBlock, 2);
+    glUniformBlockBinding(shader_program, globalsBlock, 3);
+
+    GLint queriedChunk = -1;
+    GLint queriedGlobals = -1;
+    GLint queriedProjection = -1;
+    GLint queriedFog = -1;
+    glGetActiveUniformBlockiv(shader_program, chunkBlock, GL_UNIFORM_BLOCK_BINDING, &queriedChunk);
+    glGetActiveUniformBlockiv(shader_program, globalsBlock, GL_UNIFORM_BLOCK_BINDING, &queriedGlobals);
+    glGetActiveUniformBlockiv(shader_program, projectionBlock, GL_UNIFORM_BLOCK_BINDING, &queriedProjection);
+    glGetActiveUniformBlockiv(shader_program, fogBlock, GL_UNIFORM_BLOCK_BINDING, &queriedFog);
+    if (queriedChunk != 2 || queriedGlobals != 3 ||
+        queriedProjection != 1 || queriedFog != 0) {
+        fprintf(stderr,
+                "MGL CTS-LITE FAIL: UBO query mismatch ChunkSection=%d Globals=%d Projection=%d Fog=%d\n",
+                queriedChunk, queriedGlobals, queriedProjection, queriedFog);
+        return 1;
+    }
+
+    float fogData[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+    float projectionData[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float chunkData[4] = {1.0f, 0.0f, 0.0f, 1.0f};
+    float globalsData[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+    GLuint fogUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(fogData), fogData, GL_STATIC_DRAW);
+    GLuint projectionUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(projectionData), projectionData, GL_STATIC_DRAW);
+    GLuint chunkUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(chunkData), chunkData, GL_STATIC_DRAW);
+    GLuint globalsUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(globalsData), globalsData, GL_STATIC_DRAW);
+
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, fogUBO);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, projectionUBO);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, chunkUBO);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 3, globalsUBO);
+
+    GLuint atlasTex = createSolidTexture2D(255, 255, 64, 255);
+    GLuint lightTex = createSolidTexture2D(0, 255, 255, 255);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlasTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, lightTex);
+
+    GLint sampler0Loc = glGetUniformLocation(shader_program, "Sampler0");
+    GLint sampler2Loc = glGetUniformLocation(shader_program, "Sampler2");
+    if (sampler0Loc < 0 || sampler2Loc < 0) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: missing sampler locations Sampler0=%d Sampler2=%d\n",
+                sampler0Loc, sampler2Loc);
+        return 1;
+    }
+    glUniform1i(sampler0Loc, 0);
+    glUniform1i(sampler2Loc, 1);
+
+    GLint sampler0Unit = -1;
+    GLint sampler2Unit = -1;
+    glGetUniformiv(shader_program, sampler0Loc, &sampler0Unit);
+    glGetUniformiv(shader_program, sampler2Loc, &sampler2Unit);
+    if (sampler0Unit != 0 || sampler2Unit != 1) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: sampler query mismatch Sampler0=%d Sampler2=%d\n",
+                sampler0Unit, sampler2Unit);
+        return 1;
+    }
+
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    uint8_t pixel[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_FRONT);
+    glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+    bool pass = pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200 && pixel[3] > 200;
+    fprintf(stderr,
+            "MGL CTS-LITE ubo-sampler-binding %s pixel=%u,%u,%u,%u blocks(Fog=%d Projection=%d ChunkSection=%d Globals=%d) samplers(Sampler0=%d Sampler2=%d)\n",
+            pass ? "PASS" : "FAIL",
+            pixel[0], pixel[1], pixel[2], pixel[3],
+            queriedFog, queriedProjection, queriedChunk, queriedGlobals,
+            sampler0Unit, sampler2Unit);
+
+    SWAP_BUFFERS;
+    return pass ? 0 : 1;
+}
+
+static int test_terrain_uv2_block_format_impl(GLFWwindow* window, int width, int height, bool useDSABindings)
+{
+    const char* vertex_shader =
+    GLSL(330 core,
+        in vec3 Position;
+        in vec4 Color;
+        in vec2 UV0;
+        in ivec2 UV2;
+        in vec3 Normal;
+
+        uniform sampler2D Sampler2;
+
+        layout(std140) uniform ChunkSection
+        {
+            mat4 ModelViewMat;
+            float ChunkVisibility;
+            ivec2 TextureSize;
+            ivec3 ChunkPosition;
+        };
+
+        out vec4 vertexColor;
+        out vec2 texCoord0;
+
+        vec4 sampleLightmap(sampler2D lightMap, ivec2 uv) {
+            return texture(lightMap, clamp((uv / 256.0) + 0.5 / 16.0,
+                                           vec2(0.5 / 16.0),
+                                           vec2(15.5 / 16.0)));
+        }
+
+        void main() {
+            float uboOk = ChunkVisibility;
+            if (TextureSize != ivec2(2048, 2048) || ChunkPosition != ivec3(1, 2, 3)) {
+                uboOk = 0.0;
+            }
+            gl_Position = ModelViewMat * vec4(Position.xy, 0.0, 1.0);
+            vertexColor = Color * sampleLightmap(Sampler2, UV2) * uboOk;
+            texCoord0 = UV0 + Normal.xy * 0.0;
+        }
+    );
+
+    const char* fragment_shader =
+    GLSL(330 core,
+        uniform sampler2D Sampler0;
+
+        in vec4 vertexColor;
+        in vec2 texCoord0;
+
+        out vec4 frag_colour;
+
+        void main() {
+            frag_colour = texture(Sampler0, texCoord0) * vertexColor;
+        }
+    );
+
+    struct BlockVertex {
+        float position[3];
+        uint8_t color[4];
+        float uv0[2];
+        int16_t uv2[2];
+        int8_t normal[3];
+        int8_t padding;
+    };
+
+    BlockVertex vertices[3] = {
+        {{-1.0f, -1.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+        {{ 3.0f, -1.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+        {{-1.0f,  3.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+    };
+
+    GLuint vertex_shader_id = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertex_shader_id, 1, &vertex_shader, NULL);
+    glCompileShader(vertex_shader_id);
+
+    GLuint fragment_shader_id = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragment_shader_id, 1, &fragment_shader, NULL);
+    glCompileShader(fragment_shader_id);
+
+    GLuint shader_program = glCreateProgram();
+    glAttachShader(shader_program, vertex_shader_id);
+    glAttachShader(shader_program, fragment_shader_id);
+    glBindAttribLocation(shader_program, 0, "Position");
+    glBindAttribLocation(shader_program, 1, "Color");
+    glBindAttribLocation(shader_program, 2, "UV0");
+    glBindAttribLocation(shader_program, 3, "UV2");
+    glBindAttribLocation(shader_program, 4, "Normal");
+    glLinkProgram(shader_program);
+    glUseProgram(shader_program);
+
+    GLuint vao = bindVAO();
+    GLuint vbo = bindDataToVBO(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    if (useDSABindings) {
+        glVertexArrayVertexBuffer(vao, 0, vbo, 0, sizeof(BlockVertex));
+        glVertexArrayAttribFormat(vao, 0, 3, GL_FLOAT, GL_FALSE, (GLuint)offsetof(BlockVertex, position));
+        glVertexArrayAttribFormat(vao, 1, 4, GL_UNSIGNED_BYTE, GL_TRUE, (GLuint)offsetof(BlockVertex, color));
+        glVertexArrayAttribFormat(vao, 2, 2, GL_FLOAT, GL_FALSE, (GLuint)offsetof(BlockVertex, uv0));
+        glVertexArrayAttribIFormat(vao, 3, 2, GL_SHORT, (GLuint)offsetof(BlockVertex, uv2));
+        glVertexArrayAttribFormat(vao, 4, 3, GL_BYTE, GL_TRUE, (GLuint)offsetof(BlockVertex, normal));
+        for (GLuint i = 0; i < 5; i++) {
+            glVertexArrayAttribBinding(vao, i, 0);
+            glEnableVertexArrayAttrib(vao, i);
+        }
+    } else {
+        glBindBuffer(GL_ARRAY_BUFFER, vbo);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, position));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, color));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, uv0));
+        glEnableVertexAttribArray(3);
+        glVertexAttribIPointer(3, 2, GL_SHORT, sizeof(BlockVertex), (void *)offsetof(BlockVertex, uv2));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 3, GL_BYTE, GL_TRUE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, normal));
+    }
+
+    struct ChunkSectionData {
+        float modelViewMat[16];
+        float chunkVisibility;
+        int32_t pad0;
+        int32_t textureSize[2];
+        int32_t chunkPosition[3];
+        int32_t pad1;
+    };
+
+    ChunkSectionData chunk = {
+        {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        },
+        1.0f,
+        0,
+        {2048, 2048},
+        {1, 2, 3},
+        0,
+    };
+
+    GLuint chunkBlock = glGetUniformBlockIndex(shader_program, "ChunkSection");
+    if (chunkBlock == GL_INVALID_INDEX) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: terrain-uv2 missing ChunkSection block\n");
+        return 1;
+    }
+    glUniformBlockBinding(shader_program, chunkBlock, 2);
+    GLuint chunkUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(chunk), &chunk, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, chunkUBO);
+
+    uint8_t atlasPixel[4] = {255, 255, 255, 255};
+    GLuint atlasTex = 0;
+    glGenTextures(1, &atlasTex);
+    glBindTexture(GL_TEXTURE_2D, atlasTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, atlasPixel);
+
+    uint8_t lightPixels[16 * 16 * 4] = {};
+    size_t lightIndex = (0 * 16 + 15) * 4;
+    lightPixels[lightIndex + 0] = 255;
+    lightPixels[lightIndex + 1] = 255;
+    lightPixels[lightIndex + 2] = 255;
+    lightPixels[lightIndex + 3] = 255;
+
+    GLuint lightTex = 0;
+    glGenTextures(1, &lightTex);
+    glBindTexture(GL_TEXTURE_2D, lightTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, lightPixels);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlasTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, lightTex);
+
+    GLint sampler0Loc = glGetUniformLocation(shader_program, "Sampler0");
+    GLint sampler2Loc = glGetUniformLocation(shader_program, "Sampler2");
+    if (sampler0Loc < 0 || sampler2Loc < 0) {
+        fprintf(stderr,
+                "MGL CTS-LITE FAIL: terrain-uv2 missing sampler locations Sampler0=%d Sampler2=%d\n",
+                sampler0Loc, sampler2Loc);
+        return 1;
+    }
+    glUniform1i(sampler0Loc, 0);
+    glUniform1i(sampler2Loc, 1);
+
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    uint8_t pixel[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_FRONT);
+    glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+    bool pass = pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200 && pixel[3] > 200;
+    fprintf(stderr,
+            "MGL CTS-LITE terrain-uv2-block-format%s %s pixel=%u,%u,%u,%u stride=%zu uv2Offset=%zu chunkSize=%zu\n",
+            useDSABindings ? "-dsa" : "",
+            pass ? "PASS" : "FAIL",
+            pixel[0], pixel[1], pixel[2], pixel[3],
+            sizeof(BlockVertex),
+            offsetof(BlockVertex, uv2),
+            sizeof(ChunkSectionData));
+
+    SWAP_BUFFERS;
+    return pass ? 0 : 1;
+}
+
+int test_terrain_uv2_block_format(GLFWwindow* window, int width, int height)
+{
+    return test_terrain_uv2_block_format_impl(window, width, height, false);
+}
+
+int test_terrain_uv2_block_format_dsa(GLFWwindow* window, int width, int height)
+{
+    return test_terrain_uv2_block_format_impl(window, width, height, true);
+}
+
+int test_terrain_uv2_block_format_pipeline(GLFWwindow* window, int width, int height)
+{
+    const char* vertex_shader =
+    GLSL(410 core,
+        layout(location = 0) in vec3 Position;
+        layout(location = 1) in vec4 Color;
+        layout(location = 2) in vec2 UV0;
+        layout(location = 3) in ivec2 UV2;
+        layout(location = 4) in vec3 Normal;
+
+        uniform sampler2D Sampler2;
+
+        layout(std140) uniform ChunkSection
+        {
+            mat4 ModelViewMat;
+            float ChunkVisibility;
+            ivec2 TextureSize;
+            ivec3 ChunkPosition;
+        };
+
+        out vec4 vertexColor;
+        out vec2 texCoord0;
+
+        vec4 sampleLightmap(sampler2D lightMap, ivec2 uv) {
+            return texture(lightMap, clamp((uv / 256.0) + 0.5 / 16.0,
+                                           vec2(0.5 / 16.0),
+                                           vec2(15.5 / 16.0)));
+        }
+
+        void main() {
+            float uboOk = ChunkVisibility;
+            if (TextureSize != ivec2(2048, 2048) || ChunkPosition != ivec3(1, 2, 3)) {
+                uboOk = 0.0;
+            }
+            gl_Position = ModelViewMat * vec4(Position.xy, 0.0, 1.0);
+            vertexColor = Color * sampleLightmap(Sampler2, UV2) * uboOk;
+            texCoord0 = UV0 + Normal.xy * 0.0;
+        }
+    );
+
+    const char* fragment_shader =
+    GLSL(410 core,
+        uniform sampler2D Sampler0;
+
+        in vec4 vertexColor;
+        in vec2 texCoord0;
+
+        layout(location = 0) out vec4 frag_colour;
+
+        void main() {
+            frag_colour = texture(Sampler0, texCoord0) * vertexColor;
+        }
+    );
+
+    struct BlockVertex {
+        float position[3];
+        uint8_t color[4];
+        float uv0[2];
+        int16_t uv2[2];
+        int8_t normal[3];
+        int8_t padding;
+    };
+
+    BlockVertex vertices[3] = {
+        {{-1.0f, -1.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+        {{ 3.0f, -1.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+        {{-1.0f,  3.0f, 0.0f}, {255, 255, 255, 255}, {0.5f, 0.5f}, {240, 0}, {0, 0, 127}, 0},
+    };
+
+    GLuint vertexProgram = glCreateShaderProgramv(GL_VERTEX_SHADER, 1, &vertex_shader);
+    GLuint fragmentProgram = glCreateShaderProgramv(GL_FRAGMENT_SHADER, 1, &fragment_shader);
+    if (!vertexProgram || !fragmentProgram) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: separable pipeline program creation failed vs=%u fs=%u\n",
+                vertexProgram, fragmentProgram);
+        return 1;
+    }
+
+    GLuint pipeline = 0;
+    glGenProgramPipelines(1, &pipeline);
+    glUseProgramStages(pipeline, GL_VERTEX_SHADER_BIT, vertexProgram);
+    glUseProgramStages(pipeline, GL_FRAGMENT_SHADER_BIT, fragmentProgram);
+
+    GLuint vao = bindVAO();
+    GLuint vbo = bindDataToVBO(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, position));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, color));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, uv0));
+    glEnableVertexAttribArray(3);
+    glVertexAttribIPointer(3, 2, GL_SHORT, sizeof(BlockVertex), (void *)offsetof(BlockVertex, uv2));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 3, GL_BYTE, GL_TRUE, sizeof(BlockVertex), (void *)offsetof(BlockVertex, normal));
+
+    struct ChunkSectionData {
+        float modelViewMat[16];
+        float chunkVisibility;
+        int32_t pad0;
+        int32_t textureSize[2];
+        int32_t chunkPosition[3];
+        int32_t pad1;
+    };
+
+    ChunkSectionData chunk = {
+        {
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f,
+        },
+        1.0f,
+        0,
+        {2048, 2048},
+        {1, 2, 3},
+        0,
+    };
+
+    GLuint chunkBlock = glGetUniformBlockIndex(vertexProgram, "ChunkSection");
+    if (chunkBlock == GL_INVALID_INDEX) {
+        fprintf(stderr, "MGL CTS-LITE FAIL: pipeline missing ChunkSection block\n");
+        return 1;
+    }
+    glUniformBlockBinding(vertexProgram, chunkBlock, 2);
+    GLuint chunkUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(chunk), &chunk, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 2, chunkUBO);
+
+    uint8_t atlasPixel[4] = {255, 255, 255, 255};
+    GLuint atlasTex = 0;
+    glGenTextures(1, &atlasTex);
+    glBindTexture(GL_TEXTURE_2D, atlasTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, atlasPixel);
+
+    uint8_t lightPixels[16 * 16 * 4] = {};
+    size_t lightIndex = (0 * 16 + 15) * 4;
+    lightPixels[lightIndex + 0] = 255;
+    lightPixels[lightIndex + 1] = 255;
+    lightPixels[lightIndex + 2] = 255;
+    lightPixels[lightIndex + 3] = 255;
+
+    GLuint lightTex = 0;
+    glGenTextures(1, &lightTex);
+    glBindTexture(GL_TEXTURE_2D, lightTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 16, 16, 0, GL_RGBA, GL_UNSIGNED_BYTE, lightPixels);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, atlasTex);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, lightTex);
+
+    GLint sampler0Loc = glGetUniformLocation(fragmentProgram, "Sampler0");
+    GLint sampler2Loc = glGetUniformLocation(vertexProgram, "Sampler2");
+    if (sampler0Loc < 0 || sampler2Loc < 0) {
+        fprintf(stderr,
+                "MGL CTS-LITE FAIL: pipeline missing sampler locations Sampler0=%d Sampler2=%d\n",
+                sampler0Loc, sampler2Loc);
+        return 1;
+    }
+    glProgramUniform1i(fragmentProgram, sampler0Loc, 0);
+    glProgramUniform1i(vertexProgram, sampler2Loc, 1);
+
+    glUseProgram(0);
+    glBindProgramPipeline(pipeline);
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    uint8_t pixel[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_FRONT);
+    glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+    bool pass = pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200 && pixel[3] > 200;
+    fprintf(stderr,
+            "MGL CTS-LITE terrain-uv2-block-format-pipeline %s pixel=%u,%u,%u,%u pipeline=%u vs=%u fs=%u chunkBlock=%u\n",
+            pass ? "PASS" : "FAIL",
+            pixel[0], pixel[1], pixel[2], pixel[3],
+            pipeline, vertexProgram, fragmentProgram, chunkBlock);
+
+    SWAP_BUFFERS;
+    return pass ? 0 : 1;
+}
+
+int test_ubo_range_padding(GLFWwindow* window, int width, int height)
+{
+    const char* vertex_shader =
+    GLSL(330 core,
+        layout(location = 0) in vec2 position;
+
+        layout(std140) uniform VertexRange
+        {
+            vec4 offset;
+            float tailValue;
+        } vertexRange;
+
+        out float vertexTailValue;
+
+        void main() {
+            vertexTailValue = vertexRange.tailValue;
+            gl_Position = vec4(position + vertexRange.offset.xy, 0.0, 1.0);
+        }
+    );
+
+    const char* fragment_shader =
+    GLSL(330 core,
+        in float vertexTailValue;
+        out vec4 frag_colour;
+
+        layout(std140) uniform FragmentRange
+        {
+            vec4 color;
+            float tailValue;
+        } fragmentRange;
+
+        void main() {
+            float bad = max(abs(vertexTailValue), abs(fragmentRange.tailValue));
+            frag_colour = bad < 0.001 ? fragmentRange.color : vec4(0.0, 0.0, 0.0, 1.0);
+        }
+    );
+
+    float points[] = {
+       -1.0f, -1.0f,
+        3.0f, -1.0f,
+       -1.0f,  3.0f
+    };
+
+    GLuint vao = bindVAO();
+    GLuint vbo = bindDataToVBO(GL_ARRAY_BUFFER, sizeof(points), points, GL_STATIC_DRAW);
+    bindAttribute(0, GL_ARRAY_BUFFER, vbo, 2, GL_FLOAT, false, 0, NULL);
+
+    GLuint shader_program =
+        compileGLSLProgram(2, GL_VERTEX_SHADER, vertex_shader,
+                           GL_FRAGMENT_SHADER, fragment_shader);
+    glUseProgram(shader_program);
+
+    GLuint vertexBlock = glGetUniformBlockIndex(shader_program, "VertexRange");
+    GLuint fragmentBlock = glGetUniformBlockIndex(shader_program, "FragmentRange");
+    if (vertexBlock == GL_INVALID_INDEX || fragmentBlock == GL_INVALID_INDEX) {
+        fprintf(stderr,
+                "MGL CTS-LITE FAIL: ubo-range-padding missing block VertexRange=%u FragmentRange=%u\n",
+                vertexBlock, fragmentBlock);
+        return 1;
+    }
+
+    glUniformBlockBinding(shader_program, vertexBlock, 0);
+    glUniformBlockBinding(shader_program, fragmentBlock, 1);
+
+    float vertexData[8] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        1.0f, 1.0f, 1.0f, 1.0f
+    };
+    float fragmentData[8] = {
+        1.0f, 1.0f, 1.0f, 1.0f,
+        1.0f, 1.0f, 1.0f, 1.0f
+    };
+    GLuint vertexUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(vertexData), vertexData, GL_STATIC_DRAW);
+    GLuint fragmentUBO = bindDataToVBO(GL_UNIFORM_BUFFER, sizeof(fragmentData), fragmentData, GL_STATIC_DRAW);
+
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, vertexUBO, 0, 16);
+    glBindBufferRange(GL_UNIFORM_BUFFER, 1, fragmentUBO, 0, 16);
+
+    glViewport(0, 0, width, height);
+    glDisable(GL_DEPTH_TEST);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    uint8_t pixel[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_FRONT);
+    glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+
+    bool pass = pixel[0] > 200 && pixel[1] > 200 && pixel[2] > 200 && pixel[3] > 200;
+    fprintf(stderr,
+            "MGL CTS-LITE ubo-range-padding %s pixel=%u,%u,%u,%u vertexBlock=%u fragmentBlock=%u\n",
+            pass ? "PASS" : "FAIL",
+            pixel[0], pixel[1], pixel[2], pixel[3],
+            vertexBlock, fragmentBlock);
+
+    SWAP_BUFFERS;
+    return pass ? 0 : 1;
+}
+
+int test_clip_control_depth_mode(GLFWwindow* window, int width, int height)
+{
+    const char* vertex_shader =
+    GLSL(400,
+        layout(location = 0) in vec3 Position;
+        layout(location = 1) in vec4 Color;
+        out vec4 vertexColor;
+        void main() {
+            gl_Position = vec4(Position, 1.0);
+            vertexColor = Color;
+        }
+    );
+
+    const char* fragment_shader =
+    GLSL(400,
+        in vec4 vertexColor;
+        layout(location = 0) out vec4 frag_colour;
+        void main() {
+            frag_colour = vertexColor;
+        }
+    );
+
+    struct ClipVertex {
+        float position[3];
+        uint8_t color[4];
+    };
+
+    ClipVertex vertices[] = {
+        {{-1.0f, -1.0f, -1.0f}, {255,   0,   0, 255}},
+        {{ 1.0f, -1.0f,  0.0f}, {  0, 255,   0, 255}},
+        {{-1.0f,  1.0f,  0.0f}, {  0, 255,   0, 255}},
+        {{ 1.0f,  1.0f,  1.0f}, {  0,   0, 255, 255}},
+    };
+
+    GLuint shader_program =
+        compileGLSLProgram(2, GL_VERTEX_SHADER, vertex_shader,
+                           GL_FRAGMENT_SHADER, fragment_shader);
+    glUseProgram(shader_program);
+
+    GLuint vao = bindVAO();
+    GLuint vbo = bindDataToVBO(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(ClipVertex),
+                          (void *)offsetof(ClipVertex, position));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(ClipVertex),
+                          (void *)offsetof(ClipVertex, color));
+
+    glViewport(0, 0, width, height);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glDisable(GL_DEPTH_CLAMP);
+    glBindVertexArray(vao);
+
+    glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearDepth(0.5);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+
+    uint8_t zeroLeft[4] = {0, 0, 0, 0};
+    uint8_t zeroRight[4] = {0, 0, 0, 0};
+    glReadBuffer(GL_FRONT);
+    glReadPixels(width / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, zeroLeft);
+    glReadPixels((width * 3) / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, zeroRight);
+
+    bool zeroPass =
+        zeroLeft[0] < 24 && zeroLeft[1] < 24 && zeroLeft[2] < 24 &&
+        (zeroRight[1] > 24 || zeroRight[2] > 24);
+
+    glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClearDepth(0.5);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+
+    uint8_t negLeft[4] = {0, 0, 0, 0};
+    uint8_t negRight[4] = {0, 0, 0, 0};
+    glReadPixels(width / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, negLeft);
+    glReadPixels((width * 3) / 4, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, negRight);
+
+    bool negPass =
+        (negLeft[0] > 24 || negLeft[1] > 24) &&
+        (negRight[1] > 24 || negRight[2] > 24);
+
+    glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+    fprintf(stderr,
+            "MGL CTS-LITE clip-control-depth-mode %s zeroLeft=%u,%u,%u,%u zeroRight=%u,%u,%u,%u negLeft=%u,%u,%u,%u negRight=%u,%u,%u,%u\n",
+            (zeroPass && negPass) ? "PASS" : "FAIL",
+            zeroLeft[0], zeroLeft[1], zeroLeft[2], zeroLeft[3],
+            zeroRight[0], zeroRight[1], zeroRight[2], zeroRight[3],
+            negLeft[0], negLeft[1], negLeft[2], negLeft[3],
+            negRight[0], negRight[1], negRight[2], negRight[3]);
+
+    SWAP_BUFFERS;
+    return (zeroPass && negPass) ? 0 : 1;
 }
 
 int test_1D_textures(GLFWwindow* window, int width, int height)
@@ -3277,6 +4091,52 @@ GLFWwindow *newTestWindow(int width, int height, const char *name)
     return window;
 }
 
+int run_named_test_case(const char *test_name, int width, int height)
+{
+    if (!test_name) {
+        return -1;
+    }
+
+    if (strcmp(test_name, "ubo-sampler-binding") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_ubo_sampler_binding_semantics");
+        int result = test_ubo_sampler_binding_semantics(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+    if (strcmp(test_name, "terrain-uv2-block-format") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_terrain_uv2_block_format");
+        int result = test_terrain_uv2_block_format(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+    if (strcmp(test_name, "terrain-uv2-block-format-dsa") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_terrain_uv2_block_format_dsa");
+        int result = test_terrain_uv2_block_format_dsa(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+    if (strcmp(test_name, "terrain-uv2-block-format-pipeline") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_terrain_uv2_block_format_pipeline");
+        int result = test_terrain_uv2_block_format_pipeline(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+    if (strcmp(test_name, "ubo-range-padding") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_ubo_range_padding");
+        int result = test_ubo_range_padding(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+    if (strcmp(test_name, "clip-control-depth-mode") == 0) {
+        GLFWwindow *window = newTestWindow(width, height, "test_clip_control_depth_mode");
+        int result = test_clip_control_depth_mode(window, width, height);
+        glfwTerminate();
+        return result;
+    }
+
+    return -1;
+}
+
 int run_test_case(int test_num, int width, int height)
 {
     GLFWwindow *window;
@@ -3391,6 +4251,22 @@ int run_test_case(int test_num, int width, int height)
         case 21:
             window = newTestWindow(width, height, "test_draw_arrays_uniform1i");
             test_draw_arrays_uniform1i(window, width, height);
+            break;
+
+        case 22:
+            window = newTestWindow(width, height, "test_ubo_sampler_binding_semantics");
+            test_ubo_sampler_binding_semantics(window, width, height);
+            break;
+
+        case 23:
+            window = newTestWindow(width, height, "test_terrain_uv2_block_format");
+            test_terrain_uv2_block_format(window, width, height);
+            break;
+
+        case 24:
+            window = newTestWindow(width, height, "test_clip_control_depth_mode");
+            test_clip_control_depth_mode(window, width, height);
+            break;
 
         default:
             return 0;
@@ -3408,6 +4284,21 @@ int main_glfw(int argc, const char * argv[])
     
     width = 512;
     height = 512;
+
+    if (argc > 1) {
+        int namedResult = run_named_test_case(argv[1], width, height);
+        if (namedResult >= 0) {
+            return namedResult;
+        }
+
+        int test_num = atoi(argv[1]);
+        if (test_num > 0) {
+            return run_test_case(test_num, width, height) ? 0 : 1;
+        }
+
+        fprintf(stderr, "unknown test case: %s\n", argv[1]);
+        return 1;
+    }
     
 #if 1
     run_test_case(0, width, height);
@@ -3523,4 +4414,3 @@ int main(int argc, const char * argv[])
     return main_sdl(argc, argv);
 #endif
 }
-

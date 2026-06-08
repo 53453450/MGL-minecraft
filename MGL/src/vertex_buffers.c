@@ -46,12 +46,6 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
         ERROR_CHECK_RETURN_VALUE(vao, GL_INVALID_VALUE, false);
     }
 
-    static int s_bindVBCallCount = 0;
-    if (++s_bindVBCallCount <= 32 || (s_bindVBCallCount % 256 == 0)) {
-        fprintf(stderr, "MGL DIAG BindVertexBuffer #%d vaobj=%u binding=%u buffer=%u offset=%lld stride=%d vao=%p maxAttribs=%u\n",
-                s_bindVBCallCount, vaobj, bindingindex, buffer, (long long)offset, (int)stride, vao, ctx->state.max_vertex_attribs);
-    }
-
     ERROR_CHECK_RETURN_VALUE(offset >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(stride >= 0, GL_INVALID_VALUE, false);
 
@@ -70,17 +64,6 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
         vao->bindings[bindingindex].buffer != buf ||
         vao->bindings[bindingindex].offset != offset ||
         vao->bindings[bindingindex].stride != stride;
-    for (int i = 0; !changed && i < ctx->state.max_vertex_attribs; i++)
-    {
-        if (vao->attrib[i].buffer_bindingindex == bindingindex &&
-            (vao->attrib[i].buffer != buf ||
-             vao->attrib[i].stride != (GLuint)stride ||
-             vao->attrib[i].binding_offset != offset ||
-             vao->attrib[i].divisor != vao->bindings[bindingindex].divisor))
-        {
-            changed = GL_TRUE;
-        }
-    }
     if (!changed)
         return true;
 
@@ -89,26 +72,6 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     vao->bindings[bindingindex].buffer = buf;
     vao->bindings[bindingindex].offset = offset;
     vao->bindings[bindingindex].stride = stride;
-
-    // Mirror binding state into attributes for the existing Metal path. This
-    // also covers DSA ordering where the binding is established before an
-    // attribute is pointed at that binding index.
-    int matched = 0;
-    for (int i = 0; i < ctx->state.max_vertex_attribs; i++)
-    {
-        if (vao->attrib[i].buffer_bindingindex == bindingindex)
-        {
-            vao->attrib[i].buffer = buf;
-            vao->attrib[i].stride = stride;
-            vao->attrib[i].binding_offset = offset;
-            vao->attrib[i].divisor = vao->bindings[bindingindex].divisor;
-            matched++;
-        }
-    }
-    if (matched == 0) {
-        fprintf(stderr, "MGL DIAG BindVertexBuffer bindingindex=%u buffer=%u offset=%lld stride=%d maxAttribs=%u NO_MATCH\n",
-                bindingindex, buffer, (long long)offset, (int)stride, ctx->state.max_vertex_attribs);
-    }
 
     vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
@@ -121,7 +84,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
 void mglBindVertexBuffer(GLMContext ctx, GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride)
 {
     ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
-    ERROR_CHECK_RETURN(bindingindex < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
 
     bindVertexBuffer(ctx, 0, bindingindex, buffer, offset, stride);
 }
@@ -130,7 +93,7 @@ void mglBindVertexBuffers(GLMContext ctx, GLuint first, GLsizei count, const GLu
 {
     ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(first + count <= MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(first + count <= MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
     if (buffers)
     {
         ERROR_CHECK_RETURN(offsets, GL_INVALID_VALUE);
@@ -187,7 +150,7 @@ void mglVertexArrayVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindinginde
         ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     }
 
-    ERROR_CHECK_RETURN(bindingindex < MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
 
     bindVertexBuffer(ctx, vaobj, bindingindex, buffer, offset, stride);
 }
@@ -203,7 +166,7 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
         ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     }
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(first + count <= MAX_BINDABLE_BUFFERS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(first + count <= MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
     if (buffers)
     {
         ERROR_CHECK_RETURN(offsets, GL_INVALID_VALUE);

@@ -355,6 +355,17 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_DEBUG_GROUP_STACK_DEPTH,&glm_ctx->state.var.max_debug_group_stack_depth);
     glGetIntegerv(GL_DEBUG_GROUP_STACK_DEPTH,&glm_ctx->state.var.debug_group_stack_depth);
     glGetIntegerv(GL_MAX_LABEL_LENGTH,&glm_ctx->state.var.max_label_length);
+    if (glm_ctx->state.var.max_debug_group_stack_depth == 0 ||
+        glm_ctx->state.var.max_debug_group_stack_depth > 1024) {
+        glm_ctx->state.var.max_debug_group_stack_depth = 64;
+    }
+    if (glm_ctx->state.var.debug_group_stack_depth > glm_ctx->state.var.max_debug_group_stack_depth) {
+        glm_ctx->state.var.debug_group_stack_depth = 0;
+    }
+    if (glm_ctx->state.var.max_label_length < 64 ||
+        glm_ctx->state.var.max_label_length > 4096) {
+        glm_ctx->state.var.max_label_length = 128;
+    }
     glGetIntegerv(GL_MAX_UNIFORM_LOCATIONS,&glm_ctx->state.var.max_uniform_locations);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_WIDTH,&glm_ctx->state.var.max_framebuffer_width);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_HEIGHT,&glm_ctx->state.var.max_framebuffer_height);
@@ -387,6 +398,15 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_VERTEX_BINDING_STRIDE,&glm_ctx->state.var.vertex_binding_stride);
     glGetIntegerv(GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET,&glm_ctx->state.var.max_vertex_attrib_relative_offset);
     glGetIntegerv(GL_MAX_VERTEX_ATTRIB_BINDINGS,&glm_ctx->state.var.max_vertex_attrib_bindings);
+    if (glm_ctx->state.var.max_vertex_attrib_bindings < MAX_ATTRIBS ||
+        glm_ctx->state.var.max_vertex_attrib_bindings == 0x01010101u ||
+        glm_ctx->state.var.max_vertex_attrib_bindings > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        glm_ctx->state.var.max_vertex_attrib_bindings = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    }
+    if (glm_ctx->state.var.max_vertex_attrib_relative_offset < 2047u ||
+        glm_ctx->state.var.max_vertex_attrib_relative_offset == 0x01010101u) {
+        glm_ctx->state.var.max_vertex_attrib_relative_offset = 2047u;
+    }
     glGetIntegerv(GL_TEXTURE_BINDING_1D,&glm_ctx->state.var.texture_binding_1d);
     glGetIntegerv(GL_TEXTURE_BINDING_1D_ARRAY,&glm_ctx->state.var.texture_binding_1d_array);
     glGetIntegerv(GL_TEXTURE_BINDING_2D,&glm_ctx->state.var.texture_binding_2d);

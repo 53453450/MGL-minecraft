@@ -735,6 +735,14 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
 
+    if (ctx &&
+        (ctx->state.viewport[0] != x ||
+         ctx->state.viewport[1] != y ||
+         ctx->state.viewport[2] != width ||
+         ctx->state.viewport[3] != height)) {
+        mglFlushPendingDraws(ctx);
+    }
+
     ctx->state.viewport[0] = x;
     ctx->state.viewport[1] = y;
     ctx->state.viewport[2] = width;
@@ -743,18 +751,6 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     ctx->state.viewport_array[0][1] = (GLfloat)y;
     ctx->state.viewport_array[0][2] = (GLfloat)width;
     ctx->state.viewport_array[0][3] = (GLfloat)height;
-
-    {
-        Framebuffer *drawFbo = ctx->state.framebuffer;
-        ctx->state.viewport_binding_fbo_name = drawFbo ? drawFbo->name : 0u;
-        ctx->state.viewport_binding_width = width;
-        ctx->state.viewport_binding_height = height;
-        if (drawFbo && mglFramebufferIsSmallIconTarget(ctx, drawFbo)) {
-            ctx->state.pending_icon_bake_fbo_name = drawFbo->name;
-        } else {
-            ctx->state.pending_icon_bake_fbo_name = 0u;
-        }
-    }
 
     mglLogMinecraftOffscreenViewport(ctx, x, y, width, height);
 

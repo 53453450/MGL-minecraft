@@ -33,6 +33,8 @@
 #include "draw_command.h"
 #include "mgl_safety.h"
 
+extern void mglTraceLogExternal(const char *fmt, ...);
+
 static inline bool mglShouldTraceClearCall(uint64_t callCount)
 {
     return (callCount <= 60ull) || ((callCount % 200ull) == 0ull);
@@ -104,6 +106,40 @@ static bool mglAlignSizeT(size_t value, size_t alignment, size_t *out)
         return true;
     }
     return mglAddSizeT(value, alignment - rem, out);
+}
+
+static void mglMarkPackBufferReadPixelsWrite(GLMContext ctx,
+                                             Buffer *ptr,
+                                             GLintptr offset,
+                                             GLsizeiptr size,
+                                             const void *dst_ptr)
+{
+    (void)ctx;
+
+    if (!ptr || size <= 0)
+        return;
+
+    ptr->ever_written = GL_TRUE;
+    if (offset >= 0 &&
+        offset <= ptr->size &&
+        size <= (ptr->size - offset))
+    {
+        GLintptr write_end = offset + size;
+        if (ptr->written_min < 0 || offset < ptr->written_min)
+            ptr->written_min = offset;
+        if (ptr->written_max < 0 || write_end > ptr->written_max)
+            ptr->written_max = write_end;
+        ptr->has_initialized_data = GL_TRUE;
+    }
+
+    ptr->last_init_source = kInitReadPixels;
+    ptr->last_write_offset = offset;
+    ptr->last_write_size = size;
+    ptr->last_write_src_ptr = dst_ptr;
+    ptr->last_write_src_hash = 0ull;
+    ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+    if (ctx)
+        ctx->state.dirty_bits |= DIRTY_BUFFER;
 }
 
 static GLuint mglMaxDrawBuffers(GLMContext ctx)
@@ -204,14 +240,20 @@ static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const 
 
     uint64_t hit = ++s_immediateClearCount;
     if (hit <= 64ull || (hit % 512ull) == 0ull) {
-        fprintf(stderr,
-                "MGL TRACE clear.immediate source=%s call=%llu mask=0x%x fbo=%p(%u) hit=%llu\n",
-                source ? source : "unknown",
-                (unsigned long long)callCount,
-                (unsigned)mask,
-                (void *)ctx->state.framebuffer,
-                (unsigned)mglSafeDrawFramebufferName(ctx),
-                (unsigned long long)hit);
+        mglTraceLogExternal("CLEAR_IMMEDIATE source=%s call=%llu mask=0x%x fbo=%u scissor(test=%d box=%d,%d,%d,%d) depth(write=%d clear=%.6f) dirty=0x%x hit=%llu",
+                            source ? source : "unknown",
+                            (unsigned long long)callCount,
+                            (unsigned)mask,
+                            (unsigned)mglSafeDrawFramebufferName(ctx),
+                            ctx->state.caps.scissor_test ? 1 : 0,
+                            (int)ctx->state.var.scissor_box[0],
+                            (int)ctx->state.var.scissor_box[1],
+                            (int)ctx->state.var.scissor_box[2],
+                            (int)ctx->state.var.scissor_box[3],
+                            ctx->state.var.depth_writemask ? 1 : 0,
+                            (double)ctx->state.var.depth_clear_value,
+                            (unsigned)ctx->state.dirty_bits,
+                            (unsigned long long)hit);
     }
 
     ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
@@ -268,14 +310,25 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     if (ctx->state.caps.scissor_test) {
         uint64_t hit = ++s_scissoredClearCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
-            fprintf(stderr,
-                    "MGL INFO: immediate scissored glClear mask=0x%x box=(%d,%d,%d,%d) hit=%llu\n",
-                    (unsigned)mask,
-                    (int)ctx->state.var.scissor_box[0],
-                    (int)ctx->state.var.scissor_box[1],
-                    (int)ctx->state.var.scissor_box[2],
-                    (int)ctx->state.var.scissor_box[3],
-                    (unsigned long long)hit);
+            mglTraceLogExternal("CLEAR_SCISSORED_GL call=%llu hit=%llu mask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x box=%d,%d,%d,%d colorMask=%d%d%d%d depth(write=%d clear=%.6f) stencilWrite(front=0x%x back=0x%x)",
+                                (unsigned long long)callCount,
+                                (unsigned long long)hit,
+                                (unsigned)mask,
+                                (unsigned)mglSafeDrawFramebufferName(ctx),
+                                (unsigned)ctx->state.draw_buffer,
+                                (unsigned)ctx->state.read_buffer,
+                                (int)ctx->state.var.scissor_box[0],
+                                (int)ctx->state.var.scissor_box[1],
+                                (int)ctx->state.var.scissor_box[2],
+                                (int)ctx->state.var.scissor_box[3],
+                                ctx->state.var.color_writemask[0][0] ? 1 : 0,
+                                ctx->state.var.color_writemask[0][1] ? 1 : 0,
+                                ctx->state.var.color_writemask[0][2] ? 1 : 0,
+                                ctx->state.var.color_writemask[0][3] ? 1 : 0,
+                                ctx->state.var.depth_writemask ? 1 : 0,
+                                (double)ctx->state.var.depth_clear_value,
+                                (unsigned)ctx->state.var.stencil_writemask,
+                                (unsigned)ctx->state.var.stencil_back_writemask);
         }
         if (ctx->mtl_funcs.mtlClearBuffer) {
             ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
@@ -365,16 +418,24 @@ clear_done:
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
 
     if (mglShouldTraceClearCall(callCount)) {
-        fprintf(stderr,
-                "MGL TRACE clear.set call=%llu mask=0x%x prevMask=0x%x drawBuf=0x%x readBuf=0x%x fbo=%p(%u) dirty=0x%x\n",
-                (unsigned long long)callCount,
-                (unsigned)mask,
-                (unsigned)previousMask,
-                (unsigned)ctx->state.draw_buffer,
-                (unsigned)ctx->state.read_buffer,
-                (void *)ctx->state.framebuffer,
-                (unsigned)mglSafeDrawFramebufferName(ctx),
-                (unsigned)ctx->state.dirty_bits);
+        mglTraceLogExternal("CLEAR_SET call=%llu mask=0x%x prevMask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x scissor(test=%d box=%d,%d,%d,%d) clearBits(global=0x%x default=0x%x fboDepth=0x%x) depth(write=%d clear=%.6f) dirty=0x%x",
+                            (unsigned long long)callCount,
+                            (unsigned)mask,
+                            (unsigned)previousMask,
+                            (unsigned)mglSafeDrawFramebufferName(ctx),
+                            (unsigned)ctx->state.draw_buffer,
+                            (unsigned)ctx->state.read_buffer,
+                            ctx->state.caps.scissor_test ? 1 : 0,
+                            (int)ctx->state.var.scissor_box[0],
+                            (int)ctx->state.var.scissor_box[1],
+                            (int)ctx->state.var.scissor_box[2],
+                            (int)ctx->state.var.scissor_box[3],
+                            (unsigned)ctx->state.clear_bitmask,
+                            (unsigned)ctx->state.default_fbo_clear_bitmask,
+                            (unsigned)(ctx->state.framebuffer ? ctx->state.framebuffer->depth.clear_bitmask : 0u),
+                            ctx->state.var.depth_writemask ? 1 : 0,
+                            (double)ctx->state.var.depth_clear_value,
+                            (unsigned)ctx->state.dirty_bits);
     }
 
     mglMaterializeImmediateClear(ctx, mask, "glClear", callCount);
@@ -393,17 +454,16 @@ void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
     ctx->state.dirty_bits |= DIRTY_STATE;
 
     if (mglShouldTraceClearCall(callCount)) {
-        fprintf(stderr,
-                "MGL TRACE clearColor call=%llu value=(%.3f,%.3f,%.3f,%.3f) fbo=%p(%u) drawBuf=0x%x dirty=0x%x\n",
-                (unsigned long long)callCount,
-                red,
-                green,
-                blue,
-                alpha,
-                (void *)ctx->state.framebuffer,
-                (unsigned)mglSafeDrawFramebufferName(ctx),
-                (unsigned)ctx->state.draw_buffer,
-                (unsigned)ctx->state.dirty_bits);
+        mglTraceLogExternal("CLEAR_COLOR call=%llu value=(%.3f,%.3f,%.3f,%.3f) fbo=%p(%u) drawBuf=0x%x dirty=0x%x",
+                            (unsigned long long)callCount,
+                            red,
+                            green,
+                            blue,
+                            alpha,
+                            (void *)ctx->state.framebuffer,
+                            (unsigned)mglSafeDrawFramebufferName(ctx),
+                            (unsigned)ctx->state.draw_buffer,
+                            (unsigned)ctx->state.dirty_bits);
     }
 }
 
@@ -419,6 +479,7 @@ void mglClearDepth(GLMContext ctx, GLdouble depth)
     ctx->state.var.depth_clear_value = mglClampDepthClearValue(depth);
 
     ctx->state.dirty_bits |= DIRTY_STATE;
+
 }
 
 void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value)
@@ -490,17 +551,22 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
 
     if (mglShouldTraceClearCall(callCount)) {
-        fprintf(stderr,
-                "MGL TRACE clearBufferfv call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) value=(%.3f,%.3f,%.3f,%.3f)\n",
-                (unsigned long long)callCount,
-                (unsigned)buffer,
-                (int)drawbuffer,
-                (void *)fbo,
-                (unsigned)(fbo ? fbo->name : 0),
-                value ? value[0] : 0.0f,
-                value ? value[1] : 0.0f,
-                value ? value[2] : 0.0f,
-                value ? value[3] : 0.0f);
+        mglTraceLogExternal("CLEAR_BUFFERFV call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) value=(%.6f,%.6f,%.6f,%.6f) depthWrite=%d dirty=0x%x",
+                            (unsigned long long)callCount,
+                            (unsigned)buffer,
+                            (int)drawbuffer,
+                            (unsigned)(fbo ? fbo->name : 0),
+                            ctx->state.caps.scissor_test ? 1 : 0,
+                            (int)ctx->state.var.scissor_box[0],
+                            (int)ctx->state.var.scissor_box[1],
+                            (int)ctx->state.var.scissor_box[2],
+                            (int)ctx->state.var.scissor_box[3],
+                            value ? (double)value[0] : 0.0,
+                            value ? (double)value[1] : 0.0,
+                            value ? (double)value[2] : 0.0,
+                            value ? (double)value[3] : 0.0,
+                            ctx->state.var.depth_writemask ? 1 : 0,
+                            (unsigned)ctx->state.dirty_bits);
     }
 
     GLbitfield clearMask = 0;
@@ -550,15 +616,20 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
     ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
 
     if (mglShouldTraceClearCall(callCount)) {
-        fprintf(stderr,
-                "MGL TRACE clearBufferfi call=%llu buffer=0x%x drawbuffer=%d fbo=%p(%u) depth=%.3f stencil=%d\n",
-                (unsigned long long)callCount,
-                (unsigned)buffer,
-                (int)drawbuffer,
-                (void *)fbo,
-                (unsigned)(fbo ? fbo->name : 0),
-                depth,
-                stencil);
+        mglTraceLogExternal("CLEAR_BUFFERFI call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) depth=%.6f stencil=%d depthWrite=%d dirty=0x%x",
+                            (unsigned long long)callCount,
+                            (unsigned)buffer,
+                            (int)drawbuffer,
+                            (unsigned)(fbo ? fbo->name : 0),
+                            ctx->state.caps.scissor_test ? 1 : 0,
+                            (int)ctx->state.var.scissor_box[0],
+                            (int)ctx->state.var.scissor_box[1],
+                            (int)ctx->state.var.scissor_box[2],
+                            (int)ctx->state.var.scissor_box[3],
+                            (double)depth,
+                            (int)stencil,
+                            ctx->state.var.depth_writemask ? 1 : 0,
+                            (unsigned)ctx->state.dirty_bits);
     }
 
     mglMaterializeImmediateClear(ctx,
@@ -666,6 +737,9 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
             changed = GL_TRUE;
     }
 
+    if (changed)
+        mglFlushPendingDraws(ctx);
+
     if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
         ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
 
@@ -693,6 +767,9 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
             if (STATE(draw_buffers[i]) != GL_NONE)
                 changed = GL_TRUE;
         }
+
+        if (changed)
+            mglFlushPendingDraws(ctx);
 
         if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
             ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
@@ -746,6 +823,21 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         return;
     }
 
+    GLboolean changed =
+        STATE(draw_buffer) != buf ||
+        STATE(draw_buffer_count) != 1 ||
+        STATE(draw_buffers[0]) != buf;
+    for (GLuint i = 1; !changed && i < MAX_COLOR_ATTACHMENTS; ++i) {
+        if (STATE(draw_buffers[i]) != GL_NONE)
+            changed = GL_TRUE;
+    }
+
+    if (changed)
+        mglFlushPendingDraws(ctx);
+
+    if (changed && ctx->mtl_funcs.mtlInvalidateRenderPass)
+        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
         (buf < (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments))))
     {
@@ -759,14 +851,6 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
             if (att->buf.rbo)
                 att->buf.rbo->is_draw_buffer = GL_TRUE;
         }
-    }
-
-    if ((STATE(draw_buffer) != buf ||
-         STATE(draw_buffer_count) != 1 ||
-         STATE(draw_buffers[0]) != buf) &&
-        ctx->mtl_funcs.mtlInvalidateRenderPass)
-    {
-        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
     }
 
     STATE(draw_buffer) = buf;
@@ -825,9 +909,14 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
         // probably should validate current fbo..
     }
 
-    STATE(read_buffer) = buf;
-    mglStoreCurrentReadBufferSelection(ctx);
-    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
+    if (STATE(read_buffer) != buf) {
+        /*
+         * GL_READ_BUFFER only selects the source for explicit read/blit/copy
+         * operations. It is not part of draw framebuffer render-pass identity.
+         */
+        STATE(read_buffer) = buf;
+        mglStoreCurrentReadBufferSelection(ctx);
+    }
 }
 
 void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
@@ -1180,6 +1269,9 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
 void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels)
 {
     GLuint pixel_size;
+    Buffer *pack_buffer = NULL;
+    GLintptr pack_write_offset = 0;
+    GLsizeiptr pack_write_size = 0;
 
     pixel_size = sizeForFormatType(format, type);
     // ERROR_CHECK_RETURN(pixel_size != 0, GL_INVALID_ENUM);
@@ -1214,12 +1306,16 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             break;
 
         case GL_DEPTH_COMPONENT:
-            ERROR_CHECK_RETURN(ctx->depth_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            if (!ctx->state.readbuffer) {
+                ERROR_CHECK_RETURN(ctx->depth_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            }
             break;
 
         case GL_DEPTH_STENCIL:
-            ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) ||
-                               (ctx->stencil_format.mtl_pixel_format > 0), GL_INVALID_OPERATION);
+            if (!ctx->state.readbuffer) {
+                ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) ||
+                                   (ctx->stencil_format.mtl_pixel_format > 0), GL_INVALID_OPERATION);
+            }
             switch(type)
             {
                 case GL_UNSIGNED_INT_24_8:
@@ -1282,10 +1378,41 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
         ptr = STATE(buffers[_PIXEL_PACK_BUFFER]);
 
-        // ERROR_CHECK_RETURN(ptr->mapped == false, GL_INVALID_OPERATION);
         if (ptr->mapped) {
-            fprintf(stderr, "MGL Error: mglReadPixels: pixel pack buffer is mapped\n");
-            ERROR_RETURN(GL_INVALID_OPERATION);
+            GLboolean persistent_map =
+                ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) != 0u) &&
+                ((ptr->access_flags & GL_MAP_PERSISTENT_BIT) != 0u);
+            static uint64_t s_mapped_pbo_readpixels_count = 0u;
+            uint64_t hit = ++s_mapped_pbo_readpixels_count;
+
+            if (!persistent_map) {
+                fprintf(stderr,
+                        "MGL Error: mglReadPixels: pixel pack buffer is mapped "
+                        "(buffer=%u storageFlags=0x%x access=0x%x accessFlags=0x%x mappedRange=%lld,%lld)\n",
+                        ptr->name,
+                        ptr->storage_flags,
+                        ptr->access,
+                        ptr->access_flags,
+                        (long long)ptr->mapped_offset,
+                        (long long)ptr->mapped_length);
+                ERROR_RETURN(GL_INVALID_OPERATION);
+            }
+
+            if (hit <= 32u || (hit % 256u) == 0u) {
+                fprintf(stderr,
+                        "MGL TRACE ReadPixels.PBO.persistentMapped hit=%llu buffer=%u storageFlags=0x%x accessFlags=0x%x "
+                        "mappedRange=%lld,%lld size=%lld offset=%p required=%zu backing=%p\n",
+                        (unsigned long long)hit,
+                        ptr->name,
+                        ptr->storage_flags,
+                        ptr->access_flags,
+                        (long long)ptr->mapped_offset,
+                        (long long)ptr->mapped_length,
+                        (long long)ptr->size,
+                        pixels,
+                        pack_layout.required_bytes,
+                        (void *)(uintptr_t)ptr->data.buffer_data);
+            }
         }
 
         if (ptr->size < 0)
@@ -1315,6 +1442,23 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             ERROR_RETURN(GL_INVALID_OPERATION);
         }
 
+        if (offset > (uintptr_t)INTPTR_MAX ||
+            pack_layout.skip_offset_bytes > (size_t)INTPTR_MAX ||
+            pack_layout.write_span_bytes > (size_t)INTPTR_MAX ||
+            (size_t)offset + pack_layout.skip_offset_bytes > (size_t)INTPTR_MAX)
+        {
+            fprintf(stderr,
+                    "MGL Error: mglReadPixels: pixel pack write bookkeeping overflow "
+                    "(offset=%lu skip=%zu span=%zu)\n",
+                    (unsigned long)offset,
+                    pack_layout.skip_offset_bytes,
+                    pack_layout.write_span_bytes);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+
+        pack_buffer = ptr;
+        pack_write_offset = (GLintptr)((size_t)offset + pack_layout.skip_offset_bytes);
+        pack_write_size = (GLsizeiptr)pack_layout.write_span_bytes;
         pixels = (void *)(base + offset + pack_layout.skip_offset_bytes);
     }
 
@@ -1328,14 +1472,55 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         pixels = (void *)((uint8_t *)pixels + pack_layout.skip_offset_bytes);
     }
 
+    if (format == GL_DEPTH_COMPONENT)
+    {
+        if (type != GL_FLOAT || !ctx->mtl_funcs.mtlReadDepthPixels)
+        {
+            static uint64_t s_unsupported_depth_readpixels_count = 0u;
+            uint64_t hit = ++s_unsupported_depth_readpixels_count;
+            if (hit <= 32u || (hit % 256u) == 0u) {
+                fprintf(stderr,
+                        "MGL WARNING: mglReadPixels depth readback is unsupported format=0x%x type=0x%x hit=%llu\n",
+                        format,
+                        type,
+                        (unsigned long long)hit);
+            }
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        if (pack_layout.dst_pitch > UINT_MAX ||
+            pack_layout.write_span_bytes > UINT_MAX)
+        {
+            fprintf(stderr,
+                    "MGL Error: mglReadPixels: depth readback pack overflow pitch=%zu span=%zu\n",
+                    pack_layout.dst_pitch,
+                    pack_layout.write_span_bytes);
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlReadDepthPixels(ctx,
+                                          pixels,
+                                          (GLuint)pack_layout.dst_pitch,
+                                          (GLuint)pack_layout.write_span_bytes,
+                                          x,
+                                          y,
+                                          width,
+                                          height);
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
+    }
+
     if (STATE(read_buffer) == GL_NONE)
     {
         fprintf(stderr, "MGL Error: mglReadPixels: read buffer is GL_NONE\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
-    if (format == GL_DEPTH_COMPONENT ||
-        format == GL_STENCIL_INDEX ||
+    if (format == GL_STENCIL_INDEX ||
         format == GL_DEPTH_STENCIL)
     {
         static uint64_t s_unsupported_depth_stencil_readpixels_count = 0u;
@@ -1400,6 +1585,9 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         }
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
+
+    if (pack_buffer)
+        mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
 
     vm_deallocate(mach_task_self(), buffer_data, readback_size);
 }
