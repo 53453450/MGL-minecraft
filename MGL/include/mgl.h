@@ -657,6 +657,7 @@ void mglDeleteVertexArrays(GLMContext ctx, GLsizei n, const GLuint *arrays);
 void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
 GLboolean mglIsVertexArray(GLMContext ctx, GLuint array);
 void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount);
+bool mglTryCPUTransformFeedbackCapture(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseInstance);
 void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount);
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer);
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index);

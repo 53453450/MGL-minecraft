@@ -4490,6 +4490,16 @@ void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void
     ctx->dispatch.draw_elements_instanced(ctx, mode, count, type, indices, instancecount);
 }
 
+void glDrawArraysInstancedARB(GLenum mode, GLint first, GLsizei count, GLsizei primcount)
+{
+    glDrawArraysInstanced(mode, first, count, primcount);
+}
+
+void glDrawElementsInstancedARB(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei primcount)
+{
+    glDrawElementsInstanced(mode, count, type, indices, primcount);
+}
+
 void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer)
 {
     GLMContext ctx = GET_CONTEXT();
@@ -4840,6 +4850,11 @@ void glVertexAttribDivisor(GLuint index, GLuint divisor)
     GLMContext ctx = GET_CONTEXT();
 
     ctx->dispatch.vertex_attrib_divisor(ctx, index, divisor);
+}
+
+void glVertexAttribDivisorARB(GLuint index, GLuint divisor)
+{
+    glVertexAttribDivisor(index, divisor);
 }
 
 void glVertexAttribP1ui(GLuint index, GLenum type, GLboolean normalized, GLuint value)

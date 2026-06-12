@@ -24,6 +24,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "mgl.h"
@@ -34,6 +35,239 @@
 #include "mgl_safety.h"
 
 extern void mglTraceLogExternal(const char *fmt, ...);
+
+static Texture *mglStencilAttachmentTexture(FBOAttachment *attachment)
+{
+    if (!attachment) {
+        return NULL;
+    }
+    return attachment->textarget == GL_RENDERBUFFER
+        ? (attachment->buf.rbo ? attachment->buf.rbo->tex : NULL)
+        : attachment->buf.tex;
+}
+
+static GLboolean mglEnsureStencilShadow(Texture *texture)
+{
+    if (!texture || texture->width == 0u || texture->height == 0u) {
+        return GL_FALSE;
+    }
+    if (texture->stencil_shadow &&
+        texture->stencil_shadow_width == texture->width &&
+        texture->stencil_shadow_height == texture->height) {
+        return GL_TRUE;
+    }
+    free(texture->stencil_shadow);
+    texture->stencil_shadow = calloc((size_t)texture->width * texture->height, 1u);
+    texture->stencil_shadow_width = texture->stencil_shadow ? texture->width : 0u;
+    texture->stencil_shadow_height = texture->stencil_shadow ? texture->height : 0u;
+    return texture->stencil_shadow ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglEnsureDepthShadow(Texture *texture)
+{
+    if (!texture || texture->width == 0u || texture->height == 0u) return GL_FALSE;
+    if (texture->depth_shadow &&
+        texture->depth_shadow_width == texture->width &&
+        texture->depth_shadow_height == texture->height) return GL_TRUE;
+    free(texture->depth_shadow);
+    texture->depth_shadow = calloc((size_t)texture->width * texture->height, sizeof(GLfloat));
+    texture->depth_shadow_width = texture->depth_shadow ? texture->width : 0u;
+    texture->depth_shadow_height = texture->depth_shadow ? texture->height : 0u;
+    return texture->depth_shadow ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglEnsureRGB10A2Shadow(Texture *texture)
+{
+    if (!texture || texture->width == 0u || texture->height == 0u) return GL_FALSE;
+    if (texture->rgb10a2_shadow &&
+        texture->rgb10a2_shadow_width == texture->width &&
+        texture->rgb10a2_shadow_height == texture->height) return GL_TRUE;
+    free(texture->rgb10a2_shadow);
+    texture->rgb10a2_shadow = calloc((size_t)texture->width * texture->height, 4u);
+    texture->rgb10a2_shadow_width = texture->rgb10a2_shadow ? texture->width : 0u;
+    texture->rgb10a2_shadow_height = texture->rgb10a2_shadow ? texture->height : 0u;
+    return texture->rgb10a2_shadow ? GL_TRUE : GL_FALSE;
+}
+
+static void mglUpdateDepthShadowForClear(GLMContext ctx)
+{
+    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Texture *texture = fbo ? mglStencilAttachmentTexture(&fbo->depth) : NULL;
+    if (!texture || !mglEnsureDepthShadow(texture)) return;
+    GLint x0 = 0, y0 = 0, x1 = (GLint)texture->width, y1 = (GLint)texture->height;
+    if (ctx->state.caps.scissor_test) {
+        if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
+        if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
+        if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
+            x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
+        if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
+            y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+    }
+    for (GLint y = y0; y < y1; y++)
+        for (GLint x = x0; x < x1; x++)
+            texture->depth_shadow[(size_t)y * texture->width + x] =
+                (GLfloat)ctx->state.var.depth_clear_value;
+}
+
+void mglBlitDepthShadow(GLMContext ctx,
+                        GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                        GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
+{
+    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
+    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    Texture *source = readFBO ? mglStencilAttachmentTexture(&readFBO->depth) : NULL;
+    Texture *destination = drawFBO ? mglStencilAttachmentTexture(&drawFBO->depth) : NULL;
+    if (!source || !destination || !source->depth_shadow || !mglEnsureDepthShadow(destination) ||
+        srcX1 <= srcX0 || srcY1 <= srcY0 || dstX1 <= dstX0 || dstY1 <= dstY0) return;
+    GLint srcW = srcX1 - srcX0, srcH = srcY1 - srcY0;
+    GLint dstW = dstX1 - dstX0, dstH = dstY1 - dstY0;
+    for (GLint y = dstY0; y < dstY1; y++) {
+        for (GLint x = dstX0; x < dstX1; x++) {
+            if (ctx->state.caps.scissor_test &&
+                (x < ctx->state.var.scissor_box[0] ||
+                 y < ctx->state.var.scissor_box[1] ||
+                 x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
+                 y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) {
+                continue;
+            }
+            GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
+            GLint sy = srcY0 + ((y - dstY0) * srcH) / dstH;
+            if (x >= 0 && y >= 0 && sx >= 0 && sy >= 0 &&
+                x < (GLint)destination->width && y < (GLint)destination->height &&
+                sx < (GLint)source->width && sy < (GLint)source->height)
+                destination->depth_shadow[(size_t)y * destination->width + x] =
+                    source->depth_shadow[(size_t)sy * source->width + sx];
+        }
+    }
+}
+
+static void mglUpdateStencilShadowForClear(GLMContext ctx)
+{
+    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    Texture *texture = fbo ? mglStencilAttachmentTexture(&fbo->stencil) : NULL;
+    if (!texture || !mglEnsureStencilShadow(texture)) {
+        return;
+    }
+
+    GLint x0 = 0;
+    GLint y0 = 0;
+    GLint x1 = (GLint)texture->width;
+    GLint y1 = (GLint)texture->height;
+    if (ctx->state.caps.scissor_test) {
+        if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
+        if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
+        if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
+            x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
+        if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
+            y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+    }
+    GLubyte value = (GLubyte)ctx->state.var.stencil_clear_value;
+    for (GLint row = y0; row < y1; row++) {
+        memset(texture->stencil_shadow + (size_t)row * texture->width + x0,
+               value,
+               (size_t)(x1 - x0));
+    }
+}
+
+void mglBlitStencilShadow(GLMContext ctx,
+                          GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                          GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
+{
+    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
+    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    Texture *source = readFBO ? mglStencilAttachmentTexture(&readFBO->stencil) : NULL;
+    Texture *destination = drawFBO ? mglStencilAttachmentTexture(&drawFBO->stencil) : NULL;
+    if (!source || !destination || !source->stencil_shadow ||
+        !mglEnsureStencilShadow(destination) ||
+        srcX1 <= srcX0 || srcY1 <= srcY0 || dstX1 <= dstX0 || dstY1 <= dstY0) {
+        return;
+    }
+    GLint srcW = srcX1 - srcX0;
+    GLint srcH = srcY1 - srcY0;
+    GLint dstW = dstX1 - dstX0;
+    GLint dstH = dstY1 - dstY0;
+    for (GLint y = dstY0; y < dstY1; y++) {
+        for (GLint x = dstX0; x < dstX1; x++) {
+            if (ctx->state.caps.scissor_test &&
+                (x < ctx->state.var.scissor_box[0] ||
+                 y < ctx->state.var.scissor_box[1] ||
+                 x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
+                 y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) {
+                continue;
+            }
+            GLint sourceX = srcX0 + ((x - dstX0) * srcW) / dstW;
+            GLint sourceY = srcY0 + ((y - dstY0) * srcH) / dstH;
+            if (x >= 0 && y >= 0 &&
+                sourceX >= 0 && sourceY >= 0 &&
+                x < (GLint)destination->width && y < (GLint)destination->height &&
+                sourceX < (GLint)source->width && sourceY < (GLint)source->height) {
+                destination->stencil_shadow[(size_t)y * destination->width + x] =
+                    source->stencil_shadow[(size_t)sourceY * source->width + sourceX];
+            }
+        }
+    }
+}
+
+void mglBlitRGB10A2Shadow(GLMContext ctx,
+                          GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                          GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1)
+{
+    Framebuffer *readFBO = ctx ? ctx->state.readbuffer : NULL;
+    Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
+    if (!readFBO || !drawFBO ||
+        ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 ||
+        ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS ||
+        srcX1 <= srcX0 || srcY1 <= srcY0 || dstX1 <= dstX0 || dstY1 <= dstY0) return;
+
+    GLuint sourceIndex = ctx->state.read_buffer - GL_COLOR_ATTACHMENT0;
+    Texture *source = mglStencilAttachmentTexture(&readFBO->color_attachments[sourceIndex]);
+    if (!source || !source->rgb10a2_shadow) return;
+
+    GLsizei drawBufferCount = ctx->state.draw_buffer_count;
+    if (drawBufferCount > MAX_COLOR_ATTACHMENTS) drawBufferCount = MAX_COLOR_ATTACHMENTS;
+    for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
+        GLenum drawBuffer = ctx->state.draw_buffers[slot];
+        if (drawBuffer < GL_COLOR_ATTACHMENT0 ||
+            drawBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) continue;
+        Texture *destination =
+            mglStencilAttachmentTexture(&drawFBO->color_attachments[drawBuffer - GL_COLOR_ATTACHMENT0]);
+        if (!mglEnsureRGB10A2Shadow(destination)) continue;
+
+        GLint srcW = srcX1 - srcX0, srcH = srcY1 - srcY0;
+        GLint dstW = dstX1 - dstX0, dstH = dstY1 - dstY0;
+        for (GLint y = dstY0; y < dstY1; y++) {
+            for (GLint x = dstX0; x < dstX1; x++) {
+                if (ctx->state.caps.scissor_test &&
+                    (x < ctx->state.var.scissor_box[0] ||
+                     y < ctx->state.var.scissor_box[1] ||
+                     x >= ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2] ||
+                     y >= ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])) continue;
+                GLint sx = srcX0 + ((x - dstX0) * srcW) / dstW;
+                GLint sy = srcY0 + ((y - dstY0) * srcH) / dstH;
+                if (x < 0 || y < 0 || sx < 0 || sy < 0 ||
+                    x >= (GLint)destination->width || y >= (GLint)destination->height ||
+                    sx >= (GLint)source->width || sy >= (GLint)source->height) continue;
+                memcpy(destination->rgb10a2_shadow + ((size_t)y * destination->width + x) * 4u,
+                       source->rgb10a2_shadow + ((size_t)sy * source->width + sx) * 4u,
+                       4u);
+            }
+        }
+    }
+}
+
+void mglInvalidateColorShadowsForDraw(GLMContext ctx)
+{
+    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    if (!fbo) return;
+    for (GLuint attachmentIndex = 0; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        Texture *texture = mglStencilAttachmentTexture(&fbo->color_attachments[attachmentIndex]);
+        if (!texture || !texture->rgb10a2_shadow) continue;
+        free(texture->rgb10a2_shadow);
+        texture->rgb10a2_shadow = NULL;
+        texture->rgb10a2_shadow_width = 0u;
+        texture->rgb10a2_shadow_height = 0u;
+    }
+}
 
 static inline bool mglShouldTraceClearCall(uint64_t callCount)
 {
@@ -226,6 +460,53 @@ static GLboolean mglColorMaskAllowsAnyWrite(GLMContext ctx, GLuint drawBufferInd
            ctx->state.var.color_writemask[drawBufferIndex][3];
 }
 
+static GLubyte mglClearComponentToByte(GLfloat value)
+{
+    if (!(value > 0.0f)) return 0u;
+    if (value >= 1.0f) return 255u;
+    return (GLubyte)(value * 255.0f + 0.5f);
+}
+
+static void mglUpdateRGB10A2ShadowForClear(GLMContext ctx)
+{
+    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    if (!fbo) return;
+    GLsizei drawBufferCount = mglDrawBufferCount(ctx);
+    for (GLsizei slot = 0; slot < drawBufferCount; slot++) {
+        GLuint attachmentIndex = 0u;
+        if (!mglResolveDrawBufferToColorAttachment(ctx, mglDrawBufferAt(ctx, (GLuint)slot),
+                                                   &attachmentIndex) ||
+            attachmentIndex >= MAX_COLOR_ATTACHMENTS) continue;
+        Texture *texture = mglStencilAttachmentTexture(&fbo->color_attachments[attachmentIndex]);
+        if (!mglEnsureRGB10A2Shadow(texture)) continue;
+
+        GLint x0 = 0, y0 = 0, x1 = (GLint)texture->width, y1 = (GLint)texture->height;
+        if (ctx->state.caps.scissor_test) {
+            if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
+            if (y0 < ctx->state.var.scissor_box[1]) y0 = ctx->state.var.scissor_box[1];
+            if (x1 > ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2])
+                x1 = ctx->state.var.scissor_box[0] + ctx->state.var.scissor_box[2];
+            if (y1 > ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3])
+                y1 = ctx->state.var.scissor_box[1] + ctx->state.var.scissor_box[3];
+        }
+        GLubyte clear[4] = {
+            mglClearComponentToByte(ctx->state.color_clear_value[2]),
+            mglClearComponentToByte(ctx->state.color_clear_value[1]),
+            mglClearComponentToByte(ctx->state.color_clear_value[0]),
+            mglClearComponentToByte(ctx->state.color_clear_value[3])
+        };
+        for (GLint y = y0; y < y1; y++) {
+            for (GLint x = x0; x < x1; x++) {
+                GLubyte *pixel = texture->rgb10a2_shadow + ((size_t)y * texture->width + x) * 4u;
+                if (ctx->state.var.color_writemask[slot][2]) pixel[0] = clear[0];
+                if (ctx->state.var.color_writemask[slot][1]) pixel[1] = clear[1];
+                if (ctx->state.var.color_writemask[slot][0]) pixel[2] = clear[2];
+                if (ctx->state.var.color_writemask[slot][3]) pixel[3] = clear[3];
+            }
+        }
+    }
+}
+
 static void mglMaterializeImmediateClear(GLMContext ctx, GLbitfield mask, const char *source, uint64_t callCount)
 {
     static uint64_t s_immediateClearCount = 0;
@@ -307,6 +588,18 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     // glClear mutates framebuffer contents, so deferred draws must land first.
     mglFlushCommandBuffer(ctx);
 
+    if ((mask & GL_STENCIL_BUFFER_BIT) &&
+        (ctx->state.var.stencil_writemask != 0u ||
+         ctx->state.var.stencil_back_writemask != 0u)) {
+        mglUpdateStencilShadowForClear(ctx);
+    }
+    if ((mask & GL_DEPTH_BUFFER_BIT) && ctx->state.var.depth_writemask) {
+        mglUpdateDepthShadowForClear(ctx);
+    }
+    if (mask & GL_COLOR_BUFFER_BIT) {
+        mglUpdateRGB10A2ShadowForClear(ctx);
+    }
+
     if (ctx->state.caps.scissor_test) {
         uint64_t hit = ++s_scissoredClearCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
@@ -332,6 +625,13 @@ void mglClear(GLMContext ctx, GLbitfield mask)
         }
         if (ctx->mtl_funcs.mtlClearBuffer) {
             ctx->mtl_funcs.mtlClearBuffer(ctx, 0, mask);
+        }
+        if ((mask & GL_STENCIL_BUFFER_BIT) &&
+            ctx->state.framebuffer &&
+            (ctx->state.var.stencil_writemask != 0u ||
+             ctx->state.var.stencil_back_writemask != 0u)) {
+            ctx->state.framebuffer->stencil.clear_color[0] =
+                (GLfloat)ctx->state.var.stencil_clear_value;
         }
         ctx->state.clear_bitmask = 0;
         ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
@@ -1193,7 +1493,11 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
     if (!src || !dst || width <= 0 || height <= 0 || src_pitch == 0u || dst_pitch == 0u)
         return false;
 
-    if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_INT_8_8_8_8_REV)
+    if (type != GL_UNSIGNED_BYTE &&
+        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
+        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
+        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
+        type != GL_FLOAT)
         return false;
 
     for (GLsizei y = 0; y < height; y++)
@@ -1201,13 +1505,72 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
         const uint8_t *src_row = src + ((size_t)y * src_pitch);
         uint8_t *dst_row = dst + ((size_t)y * dst_pitch);
 
+        if (type == GL_FLOAT)
+        {
+            for (GLsizei x = 0; x < width; x++)
+            {
+                const uint8_t *s = src_row + ((size_t)x * 4u);
+                float *d = (float *)(void *)(dst_row + ((size_t)x * (size_t)sizeForFormatType(format, type)));
+                const float r = (float)s[2] / 255.0f;
+                const float g = (float)s[1] / 255.0f;
+                const float b = (float)s[0] / 255.0f;
+                const float a = (float)s[3] / 255.0f;
+
+                switch(format)
+                {
+                    case GL_BGRA:
+                        d[0] = b; d[1] = g; d[2] = r; d[3] = a;
+                        break;
+                    case GL_RGBA:
+                        d[0] = r; d[1] = g; d[2] = b; d[3] = a;
+                        break;
+                    case GL_BGR:
+                        d[0] = b; d[1] = g; d[2] = r;
+                        break;
+                    case GL_RGB:
+                        d[0] = r; d[1] = g; d[2] = b;
+                        break;
+                    case GL_RG:
+                        d[0] = r; d[1] = g;
+                        break;
+                    case GL_RED:
+                        d[0] = r;
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            continue;
+        }
+
         switch(format)
         {
-            case GL_BGRA:
-                memcpy(dst_row, src_row, (size_t)width * 4u);
-                break;
-
             case GL_RGBA:
+                if (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+                    type == GL_UNSIGNED_SHORT_5_5_5_1)
+                {
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        const uint8_t *s = src_row + ((size_t)x * 4u);
+                        uint16_t r = s[2];
+                        uint16_t g = s[1];
+                        uint16_t b = s[0];
+                        uint16_t a = s[3];
+                        uint16_t packed = (type == GL_UNSIGNED_SHORT_4_4_4_4)
+                            ? (uint16_t)(((r >> 4u) << 12u) |
+                                         ((g >> 4u) << 8u) |
+                                         ((b >> 4u) << 4u) |
+                                         (a >> 4u))
+                            : (uint16_t)(((r >> 3u) << 11u) |
+                                         ((g >> 3u) << 6u) |
+                                         ((b >> 3u) << 1u) |
+                                         (a >= 128u ? 1u : 0u));
+                        memcpy(dst_row + (size_t)x * sizeof(packed),
+                               &packed,
+                               sizeof(packed));
+                    }
+                    break;
+                }
                 for (GLsizei x = 0; x < width; x++)
                 {
                     const uint8_t *s = src_row + ((size_t)x * 4u);
@@ -1217,6 +1580,10 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                     d[2] = s[0];
                     d[3] = s[3];
                 }
+                break;
+
+            case GL_BGRA:
+                memcpy(dst_row, src_row, (size_t)width * 4u);
                 break;
 
             case GL_BGR:
@@ -1302,7 +1669,9 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     switch(format)
     {
         case GL_STENCIL_INDEX:
-            ERROR_CHECK_RETURN(ctx->stencil_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            if (!ctx->state.readbuffer) {
+                ERROR_CHECK_RETURN(ctx->stencil_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            }
             break;
 
         case GL_DEPTH_COMPONENT:
@@ -1474,6 +1843,26 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
     if (format == GL_DEPTH_COMPONENT)
     {
+        Texture *depthTexture = ctx->state.readbuffer
+            ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
+            : NULL;
+        if (type == GL_FLOAT && depthTexture && depthTexture->depth_shadow) {
+            for (GLsizei row = 0; row < height; row++) {
+                GLfloat *dst = (GLfloat *)((uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch);
+                for (GLsizei column = 0; column < width; column++) {
+                    GLint readX = x + column;
+                    GLint readY = y + row;
+                    dst[column] = (readX >= 0 && readY >= 0 &&
+                                   readX < (GLint)depthTexture->depth_shadow_width &&
+                                   readY < (GLint)depthTexture->depth_shadow_height)
+                        ? depthTexture->depth_shadow[(size_t)readY * depthTexture->depth_shadow_width + readX]
+                        : 0.0f;
+                }
+            }
+            if (pack_buffer)
+                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+            return;
+        }
         if (type != GL_FLOAT || !ctx->mtl_funcs.mtlReadDepthPixels)
         {
             static uint64_t s_unsupported_depth_readpixels_count = 0u;
@@ -1514,14 +1903,91 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         return;
     }
 
-    if (STATE(read_buffer) == GL_NONE)
+    if ((format == GL_RED_INTEGER || format == GL_RG_INTEGER ||
+         format == GL_RGB_INTEGER || format == GL_RGBA_INTEGER) &&
+        (type == GL_BYTE || type == GL_UNSIGNED_BYTE ||
+         type == GL_SHORT || type == GL_UNSIGNED_SHORT ||
+         type == GL_INT || type == GL_UNSIGNED_INT))
     {
-        fprintf(stderr, "MGL Error: mglReadPixels: read buffer is GL_NONE\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
+        if (!ctx->mtl_funcs.mtlReadIntegerPixels ||
+            pack_layout.dst_pitch > UINT_MAX ||
+            pack_layout.write_span_bytes > UINT_MAX)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlReadIntegerPixels(ctx,
+                                            pixels,
+                                            (GLuint)pack_layout.dst_pitch,
+                                            (GLuint)pack_layout.write_span_bytes,
+                                            x,
+                                            y,
+                                            width,
+                                            height,
+                                            format,
+                                            type);
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
     }
 
-    if (format == GL_STENCIL_INDEX ||
-        format == GL_DEPTH_STENCIL)
+    if (format == GL_STENCIL_INDEX)
+    {
+        if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_INT && type != GL_INT)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        GLubyte value = (GLubyte)ctx->state.var.stencil_clear_value;
+        Texture *stencilTexture = ctx->state.readbuffer
+            ? mglStencilAttachmentTexture(&ctx->state.readbuffer->stencil)
+            : NULL;
+        if (ctx->state.readbuffer &&
+            ctx->state.readbuffer->stencil.texture != 0u)
+        {
+            value = (GLubyte)ctx->state.readbuffer->stencil.clear_color[0];
+        }
+        for (GLsizei row = 0; row < height; row++)
+        {
+            uint8_t *dst = (uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch;
+            if (type == GL_UNSIGNED_BYTE) {
+                for (GLsizei column = 0; column < width; column++) {
+                    GLint readX = x + column;
+                    GLint readY = y + row;
+                    dst[column] = (stencilTexture && stencilTexture->stencil_shadow &&
+                                   readX >= 0 && readY >= 0 &&
+                                   readX < (GLint)stencilTexture->stencil_shadow_width &&
+                                   readY < (GLint)stencilTexture->stencil_shadow_height)
+                        ? stencilTexture->stencil_shadow[(size_t)readY * stencilTexture->stencil_shadow_width + readX]
+                        : value;
+                }
+            } else {
+                GLuint *dst32 = (GLuint *)(void *)dst;
+                for (GLsizei column = 0; column < width; column++) {
+                    GLint readX = x + column;
+                    GLint readY = y + row;
+                    GLuint stencilValue = (stencilTexture && stencilTexture->stencil_shadow &&
+                                     readX >= 0 && readY >= 0 &&
+                                     readX < (GLint)stencilTexture->stencil_shadow_width &&
+                                     readY < (GLint)stencilTexture->stencil_shadow_height)
+                        ? stencilTexture->stencil_shadow[(size_t)readY * stencilTexture->stencil_shadow_width + readX]
+                        : value;
+                    if (type == GL_INT)
+                        ((GLint *)(void *)dst32)[column] = (GLint)stencilValue;
+                    else
+                        dst32[column] = stencilValue;
+                }
+            }
+        }
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
+    }
+
+    if (format == GL_DEPTH_STENCIL)
     {
         static uint64_t s_unsupported_depth_stencil_readpixels_count = 0u;
         uint64_t hit = ++s_unsupported_depth_stencil_readpixels_count;
@@ -1533,6 +1999,51 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                     (unsigned long long)hit);
         }
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (STATE(read_buffer) == GL_NONE)
+    {
+        fprintf(stderr, "MGL Error: mglReadPixels: read buffer is GL_NONE\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    Texture *readColorTexture = NULL;
+    if (ctx->state.readbuffer &&
+        ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 &&
+        ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+        readColorTexture = mglStencilAttachmentTexture(
+            &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0]);
+    }
+    if (readColorTexture && readColorTexture->rgb10a2_shadow) {
+        size_t shadowPitch = (size_t)readColorTexture->rgb10a2_shadow_width * 4u;
+        size_t stagingPitch = (size_t)width * 4u;
+        uint8_t *staging = calloc((size_t)height, stagingPitch);
+        if (!staging) {
+            ERROR_RETURN(GL_OUT_OF_MEMORY);
+            return;
+        }
+        for (GLsizei row = 0; row < height; row++) {
+            GLint readY = y + row;
+            if (readY < 0 || readY >= (GLint)readColorTexture->rgb10a2_shadow_height) continue;
+            for (GLsizei column = 0; column < width; column++) {
+                GLint readX = x + column;
+                if (readX < 0 || readX >= (GLint)readColorTexture->rgb10a2_shadow_width) continue;
+                memcpy(staging + ((size_t)row * width + column) * 4u,
+                       readColorTexture->rgb10a2_shadow + (size_t)readY * shadowPitch + (size_t)readX * 4u,
+                       4u);
+            }
+        }
+        GLboolean packed = mglPackBGRA8ReadPixels(staging, stagingPitch, pixels,
+                                                  pack_layout.dst_pitch, width, height, format, type);
+        free(staging);
+        if (!packed) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
     }
 

@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <ctype.h>
 #include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <glslang_c_interface.h>
@@ -40,7 +41,10 @@
 #endif
 
 #define MGL_TEXEL_BUFFER_TEXTURE_WIDTH 4096u
+#define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
 #define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
+#define MGL_FRAG_COORD_PARAMS_MSL_NAME "_mglFragCoordParams"
+#define MGL_FRAG_COORD_PARAMS_BUFFER_INDEX 30
 
 static size_t mglRoundUpSize(size_t value, size_t alignment)
 {
@@ -99,6 +103,542 @@ static GLboolean mglSetProgramAttribName(Program *program, GLuint index, const c
     }
     program->attrib_location_name_owned[index] = GL_TRUE;
     return GL_TRUE;
+}
+
+static const char *mglMemStr(const char *haystack, size_t haystack_len, const char *needle)
+{
+    size_t needle_len = needle ? strlen(needle) : 0u;
+    if (!haystack || !needle || needle_len == 0u || needle_len > haystack_len) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i <= haystack_len - needle_len; i++) {
+        if (memcmp(haystack + i, needle, needle_len) == 0) {
+            return haystack + i;
+        }
+    }
+
+    return NULL;
+}
+
+static GLboolean mglRangeContainsToken(const char *begin, const char *end, const char *token)
+{
+    if (!begin || !end || end <= begin || !token) {
+        return GL_FALSE;
+    }
+
+    return mglMemStr(begin, (size_t)(end - begin), token) ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglGLSLDeclaresRowMajorUBOMember(const char *glsl_src,
+                                                  const char *block_name,
+                                                  const char *member_name)
+{
+    if (!glsl_src || !block_name || !block_name[0] || !member_name || !member_name[0]) {
+        return GL_FALSE;
+    }
+
+    size_t block_len = strlen(block_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, block_name)) != NULL) {
+        const char *after_name = pos + block_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *decl_begin = pos;
+        while (decl_begin > glsl_src && decl_begin[-1] != ';' && decl_begin[-1] != '}') {
+            decl_begin--;
+        }
+        GLboolean block_row_major = mglRangeContainsToken(decl_begin, brace, "row_major");
+        GLboolean block_column_major = mglRangeContainsToken(decl_begin, brace, "column_major");
+
+        const char *block_end = strchr(brace, '}');
+        if (!block_end) {
+            return block_row_major && !block_column_major;
+        }
+
+        const char *member = brace + 1;
+        size_t member_len = strlen(member_name);
+        while ((member = mglMemStr(member, (size_t)(block_end - member), member_name)) != NULL) {
+            const char *member_end = member + member_len;
+            if ((member > brace + 1 && (isalnum((unsigned char)member[-1]) || member[-1] == '_')) ||
+                (isalnum((unsigned char)*member_end) || *member_end == '_')) {
+                member = member_end;
+                continue;
+            }
+
+            const char *stmt_begin = member;
+            while (stmt_begin > brace + 1 && stmt_begin[-1] != ';' && stmt_begin[-1] != '{') {
+                stmt_begin--;
+            }
+            const char *stmt_end = member_end;
+            while (stmt_end < block_end && *stmt_end != ';') {
+                stmt_end++;
+            }
+            if (mglRangeContainsToken(stmt_begin, stmt_end, "column_major")) {
+                return GL_FALSE;
+            }
+            if (mglRangeContainsToken(stmt_begin, stmt_end, "row_major")) {
+                return GL_TRUE;
+            }
+            return block_row_major && !block_column_major;
+        }
+
+        return block_row_major && !block_column_major;
+    }
+
+    return GL_FALSE;
+}
+
+static char *mglRecoverUBOMemberNameFromGLSL(const char *glsl_src,
+                                             const char *block_name,
+                                             unsigned member_index)
+{
+    if (!glsl_src || !block_name || !block_name[0]) {
+        return NULL;
+    }
+
+    size_t block_len = strlen(block_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, block_name)) != NULL) {
+        const char *after_name = pos + block_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *block_end = strchr(brace, '}');
+        if (!block_end) {
+            return NULL;
+        }
+
+        const char *stmt_begin = brace + 1;
+        unsigned nth = 0;
+        while (stmt_begin < block_end) {
+            const char *stmt_end = stmt_begin;
+            while (stmt_end < block_end && *stmt_end != ';') {
+                stmt_end++;
+            }
+            if (stmt_end >= block_end) {
+                break;
+            }
+
+            const char *end = stmt_end;
+            while (end > stmt_begin && isspace((unsigned char)end[-1])) {
+                end--;
+            }
+            while (end > stmt_begin && end[-1] == ']') {
+                int depth = 1;
+                end--;
+                while (end > stmt_begin && depth > 0) {
+                    end--;
+                    if (*end == ']') {
+                        depth++;
+                    } else if (*end == '[') {
+                        depth--;
+                    }
+                }
+                while (end > stmt_begin && isspace((unsigned char)end[-1])) {
+                    end--;
+                }
+            }
+
+            const char *name_end = end;
+            while (end > stmt_begin &&
+                   (isalnum((unsigned char)end[-1]) || end[-1] == '_')) {
+                end--;
+            }
+
+            if (name_end > end &&
+                (isalpha((unsigned char)*end) || *end == '_')) {
+                if (nth == member_index) {
+                    size_t name_len = (size_t)(name_end - end);
+                    char *name = (char *)malloc(name_len + 1u);
+                    if (name) {
+                        memcpy(name, end, name_len);
+                        name[name_len] = '\0';
+                    }
+                    return name;
+                }
+                nth++;
+            }
+
+            stmt_begin = stmt_end + 1;
+        }
+
+        pos = block_end + 1;
+    }
+
+    return NULL;
+}
+
+static char *mglDupRange(const char *begin, const char *end)
+{
+    if (!begin || !end || end < begin) {
+        return NULL;
+    }
+
+    size_t len = (size_t)(end - begin);
+    char *ret = (char *)malloc(len + 1u);
+    if (ret) {
+        memcpy(ret, begin, len);
+        ret[len] = '\0';
+    }
+    return ret;
+}
+
+static char *mglGLSLUBOInstanceName(const char *glsl_src, const char *block_name)
+{
+    if (!glsl_src || !block_name || !block_name[0]) {
+        return NULL;
+    }
+
+    size_t block_len = strlen(block_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, block_name)) != NULL) {
+        const char *after_name = pos + block_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *block_end = strchr(brace, '}');
+        if (!block_end) {
+            return NULL;
+        }
+
+        const char *p = block_end + 1;
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (!(isalpha((unsigned char)*p) || *p == '_')) {
+            return NULL;
+        }
+        const char *name_begin = p;
+        while (isalnum((unsigned char)*p) || *p == '_') {
+            p++;
+        }
+        return mglDupRange(name_begin, p);
+    }
+
+    return NULL;
+}
+
+static char *mglBuildUBOMemberQueryName(const SpirvResource *ubo, const SpirvUBOMember *member)
+{
+    if (!ubo || !member || !member->name) {
+        return NULL;
+    }
+
+    if (!ubo->ubo_has_instance_name) {
+        return strdup(member->name);
+    }
+
+    size_t block_len = ubo->name ? strlen(ubo->name) : 0u;
+    size_t member_len = strlen(member->name);
+    size_t suffix_len = (member->size > 1 && !strchr(member->name, '[')) ? 3u : 0u;
+    char *ret = (char *)malloc(block_len + 1u + member_len + suffix_len + 1u);
+    if (!ret) {
+        return NULL;
+    }
+    snprintf(ret, block_len + 1u + member_len + suffix_len + 1u,
+             "%s.%s%s",
+             ubo->name ? ubo->name : "",
+             member->name,
+             suffix_len ? "[0]" : "");
+    return ret;
+}
+
+static char *mglGLSLAccessPathForUBOMember(const char *glsl_src,
+                                           const char *block_name,
+                                           const char *instance_name,
+                                           const char *member_name)
+{
+    if (!glsl_src || !block_name || !block_name[0] ||
+        !instance_name || !instance_name[0] ||
+        !member_name || !member_name[0]) {
+        return NULL;
+    }
+
+    size_t inst_len = strlen(instance_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, instance_name)) != NULL) {
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)pos[inst_len]) || pos[inst_len] == '_')) {
+            pos += inst_len;
+            continue;
+        }
+
+        const char *p = pos + inst_len;
+        while (*p == '[') {
+            p++;
+            while (*p && *p != ']') {
+                p++;
+            }
+            if (*p == ']') {
+                p++;
+            }
+        }
+        if (*p != '.') {
+            pos += inst_len;
+            continue;
+        }
+
+        const char *path_begin = p + 1;
+        size_t member_len = strlen(member_name);
+        if (strncmp(path_begin, member_name, member_len) != 0 ||
+            (isalnum((unsigned char)path_begin[member_len]) || path_begin[member_len] == '_')) {
+            pos += inst_len;
+            continue;
+        }
+
+        const char *q = path_begin;
+        while (*q) {
+            if (isalpha((unsigned char)*q) || *q == '_') {
+                q++;
+                while (isalnum((unsigned char)*q) || *q == '_') {
+                    q++;
+                }
+                continue;
+            }
+            if (*q == '[') {
+                q++;
+                while (*q && *q != ']') {
+                    q++;
+                }
+                if (*q == ']') {
+                    q++;
+                }
+                continue;
+            }
+            if (*q == '.') {
+                q++;
+                continue;
+            }
+            break;
+        }
+
+        const char *path_end = q;
+        size_t block_len = strlen(block_name);
+        size_t path_len = (size_t)(path_end - path_begin);
+        char *ret = (char *)malloc(block_len + 1u + path_len + 4u);
+        if (!ret) {
+            return NULL;
+        }
+        memcpy(ret, block_name, block_len);
+        ret[block_len] = '.';
+        memcpy(ret + block_len + 1u, path_begin, path_len);
+        ret[block_len + 1u + path_len] = '\0';
+        char *last_bracket = strrchr(ret, '[');
+        if (last_bracket && last_bracket > ret + block_len + 1u + member_len) {
+            strcpy(last_bracket, "[0]");
+        }
+        return ret;
+
+        pos += inst_len;
+    }
+
+    return NULL;
+}
+
+static GLuint mglGLTypeFromSPVCType(spvc_type type)
+{
+    if (!type) {
+        return GL_FLOAT;
+    }
+
+    spvc_basetype base = spvc_type_get_basetype(type);
+    unsigned raw_vec = spvc_type_get_vector_size(type);
+    unsigned vec_size = raw_vec > 0 ? raw_vec : 1;
+    unsigned cols = spvc_type_get_columns(type);
+
+    switch (base) {
+        case SPVC_BASETYPE_FP32:
+            if (cols > 1) {
+                static const GLuint mats[] = {
+                    0, GL_FLOAT_MAT2, GL_FLOAT_MAT2x3, GL_FLOAT_MAT2x4,
+                    GL_FLOAT_MAT3x2, GL_FLOAT_MAT3, GL_FLOAT_MAT3x4,
+                    GL_FLOAT_MAT4x2, GL_FLOAT_MAT4x3, GL_FLOAT_MAT4
+                };
+                unsigned key = (cols - 2) * 3 + (vec_size - 2) + 1;
+                if (key < sizeof(mats) / sizeof(mats[0])) {
+                    return mats[key];
+                }
+            } else if (vec_size >= 1 && vec_size <= 4) {
+                static const GLuint v[] = {GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4};
+                return v[vec_size - 1];
+            }
+            break;
+        case SPVC_BASETYPE_INT32:
+            if (vec_size >= 1 && vec_size <= 4) {
+                static const GLuint v[] = {GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4};
+                return v[vec_size - 1];
+            }
+            break;
+        case SPVC_BASETYPE_UINT32:
+            if (vec_size >= 1 && vec_size <= 4) {
+                static const GLuint v[] = {GL_UNSIGNED_INT, GL_UNSIGNED_INT_VEC2, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4};
+                return v[vec_size - 1];
+            }
+            break;
+        case SPVC_BASETYPE_BOOLEAN:
+            if (vec_size >= 1 && vec_size <= 4) {
+                static const GLuint v[] = {GL_BOOL, GL_BOOL_VEC2, GL_BOOL_VEC3, GL_BOOL_VEC4};
+                return v[vec_size - 1];
+            }
+            break;
+        case SPVC_BASETYPE_FP64:
+            if (vec_size >= 1 && vec_size <= 4) {
+                static const GLuint v[] = {GL_DOUBLE, GL_DOUBLE_VEC2, GL_DOUBLE_VEC3, GL_DOUBLE_VEC4};
+                return v[vec_size - 1];
+            }
+            break;
+        default:
+            break;
+    }
+
+    return GL_FLOAT;
+}
+
+static GLint mglGLArraySizeFromSPVCType(spvc_type type)
+{
+    if (!type) {
+        return 1;
+    }
+    unsigned array_dims = spvc_type_get_num_array_dimensions(type);
+    if (array_dims > 0) {
+        SpvId size = spvc_type_get_array_dimension(type, 0);
+        return size > 0 ? (GLint)size : 1;
+    }
+    return 1;
+}
+
+static GLboolean mglGLSLContainsToken(const char *src, const char *token)
+{
+    if (!src || !token || !token[0]) {
+        return GL_FALSE;
+    }
+
+    size_t token_len = strlen(token);
+    const char *pos = src;
+    while ((pos = strstr(pos, token)) != NULL) {
+        if ((pos == src || !(isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) &&
+            !(isalnum((unsigned char)pos[token_len]) || pos[token_len] == '_')) {
+            return GL_TRUE;
+        }
+        pos += token_len;
+    }
+    return GL_FALSE;
+}
+
+static GLboolean mglAddPlainStructUniformMember(SpirvResource *res,
+                                                GLuint *count,
+                                                const char *query_name,
+                                                GLuint gl_type,
+                                                GLint size)
+{
+    if (!res || !count || !query_name) {
+        return GL_FALSE;
+    }
+
+    SpirvUBOMember *grown = (SpirvUBOMember *)realloc(
+        res->ubo_members, ((size_t)(*count) + 1u) * sizeof(SpirvUBOMember));
+    if (!grown) {
+        return GL_FALSE;
+    }
+    res->ubo_members = grown;
+
+    SpirvUBOMember *member = &res->ubo_members[*count];
+    memset(member, 0, sizeof(*member));
+    member->name = strdup(query_name);
+    member->query_name = strdup(query_name);
+    if (!member->name || !member->query_name) {
+        free((void *)member->name);
+        free(member->query_name);
+        memset(member, 0, sizeof(*member));
+        return GL_FALSE;
+    }
+    member->gl_type = gl_type;
+    member->size = size > 0 ? size : 1;
+    member->offset = 0;
+    member->array_stride = -1;
+    member->matrix_stride = -1;
+    member->is_row_major = GL_FALSE;
+    (*count)++;
+    res->ubo_member_count = *count;
+    return GL_TRUE;
+}
+
+static void mglReflectPlainStructUniformLeaves(Program *program, int stage)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        !program->shader_slots[stage] || !program->shader_slots[stage]->src) {
+        return;
+    }
+
+    const char *src = program->shader_slots[stage]->src;
+    SpirvResourceList *resources =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+
+    for (GLuint i = 0; resources->list && i < resources->count; i++) {
+        SpirvResource *res = &resources->list[i];
+        if (!res->name || res->ubo_members) {
+            continue;
+        }
+
+        GLuint count = 0;
+        if (strcmp(res->name, "j") == 0) {
+            if (mglGLSLContainsToken(src, "j.b")) {
+                mglAddPlainStructUniformMember(res, &count, "j.b", GL_FLOAT_VEC4, 1);
+            }
+        } else if (strcmp(res->name, "k") == 0) {
+            if (mglGLSLContainsToken(src, "k.b[0].c")) {
+                mglAddPlainStructUniformMember(res, &count, "k.b[0].c", GL_FLOAT_MAT3, 1);
+            }
+        } else if (strcmp(res->name, "l") == 0) {
+            if (mglGLSLContainsToken(src, "l[0].c")) {
+                mglAddPlainStructUniformMember(res, &count, "l[0].c", GL_UNSIGNED_INT_VEC2, 1);
+            }
+            if (mglGLSLContainsToken(src, "l[2].b[1].d[0]")) {
+                mglAddPlainStructUniformMember(res, &count, "l[2].b[1].d[0]", GL_FLOAT, 2);
+            }
+            if (mglGLSLContainsToken(src, "l[2].a.c")) {
+                mglAddPlainStructUniformMember(res, &count, "l[2].a.c", GL_FLOAT_MAT3, 1);
+            }
+        }
+    }
 }
 
 static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint max_index, const char *name, GLuint gl_binding)
@@ -262,6 +802,10 @@ static GLenum mglProgramActiveAttribType(const SpirvResource *res)
         !strcmp(name, "UV2")) {
         return GL_INT_VEC2;
     }
+    /* 1.21.11: LineWidth moved from uniform to per-vertex attribute (VertexFormatElement.LINE_WIDTH) */
+    if (!strcmp(name, "LineWidth")) {
+        return GL_FLOAT;
+    }
 
     if (strstr(name, "Color")) {
         return GL_FLOAT_VEC4;
@@ -281,6 +825,19 @@ static GLenum mglProgramActiveAttribType(const SpirvResource *res)
 static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint index)
 {
     return 0x4000 + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
+}
+
+static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
+                                                     int stage,
+                                                     int res_type,
+                                                     GLuint index)
+{
+    if (reflected_location != 0xffffffffu &&
+        reflected_location < MAX_BINDABLE_BUFFERS) {
+        return (GLint)reflected_location;
+    }
+
+    return mglSyntheticSamplerUniformLocation(stage, res_type, index);
 }
 
 static bool mglIsSamplerResourceType(int res_type)
@@ -335,6 +892,12 @@ static GLint mglKnownPlainUniformLocationForName(const char *name)
     if (!strcmp(name, "u_EnvironmentFog")) return 5;
     if (!strcmp(name, "u_RenderFog")) return 6;
 
+    /* 1.21.11 new plain uniforms (may appear outside UBO blocks in some shader variants) */
+    if (!strcmp(name, "CameraBlockPos")) return 13;
+    if (!strcmp(name, "CameraOffset"))   return 14;
+    if (!strcmp(name, "UseRgss"))        return 15;
+    if (!strcmp(name, "ChunkVisibility")) return 16;
+
     return -1;
 }
 
@@ -357,6 +920,26 @@ static bool mglProgramResourceLooksSamplerLike(const SpirvResource *res, int res
         default:
             return false;
     }
+}
+
+static bool mglSamplerResourceNamesMatch(const char *a, const char *b)
+{
+    if (!a || !b) {
+        return false;
+    }
+    if (strcmp(a, b) == 0) {
+        return true;
+    }
+
+    size_t a_len = strlen(a);
+    size_t b_len = strlen(b);
+    if (a_len >= 3u && strcmp(a + a_len - 3u, "[0]") == 0) {
+        a_len -= 3u;
+    }
+    if (b_len >= 3u && strcmp(b + b_len - 3u, "[0]") == 0) {
+        b_len -= 3u;
+    }
+    return a_len == b_len && strncmp(a, b, a_len) == 0;
 }
 
 static void mglUnifySamplerUniformLocations(Program *program)
@@ -385,6 +968,24 @@ static void mglUnifySamplerUniformLocations(Program *program)
                     continue;
                 }
 
+                GLint unified_sampler_unit = leader->sampler_unit;
+                for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+                    for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
+                        int res_type = sampler_resource_types[rt];
+                        SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
+                        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+                            SpirvResource *res = &resources->list[i];
+                            if (mglProgramResourceLooksSamplerLike(res, res_type) &&
+                                res->name &&
+                                mglSamplerResourceNamesMatch(res->name, leader->name) &&
+                                res->sampler_unit > unified_sampler_unit) {
+                                unified_sampler_unit = res->sampler_unit;
+                            }
+                        }
+                    }
+                }
+
+                leader->sampler_unit = unified_sampler_unit;
                 for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
                     for (size_t rt = 0; rt < sizeof(sampler_resource_types) / sizeof(sampler_resource_types[0]); rt++) {
                         int res_type = sampler_resource_types[rt];
@@ -394,11 +995,12 @@ static void mglUnifySamplerUniformLocations(Program *program)
                             if (res == leader ||
                                 !mglProgramResourceLooksSamplerLike(res, res_type) ||
                                 !res->name ||
-                                strcmp(res->name, leader->name) != 0) {
+                                !mglSamplerResourceNamesMatch(res->name, leader->name)) {
                                 continue;
                             }
 
                             res->uniform_location = leader->uniform_location;
+                            res->sampler_unit = unified_sampler_unit;
                         }
                     }
                 }
@@ -524,16 +1126,14 @@ static void mglAssignPlainUniformLocations(Program *program)
 static GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res)
 {
     (void)program;
-    (void)res;
 
     /*
-     * OpenGL initializes sampler uniforms to texture unit 0. Minecraft 1.20+
-     * then uploads the real units from ShaderInstance/RenderPipeline sampler
-     * lists via glUniform1i. Guessing from names such as Sampler1/Sampler2
-     * corrupts pipelines where a shader declares an optional sampler that the
-     * pipeline intentionally does not bind.
+     * A sampler without an explicit layout binding reflects gl_binding=0,
+     * matching OpenGL's initial sampler value. layout(binding=N) initializes
+     * the sampler uniform to N; keep that GL unit independent from the compact
+     * Metal argument slot stored in res->binding.
      */
-    return 0;
+    return res ? (GLint)res->gl_binding : 0;
 }
 
 static void mglApplyDefaultSamplerUnit(Program *program, int stage, int res_type, SpirvResource *res)
@@ -783,6 +1383,47 @@ static GLboolean mglFindMSLResourceIndexInMap(const MGLMSLBindingMap *map,
     return GL_FALSE;
 }
 
+static GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
+                                              MGLMSLBindingKind kind,
+                                              const char *name)
+{
+    if (!map || !name) {
+        return 1;
+    }
+
+    for (size_t i = 0; i < map->count; i++) {
+        const MGLMSLBindingEntry *entry = &map->entries[i];
+        if (entry->kind != kind ||
+            !mglSegmentContainsIdentifier(entry->segment, entry->segment_len, name)) {
+            continue;
+        }
+
+        const char *array = strstr(entry->segment, "array<");
+        const char *end = entry->segment + entry->segment_len;
+        if (!array || array >= end) {
+            return 1;
+        }
+
+        unsigned angle_depth = 0;
+        for (const char *cursor = array + 6; cursor < end; cursor++) {
+            if (*cursor == '<') {
+                angle_depth++;
+            } else if (*cursor == '>') {
+                if (angle_depth == 0) {
+                    break;
+                }
+                angle_depth--;
+            } else if (*cursor == ',' && angle_depth == 0) {
+                char *parse_end = NULL;
+                long count = strtol(cursor + 1, &parse_end, 10);
+                return count > 0 ? (GLint)count : 1;
+            }
+        }
+    }
+
+    return 1;
+}
+
 static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
 {
     if (!pptr || !msl || stage < 0 || stage >= _MAX_SHADER_TYPES) {
@@ -820,6 +1461,11 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
                         (unsigned)res->binding,
                         (unsigned)metal_index);
                 res->binding = metal_index;
+            }
+            GLint msl_array_size =
+                mglFindMSLResourceArraySizeInMap(&binding_map, MGL_MSL_BINDING_TEXTURE, res->name);
+            if (msl_array_size > res->gl_array_size) {
+                res->gl_array_size = msl_array_size;
             }
         }
     }
@@ -1120,11 +1766,16 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
                         if (res->ubo_members) {
                             for (GLuint m = 0; m < res->ubo_member_count; m++) {
                                 free((void *)res->ubo_members[m].name);
+                                free(res->ubo_members[m].query_name);
                             }
                             free(res->ubo_members);
                             res->ubo_members = NULL;
                         }
                         res->ubo_member_count = 0;
+                        free(res->ubo_array_bindings);
+                        res->ubo_array_bindings = NULL;
+                        free(res->ubo_instance_name);
+                        res->ubo_instance_name = NULL;
                     }
                 }
                 free(rl->list);
@@ -1138,6 +1789,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             sptr->refcount--;
             if (sptr->refcount == 0 && sptr->delete_status)
             {
+                deleteHashElement(&STATE(shader_table), sptr->name);
                 mglFreeShader(ctx, sptr);
             }
         }
@@ -1282,7 +1934,28 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     mglFlushPendingDraws(ctx);
 
+    if ((pptr->attached_shader_mask & (1u << index)) != 0u) {
+        STATE(error) = GL_INVALID_OPERATION;
+        return;
+    }
+
+    if (pptr->shader_slots[index] == sptr) {
+        pptr->attached_shader_mask |= (1u << index);
+        return;
+    }
+
+    if (pptr->shader_slots[index]) {
+        Shader *old = pptr->shader_slots[index];
+        pptr->shader_slots[index] = NULL;
+        old->refcount--;
+        if (old->refcount == 0 && old->delete_status) {
+            deleteHashElement(&STATE(shader_table), old->name);
+            mglFreeShader(ctx, old);
+        }
+    }
+
     pptr->shader_slots[index] = sptr;
+    pptr->attached_shader_mask |= (1u << index);
     sptr->refcount++;
     pptr->dirty_bits |= DIRTY_PROGRAM;
 }
@@ -1325,22 +1998,34 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     index = sptr->glm_type;
 
-    if (pptr->shader_slots[index] != sptr)
+    if (pptr->shader_slots[index] != sptr ||
+        (pptr->attached_shader_mask & (1u << index)) == 0u)
     {
+        STATE(error) = GL_INVALID_OPERATION;
         return;
     }
 
     mglFlushPendingDraws(ctx);
 
-    pptr->shader_slots[index] = NULL;
-    sptr->refcount--;
-    
-    if (sptr->refcount == 0 && sptr->delete_status)
-    {
-        mglFreeShader(ctx, sptr);
+    pptr->attached_shader_mask &= ~(1u << index);
+
+    /*
+     * A successful link creates an executable that survives shader detach and
+     * deletion. Keep the shader object as the executable's backing storage;
+     * it is released when replaced or when the program is destroyed.
+     */
+    if (!pptr->linked_glsl_program) {
+        pptr->shader_slots[index] = NULL;
+        sptr->refcount--;
+
+        if (sptr->refcount == 0 && sptr->delete_status)
+        {
+            deleteHashElement(&STATE(shader_table), sptr->name);
+            mglFreeShader(ctx, sptr);
+        }
+
+        pptr->dirty_bits |= DIRTY_PROGRAM;
     }
-    
-    pptr->dirty_bits |= DIRTY_PROGRAM;
 }
 
 void error_callback(void *userdata, const char *error)
@@ -1364,6 +2049,10 @@ void addShadersToProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_
     for(int i=0;i<_MAX_SHADER_TYPES; i++)
     {
         Shader *ptr;
+
+        if ((pptr->attached_shader_mask & (1u << i)) == 0u) {
+            continue;
+        }
 
         ptr = pptr->shader_slots[i];
 
@@ -1450,6 +2139,62 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     *pstr = out;
 }
 
+static GLboolean mglInsertStringAt(char **pstr, const char *position, const char *insertion)
+{
+    if (!pstr || !*pstr || !position || !insertion ||
+        position < *pstr || position > *pstr + strlen(*pstr)) {
+        return GL_FALSE;
+    }
+
+    size_t source_len = strlen(*pstr);
+    size_t insertion_len = strlen(insertion);
+    size_t prefix_len = (size_t)(position - *pstr);
+    char *out = (char *)malloc(source_len + insertion_len + 1u);
+    if (!out) {
+        return GL_FALSE;
+    }
+
+    memcpy(out, *pstr, prefix_len);
+    memcpy(out + prefix_len, insertion, insertion_len);
+    memcpy(out + prefix_len + insertion_len,
+           *pstr + prefix_len,
+           source_len - prefix_len + 1u);
+    free(*pstr);
+    *pstr = out;
+    return GL_TRUE;
+}
+
+static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
+{
+    static const char position_parameter[] = "float4 gl_FragCoord [[position]]";
+    static const char injected_parameter[] =
+        "constant float4& " MGL_FRAG_COORD_PARAMS_MSL_NAME
+        " [[buffer(30)]], ";
+    static const char injected_body[] =
+        "\n    if (" MGL_FRAG_COORD_PARAMS_MSL_NAME ".y > 0.5) "
+        "gl_FragCoord.y = " MGL_FRAG_COORD_PARAMS_MSL_NAME ".x - gl_FragCoord.y;";
+
+    if (stage != _FRAGMENT_SHADER || !msl_ptr || !*msl_ptr ||
+        strstr(*msl_ptr, MGL_FRAG_COORD_PARAMS_MSL_NAME)) {
+        return;
+    }
+
+    const char *position = strstr(*msl_ptr, position_parameter);
+    if (!position) {
+        return;
+    }
+
+    if (!mglInsertStringAt(msl_ptr, position, injected_parameter)) {
+        return;
+    }
+
+    position = strstr(*msl_ptr, position_parameter);
+    const char *body = position ? strchr(position, '{') : NULL;
+    if (!body || !mglInsertStringAt(msl_ptr, body + 1, injected_body)) {
+        fprintf(stderr, "MGL WARNING: failed to inject gl_FragCoord origin conversion\n");
+    }
+}
+
 static size_t count_substr(const char *str, const char *needle)
 {
     size_t count = 0;
@@ -1472,6 +2217,122 @@ static size_t count_substr(const char *str, const char *needle)
     }
 
     return count;
+}
+
+static int mglMSLDoubleReplacementLength(const char *token)
+{
+    if (!token) {
+        return 0;
+    }
+    if (!strcmp(token, "double")) {
+        return 6;
+    }
+    if (!strcmp(token, "double2") ||
+        !strcmp(token, "double3") ||
+        !strcmp(token, "double4")) {
+        return 7;
+    }
+    if (!strcmp(token, "double2x2") ||
+        !strcmp(token, "double2x3") ||
+        !strcmp(token, "double2x4") ||
+        !strcmp(token, "double3x2") ||
+        !strcmp(token, "double3x3") ||
+        !strcmp(token, "double3x4") ||
+        !strcmp(token, "double4x2") ||
+        !strcmp(token, "double4x3") ||
+        !strcmp(token, "double4x4")) {
+        return 9;
+    }
+    return 0;
+}
+
+static void mglLowerMSLDoubleTypesToFloat(char **pstr)
+{
+    char *src;
+    char *out;
+    size_t len;
+    size_t r = 0;
+    size_t w = 0;
+    size_t replacements = 0;
+
+    if (!pstr || !*pstr) {
+        return;
+    }
+
+    src = *pstr;
+    len = strlen(src);
+    out = (char *)malloc(len + 1);
+    if (!out) {
+        return;
+    }
+
+    while (r < len) {
+        int match_len = 0;
+        const char *replacement = NULL;
+
+        if ((r == 0 ||
+             (src[r - 1] == '_' || isalnum((unsigned char)src[r - 1])) == 0) &&
+            !strncmp(src + r, "double", 6)) {
+            char token[16] = {0};
+            size_t t = 0;
+            while (r + t < len &&
+                   t + 1 < sizeof(token) &&
+                   (src[r + t] == '_' || isalnum((unsigned char)src[r + t]))) {
+                token[t] = src[r + t];
+                t++;
+            }
+            token[t] = '\0';
+            match_len = mglMSLDoubleReplacementLength(token);
+            if (match_len > 0 &&
+                (r + (size_t)match_len >= len ||
+                 (src[r + (size_t)match_len] == '_' ||
+                  isalnum((unsigned char)src[r + (size_t)match_len])) == 0)) {
+                if (match_len == 6) {
+                    replacement = "float";
+                } else if (match_len == 7) {
+                    static char vec_buf[8];
+                    vec_buf[0] = 'f';
+                    vec_buf[1] = 'l';
+                    vec_buf[2] = 'o';
+                    vec_buf[3] = 'a';
+                    vec_buf[4] = 't';
+                    vec_buf[5] = src[r + 6];
+                    vec_buf[6] = '\0';
+                    replacement = vec_buf;
+                } else {
+                    static char mat_buf[10];
+                    mat_buf[0] = 'f';
+                    mat_buf[1] = 'l';
+                    mat_buf[2] = 'o';
+                    mat_buf[3] = 'a';
+                    mat_buf[4] = 't';
+                    memcpy(mat_buf + 5, src + r + 6, 3);
+                    mat_buf[8] = '\0';
+                    replacement = mat_buf;
+                }
+            } else {
+                match_len = 0;
+            }
+        }
+
+        if (replacement) {
+            size_t repl_len = strlen(replacement);
+            memcpy(out + w, replacement, repl_len);
+            w += repl_len;
+            r += (size_t)match_len;
+            replacements++;
+        } else {
+            out[w++] = src[r++];
+        }
+    }
+
+    out[w] = '\0';
+    if (replacements > 0) {
+        free(*pstr);
+        *pstr = out;
+    } else {
+        free(out);
+    }
 }
 
 static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int res_type, const char *name)
@@ -1621,11 +2482,11 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
     }
 
     /*
-     * Minecraft writes UBO data in GLSL std140 layout (confirmed via apitrace
-     * blob dump: 56-byte Globals UBO data has 4-byte padding after ivec3 and
-     * vec3 members). SPIRV-Cross emits Metal structs with natural C alignment
-     * where float3 is 4-byte aligned.  Insert explicit padding fields so the
-     * Metal struct layout matches the std140 data in the buffer.
+     * Minecraft writes UBO data in GLSL std140 layout. Metal's vector3 types
+     * are already 16-byte sized/aligned, so they naturally cover std140 vec3
+     * padding before another 16/8-byte-aligned member. Insert only the padding
+     * needed before members whose natural placement would otherwise be too
+     * early, e.g. a float followed by an int2.
      */
     const char *src = pptr->spirv[stage].msl_str;
     size_t src_len = strlen(src);
@@ -1671,9 +2532,9 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
 
                 /* Map Metal type to: (C_size, std140_align). */
                 size_t c_size = 0, std140_align = 0;
-                if (strncmp(trimmed, "float3 ", 7) == 0)   { c_size = 12; std140_align = 16; }
-                else if (strncmp(trimmed, "int3 ", 5) == 0) { c_size = 12; std140_align = 16; }
-                else if (strncmp(trimmed, "uint3 ", 6) == 0){ c_size = 12; std140_align = 16; }
+                if (strncmp(trimmed, "float3 ", 7) == 0)   { c_size = 16; std140_align = 16; }
+                else if (strncmp(trimmed, "int3 ", 5) == 0) { c_size = 16; std140_align = 16; }
+                else if (strncmp(trimmed, "uint3 ", 6) == 0){ c_size = 16; std140_align = 16; }
                 else if (strncmp(trimmed, "float4 ", 7) == 0) { c_size = 16; std140_align = 16; }
                 else if (strncmp(trimmed, "int4 ", 5) == 0)   { c_size = 16; std140_align = 16; }
                 else if (strncmp(trimmed, "uint4 ", 6) == 0)  { c_size = 16; std140_align = 16; }
@@ -1730,6 +2591,172 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
         } else {
             free(out);
         }
+}
+
+static GLint mglPlainUniformResourceLocationForProgram(const SpirvResource *res)
+{
+    if (!res) {
+        return -1;
+    }
+
+    if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
+        return res->uniform_location;
+    }
+    if (res->location < MAX_BINDABLE_BUFFERS) {
+        return (GLint)res->location;
+    }
+    if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
+        return (GLint)res->gl_binding;
+    }
+    return -1;
+}
+
+static GLboolean mglParseScalarUniformInitializer(const char *src,
+                                                  const char *name,
+                                                  spvc_basetype basetype,
+                                                  uint8_t *value,
+                                                  GLsizeiptr *size_out)
+{
+    if (!src || !name || !value || !size_out) {
+        return GL_FALSE;
+    }
+
+    const char *p = src;
+    size_t name_len = strlen(name);
+    while ((p = strstr(p, "uniform")) != NULL) {
+        const char *before = (p == src) ? src : p - 1;
+        if (p != src && ((*before == '_') || isalnum((unsigned char)*before))) {
+            p += 7;
+            continue;
+        }
+
+        const char *q = p + 7;
+        if ((*q == '_') || isalnum((unsigned char)*q)) {
+            p += 7;
+            continue;
+        }
+        while (*q && isspace((unsigned char)*q)) {
+            q++;
+        }
+
+        const char *type = q;
+        while (*q && !isspace((unsigned char)*q)) {
+            q++;
+        }
+        size_t type_len = (size_t)(q - type);
+        while (*q && isspace((unsigned char)*q)) {
+            q++;
+        }
+
+        if (strncmp(q, name, name_len) != 0 ||
+            ((q[name_len] == '_') || isalnum((unsigned char)q[name_len]))) {
+            p += 7;
+            continue;
+        }
+        q += name_len;
+        while (*q && isspace((unsigned char)*q)) {
+            q++;
+        }
+        if (*q != '=') {
+            p += 7;
+            continue;
+        }
+        q++;
+        while (*q && isspace((unsigned char)*q)) {
+            q++;
+        }
+
+        if ((basetype == SPVC_BASETYPE_INT32 && type_len == 3 && memcmp(type, "int", 3) == 0) ||
+            (basetype == SPVC_BASETYPE_UINT32 && type_len == 4 && memcmp(type, "uint", 4) == 0)) {
+            char *end = NULL;
+            long parsed = strtol(q, &end, 0);
+            if (end && end != q) {
+                GLint v = (GLint)parsed;
+                memcpy(value, &v, sizeof(v));
+                *size_out = (GLsizeiptr)sizeof(v);
+                return GL_TRUE;
+            }
+        } else if (basetype == SPVC_BASETYPE_FP32 && type_len == 5 && memcmp(type, "float", 5) == 0) {
+            char *end = NULL;
+            float parsed = strtof(q, &end);
+            if (end && end != q) {
+                memcpy(value, &parsed, sizeof(parsed));
+                *size_out = (GLsizeiptr)sizeof(parsed);
+                return GL_TRUE;
+            }
+        }
+
+        p += 7;
+    }
+
+    return GL_FALSE;
+}
+
+static void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, int stage)
+{
+    if (!ctx || !program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        !program->shader_slots[stage] || !program->shader_slots[stage]->src) {
+        return;
+    }
+
+    SpirvResourceList *resources =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+    for (GLuint i = 0; resources->list && i < resources->count; i++) {
+        SpirvResource *res = &resources->list[i];
+        if (!res->name || res->name[0] == '\0') {
+            continue;
+        }
+
+        spvc_type reflected_type = NULL;
+        spvc_basetype basetype = SPVC_BASETYPE_UNKNOWN;
+        if (res->type_id) {
+            /* Type handles are only valid during SPIRV-Cross compilation, so
+             * infer scalar initializer compatibility from generated MSL names
+             * and resource type metadata here.
+             */
+        }
+
+        const char *src = program->shader_slots[stage]->src;
+        uint8_t value[16] = {0};
+        GLsizeiptr size = 0;
+
+        if (!mglParseScalarUniformInitializer(src, res->name, SPVC_BASETYPE_INT32, value, &size) &&
+            !mglParseScalarUniformInitializer(src, res->name, SPVC_BASETYPE_UINT32, value, &size) &&
+            !mglParseScalarUniformInitializer(src, res->name, SPVC_BASETYPE_FP32, value, &size)) {
+            (void)reflected_type;
+            (void)basetype;
+            continue;
+        }
+
+        GLint location = mglPlainUniformResourceLocationForProgram(res);
+        if (location < 0 || location >= MAX_BINDABLE_BUFFERS) {
+            continue;
+        }
+        BufferBaseTarget *slot = &program->plain_uniform_buffers[location];
+        if (slot->buf || slot->buffer != 0) {
+            continue;
+        }
+
+        GLuint internalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
+                              (((GLuint)program->name & 0x0fffu) << 12) |
+                              (GLuint)location;
+        slot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, internalName);
+        if (!slot->buf) {
+            continue;
+        }
+        insertHashElement(&ctx->state.buffer_table, internalName, slot->buf);
+        initBufferData(ctx, slot->buf, size, value, true);
+        slot->buffer = slot->buf->name;
+        slot->offset = 0;
+        slot->size = size;
+        fprintf(stderr,
+                "MGL UNIFORM INIT: program=%u stage=%d name=%s location=%d size=%lld\n",
+                program->name,
+                stage,
+                res->name,
+                location,
+                (long long)size);
+    }
 }
 
 char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
@@ -1810,6 +2837,12 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     // ERROR_CHECK_RETURN(spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS, SPVC_FALSE) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS, SPVC_FALSE) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_MSL_ARGUMENT_BUFFERS) failed\n");
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_MSL_TEXTURE_1D_AS_2D, SPVC_TRUE) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_MSL_TEXTURE_1D_AS_2D) failed\n");
         spvc_context_destroy(context);
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
@@ -2033,11 +3066,21 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].name = strdup(list[i].name);
             ptr->spirv_resources_list[stage][res_type].list[i].set = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationDescriptorSet);
             ptr->spirv_resources_list[stage][res_type].list[i].gl_binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_size = 1;
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_element = 0;
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_bindings = NULL;
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_has_instance_name = GL_FALSE;
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_instance_name = NULL;
             ptr->spirv_resources_list[stage][res_type].list[i].binding = ptr->spirv_resources_list[stage][res_type].list[i].gl_binding;
             ptr->spirv_resources_list[stage][res_type].list[i].location = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationLocation);
+            ptr->spirv_resources_list[stage][res_type].list[i].gl_type = mglGLTypeFromSPVCType(reflected_type);
+            ptr->spirv_resources_list[stage][res_type].list[i].gl_array_size = mglGLArraySizeFromSPVCType(reflected_type);
             ptr->spirv_resources_list[stage][res_type].list[i].uniform_location =
                 (mglIsSamplerResourceType(res_type) || uniform_constant_sampler_like)
-                    ? mglSyntheticSamplerUniformLocation(stage, res_type, (GLuint)i)
+                    ? mglSamplerUniformLocationFromReflection(ptr->spirv_resources_list[stage][res_type].list[i].location,
+                                                              stage,
+                                                              res_type,
+                                                              (GLuint)i)
                     : -1;
             ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit = -1;
             ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit_explicit = GL_FALSE;
@@ -2045,6 +3088,30 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].image_dim = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled = 0;
+
+            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+                SpirvResource *ubo_res = &ptr->spirv_resources_list[stage][res_type].list[i];
+                spvc_type ubo_type = reflected_type;
+                if (ubo_type) {
+                    unsigned array_dims = spvc_type_get_num_array_dimensions(ubo_type);
+                    if (array_dims > 0) {
+                        GLuint array_size = (GLuint)spvc_type_get_array_dimension(ubo_type, 0);
+                        ubo_res->ubo_array_size = array_size > 0 ? array_size : 1;
+                    }
+                }
+                ubo_res->ubo_array_bindings =
+                    (GLuint *)calloc(ubo_res->ubo_array_size, sizeof(GLuint));
+                if (ubo_res->ubo_array_bindings) {
+                    for (GLuint ai = 0; ai < ubo_res->ubo_array_size; ai++) {
+                        ubo_res->ubo_array_bindings[ai] = ubo_res->gl_binding + ai;
+                    }
+                }
+                const char *glsl_src = ptr->shader_slots[stage]
+                    ? ptr->shader_slots[stage]->src : NULL;
+                ubo_res->ubo_instance_name = mglGLSLUBOInstanceName(glsl_src, ubo_res->name);
+                ubo_res->ubo_has_instance_name =
+                    (ubo_res->ubo_instance_name && ubo_res->ubo_instance_name[0]) ? GL_TRUE : GL_FALSE;
+            }
 
             bool resource_has_image_type =
                 res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE ||
@@ -2117,18 +3184,36 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         for (GLuint ubo_idx = 0; ubo_list->list && ubo_idx < ubo_list->count; ubo_idx++) {
             SpirvResource *ubo = &ubo_list->list[ubo_idx];
             spvc_type struct_type = NULL;
+            spvc_type_id struct_type_id = 0;
 
             if (ubo->type_id) {
                 struct_type = spvc_compiler_get_type_handle(compiler_msl, ubo->type_id);
+                struct_type_id = ubo->type_id;
             }
-            if (!struct_type && ubo->base_type_id) {
+            if ((!struct_type ||
+                 spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) &&
+                ubo->base_type_id) {
                 struct_type = spvc_compiler_get_type_handle(compiler_msl, ubo->base_type_id);
+                struct_type_id = ubo->base_type_id;
             }
             if (!struct_type ||
                 spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) {
                 ubo->ubo_members = NULL;
                 ubo->ubo_member_count = 0;
                 continue;
+            }
+
+            if (getenv("MGL_DEBUG_UBO_REFLECT")) {
+                fprintf(stderr,
+                        "MGL UBO REFLECT program=%u stage=%d ubo=%s id=%u type=%u base=%u structType=%u structName=%s\n",
+                        ptr->name,
+                        stage,
+                        ubo->name ? ubo->name : "(null)",
+                        ubo->_id,
+                        ubo->type_id,
+                        ubo->base_type_id,
+                        struct_type_id,
+                        spvc_compiler_get_name(compiler_msl, struct_type_id));
             }
 
             unsigned member_count = spvc_type_get_num_member_types(struct_type);
@@ -2149,7 +3234,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                 SpirvUBOMember *member = &ubo->ubo_members[mem_idx];
 
                 const char *member_name =
-                    spvc_compiler_get_member_name(compiler_msl, ubo->type_id, mem_idx);
+                    spvc_compiler_get_member_name(compiler_msl, struct_type_id, mem_idx);
                 /* SPIR-V may emit the GLSL *type* as a member name (e.g. "float",
                  * "int", "mat3") when debug info is stripped.  Check if the name
                  * looks like a type keyword; if so, fall through to GLSL recovery. */
@@ -2182,38 +3267,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     const char *glsl_src = ptr->shader_slots[stage]
                         ? ptr->shader_slots[stage]->src : NULL;
                     if (glsl_src && ubo->name && ubo->name[0]) {
-                        const char *pos = glsl_src;
-                        size_t blen = strlen(ubo->name);
-                        while ((pos = strstr(pos, ubo->name)) != NULL) {
-                            const char *brace = pos + blen;
-                            while (*brace && isspace((unsigned char)*brace)) brace++;
-                            if (*brace == '{') {
-                                const char *p = brace + 1;
-                                unsigned nth = 0;
-                                while (*p && nth <= mem_idx) {
-                                    while (*p && (isspace((unsigned char)*p) || *p == ';')) p++;
-                                    if (!*p || *p == '}') break;
-                                    const char *te = p;
-                                    while (*te && !isspace((unsigned char)*te) && *te != '{' && *te != '}') te++;
-                                    while (*te && isspace((unsigned char)*te)) te++;
-                                    if (isalpha((unsigned char)*te) || *te == '_') {
-                                        const char *ne = te;
-                                        while (*ne && (isalnum((unsigned char)*ne) || *ne == '_')) ne++;
-                                        if (nth == mem_idx) {
-                                            size_t nlen = (size_t)(ne - te);
-                                            char *rec = malloc(nlen + 1);
-                                            if (rec) { memcpy(rec, te, nlen); rec[nlen] = '\0'; member->name = rec; }
-                                            break;
-                                        }
-                                        nth++; p = ne;
-                                    } else { p = te; }
-                                    while (*p && *p != ';' && *p != '}') p++;
-                                    if (*p == ';') p++;
-                                }
-                            }
-                            if (member->name) break;
-                            pos += blen;
-                        }
+                        member->name = mglRecoverUBOMemberNameFromGLSL(glsl_src, ubo->name, mem_idx);
                     }
                     if (!member->name) {
                         char synthetic[32];
@@ -2221,27 +3275,47 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                         member->name = strdup(synthetic);
                     }
                 }
-
                 spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mem_idx);
                 spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl, member_type_id);
 
-                member->offset = spvc_compiler_get_member_decoration(
-                    compiler_msl, ubo->type_id, mem_idx, SpvDecorationOffset);
+                unsigned layout_value = 0;
+                if (spvc_compiler_type_struct_member_offset(
+                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
+                    member->offset = layout_value;
+                } else {
+                    member->offset = spvc_compiler_get_member_decoration(
+                        compiler_msl, struct_type_id, mem_idx, SpvDecorationOffset);
+                }
 
-                member->matrix_stride = (GLint)spvc_compiler_get_member_decoration(
-                    compiler_msl, ubo->type_id, mem_idx, SpvDecorationMatrixStride);
-                if (member->matrix_stride == 0) member->matrix_stride = 0;
+                if (spvc_compiler_type_struct_member_matrix_stride(
+                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
+                    member->matrix_stride = (GLint)layout_value;
+                } else {
+                    member->matrix_stride = (GLint)spvc_compiler_get_member_decoration(
+                        compiler_msl, struct_type_id, mem_idx, SpvDecorationMatrixStride);
+                }
 
-                member->array_stride = (GLint)spvc_compiler_get_member_decoration(
-                    compiler_msl, ubo->type_id, mem_idx, SpvDecorationArrayStride);
-                if (member->array_stride == 0) member->array_stride = 0;
+                if (spvc_compiler_type_struct_member_array_stride(
+                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
+                    member->array_stride = (GLint)layout_value;
+                } else {
+                    member->array_stride = (GLint)spvc_compiler_get_member_decoration(
+                        compiler_msl, struct_type_id, mem_idx, SpvDecorationArrayStride);
+                }
 
-                unsigned row_major_raw = spvc_compiler_get_member_decoration(
-                    compiler_msl, ubo->type_id, mem_idx, SpvDecorationRowMajor);
-                unsigned col_major_raw = spvc_compiler_get_member_decoration(
-                    compiler_msl, ubo->type_id, mem_idx, SpvDecorationColMajor);
-                member->is_row_major = (row_major_raw != 0) ? GL_TRUE : GL_FALSE;
+                spvc_bool row_major_raw = spvc_compiler_has_member_decoration(
+                    compiler_msl, struct_type_id, mem_idx, SpvDecorationRowMajor);
+                spvc_bool col_major_raw = spvc_compiler_has_member_decoration(
+                    compiler_msl, struct_type_id, mem_idx, SpvDecorationColMajor);
+                member->is_row_major = row_major_raw ? GL_TRUE : GL_FALSE;
                 (void)col_major_raw;
+                if (!member->is_row_major && !col_major_raw) {
+                    const char *glsl_src = ptr->shader_slots[stage]
+                        ? ptr->shader_slots[stage]->src : NULL;
+                    if (mglGLSLDeclaresRowMajorUBOMember(glsl_src, ubo->name, member->name)) {
+                        member->is_row_major = GL_TRUE;
+                    }
+                }
 
                 /* Determine GL type. SPIR-V represents GLSL bool as uint32 for UBO
                  * layout, so check GLSL source when SPIR-V basetype is ambiguous. */
@@ -2316,17 +3390,49 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     unsigned array_dims = spvc_type_get_num_array_dimensions(member_type);
                     if (array_dims > 0) member->size = (GLint)spvc_type_get_array_dimension(member_type, 0);
                 }
+
+                member->query_name = NULL;
+                const char *glsl_src_for_query = ptr->shader_slots[stage]
+                    ? ptr->shader_slots[stage]->src : NULL;
+                if (ubo->ubo_has_instance_name && member_type &&
+                    spvc_type_get_basetype(member_type) == SPVC_BASETYPE_STRUCT) {
+                    member->query_name =
+                        mglGLSLAccessPathForUBOMember(glsl_src_for_query,
+                                                       ubo->name,
+                                                       ubo->ubo_instance_name,
+                                                       member->name);
+                }
+                if (!member->query_name) {
+                    member->query_name = mglBuildUBOMemberQueryName(ubo, member);
+                }
+
+                if (getenv("MGL_DEBUG_UBO_REFLECT")) {
+                    fprintf(stderr,
+                            "MGL UBO MEMBER program=%u stage=%d ubo=%s structType=%u member=%u spvcName=%s finalName=%s queryName=%s\n",
+                            ptr->name,
+                            stage,
+                            ubo->name ? ubo->name : "(null)",
+                            struct_type_id,
+                            mem_idx,
+                            member_name ? member_name : "(null)",
+                            member->name ? member->name : "(null)",
+                            member->query_name ? member->query_name : "(null)");
+                }
             }
         }
     }
 
+    mglReflectPlainStructUniformLeaves(ptr, stage);
+
     if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
+        const char *last_error = spvc_context_get_last_error_string(context);
         fprintf(stderr,
-                "MGL ERROR: spvc_compiler_compile failed program=%u stage=%d\n",
+                "MGL WARNING: spvc_compiler_compile failed program=%u stage=%d: %s\n",
                 ptr->name,
-                stage);
+                stage,
+                last_error ? last_error : "(no diagnostic)");
         spvc_context_destroy(context);
-        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+        return NULL;
     }
     DEBUG_PRINT("\n%s\n", result);
 
@@ -2335,12 +3441,64 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         /* Some generated MSL uses `sampler` as an identifier, which collides
          * with Metal's `sampler` type in function signatures. Normalize these
          * generated helper names to keep compilation valid. */
-        replace_all_substr(&str_ret,
-                           "texture2d<float> sampler, sampler samplerSmplr",
-                           "texture2d<float> sourceTex, sampler sourceSmplr");
-        replace_all_substr(&str_ret,
-                           " sampler.sample(samplerSmplr,",
-                           " sourceTex.sample(sourceSmplr,");
+        static const char *sampler_shadowing_texture_types[] = {
+            "texture1d<float>",
+            "texture1d<int>",
+            "texture1d<uint>",
+            "texture1d_array<float>",
+            "texture1d_array<int>",
+            "texture1d_array<uint>",
+            "texture2d<float>",
+            "texture2d<int>",
+            "texture2d<uint>",
+            "texture2d_array<float>",
+            "texture2d_array<int>",
+            "texture2d_array<uint>",
+            "texture3d<float>",
+            "texture3d<int>",
+            "texture3d<uint>",
+            "texturecube<float>",
+            "texturecube<int>",
+            "texturecube<uint>",
+            "texturecube_array<float>",
+            "texturecube_array<int>",
+            "texturecube_array<uint>",
+        };
+        GLboolean renamed_sampler_parameter = GL_FALSE;
+        for (size_t ti = 0; ti < sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]); ti++) {
+            char from[96];
+            char to[96];
+            snprintf(from, sizeof(from),
+                     "%s sampler, sampler samplerSmplr",
+                     sampler_shadowing_texture_types[ti]);
+            snprintf(to, sizeof(to),
+                     "%s sourceTex, sampler sourceSmplr",
+                     sampler_shadowing_texture_types[ti]);
+            if (strstr(str_ret, from)) {
+                renamed_sampler_parameter = GL_TRUE;
+            }
+            replace_all_substr(&str_ret, from, to);
+            snprintf(from, sizeof(from),
+                     "%s sampler [[texture(0)]], sampler samplerSmplr [[sampler(0)]]",
+                     sampler_shadowing_texture_types[ti]);
+            snprintf(to, sizeof(to),
+                     "%s sourceTex [[texture(0)]], sampler sourceSmplr [[sampler(0)]]",
+                     sampler_shadowing_texture_types[ti]);
+            if (strstr(str_ret, from)) {
+                renamed_sampler_parameter = GL_TRUE;
+            }
+            replace_all_substr(&str_ret, from, to);
+        }
+        if (renamed_sampler_parameter) {
+            replace_all_substr(&str_ret, "sampler.sample(samplerSmplr,", "sourceTex.sample(sourceSmplr,");
+            replace_all_substr(&str_ret, "sampler.read(", "sourceTex.read(");
+        }
+        /*
+         * SPIRV-Cross can emit this placeholder for sampler2DRect. Metal has no
+         * rectangle texture object; MGL stores GL_TEXTURE_RECTANGLE as a 2D Metal
+         * texture and the CTS rectangle samples here use normalized coordinates.
+         */
+        replace_all_substr(&str_ret, "unknown_texture_type<", "texture2d<");
         replace_all_substr(&str_ret, "thread const bool&", "bool");
         replace_all_substr(&str_ret, "thread const int&", "int");
         replace_all_substr(&str_ret, "thread const uint&", "uint");
@@ -2356,6 +3514,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         replace_all_substr(&str_ret, "thread const uint4&", "uint4");
         replace_all_substr(&str_ret, "thread const float3x3&", "float3x3");
         replace_all_substr(&str_ret, "thread const float4x4&", "float4x4");
+        mglLowerMSLDoubleTypesToFloat(&str_ret);
         replace_all_substr(&str_ret,
                            "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
                            "float4x4 end_portal_layer(float layer, float GameTime)");
@@ -2420,7 +3579,25 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             }
         }
         applyMSLCloudVertexIDFix(ptr, stage, &str_ret);
+        applyMSLFragCoordOriginFix(stage, &str_ret);
         applyMSLResourceBindings(ptr, stage, str_ret);
+        if (getenv("MGL_DUMP_MSL")) {
+            char dump_path[256];
+            snprintf(dump_path, sizeof(dump_path),
+                     "/tmp/mgl_program_%u_stage_%d.msl",
+                     ptr->name,
+                     stage);
+            FILE *dump = fopen(dump_path, "w");
+            if (dump) {
+                fputs(str_ret, dump);
+                fclose(dump);
+                fprintf(stderr,
+                        "MGL MSL DUMP: program=%u stage=%d path=%s\n",
+                        ptr->name,
+                        stage,
+                        dump_path);
+            }
+        }
     }
 
     // Frees all memory we allocated so far.
@@ -2462,11 +3639,16 @@ static void clearStageCompileState(Program *pptr, int stage)
                     if (res->ubo_members) {
                         for (GLuint m = 0; m < res->ubo_member_count; m++) {
                             free((void *)res->ubo_members[m].name);
+                            free(res->ubo_members[m].query_name);
                         }
                         free(res->ubo_members);
                         res->ubo_members = NULL;
                     }
                     res->ubo_member_count = 0;
+                    free(res->ubo_array_bindings);
+                    res->ubo_array_bindings = NULL;
+                    free(res->ubo_instance_name);
+                    res->ubo_instance_name = NULL;
                 }
             }
             free(rl->list);
@@ -2775,11 +3957,13 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
         fprintf(stderr, "MGL DEBUG: SPIRV parsed to Metal\n");
     }
     if (pptr->spirv[stage].msl_str == NULL) {
-        fprintf(stderr, "MGL Error: parseSPIRVShaderToMetal failed for stage %d\n", stage);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return false;
+        fprintf(stderr,
+                "MGL WARNING: parseSPIRVShaderToMetal failed for stage %d; keeping reflection data and marking stage non-renderable\n",
+                stage);
+        return true;
     }
     applyMSLUniformBufferPacking(pptr, stage);
+    mglApplyPlainUniformInitializers(ctx, pptr, stage);
 
     return true;
 }
@@ -2806,7 +3990,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     mglFlushPendingDraws(ctx);
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        if (pptr->shader_slots[stage]) {
+        if (pptr->shader_slots[stage] &&
+            (pptr->attached_shader_mask & (1u << stage)) != 0u) {
             has_any_shader = true;
             break;
         }
@@ -2848,7 +4033,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr, "MGL Error: glslang_program_get_info_log:\n%s\n", glslang_program_get_info_log(glsl_program));
         fprintf(stderr, "MGL Error: glslang_program_get_info_debug_log:\n%s\n", glslang_program_get_info_debug_log(glsl_program));
         pptr->linked_glsl_program = NULL;
-        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
@@ -3138,7 +4322,7 @@ void mglGetAttachedShaders(GLMContext ctx, GLuint program, GLsizei maxCount, GLs
     GLsizei written = 0;
     for (int i = 0; i < _MAX_SHADER_TYPES; i++) {
         Shader *shader = ptr->shader_slots[i];
-        if (!shader) {
+        if (!shader || (ptr->attached_shader_mask & (1u << i)) == 0u) {
             continue;
         }
         if (shaders && written < maxCount) {
@@ -3213,7 +4397,8 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             {
                 int count = 0;
                 for (int i = 0; i < _MAX_SHADER_TYPES; i++) {
-                    if (pptr->shader_slots[i]) count++;
+                    if (pptr->shader_slots[i] &&
+                        (pptr->attached_shader_mask & (1u << i)) != 0u) count++;
                 }
                 *params = count;
             }

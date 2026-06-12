@@ -148,7 +148,10 @@ void mglGenSamplers(GLMContext ctx, GLsizei count, GLuint *samplers)
 
     while(count--)
     {
-        *samplers++ = getNewName(&ctx->state.sampler_table);
+        GLuint name = getNewName(&ctx->state.sampler_table);
+        if (!getSampler(ctx, name))
+            return;
+        *samplers++ = name;
     }
 }
 
@@ -265,18 +268,27 @@ void mglCreateSamplers(GLMContext ctx, GLsizei n, GLuint *samplers)
 
 void mglBindSamplers(GLMContext ctx, GLuint first, GLsizei count, const GLuint *samplers)
 {
-    if (!ctx || count < 0)
-    {
-        if (ctx && count < 0)
-            ERROR_RETURN(GL_INVALID_VALUE);
+    if (!ctx) {
         return;
     }
 
-    while(count--)
+    if (count < 0 ||
+        first > STATE_VAR(max_combined_texture_image_units) ||
+        (GLuint)count > STATE_VAR(max_combined_texture_image_units) - first ||
+        first > TEXTURE_UNITS ||
+        (GLuint)count > TEXTURE_UNITS - first) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    for (GLsizei i = 0; i < count; i++)
     {
-        GLuint sampler = samplers ? *samplers++ : 0;
-        mglBindSampler(ctx, first, sampler);
-        first++;
+        GLuint sampler = samplers ? samplers[i] : 0u;
+        if (sampler && !isSampler(ctx, sampler)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            continue;
+        }
+        mglBindSampler(ctx, first + (GLuint)i, sampler);
     }
 }
 
@@ -509,6 +521,13 @@ void mglGetSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, GLfl
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
+    if (pname == GL_TEXTURE_BORDER_COLOR)
+    {
+        for (int i = 0; i < 4; ++i)
+            params[i] = ptr->params.border_color[i];
+        return;
+    }
+
     GLint iparam;
     iparam = 0;
 
@@ -534,6 +553,13 @@ void mglGetSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, GLin
 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+
+    if (pname == GL_TEXTURE_BORDER_COLOR)
+    {
+        for (int i = 0; i < 4; ++i)
+            params[i] = (GLint)ptr->params.border_color[i];
+        return;
+    }
 
     GLfloat fparam;
     fparam = 0.0;

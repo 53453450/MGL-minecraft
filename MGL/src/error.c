@@ -52,6 +52,12 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
     if (!func || error != GL_INVALID_OPERATION)
         return 0;
 
+    /* Public texture-buffer entry points have required error semantics. */
+    if (strcmp(func, "mglTextureBuffer") == 0 ||
+        strcmp(func, "mglTextureBufferRange") == 0 ||
+        strcmp(func, "mglTextureBufferRangeImpl") == 0)
+        return 0;
+
     /* Minecraft startup performs a lot of texture probing/update patterns.
      * Treat transient INVALID_OPERATION from texture paths as non-fatal
      * compatibility warnings so createTexture() does not abort startup. */

@@ -650,6 +650,11 @@ void glVertexAttribDivisor(GLuint index, GLuint divisor)
 	ctx->dispatch.vertex_attrib_divisor(ctx, index, divisor);
 }
 
+void glVertexAttribDivisorARB(GLuint index, GLuint divisor)
+{
+	glVertexAttribDivisor(index, divisor);
+}
+
 void glBindTransformFeedback(GLenum target, GLuint id)
 {
 	GLMContext ctx = GET_CONTEXT();

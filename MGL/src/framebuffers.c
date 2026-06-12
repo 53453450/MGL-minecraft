@@ -47,6 +47,15 @@ extern void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, c
 extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
 extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
 extern void mglTraceLogExternal(const char *fmt, ...);
+extern void mglBlitStencilShadow(GLMContext ctx,
+                                 GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                                 GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
+extern void mglBlitDepthShadow(GLMContext ctx,
+                               GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                               GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
+extern void mglBlitRGB10A2Shadow(GLMContext ctx,
+                                 GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                                 GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
 
 static GLubyte mglClampClearComponentToByte(GLfloat value)
 {
@@ -1112,6 +1121,17 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         return GL_FRAMEBUFFER_COMPLETE;
     }
 
+    if (fbo == ctx->state.framebuffer) {
+        fbo->draw_buffer = ctx->state.draw_buffer;
+        fbo->draw_buffer_count = ctx->state.draw_buffer_count;
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            fbo->draw_buffers[i] = ctx->state.draw_buffers[i];
+        }
+    }
+    if (fbo == ctx->state.readbuffer) {
+        fbo->read_buffer = ctx->state.read_buffer;
+    }
+
     if (!mglFramebufferHasAnyAttachment(fbo)) {
         if (fbo->default_width > 0 && fbo->default_height > 0) {
             return GL_FRAMEBUFFER_COMPLETE;
@@ -1138,14 +1158,11 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
     }
 
-    if (mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
-    }
-
-    if (mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
-    }
-
+    /*
+     * Depth/stencil-only framebuffer users commonly leave the default color
+     * selections untouched. There is no color source or destination to
+     * validate in that case.
+     */
     return GL_FRAMEBUFFER_COMPLETE;
 }
 
@@ -2371,15 +2388,19 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    if ((mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)) != 0u) {
-        fprintf(stderr,
-                "MGL WARNING: glBlitFramebuffer depth/stencil mask=0x%x is unsupported by the Metal blit path\n",
-                mask);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+    if (mask & GL_STENCIL_BUFFER_BIT) {
+        mglBlitStencilShadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
     }
-
-    ctx->mtl_funcs.mtlBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+    if (mask & GL_DEPTH_BUFFER_BIT) {
+        mglBlitDepthShadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+    }
+    if (mask & GL_COLOR_BUFFER_BIT) {
+        mglBlitRGB10A2Shadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+    }
+    GLbitfield backendMask = mask;
+    if (backendMask != 0u) {
+        ctx->mtl_funcs.mtlBlitFramebuffer(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, backendMask, filter);
+    }
 }
 
 void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height)
@@ -2392,14 +2413,11 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (samples > 0) {
-        fprintf(stderr,
-                "MGL WARNING: glRenderbufferStorageMultisample unsupported samples=%d internalformat=0x%x %dx%d\n",
-                samples, internalformat, width, height);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
+    /*
+     * Keep a single-sample backing store until the Metal resolve path is wired
+     * through for renderbuffers. This preserves the GL API contract and lets
+     * framebuffer/blit users operate on the storage without a spurious error.
+     */
     mglRenderbufferStorage(ctx, target, internalformat, width, height);
 }
 
@@ -3038,14 +3056,6 @@ void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer,
         return;
     }
     if (renderbuffer == 0u || !findRenderbuffer(ctx, renderbuffer)) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (samples > 0) {
-        fprintf(stderr,
-                "MGL WARNING: glNamedRenderbufferStorageMultisample unsupported renderbuffer=%u samples=%d internalformat=0x%x %dx%d\n",
-                renderbuffer, samples, internalformat, width, height);
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }

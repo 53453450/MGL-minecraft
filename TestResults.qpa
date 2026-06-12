@@ -1,0 +1,7 @@
+#sessionInfo releaseName vulkan-cts-1.4.6.0-139-g1ac9ff38661d5b4ec9fbd9591cb9b78e1e46f122
+#sessionInfo releaseId 0x1ac9ff38
+#sessionInfo targetName "MGL"
+#sessionInfo logFormatVersion "0.3.4"
+#sessionInfo commandLineParameters "--deqp-runmode=stdout-caselist --deqp-case=KHR-GL46.* --deqp-surface-type=fbo --deqp-visibility=hidden"
+
+#beginSession

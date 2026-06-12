@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 #include <stdint.h>
@@ -371,6 +372,20 @@ static GLint mglKnownPlainUniformLocation(const char *name)
         return 6;
     }
 
+    /* 1.21.11 new plain uniforms */
+    if (mglSafeCStringEquals(name, "CameraBlockPos")) {
+        return 13;
+    }
+    if (mglSafeCStringEquals(name, "CameraOffset")) {
+        return 14;
+    }
+    if (mglSafeCStringEquals(name, "UseRgss")) {
+        return 15;
+    }
+    if (mglSafeCStringEquals(name, "ChunkVisibility")) {
+        return 16;
+    }
+
     return -1;
 }
 
@@ -451,6 +466,47 @@ static GLboolean mglActiveUniformNamesMatch(const char *resource_name, const cha
     return GL_FALSE;
 }
 
+static GLboolean mglActiveUniformBlockMemberNamesMatch(const char *block_name,
+                                                       const char *member_name,
+                                                       const char *member_query_name,
+                                                       const char *query_name)
+{
+    size_t block_len = 0u;
+    size_t member_query_len = 0u;
+    size_t query_len = 0u;
+
+    if (mglActiveUniformNamesMatch(member_name, query_name) ||
+        mglActiveUniformNamesMatch(member_query_name, query_name)) {
+        return GL_TRUE;
+    }
+
+    if (mglSafeCStringLength(member_query_name, &member_query_len) &&
+        mglSafeCStringLength(query_name, &query_len) &&
+        member_query_len == query_len + 3u &&
+        member_query_name[query_len] == '[' &&
+        member_query_name[query_len + 1u] == '0' &&
+        member_query_name[query_len + 2u] == ']' &&
+        memcmp(member_query_name, query_name, query_len) == 0) {
+        return GL_TRUE;
+    }
+
+    {
+        if (!mglSafeCStringLength(block_name, &block_len) ||
+            !mglSafeCStringLength(member_name, NULL) ||
+            !mglSafeCStringLength(query_name, &query_len)) {
+            return GL_FALSE;
+        }
+
+        if (query_len <= block_len + 1u ||
+            query_name[block_len] != '.' ||
+            memcmp(query_name, block_name, block_len) != 0) {
+            return GL_FALSE;
+        }
+
+        return mglActiveUniformNamesMatch(member_name, query_name + block_len + 1u);
+    }
+}
+
 static GLboolean mglActiveUniformNameSeenBefore(Program *program,
                                                 GLint target_type_ordinal,
                                                 int target_stage,
@@ -520,6 +576,25 @@ SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *st
                 res->ubo_member = NULL;
                 if (!mglActiveUniformResourceHasName(res) ||
                     mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (res->ubo_members && res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (!res->ubo_members[mem_i].query_name) {
+                            continue;
+                        }
+                        if (ordinal == index) {
+                            if (stage_out) {
+                                *stage_out = stage;
+                            }
+                            if (res_type_out) {
+                                *res_type_out = res_type;
+                            }
+                            res->ubo_member = &res->ubo_members[mem_i];
+                            return res;
+                        }
+                        ordinal++;
+                    }
                     continue;
                 }
                 if (ordinal == index) {
@@ -604,9 +679,27 @@ GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name)
 
     GLint count = mglProgramActiveUniformCount(program);
     for (GLint i = 0; i < count; i++) {
-        SpirvResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, NULL);
-        const char *uniform_name = res ? (res->ubo_member ? res->ubo_member->name : res->name) : NULL;
-        if (res && mglActiveUniformNamesMatch(uniform_name, name)) {
+        int res_type = -1;
+        SpirvResource *res = mglProgramActiveUniformAt(program, (GLuint)i, NULL, &res_type);
+        if (!res) {
+            continue;
+        }
+        if (res->ubo_member) {
+            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+                if (mglActiveUniformNamesMatch(res->ubo_member->query_name, name)) {
+                    return i;
+                }
+                continue;
+            }
+            if (mglActiveUniformBlockMemberNamesMatch(res->name,
+                                                      res->ubo_member->name,
+                                                      res->ubo_member->query_name,
+                                                      name)) {
+                return i;
+            }
+            continue;
+        }
+        if (mglActiveUniformNamesMatch(res->name, name)) {
             return i;
         }
     }
@@ -688,19 +781,25 @@ GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type)
     if (sampler_type != 0) {
         return sampler_type;
     }
+    if (res && res->gl_type != 0) {
+        return (GLint)res->gl_type;
+    }
     return mglKnownPlainUniformType(res ? res->name : NULL);
 }
 
 GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type)
 {
-    (void)res;
     (void)res_type;
+    if (res && res->gl_array_size > 0) {
+        return res->gl_array_size;
+    }
     return 1;
 }
 
 GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res)
 {
     size_t len = 0u;
+    GLsizei extra = 0;
     const char *name = NULL;
 
     if (!res) {
@@ -709,7 +808,7 @@ GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res)
 
     /* UBO member uniforms carry their name on the ubo_member sub-struct. */
     if (res->ubo_member) {
-        name = res->ubo_member->name;
+        name = res->ubo_member->query_name ? res->ubo_member->query_name : res->ubo_member->name;
     } else {
         name = res->name;
     }
@@ -717,7 +816,10 @@ GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res)
     if (!name || !mglSafeCStringLength(name, &len)) {
         return 0;
     }
-    return (GLsizei)len;
+    if (!res->ubo_member && res->gl_array_size > 1 && !strchr(name, '[')) {
+        extra = 3;
+    }
+    return (GLsizei)len + extra;
 }
 
 GLint mglProgramActiveUniformMaxNameLength(Program *program)
@@ -741,10 +843,19 @@ void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, 
 
     if (src_len > 0 && res) {
         if (res->ubo_member) {
-            src = res->ubo_member->name ? res->ubo_member->name : "";
+            src = res->ubo_member->query_name
+                ? res->ubo_member->query_name
+                : (res->ubo_member->name ? res->ubo_member->name : "");
         } else {
             src = res->name ? res->name : "";
         }
+    }
+
+    char array_name[256];
+    if (res && !res->ubo_member && res->gl_array_size > 1 && src && !strchr(src, '[')) {
+        snprintf(array_name, sizeof(array_name), "%s[0]", src);
+        src = array_name;
+        src_len = (GLsizei)strlen(src);
     }
 
     if (length) {
@@ -834,7 +945,10 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, int
     // location should match; otherwise unrelated integer uniforms at location 0
     // can accidentally rewrite sampler units.
     if (mglUniformResourceLooksSamplerLike(res, res_type)) {
-        return (res->uniform_location >= 0 && res->uniform_location == location) ? GL_TRUE : GL_FALSE;
+        GLint array_size = res->gl_array_size > 0 ? res->gl_array_size : 1;
+        return (res->uniform_location >= 0 &&
+                location >= res->uniform_location &&
+                location < res->uniform_location + array_size) ? GL_TRUE : GL_FALSE;
     }
 
     if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
@@ -902,7 +1016,7 @@ static SpirvResource *mglFindSamplerUniformResource(Program *program,
                     *stage_out = stage;
                 }
                 if (metal_binding_out) {
-                    *metal_binding_out = res->binding;
+                    *metal_binding_out = res->binding + (GLuint)(location - res->uniform_location);
                 }
                 return res;
             }
@@ -1122,33 +1236,38 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                 }
 
                 updatedResourceCount++;
-                if (res->sampler_unit != unit) {
+                GLint array_element = location - res->uniform_location;
+                if (array_element < 0) {
+                    array_element = 0;
+                }
+                GLuint metal_slot = res->binding + (GLuint)array_element;
+                if (array_element == 0 && res->sampler_unit != unit) {
                     changed = GL_TRUE;
                     res->sampler_unit = unit;
                 }
-                if (!res->sampler_unit_explicit) {
+                if (array_element == 0 && !res->sampler_unit_explicit) {
                     explicit_changed = GL_TRUE;
                     res->sampler_unit_explicit = GL_TRUE;
                 }
 
-                if (res->binding < TEXTURE_UNITS) {
+                if (metal_slot < TEXTURE_UNITS) {
                     GLboolean shared_slot =
-                        mglMetalSamplerSlotSharedAcrossResources(program, res->binding);
-                    if (!shared_slot && program->sampler_units[res->binding] != unit) {
+                        mglMetalSamplerSlotSharedAcrossResources(program, metal_slot);
+                    if (!shared_slot && program->sampler_units[metal_slot] != unit) {
                         changed = GL_TRUE;
-                        program->sampler_units[res->binding] = unit;
+                        program->sampler_units[metal_slot] = unit;
                     }
-                    if (!shared_slot && !program->sampler_units_explicit[res->binding]) {
+                    if (!shared_slot && !program->sampler_units_explicit[metal_slot]) {
                         explicit_changed = GL_TRUE;
-                        program->sampler_units_explicit[res->binding] = GL_TRUE;
+                        program->sampler_units_explicit[metal_slot] = GL_TRUE;
                     }
-                    if (program->sampler_units_by_stage[stage][res->binding] != unit) {
+                    if (program->sampler_units_by_stage[stage][metal_slot] != unit) {
                         changed = GL_TRUE;
-                        program->sampler_units_by_stage[stage][res->binding] = unit;
+                        program->sampler_units_by_stage[stage][metal_slot] = unit;
                     }
-                    if (!program->sampler_units_explicit_by_stage[stage][res->binding]) {
+                    if (!program->sampler_units_explicit_by_stage[stage][metal_slot]) {
                         explicit_changed = GL_TRUE;
-                        program->sampler_units_explicit_by_stage[stage][res->binding] = GL_TRUE;
+                        program->sampler_units_explicit_by_stage[stage][metal_slot] = GL_TRUE;
                     }
                 }
             }
@@ -1198,6 +1317,47 @@ static GLboolean mglUniformBlockSameIdentity(const SpirvResource *a, const Spirv
     return a == b;
 }
 
+static GLuint mglUniformBlockArraySize(const SpirvResource *block)
+{
+    return (block && block->ubo_array_size > 0) ? block->ubo_array_size : 1u;
+}
+
+static GLuint mglUniformBlockElementBinding(const SpirvResource *block, GLuint element)
+{
+    if (!block) {
+        return 0;
+    }
+    if (block->ubo_array_bindings && element < mglUniformBlockArraySize(block)) {
+        return block->ubo_array_bindings[element];
+    }
+    return block->gl_binding + element;
+}
+
+static GLsizei mglUniformBlockElementName(const SpirvResource *block,
+                                          GLuint element,
+                                          GLsizei bufSize,
+                                          GLchar *name)
+{
+    GLsizei len = 0;
+    if (!block || !block->name) {
+        if (name && bufSize > 0) {
+            name[0] = '\0';
+        }
+        return 0;
+    }
+
+    if (mglUniformBlockArraySize(block) > 1) {
+        len = snprintf(name && bufSize > 0 ? name : NULL,
+                       name && bufSize > 0 ? (size_t)bufSize : 0u,
+                       "%s[%u]", block->name, element);
+    } else {
+        len = snprintf(name && bufSize > 0 ? name : NULL,
+                       name && bufSize > 0 ? (size_t)bufSize : 0u,
+                       "%s", block->name);
+    }
+    return len;
+}
+
 static GLboolean mglUniformBlockNameSeenBefore(Program *program, int block_stage, GLuint block_index, const char *name)
 {
     if (!program || !mglSafeCStringLength(name, NULL)) {
@@ -1241,13 +1401,15 @@ static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint unifor
             if (mglUniformBlockNameSeenBefore(program, stage, i, res->name)) {
                 continue;
             }
-            if (ordinal == uniformBlockIndex) {
+            GLuint element_count = mglUniformBlockArraySize(res);
+            if (uniformBlockIndex < ordinal + element_count) {
                 if (stage_out) {
                     *stage_out = stage;
                 }
+                res->ubo_array_element = uniformBlockIndex - ordinal;
                 return res;
             }
-            ordinal++;
+            ordinal += element_count;
         }
     }
 
@@ -1347,7 +1509,25 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     continue;
                 }
 
-                if (mglSafeCStringEquals(str, name))
+                size_t resource_name_len = strlen(str);
+                size_t query_name_len = strlen(name);
+                GLint array_element = 0;
+                GLboolean name_matches = mglSafeCStringEquals(str, name);
+                if (!name_matches && list[i].gl_array_size > 0 &&
+                    query_name_len > resource_name_len + 2u &&
+                    strncmp(str, name, resource_name_len) == 0 &&
+                    name[resource_name_len] == '[' &&
+                    name[query_name_len - 1u] == ']') {
+                    char *end = NULL;
+                    long parsed = strtol(name + resource_name_len + 1u, &end, 10);
+                    if (end == name + query_name_len - 1u &&
+                        parsed >= 0 && parsed < list[i].gl_array_size) {
+                        array_element = (GLint)parsed;
+                        name_matches = GL_TRUE;
+                    }
+                }
+
+                if (name_matches)
                 {
                     GLuint gl_binding = list[i].gl_binding;
                     GLboolean sampler_like = mglUniformResourceLooksSamplerLike(&list[i], res_type);
@@ -1359,7 +1539,7 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                                 ? list[i].uniform_location
                                 : ((list[i].location != 0xffffffffu) ? (GLint)list[i].location : (GLint)gl_binding)));
 
-                    return location;
+                    return location >= 0 ? location + array_element : location;
                 }
             }
         }
@@ -1399,7 +1579,8 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
         SpirvResource *res =
             ptr ? mglFindSamplerUniformResource(ptr, location, &stage, &metal_binding) : NULL;
         if (res && res->sampler_unit >= 0 && res->sampler_unit < TEXTURE_UNITS) {
-            *params = res->sampler_unit;
+            GLint array_element = location - res->uniform_location;
+            *params = res->sampler_unit + (array_element > 0 ? array_element : 0);
         } else if (ptr && metal_binding < TEXTURE_UNITS &&
                    stage >= 0 && stage < _MAX_SHADER_TYPES &&
                    ptr->sampler_units_by_stage[stage][metal_binding] >= 0) {
@@ -1500,7 +1681,10 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
             case GL_UNIFORM_NAME_LENGTH:
                 if (res->ubo_member) {
                     size_t len = 0u;
-                    params[i] = (GLint)(mglSafeCStringLength(res->ubo_member->name, &len) ? len + 1u : 1u);
+                    const char *member_name = res->ubo_member->query_name
+                        ? res->ubo_member->query_name
+                        : res->ubo_member->name;
+                    params[i] = (GLint)(mglSafeCStringLength(member_name, &len) ? len + 1u : 1u);
                 } else {
                     params[i] = (GLint)mglProgramActiveUniformNameLength(res) + 1;
                 }
@@ -1627,11 +1811,19 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
                 continue;
             }
 
-            if (mglSafeCStringEquals(str, uniformBlockName))
-            {
-                return block_index;
+            GLuint element_count = mglUniformBlockArraySize(&list[i]);
+            for (GLuint element = 0; element < element_count; element++) {
+                char element_name[256];
+                mglUniformBlockElementName(&list[i],
+                                           element,
+                                           (GLsizei)sizeof(element_name),
+                                           element_name);
+                if ((element == 0 && mglSafeCStringEquals(str, uniformBlockName)) ||
+                    mglSafeCStringEquals(element_name, uniformBlockName)) {
+                    return block_index + element;
+                }
             }
-            block_index++;
+            block_index += element_count;
         }
     }
 
@@ -1670,15 +1862,18 @@ void mglGetActiveUniformBlockiv(GLMContext ctx, GLuint program, GLuint uniformBl
 
     switch (pname) {
         case GL_UNIFORM_BLOCK_BINDING:
-            *params = (GLint)block->gl_binding;
+            *params = (GLint)mglUniformBlockElementBinding(block, block->ubo_array_element);
             break;
         case GL_UNIFORM_BLOCK_DATA_SIZE:
             *params = (GLint)mglUniformBlockRequiredSize(ptr, block);
             break;
         case GL_UNIFORM_BLOCK_NAME_LENGTH:
             {
-                size_t block_name_len = 0u;
-                *params = (GLint)(mglSafeCStringLength(block->name, &block_name_len) ? block_name_len + 1u : 1u);
+                char block_name[256];
+                *params = mglUniformBlockElementName(block,
+                                                     block->ubo_array_element,
+                                                     (GLsizei)sizeof(block_name),
+                                                     block_name) + 1;
             }
             break;
         case GL_UNIFORM_BLOCK_ACTIVE_UNIFORMS:
@@ -1761,9 +1956,12 @@ void mglGetActiveUniformBlockName(GLMContext ctx, GLuint program, GLuint uniform
         return;
     }
 
-    size_t safe_src_len = 0u;
-    const char *src = mglSafeCStringLength(block->name, &safe_src_len) ? block->name : "";
-    GLsizei src_len = (GLsizei)safe_src_len;
+    char src_buf[256];
+    GLsizei src_len = mglUniformBlockElementName(block,
+                                                block->ubo_array_element,
+                                                (GLsizei)sizeof(src_buf),
+                                                src_buf);
+    const char *src = src_buf;
     if (length) {
         *length = src_len;
     }
@@ -1806,7 +2004,8 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
     }
 
     const char *block_name = mglSafeCStringLength(block->name, NULL) ? block->name : NULL;
-    GLuint old_binding = block->gl_binding;
+    GLuint block_element = block->ubo_array_element;
+    GLuint old_binding = mglUniformBlockElementBinding(block, block_element);
     if (old_binding != uniformBlockBinding) {
         mglFlushPendingDraws(ctx);
     }
@@ -1842,7 +2041,12 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
             GLboolean same_resource =
                 !block_name && stage == block_stage && res == block;
             if (same_named_block || same_resource) {
-                res->gl_binding = uniformBlockBinding;
+                if (res->ubo_array_bindings && block_element < mglUniformBlockArraySize(res)) {
+                    res->ubo_array_bindings[block_element] = uniformBlockBinding;
+                }
+                if (block_element == 0) {
+                    res->gl_binding = uniformBlockBinding;
+                }
             }
         }
     }
@@ -2026,14 +2230,66 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE;
 }
 
+static void mglUniformDoubleVectorAsFloat(GLMContext ctx,
+                                          GLint location,
+                                          const GLdouble *value,
+                                          GLsizei count,
+                                          size_t components)
+{
+    GLsizeiptr sourceBytes = 0;
+    size_t scalarCount;
+    GLfloat stackValues[16];
+    GLfloat *converted = stackValues;
+
+    if (!checkUniformUploadParams(ctx,
+                                  location,
+                                  value,
+                                  count,
+                                  components * sizeof(GLdouble),
+                                  &sourceBytes)) {
+        return;
+    }
+
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+
+    scalarCount = (size_t)count * components;
+    if (scalarCount > sizeof(stackValues) / sizeof(stackValues[0])) {
+        if (scalarCount > SIZE_MAX / sizeof(GLfloat)) {
+            ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+            mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+            return;
+        }
+        converted = (GLfloat *)malloc(scalarCount * sizeof(GLfloat));
+        if (!converted) {
+            ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+            mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+            return;
+        }
+    }
+
+    for (size_t i = 0; i < scalarCount; i++) {
+        converted[i] = (GLfloat)value[i];
+    }
+
+    (void)sourceBytes;
+    mglUniform(ctx, location, converted, (GLsizeiptr)(scalarCount * sizeof(GLfloat)));
+
+    if (converted != stackValues) {
+        free(converted);
+    }
+}
+
 void mglUniform1d(GLMContext ctx, GLint location, GLdouble x)
 {
-    mglUniform(ctx, location, &x, sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, &x, 1, 1);
 }
 
 void mglUniform1dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniform(ctx, location, (void *)value, count * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 1);
 }
 
 void mglUniform1f(GLMContext ctx, GLint location, GLfloat v0)
@@ -2089,12 +2345,12 @@ void mglUniform2d(GLMContext ctx, GLint location, volatile GLdouble x, volatile 
 {
     GLdouble data[] = {x, y};
     
-    mglUniform(ctx, location, data, 2 * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 2);
 }
 
 void mglUniform2dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniform(ctx, location, (void *)value, 2 * count * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 2);
 }
 
 void mglUniform2f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1)
@@ -2137,12 +2393,12 @@ void mglUniform3d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdoub
 {
     GLdouble data[] = {x, y, z};
     
-    mglUniform(ctx, location, data, 3 * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 3);
 }
 
 void mglUniform3dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniform(ctx, location, (void *)value, 3 * count * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 3);
 }
 
 void mglUniform3f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2)
@@ -2185,12 +2441,12 @@ void mglUniform4d(GLMContext ctx, GLint location, GLdouble x, GLdouble y, GLdoub
 {
     GLdouble data[] = {x, y, z, w};
     
-    mglUniform(ctx, location, data, 4 * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, data, 1, 4);
 }
 
 void mglUniform4dv(GLMContext ctx, GLint location, GLsizei count, const GLdouble *value)
 {
-    mglUniform(ctx, location, (void *)value, 4 * count * sizeof(GLdouble));
+    mglUniformDoubleVectorAsFloat(ctx, location, value, count, 4);
 }
 
 void mglUniform4f(GLMContext ctx, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3)

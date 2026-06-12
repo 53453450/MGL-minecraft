@@ -21,6 +21,7 @@
 #include <strings.h>
 
 #include "glm_context.h"
+#include "draw_command.h"
 
 Sync *newSync(GLMContext ctx)
 {
@@ -231,10 +232,40 @@ void mglTextureBarrier(GLMContext ctx)
 
 void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
 {
-    if (barriers & ~(GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT | GL_ELEMENT_ARRAY_BARRIER_BIT | GL_UNIFORM_BARRIER_BIT |  GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_COMMAND_BARRIER_BIT | GL_PIXEL_BUFFER_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT | GL_FRAMEBUFFER_BARRIER_BIT | GL_TRANSFORM_FEEDBACK_BARRIER_BIT | GL_ATOMIC_COUNTER_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT))
+    const GLbitfield valid_barriers =
+        GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT |
+        GL_ELEMENT_ARRAY_BARRIER_BIT |
+        GL_UNIFORM_BARRIER_BIT |
+        GL_TEXTURE_FETCH_BARRIER_BIT |
+        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+        GL_COMMAND_BARRIER_BIT |
+        GL_PIXEL_BUFFER_BARRIER_BIT |
+        GL_TEXTURE_UPDATE_BARRIER_BIT |
+        GL_BUFFER_UPDATE_BARRIER_BIT |
+        GL_FRAMEBUFFER_BARRIER_BIT |
+        GL_TRANSFORM_FEEDBACK_BARRIER_BIT |
+        GL_ATOMIC_COUNTER_BARRIER_BIT |
+        GL_SHADER_STORAGE_BARRIER_BIT;
+
+    if (barriers != GL_ALL_BARRIER_BITS && (barriers & ~valid_barriers))
     {
         // extra bits...
         ERROR_RETURN(GL_INVALID_VALUE);
+    }
+
+    if (!ctx) {
+        return;
+    }
+
+    /*
+     * Metal command buffers provide the actual visibility boundary for compute
+     * writes consumed by later GL reads or draws. This conservative barrier
+     * gives SSBO/image/texture updates GL ordering semantics until finer-grain
+     * encoder hazards are implemented.
+     */
+    mglFlushCommandBuffer(ctx);
+    if (ctx->mtl_funcs.mtlFlush) {
+        ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 }
 

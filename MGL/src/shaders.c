@@ -41,6 +41,8 @@ typedef struct {
 static MGLUBOBindingEntry s_ubo_binding_entries[MGL_MAX_UBO_BINDINGS];
 static int s_ubo_binding_count = 0;
 
+static int mgl_is_identifier_char(int c);
+
 static int mgl_get_or_assign_ubo_binding(const char *block_name)
 {
     if (!block_name || !block_name[0]) {
@@ -82,7 +84,6 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
                                                int binding)
 {
     char work[256];
-    size_t work_len = 0;
     char binding_str[32];
     int binding_written = 0;
 
@@ -92,7 +93,9 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
     memcpy(work, qualifier_src, qualifier_len);
     work[qualifier_len] = '\0';
 
-    /* Build normalized qualifier list in dst. */
+    /* Build normalized qualifier list in dst. GLSL layout qualifiers are
+     * comma-separated; qualifiers such as "binding = 0" may contain spaces.
+     */
     size_t out = 0;
     const char *cursor = work;
     int first = 1;
@@ -106,12 +109,19 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
             break;
         }
 
-        /* Find the end of this qualifier token. */
+        /* Find the end of this comma-delimited qualifier. */
         const char *start = cursor;
-        while (*cursor && !isspace((unsigned char)*cursor) && *cursor != ',') {
+        while (*cursor && *cursor != ',') {
             cursor++;
         }
-        size_t tok_len = (size_t)(cursor - start);
+        const char *end = cursor;
+        while (end > start && isspace((unsigned char)end[-1])) {
+            end--;
+        }
+        size_t tok_len = (size_t)(end - start);
+        if (tok_len == 0) {
+            continue;
+        }
 
         /* Skip "packed" and "shared" — replace them with "std140" later. */
         if ((tok_len == 6 && memcmp(start, "packed", 6) == 0) ||
@@ -119,10 +129,9 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
             continue;
         }
 
-        /* Skip any existing "binding" qualifier — we'll append our own. */
+        /* Preserve any existing binding qualifier and its value. */
         if (tok_len >= 7 && memcmp(start, "binding", 7) == 0) {
             binding_written = 1;
-            /* Keep the original binding value — do NOT overwrite it. */
             if (!first && out < dst_capacity) {
                 dst[out++] = ',';
                 dst[out++] = ' ';
@@ -230,6 +239,15 @@ static bool mgl_patch_uniform_block_bindings(char *src, size_t src_capacity)
             continue;
         }
 
+        char *after_name = p;
+        while (*after_name && isspace((unsigned char)*after_name)) {
+            after_name++;
+        }
+        if (*after_name != '{') {
+            cursor = paren_close + 1;
+            continue;
+        }
+
         int binding = mgl_get_or_assign_ubo_binding(block_name);
 
         /* 5. Normalize the layout qualifier. */
@@ -281,6 +299,82 @@ static bool mgl_patch_uniform_block_bindings(char *src, size_t src_capacity)
             patched = true;
         }
     }
+
+    cursor = src;
+    while (*cursor) {
+        char *uniform_kw = strstr(cursor, "uniform");
+        if (!uniform_kw) {
+            break;
+        }
+
+        int before = uniform_kw == src ? 0 : uniform_kw[-1];
+        int after = uniform_kw[7];
+        if (mgl_is_identifier_char(before) || mgl_is_identifier_char(after)) {
+            cursor = uniform_kw + 7;
+            continue;
+        }
+
+        char *prev = uniform_kw;
+        while (prev > src && isspace((unsigned char)prev[-1])) {
+            prev--;
+        }
+        if (prev > src && prev[-1] == ')') {
+            cursor = uniform_kw + 7;
+            continue;
+        }
+
+        char *name_start = uniform_kw + 7;
+        while (*name_start && isspace((unsigned char)*name_start)) {
+            name_start++;
+        }
+        if (!isalpha((unsigned char)*name_start) && *name_start != '_') {
+            cursor = uniform_kw + 7;
+            continue;
+        }
+
+        char block_name[128];
+        size_t bn = 0;
+        char *p = name_start;
+        while ((*p == '_' || isalnum((unsigned char)*p)) && bn + 1 < sizeof(block_name)) {
+            block_name[bn++] = *p++;
+        }
+        block_name[bn] = '\0';
+
+        char *after_name = p;
+        while (*after_name && isspace((unsigned char)*after_name)) {
+            after_name++;
+        }
+        if (*after_name != '{') {
+            cursor = uniform_kw + 7;
+            continue;
+        }
+
+        int binding = mgl_get_or_assign_ubo_binding(block_name);
+        char replacement[256];
+        int repl_total = snprintf(replacement, sizeof(replacement),
+                                  "layout(std140, binding = %d) uniform ",
+                                  binding);
+        if (repl_total < 0 || (size_t)repl_total >= sizeof(replacement)) {
+            cursor = uniform_kw + 7;
+            continue;
+        }
+
+        size_t repl_len = (size_t)repl_total;
+        size_t old_len = (size_t)(name_start - uniform_kw);
+        size_t tail_len = strlen(uniform_kw + old_len);
+        size_t used = strlen(src);
+        size_t grow = repl_len - old_len;
+        if (repl_len < old_len || used + grow + 1 >= src_capacity) {
+            cursor = uniform_kw + old_len;
+            continue;
+        }
+
+        memmove(uniform_kw + repl_len, uniform_kw + old_len, tail_len + 1);
+        memcpy(uniform_kw, replacement, repl_len);
+        cursor = uniform_kw + repl_len;
+        patched = true;
+    }
+
     return patched;
 }
 
@@ -638,7 +732,7 @@ int isShader(GLMContext ctx, GLuint shader)
 
     ptr = (Shader *)searchHashTable(&STATE(shader_table), shader);
 
-    if (ptr)
+    if (ptr && !ptr->delete_status)
         return 1;
 
     return 0;
@@ -738,12 +832,11 @@ void mglDeleteShader(GLMContext ctx, GLuint shader)
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
 
-    deleteHashElement(&STATE(shader_table), shader);
-
     ptr->delete_status = GL_TRUE;
 
     if (ptr->refcount == 0)
     {
+        deleteHashElement(&STATE(shader_table), shader);
         mglFreeShader(ctx, ptr);
     }
 }
@@ -759,7 +852,7 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
     GLchar *src;
     Shader *ptr;
 
-    ERROR_CHECK_RETURN(isShader(ctx, shader), GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(shader != 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
 
     ptr = findShader(ctx, shader);
@@ -855,7 +948,7 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     glslang_shader_t *glsl_shader;
     int err;
 
-    ERROR_CHECK_RETURN(isShader(ctx, shader), GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(shader != 0, GL_INVALID_VALUE);
 
     ptr = findShader(ctx, shader);
 

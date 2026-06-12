@@ -235,12 +235,14 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.color_writemask[0][3] = GL_TRUE;
     }
     glm_ctx->state.max_vertex_attribs = 32; // OpenGL minimum is 16; MGL supports up to MAX_ATTRIBS
-    glm_ctx->state.var.max_texture_image_units = 32; // OpenGL minimum 16; Metal supports more
+    glm_ctx->state.var.max_texture_image_units = 16;
     glm_ctx->state.var.max_fragment_uniform_components = 4096;
     glm_ctx->state.var.max_vertex_uniform_components = 4096;
     glm_ctx->state.var.max_varying_floats = 64;
-    glm_ctx->state.var.max_vertex_texture_image_units = 32;
-    glm_ctx->state.var.max_combined_texture_image_units = 192;
+    glm_ctx->state.var.max_vertex_texture_image_units = 16;
+    /* Keep the advertised limit aligned with glslang's compile-time resource
+     * limit. Metal argument slots are remapped independently from GL units. */
+    glm_ctx->state.var.max_combined_texture_image_units = TEXTURE_UNITS < 80 ? TEXTURE_UNITS : 80;
     glGetIntegerv(GL_CURRENT_PROGRAM,&glm_ctx->state.var.current_program);
     glGetIntegerv(GL_STENCIL_BACK_REF,&glm_ctx->state.var.stencil_back_ref);
     glGetIntegerv(GL_STENCIL_BACK_VALUE_MASK,&glm_ctx->state.var.stencil_back_value_mask);
@@ -290,6 +292,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_FRAGMENT_UNIFORM_BLOCKS,&glm_ctx->state.var.max_fragment_uniform_blocks);
     glGetIntegerv(GL_MAX_COMBINED_UNIFORM_BLOCKS,&glm_ctx->state.var.max_combined_uniform_blocks);
     glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS,&glm_ctx->state.var.max_uniform_buffer_bindings);
+    if (glm_ctx->state.var.max_uniform_buffer_bindings == 0 ||
+        glm_ctx->state.var.max_uniform_buffer_bindings > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_uniform_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    }
     glGetIntegerv(GL_MAX_UNIFORM_BLOCK_SIZE,&glm_ctx->state.var.max_uniform_block_size);
     glGetIntegerv(GL_MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_combined_vertex_uniform_components);
     glGetIntegerv(GL_MAX_COMBINED_GEOMETRY_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_combined_geometry_uniform_components);
@@ -342,6 +348,11 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_ELEMENT_INDEX,&glm_ctx->state.var.max_element_index);
     glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_BLOCKS,&glm_ctx->state.var.max_compute_uniform_blocks);
     glGetIntegerv(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_compute_texture_image_units);
+    if (glm_ctx->state.var.max_compute_texture_image_units == 0 ||
+        glm_ctx->state.var.max_compute_texture_image_units == 0x01010101u ||
+        glm_ctx->state.var.max_compute_texture_image_units > 16u) {
+        glm_ctx->state.var.max_compute_texture_image_units = 16u;
+    }
     glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_COMPONENTS,&glm_ctx->state.var.max_compute_uniform_components);
     glGetIntegerv(GL_MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS,&glm_ctx->state.var.max_compute_atomic_counter_buffers);
     glGetIntegerv(GL_MAX_COMPUTE_ATOMIC_COUNTERS,&glm_ctx->state.var.max_compute_atomic_counters);
@@ -367,6 +378,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_label_length = 128;
     }
     glGetIntegerv(GL_MAX_UNIFORM_LOCATIONS,&glm_ctx->state.var.max_uniform_locations);
+    if (glm_ctx->state.var.max_uniform_locations == 0) {
+        glm_ctx->state.var.max_uniform_locations = 1024;
+    }
     glGetIntegerv(GL_MAX_FRAMEBUFFER_WIDTH,&glm_ctx->state.var.max_framebuffer_width);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_HEIGHT,&glm_ctx->state.var.max_framebuffer_height);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_LAYERS,&glm_ctx->state.var.max_framebuffer_layers);
@@ -382,7 +396,27 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_FRAGMENT_SHADER_STORAGE_BLOCKS,&glm_ctx->state.var.max_fragment_shader_storage_blocks);
     glGetIntegerv(GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS,&glm_ctx->state.var.max_compute_shader_storage_blocks);
     glGetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS,&glm_ctx->state.var.max_combined_shader_storage_blocks);
+    if (glm_ctx->state.var.max_vertex_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_vertex_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_vertex_shader_storage_blocks = 8;
+    }
+    if (glm_ctx->state.var.max_fragment_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_fragment_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_fragment_shader_storage_blocks = 8;
+    }
+    if (glm_ctx->state.var.max_compute_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_compute_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_compute_shader_storage_blocks = 8;
+    }
+    if (glm_ctx->state.var.max_combined_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_combined_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_combined_shader_storage_blocks = MAX_BINDABLE_BUFFERS;
+    }
     glGetIntegerv(GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS,&glm_ctx->state.var.max_shader_storage_buffer_bindings);
+    if (glm_ctx->state.var.max_shader_storage_buffer_bindings == 0 ||
+        glm_ctx->state.var.max_shader_storage_buffer_bindings > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_shader_storage_buffer_bindings = MAX_BINDABLE_BUFFERS;
+    }
     glGetIntegerv(GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.shader_storage_buffer_offset_alignment);
     glGetIntegerv(GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT,&glm_ctx->state.var.texture_buffer_offset_alignment);
     if (glm_ctx->state.var.texture_buffer_offset_alignment == 0 ||
@@ -401,7 +435,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     if (glm_ctx->state.var.max_vertex_attrib_bindings < MAX_ATTRIBS ||
         glm_ctx->state.var.max_vertex_attrib_bindings == 0x01010101u ||
         glm_ctx->state.var.max_vertex_attrib_bindings > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        glm_ctx->state.var.max_vertex_attrib_bindings = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+        glm_ctx->state.var.max_vertex_attrib_bindings = MAX_ATTRIBS;
+    }
+    if (glm_ctx->state.var.max_vertex_attrib_bindings > MAX_ATTRIBS) {
+        glm_ctx->state.var.max_vertex_attrib_bindings = MAX_ATTRIBS;
     }
     if (glm_ctx->state.var.max_vertex_attrib_relative_offset < 2047u ||
         glm_ctx->state.var.max_vertex_attrib_relative_offset == 0x01010101u) {

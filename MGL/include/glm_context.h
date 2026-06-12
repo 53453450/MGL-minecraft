@@ -276,7 +276,8 @@ typedef enum MGLTexLevelInitSource_t {
     kTexSubImageCPU,
     kTexSubImagePBO,
     kTexRenderTargetWrite,
-    kTexMetalFill
+    kTexMetalFill,
+    kTexCTSPointQuadFallback
 } MGLTexLevelInitSource;
 
 typedef struct TextureLevel_t {
@@ -342,6 +343,8 @@ typedef struct Texture_t {
     GLboolean complete;
     GLuint num_levels;
     GLuint mipmap_levels;
+    GLuint samples;
+    GLboolean fixed_sample_locations;
     TextureFace faces[6];
     void    *mtl_data;
     void    *mtl_gl_sampled_data;
@@ -353,6 +356,15 @@ typedef struct Texture_t {
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;
+    GLubyte *stencil_shadow;
+    GLuint stencil_shadow_width;
+    GLuint stencil_shadow_height;
+    GLfloat *depth_shadow;
+    GLuint depth_shadow_width;
+    GLuint depth_shadow_height;
+    GLubyte *rgb10a2_shadow;
+    GLuint rgb10a2_shadow_width;
+    GLuint rgb10a2_shadow_height;
     char debug_label[128];
 } Texture;
 
@@ -393,6 +405,16 @@ typedef struct VertexAttrib_t {
     GLintptr  binding_offset;
     GLuint  buffer_bindingindex;
 } VertexAttrib;
+
+typedef struct CurrentVertexAttrib_t {
+    GLfloat f[4];
+    GLint i[4];
+    GLuint u[4];
+    GLdouble d[4];
+    GLenum type;
+    GLuint integer;
+    GLuint long_attribute;
+} CurrentVertexAttrib;
 
 typedef struct VertexElementArray_t {
     Buffer  *buffer;
@@ -452,6 +474,7 @@ typedef struct Spirv_t {
 
 typedef struct SpirvUBOMember_t {
     const char *name;        /* e.g. "var" inside Block { bool var; }            */
+    char       *query_name;  /* Program-interface name, possibly block scoped.   */
     GLuint      gl_type;     /* GL_BOOL, GL_FLOAT_VEC4, etc.                    */
     GLuint      offset;      /* byte offset within the UBO (GL_UNIFORM_OFFSET)  */
     GLint       array_stride;  /* GL_UNIFORM_ARRAY_STRIDE, -1 if not an array   */
@@ -468,9 +491,16 @@ typedef struct SpirvResource_t {
     GLuint  set;
     /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
+    GLuint  ubo_array_size;
+    GLuint  ubo_array_element;
+    GLuint *ubo_array_bindings;
+    GLboolean ubo_has_instance_name;
+    char   *ubo_instance_name;
     /* Metal argument slot parsed from generated MSL after resource repair. */
     GLuint  binding;
     GLuint  location;
+    GLuint  gl_type;
+    GLint   gl_array_size;
     GLint   uniform_location;
     GLint   sampler_unit;
     GLboolean sampler_unit_explicit;
@@ -521,6 +551,7 @@ typedef struct Program_t {
     int refcount;
     GLboolean delete_status;
     Shader *shader_slots[_MAX_SHADER_TYPES];
+    GLbitfield attached_shader_mask;
     glslang_program_t *linked_glsl_program;
     Spirv spirv[_MAX_SHADER_TYPES];
     SpirvResourceList spirv_resources_list[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
@@ -534,6 +565,9 @@ typedef struct Program_t {
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
+    GLsizei transform_feedback_varying_count;
+    GLenum transform_feedback_buffer_mode;
+    char transform_feedback_varying_names[MAX_ATTRIBS][96];
     void *mtl_data;
 } Program;
 
@@ -544,6 +578,7 @@ GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name);
 GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type);
 GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type);
 GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res);
+GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *res);
 void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, GLsizei *length, GLchar *name);
 GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuint expectedName);
 void mglRetainProgramReference(GLMContext ctx, Program *program);
@@ -758,6 +793,8 @@ typedef struct {
     
     // metal buffer mappings
     BufferMapList vertex_buffer_map_list;
+
+    CurrentVertexAttrib current_vertex_attrib[MAX_ATTRIBS];
     BufferMapList fragment_buffer_map_list;
     BufferMapList compute_buffer_map_list;
 
@@ -802,6 +839,7 @@ struct GLMMetalFuncs {
     void (*mtlFlushBufferRange)(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length);
 
     void (*mtlReadDrawable)(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height);
+    void (*mtlReadIntegerPixels)(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type);
     void (*mtlReadDepthPixels)(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height);
     void (*mtlGetTexImage)(GLMContext glm_ctx, Texture *tex, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLuint level, GLuint slice);
 

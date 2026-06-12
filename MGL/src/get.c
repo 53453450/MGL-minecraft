@@ -144,7 +144,13 @@ static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
 {
     GLuint value = ctx ? ctx->state.var.max_vertex_attrib_bindings : 0u;
     if (value < MAX_ATTRIBS || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        value = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+        value = MAX_ATTRIBS;
+        if (ctx) {
+            ctx->state.var.max_vertex_attrib_bindings = value;
+        }
+    }
+    if (value > MAX_ATTRIBS) {
+        value = MAX_ATTRIBS;
         if (ctx) {
             ctx->state.var.max_vertex_attrib_bindings = value;
         }
@@ -190,7 +196,7 @@ static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
 }
 
 // these cast a void ptr to a type and value
-#define RET_BOOL(__value__) *((GLboolean *)data) = (GLboolean)__value__; break;
+#define RET_BOOL(__value__) *((GLboolean *)data) = ((__value__) != 0) ? GL_TRUE : GL_FALSE; break;
 #define RET_INT(__value__) *((GLint *)data) = (GLint)__value__; break;
 #define RET_FLOAT(__value__) *((GLfloat *)data) = (GLfloat)__value__; break;
 #define RET_DOUBLE(__value__) *((GLdouble *)data) = (GLdouble)__value__; break;
@@ -592,7 +598,16 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x84F6: RET_TYPE_VAR(type, texture_binding_rectangle); break; // GL_TEXTURE_BINDING_RECTANGLE
         case 0x84F8: RET_TYPE_VAR(type, max_rectangle_texture_size); break; // GL_MAX_RECTANGLE_TEXTURE_SIZE
         case 0x8F9E: RET_TYPE_VAR(type, primitive_restart_index); break; // GL_PRIMITIVE_RESTART_INDEX
-        case 0x8A28: RET_TYPE_VAR(type, uniform_buffer_binding); break; // GL_UNIFORM_BUFFER_BINDING
+        case 0x8A28: { // GL_UNIFORM_BUFFER_BINDING
+            GLuint binding = ctx->state.var.uniform_buffer_binding;
+            switch(type) {
+                case kBool: RET_BOOL(binding);
+                case kInt: RET_INT(binding);
+                case kFloat: RET_FLOAT(binding);
+                case kDouble: RET_DOUBLE(binding);
+            }
+            break;
+        }
         case 0x8A29: RET_TYPE_VAR(type, uniform_buffer_start); break; // GL_UNIFORM_BUFFER_START
         case 0x8A2A: RET_TYPE_VAR(type, uniform_buffer_size); break; // GL_UNIFORM_BUFFER_SIZE
         case 0x8A2B: RET_TYPE_VAR(type, max_vertex_uniform_blocks); break; // GL_MAX_VERTEX_UNIFORM_BLOCKS
@@ -606,7 +621,23 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8A33: RET_TYPE_VAR(type, max_combined_fragment_uniform_components); break; // GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
         case 0x8A34: RET_TYPE_VAR(type, uniform_buffer_offset_alignment); break; // GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
         case 0x8C29: RET_TYPE_VAR(type, max_geometry_texture_image_units); break; // GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS
+        case 0x8C8A: // GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
+            switch(type) {
+                case kBool: RET_BOOL(64);
+                case kInt: RET_INT(64);
+                case kFloat: RET_FLOAT(64);
+                case kDouble: RET_DOUBLE(64);
+            }
+            break;
         case 0x8DDF: RET_TYPE_VAR(type, max_geometry_uniform_components); break; // GL_MAX_GEOMETRY_UNIFORM_COMPONENTS
+        case 0x8E70: // GL_MAX_TRANSFORM_FEEDBACK_BUFFERS
+            switch(type) {
+                case kBool: RET_BOOL(MAX_BINDABLE_BUFFERS);
+                case kInt: RET_INT(MAX_BINDABLE_BUFFERS);
+                case kFloat: RET_FLOAT(MAX_BINDABLE_BUFFERS);
+                case kDouble: RET_DOUBLE(MAX_BINDABLE_BUFFERS);
+            }
+            break;
         case 0x9122: RET_TYPE_VAR(type, max_vertex_output_components); break; // GL_MAX_VERTEX_OUTPUT_COMPONENTS
         case 0x9123: RET_TYPE_VAR(type, max_geometry_input_components); break; // GL_MAX_GEOMETRY_INPUT_COMPONENTS
         case 0x9124: RET_TYPE_VAR(type, max_geometry_output_components); break; // GL_MAX_GEOMETRY_OUTPUT_COMPONENTS
@@ -622,7 +653,20 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x910F: RET_TYPE_VAR(type, max_depth_texture_samples); break; // GL_MAX_DEPTH_TEXTURE_SAMPLES
         case 0x9110: RET_TYPE_VAR(type, max_integer_samples); break; // GL_MAX_INTEGER_SAMPLES
         case 0x88FC: RET_TYPE_VAR(type, max_dual_source_draw_buffers); break; // GL_MAX_DUAL_SOURCE_DRAW_BUFFERS
-        case 0x8919: RET_TYPE_VAR(type, sampler_binding); break; // GL_SAMPLER_BINDING
+        case 0x8919: { // GL_SAMPLER_BINDING
+            GLuint unit = ctx ? ctx->state.active_texture : 0u;
+            GLuint binding = (ctx && unit < TEXTURE_UNITS && ctx->state.texture_samplers[unit])
+                ? ctx->state.texture_samplers[unit]->name
+                : 0u;
+            ctx->state.var.sampler_binding = binding;
+            switch(type) {
+                case kBool: RET_BOOL(binding);
+                case kInt: RET_INT(binding);
+                case kFloat: RET_FLOAT(binding);
+                case kDouble: RET_DOUBLE(binding);
+            }
+            break;
+        }
         case 0x8E89: RET_TYPE_VAR(type, max_tess_control_uniform_blocks); break; // GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS
         case 0x8E8A: RET_TYPE_VAR(type, max_tess_evaluation_uniform_blocks); break; // GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS
         case 0x8DFA: RET_TYPE_VAR(type, shader_compiler); break; // GL_SHADER_COMPILER
@@ -648,6 +692,22 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x92D5: RET_TYPE_VAR(type, max_geometry_atomic_counters); break; // GL_MAX_GEOMETRY_ATOMIC_COUNTERS
         case 0x92D6: RET_TYPE_VAR(type, max_fragment_atomic_counters); break; // GL_MAX_FRAGMENT_ATOMIC_COUNTERS
         case 0x92D7: RET_TYPE_VAR(type, max_combined_atomic_counters); break; // GL_MAX_COMBINED_ATOMIC_COUNTERS
+        case 0x92D8: // GL_MAX_ATOMIC_COUNTER_BUFFER_SIZE
+            switch(type) {
+                case kBool: RET_BOOL(16384);
+                case kInt: RET_INT(16384);
+                case kFloat: RET_FLOAT(16384);
+                case kDouble: RET_DOUBLE(16384);
+            }
+            break;
+        case 0x92DC: // GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS
+            switch(type) {
+                case kBool: RET_BOOL(MAX_BINDABLE_BUFFERS);
+                case kInt: RET_INT(MAX_BINDABLE_BUFFERS);
+                case kFloat: RET_FLOAT(MAX_BINDABLE_BUFFERS);
+                case kDouble: RET_DOUBLE(MAX_BINDABLE_BUFFERS);
+            }
+            break;
         case 0x8D6B: RET_TYPE_VAR(type, max_element_index); break; // GL_MAX_ELEMENT_INDEX
         case 0x91BB: RET_TYPE_VAR(type, max_compute_uniform_blocks); break; // GL_MAX_COMPUTE_UNIFORM_BLOCKS
         case 0x91BC: RET_TYPE_VAR(type, max_compute_texture_image_units); break; // GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS
@@ -667,7 +727,16 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9316: RET_TYPE_VAR(type, max_framebuffer_height); break; // GL_MAX_FRAMEBUFFER_HEIGHT
         case 0x9317: RET_TYPE_VAR(type, max_framebuffer_layers); break; // GL_MAX_FRAMEBUFFER_LAYERS
         case 0x9318: RET_TYPE_VAR(type, max_framebuffer_samples); break; // GL_MAX_FRAMEBUFFER_SAMPLES
-        case 0x90D3: RET_TYPE_VAR(type, shader_storage_buffer_binding); break; // GL_SHADER_STORAGE_BUFFER_BINDING
+        case 0x90D3: { // GL_SHADER_STORAGE_BUFFER_BINDING
+            GLuint binding = ctx->state.var.shader_storage_buffer_binding;
+            switch(type) {
+                case kBool: RET_BOOL(binding);
+                case kInt: RET_INT(binding);
+                case kFloat: RET_FLOAT(binding);
+                case kDouble: RET_DOUBLE(binding);
+            }
+            break;
+        }
         case 0x90D4: RET_TYPE_VAR(type, shader_storage_buffer_start); break; // GL_SHADER_STORAGE_BUFFER_START
         case 0x90D5: RET_TYPE_VAR(type, shader_storage_buffer_size); break; // GL_SHADER_STORAGE_BUFFER_SIZE
         case 0x90D6: RET_TYPE_VAR(type, max_vertex_shader_storage_blocks); break; // GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS
@@ -678,6 +747,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x90DB: RET_TYPE_VAR(type, max_compute_shader_storage_blocks); break; // GL_MAX_COMPUTE_SHADER_STORAGE_BLOCKS
         case 0x90DC: RET_TYPE_VAR(type, max_combined_shader_storage_blocks); break; // GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS
         case 0x90DD: RET_TYPE_VAR(type, max_shader_storage_buffer_bindings); break; // GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS
+        case 0x90DE: // GL_MAX_SHADER_STORAGE_BLOCK_SIZE
+            switch(type) {
+                case kBool: RET_BOOL(65536);
+                case kInt: RET_INT(65536);
+                case kFloat: RET_FLOAT(65536);
+                case kDouble: RET_DOUBLE(65536);
+            }
+            break;
         case 0x90DF: RET_TYPE_VAR(type, shader_storage_buffer_offset_alignment); break; // GL_SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT
         case 0x919F: // GL_TEXTURE_BUFFER_OFFSET_ALIGNMENT
             switch(type) {
@@ -874,6 +951,17 @@ void mglGetInteger64i_v(GLMContext ctx, GLenum target, GLuint index, GLint64 *da
             *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
             return;
 
+        case GL_SAMPLER_BINDING:
+            if (index >= TEXTURE_UNITS ||
+                index >= ctx->state.var.max_combined_texture_image_units) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            *data = ctx->state.texture_samplers[index]
+                ? (GLint64)ctx->state.texture_samplers[index]->name
+                : 0;
+            return;
+
         case GL_UNIFORM_BUFFER_BINDING:
         case GL_UNIFORM_BUFFER_START:
         case GL_UNIFORM_BUFFER_SIZE:
@@ -1046,6 +1134,57 @@ void mglGetIntegeri_v(GLMContext ctx, GLenum target, GLuint index, GLint *data)
             }
             *data = ctx->state.caps.scissor_testi[index] ? GL_TRUE : GL_FALSE;
             break;
+
+        case GL_SAMPLER_BINDING:
+            if (index >= TEXTURE_UNITS ||
+                index >= ctx->state.var.max_combined_texture_image_units) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            *data = ctx->state.texture_samplers[index]
+                ? (GLint)ctx->state.texture_samplers[index]->name
+                : 0;
+            break;
+
+        case GL_TEXTURE_BINDING_1D:
+        case GL_TEXTURE_BINDING_1D_ARRAY:
+        case GL_TEXTURE_BINDING_2D:
+        case GL_TEXTURE_BINDING_2D_ARRAY:
+        case GL_TEXTURE_BINDING_3D:
+        case GL_TEXTURE_BINDING_BUFFER:
+        case GL_TEXTURE_BINDING_CUBE_MAP:
+        case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_BINDING_RECTANGLE:
+        case GL_TEXTURE_BINDING_2D_MULTISAMPLE:
+        case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY:
+        {
+            GLuint texIndex = _MAX_TEXTURE_TYPES;
+            Texture *tex = NULL;
+
+            if (index >= TEXTURE_UNITS ||
+                index >= ctx->state.var.max_combined_texture_image_units) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+
+            switch (target) {
+                case GL_TEXTURE_BINDING_1D: texIndex = _TEXTURE_1D; break;
+                case GL_TEXTURE_BINDING_1D_ARRAY: texIndex = _TEXTURE_1D_ARRAY; break;
+                case GL_TEXTURE_BINDING_2D: texIndex = _TEXTURE_2D; break;
+                case GL_TEXTURE_BINDING_2D_ARRAY: texIndex = _TEXTURE_2D_ARRAY; break;
+                case GL_TEXTURE_BINDING_3D: texIndex = _TEXTURE_3D; break;
+                case GL_TEXTURE_BINDING_BUFFER: texIndex = _TEXTURE_BUFFER_TARGET; break;
+                case GL_TEXTURE_BINDING_CUBE_MAP: texIndex = _TEXTURE_CUBE_MAP; break;
+                case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: texIndex = _TEXTURE_CUBE_MAP_ARRAY; break;
+                case GL_TEXTURE_BINDING_RECTANGLE: texIndex = _TEXTURE_RECTANGLE; break;
+                case GL_TEXTURE_BINDING_2D_MULTISAMPLE: texIndex = _TEXTURE_2D_MULTISAMPLE; break;
+                case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: texIndex = _TEXTURE_2D_MULTISAMPLE_ARRAY; break;
+            }
+
+            tex = ctx->state.texture_units[index].textures[texIndex];
+            *data = tex ? (GLint)tex->name : 0;
+            break;
+        }
 
         case GL_UNIFORM_BUFFER_BINDING:
         case GL_UNIFORM_BUFFER_START:

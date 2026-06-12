@@ -25,19 +25,149 @@ extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
 
-static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex)
+static bool mglTextureParameterAffectsTextureDescriptor(GLenum pname)
+{
+    switch (pname) {
+        case GL_TEXTURE_SWIZZLE_R:
+        case GL_TEXTURE_SWIZZLE_G:
+        case GL_TEXTURE_SWIZZLE_B:
+        case GL_TEXTURE_SWIZZLE_A:
+        case GL_TEXTURE_SWIZZLE_RGBA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool mglTextureParameterIsSamplerState(GLenum pname)
+{
+    switch (pname)
+    {
+        case GL_DEPTH_STENCIL_TEXTURE_MODE:
+        case GL_TEXTURE_BASE_LEVEL:
+        case GL_TEXTURE_COMPARE_FUNC:
+        case GL_TEXTURE_COMPARE_MODE:
+        case GL_TEXTURE_LOD_BIAS:
+        case GL_TEXTURE_MIN_FILTER:
+        case GL_TEXTURE_MAG_FILTER:
+        case GL_TEXTURE_MIN_LOD:
+        case GL_TEXTURE_MAX_LOD:
+        case GL_TEXTURE_MAX_LEVEL:
+        case GL_TEXTURE_SWIZZLE_R:
+        case GL_TEXTURE_SWIZZLE_G:
+        case GL_TEXTURE_SWIZZLE_B:
+        case GL_TEXTURE_SWIZZLE_A:
+        case GL_TEXTURE_SWIZZLE_RGBA:
+        case GL_TEXTURE_WRAP_S:
+        case GL_TEXTURE_WRAP_T:
+        case GL_TEXTURE_WRAP_R:
+        case GL_TEXTURE_BORDER_COLOR:
+        case GL_TEXTURE_MAX_ANISOTROPY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool mglTextureParameterSetError(GLMContext ctx, GLenum error)
+{
+    if (ctx && ctx->state.error == GL_NO_ERROR)
+    {
+        ctx->state.error = error;
+    }
+    return false;
+}
+
+static bool mglTextureParameterValidateNamedTarget(GLMContext ctx, Texture *tex, GLenum pname, GLint ivalue)
+{
+    GLenum target = tex ? tex->target : 0;
+
+    if (!tex)
+    {
+        return mglTextureParameterSetError(ctx, GL_INVALID_OPERATION);
+    }
+
+    if (target == GL_TEXTURE_2D_MULTISAMPLE || target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
+    {
+        if (mglTextureParameterIsSamplerState(pname))
+        {
+            return mglTextureParameterSetError(ctx, GL_INVALID_OPERATION);
+        }
+
+        if (pname == GL_TEXTURE_BASE_LEVEL && ivalue != 0)
+        {
+            return mglTextureParameterSetError(ctx, GL_INVALID_OPERATION);
+        }
+    }
+
+    if (target == GL_TEXTURE_RECTANGLE)
+    {
+        if (pname == GL_TEXTURE_BASE_LEVEL && ivalue != 0)
+        {
+            return mglTextureParameterSetError(ctx, GL_INVALID_OPERATION);
+        }
+
+        if (pname == GL_TEXTURE_MIN_FILTER)
+        {
+            switch ((GLenum)ivalue)
+            {
+                case GL_NEAREST:
+                case GL_LINEAR:
+                    break;
+                default:
+                    return mglTextureParameterSetError(ctx, GL_INVALID_ENUM);
+            }
+        }
+
+        if (pname == GL_TEXTURE_WRAP_S || pname == GL_TEXTURE_WRAP_T)
+        {
+            switch ((GLenum)ivalue)
+            {
+                case GL_MIRROR_CLAMP_TO_EDGE:
+                case GL_MIRRORED_REPEAT:
+                case GL_REPEAT:
+                    return mglTextureParameterSetError(ctx, GL_INVALID_ENUM);
+                default:
+                    break;
+            }
+        }
+    }
+
+    return true;
+}
+
+static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pname)
 {
     if (!tex) {
         return;
     }
 
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
+    if (mglTextureParameterAffectsTextureDescriptor(pname)) {
+        tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
+    }
     if (ctx) {
         STATE(dirty_bits) |= DIRTY_TEX_PARAM;
+        if (mglTextureParameterAffectsTextureDescriptor(pname)) {
+            STATE(dirty_bits) |= DIRTY_TEX;
+        }
     }
 }
 
-static GLint mglTexLevelCanonicalInternalFormat(GLint internalformat)
+static void mglUpdateTextureSwizzled(TextureParameter *tex_params)
+{
+    if (!tex_params) {
+        return;
+    }
+
+    tex_params->swizzled =
+        (tex_params->swizzle_r != GL_RED ||
+         tex_params->swizzle_g != GL_GREEN ||
+         tex_params->swizzle_b != GL_BLUE ||
+         tex_params->swizzle_a != GL_ALPHA);
+}
+
+GLint mglTexLevelCanonicalInternalFormat(GLint internalformat)
 {
     switch (internalformat)
     {
@@ -53,7 +183,7 @@ static GLint mglTexLevelCanonicalInternalFormat(GLint internalformat)
     }
 }
 
-static bool mglTexLevelInternalFormatCompressed(GLint internalformat)
+bool mglTexLevelInternalFormatCompressed(GLint internalformat)
 {
     switch (mglTexLevelCanonicalInternalFormat(internalformat))
     {
@@ -172,7 +302,7 @@ static bool mglTexLevelInternalFormatSignedNormalized(GLint internalformat)
     }
 }
 
-static GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname)
+GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname)
 {
     GLenum component = GL_NONE;
     GLint canonical = mglTexLevelCanonicalInternalFormat(internalformat);
@@ -193,7 +323,7 @@ static GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname)
     return (GLint)bitcountForInternalFormat(canonical, component);
 }
 
-static GLint mglTexLevelComponentType(GLint internalformat, GLenum pname)
+GLint mglTexLevelComponentType(GLint internalformat, GLenum pname)
 {
     GLenum component = GL_NONE;
     GLint canonical = mglTexLevelCanonicalInternalFormat(internalformat);
@@ -427,24 +557,28 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             if (!mglValidTextureSwizzle(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
             tex_params->swizzle_r = *param;
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         case GL_TEXTURE_SWIZZLE_G:
             if (!mglValidTextureSwizzle(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
             tex_params->swizzle_g = *param;
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         case GL_TEXTURE_SWIZZLE_B:
             if (!mglValidTextureSwizzle(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
             tex_params->swizzle_b = *param;
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         case GL_TEXTURE_SWIZZLE_A:
             if (!mglValidTextureSwizzle(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
             tex_params->swizzle_a = *param;
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         case GL_TEXTURE_WRAP_S:
@@ -489,21 +623,11 @@ bool setTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, c
                     return mglTexParameterError(ctx, GL_INVALID_ENUM);
             }
 
-         if ((params[0] != GL_RED) ||
-             (params[1] != GL_GREEN) ||
-             (params[2] != GL_BLUE) ||
-             (params[3] != GL_ALPHA))
-            {
-                tex_params->swizzled = true;
-                tex_params->swizzle_r = params[0];
-                tex_params->swizzle_g = params[1];
-                tex_params->swizzle_b = params[2];
-                tex_params->swizzle_a = params[3];
-            }
-            else
-            {
-                tex_params->swizzled = false;
-            }
+            tex_params->swizzle_r = params[0];
+            tex_params->swizzle_g = params[1];
+            tex_params->swizzle_b = params[2];
+            tex_params->swizzle_a = params[3];
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         default:
@@ -597,6 +721,7 @@ bool setTexParamsf(GLMContext ctx, TextureParameter *tex_params, GLenum pname, c
             tex_params->swizzle_g = (GLint)params[1];
             tex_params->swizzle_b = (GLint)params[2];
             tex_params->swizzle_a = (GLint)params[3];
+            mglUpdateTextureSwizzled(tex_params);
             break;
 
         default:
@@ -846,7 +971,7 @@ void mglTexParameterf(GLMContext ctx, GLenum target, GLenum pname, GLfloat param
 
     if (setParam(ctx, &tex->params, pname, 0, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -869,14 +994,14 @@ void mglTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, const GLfloa
    // more than one param... try setTexParamsf
     if (setTexParamsf(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
 
     if (setParam(ctx, &tex->params, pname, 0, *params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -894,7 +1019,7 @@ void mglTexParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
 
     if (setParam(ctx, &tex->params, pname, param, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -919,14 +1044,14 @@ void mglTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, const GLint 
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
 
     if (setParam(ctx, &tex->params, pname, *params, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -948,7 +1073,7 @@ void mglTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, const GLint
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -956,7 +1081,7 @@ void mglTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, const GLint
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -964,7 +1089,7 @@ void mglTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, const GLint
     GLfloat fparam = 0.0;
     if (setParam(ctx, &tex->params, pname, *params, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -986,7 +1111,7 @@ void mglTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, const GLui
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -994,7 +1119,7 @@ void mglTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, const GLui
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, (GLint *)params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -1002,7 +1127,7 @@ void mglTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, const GLui
     GLfloat fparam = 0.0;
     if (setParam(ctx, &tex->params, pname, *params, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1014,11 +1139,14 @@ void mglTextureParameterf(GLMContext ctx, GLuint texture, GLenum pname, GLfloat 
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)param))
+        return;
     mglFlushPendingDraws(ctx);
 
     if(setParam(ctx, &tex->params, pname, 0, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1036,22 +1164,25 @@ void mglTextureParameterfv(GLMContext ctx, GLuint texture, GLenum pname, const G
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)param[0]))
+        return;
     mglFlushPendingDraws(ctx);
 
     if(setTexParamsf(ctx, &tex->params, pname, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
     if(setTexParmf(ctx, &tex->params, pname, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
     if (setParam(ctx, &tex->params, pname, 0, *param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1063,11 +1194,14 @@ void mglTextureParameteri(GLMContext ctx, GLuint texture, GLenum pname, GLint pa
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, param))
+        return;
     mglFlushPendingDraws(ctx);
 
     if(setParam(ctx, &tex->params, pname, param, 0.0f))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1085,22 +1219,25 @@ void mglTextureParameteriv(GLMContext ctx, GLuint texture, GLenum pname, const G
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, param[0]))
+        return;
     mglFlushPendingDraws(ctx);
 
     if(setTexParamsi(ctx, &tex->params, pname, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
     if(setTexParmi(ctx, &tex->params, pname, param))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
     if (setParam(ctx, &tex->params, pname, *param, 0.0f))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1118,11 +1255,14 @@ void mglTextureParameterIiv(GLMContext ctx, GLuint texture, GLenum pname, const 
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, params[0]))
+        return;
     mglFlushPendingDraws(ctx);
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -1130,7 +1270,7 @@ void mglTextureParameterIiv(GLMContext ctx, GLuint texture, GLenum pname, const 
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -1138,7 +1278,7 @@ void mglTextureParameterIiv(GLMContext ctx, GLuint texture, GLenum pname, const 
     GLfloat fparam = 0.0;
     if (setParam(ctx, &tex->params, pname, *params, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1156,11 +1296,14 @@ void mglTextureParameterIuiv(GLMContext ctx, GLuint texture, GLenum pname, const
     Texture *tex = mglNamedTextureForParameter(ctx, texture);
     if (!tex)
         return;
+
+    if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)params[0]))
+        return;
     mglFlushPendingDraws(ctx);
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -1168,7 +1311,7 @@ void mglTextureParameterIuiv(GLMContext ctx, GLuint texture, GLenum pname, const
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, (GLint *)params))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
 
         return;
     }
@@ -1176,7 +1319,7 @@ void mglTextureParameterIuiv(GLMContext ctx, GLuint texture, GLenum pname, const
     GLfloat fparam = 0.0;
     if (setParam(ctx, &tex->params, pname, *params, fparam))
     {
-        mglMarkTextureParameterDirty(ctx, tex);
+        mglMarkTextureParameterDirty(ctx, tex, pname);
         return;
     }
 
@@ -1257,10 +1400,6 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     GLuint index;
     Texture *tex;
     GLint internalformat;
-
-    fprintf(stderr, "MGL GetTexLevelParameter ENTER target=0x%x level=%d pname=0x%x\n",
-            target, level, pname);
-
     if (!params)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -1298,58 +1437,36 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
         switch (pname)
         {
             case GL_TEXTURE_WIDTH:
-                *params = (level == 0) ? proxy_state->width : 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (level == 0) ? proxy_state->width : 0;                return;
             case GL_TEXTURE_HEIGHT:
-                *params = (level == 0) ? proxy_state->height : 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (level == 0) ? proxy_state->height : 0;                return;
             case GL_TEXTURE_DEPTH:
-                *params = (level == 0) ? proxy_state->depth : 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (level == 0) ? proxy_state->depth : 0;                return;
             case GL_TEXTURE_INTERNAL_FORMAT:
-                *params = proxy_internal;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = proxy_internal;                return;
             case GL_TEXTURE_RED_SIZE:
             case GL_TEXTURE_GREEN_SIZE:
             case GL_TEXTURE_BLUE_SIZE:
             case GL_TEXTURE_ALPHA_SIZE:
             case GL_TEXTURE_DEPTH_SIZE:
             case GL_TEXTURE_STENCIL_SIZE:
-                *params = (proxy_internal != 0) ? mglTexLevelComponentBits(proxy_internal, pname) : 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (proxy_internal != 0) ? mglTexLevelComponentBits(proxy_internal, pname) : 0;                return;
             case GL_TEXTURE_COMPRESSED:
-                *params = mglTexLevelInternalFormatCompressed(proxy_internal) ? GL_TRUE : GL_FALSE;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = mglTexLevelInternalFormatCompressed(proxy_internal) ? GL_TRUE : GL_FALSE;                return;
             case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
-                *params = 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = 0;                return;
             case GL_TEXTURE_RED_TYPE:
             case GL_TEXTURE_GREEN_TYPE:
             case GL_TEXTURE_BLUE_TYPE:
             case GL_TEXTURE_ALPHA_TYPE:
             case GL_TEXTURE_DEPTH_TYPE:
-                *params = (proxy_internal != 0) ? mglTexLevelComponentType(proxy_internal, pname) : GL_NONE;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (proxy_internal != 0) ? mglTexLevelComponentType(proxy_internal, pname) : GL_NONE;                return;
             case GL_TEXTURE_SAMPLES:
-                *params = 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = 0;                return;
             case GL_TEXTURE_FIXED_SAMPLE_LOCATIONS:
-                *params = GL_TRUE;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = GL_TRUE;                return;
             case GL_TEXTURE_SHARED_SIZE:
-                *params = (proxy_internal == GL_RGB9_E5) ? 5 : 0;
-                fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-                return;
+                *params = (proxy_internal == GL_RGB9_E5) ? 5 : 0;                return;
             default:
                 ERROR_RETURN(GL_INVALID_ENUM);
                 return;
@@ -1366,16 +1483,12 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     tex = currentTexture(ctx, index);
     if (!tex)
     {
-        *params = 0;
-        fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-        return;
+        *params = 0;        return;
     }
 
     if (level >= (GLint)tex->num_levels || !tex->faces[0].levels)
     {
-        *params = 0;
-        fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-        return;
+        *params = 0;        return;
     }
 
     internalformat = tex->internalformat;
@@ -1383,60 +1496,38 @@ void mglGetTexLevelParameteriv(GLMContext ctx, GLenum target, GLint level, GLenu
     switch (pname)
     {
         case GL_TEXTURE_WIDTH:
-            *params = tex->faces[0].levels[level].width;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = tex->faces[0].levels[level].width;            return;
         case GL_TEXTURE_HEIGHT:
-            *params = tex->faces[0].levels[level].height;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = tex->faces[0].levels[level].height;            return;
         case GL_TEXTURE_DEPTH:
-            *params = tex->faces[0].levels[level].depth;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = tex->faces[0].levels[level].depth;            return;
         case GL_TEXTURE_INTERNAL_FORMAT:
-            *params = internalformat;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = internalformat;            return;
         case GL_TEXTURE_RED_SIZE:
         case GL_TEXTURE_GREEN_SIZE:
         case GL_TEXTURE_BLUE_SIZE:
         case GL_TEXTURE_ALPHA_SIZE:
         case GL_TEXTURE_DEPTH_SIZE:
         case GL_TEXTURE_STENCIL_SIZE:
-            *params = mglTexLevelComponentBits(internalformat, pname);
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = mglTexLevelComponentBits(internalformat, pname);            return;
         case GL_TEXTURE_COMPRESSED:
-            *params = mglTexLevelInternalFormatCompressed(internalformat) ? GL_TRUE : GL_FALSE;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = mglTexLevelInternalFormatCompressed(internalformat) ? GL_TRUE : GL_FALSE;            return;
         case GL_TEXTURE_COMPRESSED_IMAGE_SIZE:
             *params = mglTexLevelInternalFormatCompressed(internalformat)
                 ? (GLint)tex->faces[0].levels[level].data_size
-                : 0;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+                : 0;            return;
         case GL_TEXTURE_RED_TYPE:
         case GL_TEXTURE_GREEN_TYPE:
         case GL_TEXTURE_BLUE_TYPE:
         case GL_TEXTURE_ALPHA_TYPE:
         case GL_TEXTURE_DEPTH_TYPE:
-            *params = mglTexLevelComponentType(internalformat, pname);
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = mglTexLevelComponentType(internalformat, pname);            return;
         case GL_TEXTURE_SAMPLES:
-            *params = 0;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = 0;            return;
         case GL_TEXTURE_FIXED_SAMPLE_LOCATIONS:
-            *params = GL_TRUE;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = GL_TRUE;            return;
         case GL_TEXTURE_SHARED_SIZE:
-            *params = (mglTexLevelCanonicalInternalFormat(internalformat) == GL_RGB9_E5) ? 5 : 0;
-            fprintf(stderr, "MGL GetTexLevelParameter target=0x%x level=%d pname=0x%x -> %d\n", target, level, pname, *params);
-            return;
+            *params = (mglTexLevelCanonicalInternalFormat(internalformat) == GL_RGB9_E5) ? 5 : 0;            return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;

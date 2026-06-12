@@ -262,6 +262,11 @@ GLMContext createGLMContext(GLenum format, GLenum type,
      * renderbuffers. Keep all public MSAA limits at zero so capability probes do
      * not take paths that would otherwise be silently downgraded to single-sample.
      */
+    if (STATE(var.max_compute_texture_image_units) == 0 ||
+        STATE(var.max_compute_texture_image_units) == 0x01010101u ||
+        STATE(var.max_compute_texture_image_units) > 16u) {
+        STATE(var.max_compute_texture_image_units) = 16u;
+    }
     STATE(var.max_sample_mask_words) = 0;
     STATE(var.max_color_texture_samples) = 0;
     STATE(var.max_depth_texture_samples) = 0;
@@ -409,6 +414,29 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(default_clear_color[1]) = 0.0f;
     STATE(default_clear_color[2]) = 0.0f;
     STATE(default_clear_color[3]) = 1.0f;
+
+    for (int i = 0; i < MAX_ATTRIBS; i++)
+    {
+        STATE(current_vertex_attrib[i].f[0]) = 0.0f;
+        STATE(current_vertex_attrib[i].f[1]) = 0.0f;
+        STATE(current_vertex_attrib[i].f[2]) = 0.0f;
+        STATE(current_vertex_attrib[i].f[3]) = 1.0f;
+        STATE(current_vertex_attrib[i].i[0]) = 0;
+        STATE(current_vertex_attrib[i].i[1]) = 0;
+        STATE(current_vertex_attrib[i].i[2]) = 0;
+        STATE(current_vertex_attrib[i].i[3]) = 1;
+        STATE(current_vertex_attrib[i].u[0]) = 0u;
+        STATE(current_vertex_attrib[i].u[1]) = 0u;
+        STATE(current_vertex_attrib[i].u[2]) = 0u;
+        STATE(current_vertex_attrib[i].u[3]) = 1u;
+        STATE(current_vertex_attrib[i].d[0]) = 0.0;
+        STATE(current_vertex_attrib[i].d[1]) = 0.0;
+        STATE(current_vertex_attrib[i].d[2]) = 0.0;
+        STATE(current_vertex_attrib[i].d[3]) = 1.0;
+        STATE(current_vertex_attrib[i].type) = GL_FLOAT;
+        STATE(current_vertex_attrib[i].integer) = GL_FALSE;
+        STATE(current_vertex_attrib[i].long_attribute) = GL_FALSE;
+    }
 
     STATE(var.logic_op) = GL_COPY;
     STATE(var.logic_op_mode) = GL_COPY;
