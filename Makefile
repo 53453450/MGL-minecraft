@@ -6,6 +6,7 @@ SHELL := /bin/bash
 # on M1 monterey, comment out the following line
 SDK_ROOT = $(shell xcrun --sdk macosx --show-sdk-path)
 APPLE_CLANG = $(shell xcrun --find clang)
+APPLE_CLANGXX = $(shell xcrun --find clang++)
 
 # lets only install from external, devs complained about brew and we want the latest build from spirv
 spirv_cross_include_path ?= ./external/SPIRV-Cross
@@ -278,6 +279,21 @@ lib: $(mgl_lib) $(mgl_es_lib) $(build_dir)/libglfw.dylib
 
 toolchain: $(mgl_toolchain_lib)
 
+repro_minecraft_gl := $(build_dir)/repro/minecraft_gl_repro
+
+repro: $(repro_minecraft_gl)
+
+$(repro_minecraft_gl): repro/minecraft_gl_repro.mm $(mgl_lib) $(build_dir)/libglfw.dylib Makefile
+	@mkdir -p $(dir $@)
+	$(APPLE_CLANGXX) -fobjc-arc -fmodules -MMD $(CFLAGS_GL_CORE) \
+		-I./external/glfw/include -I./external/glfw/src -IMGL/include/GL \
+		-o $@ $< \
+		-L$(build_dir) -lglfw -lmgl \
+		-Wl,-rpath,@executable_path/.. \
+		$(GLFW_FRAMEWORKS) -lc++
+	@install_name_tool -change build/libmgl.dylib @rpath/libmgl.dylib $@ 2>/dev/null || true
+	@install_name_tool -change $(build_dir)/libmgl.dylib @rpath/libmgl.dylib $@ 2>/dev/null || true
+
 test: $(test_exe)
 	$(test_exe)
 
@@ -366,6 +382,6 @@ compile-pkgdeps:
 
 	@echo "use /external/.sh"
 	
-.PHONY: default test dbg lib clean insall-pkgdeps test-make
+.PHONY: default test dbg lib repro clean insall-pkgdeps test-make
 
 -include $(deps)

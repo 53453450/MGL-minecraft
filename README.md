@@ -161,7 +161,60 @@ Objective-C 实现的 Metal 渲染器，处理：
 - RenderCommandEncoder 创建与管理
 - 状态映射 (OpenGL → Metal)
 - 绘制命令执行
-- 
+
+## 调试与最小复现
+
+### MGL_TRACE_LOG
+
+设置 `MGL_TRACE_LOG=1` 可以启用 MGL 内部 trace 日志。日志默认写到 `libmgl.dylib` 所在目录，文件名格式为 `mgl-trace-<pid>.log`。
+
+常用开关：
+
+```bash
+MGL_TRACE_LOG=1
+MGL_TRACE_LOG_DRAW=1
+MGL_TRACE_LOG_RESOURCES=1
+MGL_TRACE_LOG_GUI=1
+MGL_TRACE_LOG_PROGRAMS=91,92,93
+```
+
+这些变量可以按需加入启动器环境变量，用于捕获 draw、资源绑定、GUI 或指定 program 的调试信息。
+
+### Minecraft GL 最小复现
+
+仓库内提供了两个面向 Minecraft 1.21.11 渲染路径的最小复现 case，用于验证 MGL 是否正确覆盖相关 OpenGL 调用：
+
+- `cloud-tbo-vertexid`: 云渲染路径，覆盖 `isamplerBuffer`、`GL_R8I` texture buffer、`gl_VertexID` 和大规模 indexed draw。
+- `rt-pingpong-blur`: 后处理路径，覆盖 FBO ping-pong、RGBA8 render target 采样和 blur pass。
+
+构建：
+
+```bash
+cd MGL-minecraft
+make repro
+```
+
+运行全部 case：
+
+```bash
+./build/repro/minecraft_gl_repro all
+```
+
+单独运行：
+
+```bash
+./build/repro/minecraft_gl_repro cloud-tbo-vertexid
+./build/repro/minecraft_gl_repro rt-pingpong-blur
+```
+
+输出图片默认写入当前运行目录下的 `mgl-repro-output/`。也可以用 `MGL_REPRO_OUTPUT_DIR` 指定输出目录：
+
+```bash
+MGL_REPRO_OUTPUT_DIR=./mgl-repro-output ./build/repro/minecraft_gl_repro all
+```
+
+注意：case 名是程序参数，不需要把可执行文件路径再作为参数传入。
+
 ## 致谢
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS

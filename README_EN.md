@@ -185,6 +185,59 @@ Implemented in Objective-C, responsible for:
 - State mapping (OpenGL → Metal)
 - Draw call execution
 
+## Debugging and Repro Cases
+
+### MGL_TRACE_LOG
+
+Set `MGL_TRACE_LOG=1` to enable MGL internal trace logging. Logs are written next to `libmgl.dylib` by default, using the file name format `mgl-trace-<pid>.log`.
+
+Useful switches:
+
+```bash
+MGL_TRACE_LOG=1
+MGL_TRACE_LOG_DRAW=1
+MGL_TRACE_LOG_RESOURCES=1
+MGL_TRACE_LOG_GUI=1
+MGL_TRACE_LOG_PROGRAMS=91,92,93
+```
+
+These variables can be added to the launcher environment as needed to capture draw, resource binding, GUI, or selected program diagnostics.
+
+### Minecraft GL Repro Cases
+
+The repository includes two minimal repro cases for Minecraft 1.21.11 rendering paths. They are useful for checking whether MGL covers the relevant OpenGL calls correctly:
+
+- `cloud-tbo-vertexid`: cloud rendering path, covering `isamplerBuffer`, `GL_R8I` texture buffers, `gl_VertexID`, and large indexed draws.
+- `rt-pingpong-blur`: post-processing path, covering FBO ping-pong, RGBA8 render target sampling, and blur passes.
+
+Build:
+
+```bash
+cd MGL-minecraft
+make repro
+```
+
+Run all cases:
+
+```bash
+./build/repro/minecraft_gl_repro all
+```
+
+Run individual cases:
+
+```bash
+./build/repro/minecraft_gl_repro cloud-tbo-vertexid
+./build/repro/minecraft_gl_repro rt-pingpong-blur
+```
+
+Output images are written to `mgl-repro-output/` under the current working directory by default. You can override the output directory with `MGL_REPRO_OUTPUT_DIR`:
+
+```bash
+MGL_REPRO_OUTPUT_DIR=./mgl-repro-output ./build/repro/minecraft_gl_repro all
+```
+
+Note: the case name is the program argument. Do not pass the executable path again as an argument.
+
 ## Acknowledgements
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS

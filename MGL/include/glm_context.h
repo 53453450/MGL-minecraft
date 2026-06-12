@@ -481,6 +481,7 @@ typedef struct SpirvUBOMember_t {
     GLint       matrix_stride; /* GL_UNIFORM_MATRIX_STRIDE, -1 if not a matrix  */
     GLboolean   is_row_major;  /* GL_UNIFORM_IS_ROW_MAJOR                       */
     GLint       size;        /* GL_UNIFORM_SIZE (array element count, 1 for scalar) */
+    GLint       location_offset; /* Plain struct leaf location relative to parent */
 } SpirvUBOMember;
 
 typedef struct SpirvResource_t {
@@ -492,6 +493,7 @@ typedef struct SpirvResource_t {
     /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
     GLuint  ubo_array_size;
+    GLboolean ubo_is_array;
     GLuint  ubo_array_element;
     GLuint *ubo_array_bindings;
     GLboolean ubo_has_instance_name;

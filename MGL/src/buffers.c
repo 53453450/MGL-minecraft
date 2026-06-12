@@ -361,6 +361,16 @@ bool isBuffer(GLMContext ctx, GLuint buffer)
     return ((Buffer *)searchHashTable(&STATE(buffer_table), buffer)) != NULL;
 }
 
+static bool mglBufferNameWasGenerated(GLMContext ctx, GLuint buffer)
+{
+#ifdef MGL_GL_ES
+    (void)ctx;
+    return buffer != 0u;
+#else
+    return ctx && buffer != 0u && buffer <= STATE(buffer_table).current_name;
+#endif
+}
+
 Buffer *findBuffer(GLMContext ctx, GLuint buffer)
 {
     if (!ctx || buffer == 0u)
@@ -1249,6 +1259,12 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
 
     if (buffer)
     {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
         ptr = getBuffer(ctx, target, buffer);
         if (!ptr)
         {
@@ -1327,6 +1343,12 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
 
     if (buffer)
     {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
         ptr = getBuffer(ctx, target, buffer);
         if (!ptr) {
             ERROR_RETURN(GL_OUT_OF_MEMORY);
@@ -1478,6 +1500,12 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     }
 
     {
+        if (!mglBufferNameWasGenerated(ctx, buffer))
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
         ptr = getBuffer(ctx, target, buffer);
         if (!ptr) {
             ERROR_RETURN(GL_OUT_OF_MEMORY);
@@ -1665,7 +1693,7 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
         return;
     }
 
-    ptr = STATE(buffers[index]);
+    ptr = mglGetBoundBufferForTarget(ctx, target);
     if (ptr == NULL)
     {
         fprintf(stderr,
@@ -1831,7 +1859,13 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         ERROR_RETURN(GL_INVALID_ENUM);
     }
     
-    ptr = ctx->state.buffers[index];
+    ptr = mglGetBoundBufferForTarget(ctx, target);
+    if (!ptr)
+    {
+        fprintf(stderr, "MGL Error: mglBufferSubData: no buffer bound to target 0x%x\n", target);
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
     // COMPREHENSIVE BUFFER SAFETY: Validate buffer pointer and get size safely (void function)
     GLsizeiptr buffer_size;

@@ -31,6 +31,7 @@
 #include "mgl_safety.h"
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
+extern void mglTraceLogExternal(const char *fmt, ...);
 #include "spirv_cross_c.h"
 
 static void mglInitVertexArrayDefaultsForDraw(VertexArray *vao)
@@ -1286,6 +1287,13 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
     mglInvalidateColorShadowsForDraw(ctx);
 
     if (ctx->draw_defer_enabled) {
+        mglTraceLogExternal("DRAW_ARRAYS_FRONTEND mode=0x%x first=%d count=%d program=%u vao=%p defer=1 dirty=0x%x",
+                            (unsigned)mode,
+                            (int)first,
+                            (int)count,
+                            (unsigned)(ctx->state.program ? ctx->state.program->name : ctx->state.program_name),
+                            ctx->state.vao,
+                            (unsigned)ctx->state.dirty_bits);
         MGLDrawCommand cmd;
         memset(&cmd, 0, sizeof(cmd));
         cmd.type = MGL_CMD_DRAW_ARRAYS;
@@ -1297,6 +1305,13 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
         return;
     }
 
+    mglTraceLogExternal("DRAW_ARRAYS_FRONTEND mode=0x%x first=%d count=%d program=%u vao=%p defer=0 dirty=0x%x",
+                        (unsigned)mode,
+                        (int)first,
+                        (int)count,
+                        (unsigned)(ctx->state.program ? ctx->state.program->name : ctx->state.program_name),
+                        ctx->state.vao,
+                        (unsigned)ctx->state.dirty_bits);
     ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
 }
 

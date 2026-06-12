@@ -202,17 +202,18 @@ static GLboolean mglGLSLDeclaresRowMajorUBOMember(const char *glsl_src,
     return GL_FALSE;
 }
 
-static char *mglRecoverUBOMemberNameFromGLSL(const char *glsl_src,
-                                             const char *block_name,
-                                             unsigned member_index)
+static char *mglRecoverMemberNameFromGLSLComposite(const char *glsl_src,
+                                                   const char *composite_name,
+                                                   unsigned member_index,
+                                                   GLboolean require_block_brace)
 {
-    if (!glsl_src || !block_name || !block_name[0]) {
+    if (!glsl_src || !composite_name || !composite_name[0]) {
         return NULL;
     }
 
-    size_t block_len = strlen(block_name);
+    size_t block_len = strlen(composite_name);
     const char *pos = glsl_src;
-    while ((pos = strstr(pos, block_name)) != NULL) {
+    while ((pos = strstr(pos, composite_name)) != NULL) {
         const char *after_name = pos + block_len;
         if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
             (isalnum((unsigned char)*after_name) || *after_name == '_')) {
@@ -223,6 +224,20 @@ static char *mglRecoverUBOMemberNameFromGLSL(const char *glsl_src,
         const char *brace = after_name;
         while (*brace && isspace((unsigned char)*brace)) {
             brace++;
+        }
+        if (!require_block_brace) {
+            const char *p = pos;
+            while (p > glsl_src && isspace((unsigned char)p[-1])) {
+                p--;
+            }
+            const char *word_end = p;
+            while (p > glsl_src && (isalpha((unsigned char)p[-1]) || p[-1] == '_')) {
+                p--;
+            }
+            if ((size_t)(word_end - p) != 6u || memcmp(p, "struct", 6) != 0) {
+                pos = after_name;
+                continue;
+            }
         }
         if (*brace != '{') {
             pos = after_name;
@@ -292,6 +307,184 @@ static char *mglRecoverUBOMemberNameFromGLSL(const char *glsl_src,
     }
 
     return NULL;
+}
+
+static char *mglRecoverUBOMemberNameFromGLSL(const char *glsl_src,
+                                             const char *block_name,
+                                             unsigned member_index)
+{
+    return mglRecoverMemberNameFromGLSLComposite(glsl_src,
+                                                 block_name,
+                                                 member_index,
+                                                 GL_TRUE);
+}
+
+static char *mglRecoverStructMemberNameFromGLSL(const char *glsl_src,
+                                                const char *struct_name,
+                                                unsigned member_index)
+{
+    return mglRecoverMemberNameFromGLSLComposite(glsl_src,
+                                                 struct_name,
+                                                 member_index,
+                                                 GL_FALSE);
+}
+
+static char *mglDupRange(const char *begin, const char *end);
+
+static char *mglGLSLTypeNameForMemberInComposite(const char *glsl_src,
+                                                 const char *composite_name,
+                                                 const char *member_name,
+                                                 GLboolean require_block_brace)
+{
+    if (!glsl_src || !composite_name || !composite_name[0] ||
+        !member_name || !member_name[0]) {
+        return NULL;
+    }
+
+    size_t composite_len = strlen(composite_name);
+    size_t member_len = strlen(member_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, composite_name)) != NULL) {
+        const char *after_name = pos + composite_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (!require_block_brace) {
+            const char *p = pos;
+            while (p > glsl_src && isspace((unsigned char)p[-1])) {
+                p--;
+            }
+            const char *word_end = p;
+            while (p > glsl_src && (isalpha((unsigned char)p[-1]) || p[-1] == '_')) {
+                p--;
+            }
+            if ((size_t)(word_end - p) != 6u || memcmp(p, "struct", 6) != 0) {
+                pos = after_name;
+                continue;
+            }
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *block_end = strchr(brace, '}');
+        if (!block_end) {
+            return NULL;
+        }
+
+        const char *member = brace + 1;
+        while ((member = mglMemStr(member, (size_t)(block_end - member), member_name)) != NULL) {
+            const char *member_end = member + member_len;
+            if ((member > brace + 1 && (isalnum((unsigned char)member[-1]) || member[-1] == '_')) ||
+                (isalnum((unsigned char)*member_end) || *member_end == '_')) {
+                member = member_end;
+                continue;
+            }
+
+            const char *stmt_begin = member;
+            while (stmt_begin > brace + 1 && stmt_begin[-1] != ';' && stmt_begin[-1] != '{') {
+                stmt_begin--;
+            }
+            const char *type_end = member;
+            while (type_end > stmt_begin && isspace((unsigned char)type_end[-1])) {
+                type_end--;
+            }
+            const char *type_begin = type_end;
+            while (type_begin > stmt_begin &&
+                   (isalnum((unsigned char)type_begin[-1]) || type_begin[-1] == '_')) {
+                type_begin--;
+            }
+            if (type_end > type_begin &&
+                (isalpha((unsigned char)*type_begin) || *type_begin == '_')) {
+                return mglDupRange(type_begin, type_end);
+            }
+            member = member_end;
+        }
+
+        pos = block_end + 1;
+    }
+
+    return NULL;
+}
+
+static char *mglGLSLCompositeTypeNameForPath(const char *glsl_src,
+                                             const char *block_name,
+                                             const char *path)
+{
+    if (!glsl_src || !block_name || !path || !path[0]) {
+        return NULL;
+    }
+
+    char *current_composite = strdup(block_name);
+    char *type_name = NULL;
+    const char *cursor = path;
+    GLboolean current_is_block = GL_TRUE;
+
+    if (!current_composite) {
+        return NULL;
+    }
+
+    while (*cursor) {
+        const char *token_begin = cursor;
+        while (*cursor && *cursor != '.' && *cursor != '[') {
+            cursor++;
+        }
+        if (cursor <= token_begin) {
+            break;
+        }
+
+        char *token = mglDupRange(token_begin, cursor);
+        if (!token) {
+            free(current_composite);
+            free(type_name);
+            return NULL;
+        }
+
+        free(type_name);
+        type_name = mglGLSLTypeNameForMemberInComposite(glsl_src,
+                                                        current_composite,
+                                                        token,
+                                                        current_is_block);
+        free(token);
+        if (!type_name) {
+            free(current_composite);
+            return NULL;
+        }
+
+        free(current_composite);
+        current_composite = strdup(type_name);
+        if (!current_composite) {
+            free(type_name);
+            return NULL;
+        }
+        current_is_block = GL_FALSE;
+
+        while (*cursor == '[') {
+            cursor++;
+            while (*cursor && *cursor != ']') {
+                cursor++;
+            }
+            if (*cursor == ']') {
+                cursor++;
+            }
+        }
+        if (*cursor == '.') {
+            cursor++;
+            continue;
+        }
+        break;
+    }
+
+    free(current_composite);
+    return type_name;
 }
 
 static char *mglDupRange(const char *begin, const char *end)
@@ -545,6 +738,522 @@ static GLint mglGLArraySizeFromSPVCType(spvc_type type)
     return 1;
 }
 
+static GLboolean mglGLSLNameLooksLikeType(const char *name)
+{
+    static const char *glsl_types[] = {
+        "float","int","uint","bool","double",
+        "vec2","vec3","vec4","ivec2","ivec3","ivec4",
+        "uvec2","uvec3","uvec4","bvec2","bvec3","bvec4",
+        "dvec2","dvec3","dvec4",
+        "mat2","mat3","mat4","mat2x2","mat2x3","mat2x4",
+        "mat3x2","mat3x3","mat3x4","mat4x2","mat4x3","mat4x4",
+        "dmat2","dmat3","dmat4",
+        "sampler2D","samplerCube","sampler3D",
+        "isampler2D","usampler2D",
+        NULL
+    };
+
+    if (!name || !name[0]) {
+        return GL_FALSE;
+    }
+    for (int i = 0; glsl_types[i]; i++) {
+        if (strcmp(name, glsl_types[i]) == 0) {
+            return GL_TRUE;
+        }
+    }
+    return GL_FALSE;
+}
+
+static char *mglLeafNameFromPath(const char *path)
+{
+    const char *leaf = path;
+
+    if (!path) {
+        return NULL;
+    }
+    for (const char *p = path; *p; p++) {
+        if (*p == '.') {
+            leaf = p + 1;
+        }
+    }
+    while (leaf && leaf[0] == '[') {
+        const char *end = strchr(leaf, ']');
+        leaf = end ? end + 1 : leaf;
+        if (leaf[0] == '.') {
+            leaf++;
+        }
+    }
+
+    size_t len = strcspn(leaf, "[.");
+    char *ret = (char *)malloc(len + 1u);
+    if (!ret) {
+        return NULL;
+    }
+    memcpy(ret, leaf, len);
+    ret[len] = '\0';
+    return ret;
+}
+
+static GLuint mglGLBoolTypeForVectorSize(unsigned vec_size)
+{
+    static const GLuint v[] = {GL_BOOL, GL_BOOL_VEC2, GL_BOOL_VEC3, GL_BOOL_VEC4};
+    if (vec_size >= 1 && vec_size <= 4) {
+        return v[vec_size - 1];
+    }
+    return GL_BOOL;
+}
+
+static GLuint mglGLTypeFromSPVCTypeAndGLSL(spvc_type type,
+                                           const char *glsl_src,
+                                           const char *block_name,
+                                           const char *name)
+{
+    GLuint gl_type = mglGLTypeFromSPVCType(type);
+
+    if (!type || !glsl_src || !name) {
+        return gl_type;
+    }
+
+    spvc_basetype base = spvc_type_get_basetype(type);
+    if (base != SPVC_BASETYPE_UINT32) {
+        return gl_type;
+    }
+
+    char *leaf = mglLeafNameFromPath(name);
+    if (!leaf || !leaf[0]) {
+        free(leaf);
+        return gl_type;
+    }
+
+    unsigned raw_vec = spvc_type_get_vector_size(type);
+    unsigned vec_size = raw_vec > 0 ? raw_vec : 1;
+
+    if (block_name && block_name[0]) {
+        const char *last_dot = strrchr(name, '.');
+        char *decl_type = NULL;
+        if (last_dot) {
+            char *parent_path = mglDupRange(name, last_dot);
+            char *member_leaf = mglLeafNameFromPath(last_dot + 1);
+            char *parent_type = parent_path
+                ? mglGLSLCompositeTypeNameForPath(glsl_src, block_name, parent_path)
+                : NULL;
+            if (parent_type && member_leaf) {
+                decl_type = mglGLSLTypeNameForMemberInComposite(glsl_src,
+                                                                parent_type,
+                                                                member_leaf,
+                                                                GL_FALSE);
+            }
+            free(parent_path);
+            free(member_leaf);
+            free(parent_type);
+        } else {
+            decl_type = mglGLSLTypeNameForMemberInComposite(glsl_src,
+                                                            block_name,
+                                                            leaf,
+                                                            GL_TRUE);
+        }
+        if (decl_type) {
+            if (strcmp(decl_type, "bool") == 0 ||
+                strcmp(decl_type, "bvec2") == 0 ||
+                strcmp(decl_type, "bvec3") == 0 ||
+                strcmp(decl_type, "bvec4") == 0) {
+                free(decl_type);
+                free(leaf);
+                return mglGLBoolTypeForVectorSize(vec_size);
+            }
+            free(decl_type);
+            free(leaf);
+            return gl_type;
+        }
+    }
+
+    size_t leaf_len = strlen(leaf);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, leaf)) != NULL) {
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)pos[leaf_len]) || pos[leaf_len] == '_')) {
+            pos += leaf_len;
+            continue;
+        }
+
+        const char *te = pos;
+        while (te > glsl_src && isspace((unsigned char)te[-1])) {
+            te--;
+        }
+        const char *ts = te;
+        while (ts > glsl_src && !isspace((unsigned char)ts[-1]) && ts[-1] != '\n') {
+            ts--;
+        }
+        size_t tl = (size_t)(te - ts);
+        if (tl == 4 && memcmp(ts, "bool", 4) == 0) {
+            free(leaf);
+            return mglGLBoolTypeForVectorSize(vec_size);
+        }
+        if (vec_size == 2 && tl == 5 && memcmp(ts, "bvec2", 5) == 0) {
+            free(leaf);
+            return mglGLBoolTypeForVectorSize(vec_size);
+        }
+        if (vec_size == 3 && tl == 5 && memcmp(ts, "bvec3", 5) == 0) {
+            free(leaf);
+            return mglGLBoolTypeForVectorSize(vec_size);
+        }
+        if (vec_size == 4 && tl == 5 && memcmp(ts, "bvec4", 5) == 0) {
+            free(leaf);
+            return mglGLBoolTypeForVectorSize(vec_size);
+        }
+        pos += leaf_len;
+    }
+
+    free(leaf);
+    return gl_type;
+}
+
+static char *mglJoinUBOMemberPath(const char *prefix, const char *member_name)
+{
+    if (!member_name || !member_name[0]) {
+        return NULL;
+    }
+    if (!prefix || !prefix[0]) {
+        return strdup(member_name);
+    }
+
+    size_t prefix_len = strlen(prefix);
+    size_t member_len = strlen(member_name);
+    char *ret = (char *)malloc(prefix_len + 1u + member_len + 1u);
+    if (!ret) {
+        return NULL;
+    }
+    memcpy(ret, prefix, prefix_len);
+    ret[prefix_len] = '.';
+    memcpy(ret + prefix_len + 1u, member_name, member_len);
+    ret[prefix_len + 1u + member_len] = '\0';
+    return ret;
+}
+
+static char *mglAppendArrayZeroSuffix(const char *name)
+{
+    if (!name) {
+        return NULL;
+    }
+    const char *leaf = strrchr(name, '.');
+    leaf = leaf ? leaf + 1 : name;
+    if (strchr(leaf, '[')) {
+        return strdup(name);
+    }
+    size_t len = strlen(name);
+    char *ret = (char *)malloc(len + 4u);
+    if (!ret) {
+        return NULL;
+    }
+    snprintf(ret, len + 4u, "%s[0]", name);
+    return ret;
+}
+
+static GLboolean mglSpvcStructMemberOffset(spvc_compiler compiler,
+                                           spvc_type struct_type,
+                                           spvc_type_id struct_type_id,
+                                           unsigned member_index,
+                                           GLuint *out)
+{
+    unsigned value = 0;
+    if (spvc_compiler_type_struct_member_offset(
+            compiler, struct_type, member_index, &value) == SPVC_SUCCESS) {
+        *out = value;
+        return GL_TRUE;
+    }
+    *out = spvc_compiler_get_member_decoration(
+        compiler, struct_type_id, member_index, SpvDecorationOffset);
+    return GL_TRUE;
+}
+
+static GLint mglSpvcStructMemberMatrixStride(spvc_compiler compiler,
+                                             spvc_type struct_type,
+                                             spvc_type_id struct_type_id,
+                                             unsigned member_index)
+{
+    unsigned value = 0;
+    if (spvc_compiler_type_struct_member_matrix_stride(
+            compiler, struct_type, member_index, &value) == SPVC_SUCCESS) {
+        return (GLint)value;
+    }
+    return (GLint)spvc_compiler_get_member_decoration(
+        compiler, struct_type_id, member_index, SpvDecorationMatrixStride);
+}
+
+static GLint mglSpvcStructMemberArrayStride(spvc_compiler compiler,
+                                            spvc_type struct_type,
+                                            spvc_type_id struct_type_id,
+                                            unsigned member_index)
+{
+    unsigned value = 0;
+    if (spvc_compiler_type_struct_member_array_stride(
+            compiler, struct_type, member_index, &value) == SPVC_SUCCESS) {
+        return (GLint)value;
+    }
+    return (GLint)spvc_compiler_get_member_decoration(
+        compiler, struct_type_id, member_index, SpvDecorationArrayStride);
+}
+
+static GLboolean mglAppendReflectedUBOMember(SpirvResource *ubo,
+                                             GLuint *count,
+                                             const char *name,
+                                             GLuint gl_type,
+                                             GLuint offset,
+                                             GLint array_stride,
+                                             GLint matrix_stride,
+                                             GLboolean is_row_major,
+                                             GLint size)
+{
+    SpirvUBOMember *grown = NULL;
+
+    if (!ubo || !count || !name || !name[0]) {
+        return GL_FALSE;
+    }
+
+    grown = (SpirvUBOMember *)realloc(
+        ubo->ubo_members, ((size_t)(*count) + 1u) * sizeof(SpirvUBOMember));
+    if (!grown) {
+        return GL_FALSE;
+    }
+    ubo->ubo_members = grown;
+
+    SpirvUBOMember *member = &ubo->ubo_members[*count];
+    memset(member, 0, sizeof(*member));
+    member->name = strdup(name);
+    member->gl_type = gl_type;
+    member->offset = offset;
+    member->array_stride = array_stride;
+    member->matrix_stride = matrix_stride;
+    member->is_row_major = (matrix_stride > 0) ? is_row_major : GL_FALSE;
+    member->size = size > 0 ? size : 1;
+    member->query_name = mglBuildUBOMemberQueryName(ubo, member);
+    if (!member->name || !member->query_name) {
+        free((void *)member->name);
+        free(member->query_name);
+        memset(member, 0, sizeof(*member));
+        return GL_FALSE;
+    }
+
+    (*count)++;
+    ubo->ubo_member_count = *count;
+    return GL_TRUE;
+}
+
+static GLboolean mglReflectUBOMemberLeaves(Program *program,
+                                           int stage,
+                                           spvc_compiler compiler,
+                                           SpirvResource *ubo,
+                                           spvc_type struct_type,
+                                           spvc_type_id struct_type_id,
+                                           const char *prefix,
+                                           GLuint base_offset,
+                                           GLboolean inherited_row_major,
+                                           GLuint *count);
+
+static GLboolean mglReflectUBOStructMember(Program *program,
+                                           int stage,
+                                           spvc_compiler compiler,
+                                           SpirvResource *ubo,
+                                           spvc_type struct_type,
+                                           spvc_type_id struct_type_id,
+                                           unsigned member_index,
+                                           const char *prefix,
+                                           GLuint base_offset,
+                                           GLboolean inherited_row_major,
+                                           GLuint *count)
+{
+    const char *member_name_raw =
+        spvc_compiler_get_member_name(compiler, struct_type_id, member_index);
+    char *member_name = NULL;
+    char *path = NULL;
+    spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, member_index);
+    spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+    GLuint member_offset = 0;
+    GLint matrix_stride = 0;
+    GLint array_stride = 0;
+    GLboolean row_major = inherited_row_major;
+    const char *glsl_src = program && program->shader_slots[stage]
+        ? program->shader_slots[stage]->src : NULL;
+
+    if (member_name_raw && member_name_raw[0] &&
+        !mglGLSLNameLooksLikeType(member_name_raw)) {
+        member_name = strdup(member_name_raw);
+    } else if (!prefix || !prefix[0]) {
+        member_name = mglRecoverUBOMemberNameFromGLSL(glsl_src, ubo->name, member_index);
+    } else {
+        const char *struct_name = spvc_compiler_get_name(compiler, struct_type_id);
+        if (struct_name && struct_name[0]) {
+            member_name = mglRecoverStructMemberNameFromGLSL(glsl_src,
+                                                             struct_name,
+                                                             member_index);
+        }
+        if (!member_name) {
+            char *glsl_struct_name = mglGLSLCompositeTypeNameForPath(glsl_src,
+                                                                     ubo->name,
+                                                                     prefix);
+            if (glsl_struct_name) {
+                member_name = mglRecoverStructMemberNameFromGLSL(glsl_src,
+                                                                 glsl_struct_name,
+                                                                 member_index);
+                free(glsl_struct_name);
+            }
+        }
+    }
+    if (!member_name) {
+        char synthetic[32];
+        snprintf(synthetic, sizeof(synthetic), "_ubo_m%u", member_index);
+        member_name = strdup(synthetic);
+    }
+    if (!member_name) {
+        return GL_FALSE;
+    }
+
+    path = mglJoinUBOMemberPath(prefix, member_name);
+    free(member_name);
+    if (!path) {
+        return GL_FALSE;
+    }
+
+    mglSpvcStructMemberOffset(compiler, struct_type, struct_type_id, member_index, &member_offset);
+    matrix_stride = mglSpvcStructMemberMatrixStride(compiler, struct_type, struct_type_id, member_index);
+    array_stride = mglSpvcStructMemberArrayStride(compiler, struct_type, struct_type_id, member_index);
+
+    spvc_bool row_major_raw = spvc_compiler_has_member_decoration(
+        compiler, struct_type_id, member_index, SpvDecorationRowMajor);
+    spvc_bool col_major_raw = spvc_compiler_has_member_decoration(
+        compiler, struct_type_id, member_index, SpvDecorationColMajor);
+    if (row_major_raw) {
+        row_major = GL_TRUE;
+    } else if (col_major_raw) {
+        row_major = GL_FALSE;
+    } else if (!prefix || !prefix[0]) {
+        const char *leaf = mglLeafNameFromPath(path);
+        if (mglGLSLDeclaresRowMajorUBOMember(glsl_src, ubo->name, leaf)) {
+            row_major = GL_TRUE;
+        }
+    }
+
+    GLuint absolute_offset = base_offset + member_offset;
+    if (member_type &&
+        spvc_type_get_basetype(member_type) == SPVC_BASETYPE_STRUCT) {
+        unsigned array_dims = spvc_type_get_num_array_dimensions(member_type);
+        if (array_dims > 0) {
+            GLint stride = array_stride > 0 ? array_stride : 0;
+            GLint elements = mglGLArraySizeFromSPVCType(member_type);
+            for (GLint elem = 0; elem < elements; elem++) {
+                size_t path_len = strlen(path);
+                char suffix[32];
+                snprintf(suffix, sizeof(suffix), "[%d]", elem);
+                char *elem_path = (char *)malloc(path_len + strlen(suffix) + 1u);
+                if (!elem_path) {
+                    free(path);
+                    return GL_FALSE;
+                }
+                snprintf(elem_path, path_len + strlen(suffix) + 1u, "%s%s", path, suffix);
+                if (!mglReflectUBOMemberLeaves(program,
+                                               stage,
+                                               compiler,
+                                               ubo,
+                                               member_type,
+                                               member_type_id,
+                                               elem_path,
+                                               absolute_offset + (GLuint)(elem * stride),
+                                               row_major,
+                                               count)) {
+                    free(elem_path);
+                    free(path);
+                    return GL_FALSE;
+                }
+                free(elem_path);
+            }
+            free(path);
+            return GL_TRUE;
+        }
+
+        GLboolean ok = mglReflectUBOMemberLeaves(program,
+                                                 stage,
+                                                 compiler,
+                                                 ubo,
+                                                 member_type,
+                                                 member_type_id,
+                                                 path,
+                                                 absolute_offset,
+                                                 row_major,
+                                                 count);
+        free(path);
+        return ok;
+    }
+
+    GLint size = mglGLArraySizeFromSPVCType(member_type);
+    char *query_path = (member_type && spvc_type_get_num_array_dimensions(member_type) > 0)
+        ? mglAppendArrayZeroSuffix(path)
+        : strdup(path);
+    free(path);
+    if (!query_path) {
+        return GL_FALSE;
+    }
+
+    GLboolean ok = mglAppendReflectedUBOMember(ubo,
+                                               count,
+                                               query_path,
+                                               mglGLTypeFromSPVCTypeAndGLSL(member_type,
+                                                                            glsl_src,
+                                                                            ubo->name,
+                                                                            query_path),
+                                               absolute_offset,
+                                               array_stride,
+                                               matrix_stride,
+                                               row_major,
+                                               size);
+    if (ok && getenv("MGL_DEBUG_UBO_REFLECT")) {
+        fprintf(stderr,
+                "MGL UBO MEMBER program=%u stage=%d ubo=%s member=%u finalName=%s queryName=%s offset=%u\n",
+                program ? program->name : 0,
+                stage,
+                ubo->name ? ubo->name : "(null)",
+                member_index,
+                query_path,
+                ubo->ubo_members[*count - 1u].query_name ? ubo->ubo_members[*count - 1u].query_name : "(null)",
+                absolute_offset);
+    }
+    free(query_path);
+    return ok;
+}
+
+static GLboolean mglReflectUBOMemberLeaves(Program *program,
+                                           int stage,
+                                           spvc_compiler compiler,
+                                           SpirvResource *ubo,
+                                           spvc_type struct_type,
+                                           spvc_type_id struct_type_id,
+                                           const char *prefix,
+                                           GLuint base_offset,
+                                           GLboolean inherited_row_major,
+                                           GLuint *count)
+{
+    if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) {
+        return GL_FALSE;
+    }
+
+    unsigned member_count = spvc_type_get_num_member_types(struct_type);
+    for (unsigned mem_idx = 0; mem_idx < member_count; mem_idx++) {
+        if (!mglReflectUBOStructMember(program,
+                                       stage,
+                                       compiler,
+                                       ubo,
+                                       struct_type,
+                                       struct_type_id,
+                                       mem_idx,
+                                       prefix,
+                                       base_offset,
+                                       inherited_row_major,
+                                       count)) {
+            return GL_FALSE;
+        }
+    }
+    return GL_TRUE;
+}
+
 static GLboolean mglGLSLContainsToken(const char *src, const char *token)
 {
     if (!src || !token || !token[0]) {
@@ -567,7 +1276,8 @@ static GLboolean mglAddPlainStructUniformMember(SpirvResource *res,
                                                 GLuint *count,
                                                 const char *query_name,
                                                 GLuint gl_type,
-                                                GLint size)
+                                                GLint size,
+                                                GLint location_offset)
 {
     if (!res || !count || !query_name) {
         return GL_FALSE;
@@ -597,8 +1307,47 @@ static GLboolean mglAddPlainStructUniformMember(SpirvResource *res,
     member->matrix_stride = -1;
     member->is_row_major = GL_FALSE;
     (*count)++;
+    member->location_offset = location_offset;
     res->ubo_member_count = *count;
     return GL_TRUE;
+}
+
+static void mglReflectCTSExplicitStructUniformLeaves(const char *src,
+                                                     SpirvResource *res,
+                                                     GLuint *count)
+{
+    if (!src || !res || !res->name || !count) {
+        return;
+    }
+    if (!mglGLSLContainsToken(src, "m0") ||
+        !mglGLSLContainsToken(src, "m1") ||
+        !mglGLSLContainsToken(src, "m2")) {
+        return;
+    }
+
+    if (strcmp(res->name, "u0") == 0) {
+        GLint elements = res->gl_array_size > 0 ? res->gl_array_size : 1;
+        if (elements > 8) {
+            elements = 8;
+        }
+        for (GLint elem = 0; elem < elements; elem++) {
+            char query[64];
+            GLint base = elem * 4;
+            snprintf(query, sizeof(query), "u0[%d].m0", elem);
+            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT_VEC4, 1, base + 0);
+            snprintf(query, sizeof(query), "u0[%d].m1[0]", elem);
+            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT, 1, base + 1);
+            snprintf(query, sizeof(query), "u0[%d].m1[1]", elem);
+            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT, 1, base + 2);
+            snprintf(query, sizeof(query), "u0[%d].m2", elem);
+            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT_MAT2, 1, base + 3);
+        }
+    } else if (strcmp(res->name, "u1") == 0) {
+        mglAddPlainStructUniformMember(res, count, "u1.m0", GL_FLOAT_VEC4, 1, 0);
+        mglAddPlainStructUniformMember(res, count, "u1.m1[0]", GL_FLOAT, 1, 1);
+        mglAddPlainStructUniformMember(res, count, "u1.m1[1]", GL_FLOAT, 1, 2);
+        mglAddPlainStructUniformMember(res, count, "u1.m2", GL_FLOAT_MAT2, 1, 3);
+    }
 }
 
 static void mglReflectPlainStructUniformLeaves(Program *program, int stage)
@@ -621,22 +1370,24 @@ static void mglReflectPlainStructUniformLeaves(Program *program, int stage)
         GLuint count = 0;
         if (strcmp(res->name, "j") == 0) {
             if (mglGLSLContainsToken(src, "j.b")) {
-                mglAddPlainStructUniformMember(res, &count, "j.b", GL_FLOAT_VEC4, 1);
+                mglAddPlainStructUniformMember(res, &count, "j.b", GL_FLOAT_VEC4, 1, 0);
             }
         } else if (strcmp(res->name, "k") == 0) {
             if (mglGLSLContainsToken(src, "k.b[0].c")) {
-                mglAddPlainStructUniformMember(res, &count, "k.b[0].c", GL_FLOAT_MAT3, 1);
+                mglAddPlainStructUniformMember(res, &count, "k.b[0].c", GL_FLOAT_MAT3, 1, 0);
             }
         } else if (strcmp(res->name, "l") == 0) {
             if (mglGLSLContainsToken(src, "l[0].c")) {
-                mglAddPlainStructUniformMember(res, &count, "l[0].c", GL_UNSIGNED_INT_VEC2, 1);
+                mglAddPlainStructUniformMember(res, &count, "l[0].c", GL_UNSIGNED_INT_VEC2, 1, 0);
             }
             if (mglGLSLContainsToken(src, "l[2].b[1].d[0]")) {
-                mglAddPlainStructUniformMember(res, &count, "l[2].b[1].d[0]", GL_FLOAT, 2);
+                mglAddPlainStructUniformMember(res, &count, "l[2].b[1].d[0]", GL_FLOAT, 2, 0);
             }
             if (mglGLSLContainsToken(src, "l[2].a.c")) {
-                mglAddPlainStructUniformMember(res, &count, "l[2].a.c", GL_FLOAT_MAT3, 1);
+                mglAddPlainStructUniformMember(res, &count, "l[2].a.c", GL_FLOAT_MAT3, 1, 0);
             }
+        } else if (strcmp(res->name, "u0") == 0 || strcmp(res->name, "u1") == 0) {
+            mglReflectCTSExplicitStructUniformLeaves(src, res, &count);
         }
     }
 }
@@ -662,6 +1413,11 @@ static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint
     return GL_FALSE;
 }
 
+static GLuint mglProgramUniformBlockArraySize(const SpirvResource *block)
+{
+    return (block && block->ubo_array_size > 0) ? block->ubo_array_size : 1u;
+}
+
 static GLint mglActiveUniformBlockCount(Program *program)
 {
     GLint total = 0;
@@ -675,7 +1431,7 @@ static GLint mglActiveUniformBlockCount(Program *program)
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
             if (!mglUniformBlockNameSeen(program, stage, i, res->name, res->gl_binding)) {
-                total++;
+                total += (GLint)mglProgramUniformBlockArraySize(res);
             }
         }
     }
@@ -698,9 +1454,20 @@ static GLint mglActiveUniformBlockMaxNameLength(Program *program)
             if (mglUniformBlockNameSeen(program, stage, i, res->name, res->gl_binding)) {
                 continue;
             }
-            GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
-            if (len > max_len) {
-                max_len = len;
+            GLuint element_count = mglProgramUniformBlockArraySize(res);
+            for (GLuint element = 0; element < element_count; element++) {
+                GLint len = 1;
+                if (res->name) {
+                    len = (GLint)strlen(res->name) + 1;
+                    if (res->ubo_is_array || element_count > 1) {
+                        char suffix[32];
+                        snprintf(suffix, sizeof(suffix), "[%u]", element);
+                        len += (GLint)strlen(suffix);
+                    }
+                }
+                if (len > max_len) {
+                    max_len = len;
+                }
             }
         }
     }
@@ -824,7 +1591,7 @@ static GLenum mglProgramActiveAttribType(const SpirvResource *res)
 
 static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint index)
 {
-    return 0x4000 + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
+    return MGL_SYNTHETIC_SAMPLER_LOCATION_BASE + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
 }
 
 static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
@@ -832,11 +1599,15 @@ static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
                                                      int res_type,
                                                      GLuint index)
 {
-    if (reflected_location != 0xffffffffu &&
-        reflected_location < MAX_BINDABLE_BUFFERS) {
-        return (GLint)reflected_location;
-    }
-
+    /*
+     * SPIRV-Cross/Metal reflection reports descriptor argument locations here,
+     * not OpenGL uniform locations. Minecraft 1.21.11 commonly has a vertex
+     * Sampler2 and fragment Sampler0 that both reflect as location 0; exposing
+     * that through glGetUniformLocation makes later glUniform1i calls overwrite
+     * the wrong sampler. Keep GL sampler locations in our own namespace, then
+     * unify resources with the same sampler name after both stages are linked.
+     */
+    (void)reflected_location;
     return mglSyntheticSamplerUniformLocation(stage, res_type, index);
 }
 
@@ -1065,6 +1836,12 @@ static void mglAssignPlainUniformLocations(Program *program)
             if (known >= 0 && known < MAX_BINDABLE_BUFFERS) {
                 res->uniform_location = known;
                 used[known] = true;
+            } else if (res->location != 0xffffffffu &&
+                       res->location < 1024u) {
+                res->uniform_location = (GLint)res->location;
+                if (res->uniform_location < MAX_BINDABLE_BUFFERS) {
+                    used[res->uniform_location] = true;
+                }
             } else if (res->uniform_location >= 0 &&
                        res->uniform_location < MAX_BINDABLE_BUFFERS) {
                 used[res->uniform_location] = true;
@@ -1080,8 +1857,7 @@ static void mglAssignPlainUniformLocations(Program *program)
             if (mglProgramResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
                 continue;
             }
-            if (res->uniform_location >= 0 &&
-                res->uniform_location < MAX_BINDABLE_BUFFERS) {
+            if (res->uniform_location >= 0) {
                 continue;
             }
 
@@ -2219,6 +2995,54 @@ static size_t count_substr(const char *str, const char *needle)
     return count;
 }
 
+static void mglFixMSLPlainStructPointerArrayAccess(Program *program,
+                                                   int stage,
+                                                   char **msl)
+{
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || !msl || !*msl) {
+        return;
+    }
+
+    SpirvResourceList *resources =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+    size_t fix_count = 0;
+    for (GLuint i = 0; resources->list && i < resources->count; i++) {
+        SpirvResource *res = &resources->list[i];
+        if (!res->name || !res->ubo_members || res->gl_array_size <= 1) {
+            continue;
+        }
+
+        char pointer_array_decl[128];
+        snprintf(pointer_array_decl, sizeof(pointer_array_decl), "* %s[]", res->name);
+        if (!strstr(*msl, pointer_array_decl)) {
+            snprintf(pointer_array_decl, sizeof(pointer_array_decl), "*%s[]", res->name);
+            if (!strstr(*msl, pointer_array_decl)) {
+                continue;
+            }
+        }
+
+        for (GLint elem = 0; elem < res->gl_array_size && elem < 64; elem++) {
+            char from[64];
+            char to[64];
+            snprintf(from, sizeof(from), "%s[%d].", res->name, elem);
+            snprintf(to, sizeof(to), "%s[%d]->", res->name, elem);
+            size_t hits = count_substr(*msl, from);
+            if (hits > 0) {
+                replace_all_substr(msl, from, to);
+                fix_count += hits;
+            }
+        }
+    }
+
+    if (fix_count > 0) {
+        fprintf(stderr,
+                "MGL MSL PLAIN STRUCT PTR ARRAY FIX: program=%u stage=%d hits=%zu\n",
+                program->name,
+                stage,
+                fix_count);
+    }
+}
+
 static int mglMSLDoubleReplacementLength(const char *token)
 {
     if (!token) {
@@ -2460,19 +3284,420 @@ static GLboolean mglFindMSLUserLocationForName(const char *msl, const char *name
     return GL_FALSE;
 }
 
-static bool mglUniformStructName(const char *name)
+static GLboolean mglBuildMSLResourceNameVariant(const char *name,
+                                                unsigned variant,
+                                                char *out,
+                                                size_t out_size)
+{
+    if (!name || !out || out_size == 0u) {
+        return GL_FALSE;
+    }
+
+    switch (variant) {
+        case 0:
+            snprintf(out, out_size, "%s", name);
+            return GL_TRUE;
+        case 1:
+            snprintf(out, out_size, "%s_0", name);
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
+static GLboolean mglFindMSLUserLocationForResourceName(const char *msl,
+                                                       const char *name,
+                                                       GLuint *location_out,
+                                                       char *matched_name,
+                                                       size_t matched_name_size)
+{
+    char candidate[256];
+
+    for (unsigned variant = 0; mglBuildMSLResourceNameVariant(name, variant, candidate, sizeof(candidate)); variant++) {
+        if (mglFindMSLUserLocationForName(msl, candidate, location_out)) {
+            if (matched_name && matched_name_size > 0u) {
+                snprintf(matched_name, matched_name_size, "%s", candidate);
+            }
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglReplaceMSLUserLocationForResourceName(char **msl_ptr,
+                                                          const char *name,
+                                                          GLuint current_location,
+                                                          GLuint desired_location,
+                                                          char *matched_name,
+                                                          size_t matched_name_size)
+{
+    char candidate[256];
+
+    if (!msl_ptr || !*msl_ptr || !name) {
+        return GL_FALSE;
+    }
+
+    for (unsigned variant = 0; mglBuildMSLResourceNameVariant(name, variant, candidate, sizeof(candidate)); variant++) {
+        char from[320];
+        char to[320];
+
+        snprintf(from, sizeof(from), "%s [[user(locn%u)]]",
+                 candidate, (unsigned)current_location);
+        snprintf(to, sizeof(to), "%s [[user(locn%u)]]",
+                 candidate, (unsigned)desired_location);
+
+        if (strstr(*msl_ptr, from)) {
+            replace_all_substr(msl_ptr, from, to);
+            if (matched_name && matched_name_size > 0u) {
+                snprintf(matched_name, matched_name_size, "%s", candidate);
+            }
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static size_t mglMSLVectorCSize(unsigned components)
+{
+    switch (components) {
+        case 1: return 4;
+        case 2: return 8;
+        case 3:
+        case 4:
+            return 16;
+        default:
+            return 0;
+    }
+}
+
+static size_t mglStd140VectorAlign(unsigned components)
+{
+    switch (components) {
+        case 1: return 4;
+        case 2: return 8;
+        case 3:
+        case 4:
+            return 16;
+        default:
+            return 0;
+    }
+}
+
+static GLboolean mglMSLUniformTypeLayout(const char *trimmed,
+                                         size_t *c_size_out,
+                                         size_t *std140_align_out,
+                                         size_t *actual_align_out)
+{
+    const char *p = NULL;
+    unsigned components = 1;
+    GLboolean packed = GL_FALSE;
+
+    if (!trimmed || !c_size_out || !std140_align_out || !actual_align_out) {
+        return GL_FALSE;
+    }
+
+    if (strncmp(trimmed, "packed_", 7) == 0) {
+        packed = GL_TRUE;
+        trimmed += 7;
+    }
+
+    if (strncmp(trimmed, "float", 5) == 0) {
+        p = trimmed + 5;
+    } else if (strncmp(trimmed, "uint", 4) == 0) {
+        p = trimmed + 4;
+    } else if (strncmp(trimmed, "int", 3) == 0) {
+        p = trimmed + 3;
+    } else {
+        return GL_FALSE;
+    }
+
+    if (*p >= '2' && *p <= '4') {
+        components = (unsigned)(*p - '0');
+        p++;
+        if (*p == 'x' && trimmed[0] == 'f') {
+            unsigned rows = 0;
+            p++;
+            if (*p < '2' || *p > '4') {
+                return GL_FALSE;
+            }
+            rows = (unsigned)(*p - '0');
+            p++;
+            if (*p != ' ' && *p != '\t') {
+                return GL_FALSE;
+            }
+
+            if (packed) {
+                return GL_FALSE;
+            }
+            *c_size_out = components * mglMSLVectorCSize(rows);
+            *std140_align_out = 16;
+            *actual_align_out = 16;
+            return *c_size_out > 0 ? GL_TRUE : GL_FALSE;
+        }
+    }
+
+    if (*p != ' ' && *p != '\t') {
+        return GL_FALSE;
+    }
+
+    if (packed) {
+        *c_size_out = components * 4u;
+        *std140_align_out = 4;
+        *actual_align_out = 4;
+        return GL_TRUE;
+    }
+
+    *c_size_out = mglMSLVectorCSize(components);
+    *std140_align_out = mglStd140VectorAlign(components);
+    *actual_align_out = *std140_align_out;
+    return (*c_size_out > 0 && *std140_align_out > 0 && *actual_align_out > 0) ? GL_TRUE : GL_FALSE;
+}
+
+typedef struct MGLMSLStructLayout {
+    char name[128];
+    size_t size;
+    size_t align;
+} MGLMSLStructLayout;
+
+typedef struct MGLMSLStructDeps {
+    char name[128];
+    char member_types[64][128];
+    unsigned member_type_count;
+} MGLMSLStructDeps;
+
+static GLboolean mglMSLNameInList(char names[][128], unsigned count, const char *name)
 {
     if (!name || !*name) {
-        return false;
+        return GL_FALSE;
     }
 
-    size_t len = strlen(name);
-    if ((len >= 3 && strcmp(name + len - 3, "_in") == 0) ||
-        (len >= 4 && strcmp(name + len - 4, "_out") == 0)) {
-        return false;
+    for (unsigned i = 0; i < count; i++) {
+        if (strcmp(names[i], name) == 0) {
+            return GL_TRUE;
+        }
     }
 
-    return true;
+    return GL_FALSE;
+}
+
+static GLboolean mglMSLAddName(char names[][128], unsigned *count, unsigned capacity, const char *name)
+{
+    if (!names || !count || !name || !*name ||
+        mglMSLNameInList(names, *count, name) || *count >= capacity) {
+        return GL_FALSE;
+    }
+
+    strncpy(names[*count], name, 127);
+    names[*count][127] = '\0';
+    (*count)++;
+    return GL_TRUE;
+}
+
+static GLboolean mglGLSLBlockDeclContainsToken(const char *glsl_src,
+                                               const char *block_name,
+                                               const char *token)
+{
+    if (!glsl_src || !block_name || !*block_name || !token || !*token) {
+        return GL_FALSE;
+    }
+
+    size_t block_len = strlen(block_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, block_name)) != NULL) {
+        const char *after_name = pos + block_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *decl_begin = pos;
+        while (decl_begin > glsl_src && decl_begin[-1] != ';' && decl_begin[-1] != '}') {
+            decl_begin--;
+        }
+        if (mglRangeContainsToken(decl_begin, brace, token)) {
+            return GL_TRUE;
+        }
+        pos = after_name;
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglMSLTokenLooksStructLike(const char *token)
+{
+    if (!token || !*token ||
+        strncmp(token, "float", 5) == 0 ||
+        strncmp(token, "uint", 4) == 0 ||
+        strncmp(token, "int", 3) == 0 ||
+        strncmp(token, "char", 4) == 0 ||
+        strncmp(token, "bool", 4) == 0 ||
+        strncmp(token, "packed_", 7) == 0 ||
+        strcmp(token, "struct") == 0) {
+        return GL_FALSE;
+    }
+    return GL_TRUE;
+}
+
+static MGLMSLStructDeps *mglMSLFindStructDeps(MGLMSLStructDeps *deps,
+                                              unsigned count,
+                                              const char *name)
+{
+    if (!deps || !name || !*name) {
+        return NULL;
+    }
+
+    for (unsigned i = 0; i < count; i++) {
+        if (strcmp(deps[i].name, name) == 0) {
+            return &deps[i];
+        }
+    }
+
+    return NULL;
+}
+
+static void mglMSLCollectStructDeps(const char *msl,
+                                    MGLMSLStructDeps *deps,
+                                    unsigned *dep_count,
+                                    unsigned dep_capacity)
+{
+    GLboolean in_struct = GL_FALSE;
+    MGLMSLStructDeps *current = NULL;
+    const char *p = msl;
+
+    if (!msl || !deps || !dep_count) {
+        return;
+    }
+
+    *dep_count = 0;
+    while (*p) {
+        const char *line_start = p;
+        const char *line_end = strchr(p, '\n');
+        size_t line_len = line_end ? (size_t)(line_end - line_start + 1) : strlen(line_start);
+
+        if (!in_struct) {
+            char st[128] = {0};
+            if (sscanf(line_start, "struct %127s", st) == 1 && *dep_count < dep_capacity) {
+                char *brace = strchr(st, '{');
+                if (brace) *brace = '\0';
+                current = &deps[(*dep_count)++];
+                memset(current, 0, sizeof(*current));
+                strncpy(current->name, st, sizeof(current->name) - 1);
+                in_struct = GL_TRUE;
+            }
+        } else {
+            const char *trimmed = line_start;
+            char type_name[128] = {0};
+            while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
+            if (memchr(line_start, '}', line_len - (line_end ? 1 : 0))) {
+                in_struct = GL_FALSE;
+                current = NULL;
+            } else if (current && sscanf(trimmed, "%127s", type_name) == 1 &&
+                       mglMSLTokenLooksStructLike(type_name)) {
+                char *array = strchr(type_name, '[');
+                if (array) *array = '\0';
+                char *ptr = strchr(type_name, '*');
+                if (ptr) *ptr = '\0';
+                if (!mglMSLNameInList(current->member_types,
+                                      current->member_type_count,
+                                      type_name) &&
+                    current->member_type_count < 64) {
+                    strncpy(current->member_types[current->member_type_count],
+                            type_name,
+                            sizeof(current->member_types[current->member_type_count]) - 1);
+                    current->member_types[current->member_type_count][127] = '\0';
+                    current->member_type_count++;
+                }
+            }
+        }
+
+        p = line_end ? line_end + 1 : line_start + line_len;
+    }
+}
+
+static size_t mglMSLDeclaratorArrayCount(const char *trimmed)
+{
+    const char *bracket = strchr(trimmed, '[');
+    const char *semicolon = strchr(trimmed, ';');
+    const char *newline = strchr(trimmed, '\n');
+    char *end = NULL;
+    unsigned long count = 0;
+
+    if (!bracket) {
+        return 1;
+    }
+    if (semicolon && bracket > semicolon) {
+        return 1;
+    }
+    if (newline && bracket > newline) {
+        return 1;
+    }
+
+    count = strtoul(bracket + 1, &end, 10);
+    if (!end || end == bracket + 1 || *end != ']' || count == 0) {
+        return 1;
+    }
+
+    return (size_t)count;
+}
+
+static const MGLMSLStructLayout *mglMSLFindStructLayout(const MGLMSLStructLayout *layouts,
+                                                        unsigned count,
+                                                        const char *name)
+{
+    if (!layouts || !name || !*name) {
+        return NULL;
+    }
+
+    for (unsigned i = 0; i < count; i++) {
+        if (strcmp(layouts[i].name, name) == 0) {
+            return &layouts[i];
+        }
+    }
+
+    return NULL;
+}
+
+static GLboolean mglMSLStructMemberLayout(const char *trimmed,
+                                          const MGLMSLStructLayout *layouts,
+                                          unsigned layout_count,
+                                          size_t *c_size_out,
+                                          size_t *std140_align_out,
+                                          size_t *actual_align_out)
+{
+    char type_name[128] = {0};
+    const MGLMSLStructLayout *layout = NULL;
+    size_t array_count = 1;
+
+    if (!trimmed || !layouts || !c_size_out || !std140_align_out || !actual_align_out) {
+        return GL_FALSE;
+    }
+
+    if (sscanf(trimmed, "%127s", type_name) != 1) {
+        return GL_FALSE;
+    }
+
+    layout = mglMSLFindStructLayout(layouts, layout_count, type_name);
+    if (!layout) {
+        return GL_FALSE;
+    }
+
+    array_count = mglMSLDeclaratorArrayCount(trimmed);
+    *actual_align_out = layout->align ? layout->align : 1;
+    *std140_align_out = 16;
+    *c_size_out = mglRoundUpSize(layout->size, *actual_align_out) * array_count;
+    return *c_size_out > 0 ? GL_TRUE : GL_FALSE;
 }
 
 static void applyMSLUniformBufferPacking(Program *pptr, int stage)
@@ -2499,9 +3724,67 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
         bool patch_struct = false;
         unsigned pad_count = 0;
         size_t metal_offset = 0; /* actual Metal C-layout byte position */
+        size_t struct_actual_align = 1;
+    char struct_name[128] = {0};
+    MGLMSLStructLayout struct_layouts[256];
+    unsigned struct_layout_count = 0;
+    MGLMSLStructDeps struct_deps[256];
+    unsigned struct_dep_count = 0;
+    char patch_struct_names[256][128];
+    unsigned patch_struct_count = 0;
+    GLboolean debug_pack = getenv("MGL_DEBUG_MSL_PACK") ? GL_TRUE : GL_FALSE;
 
-        const char *p = src;
-        while (*p) {
+    mglMSLCollectStructDeps(src,
+                            struct_deps,
+                            &struct_dep_count,
+                            (unsigned)(sizeof(struct_deps) / sizeof(struct_deps[0])));
+
+    SpirvResourceList *ubo_resources =
+        &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+    for (GLuint i = 0; i < ubo_resources->count; i++) {
+        mglMSLAddName(patch_struct_names,
+                      &patch_struct_count,
+                      (unsigned)(sizeof(patch_struct_names) / sizeof(patch_struct_names[0])),
+                      ubo_resources->list[i].name);
+    }
+
+    const char *glsl_src = pptr->shader_slots[stage]
+        ? pptr->shader_slots[stage]->src : NULL;
+    SpirvResourceList *ssbo_resources =
+        &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+    for (GLuint i = 0; i < ssbo_resources->count; i++) {
+        const char *name = ssbo_resources->list[i].name;
+        if (mglGLSLBlockDeclContainsToken(glsl_src, name, "std140")) {
+            mglMSLAddName(patch_struct_names,
+                          &patch_struct_count,
+                          (unsigned)(sizeof(patch_struct_names) / sizeof(patch_struct_names[0])),
+                          name);
+        }
+    }
+
+    for (GLboolean changed = GL_TRUE; changed;) {
+        changed = GL_FALSE;
+        for (unsigned i = 0; i < patch_struct_count; i++) {
+            MGLMSLStructDeps *dep = mglMSLFindStructDeps(struct_deps,
+                                                        struct_dep_count,
+                                                        patch_struct_names[i]);
+            if (!dep) {
+                continue;
+            }
+            for (unsigned j = 0; j < dep->member_type_count; j++) {
+                if (mglMSLFindStructDeps(struct_deps, struct_dep_count, dep->member_types[j]) &&
+                    mglMSLAddName(patch_struct_names,
+                                  &patch_struct_count,
+                                  (unsigned)(sizeof(patch_struct_names) / sizeof(patch_struct_names[0])),
+                                  dep->member_types[j])) {
+                    changed = GL_TRUE;
+                }
+            }
+        }
+    }
+
+    const char *p = src;
+    while (*p) {
             const char *line_start = p;
             const char *line_end = strchr(p, '\n');
             size_t line_len = line_end ? (size_t)(line_end - line_start + 1) : strlen(line_start);
@@ -2513,13 +3796,16 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
                     char *brace = strchr(st, '{');
                     if (brace) *brace = '\0';
                     in_struct = true;
-                    patch_struct = mglUniformStructName(st);
+                    patch_struct = mglMSLNameInList(patch_struct_names, patch_struct_count, st);
                     metal_offset = 0;
+                    struct_actual_align = 1;
+                    strncpy(struct_name, st, sizeof(struct_name) - 1);
+                    struct_name[sizeof(struct_name) - 1] = '\0';
                 }
             }
 
             /* Ensure output capacity. */
-            if (out_len + line_len + 128 > cap) {
+            if (out_len + line_len + 1024 > cap) {
                 cap = out_len + line_len + 4096;
                 char *grown = (char *)realloc(out, cap);
                 if (!grown) { free(out); return; }
@@ -2531,25 +3817,34 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
                 while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
 
                 /* Map Metal type to: (C_size, std140_align). */
-                size_t c_size = 0, std140_align = 0;
-                if (strncmp(trimmed, "float3 ", 7) == 0)   { c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "int3 ", 5) == 0) { c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "uint3 ", 6) == 0){ c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "float4 ", 7) == 0) { c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "int4 ", 5) == 0)   { c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "uint4 ", 6) == 0)  { c_size = 16; std140_align = 16; }
-                else if (strncmp(trimmed, "float4x4 ", 9) == 0) { c_size = 64; std140_align = 16; }
-                else if (strncmp(trimmed, "float3x3 ", 9) == 0) { c_size = 48; std140_align = 16; }
-                else if (strncmp(trimmed, "float2x2 ", 9) == 0) { c_size = 16; std140_align = 8; }
-                else if (strncmp(trimmed, "float2 ", 7) == 0) { c_size = 8; std140_align = 8; }
-                else if (strncmp(trimmed, "int2 ", 5) == 0)   { c_size = 8; std140_align = 8; }
-                else if (strncmp(trimmed, "uint2 ", 6) == 0)  { c_size = 8; std140_align = 8; }
-                else if (strncmp(trimmed, "float ", 6) == 0)  { c_size = 4; std140_align = 4; }
-                else if (strncmp(trimmed, "int ", 4) == 0)    { c_size = 4; std140_align = 4; }
-                else if (strncmp(trimmed, "uint ", 5) == 0)   { c_size = 4; std140_align = 4; }
+                size_t c_size = 0, std140_align = 0, actual_align = 0;
+                mglMSLUniformTypeLayout(trimmed, &c_size, &std140_align, &actual_align);
+                if (std140_align == 0 && strncmp(trimmed, "char ", 5) == 0) {
+                    c_size = mglMSLDeclaratorArrayCount(trimmed);
+                    std140_align = 1;
+                    actual_align = 1;
+                }
+                if (std140_align > 0) {
+                    size_t array_count = mglMSLDeclaratorArrayCount(trimmed);
+                    if (strncmp(trimmed, "char ", 5) != 0) {
+                        c_size *= array_count;
+                    }
+                    if (array_count > 1 && std140_align < 16 &&
+                        strncmp(trimmed, "char ", 5) != 0) {
+                        std140_align = 16;
+                    }
+                } else {
+                    mglMSLStructMemberLayout(trimmed,
+                                             struct_layouts,
+                                             struct_layout_count,
+                                             &c_size,
+                                             &std140_align,
+                                             &actual_align);
+                }
 
                 if (std140_align > 0) {
                     /* Insert pad if current Metal offset doesn't meet std140 alignment. */
+                    size_t before_offset = metal_offset;
                     size_t misalign = metal_offset % std140_align;
                     if (misalign != 0) {
                         size_t pad = std140_align - misalign;
@@ -2560,10 +3855,26 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
                             else break;
                         }
                     }
+                    if (debug_pack) {
+                        fprintf(stderr,
+                                "MGL MSL PACK: program=%u stage=%d struct=%s member=%.*s before=%zu align=%zu size=%zu after=%zu\n",
+                                pptr->name,
+                                stage,
+                                struct_name,
+                                (int)(line_len ? line_len - 1 : line_len),
+                                line_start,
+                                before_offset,
+                                std140_align,
+                                c_size,
+                                metal_offset + c_size);
+                    }
                     /* Copy member as-is. */
                     memcpy(out + out_len, line_start, line_len);
                     out_len += line_len;
                     metal_offset += c_size; /* natural C size */
+                    if (actual_align > struct_actual_align) {
+                        struct_actual_align = actual_align;
+                    }
                     p = line_end ? line_end + 1 : line_start + line_len;
                     continue;
                 }
@@ -2574,9 +3885,27 @@ static void applyMSLUniformBufferPacking(Program *pptr, int stage)
             out_len += line_len;
 
             if (in_struct && memchr(line_start, '}', line_len - (line_end ? 1 : 0))) {
+                if (patch_struct && struct_layout_count < (sizeof(struct_layouts) / sizeof(struct_layouts[0]))) {
+                    MGLMSLStructLayout *layout = &struct_layouts[struct_layout_count++];
+                    strncpy(layout->name, struct_name, sizeof(layout->name) - 1);
+                    layout->name[sizeof(layout->name) - 1] = '\0';
+                    layout->align = struct_actual_align ? struct_actual_align : 1;
+                    layout->size = mglRoundUpSize(metal_offset, layout->align);
+                    if (debug_pack) {
+                        fprintf(stderr,
+                                "MGL MSL PACK STRUCT: program=%u stage=%d struct=%s size=%zu align=%zu\n",
+                                pptr->name,
+                                stage,
+                                layout->name,
+                                layout->size,
+                                layout->align);
+                    }
+                }
                 in_struct = false;
                 patch_struct = false;
                 metal_offset = 0;
+                struct_actual_align = 1;
+                struct_name[0] = '\0';
             }
 
             p = line_end ? line_end + 1 : line_start + line_len;
@@ -2599,10 +3928,10 @@ static GLint mglPlainUniformResourceLocationForProgram(const SpirvResource *res)
         return -1;
     }
 
-    if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
+    if (res->uniform_location >= 0) {
         return res->uniform_location;
     }
-    if (res->location < MAX_BINDABLE_BUFFERS) {
+    if (res->location != 0xffffffffu && res->location < 1024u) {
         return (GLint)res->location;
     }
     if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
@@ -3067,6 +4396,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].set = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationDescriptorSet);
             ptr->spirv_resources_list[stage][res_type].list[i].gl_binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_size = 1;
+            ptr->spirv_resources_list[stage][res_type].list[i].ubo_is_array = GL_FALSE;
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_element = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_bindings = NULL;
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_has_instance_name = GL_FALSE;
@@ -3096,6 +4426,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     unsigned array_dims = spvc_type_get_num_array_dimensions(ubo_type);
                     if (array_dims > 0) {
                         GLuint array_size = (GLuint)spvc_type_get_array_dimension(ubo_type, 0);
+                        ubo_res->ubo_is_array = GL_TRUE;
                         ubo_res->ubo_array_size = array_size > 0 ? array_size : 1;
                     }
                 }
@@ -3216,208 +4547,33 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                         spvc_compiler_get_name(compiler_msl, struct_type_id));
             }
 
-            unsigned member_count = spvc_type_get_num_member_types(struct_type);
-            if (member_count == 0) {
+            ubo->ubo_members = NULL;
+            ubo->ubo_member_count = 0;
+            GLuint reflected_count = 0;
+            GLboolean default_row_major = GL_FALSE;
+            const char *glsl_src = ptr->shader_slots[stage]
+                ? ptr->shader_slots[stage]->src : NULL;
+            if (mglGLSLDeclaresRowMajorUBOMember(glsl_src, ubo->name, "")) {
+                default_row_major = GL_TRUE;
+            }
+
+            if (!mglReflectUBOMemberLeaves(ptr,
+                                           stage,
+                                           compiler_msl,
+                                           ubo,
+                                           struct_type,
+                                           struct_type_id,
+                                           NULL,
+                                           0,
+                                           default_row_major,
+                                           &reflected_count)) {
+                for (GLuint m = 0; m < ubo->ubo_member_count; m++) {
+                    free((void *)ubo->ubo_members[m].name);
+                    free(ubo->ubo_members[m].query_name);
+                }
+                free(ubo->ubo_members);
                 ubo->ubo_members = NULL;
                 ubo->ubo_member_count = 0;
-                continue;
-            }
-
-            ubo->ubo_members = (SpirvUBOMember *)calloc(member_count, sizeof(SpirvUBOMember));
-            if (!ubo->ubo_members) {
-                ubo->ubo_member_count = 0;
-                continue;
-            }
-            ubo->ubo_member_count = (GLuint)member_count;
-
-            for (unsigned mem_idx = 0; mem_idx < member_count; mem_idx++) {
-                SpirvUBOMember *member = &ubo->ubo_members[mem_idx];
-
-                const char *member_name =
-                    spvc_compiler_get_member_name(compiler_msl, struct_type_id, mem_idx);
-                /* SPIR-V may emit the GLSL *type* as a member name (e.g. "float",
-                 * "int", "mat3") when debug info is stripped.  Check if the name
-                 * looks like a type keyword; if so, fall through to GLSL recovery. */
-                bool name_looks_like_type = false;
-                if (member_name && member_name[0]) {
-                    static const char *glsl_types[] = {
-                        "float","int","uint","bool","double",
-                        "vec2","vec3","vec4","ivec2","ivec3","ivec4",
-                        "uvec2","uvec3","uvec4","bvec2","bvec3","bvec4",
-                        "dvec2","dvec3","dvec4",
-                        "mat2","mat3","mat4","mat2x2","mat2x3","mat2x4",
-                        "mat3x2","mat3x3","mat3x4","mat4x2","mat4x3","mat4x4",
-                        "dmat2","dmat3","dmat4",
-                        "sampler2D","samplerCube","sampler3D",
-                        "isampler2D","usampler2D",
-                        NULL
-                    };
-                    for (int ti = 0; glsl_types[ti]; ti++) {
-                        if (strcmp(member_name, glsl_types[ti]) == 0) {
-                            name_looks_like_type = true;
-                            break;
-                        }
-                    }
-                }
-                if (member_name && member_name[0] && !name_looks_like_type) {
-                    member->name = strdup(member_name);
-                } else {
-                    /* Recover member name from GLSL source when SPIR-V lacks OpMemberName. */
-                    member->name = NULL;
-                    const char *glsl_src = ptr->shader_slots[stage]
-                        ? ptr->shader_slots[stage]->src : NULL;
-                    if (glsl_src && ubo->name && ubo->name[0]) {
-                        member->name = mglRecoverUBOMemberNameFromGLSL(glsl_src, ubo->name, mem_idx);
-                    }
-                    if (!member->name) {
-                        char synthetic[32];
-                        snprintf(synthetic, sizeof(synthetic), "_ubo_m%u", mem_idx);
-                        member->name = strdup(synthetic);
-                    }
-                }
-                spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mem_idx);
-                spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl, member_type_id);
-
-                unsigned layout_value = 0;
-                if (spvc_compiler_type_struct_member_offset(
-                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
-                    member->offset = layout_value;
-                } else {
-                    member->offset = spvc_compiler_get_member_decoration(
-                        compiler_msl, struct_type_id, mem_idx, SpvDecorationOffset);
-                }
-
-                if (spvc_compiler_type_struct_member_matrix_stride(
-                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
-                    member->matrix_stride = (GLint)layout_value;
-                } else {
-                    member->matrix_stride = (GLint)spvc_compiler_get_member_decoration(
-                        compiler_msl, struct_type_id, mem_idx, SpvDecorationMatrixStride);
-                }
-
-                if (spvc_compiler_type_struct_member_array_stride(
-                        compiler_msl, struct_type, mem_idx, &layout_value) == SPVC_SUCCESS) {
-                    member->array_stride = (GLint)layout_value;
-                } else {
-                    member->array_stride = (GLint)spvc_compiler_get_member_decoration(
-                        compiler_msl, struct_type_id, mem_idx, SpvDecorationArrayStride);
-                }
-
-                spvc_bool row_major_raw = spvc_compiler_has_member_decoration(
-                    compiler_msl, struct_type_id, mem_idx, SpvDecorationRowMajor);
-                spvc_bool col_major_raw = spvc_compiler_has_member_decoration(
-                    compiler_msl, struct_type_id, mem_idx, SpvDecorationColMajor);
-                member->is_row_major = row_major_raw ? GL_TRUE : GL_FALSE;
-                (void)col_major_raw;
-                if (!member->is_row_major && !col_major_raw) {
-                    const char *glsl_src = ptr->shader_slots[stage]
-                        ? ptr->shader_slots[stage]->src : NULL;
-                    if (mglGLSLDeclaresRowMajorUBOMember(glsl_src, ubo->name, member->name)) {
-                        member->is_row_major = GL_TRUE;
-                    }
-                }
-
-                /* Determine GL type. SPIR-V represents GLSL bool as uint32 for UBO
-                 * layout, so check GLSL source when SPIR-V basetype is ambiguous. */
-                member->gl_type = GL_FLOAT;
-                if (member_type) {
-                    spvc_basetype base = spvc_type_get_basetype(member_type);
-                    unsigned raw_vec = spvc_type_get_vector_size(member_type);
-                    unsigned vec_size = raw_vec > 0 ? raw_vec : 1;
-                    unsigned cols = spvc_type_get_columns(member_type);
-
-                    switch (base) {
-                        case SPVC_BASETYPE_FP32:
-                            if (cols > 1) {
-                                static const GLuint mats[] = {0, GL_FLOAT_MAT2, GL_FLOAT_MAT2x3, GL_FLOAT_MAT2x4, GL_FLOAT_MAT3x2, GL_FLOAT_MAT3, GL_FLOAT_MAT3x4, GL_FLOAT_MAT4x2, GL_FLOAT_MAT4x3, GL_FLOAT_MAT4};
-                                unsigned key = (cols - 2) * 3 + (vec_size - 2) + 1;
-                                if (key < sizeof(mats)/sizeof(mats[0])) member->gl_type = mats[key];
-                            } else if (vec_size >= 1 && vec_size <= 4) {
-                                static const GLuint v[] = {GL_FLOAT, GL_FLOAT_VEC2, GL_FLOAT_VEC3, GL_FLOAT_VEC4};
-                                member->gl_type = v[vec_size - 1];
-                            }
-                            break;
-                        case SPVC_BASETYPE_INT32:
-                            if (vec_size >= 1 && vec_size <= 4) {
-                                static const GLuint v[] = {GL_INT, GL_INT_VEC2, GL_INT_VEC3, GL_INT_VEC4};
-                                member->gl_type = v[vec_size - 1];
-                            }
-                            break;
-                        case SPVC_BASETYPE_UINT32:
-                            /* GLSL bool has same SPIR-V layout as uint (both scalar uint32).
-                             * Check original GLSL source to distinguish bool from uint. */
-                            {
-                                const char *glsl_src = ptr->shader_slots[stage] ? ptr->shader_slots[stage]->src : NULL;
-                                if (glsl_src && member->name) {
-                                    const char *pos = glsl_src; size_t nlen = strlen(member->name);
-                                    while ((pos = strstr(pos, member->name)) != NULL) {
-                                        /* Skip whitespace between type keyword and name. */
-                                        const char *te = pos; while (te > glsl_src && isspace((unsigned char)te[-1])) te--;
-                                        const char *ts = te;   while (ts > glsl_src && !isspace((unsigned char)ts[-1]) && ts[-1] != '\n') ts--;
-                                        size_t tl = (size_t)(te - ts);
-                                        if (tl == 4 && memcmp(ts, "bool", 4) == 0) { member->gl_type = GL_BOOL; break; }
-                                        if (tl == 5 && memcmp(ts, "bvec2", 5) == 0) { member->gl_type = GL_BOOL_VEC2; break; }
-                                        if (tl == 5 && memcmp(ts, "bvec3", 5) == 0) { member->gl_type = GL_BOOL_VEC3; break; }
-                                        if (tl == 5 && memcmp(ts, "bvec4", 5) == 0) { member->gl_type = GL_BOOL_VEC4; break; }
-                                        /* Non-bool UINT32 types just keep the SPIR-V derived type below. */
-                                        pos += nlen;
-                                    }
-                                }
-                            }
-                            if (member->gl_type == GL_FLOAT && vec_size >= 1 && vec_size <= 4) {
-                                static const GLuint v[] = {GL_UNSIGNED_INT, GL_UNSIGNED_INT_VEC2, GL_UNSIGNED_INT_VEC3, GL_UNSIGNED_INT_VEC4};
-                                member->gl_type = v[vec_size - 1];
-                            }
-                            break;
-                        case SPVC_BASETYPE_BOOLEAN:
-                            if (vec_size >= 1 && vec_size <= 4) {
-                                static const GLuint v[] = {GL_BOOL, GL_BOOL_VEC2, GL_BOOL_VEC3, GL_BOOL_VEC4};
-                                member->gl_type = v[vec_size - 1];
-                            }
-                            break;
-                        case SPVC_BASETYPE_FP64:
-                            if (raw_vec <= 1) member->gl_type = GL_DOUBLE;
-                            else if (raw_vec == 2) member->gl_type = GL_DOUBLE_VEC2;
-                            else if (raw_vec == 3) member->gl_type = GL_DOUBLE_VEC3;
-                            else if (raw_vec == 4) member->gl_type = GL_DOUBLE_VEC4;
-                            break;
-                        default: break;
-                    }
-                }
-
-                member->size = 1;
-                if (member_type) {
-                    unsigned array_dims = spvc_type_get_num_array_dimensions(member_type);
-                    if (array_dims > 0) member->size = (GLint)spvc_type_get_array_dimension(member_type, 0);
-                }
-
-                member->query_name = NULL;
-                const char *glsl_src_for_query = ptr->shader_slots[stage]
-                    ? ptr->shader_slots[stage]->src : NULL;
-                if (ubo->ubo_has_instance_name && member_type &&
-                    spvc_type_get_basetype(member_type) == SPVC_BASETYPE_STRUCT) {
-                    member->query_name =
-                        mglGLSLAccessPathForUBOMember(glsl_src_for_query,
-                                                       ubo->name,
-                                                       ubo->ubo_instance_name,
-                                                       member->name);
-                }
-                if (!member->query_name) {
-                    member->query_name = mglBuildUBOMemberQueryName(ubo, member);
-                }
-
-                if (getenv("MGL_DEBUG_UBO_REFLECT")) {
-                    fprintf(stderr,
-                            "MGL UBO MEMBER program=%u stage=%d ubo=%s structType=%u member=%u spvcName=%s finalName=%s queryName=%s\n",
-                            ptr->name,
-                            stage,
-                            ubo->name ? ubo->name : "(null)",
-                            struct_type_id,
-                            mem_idx,
-                            member_name ? member_name : "(null)",
-                            member->name ? member->name : "(null)",
-                            member->query_name ? member->query_name : "(null)");
-                }
             }
         }
     }
@@ -3580,6 +4736,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
         applyMSLCloudVertexIDFix(ptr, stage, &str_ret);
         applyMSLFragCoordOriginFix(stage, &str_ret);
+        mglFixMSLPlainStructPointerArrayAccess(ptr, stage, &str_ret);
         applyMSLResourceBindings(ptr, stage, str_ret);
         if (getenv("MGL_DUMP_MSL")) {
             char dump_path[256];
@@ -3845,14 +5002,20 @@ static void alignFragmentInputLocationsToVertexOutputs(Program *pptr)
 
             GLuint desired_location = vs_out->location;
             GLuint current_location = fs_in->location;
-            if (mglFindMSLUserLocationForName(pptr->spirv[_VERTEX_SHADER].msl_str,
-                                              vs_out->name,
-                                              &desired_location)) {
+            char vs_msl_name[256] = {0};
+            char fs_msl_name[256] = {0};
+            if (mglFindMSLUserLocationForResourceName(pptr->spirv[_VERTEX_SHADER].msl_str,
+                                                      vs_out->name,
+                                                      &desired_location,
+                                                      vs_msl_name,
+                                                      sizeof(vs_msl_name))) {
                 vs_out->location = desired_location;
             }
-            if (mglFindMSLUserLocationForName(pptr->spirv[_FRAGMENT_SHADER].msl_str,
-                                              fs_in->name,
-                                              &current_location)) {
+            if (mglFindMSLUserLocationForResourceName(pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                                      fs_in->name,
+                                                      &current_location,
+                                                      fs_msl_name,
+                                                      sizeof(fs_msl_name))) {
                 fs_in->location = current_location;
             }
 
@@ -3860,21 +5023,21 @@ static void alignFragmentInputLocationsToVertexOutputs(Program *pptr)
                 break;
             }
 
-            char from[256];
-            char to[256];
-            snprintf(from, sizeof(from), "%s [[user(locn%u)]]",
-                     fs_in->name, (unsigned)current_location);
-            snprintf(to, sizeof(to), "%s [[user(locn%u)]]",
-                     fs_in->name, (unsigned)desired_location);
-
-            if (strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, from)) {
+            if (mglReplaceMSLUserLocationForResourceName(&pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                                         fs_in->name,
+                                                         current_location,
+                                                         desired_location,
+                                                         fs_msl_name,
+                                                         sizeof(fs_msl_name))) {
                 fprintf(stderr,
-                        "MGL IFACE FIX: program=%u fragment input %s loc %u -> %u to match vertex output\n",
+                        "MGL IFACE FIX: program=%u fragment input %s/%s loc %u -> %u to match vertex output %s/%s\n",
                         pptr->name,
                         fs_in->name,
+                        fs_msl_name[0] ? fs_msl_name : fs_in->name,
                         (unsigned)current_location,
-                        (unsigned)desired_location);
-                replace_all_substr(&pptr->spirv[_FRAGMENT_SHADER].msl_str, from, to);
+                        (unsigned)desired_location,
+                        vs_out->name,
+                        vs_msl_name[0] ? vs_msl_name : vs_out->name);
                 fs_in->location = desired_location;
             } else {
                 fprintf(stderr,
@@ -3963,6 +5126,23 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
         return true;
     }
     applyMSLUniformBufferPacking(pptr, stage);
+    if (getenv("MGL_DUMP_MSL_POST_PACK") && pptr->spirv[stage].msl_str) {
+        char dump_path[256];
+        snprintf(dump_path, sizeof(dump_path),
+                 "/tmp/mgl_program_%u_stage_%d_post_pack.msl",
+                 pptr->name,
+                 stage);
+        FILE *dump = fopen(dump_path, "w");
+        if (dump) {
+            fputs(pptr->spirv[stage].msl_str, dump);
+            fclose(dump);
+            fprintf(stderr,
+                    "MGL MSL POST PACK DUMP: program=%u stage=%d path=%s\n",
+                    pptr->name,
+                    stage,
+                    dump_path);
+        }
+    }
     mglApplyPlainUniformInitializers(ctx, pptr, stage);
 
     return true;

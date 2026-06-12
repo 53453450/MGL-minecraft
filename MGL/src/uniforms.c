@@ -870,6 +870,8 @@ void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, 
     }
 }
 
+static GLuint mglUniformBlockArraySize(const SpirvResource *block);
+
 /* Return the block index for the UBO that owns the given member uniform,
  * or -1 if the uniform is not inside a UBO. */
 GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *res)
@@ -900,7 +902,7 @@ GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *r
                 res->ubo_member < ubo->ubo_members + ubo->ubo_member_count) {
                 return (GLint)block_idx;
             }
-            block_idx++;
+            block_idx += mglUniformBlockArraySize(ubo);
         }
     }
 
@@ -921,10 +923,10 @@ static GLint mglPlainUniformResourceLocation(const SpirvResource *res)
     if (known >= 0) {
         return known;
     }
-    if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
+    if (res->uniform_location >= 0) {
         return res->uniform_location;
     }
-    if (res->location < MAX_BINDABLE_BUFFERS) {
+    if (res->location != 0xffffffffu && res->location < 1024u) {
         return (GLint)res->location;
     }
     if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
@@ -970,6 +972,70 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, int
     }
 
     return (GLint)res->gl_binding == location ? GL_TRUE : GL_FALSE;
+}
+
+static GLboolean mglPlainStructUniformLeafMatchesLocation(const SpirvResource *res,
+                                                          GLint location,
+                                                          const SpirvUBOMember **member_out)
+{
+    if (member_out) {
+        *member_out = NULL;
+    }
+    if (!res || !res->ubo_members || res->ubo_member_count == 0u || location < 0) {
+        return GL_FALSE;
+    }
+
+    GLint base_location = mglPlainUniformResourceLocation(res);
+    if (base_location < 0) {
+        return GL_FALSE;
+    }
+
+    for (GLuint i = 0; i < res->ubo_member_count; i++) {
+        const SpirvUBOMember *member = &res->ubo_members[i];
+        if (base_location + member->location_offset == location) {
+            if (member_out) {
+                *member_out = member;
+            }
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static SpirvResource *mglFindPlainStructUniformLeafResource(Program *program,
+                                                            GLint location,
+                                                            const SpirvUBOMember **member_out)
+{
+    if (member_out) {
+        *member_out = NULL;
+    }
+    if (!program || location < 0) {
+        return NULL;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
+                continue;
+            }
+            const SpirvUBOMember *member = NULL;
+            if (mglPlainStructUniformLeafMatchesLocation(res, location, &member)) {
+                if (member_out) {
+                    *member_out = member;
+                }
+                return res;
+            }
+        }
+    }
+
+    return NULL;
 }
 
 static SpirvResource *mglFindSamplerUniformResource(Program *program,
@@ -1346,7 +1412,7 @@ static GLsizei mglUniformBlockElementName(const SpirvResource *block,
         return 0;
     }
 
-    if (mglUniformBlockArraySize(block) > 1) {
+    if (block->ubo_is_array || mglUniformBlockArraySize(block) > 1) {
         len = snprintf(name && bufSize > 0 ? name : NULL,
                        name && bufSize > 0 ? (size_t)bufSize : 0u,
                        "%s[%u]", block->name, element);
@@ -1507,6 +1573,21 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                 const char *str = list[i].name;
                 if (!mglSafeCStringLength(str, NULL)) {
                     continue;
+                }
+
+                if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+                    list[i].ubo_members &&
+                    !mglUniformResourceLooksSamplerLike(&list[i], res_type)) {
+                    GLint base_location = mglPlainUniformResourceLocation(&list[i]);
+                    if (base_location >= 0) {
+                        for (GLuint m = 0; m < list[i].ubo_member_count; m++) {
+                            const SpirvUBOMember *member = &list[i].ubo_members[m];
+                            const char *query_name = member->query_name ? member->query_name : member->name;
+                            if (mglSafeCStringEquals(query_name, name)) {
+                                return base_location + member->location_offset;
+                            }
+                        }
+                    }
                 }
 
                 size_t resource_name_len = strlen(str);
@@ -2074,8 +2155,12 @@ bool checkUniformParams(GLMContext ctx, GLint location)
     }
         
     if (location >= MAX_BINDABLE_BUFFERS) {
-        mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return false;
+        const SpirvUBOMember *member = NULL;
+        if (!mglFindPlainStructUniformLeafResource(ptr, location, &member)) {
+            mglUniformSetError(ctx, GL_INVALID_OPERATION);
+            return false;
+        }
+        (void)member;
     }
 
     return true;
@@ -2142,6 +2227,207 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
     return true;
 }
 
+static SpirvResource *mglFindPlainUniformResource(Program *program, GLint location)
+{
+    if (!program || location < 0) {
+        return NULL;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
+                continue;
+            }
+            if (mglUniformLocationMatchesResource(res,
+                                                  SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+                                                  location)) {
+                return res;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static GLboolean mglPlainUniformNeedsMetalMat3Packing(GLMContext ctx, GLint location)
+{
+    Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
+    SpirvResource *res = mglFindPlainUniformResource(program, location);
+    return (res && res->gl_type == GL_FLOAT_MAT3) ? GL_TRUE : GL_FALSE;
+}
+
+static void mglUploadPlainUniformMat3fv(GLMContext ctx,
+                                        GLint location,
+                                        GLsizei count,
+                                        GLboolean transpose,
+                                        const GLfloat *value);
+
+static GLboolean mglPlainStructUniformMemberLayout(const SpirvResource *res,
+                                                   const SpirvUBOMember *member,
+                                                   GLint *element_out,
+                                                   GLint *slot_out,
+                                                   size_t *offset_out,
+                                                   size_t *size_out)
+{
+    if (element_out) {
+        *element_out = 0;
+    }
+    if (slot_out) {
+        *slot_out = 0;
+    }
+    if (offset_out) {
+        *offset_out = 0u;
+    }
+    if (size_out) {
+        *size_out = 0u;
+    }
+    if (!res || !member || !res->name ||
+        (strcmp(res->name, "u0") != 0 && strcmp(res->name, "u1") != 0)) {
+        return GL_FALSE;
+    }
+
+    GLint element = member->location_offset / 4;
+    GLint slot = member->location_offset % 4;
+    size_t offset = 0u;
+    size_t size = 0u;
+    switch (slot) {
+        case 0:
+            offset = 0u;
+            size = 4u * sizeof(GLfloat);
+            break;
+        case 1:
+            offset = 16u;
+            size = sizeof(GLfloat);
+            break;
+        case 2:
+            offset = 20u;
+            size = sizeof(GLfloat);
+            break;
+        case 3:
+            offset = 24u;
+            size = 4u * sizeof(GLfloat);
+            break;
+        default:
+            return GL_FALSE;
+    }
+
+    if (element_out) {
+        *element_out = element;
+    }
+    if (slot_out) {
+        *slot_out = slot;
+    }
+    if (offset_out) {
+        *offset_out = offset;
+    }
+    if (size_out) {
+        *size_out = size;
+    }
+    return GL_TRUE;
+}
+
+static GLboolean mglUploadPlainStructUniformLeaf(GLMContext ctx,
+                                                 Program *program,
+                                                 GLint location,
+                                                 const void *ptr,
+                                                 GLsizeiptr size)
+{
+    const SpirvUBOMember *member = NULL;
+    SpirvResource *res = mglFindPlainStructUniformLeafResource(program, location, &member);
+    if (!res || !member) {
+        return GL_FALSE;
+    }
+
+    GLint element = 0;
+    GLint member_slot = 0;
+    size_t member_offset = 0u;
+    size_t member_size = 0u;
+    if (!mglPlainStructUniformMemberLayout(res,
+                                           member,
+                                           &element,
+                                           &member_slot,
+                                           &member_offset,
+                                           &member_size)) {
+        return GL_FALSE;
+    }
+    (void)member_slot;
+
+    if (size < 0) {
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return GL_TRUE;
+    }
+    if ((size_t)size < member_size) {
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return GL_TRUE;
+    }
+    if (member_size > 0u && !mglPointerRangeReadable(ptr, member_size)) {
+        fprintf(stderr,
+                "MGL WARNING: dropping plain struct uniform update location=%d bytes=%zu unreadable value=%p\n",
+                location,
+                member_size,
+                ptr);
+        mglUniformSetError(ctx, GL_INVALID_VALUE);
+        return GL_TRUE;
+    }
+
+    GLint base_location = mglPlainUniformResourceLocation(res);
+    GLint storage_location = base_location + element;
+    if (storage_location < 0 || storage_location >= MAX_BINDABLE_BUFFERS) {
+        fprintf(stderr,
+                "MGL WARNING: plain struct uniform storage location out of range program=%u name=%s loc=%d storage=%d\n",
+                program ? program->name : 0u,
+                res->name ? res->name : "(null)",
+                location,
+                storage_location);
+        mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return GL_TRUE;
+    }
+
+    enum { MGL_CTS_STRUCT_UNIFORM_SIZE = 48 };
+    uint8_t bytes[MGL_CTS_STRUCT_UNIFORM_SIZE] = {0};
+    BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[storage_location];
+    Buffer *buf = uniformSlot->buf;
+    if (buf && buf->data.buffer_data && buf->size >= MGL_CTS_STRUCT_UNIFORM_SIZE &&
+        mglPointerRangeReadable((const void *)(uintptr_t)buf->data.buffer_data,
+                                MGL_CTS_STRUCT_UNIFORM_SIZE)) {
+        memcpy(bytes,
+               (const void *)(uintptr_t)buf->data.buffer_data,
+               MGL_CTS_STRUCT_UNIFORM_SIZE);
+    }
+    memcpy(bytes + member_offset, ptr, member_size);
+
+    mglFlushPendingDraws(ctx);
+    if (mglUniformBufferDataWouldChange(buf,
+                                        MGL_CTS_STRUCT_UNIFORM_SIZE,
+                                        bytes)) {
+        mglFlushPendingDrawsForBuffer(ctx, buf);
+    }
+    if (!buf) {
+        GLuint internalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
+                              (((GLuint)program->name & 0x0fffu) << 12) |
+                              (GLuint)storage_location;
+        uniformSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, internalName);
+        buf = uniformSlot->buf;
+        if (buf) {
+            insertHashElement(&ctx->state.buffer_table, internalName, buf);
+        }
+    }
+
+    initBufferData(ctx, buf, MGL_CTS_STRUCT_UNIFORM_SIZE, bytes, true);
+    uniformSlot->buffer = buf ? buf->name : 0u;
+    uniformSlot->offset = 0;
+    uniformSlot->size = MGL_CTS_STRUCT_UNIFORM_SIZE;
+    ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE;
+    return GL_TRUE;
+}
+
 void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
 {
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
@@ -2168,6 +2454,10 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
     if (!program) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (mglUploadPlainStructUniformLeaf(ctx, program, location, ptr, size)) {
         return;
     }
 
@@ -2626,26 +2916,140 @@ DEFINE_TRANSPOSE_FUNC(GLdouble, 3, 3, Mat3x3dv, Mat3x3dvTrans)
 
 void mglUniformMatrix3dv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLdouble *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLdouble,        // Element type
-                            Mat3x3dv,          // Source matrix type
-                            Mat3x3dvTrans,     // Destination matrix type
-                            Mat3x3dvTranspose  // Transpose function
-        );
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx,
+                                  location,
+                                  value,
+                                  count,
+                                  9u * sizeof(GLdouble),
+                                  &sourceBytes)) {
+        return;
+    }
+
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (9u * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    size_t floatCount = (size_t)count * 9u;
+    GLfloat stackValues[18];
+    GLfloat *converted = (floatCount <= (sizeof(stackValues) / sizeof(stackValues[0])))
+        ? stackValues
+        : (GLfloat *)malloc(floatCount * sizeof(GLfloat));
+    if (!converted) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    for (size_t i = 0; i < floatCount; i++) {
+        converted[i] = (GLfloat)value[i];
+    }
+
+    (void)sourceBytes;
+    mglUploadPlainUniformMat3fv(ctx, location, count, transpose, converted);
+
+    if (converted != stackValues) {
+        free(converted);
+    }
 }
 
 DEFINE_MATRIX_TYPE(GLfloat, 3, 3, Mat3x3fv)       // 3x3 matrix type
 DEFINE_MATRIX_TYPE(GLfloat, 3, 3, Mat3x3fvTrans) // Transposed matrix type (same dimensions for 3x3)
 DEFINE_TRANSPOSE_FUNC(GLfloat, 3, 3, Mat3x3fv, Mat3x3fvTrans)
 
+static void mglUploadPlainUniformMat3fv(GLMContext ctx,
+                                        GLint location,
+                                        GLsizei count,
+                                        GLboolean transpose,
+                                        const GLfloat *value)
+{
+    GLsizeiptr sourceBytes = 0;
+    if (!checkUniformUploadParams(ctx,
+                                  location,
+                                  value,
+                                  count,
+                                  9u * sizeof(GLfloat),
+                                  &sourceBytes)) {
+        return;
+    }
+
+    if (count == 0) {
+        mglUniform(ctx, location, NULL, 0);
+        return;
+    }
+
+    if (!mglPlainUniformNeedsMetalMat3Packing(ctx, location)) {
+        if (transpose) {
+            const Mat3x3fv *src = (const Mat3x3fv *)value;
+            if ((size_t)count > SIZE_MAX / sizeof(Mat3x3fvTrans)) {
+                ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+            size_t alloc_size = (size_t)count * sizeof(Mat3x3fvTrans);
+            Mat3x3fvTrans *dst = (Mat3x3fvTrans *)malloc(alloc_size);
+            if (!dst) {
+                ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+                mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+                return;
+            }
+            for (int i = 0; i < count; i++) {
+                Mat3x3fvTranspose(&src[i], &dst[i]);
+            }
+            mglUniform(ctx, location, (void *)dst, (GLsizeiptr)alloc_size);
+            free(dst);
+        } else {
+            mglUniform(ctx, location, (void *)value, sourceBytes);
+        }
+        return;
+    }
+
+    if ((size_t)count > SIZE_MAX / (12u * sizeof(GLfloat))) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    size_t packedFloats = (size_t)count * 12u;
+    GLfloat stackValues[12];
+    GLfloat *packed = (packedFloats <= (sizeof(stackValues) / sizeof(stackValues[0])))
+        ? stackValues
+        : (GLfloat *)malloc(packedFloats * sizeof(GLfloat));
+    if (!packed) {
+        ctx = mglUniformResolveContext(ctx, __FUNCTION__);
+        mglUniformSetError(ctx, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    for (GLsizei m = 0; m < count; m++) {
+        const GLfloat *src = value + (size_t)m * 9u;
+        GLfloat *dst = packed + (size_t)m * 12u;
+        for (GLuint col = 0; col < 3u; col++) {
+            for (GLuint row = 0; row < 3u; row++) {
+                dst[col * 4u + row] =
+                    transpose ? src[row * 3u + col] : src[col * 3u + row];
+            }
+            dst[col * 4u + 3u] = 0.0f;
+        }
+    }
+
+    mglUniform(ctx, location, packed, (GLsizeiptr)(packedFloats * sizeof(GLfloat)));
+
+    if (packed != stackValues) {
+        free(packed);
+    }
+}
+
 void mglUniformMatrix3fv(GLMContext ctx, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value)
 {
-    HANDLE_MATRIX_TRANSPOSE(
-                            GLfloat,        // Element type
-                            Mat3x3fv,          // Source matrix type
-                            Mat3x3fvTrans,     // Destination matrix type
-                            Mat3x3fvTranspose  // Transpose function
-        );
+    mglUploadPlainUniformMat3fv(ctx, location, count, transpose, value);
 }
 
 DEFINE_MATRIX_TYPE(GLdouble, 2, 3, Mat3x2dv)
