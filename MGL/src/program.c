@@ -2374,6 +2374,7 @@ TransformFeedback *newTransformFeedback(GLMContext ctx, GLuint name)
     bzero(ptr, sizeof(TransformFeedback));
     ptr->name = name;
     ptr->target = GL_TRANSFORM_FEEDBACK;
+    ptr->created = (name == 0) ? GL_TRUE : GL_FALSE;
     ptr->active = GL_FALSE;
     ptr->paused = GL_FALSE;
     ptr->primitive_mode = GL_NONE;
@@ -2482,6 +2483,33 @@ Program *findProgram(GLMContext ctx, GLuint program)
     return ptr;
 }
 
+static void mglFreeSpirvResourceOwnedFields(SpirvResource *res)
+{
+    if (!res) {
+        return;
+    }
+
+    free((void *)res->name);
+    res->name = NULL;
+
+    if (res->ubo_members) {
+        for (GLuint m = 0; m < res->ubo_member_count; m++) {
+            free((void *)res->ubo_members[m].name);
+            free(res->ubo_members[m].query_name);
+        }
+        free(res->ubo_members);
+        res->ubo_members = NULL;
+    }
+    res->ubo_member_count = 0;
+    res->ubo_member = NULL;
+
+    free(res->ubo_array_bindings);
+    res->ubo_array_bindings = NULL;
+
+    free(res->ubo_instance_name);
+    res->ubo_instance_name = NULL;
+}
+
 GLuint mglCreateProgram(GLMContext ctx)
 {
     GLuint program;
@@ -2535,39 +2563,44 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             // CRITICAL FIX: Add NULL checks and clear pointers to prevent double-frees
             SpirvResourceList *rl = &ptr->spirv_resources_list[i][j];
             if (rl->list) {
-                /* Free UBO member data before freeing the resource list. */
-                if (j == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
-                    for (GLuint k = 0; k < rl->count; k++) {
-                        SpirvResource *res = &rl->list[k];
-                        if (res->ubo_members) {
-                            for (GLuint m = 0; m < res->ubo_member_count; m++) {
-                                free((void *)res->ubo_members[m].name);
-                                free(res->ubo_members[m].query_name);
-                            }
-                            free(res->ubo_members);
-                            res->ubo_members = NULL;
-                        }
-                        res->ubo_member_count = 0;
-                        free(res->ubo_array_bindings);
-                        res->ubo_array_bindings = NULL;
-                        free(res->ubo_instance_name);
-                        res->ubo_instance_name = NULL;
-                    }
+                for (GLuint k = 0; k < rl->count; k++) {
+                    mglFreeSpirvResourceOwnedFields(&rl->list[k]);
                 }
                 free(rl->list);
                 rl->list = NULL;
+                rl->count = 0;
             }
         }
         
-        if (ptr->shader_slots[i])
-        {
-            Shader *sptr = ptr->shader_slots[i];
-            sptr->refcount--;
-            if (sptr->refcount == 0 && sptr->delete_status)
-            {
-                deleteHashElement(&STATE(shader_table), sptr->name);
-                mglFreeShader(ctx, sptr);
+        if (ptr->attached_shader_counts[i] > 0) {
+            for (GLuint attached = 0;
+                 attached < ptr->attached_shader_counts[i] &&
+                 attached < MAX_ATTACHED_SHADERS_PER_STAGE;
+                 attached++) {
+                Shader *sptr = ptr->attached_shader_slots[i][attached];
+                if (!sptr) {
+                    continue;
+                }
+                sptr->refcount--;
+                if (sptr->refcount == 0 && sptr->delete_status)
+                {
+                    deleteHashElement(&STATE(shader_table), sptr->name);
+                    mglFreeShader(ctx, sptr);
+                }
+                ptr->attached_shader_slots[i][attached] = NULL;
             }
+            ptr->attached_shader_counts[i] = 0;
+            ptr->shader_slots[i] = NULL;
+        }
+        else if (ptr->shader_slots[i])
+        {
+                Shader *sptr = ptr->shader_slots[i];
+                sptr->refcount--;
+                if (sptr->refcount == 0 && sptr->delete_status)
+                {
+                    deleteHashElement(&STATE(shader_table), sptr->name);
+                    mglFreeShader(ctx, sptr);
+                }
         }
     }
 
@@ -2679,6 +2712,38 @@ GLboolean mglIsProgram(GLMContext ctx, GLuint program)
     return GL_FALSE;
 }
 
+static GLboolean mglProgramHasAttachedShader(Program *program, GLuint stage, Shader *shader)
+{
+    if (!program || stage >= _MAX_SHADER_TYPES || !shader) {
+        return GL_FALSE;
+    }
+
+    for (GLuint i = 0;
+         i < program->attached_shader_counts[stage] &&
+         i < MAX_ATTACHED_SHADERS_PER_STAGE;
+         i++) {
+        if (program->attached_shader_slots[stage][i] == shader) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLuint mglProgramAttachedShaderCount(Program *program, GLuint stage)
+{
+    if (!program || stage >= _MAX_SHADER_TYPES) {
+        return 0u;
+    }
+
+    if (program->attached_shader_counts[stage] > 0u) {
+        return program->attached_shader_counts[stage];
+    }
+
+    return ((program->attached_shader_mask & (1u << stage)) != 0u &&
+            program->shader_slots[stage]) ? 1u : 0u;
+}
+
 void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
 {
     Program *pptr;
@@ -2710,27 +2775,21 @@ void mglAttachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     mglFlushPendingDraws(ctx);
 
-    if ((pptr->attached_shader_mask & (1u << index)) != 0u) {
+    if (mglProgramHasAttachedShader(pptr, index, sptr)) {
         STATE(error) = GL_INVALID_OPERATION;
         return;
     }
 
-    if (pptr->shader_slots[index] == sptr) {
-        pptr->attached_shader_mask |= (1u << index);
+    if (pptr->attached_shader_counts[index] >= MAX_ATTACHED_SHADERS_PER_STAGE) {
+        STATE(error) = GL_INVALID_OPERATION;
         return;
     }
 
-    if (pptr->shader_slots[index]) {
-        Shader *old = pptr->shader_slots[index];
-        pptr->shader_slots[index] = NULL;
-        old->refcount--;
-        if (old->refcount == 0 && old->delete_status) {
-            deleteHashElement(&STATE(shader_table), old->name);
-            mglFreeShader(ctx, old);
-        }
+    if (!pptr->shader_slots[index]) {
+        pptr->shader_slots[index] = sptr;
     }
 
-    pptr->shader_slots[index] = sptr;
+    pptr->attached_shader_slots[index][pptr->attached_shader_counts[index]++] = sptr;
     pptr->attached_shader_mask |= (1u << index);
     sptr->refcount++;
     pptr->dirty_bits |= DIRTY_PROGRAM;
@@ -2757,6 +2816,19 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
     {
         // If not found in hash table, check if it is attached to the program
         for (int i=0; i<_MAX_SHADER_TYPES; i++) {
+            for (GLuint attached = 0;
+                 attached < pptr->attached_shader_counts[i] &&
+                 attached < MAX_ATTACHED_SHADERS_PER_STAGE;
+                 attached++) {
+                if (pptr->attached_shader_slots[i][attached] &&
+                    pptr->attached_shader_slots[i][attached]->name == shader) {
+                    sptr = pptr->attached_shader_slots[i][attached];
+                    break;
+                }
+            }
+            if (sptr) {
+                break;
+            }
             if (pptr->shader_slots[i] && pptr->shader_slots[i]->name == shader) {
                 sptr = pptr->shader_slots[i];
                 break;
@@ -2774,7 +2846,18 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     index = sptr->glm_type;
 
-    if (pptr->shader_slots[index] != sptr ||
+    GLuint detach_index = MAX_ATTACHED_SHADERS_PER_STAGE;
+    for (GLuint attached = 0;
+         attached < pptr->attached_shader_counts[index] &&
+         attached < MAX_ATTACHED_SHADERS_PER_STAGE;
+         attached++) {
+        if (pptr->attached_shader_slots[index][attached] == sptr) {
+            detach_index = attached;
+            break;
+        }
+    }
+
+    if (detach_index == MAX_ATTACHED_SHADERS_PER_STAGE ||
         (pptr->attached_shader_mask & (1u << index)) == 0u)
     {
         STATE(error) = GL_INVALID_OPERATION;
@@ -2783,7 +2866,26 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     mglFlushPendingDraws(ctx);
 
-    pptr->attached_shader_mask &= ~(1u << index);
+    for (GLuint attached = detach_index + 1u;
+         attached < pptr->attached_shader_counts[index] &&
+         attached < MAX_ATTACHED_SHADERS_PER_STAGE;
+         attached++) {
+        pptr->attached_shader_slots[index][attached - 1u] =
+            pptr->attached_shader_slots[index][attached];
+    }
+    if (pptr->attached_shader_counts[index] > 0u) {
+        pptr->attached_shader_counts[index]--;
+        pptr->attached_shader_slots[index][pptr->attached_shader_counts[index]] = NULL;
+    }
+
+    if (pptr->attached_shader_counts[index] == 0u) {
+        pptr->attached_shader_mask &= ~(1u << index);
+        if (!pptr->linked_glsl_program) {
+            pptr->shader_slots[index] = NULL;
+        }
+    } else if (pptr->shader_slots[index] == sptr) {
+        pptr->shader_slots[index] = pptr->attached_shader_slots[index][0];
+    }
 
     /*
      * A successful link creates an executable that survives shader detach and
@@ -2791,7 +2893,6 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
      * it is released when replaced or when the program is destroyed.
      */
     if (!pptr->linked_glsl_program) {
-        pptr->shader_slots[index] = NULL;
         sptr->refcount--;
 
         if (sptr->refcount == 0 && sptr->delete_status)
@@ -2830,10 +2931,14 @@ void addShadersToProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_
             continue;
         }
 
-        ptr = pptr->shader_slots[i];
-
-        if(ptr)
-        {
+        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)i);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            ptr = (pptr->attached_shader_counts[i] > 0u)
+                ? pptr->attached_shader_slots[i][attached]
+                : pptr->shader_slots[i];
+            if (!ptr) {
+                continue;
+            }
             // should have glsl shader here
             if (!ptr->compiled_glsl_shader) {
                 fprintf(stderr,
@@ -2915,6 +3020,82 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     *pstr = out;
 }
 
+static GLboolean mglReplaceMSLIdentifier(char **msl_ptr,
+                                         const char *from,
+                                         const char *to)
+{
+    const char *src;
+    const char *cursor;
+    char *out;
+    char *dst;
+    size_t from_len;
+    size_t to_len;
+    size_t src_len;
+    size_t count = 0u;
+
+    if (!msl_ptr || !*msl_ptr || !from || !to) {
+        return GL_FALSE;
+    }
+
+    from_len = strlen(from);
+    to_len = strlen(to);
+    if (from_len == 0u || strcmp(from, to) == 0) {
+        return GL_FALSE;
+    }
+
+    src = *msl_ptr;
+    cursor = src;
+    while ((cursor = strstr(cursor, from)) != NULL) {
+        char before = (cursor == src) ? '\0' : cursor[-1];
+        char after = cursor[from_len];
+        if (!mglMSLIdentifierChar(before) && !mglMSLIdentifierChar(after)) {
+            count++;
+        }
+        cursor += from_len;
+    }
+
+    if (count == 0u) {
+        return GL_FALSE;
+    }
+
+    src_len = strlen(src);
+    out = (char *)malloc(src_len + count * (to_len > from_len ? (to_len - from_len) : 0u) + 1u);
+    if (!out) {
+        return GL_FALSE;
+    }
+
+    cursor = src;
+    dst = out;
+    while (*cursor) {
+        const char *match = strstr(cursor, from);
+        if (!match) {
+            strcpy(dst, cursor);
+            break;
+        }
+
+        char before = (match == src) ? '\0' : match[-1];
+        char after = match[from_len];
+        if (mglMSLIdentifierChar(before) || mglMSLIdentifierChar(after)) {
+            size_t chunk = (size_t)(match - cursor) + from_len;
+            memcpy(dst, cursor, chunk);
+            dst += chunk;
+            cursor = match + from_len;
+            continue;
+        }
+
+        size_t prefix = (size_t)(match - cursor);
+        memcpy(dst, cursor, prefix);
+        dst += prefix;
+        memcpy(dst, to, to_len);
+        dst += to_len;
+        cursor = match + from_len;
+    }
+
+    free(*msl_ptr);
+    *msl_ptr = out;
+    return GL_TRUE;
+}
+
 static GLboolean mglInsertStringAt(char **pstr, const char *position, const char *insertion)
 {
     if (!pstr || !*pstr || !position || !insertion ||
@@ -2971,6 +3152,104 @@ static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
     }
 }
 
+static const char *mglFindMSLKernelParameterClose(const char *msl)
+{
+    const char *kernel = msl ? strstr(msl, "kernel void ") : NULL;
+    const char *open = kernel ? strchr(kernel, '(') : NULL;
+    int depth = 0;
+
+    if (!open) {
+        return NULL;
+    }
+
+    for (const char *p = open; *p; p++) {
+        if (*p == '(') {
+            depth++;
+        } else if (*p == ')') {
+            depth--;
+            if (depth == 0) {
+                return p;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+static void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_ptr)
+{
+    if (!program || !msl_ptr || !*msl_ptr ||
+        stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return;
+    }
+
+    SpirvResourceList *atomics =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+    if (!atomics->count) {
+        return;
+    }
+
+    MGLMSLBindingMap binding_map;
+    mglBuildMSLBindingMap(*msl_ptr, &binding_map);
+
+    GLboolean used_slots[MAX_BINDABLE_BUFFERS] = {0};
+    for (size_t i = 0; i < binding_map.count; i++) {
+        if (binding_map.entries[i].kind == MGL_MSL_BINDING_BUFFER &&
+            binding_map.entries[i].index < MAX_BINDABLE_BUFFERS) {
+            used_slots[binding_map.entries[i].index] = GL_TRUE;
+        }
+    }
+
+    GLuint next_slot = 0u;
+    for (GLuint i = 0; i < atomics->count; i++) {
+        SpirvResource *res = &atomics->list[i];
+        if (!res->name || res->name[0] == '\0') {
+            continue;
+        }
+
+        GLuint existing_slot = 0u;
+        if (mglFindMSLResourceIndexInMap(&binding_map,
+                                         MGL_MSL_BINDING_BUFFER,
+                                         res->name,
+                                         &existing_slot)) {
+            continue;
+        }
+
+        while (next_slot < MAX_BINDABLE_BUFFERS && used_slots[next_slot]) {
+            next_slot++;
+        }
+        if (next_slot >= MAX_BINDABLE_BUFFERS) {
+            fprintf(stderr,
+                    "MGL WARNING: no Metal buffer slot available for atomic counter %s\n",
+                    res->name);
+            break;
+        }
+
+        char injected_parameter[256];
+        int written = snprintf(injected_parameter,
+                               sizeof(injected_parameter),
+                               ", device atomic_uint& %s [[buffer(%u)]]",
+                               res->name,
+                               (unsigned)next_slot);
+        if (written <= 0 || (size_t)written >= sizeof(injected_parameter)) {
+            continue;
+        }
+
+        const char *close = mglFindMSLKernelParameterClose(*msl_ptr);
+        if (!close || !mglInsertStringAt(msl_ptr, close, injected_parameter)) {
+            fprintf(stderr,
+                    "MGL WARNING: failed to inject Metal atomic counter argument %s\n",
+                    res->name);
+            continue;
+        }
+
+        used_slots[next_slot] = GL_TRUE;
+        next_slot++;
+    }
+
+    replace_all_substr(msl_ptr, "(thread atomic_uint*)&", "(device atomic_uint*)&");
+}
+
 static size_t count_substr(const char *str, const char *needle)
 {
     size_t count = 0;
@@ -2993,6 +3272,293 @@ static size_t count_substr(const char *str, const char *needle)
     }
 
     return count;
+}
+
+static GLboolean mglApplyProgram91FragmentExperiment(Program *program, int stage, char **msl)
+{
+    if (!program || stage != _FRAGMENT_SHADER || program->name != 91u || !msl || !*msl) {
+        return GL_FALSE;
+    }
+
+    const char *mode = getenv("MGL_EXPERIMENT_PROGRAM91");
+    if (!mode || !mode[0]) {
+        return GL_FALSE;
+    }
+
+    const char *body = NULL;
+    if (!strcmp(mode, "constant")) {
+        body =
+            "{\n"
+            "    fragment_108_out out = {};\n"
+            "    out.fragColor = float4(1.0, 0.0, 0.0, 1.0);\n"
+            "    return out;\n"
+            "}\n";
+    } else if (!strcmp(mode, "sample")) {
+        body =
+            "{\n"
+            "    fragment_108_out out = {};\n"
+            "    out.fragColor = InSampler.sample(InSamplerSmplr, in.texCoord);\n"
+            "    return out;\n"
+            "}\n";
+    } else {
+        fprintf(stderr,
+                "MGL EXPERIMENT program91 unknown mode '%s' (expected constant or sample)\n",
+                mode);
+        return GL_FALSE;
+    }
+
+    char *signature = strstr(*msl, "fragment fragment_108_out fragment_108(");
+    if (!signature) {
+        fprintf(stderr,
+                "MGL EXPERIMENT program91 mode=%s could not find fragment_108 signature\n",
+                mode);
+        return GL_FALSE;
+    }
+
+    char *open = strchr(signature, '{');
+    if (!open) {
+        fprintf(stderr,
+                "MGL EXPERIMENT program91 mode=%s could not find function body start\n",
+                mode);
+        return GL_FALSE;
+    }
+
+    int depth = 0;
+    char *close = NULL;
+    for (char *p = open; *p; p++) {
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                close = p;
+                break;
+            }
+        }
+    }
+    if (!close) {
+        fprintf(stderr,
+                "MGL EXPERIMENT program91 mode=%s could not find function body end\n",
+                mode);
+        return GL_FALSE;
+    }
+
+    size_t prefix_len = (size_t)(open - *msl);
+    size_t body_len = strlen(body);
+    size_t suffix_len = strlen(close + 1);
+    char *replacement = (char *)malloc(prefix_len + body_len + suffix_len + 1u);
+    if (!replacement) {
+        return GL_FALSE;
+    }
+
+    memcpy(replacement, *msl, prefix_len);
+    memcpy(replacement + prefix_len, body, body_len);
+    memcpy(replacement + prefix_len + body_len, close + 1, suffix_len + 1u);
+
+    free(*msl);
+    *msl = replacement;
+    fprintf(stderr, "MGL EXPERIMENT program91 fragment mode=%s applied\n", mode);
+    return GL_TRUE;
+}
+
+static GLboolean mglReplaceFragmentBodyWithConstantColor(Program *program,
+                                                         int stage,
+                                                         char **msl,
+                                                         GLuint programName,
+                                                         const char *envName,
+                                                         const char *colorFieldName,
+                                                         const char *colorLiteral)
+{
+    if (!program || stage != _FRAGMENT_SHADER || program->name != programName ||
+        !msl || !*msl || !envName || !colorFieldName || !colorLiteral) {
+        return GL_FALSE;
+    }
+
+    const char *mode = getenv(envName);
+    if (!mode || strcmp(mode, "constant")) {
+        return GL_FALSE;
+    }
+
+    char *signature = strstr(*msl, "fragment ");
+    if (!signature) {
+        fprintf(stderr, "MGL EXPERIMENT program%u could not find fragment signature\n", programName);
+        return GL_FALSE;
+    }
+
+    const char *returnTypeStart = signature + strlen("fragment ");
+    const char *returnTypeEnd = strchr(returnTypeStart, ' ');
+    if (!returnTypeEnd || returnTypeEnd <= returnTypeStart) {
+        fprintf(stderr, "MGL EXPERIMENT program%u could not parse fragment return type\n", programName);
+        return GL_FALSE;
+    }
+    size_t returnTypeLen = (size_t)(returnTypeEnd - returnTypeStart);
+    if (returnTypeLen >= 128u) {
+        return GL_FALSE;
+    }
+    char outStructName[128];
+    memcpy(outStructName, returnTypeStart, returnTypeLen);
+    outStructName[returnTypeLen] = '\0';
+
+    char *open = strchr(signature, '{');
+    if (!open) {
+        fprintf(stderr, "MGL EXPERIMENT program%u could not find function body start\n", programName);
+        return GL_FALSE;
+    }
+
+    int depth = 0;
+    char *close = NULL;
+    for (char *p = open; *p; p++) {
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                close = p;
+                break;
+            }
+        }
+    }
+    if (!close) {
+        fprintf(stderr, "MGL EXPERIMENT program%u could not find function body end\n", programName);
+        return GL_FALSE;
+    }
+
+    char body[512];
+    int bodyLen = snprintf(body, sizeof(body),
+                           "{\n"
+                           "    %s out = {};\n"
+                           "    out.%s = %s;\n"
+                           "    return out;\n"
+                           "}\n",
+                           outStructName,
+                           colorFieldName,
+                           colorLiteral);
+    if (bodyLen <= 0 || (size_t)bodyLen >= sizeof(body)) {
+        return GL_FALSE;
+    }
+
+    size_t prefix_len = (size_t)(open - *msl);
+    size_t suffix_len = strlen(close + 1);
+    char *replacement = (char *)malloc(prefix_len + (size_t)bodyLen + suffix_len + 1u);
+    if (!replacement) {
+        return GL_FALSE;
+    }
+
+    memcpy(replacement, *msl, prefix_len);
+    memcpy(replacement + prefix_len, body, (size_t)bodyLen);
+    memcpy(replacement + prefix_len + (size_t)bodyLen, close + 1, suffix_len + 1u);
+
+    free(*msl);
+    *msl = replacement;
+    fprintf(stderr, "MGL EXPERIMENT program%u fragment constant applied via %s\n", programName, envName);
+    return GL_TRUE;
+}
+
+static GLboolean mglApplyProgram31FragmentExperiment(Program *program, int stage, char **msl)
+{
+    if (!program || stage != _FRAGMENT_SHADER || program->name != 31u || !msl || !*msl) {
+        return GL_FALSE;
+    }
+
+    const char *mode = getenv("MGL_EXPERIMENT_PROGRAM31");
+    if (!mode || !mode[0] || !strcmp(mode, "constant")) {
+        return GL_FALSE;
+    }
+
+    char *signature = strstr(*msl, "fragment ");
+    if (!signature) {
+        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find fragment signature\n", mode);
+        return GL_FALSE;
+    }
+
+    const char *returnTypeStart = signature + strlen("fragment ");
+    const char *returnTypeEnd = strchr(returnTypeStart, ' ');
+    if (!returnTypeEnd || returnTypeEnd <= returnTypeStart) {
+        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not parse return type\n", mode);
+        return GL_FALSE;
+    }
+    size_t returnTypeLen = (size_t)(returnTypeEnd - returnTypeStart);
+    if (returnTypeLen >= 128u) {
+        return GL_FALSE;
+    }
+    char outStructName[128];
+    memcpy(outStructName, returnTypeStart, returnTypeLen);
+    outStructName[returnTypeLen] = '\0';
+
+    const char *expr = NULL;
+    if (!strcmp(mode, "coord")) {
+        expr = "float4(normalize(in.texCoord0) * 0.5 + float3(0.5), 1.0)";
+    } else if (!strcmp(mode, "sample-fixed") || !strcmp(mode, "sample-zp")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 0.0, 1.0))";
+    } else if (!strcmp(mode, "sample-zn")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 0.0, -1.0))";
+    } else if (!strcmp(mode, "sample-xp")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(1.0, 0.0, 0.0))";
+    } else if (!strcmp(mode, "sample-xn")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(-1.0, 0.0, 0.0))";
+    } else if (!strcmp(mode, "sample-yp")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 1.0, 0.0))";
+    } else if (!strcmp(mode, "sample-yn")) {
+        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, -1.0, 0.0))";
+    } else {
+        fprintf(stderr,
+                "MGL EXPERIMENT program31 unknown mode '%s' (expected constant, coord, sample-fixed, or sample-xp/xn/yp/yn/zp/zn)\n",
+                mode);
+        return GL_FALSE;
+    }
+
+    char *open = strchr(signature, '{');
+    if (!open) {
+        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find function body start\n", mode);
+        return GL_FALSE;
+    }
+
+    int depth = 0;
+    char *close = NULL;
+    for (char *p = open; *p; p++) {
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                close = p;
+                break;
+            }
+        }
+    }
+    if (!close) {
+        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find function body end\n", mode);
+        return GL_FALSE;
+    }
+
+    char body[768];
+    int bodyLen = snprintf(body, sizeof(body),
+                           "{\n"
+                           "    %s out = {};\n"
+                           "    out.fragColor = %s;\n"
+                           "    return out;\n"
+                           "}\n",
+                           outStructName,
+                           expr);
+    if (bodyLen <= 0 || (size_t)bodyLen >= sizeof(body)) {
+        return GL_FALSE;
+    }
+
+    size_t prefix_len = (size_t)(open - *msl);
+    size_t suffix_len = strlen(close + 1);
+    char *replacement = (char *)malloc(prefix_len + (size_t)bodyLen + suffix_len + 1u);
+    if (!replacement) {
+        return GL_FALSE;
+    }
+
+    memcpy(replacement, *msl, prefix_len);
+    memcpy(replacement + prefix_len, body, (size_t)bodyLen);
+    memcpy(replacement + prefix_len + (size_t)bodyLen, close + 1, suffix_len + 1u);
+
+    free(*msl);
+    *msl = replacement;
+    fprintf(stderr, "MGL EXPERIMENT program31 fragment mode=%s applied\n", mode);
+    return GL_TRUE;
 }
 
 static void mglFixMSLPlainStructPointerArrayAccess(Program *program,
@@ -3093,6 +3659,17 @@ static void mglLowerMSLDoubleTypesToFloat(char **pstr)
     while (r < len) {
         int match_len = 0;
         const char *replacement = NULL;
+
+        if ((src[r] == 'l' || src[r] == 'L') &&
+            r + 1 < len &&
+            (src[r + 1] == 'f' || src[r + 1] == 'F') &&
+            r > 0 &&
+            (isdigit((unsigned char)src[r - 1]) || src[r - 1] == '.')) {
+            out[w++] = 'f';
+            r += 2;
+            replacements++;
+            continue;
+        }
 
         if ((r == 0 ||
              (src[r - 1] == '_' || isalnum((unsigned char)src[r - 1])) == 0) &&
@@ -3951,7 +4528,17 @@ static GLboolean mglParseScalarUniformInitializer(const char *src,
     }
 
     const char *p = src;
+    char base_name[256];
     size_t name_len = strlen(name);
+    if (name_len >= sizeof(base_name)) {
+        return GL_FALSE;
+    }
+    memcpy(base_name, name, name_len + 1u);
+    if (name_len >= 3u && strcmp(base_name + name_len - 3u, "[0]") == 0) {
+        name_len -= 3u;
+        base_name[name_len] = '\0';
+    }
+
     while ((p = strstr(p, "uniform")) != NULL) {
         const char *before = (p == src) ? src : p - 1;
         if (p != src && ((*before == '_') || isalnum((unsigned char)*before))) {
@@ -3977,7 +4564,7 @@ static GLboolean mglParseScalarUniformInitializer(const char *src,
             q++;
         }
 
-        if (strncmp(q, name, name_len) != 0 ||
+        if (strncmp(q, base_name, name_len) != 0 ||
             ((q[name_len] == '_') || isalnum((unsigned char)q[name_len]))) {
             p += 7;
             continue;
@@ -3986,6 +4573,35 @@ static GLboolean mglParseScalarUniformInitializer(const char *src,
         while (*q && isspace((unsigned char)*q)) {
             q++;
         }
+
+        unsigned array_count = 0u;
+        if (*q == '[') {
+            char *end = NULL;
+            unsigned long parsed_count;
+            q++;
+            while (*q && isspace((unsigned char)*q)) {
+                q++;
+            }
+            parsed_count = strtoul(q, &end, 10);
+            if (!end || end == q || parsed_count == 0ul || parsed_count > 64ul) {
+                p += 7;
+                continue;
+            }
+            q = end;
+            while (*q && isspace((unsigned char)*q)) {
+                q++;
+            }
+            if (*q != ']') {
+                p += 7;
+                continue;
+            }
+            q++;
+            array_count = (unsigned)parsed_count;
+            while (*q && isspace((unsigned char)*q)) {
+                q++;
+            }
+        }
+
         if (*q != '=') {
             p += 7;
             continue;
@@ -3997,21 +4613,187 @@ static GLboolean mglParseScalarUniformInitializer(const char *src,
 
         if ((basetype == SPVC_BASETYPE_INT32 && type_len == 3 && memcmp(type, "int", 3) == 0) ||
             (basetype == SPVC_BASETYPE_UINT32 && type_len == 4 && memcmp(type, "uint", 4) == 0)) {
-            char *end = NULL;
-            long parsed = strtol(q, &end, 0);
-            if (end && end != q) {
-                GLint v = (GLint)parsed;
-                memcpy(value, &v, sizeof(v));
-                *size_out = (GLsizeiptr)sizeof(v);
-                return GL_TRUE;
+            if (array_count > 0u) {
+                if (strncmp(q, type, type_len) != 0) {
+                    p += 7;
+                    continue;
+                }
+                q += type_len;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != '[') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+                char *array_end = NULL;
+                unsigned long constructor_count = strtoul(q, &array_end, 10);
+                if (!array_end || array_end == q || constructor_count != array_count) {
+                    p += 7;
+                    continue;
+                }
+                q = array_end;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != ']') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != '(') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+
+                GLboolean parse_ok = GL_TRUE;
+                for (unsigned index = 0u; index < array_count; index++) {
+                    char *end = NULL;
+                    uint32_t v;
+                    while (*q && isspace((unsigned char)*q)) {
+                        q++;
+                    }
+                    if (basetype == SPVC_BASETYPE_INT32) {
+                        long parsed = strtol(q, &end, 0);
+                        v = (uint32_t)(GLint)parsed;
+                    } else {
+                        unsigned long parsed = strtoul(q, &end, 0);
+                        v = (uint32_t)parsed;
+                    }
+                    if (!end || end == q) {
+                        parse_ok = GL_FALSE;
+                        break;
+                    }
+                    memcpy(value + ((size_t)index * sizeof(v)), &v, sizeof(v));
+                    q = end;
+                    if (basetype == SPVC_BASETYPE_UINT32 && (*q == 'u' || *q == 'U')) {
+                        q++;
+                    }
+                    while (*q && isspace((unsigned char)*q)) {
+                        q++;
+                    }
+                    if (index + 1u < array_count) {
+                        if (*q != ',') {
+                            parse_ok = GL_FALSE;
+                            break;
+                        }
+                        q++;
+                    }
+                }
+                if (!parse_ok) {
+                    p += 7;
+                    continue;
+                }
+
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q == ')') {
+                    *size_out = (GLsizeiptr)((size_t)array_count * sizeof(uint32_t));
+                    return GL_TRUE;
+                }
+            } else {
+                char *end = NULL;
+                long parsed = strtol(q, &end, 0);
+                if (end && end != q) {
+                    GLint v = (GLint)parsed;
+                    memcpy(value, &v, sizeof(v));
+                    *size_out = (GLsizeiptr)sizeof(v);
+                    return GL_TRUE;
+                }
             }
         } else if (basetype == SPVC_BASETYPE_FP32 && type_len == 5 && memcmp(type, "float", 5) == 0) {
-            char *end = NULL;
-            float parsed = strtof(q, &end);
-            if (end && end != q) {
-                memcpy(value, &parsed, sizeof(parsed));
-                *size_out = (GLsizeiptr)sizeof(parsed);
-                return GL_TRUE;
+            if (array_count > 0u) {
+                if (strncmp(q, type, type_len) != 0) {
+                    p += 7;
+                    continue;
+                }
+                q += type_len;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != '[') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+                char *array_end = NULL;
+                unsigned long constructor_count = strtoul(q, &array_end, 10);
+                if (!array_end || array_end == q || constructor_count != array_count) {
+                    p += 7;
+                    continue;
+                }
+                q = array_end;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != ']') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q != '(') {
+                    p += 7;
+                    continue;
+                }
+                q++;
+
+                GLboolean parse_ok = GL_TRUE;
+                for (unsigned index = 0u; index < array_count; index++) {
+                    char *end = NULL;
+                    float parsed;
+                    while (*q && isspace((unsigned char)*q)) {
+                        q++;
+                    }
+                    parsed = strtof(q, &end);
+                    if (!end || end == q) {
+                        parse_ok = GL_FALSE;
+                        break;
+                    }
+                    memcpy(value + ((size_t)index * sizeof(parsed)), &parsed, sizeof(parsed));
+                    q = end;
+                    if (*q == 'f' || *q == 'F') {
+                        q++;
+                    }
+                    while (*q && isspace((unsigned char)*q)) {
+                        q++;
+                    }
+                    if (index + 1u < array_count) {
+                        if (*q != ',') {
+                            parse_ok = GL_FALSE;
+                            break;
+                        }
+                        q++;
+                    }
+                }
+                if (!parse_ok) {
+                    p += 7;
+                    continue;
+                }
+
+                while (*q && isspace((unsigned char)*q)) {
+                    q++;
+                }
+                if (*q == ')') {
+                    *size_out = (GLsizeiptr)((size_t)array_count * sizeof(float));
+                    return GL_TRUE;
+                }
+            } else {
+                char *end = NULL;
+                float parsed = strtof(q, &end);
+                if (end && end != q) {
+                    memcpy(value, &parsed, sizeof(parsed));
+                    *size_out = (GLsizeiptr)sizeof(parsed);
+                    return GL_TRUE;
+                }
             }
         }
 
@@ -4046,7 +4828,7 @@ static void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, i
         }
 
         const char *src = program->shader_slots[stage]->src;
-        uint8_t value[16] = {0};
+        uint8_t value[256] = {0};
         GLsizeiptr size = 0;
 
         if (!mglParseScalarUniformInitializer(src, res->name, SPVC_BASETYPE_INT32, value, &size) &&
@@ -4318,7 +5100,8 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         if (count == 0) {
             ptr->spirv_resources_list[stage][res_type].list = NULL;
         } else {
-            ptr->spirv_resources_list[stage][res_type].list = (SpirvResource *)malloc(alloc_size);
+            ptr->spirv_resources_list[stage][res_type].list =
+                (SpirvResource *)calloc(count, sizeof(SpirvResource));
         }
         if (count != 0 && !ptr->spirv_resources_list[stage][res_type].list) {
             fprintf(stderr, "MGL SECURITY ERROR: Failed to allocate %zu bytes for resource list\n", alloc_size);
@@ -4737,7 +5520,17 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         applyMSLCloudVertexIDFix(ptr, stage, &str_ret);
         applyMSLFragCoordOriginFix(stage, &str_ret);
         mglFixMSLPlainStructPointerArrayAccess(ptr, stage, &str_ret);
+        mglInjectMSLAtomicCounterArguments(ptr, stage, &str_ret);
         applyMSLResourceBindings(ptr, stage, str_ret);
+        mglReplaceFragmentBodyWithConstantColor(ptr,
+                                                stage,
+                                                &str_ret,
+                                                31u,
+                                                "MGL_EXPERIMENT_PROGRAM31",
+                                                "fragColor",
+                                                "float4(0.0, 1.0, 0.0, 1.0)");
+        mglApplyProgram31FragmentExperiment(ptr, stage, &str_ret);
+        mglApplyProgram91FragmentExperiment(ptr, stage, &str_ret);
         if (getenv("MGL_DUMP_MSL")) {
             char dump_path[256];
             snprintf(dump_path, sizeof(dump_path),
@@ -4789,30 +5582,141 @@ static void clearStageCompileState(Program *pptr, int stage)
     for (int res_type = 0; res_type < _MAX_SPIRV_RES; res_type++) {
         SpirvResourceList *rl = &pptr->spirv_resources_list[stage][res_type];
         if (rl->list) {
-            /* Free UBO member data before freeing the resource list. */
-            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
-                for (GLuint i = 0; i < rl->count; i++) {
-                    SpirvResource *res = &rl->list[i];
-                    if (res->ubo_members) {
-                        for (GLuint m = 0; m < res->ubo_member_count; m++) {
-                            free((void *)res->ubo_members[m].name);
-                            free(res->ubo_members[m].query_name);
-                        }
-                        free(res->ubo_members);
-                        res->ubo_members = NULL;
-                    }
-                    res->ubo_member_count = 0;
-                    free(res->ubo_array_bindings);
-                    res->ubo_array_bindings = NULL;
-                    free(res->ubo_instance_name);
-                    res->ubo_instance_name = NULL;
-                }
+            for (GLuint i = 0; i < rl->count; i++) {
+                mglFreeSpirvResourceOwnedFields(&rl->list[i]);
             }
             free(rl->list);
             rl->list = NULL;
         }
         rl->count = 0;
     }
+}
+
+static GLboolean mglShaderSourceHasToken(const char *start, const char *end, const char *token)
+{
+    size_t token_len;
+
+    if (!start || !end || !token || start > end) {
+        return GL_FALSE;
+    }
+
+    token_len = strlen(token);
+    for (const char *p = start; p + token_len <= end; p++) {
+        if (strncmp(p, token, token_len) != 0) {
+            continue;
+        }
+
+        int before = (p == start) ? 0 : (isalnum((unsigned char)p[-1]) || p[-1] == '_');
+        int after = (p[token_len] == '\0') ? 0 : (isalnum((unsigned char)p[token_len]) || p[token_len] == '_');
+        if (!before && !after) {
+            return GL_TRUE;
+        }
+    }
+
+    return GL_FALSE;
+}
+
+static GLboolean mglProgramPerVertexSignature(Program *program, int stage, unsigned *signature)
+{
+    Shader *shader;
+    const char *src;
+    const char *p;
+    unsigned sig = 0u;
+    GLboolean found = GL_FALSE;
+
+    if (signature) {
+        *signature = 0u;
+    }
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || !signature) {
+        return GL_FALSE;
+    }
+
+    shader = program->shader_slots[stage];
+    src = shader ? shader->src : NULL;
+    if (!src) {
+        return GL_FALSE;
+    }
+
+    p = src;
+    while ((p = strstr(p, "gl_PerVertex")) != NULL) {
+        const char *open = strchr(p, '{');
+        const char *close = open ? strchr(open + 1, '}') : NULL;
+        if (!open || !close) {
+            p += strlen("gl_PerVertex");
+            continue;
+        }
+
+        if (mglShaderSourceHasToken(open, close, "gl_Position")) {
+            sig |= 1u << 0;
+        }
+        if (mglShaderSourceHasToken(open, close, "gl_PointSize")) {
+            sig |= 1u << 1;
+        }
+        if (mglShaderSourceHasToken(open, close, "gl_ClipDistance")) {
+            sig |= 1u << 2;
+        }
+        if (mglShaderSourceHasToken(open, close, "gl_CullDistance")) {
+            sig |= 1u << 3;
+        }
+        found = GL_TRUE;
+        p = close + 1;
+    }
+
+    if (found) {
+        *signature = sig;
+    }
+    return found;
+}
+
+GLboolean mglProgramPipelinePerVertexCompatible(Program *const *stage_programs)
+{
+    unsigned reference = 0u;
+    GLboolean have_reference = GL_FALSE;
+
+    if (!stage_programs) {
+        return GL_TRUE;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Program *program = stage_programs[stage];
+        unsigned signature = 0u;
+
+        if (!program || !program->shader_slots[stage]) {
+            continue;
+        }
+        if (!mglProgramPerVertexSignature(program, stage, &signature)) {
+            continue;
+        }
+
+        if (!have_reference) {
+            reference = signature;
+            have_reference = GL_TRUE;
+            continue;
+        }
+        if (signature != reference) {
+            return GL_FALSE;
+        }
+    }
+
+    return GL_TRUE;
+}
+
+static GLboolean mglLinkedProgramPerVertexCompatible(Program *program)
+{
+    Program *stage_programs[_MAX_SHADER_TYPES] = {0};
+
+    if (!program) {
+        return GL_TRUE;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if ((program->attached_shader_mask & (1u << stage)) != 0u &&
+            program->shader_slots[stage]) {
+            stage_programs[stage] = program;
+        }
+    }
+
+    return mglProgramPipelinePerVertexCompatible(stage_programs);
 }
 
 static GLint mglDefaultAttribLocationForName(const char *name)
@@ -5052,6 +5956,222 @@ static void alignFragmentInputLocationsToVertexOutputs(Program *pptr)
     }
 }
 
+static GLboolean mglSpirvVaryingTypesCompatible(const SpirvResource *a,
+                                                const SpirvResource *b)
+{
+    if (!a || !b) {
+        return GL_FALSE;
+    }
+
+    if (a->gl_type != 0u && b->gl_type != 0u) {
+        return a->gl_type == b->gl_type ? GL_TRUE : GL_FALSE;
+    }
+
+    if (a->gl_array_size > 0 && b->gl_array_size > 0 &&
+        a->gl_array_size != b->gl_array_size) {
+        return GL_FALSE;
+    }
+
+    return GL_TRUE;
+}
+
+static SpirvResource *mglFindVaryingByName(SpirvResourceList *list,
+                                           const char *name,
+                                           const SpirvResource *type_peer)
+{
+    if (!list || !list->list || !name || name[0] == '\0') {
+        return NULL;
+    }
+
+    for (GLuint i = 0; i < list->count; i++) {
+        SpirvResource *candidate = &list->list[i];
+        if (!candidate->name || strcmp(candidate->name, name) != 0) {
+            continue;
+        }
+        if (type_peer && !mglSpirvVaryingTypesCompatible(candidate, type_peer)) {
+            continue;
+        }
+        return candidate;
+    }
+
+    return NULL;
+}
+
+static SpirvResource *mglFindVaryingByLocation(SpirvResourceList *list,
+                                               GLuint location,
+                                               const SpirvResource *type_peer)
+{
+    if (!list || !list->list) {
+        return NULL;
+    }
+
+    for (GLuint i = 0; i < list->count; i++) {
+        SpirvResource *candidate = &list->list[i];
+        if (!candidate->name || candidate->location != location) {
+            continue;
+        }
+        if (type_peer && !mglSpirvVaryingTypesCompatible(candidate, type_peer)) {
+            continue;
+        }
+        return candidate;
+    }
+
+    return NULL;
+}
+
+static void mglBridgeSkippedGeometryShaderVaryings(Program *pptr)
+{
+    if (!pptr ||
+        !pptr->shader_slots[_GEOMETRY_SHADER] ||
+        !pptr->spirv[_VERTEX_SHADER].msl_str ||
+        !pptr->spirv[_FRAGMENT_SHADER].msl_str) {
+        return;
+    }
+
+    SpirvResourceList *vertex_outputs =
+        &pptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+    SpirvResourceList *geometry_inputs =
+        &pptr->spirv_resources_list[_GEOMETRY_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+    SpirvResourceList *geometry_outputs =
+        &pptr->spirv_resources_list[_GEOMETRY_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+    SpirvResourceList *fragment_inputs =
+        &pptr->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+
+    if (!vertex_outputs->list || !geometry_inputs->list ||
+        !geometry_outputs->list || !fragment_inputs->list) {
+        return;
+    }
+
+    for (GLuint f = 0; f < fragment_inputs->count; f++) {
+        SpirvResource *fs_in = &fragment_inputs->list[f];
+        SpirvResource *gs_out = NULL;
+        SpirvResource *vs_out = NULL;
+        GLuint fs_location;
+        char fs_msl_name[256] = {0};
+        char vs_msl_name[256] = {0};
+        const char *fs_name;
+        const char *vs_name;
+        char expected_vs_name[256] = {0};
+
+        if (!fs_in->name || fs_in->name[0] == '\0') {
+            continue;
+        }
+
+        fs_name = fs_in->name;
+        fs_location = fs_in->location;
+        if (mglFindMSLUserLocationForResourceName(pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                                  fs_in->name,
+                                                  &fs_location,
+                                                  fs_msl_name,
+                                                  sizeof(fs_msl_name))) {
+            fs_name = fs_msl_name[0] ? fs_msl_name : fs_in->name;
+            fs_in->location = fs_location;
+        }
+
+        gs_out = mglFindVaryingByName(geometry_outputs, fs_in->name, fs_in);
+        if (!gs_out && fs_name != fs_in->name) {
+            gs_out = mglFindVaryingByName(geometry_outputs, fs_name, fs_in);
+        }
+        if (!gs_out) {
+            gs_out = mglFindVaryingByLocation(geometry_outputs, fs_location, fs_in);
+        }
+        if (!gs_out) {
+            continue;
+        }
+
+        if (strncmp(gs_out->name, "gs_fs_", 6) == 0) {
+            snprintf(expected_vs_name, sizeof(expected_vs_name),
+                     "vs_gs_%s", gs_out->name + 6);
+        }
+
+        if (expected_vs_name[0]) {
+            vs_out = mglFindVaryingByName(vertex_outputs, expected_vs_name, fs_in);
+        }
+
+        if (!vs_out) {
+            for (GLuint g = 0; g < geometry_inputs->count; g++) {
+                SpirvResource *gs_in = &geometry_inputs->list[g];
+                if (!gs_in->name ||
+                    gs_in->location != gs_out->location ||
+                    !mglSpirvVaryingTypesCompatible(gs_in, fs_in)) {
+                    continue;
+                }
+                vs_out = mglFindVaryingByName(vertex_outputs, gs_in->name, gs_in);
+                if (vs_out) {
+                    break;
+                }
+            }
+        }
+        if (!vs_out) {
+            vs_out = mglFindVaryingByLocation(vertex_outputs, gs_out->location, fs_in);
+        }
+        if (!vs_out || !vs_out->name) {
+            continue;
+        }
+
+        vs_name = vs_out->name;
+        if (mglFindMSLUserLocationForResourceName(pptr->spirv[_VERTEX_SHADER].msl_str,
+                                                  vs_out->name,
+                                                  &vs_out->location,
+                                                  vs_msl_name,
+                                                  sizeof(vs_msl_name))) {
+            vs_name = vs_msl_name[0] ? vs_msl_name : vs_out->name;
+        }
+
+        GLboolean renamed = GL_FALSE;
+        if (strcmp(vs_name, fs_name) != 0) {
+            renamed = mglReplaceMSLIdentifier(&pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                              fs_name,
+                                              vs_name);
+            if (renamed) {
+                fprintf(stderr,
+                        "MGL GS SKIP IFACE NAME FIX: program=%u fragment input %s -> %s via skipped GS %s\n",
+                        pptr->name,
+                        fs_name,
+                        vs_name,
+                        gs_out->name ? gs_out->name : "(null)");
+                fs_name = vs_name;
+            }
+        }
+
+        if (vs_out->location == fs_location) {
+            if (!renamed) {
+                continue;
+            }
+            continue;
+        }
+
+        const char *location_patch_name = renamed ? vs_name : fs_in->name;
+        if (!mglReplaceMSLUserLocationForResourceName(&pptr->spirv[_FRAGMENT_SHADER].msl_str,
+                                                      location_patch_name,
+                                                      fs_location,
+                                                      vs_out->location,
+                                                      fs_msl_name,
+                                                      sizeof(fs_msl_name))) {
+            fprintf(stderr,
+                    "MGL GS SKIP IFACE WARNING: program=%u wanted FS %s loc %u -> %u to match VS %s but MSL pattern was not found\n",
+                    pptr->name,
+                    fs_in->name,
+                    (unsigned)fs_location,
+                    (unsigned)vs_out->location,
+                    vs_out->name);
+            continue;
+        }
+
+        fprintf(stderr,
+                "MGL GS SKIP IFACE FIX: program=%u align FS %s/%s loc %u -> %u to VS %s/%s via skipped GS %s\n",
+                pptr->name,
+                fs_in->name,
+                fs_name,
+                (unsigned)fs_location,
+                (unsigned)vs_out->location,
+                vs_out->name,
+                vs_name,
+                gs_out->name ? gs_out->name : "(null)");
+        fs_in->location = vs_out->location;
+    }
+}
+
 static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_program, int stage)
 {
     const char *spirv_messages;
@@ -5169,9 +6289,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     mglFlushPendingDraws(ctx);
 
+    pptr->uses_vertex_id = GL_FALSE;
+    pptr->uses_primitive_id = GL_FALSE;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        if (pptr->shader_slots[stage] &&
-            (pptr->attached_shader_mask & (1u << stage)) != 0u) {
+        if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
             has_any_shader = true;
             break;
         }
@@ -5181,6 +6302,36 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr, "MGL WARNING: mglLinkProgram called with no attached shaders\n");
         pptr->linked_glsl_program = NULL;
         return;
+    }
+
+    if ((pptr->attached_shader_mask & COMPUTE_SHADER_MASK_BIT) &&
+        (pptr->attached_shader_mask & ~COMPUTE_SHADER_MASK_BIT)) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: compute shaders cannot be linked with non-compute stages\n",
+                pptr->name);
+        pptr->linked_glsl_program = NULL;
+        return;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+            continue;
+        }
+
+        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                ? pptr->attached_shader_slots[stage][attached]
+                : pptr->shader_slots[stage];
+            if (!shader || !shader->compiled_glsl_shader) {
+                fprintf(stderr,
+                        "MGL WARNING: mglLinkProgram failed program %u: shader stage %d is not compiled\n",
+                        pptr->name,
+                        stage);
+                pptr->linked_glsl_program = NULL;
+                return;
+            }
+        }
     }
 
     if (MGL_VERBOSE_PROGRAM_LOGS) {
@@ -5235,10 +6386,41 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
+                ? pptr->attached_shader_slots[stage][attached]
+                : pptr->shader_slots[stage];
+            if (!shader || !shader->src) {
+                continue;
+            }
+            if (strstr(shader->src, "gl_VertexID") ||
+                strstr(shader->src, "gl_VertexIndex")) {
+                pptr->uses_vertex_id = GL_TRUE;
+            }
+            if (strstr(shader->src, "gl_PrimitiveID") ||
+                strstr(shader->src, "gl_PrimitiveIndex")) {
+                pptr->uses_primitive_id = GL_TRUE;
+            }
+        }
+    }
+
     applyVertexInputLocations(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
+    mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
     mglUnifySamplerUniformLocations(pptr);
+
+    if (pptr->program_separable &&
+        (pptr->attached_shader_mask & (pptr->attached_shader_mask - 1u)) != 0u &&
+        !mglLinkedProgramPerVertexCompatible(pptr)) {
+        fprintf(stderr,
+                "MGL WARNING: separable program %u has incompatible gl_PerVertex redeclarations\n",
+                pptr->name);
+        pptr->linked_glsl_program = NULL;
+        return;
+    }
 
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
@@ -5501,12 +6683,20 @@ void mglGetAttachedShaders(GLMContext ctx, GLuint program, GLsizei maxCount, GLs
 
     GLsizei written = 0;
     for (int i = 0; i < _MAX_SHADER_TYPES; i++) {
-        Shader *shader = ptr->shader_slots[i];
-        if (!shader || (ptr->attached_shader_mask & (1u << i)) == 0u) {
-            continue;
-        }
-        if (shaders && written < maxCount) {
-            shaders[written++] = shader->name;
+        GLuint attached_count = mglProgramAttachedShaderCount(ptr, (GLuint)i);
+        for (GLuint attached = 0u; attached < attached_count; attached++) {
+            Shader *shader = (ptr->attached_shader_counts[i] > 0u)
+                ? ptr->attached_shader_slots[i][attached]
+                : ptr->shader_slots[i];
+            if (!shader) {
+                continue;
+            }
+            if (written < maxCount) {
+                if (shaders) {
+                    shaders[written] = shader->name;
+                }
+                written++;
+            }
         }
     }
 
@@ -5577,8 +6767,7 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             {
                 int count = 0;
                 for (int i = 0; i < _MAX_SHADER_TYPES; i++) {
-                    if (pptr->shader_slots[i] &&
-                        (pptr->attached_shader_mask & (1u << i)) != 0u) count++;
+                    count += (int)mglProgramAttachedShaderCount(pptr, (GLuint)i);
                 }
                 *params = count;
             }
@@ -5602,14 +6791,13 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             *params = mglActiveUniformBlockMaxNameLength(pptr);
             break;
         case GL_COMPUTE_WORK_GROUP_SIZE:
-            if (pptr->shader_slots[_COMPUTE_SHADER]) {
-                /* Return local workgroup size for compute shaders */
-                params[0] = pptr->local_workgroup_size.x;
-                params[1] = pptr->local_workgroup_size.y;
-                params[2] = pptr->local_workgroup_size.z;
-            } else {
-                params[0] = params[1] = params[2] = 0;
+            if (!pptr->linked_glsl_program || !pptr->shader_slots[_COMPUTE_SHADER]) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
+            params[0] = pptr->local_workgroup_size.x;
+            params[1] = pptr->local_workgroup_size.y;
+            params[2] = pptr->local_workgroup_size.z;
             break;
         default:
             fprintf(stderr, "mglGetProgramiv: unhandled pname 0x%x\n", pname);

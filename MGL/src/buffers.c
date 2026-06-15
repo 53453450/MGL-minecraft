@@ -443,6 +443,9 @@ static void mglSetGenericBufferBinding(GLMContext ctx, GLenum target, GLuint nam
         case GL_UNIFORM_BUFFER:
             STATE_VAR(uniform_buffer_binding) = name;
             break;
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            STATE(buffers[_TRANSFORM_FEEDBACK_BUFFER]) = name ? findBuffer(ctx, name) : NULL;
+            break;
         case GL_DISPATCH_INDIRECT_BUFFER:
             STATE_VAR(dispatch_indirect_buffer_binding) = name;
             break;
@@ -553,6 +556,34 @@ static inline bool mgl_range_ok_size_t(GLintptr offset, GLsizeiptr size, size_t 
         return false;
 
     return true;
+}
+
+static inline bool mgl_ranges_overlap(GLintptr a_offset, GLsizeiptr a_size, GLintptr b_offset, GLsizeiptr b_size)
+{
+    if (a_offset < 0 || a_size <= 0 || b_offset < 0 || b_size <= 0)
+        return false;
+
+    uint64_t a0 = (uint64_t)a_offset;
+    uint64_t b0 = (uint64_t)b_offset;
+    uint64_t a1 = a0 + (uint64_t)a_size;
+    uint64_t b1 = b0 + (uint64_t)b_size;
+
+    if (a1 < a0 || b1 < b0)
+        return true;
+
+    return a0 < b1 && b0 < a1;
+}
+
+static inline bool mglBufferSubDataBlockedByMap(const Buffer *ptr, GLintptr offset, GLsizeiptr size)
+{
+    if (!ptr || !ptr->mapped)
+        return false;
+
+    if (ptr->access_flags & GL_MAP_PERSISTENT_BIT)
+        return false;
+
+    GLsizeiptr mapped_length = ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size;
+    return mgl_ranges_overlap(offset, size, ptr->mapped_offset, mapped_length);
 }
 
 static inline GLMContext mgl_sanitize_ctx(GLMContext ctx, const char *func)
@@ -926,6 +957,7 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_HALF_FLOAT:
             break;
         default:
             ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
@@ -942,10 +974,6 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
 
     if (size == 0) {
         return true;
-    }
-
-    if (!data) {
-        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
@@ -970,10 +998,15 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
 
     GLubyte *dst = base + (size_t)offset;
     size_t pixel_count = (size_t)size / pixel_size;
+    GLubyte zero_pattern[32] = {0};
+    const void *src = data ? data : zero_pattern;
+    if (pixel_size > sizeof(zero_pattern) && !data) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
 
     for(size_t i=0; i<pixel_count; i++)
     {
-        memcpy(dst + (i * pixel_size), data, pixel_size);
+        memcpy(dst + (i * pixel_size), src, pixel_size);
     }
 
     ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
@@ -982,8 +1015,8 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
                        kInitBufferSubData,
                        offset,
                        size,
-                       data,
-                       mglTraceHashBytes(data, pixel_size));
+                       src,
+                       mglTraceHashBytes(src, pixel_size));
 
     return true;
 }
@@ -1876,10 +1909,11 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         ERROR_RETURN(GL_INVALID_VALUE);
     }
 
-    if (ptr->mapped && !(ptr->access & GL_MAP_PERSISTENT_BIT))
+    if (mglBufferSubDataBlockedByMap(ptr, offset, size))
     {
-        fprintf(stderr, "MGL Error: mglBufferSubData: buffer is mapped\n");
+        fprintf(stderr, "MGL Error: mglBufferSubData: buffer update overlaps mapped range\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     // GL_INVALID_OPERATION for immutable storage without dynamic bit
@@ -2036,7 +2070,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         return;
     }
 
-    if (ptr->mapped && !(ptr->access_flags & GL_MAP_PERSISTENT_BIT))
+    if (mglBufferSubDataBlockedByMap(ptr, offset, size))
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
@@ -3370,6 +3404,10 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
+    if (ctx->mtl_funcs.mtlFlush) {
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
     {
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -3580,6 +3618,11 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+
+    if (ctx->mtl_funcs.mtlFlush)
+    {
+        ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
     memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);

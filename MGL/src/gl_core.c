@@ -15,6 +15,7 @@
 
 extern void mgl_lazy_init(void);
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
+extern void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth);
 
 #define GET_CONTEXT()   (mgl_lazy_init(), MGLgetCurrentContext())
 
@@ -6177,7 +6178,12 @@ void glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint 
 {
     GLMContext ctx = GET_CONTEXT();
 
-    ctx->dispatch.copy_image_sub_data(ctx, srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth);
+    if (ctx->dispatch.copy_image_sub_data) {
+        ctx->dispatch.copy_image_sub_data(ctx, srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth);
+        return;
+    }
+
+    mglCopyImageSubData(ctx, srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth);
 }
 
 void glFramebufferParameteri(GLenum target, GLenum pname, GLint param)

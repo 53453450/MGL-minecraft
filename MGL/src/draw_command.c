@@ -758,6 +758,21 @@ static void mglHashBufferPointerName(uint64_t *hash, const Buffer *buffer, uint6
     *hash ^= mglRotateLeft64(ptr ^ (name << 1), salt & 63);
 }
 
+static void mglHashCurrentVertexAttrib(uint64_t *hash,
+                                       const CurrentVertexAttrib *current,
+                                       uint64_t salt)
+{
+    if (!hash || !current) return;
+
+    *hash ^= mglHashBytes64(current->f, sizeof(current->f), 0x63766166u + salt);
+    *hash ^= mglHashBytes64(current->i, sizeof(current->i), 0x63766169u + salt);
+    *hash ^= mglHashBytes64(current->u, sizeof(current->u), 0x63766175u + salt);
+    *hash ^= mglHashBytes64(current->d, sizeof(current->d), 0x63766164u + salt);
+    *hash ^= mglRotateLeft64((uint64_t)current->type, (salt + 1u) & 63);
+    *hash ^= mglRotateLeft64((uint64_t)current->integer, (salt + 2u) & 63);
+    *hash ^= mglRotateLeft64((uint64_t)current->long_attribute, (salt + 3u) & 63);
+}
+
 static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_elements)
 {
     VertexArray *vao = ctx ? ctx->state.vao : NULL;
@@ -782,6 +797,11 @@ static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_element
         hash ^= mglRotateLeft64((uint64_t)attrib->relativeoffset, (salt + 8u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->binding_offset, (salt + 9u) & 63);
         hash ^= mglRotateLeft64((uint64_t)attrib->buffer_bindingindex, (salt + 10u) & 63);
+        if ((vao->enabled_attribs & (1u << i)) == 0u) {
+            mglHashCurrentVertexAttrib(&hash,
+                                       &ctx->state.current_vertex_attrib[i],
+                                       0x300u + (uint64_t)i * 23u);
+        }
     }
 
     for (GLuint i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
@@ -1296,8 +1316,10 @@ typedef struct {
     const uint8_t *index_bytes;
     size_t       index_size;
     size_t       vertex_bytes;
+    size_t       vertex_source_offset;
     size_t       vertex_stride;
     size_t       max_attrib_end;
+    uint64_t     source_first_index;
     GLintptr     binding_offset;
     uint32_t     attrib_mask;
     uint64_t     layout_hash;
@@ -1454,6 +1476,39 @@ static bool mglLooksLikeMinecraftChunkTerrainStream(const VertexArray *vao,
            normal->normalized == GL_TRUE && normal->relativeoffset == 28;
 }
 
+static bool mglProgramUsesStreamMergeUnsafeBuiltin(const Program *program)
+{
+    return program &&
+           (program->uses_vertex_id == GL_TRUE ||
+            program->uses_primitive_id == GL_TRUE);
+}
+
+static bool mglCurrentProgramUsesStreamMergeUnsafeBuiltin(GLMContext ctx)
+{
+    if (!ctx) return true;
+
+    if (ctx->state.program_name != 0u) {
+        return mglProgramUsesStreamMergeUnsafeBuiltin(ctx->state.program);
+    }
+
+    ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    if (!pipeline && ctx->state.var.program_pipeline_binding != 0u) {
+        pipeline = (ProgramPipeline *)searchHashTable(&ctx->state.program_pipeline_table,
+                                                      ctx->state.var.program_pipeline_binding);
+    }
+    if (!pipeline) {
+        return false;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (mglProgramUsesStreamMergeUnsafeBuiltin(pipeline->stage_programs[stage])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
                                            const MGLDrawCommand *cmd,
                                            bool uses_elements,
@@ -1463,6 +1518,7 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     if (cmd->mode != GL_TRIANGLES || cmd->count <= 0) return false;
     if (cmd->instanceCount != 1 || cmd->baseInstance != 0) return false;
     if (ctx->state.var.polygon_mode != GL_FILL) return false;
+    if (mglCurrentProgramUsesStreamMergeUnsafeBuiltin(ctx)) return false;
 
     uint64_t restart = 0;
     if (mglCommandPrimitiveRestartIndex(ctx, cmd->indexType, &restart)) {
@@ -1556,6 +1612,8 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         return false;
     }
 
+    uint64_t minSourceIndex = UINT64_MAX;
+    uint64_t maxSourceIndex = 0u;
     const uint8_t *indices = (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
     for (GLsizei i = 0; i < cmd->count; i++) {
         uint64_t rawIndex = 0;
@@ -1565,14 +1623,38 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
 
         int64_t sourceIndex = (int64_t)rawIndex + (int64_t)cmd->baseVertex;
         if (sourceIndex < 0) return false;
+        uint64_t sourceIndexU = (uint64_t)sourceIndex;
+        if (sourceIndexU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
+            return false;
+        }
 
         uint64_t vertexByte = (uint64_t)bindingOffset +
-                              ((uint64_t)sourceIndex * (uint64_t)vertexStride);
+                              (sourceIndexU * (uint64_t)vertexStride);
         if (vertexByte > UINT64_MAX - (uint64_t)maxAttribEnd ||
             vertexByte + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size) {
             return false;
         }
+        if (sourceIndexU < minSourceIndex) minSourceIndex = sourceIndexU;
+        if (sourceIndexU > maxSourceIndex) maxSourceIndex = sourceIndexU;
     }
+    if (minSourceIndex == UINT64_MAX ||
+        minSourceIndex > maxSourceIndex ||
+        minSourceIndex > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride ||
+        maxSourceIndex > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
+        return false;
+    }
+
+    uint64_t sourceStart = (uint64_t)bindingOffset +
+                           minSourceIndex * (uint64_t)vertexStride;
+    uint64_t sourceEnd = (uint64_t)bindingOffset +
+                         maxSourceIndex * (uint64_t)vertexStride;
+    if (sourceEnd > UINT64_MAX - (uint64_t)maxAttribEnd ||
+        sourceEnd + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size ||
+        sourceStart > sourceEnd + (uint64_t)maxAttribEnd ||
+        sourceEnd + (uint64_t)maxAttribEnd - sourceStart > SIZE_MAX) {
+        return false;
+    }
+    size_t sourceBytes = (size_t)(sourceEnd + (uint64_t)maxAttribEnd - sourceStart);
 
     memset(out, 0, sizeof(*out));
     out->vao = vao;
@@ -1580,9 +1662,11 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     out->index_buffer = indexBuffer;
     out->index_bytes = indices;
     out->index_size = indexSize;
-    out->vertex_bytes = (size_t)vertexBuffer->size;
+    out->vertex_bytes = sourceBytes;
+    out->vertex_source_offset = (size_t)sourceStart;
     out->vertex_stride = vertexStride;
     out->max_attrib_end = maxAttribEnd;
+    out->source_first_index = minSourceIndex;
     out->binding_offset = bindingOffset;
     out->attrib_mask = attribMask;
     out->layout_hash = layoutHash ^
@@ -1667,8 +1751,7 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
     }
     size_t newVertexBytes = vertexOffset + candidate->vertex_bytes;
 
-    uint64_t vertexBase = ((uint64_t)vertexOffset + (uint64_t)candidate->binding_offset) /
-                          (uint64_t)candidate->vertex_stride;
+    uint64_t vertexBase = (uint64_t)vertexOffset / (uint64_t)candidate->vertex_stride;
 
     if ((uint64_t)srcCmd->count > (UINT64_MAX / sizeof(uint32_t)) ||
         (size_t)srcCmd->count > (MGL_STREAM_MERGE_MAX_BATCH_BYTES - batch->stream_index_bytes) / sizeof(uint32_t)) {
@@ -1685,7 +1768,9 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
         }
         int64_t sourceIndex = (int64_t)rawIndex + (int64_t)srcCmd->baseVertex;
         if (sourceIndex < 0) return false;
-        uint64_t mergedIndex = vertexBase + (uint64_t)sourceIndex;
+        uint64_t sourceIndexU = (uint64_t)sourceIndex;
+        if (sourceIndexU < candidate->source_first_index) return false;
+        uint64_t mergedIndex = vertexBase + (sourceIndexU - candidate->source_first_index);
         if (mergedIndex > UINT32_MAX) return false;
     }
 
@@ -1699,7 +1784,8 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
         memset(vertexDst + batch->stream_vertex_bytes, 0, vertexOffset - batch->stream_vertex_bytes);
     }
     memcpy(vertexDst + vertexOffset,
-           (const void *)(uintptr_t)candidate->vertex_buffer->data.buffer_data,
+           (const uint8_t *)(uintptr_t)candidate->vertex_buffer->data.buffer_data +
+               candidate->vertex_source_offset,
            candidate->vertex_bytes);
 
     uint32_t *indexDst = (uint32_t *)((uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexWriteOffset);
@@ -1707,7 +1793,8 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
         uint64_t rawIndex = 0;
         (void)mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex);
         int64_t sourceIndex = (int64_t)rawIndex + (int64_t)srcCmd->baseVertex;
-        indexDst[i] = (uint32_t)(vertexBase + (uint64_t)sourceIndex);
+        indexDst[i] = (uint32_t)(vertexBase +
+                                 ((uint64_t)sourceIndex - candidate->source_first_index));
     }
 
     batch->stream_vertex_bytes = newVertexBytes;

@@ -225,9 +225,11 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
 
 void mglTextureBarrier(GLMContext ctx)
 {
-    // CRITICAL FIX: Handle unimplemented function gracefully instead of crashing
-    fprintf(stderr, "MGL WARNING: mglTextureBarrier is not yet implemented in MGL\n");
-    // No-op implementation - this is optional functionality
+    if (!ctx) {
+        return;
+    }
+
+    mglFlushCommandBuffer(ctx);
 }
 
 void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
@@ -242,6 +244,7 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
         GL_PIXEL_BUFFER_BARRIER_BIT |
         GL_TEXTURE_UPDATE_BARRIER_BIT |
         GL_BUFFER_UPDATE_BARRIER_BIT |
+        GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT |
         GL_FRAMEBUFFER_BARRIER_BIT |
         GL_TRANSFORM_FEEDBACK_BARRIER_BIT |
         GL_ATOMIC_COUNTER_BARRIER_BIT |

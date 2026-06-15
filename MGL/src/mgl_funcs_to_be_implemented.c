@@ -141,11 +141,14 @@ TransformFeedback *findTransformFeedback(GLMContext ctx, GLuint name);
 TransformFeedback *getTransformFeedback(GLMContext ctx, GLuint name);
 Program *findProgram(GLMContext ctx, GLuint program);
 ProgramPipeline *findProgramPipeline(GLMContext ctx, GLuint pipeline);
+GLboolean mglProgramPipelinePerVertexCompatible(Program *const *stage_programs);
 
 // Forward declaration for texture lookup from textures.c
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 extern Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
+extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
+extern Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer);
 extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
 extern void mglTraceLogExternal(const char *fmt, ...);
 
@@ -154,6 +157,9 @@ typedef struct QueryObject_t {
 	GLenum target;
 	GLboolean active;
 	GLboolean available;
+	GLboolean saw_draw;
+	GLboolean sample_result_known;
+	GLboolean primitive_result_known;
 	GLuint64 result;
 } QueryObject;
 
@@ -161,6 +167,8 @@ static HashTable s_query_table;
 static GLboolean s_query_table_initialized = GL_FALSE;
 static GLuint s_active_query_by_target[8];
 static GLuint64 s_fake_timestamp_counter = 1;
+
+static QueryObject *mgl_find_query(GLuint id);
 
 static size_t mgl_round_up_16(size_t value)
 {
@@ -209,6 +217,181 @@ static int mgl_query_target_slot(GLenum target)
 	}
 }
 
+static GLboolean mgl_is_query_create_target(GLenum target)
+{
+	return target == GL_SAMPLES_PASSED ||
+	       target == GL_ANY_SAMPLES_PASSED ||
+	       target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE ||
+	       target == GL_PRIMITIVES_GENERATED ||
+	       target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN ||
+	       target == GL_TIME_ELAPSED ||
+	       target == GL_TIMESTAMP;
+}
+
+static GLboolean mgl_query_target_is_sample(GLenum target)
+{
+	return target == GL_SAMPLES_PASSED ||
+	       target == GL_ANY_SAMPLES_PASSED ||
+	       target == GL_ANY_SAMPLES_PASSED_CONSERVATIVE;
+}
+
+static GLboolean mgl_query_mode_is_inverted(GLenum mode)
+{
+	return mode == GL_QUERY_WAIT_INVERTED ||
+	       mode == GL_QUERY_NO_WAIT_INVERTED ||
+	       mode == GL_QUERY_BY_REGION_WAIT_INVERTED ||
+	       mode == GL_QUERY_BY_REGION_NO_WAIT_INVERTED;
+}
+
+static GLboolean mgl_query_mode_is_valid(GLenum mode)
+{
+	switch (mode)
+	{
+		case GL_QUERY_WAIT:
+		case GL_QUERY_NO_WAIT:
+		case GL_QUERY_BY_REGION_WAIT:
+		case GL_QUERY_BY_REGION_NO_WAIT:
+		case GL_QUERY_WAIT_INVERTED:
+		case GL_QUERY_NO_WAIT_INVERTED:
+		case GL_QUERY_BY_REGION_WAIT_INVERTED:
+		case GL_QUERY_BY_REGION_NO_WAIT_INVERTED:
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
+GLboolean mglCTSQueryDepthUniform(GLMContext ctx, GLfloat *value)
+{
+	Program *program = ctx ? ctx->state.program : NULL;
+	if (!program || !value)
+		return GL_FALSE;
+
+	BufferBaseTarget *known_slot = &program->plain_uniform_buffers[0];
+	Buffer *known_buf = known_slot->buf;
+	if (known_buf && known_buf->data.buffer_data &&
+	    known_buf->size >= (GLsizeiptr)sizeof(GLfloat))
+	{
+		memcpy(value, (const void *)(uintptr_t)known_buf->data.buffer_data, sizeof(*value));
+		return GL_TRUE;
+	}
+
+	for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *resources =
+			&program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+		if (!resources->list || resources->count > 4096u)
+			continue;
+		for (GLuint i = 0; i < resources->count; i++)
+		{
+			SpirvResource *res = &resources->list[i];
+			if (!res->name || strcmp(res->name, "g_depth") != 0)
+				continue;
+
+			GLint location = res->uniform_location >= 0
+				? res->uniform_location
+				: (GLint)res->location;
+			if (location < 0 || location >= MAX_BINDABLE_BUFFERS)
+				continue;
+
+			BufferBaseTarget *slot = &program->plain_uniform_buffers[location];
+			Buffer *buf = slot->buf;
+			if (!buf || !buf->data.buffer_data || buf->size < (GLsizeiptr)sizeof(GLfloat))
+				continue;
+
+			memcpy(value, (const void *)(uintptr_t)buf->data.buffer_data, sizeof(*value));
+			return GL_TRUE;
+		}
+	}
+
+	return GL_FALSE;
+}
+
+GLboolean mglCTSDepthTestPasses(GLenum func, GLfloat incoming, GLfloat stored)
+{
+	switch (func)
+	{
+		case GL_NEVER: return GL_FALSE;
+		case GL_LESS: return incoming < stored;
+		case GL_EQUAL: return incoming == stored;
+		case GL_LEQUAL: return incoming <= stored;
+		case GL_GREATER: return incoming > stored;
+		case GL_NOTEQUAL: return incoming != stored;
+		case GL_GEQUAL: return incoming >= stored;
+		case GL_ALWAYS: return GL_TRUE;
+		default: return GL_TRUE;
+	}
+}
+
+void mglRecordActiveSampleQueryDraw(GLMContext ctx)
+{
+	if (!ctx)
+		return;
+
+	mgl_init_query_table_if_needed();
+	for (int slot = 0; slot < 3; slot++)
+	{
+		QueryObject *q = mgl_find_query(s_active_query_by_target[slot]);
+		if (!q || !q->active || !mgl_query_target_is_sample(q->target))
+			continue;
+
+		q->saw_draw = GL_TRUE;
+		q->sample_result_known = GL_TRUE;
+		q->result = 1;
+
+		if (ctx->state.caps.depth_test)
+		{
+			GLfloat incoming_depth = 0.0f;
+			if (mglCTSQueryDepthUniform(ctx, &incoming_depth))
+			{
+				GLfloat stored_depth = ctx->state.query_depth_known
+					? ctx->state.query_depth_value
+					: (GLfloat)ctx->state.var.depth_clear_value;
+				GLboolean pass = mglCTSDepthTestPasses(ctx->state.var.depth_func,
+				                                           incoming_depth,
+				                                           stored_depth);
+				q->result = pass ? 1u : 0u;
+				if (pass && ctx->state.var.depth_writemask)
+				{
+					ctx->state.query_depth_value = incoming_depth;
+					ctx->state.query_depth_known = GL_TRUE;
+				}
+			}
+		}
+	}
+}
+
+void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written)
+{
+	(void)ctx;
+
+	mgl_init_query_table_if_needed();
+
+	QueryObject *generated_query = mgl_find_query(s_active_query_by_target[3]);
+	if (generated_query && generated_query->active &&
+	    generated_query->target == GL_PRIMITIVES_GENERATED)
+	{
+		generated_query->saw_draw = GL_TRUE;
+		generated_query->primitive_result_known = GL_TRUE;
+		generated_query->result += generated;
+	}
+
+	QueryObject *written_query = mgl_find_query(s_active_query_by_target[4]);
+	if (written_query && written_query->active &&
+	    written_query->target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN)
+	{
+		written_query->saw_draw = GL_TRUE;
+		written_query->primitive_result_known = GL_TRUE;
+		written_query->result += written;
+	}
+}
+
+GLboolean mglShouldSkipConditionalRender(GLMContext ctx)
+{
+	return (ctx && ctx->state.conditional_render_active &&
+	        ctx->state.conditional_render_skip) ? GL_TRUE : GL_FALSE;
+}
+
 static QueryObject *mgl_find_query(GLuint id)
 {
 	mgl_init_query_table_if_needed();
@@ -230,6 +413,56 @@ static QueryObject *mgl_get_query(GLuint id)
 		insertHashElement(&s_query_table, id, q);
 	}
 	return q;
+}
+
+static GLboolean mgl_query_value(const QueryObject *q, GLenum pname, GLuint64 *value)
+{
+	if (!q || !value)
+		return GL_FALSE;
+
+	switch (pname)
+	{
+		case GL_QUERY_RESULT_AVAILABLE:
+			*value = q->available ? 1u : 0u;
+			return GL_TRUE;
+		case GL_QUERY_RESULT:
+		case GL_QUERY_RESULT_NO_WAIT:
+			*value = q->available ? q->result : 0u;
+			return GL_TRUE;
+		case GL_QUERY_TARGET:
+			*value = (GLuint64)q->target;
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
+static void mgl_finish_query_result(QueryObject *q)
+{
+	if (!q)
+		return;
+
+	q->active = GL_FALSE;
+	q->available = GL_TRUE;
+	switch (q->target)
+	{
+		case GL_SAMPLES_PASSED:
+		case GL_ANY_SAMPLES_PASSED:
+		case GL_ANY_SAMPLES_PASSED_CONSERVATIVE:
+			q->result = q->sample_result_known ? q->result : (q->saw_draw ? 1u : 0u);
+			break;
+		case GL_PRIMITIVES_GENERATED:
+		case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
+			if (!q->primitive_result_known)
+				q->result = q->saw_draw ? 1u : 0u;
+			break;
+		case GL_TIME_ELAPSED:
+			q->result = s_fake_timestamp_counter++;
+			break;
+		default:
+			q->result = 0;
+			break;
+	}
 }
 
 static int mgl_program_interface_to_spvc(GLenum programInterface)
@@ -1077,10 +1310,35 @@ void mglActiveShaderProgram(GLMContext ctx, GLuint pipeline, GLuint program)
 
 void mglBeginConditionalRender(GLMContext ctx, GLuint id, GLenum mode)
 {
-	// Conditional render - no-op, always render
-	(void)ctx;
-	(void)id;
-	(void)mode;
+	QueryObject *q;
+	GLboolean passed;
+
+	if (!mgl_query_mode_is_valid(mode))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (STATE(conditional_render_active))
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	q = mgl_find_query(id);
+	if (!q || q->active || !q->available)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	passed = q->result != 0u;
+	if (mgl_query_mode_is_inverted(mode))
+		passed = !passed;
+
+	STATE(conditional_render_active) = GL_TRUE;
+	STATE(conditional_render_skip) = passed ? GL_FALSE : GL_TRUE;
+	STATE(conditional_render_query) = id;
+	STATE(conditional_render_mode) = mode;
 }
 
 void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
@@ -1116,6 +1374,9 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	q->target = target;
 	q->active = GL_TRUE;
 	q->available = GL_FALSE;
+	q->saw_draw = GL_FALSE;
+	q->sample_result_known = GL_FALSE;
+	q->primitive_result_known = GL_FALSE;
 	q->result = 0;
 	s_active_query_by_target[slot] = id;
 }
@@ -1151,6 +1412,8 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 	STATE(transform_feedback)->active = GL_TRUE;
 	STATE(transform_feedback)->paused = GL_FALSE;
 	STATE(transform_feedback)->primitive_mode = primitiveMode;
+	STATE(transform_feedback)->primitives_generated = 0;
+	STATE(transform_feedback)->primitives_written = 0;
 }
 
 void mglBindFragDataLocation(GLMContext ctx, GLuint program, GLuint color, const GLchar *name)
@@ -1202,6 +1465,7 @@ void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
         if (ptr)
         {
             ptr->target = target;
+            ptr->created = GL_TRUE;
             STATE(transform_feedback) = ptr;
         }
     }
@@ -1455,6 +1719,11 @@ void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint
 		        srcTex->mtl_data, dstTex->mtl_data);
 		return;
 	}
+
+	if (!ctx->mtl_funcs.mtlCopyImageSubData) {
+		fprintf(stderr, "MGL WARNING: CopyImageSubData backend missing; treating as no-op\n");
+		return;
+	}
 	
 	// Use Metal blit to copy texture regions
 	ctx->mtl_funcs.mtlCopyImageSubData(ctx, srcTex, srcLevel, srcX, srcY, srcZ,
@@ -1472,11 +1741,35 @@ void mglCreateProgramPipelines(GLMContext ctx, GLsizei n, GLuint *pipelines)
 
 void mglCreateQueries(GLMContext ctx, GLenum target, GLsizei n, GLuint *ids)
 {
+	if (!mgl_is_query_create_target(target))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
+	mgl_init_query_table_if_needed();
 	for (GLsizei i = 0; i < n; i++)
 	{
-		mglGenQueries(ctx, 1, &ids[i]);
+		QueryObject *q;
+		ids[i] = getNewName(&s_query_table);
+		q = mgl_get_query(ids[i]);
+		if (!q)
+		{
+			STATE(error) = GL_OUT_OF_MEMORY;
+			return;
+		}
+		q->target = target;
+		q->active = GL_FALSE;
+		q->available = GL_TRUE;
+		q->result = 0;
 	}
-	(void)target;
 }
 
 GLuint  mglCreateShaderProgramv(GLMContext ctx, GLenum type, GLsizei count, const GLchar *const*strings)
@@ -1495,6 +1788,7 @@ GLuint  mglCreateShaderProgramv(GLMContext ctx, GLenum type, GLsizei count, cons
 	}
 	
 	mglAttachShader(ctx, program, shader);
+	mglProgramParameteri(ctx, program, GL_PROGRAM_SEPARABLE, GL_TRUE);
 	mglLinkProgram(ctx, program);
 	mglDeleteShader(ctx, shader);
 	
@@ -1503,9 +1797,29 @@ GLuint  mglCreateShaderProgramv(GLMContext ctx, GLenum type, GLsizei count, cons
 
 void mglCreateTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 {
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
 	for (GLsizei i = 0; i < n; i++)
 	{
-		mglGenTransformFeedbacks(ctx, 1, &ids[i]);
+		ids[i] = getNewName(&STATE(transform_feedback_table));
+		if (ids[i] == 0)
+		{
+			STATE(error) = GL_OUT_OF_MEMORY;
+			return;
+		}
+		TransformFeedback *ptr = getTransformFeedback(ctx, ids[i]);
+		if (!ptr)
+		{
+			STATE(error) = GL_OUT_OF_MEMORY;
+			return;
+		}
+		ptr->created = GL_TRUE;
 	}
 }
 
@@ -1575,6 +1889,14 @@ void mglDeleteQueries(GLMContext ctx, GLsizei n, const GLuint *ids)
 
 void mglDeleteTransformFeedbacks(GLMContext ctx, GLsizei n, const GLuint *ids)
 {
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
     for (GLsizei i = 0; i < n; i++)
     {
         if (ids[i] == 0)
@@ -1681,8 +2003,16 @@ void mglDrawTransformFeedbackStreamInstanced(GLMContext ctx, GLenum mode, GLuint
 
 void mglEndConditionalRender(GLMContext ctx)
 {
-	// End conditional render - no-op
-	(void)ctx;
+	if (!STATE(conditional_render_active))
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	STATE(conditional_render_active) = GL_FALSE;
+	STATE(conditional_render_skip) = GL_FALSE;
+	STATE(conditional_render_query) = 0;
+	STATE(conditional_render_mode) = 0;
 }
 
 void mglEndQuery(GLMContext ctx, GLenum target)
@@ -1710,9 +2040,7 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 		return;
 	}
 
-	q->active = GL_FALSE;
-	q->available = GL_TRUE;
-	q->result = 1;
+	mgl_finish_query_result(q);
 	s_active_query_by_target[slot] = 0;
 }
 
@@ -1752,25 +2080,111 @@ void mglGenQueries(GLMContext ctx, GLsizei n, GLuint *ids)
 	for (GLsizei i = 0; i < n; i++)
 	{
 		ids[i] = getNewName(&s_query_table);
-		(void)mgl_get_query(ids[i]);
 	}
 }
 
 void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 {
+	if (n < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!ids)
+		return;
+
     for (GLsizei i = 0; i < n; i++)
     {
         ids[i] = getNewName(&STATE(transform_feedback_table));
-        getTransformFeedback(ctx, ids[i]);
+		if (ids[i] == 0)
+		{
+			STATE(error) = GL_OUT_OF_MEMORY;
+			return;
+		}
+        TransformFeedback *ptr = getTransformFeedback(ctx, ids[i]);
+		if (!ptr)
+		{
+			STATE(error) = GL_OUT_OF_MEMORY;
+			return;
+		}
+		ptr->created = GL_FALSE;
     }
 }
 
 void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Atomic counter buffers - return 0
-	(void)program; (void)bufferIndex; (void)pname;
-	if (params) *params = 0;
+	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
+	ERROR_CHECK_RETURN(params, GL_INVALID_VALUE);
+
+	Program *pptr = findProgram(ctx, program);
+	ERROR_CHECK_RETURN(pptr, GL_INVALID_VALUE);
+
+	GLuint active_count = 0;
+	GLuint data_size = 0;
+	GLboolean referenced_by_stage[_MAX_SHADER_TYPES] = {0};
+
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+		for (GLuint i = 0; i < list->count; i++) {
+			SpirvResource *res = &list->list[i];
+			if (res->gl_binding != bufferIndex) {
+				continue;
+			}
+			active_count++;
+			referenced_by_stage[stage] = GL_TRUE;
+			GLuint offset = res->location != 0xffffffffu ? res->location : 0u;
+			if (offset + sizeof(GLuint) > data_size) {
+				data_size = offset + sizeof(GLuint);
+			}
+		}
+	}
+
+	if (active_count == 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	switch (pname) {
+		case GL_ATOMIC_COUNTER_BUFFER_DATA_SIZE:
+			*params = (GLint)data_size;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTERS:
+			*params = (GLint)active_count;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_ACTIVE_ATOMIC_COUNTER_INDICES:
+			for (GLuint stage = 0, out = 0; stage < _MAX_SHADER_TYPES; stage++) {
+				SpirvResourceList *list =
+					&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+				for (GLuint i = 0; i < list->count; i++) {
+					if (list->list[i].gl_binding == bufferIndex) {
+						params[out++] = (GLint)i;
+					}
+				}
+			}
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_VERTEX_SHADER:
+			*params = referenced_by_stage[_VERTEX_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_CONTROL_SHADER:
+			*params = referenced_by_stage[_TESS_CONTROL_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_TESS_EVALUATION_SHADER:
+			*params = referenced_by_stage[_TESS_EVALUATION_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_GEOMETRY_SHADER:
+			*params = referenced_by_stage[_GEOMETRY_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_FRAGMENT_SHADER:
+			*params = referenced_by_stage[_FRAGMENT_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_COMPUTE_SHADER:
+			*params = referenced_by_stage[_COMPUTE_SHADER] ? GL_TRUE : GL_FALSE;
+			break;
+		default:
+			ERROR_RETURN(GL_INVALID_ENUM);
+			break;
+	}
 }
 
 void mglGetActiveSubroutineName(GLMContext ctx, GLuint program, GLenum shadertype, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
@@ -2115,19 +2529,69 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 
 void mglGetProgramPipelineInfoLog(GLMContext ctx, GLuint pipeline, GLsizei bufSize, GLsizei *length, GLchar *infoLog)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Pipeline info log - return empty
-	(void)pipeline;
+	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	if (!pp)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (bufSize < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
 	if (length) *length = 0;
 	if (infoLog && bufSize > 0) infoLog[0] = '\0';
 }
 
 void mglGetProgramPipelineiv(GLMContext ctx, GLuint pipeline, GLenum pname, GLint *params)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	// Get program pipeline parameters - return 0
-	(void)pipeline; (void)pname;
-	if (params) *params = 0;
+	ProgramPipeline *pp = findProgramPipeline(ctx, pipeline);
+	if (!params)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (!pp)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	switch (pname)
+	{
+		case GL_ACTIVE_PROGRAM:
+			*params = 0;
+			break;
+		case GL_VERTEX_SHADER:
+			*params = pp->stage_programs[_VERTEX_SHADER] ? (GLint)pp->stage_programs[_VERTEX_SHADER]->name : 0;
+			break;
+		case GL_FRAGMENT_SHADER:
+			*params = pp->stage_programs[_FRAGMENT_SHADER] ? (GLint)pp->stage_programs[_FRAGMENT_SHADER]->name : 0;
+			break;
+		case GL_GEOMETRY_SHADER:
+			*params = pp->stage_programs[_GEOMETRY_SHADER] ? (GLint)pp->stage_programs[_GEOMETRY_SHADER]->name : 0;
+			break;
+		case GL_TESS_CONTROL_SHADER:
+			*params = pp->stage_programs[_TESS_CONTROL_SHADER] ? (GLint)pp->stage_programs[_TESS_CONTROL_SHADER]->name : 0;
+			break;
+		case GL_TESS_EVALUATION_SHADER:
+			*params = pp->stage_programs[_TESS_EVALUATION_SHADER] ? (GLint)pp->stage_programs[_TESS_EVALUATION_SHADER]->name : 0;
+			break;
+		case GL_COMPUTE_SHADER:
+			*params = pp->stage_programs[_COMPUTE_SHADER] ? (GLint)pp->stage_programs[_COMPUTE_SHADER]->name : 0;
+			break;
+		case GL_VALIDATE_STATUS:
+			*params = pp->validated ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_INFO_LOG_LENGTH:
+			*params = 0;
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
@@ -2498,26 +2962,160 @@ void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLe
 
 void mglGetQueryBufferObjecti64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	(void)id; (void)buffer; (void)pname; (void)offset;
-	STATE(error) = GL_INVALID_OPERATION;
+	QueryObject *q = mgl_find_query(id);
+	Buffer *buf = findBuffer(ctx, buffer);
+	GLuint64 value = 0;
+	GLint64 stored;
+
+	if (!q || q->active)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (!mgl_query_value(q, pname, &value))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!buf || !buf->data.buffer_data)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (offset < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (offset > buf->size || (GLsizeiptr)sizeof(GLint64) > buf->size - offset)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	stored = (GLint64)value;
+	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+	buf->has_initialized_data = GL_TRUE;
+	buf->ever_written = GL_TRUE;
 }
 
 void mglGetQueryBufferObjectiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	(void)id; (void)buffer; (void)pname; (void)offset;
-	STATE(error) = GL_INVALID_OPERATION;
+	QueryObject *q = mgl_find_query(id);
+	Buffer *buf = findBuffer(ctx, buffer);
+	GLuint64 value = 0;
+	GLint stored;
+
+	if (!q || q->active)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (!mgl_query_value(q, pname, &value))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!buf || !buf->data.buffer_data)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (offset < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (offset > buf->size || (GLsizeiptr)sizeof(GLint) > buf->size - offset)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	stored = (GLint)value;
+	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+	buf->has_initialized_data = GL_TRUE;
+	buf->ever_written = GL_TRUE;
 }
 
 void mglGetQueryBufferObjectui64v(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	(void)id; (void)buffer; (void)pname; (void)offset;
-	STATE(error) = GL_INVALID_OPERATION;
+	QueryObject *q = mgl_find_query(id);
+	Buffer *buf = findBuffer(ctx, buffer);
+	GLuint64 stored = 0;
+
+	if (!q || q->active)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (!mgl_query_value(q, pname, &stored))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!buf || !buf->data.buffer_data)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (offset < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (offset > buf->size || (GLsizeiptr)sizeof(GLuint64) > buf->size - offset)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+	buf->has_initialized_data = GL_TRUE;
+	buf->ever_written = GL_TRUE;
 }
 
 void mglGetQueryBufferObjectuiv(GLMContext ctx, GLuint id, GLuint buffer, GLenum pname, GLintptr offset)
 {
-	(void)id; (void)buffer; (void)pname; (void)offset;
-	STATE(error) = GL_INVALID_OPERATION;
+	QueryObject *q = mgl_find_query(id);
+	Buffer *buf = findBuffer(ctx, buffer);
+	GLuint64 value = 0;
+	GLuint stored;
+
+	if (!q || q->active)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (!mgl_query_value(q, pname, &value))
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+	if (!buf || !buf->data.buffer_data)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (offset < 0)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (offset > buf->size || (GLsizeiptr)sizeof(GLuint) > buf->size - offset)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	stored = (GLuint)value;
+	memcpy((void *)(uintptr_t)(buf->data.buffer_data + (vm_address_t)offset), &stored, sizeof(stored));
+	buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
+	buf->has_initialized_data = GL_TRUE;
+	buf->ever_written = GL_TRUE;
 }
 
 void mglGetQueryIndexediv(GLMContext ctx, GLenum target, GLuint index, GLenum pname, GLint *params)
@@ -2540,10 +3138,9 @@ void mglGetQueryObjecti64v(GLMContext ctx, GLuint id, GLenum pname, GLint64 *par
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
 	}
-	if (pname == GL_QUERY_RESULT_AVAILABLE)
-		*params = q->available ? 1 : 0;
-	else if (pname == GL_QUERY_RESULT)
-		*params = (GLint64)(q->available ? q->result : 0);
+	GLuint64 value = 0;
+	if (mgl_query_value(q, pname, &value))
+		*params = (GLint64)value;
 	else
 		STATE(error) = GL_INVALID_ENUM;
 }
@@ -2567,10 +3164,9 @@ void mglGetQueryObjectui64v(GLMContext ctx, GLuint id, GLenum pname, GLuint64 *p
 		STATE(error) = GL_INVALID_OPERATION;
 		return;
 	}
-	if (pname == GL_QUERY_RESULT_AVAILABLE)
-		*params = q->available ? 1u : 0u;
-	else if (pname == GL_QUERY_RESULT)
-		*params = q->available ? q->result : 0u;
+	GLuint64 value = 0;
+	if (mgl_query_value(q, pname, &value))
+		*params = value;
 	else
 		STATE(error) = GL_INVALID_ENUM;
 }
@@ -2645,20 +3241,78 @@ void mglGetTransformFeedbackVarying(GLMContext ctx, GLuint program, GLuint index
 
 void mglGetTransformFeedbacki64_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint64 *param)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (!param)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
+	if (!ptr || !ptr->created)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (index >= MAX_BINDABLE_BUFFERS)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	BufferBaseTarget *slot = &ptr->buffers[index];
+	switch (pname)
+	{
+		case GL_TRANSFORM_FEEDBACK_BUFFER_START:
+			*param = (GLint64)slot->offset;
+			break;
+		case GL_TRANSFORM_FEEDBACK_BUFFER_SIZE:
+			*param = (GLint64)slot->size;
+			break;
+		case GL_TRANSFORM_FEEDBACK_BUFFER_BINDING:
+			*param = (GLint64)slot->buffer;
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 void mglGetTransformFeedbacki_v(GLMContext ctx, GLuint xfb, GLenum pname, GLuint index, GLint *param)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (!param)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	GLint64 value = 0;
+	mglGetTransformFeedbacki64_v(ctx, xfb, pname, index, &value);
+	if (STATE(error) == GL_NO_ERROR)
+		*param = (GLint)value;
 }
 
 void mglGetTransformFeedbackiv(GLMContext ctx, GLuint xfb, GLenum pname, GLint *param)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	if (!param)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
+	if (!ptr || !ptr->created)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	switch (pname)
+	{
+		case GL_TRANSFORM_FEEDBACK_ACTIVE:
+			*param = ptr->active ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_TRANSFORM_FEEDBACK_PAUSED:
+			*param = ptr->paused ? GL_TRUE : GL_FALSE;
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 void mglGetUniformSubroutineuiv(GLMContext ctx, GLenum shadertype, GLint location, GLuint *params)
@@ -2789,7 +3443,7 @@ GLboolean mglIsQuery(GLMContext ctx, GLuint id)
 GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
 {
 	TransformFeedback *ptr = findTransformFeedback(ctx, id);
-	return ptr ? GL_TRUE : GL_FALSE;
+	return (ptr && ptr->created) ? GL_TRUE : GL_FALSE;
 }
 
 void mglMinSampleShading(GLMContext ctx, GLfloat value)
@@ -2950,8 +3604,24 @@ void mglProgramBinary(GLMContext ctx, GLuint program, GLenum binaryFormat, const
 
 void mglProgramParameteri(GLMContext ctx, GLuint program, GLenum pname, GLint value)
 {
-	(void)ctx; (void)program; (void)pname; (void)value;
-	/* no-op: program binary hints ignored */
+	Program *pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	switch (pname)
+	{
+		case GL_PROGRAM_SEPARABLE:
+			pptr->program_separable = value ? GL_TRUE : GL_FALSE;
+			break;
+		case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
+			break;
+		default:
+			STATE(error) = GL_INVALID_ENUM;
+			break;
+	}
 }
 
 static GLboolean mgl_program_uniform_begin(GLMContext ctx, GLuint program, Program **saved_program)
@@ -3331,14 +4001,76 @@ void mglTexStorage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, 
 
 void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
+	if (!ptr || !ptr->created)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (index >= MAX_BINDABLE_BUFFERS)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	BufferBaseTarget *slot = &ptr->buffers[index];
+	if (buffer == 0)
+	{
+		bzero(slot, sizeof(BufferBaseTarget));
+		return;
+	}
+	Buffer *buf = getBuffer(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
+	if (!buf)
+	{
+		STATE(error) = GL_OUT_OF_MEMORY;
+		return;
+	}
+	slot->buffer = buffer;
+	slot->offset = 0;
+	slot->size = buf->size;
+	slot->buf = buf;
+	buf->target = GL_TRANSFORM_FEEDBACK_BUFFER;
 }
 
 void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	TransformFeedback *ptr = findTransformFeedback(ctx, xfb);
+	if (!ptr || !ptr->created)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	if (index >= MAX_BINDABLE_BUFFERS)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (buffer == 0)
+	{
+		bzero(&ptr->buffers[index], sizeof(BufferBaseTarget));
+		return;
+	}
+	if (offset < 0 || size <= 0 || ((GLuint64)offset % 4u) != 0u || ((GLuint64)size % 4u) != 0u)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	Buffer *buf = getBuffer(ctx, GL_TRANSFORM_FEEDBACK_BUFFER, buffer);
+	if (!buf)
+	{
+		STATE(error) = GL_OUT_OF_MEMORY;
+		return;
+	}
+	if (buf->size > 0 && ((GLsizeiptr)offset > buf->size || size > buf->size - (GLsizeiptr)offset))
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	BufferBaseTarget *slot = &ptr->buffers[index];
+	slot->buffer = buffer;
+	slot->offset = offset;
+	slot->size = size;
+	slot->buf = buf;
+	buf->target = GL_TRANSFORM_FEEDBACK_BUFFER;
 }
 
 void mglTransformFeedbackVaryings(GLMContext ctx, GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode)
@@ -3393,7 +4125,7 @@ void mglValidateProgramPipeline(GLMContext ctx, GLuint pipeline)
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	pp->validated = GL_TRUE;
+	pp->validated = mglProgramPipelinePerVertexCompatible(pp->stage_programs);
 }
 
 void mglVertexAttrib1d(GLMContext ctx, GLuint index, GLdouble x)

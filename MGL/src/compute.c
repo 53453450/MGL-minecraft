@@ -19,8 +19,8 @@
  */
 
 #include "glm_context.h"
+#include "draw_command.h"
 #include <string.h>
-
 
 void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z)
 {
@@ -31,6 +31,10 @@ void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y
     ERROR_CHECK_RETURN(num_groups_y <= (GLuint)ctx->state.var.max_compute_work_group_count[1], GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(num_groups_z <= (GLuint)ctx->state.var.max_compute_work_group_count[2], GL_INVALID_VALUE);
 
+    if (mglShouldSkipConditionalRender(ctx))
+        return;
+
+    mglFlushCommandBuffer(ctx);
     ctx->mtl_funcs.mtlDispatchCompute(ctx, num_groups_x, num_groups_y, num_groups_z);
 }
 
@@ -41,6 +45,9 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
     GLuint groups[3] = {0u, 0u, 0u};
 
     if (!ctx)
+        return;
+
+    if (mglShouldSkipConditionalRender(ctx))
         return;
 
     if (indirect < 0)

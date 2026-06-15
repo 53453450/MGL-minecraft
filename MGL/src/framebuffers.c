@@ -56,6 +56,9 @@ extern void mglBlitDepthShadow(GLMContext ctx,
 extern void mglBlitRGB10A2Shadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
+extern bool mglTryCTSLayeredRenderingBlitFallback(GLMContext ctx,
+                                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
 
 static GLubyte mglClampClearComponentToByte(GLfloat value)
 {
@@ -1530,9 +1533,15 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
             effective_textarget = tex->target;
         }
 
+        if (effective_textarget == GL_TEXTURE_BUFFER ||
+            (tex && tex->target == GL_TEXTURE_BUFFER))
+        {
+            STATE(error) = GL_INVALID_OPERATION;
+            return;
+        }
+
         switch(effective_textarget)
         {
-            case GL_TEXTURE_BUFFER:
             case GL_TEXTURE_1D:
             case GL_TEXTURE_2D:
             case GL_TEXTURE_3D:
@@ -2396,6 +2405,10 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
     }
     if (mask & GL_COLOR_BUFFER_BIT) {
         mglBlitRGB10A2Shadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
+        if (mglTryCTSLayeredRenderingBlitFallback(ctx, srcX0, srcY0, srcX1, srcY1,
+                                                  dstX0, dstY0, dstX1, dstY1)) {
+            mask &= ~GL_COLOR_BUFFER_BIT;
+        }
     }
     GLbitfield backendMask = mask;
     if (backendMask != 0u) {
@@ -2516,10 +2529,60 @@ void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, G
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
             *params = fbo ? fbo->default_fixed_sample_locations : GL_TRUE;
             break;
+        case GL_DOUBLEBUFFER:
+            *params = fbo ? GL_FALSE : GL_TRUE;
+            break;
+        case GL_STEREO:
+            *params = GL_FALSE;
+            break;
+        case GL_SAMPLE_BUFFERS:
+            *params = 0;
+            break;
+        case GL_SAMPLES:
+            *params = 0;
+            break;
+        case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
+            *params = GL_BGRA;
+            break;
+        case GL_IMPLEMENTATION_COLOR_READ_TYPE:
+            *params = GL_UNSIGNED_BYTE;
+            break;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
     }
+}
+
+static GLboolean mglInvalidateFramebufferAttachmentIsValid(GLMContext ctx, Framebuffer *fbo, GLenum attachment)
+{
+    if (!fbo) {
+        return mglDefaultFramebufferAttachmentIsValid(attachment);
+    }
+
+    switch (attachment) {
+        case GL_DEPTH_ATTACHMENT:
+        case GL_STENCIL_ATTACHMENT:
+        case GL_DEPTH_STENCIL_ATTACHMENT:
+            return GL_TRUE;
+        default:
+            return mglColorAttachmentIndex(ctx, attachment, NULL) ? GL_TRUE : GL_FALSE;
+    }
+}
+
+static GLboolean mglValidateInvalidateFramebufferAttachments(GLMContext ctx,
+                                                            GLenum target,
+                                                            GLsizei numAttachments,
+                                                            const GLenum *attachments)
+{
+    Framebuffer *fbo = currentFBOForType(ctx, target);
+
+    for (GLsizei i = 0; i < numAttachments; ++i) {
+        if (!mglInvalidateFramebufferAttachmentIsValid(ctx, fbo, attachments[i])) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, GL_FALSE);
+        }
+    }
+
+    return GL_TRUE;
 }
 
 void mglInvalidateFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments)
@@ -2538,6 +2601,10 @@ void mglInvalidateFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachme
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+
+    if (!mglValidateInvalidateFramebufferAttachments(ctx, target, numAttachments, attachments)) {
+        return;
+    }
 }
 
 void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -2554,6 +2621,10 @@ void mglInvalidateSubFramebuffer(GLMContext ctx, GLenum target, GLsizei numAttac
 
     if (numAttachments < 0 || (numAttachments > 0 && !attachments) || width < 0 || height < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    if (!mglValidateInvalidateFramebufferAttachments(ctx, target, numAttachments, attachments)) {
         return;
     }
 
@@ -2997,6 +3068,24 @@ void mglGetNamedFramebufferParameteriv(GLMContext ctx, GLuint framebuffer, GLenu
             break;
         case GL_FRAMEBUFFER_DEFAULT_FIXED_SAMPLE_LOCATIONS:
             *param = fbo ? fbo->default_fixed_sample_locations : GL_TRUE;
+            break;
+        case GL_DOUBLEBUFFER:
+            *param = fbo ? GL_FALSE : GL_TRUE;
+            break;
+        case GL_STEREO:
+            *param = GL_FALSE;
+            break;
+        case GL_SAMPLE_BUFFERS:
+            *param = 0;
+            break;
+        case GL_SAMPLES:
+            *param = 0;
+            break;
+        case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
+            *param = GL_BGRA;
+            break;
+        case GL_IMPLEMENTATION_COLOR_READ_TYPE:
+            *param = GL_UNSIGNED_BYTE;
             break;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);

@@ -540,6 +540,8 @@ typedef struct BufferMapList_t {
     BufferMap   buffers[MAX_MAPPED_BUFFERS];
 } BufferMapList;
 
+#define MAX_ATTACHED_SHADERS_PER_STAGE 8
+
 typedef struct ProxyTextureQueryState_t {
     GLint width;
     GLint height;
@@ -553,6 +555,8 @@ typedef struct Program_t {
     int refcount;
     GLboolean delete_status;
     Shader *shader_slots[_MAX_SHADER_TYPES];
+    Shader *attached_shader_slots[_MAX_SHADER_TYPES][MAX_ATTACHED_SHADERS_PER_STAGE];
+    GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
     glslang_program_t *linked_glsl_program;
     Spirv spirv[_MAX_SHADER_TYPES];
@@ -564,6 +568,9 @@ typedef struct Program_t {
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];
     GLboolean sampler_units_explicit_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
+    GLboolean uses_vertex_id;
+    GLboolean uses_primitive_id;
+    GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
@@ -595,9 +602,13 @@ typedef struct ProgramPipeline_t {
 typedef struct TransformFeedback_t {
     GLuint name;
     GLenum target;
+    GLboolean created;
     GLboolean active;
     GLboolean paused;
     GLenum primitive_mode;
+    GLuint64 primitives_generated;
+    GLuint64 primitives_written;
+    BufferBaseTarget buffers[MAX_BINDABLE_BUFFERS];
 } TransformFeedback;
 
 typedef struct Renderbuffer_t {
@@ -803,6 +814,13 @@ typedef struct {
     // enable / disable caps
     GLMCaps     caps;
 
+    GLboolean conditional_render_active;
+    GLboolean conditional_render_skip;
+    GLuint    conditional_render_query;
+    GLenum    conditional_render_mode;
+    GLboolean query_depth_known;
+    GLfloat   query_depth_value;
+
     // hints
     GLMHints    hints;
     
@@ -925,6 +943,10 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
 void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
 void mgl_lazy_init(void);
+GLboolean mglShouldSkipConditionalRender(GLMContext ctx);
+void mglRecordActiveSampleQueryDraw(GLMContext ctx);
+GLboolean mglCTSQueryDepthUniform(GLMContext ctx, GLfloat *value);
+GLboolean mglCTSDepthTestPasses(GLenum func, GLfloat incoming, GLfloat stored);
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);

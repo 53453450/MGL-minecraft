@@ -38,6 +38,11 @@ typedef struct {
     int binding;
 } MGLUBOBindingEntry;
 
+typedef struct {
+    char name[128];
+    int binding;
+} MGLLocalBindingEntry;
+
 static MGLUBOBindingEntry s_ubo_binding_entries[MGL_MAX_UBO_BINDINGS];
 static int s_ubo_binding_count = 0;
 
@@ -71,6 +76,36 @@ static int mgl_get_or_assign_ubo_binding(const char *block_name)
     return s_ubo_binding_entries[s_ubo_binding_count - 1].binding;
 }
 
+static int mgl_get_or_assign_local_binding(MGLLocalBindingEntry *entries,
+                                           int *count,
+                                           const char *block_name)
+{
+    if (!entries || !count || !block_name || !block_name[0]) {
+        return 0;
+    }
+
+    for (int i = 0; i < *count; i++) {
+        if (strcmp(entries[i].name, block_name) == 0) {
+            return entries[i].binding;
+        }
+    }
+
+    if (*count >= MGL_MAX_UBO_BINDINGS) {
+        unsigned hash = 2166136261u;
+        for (const char *p = block_name; *p; p++) {
+            hash ^= (unsigned char)*p;
+            hash *= 16777619u;
+        }
+        return (int)(hash % 256u);
+    }
+
+    int binding = *count;
+    snprintf(entries[*count].name, sizeof(entries[*count].name), "%s", block_name);
+    entries[*count].binding = binding;
+    (*count)++;
+    return binding;
+}
+
 /* Parse a GLSL layout qualifier list (the content between "layout(" and ")")
  * and normalize it for SPIR-V / Metal compatibility.
  *
@@ -81,11 +116,13 @@ static int mgl_get_or_assign_ubo_binding(const char *block_name)
  */
 static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
                                                const char *qualifier_src, size_t qualifier_len,
-                                               int binding)
+                                               int binding,
+                                               const char *default_layout)
 {
     char work[256];
     char binding_str[32];
     int binding_written = 0;
+    int layout_written = 0;
 
     if (qualifier_len >= sizeof(work)) {
         return 0;
@@ -123,10 +160,14 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
             continue;
         }
 
-        /* Skip "packed" and "shared" — replace them with "std140" later. */
+        /* Skip "packed" and "shared" — replace them with a supported layout later. */
         if ((tok_len == 6 && memcmp(start, "packed", 6) == 0) ||
             (tok_len == 6 && memcmp(start, "shared", 6) == 0)) {
             continue;
+        }
+        if ((tok_len == 5 && memcmp(start, "std140", 5) == 0) ||
+            (tok_len == 5 && memcmp(start, "std430", 5) == 0)) {
+            layout_written = 1;
         }
 
         /* Preserve any existing binding qualifier and its value. */
@@ -156,14 +197,16 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
         first = 0;
     }
 
-    /* Always emit "std140" as the packing qualifier. */
-    if (!first && out + 2 < dst_capacity) {
-        dst[out++] = ',';
-        dst[out++] = ' ';
-    }
-    if (out + 6 < dst_capacity) {
-        memcpy(dst + out, "std140", 6);
-        out += 6;
+    if (!layout_written && default_layout && default_layout[0]) {
+        size_t layout_len = strlen(default_layout);
+        if (!first && out + 2 < dst_capacity) {
+            dst[out++] = ',';
+            dst[out++] = ' ';
+        }
+        if (out + layout_len < dst_capacity) {
+            memcpy(dst + out, default_layout, layout_len);
+            out += layout_len;
+        }
     }
 
     /* Append our binding unless the source already had one. */
@@ -255,7 +298,7 @@ static bool mgl_patch_uniform_block_bindings(char *src, size_t src_capacity)
         size_t qualifier_len = (size_t)(paren_close - paren_open);
         size_t norm_len = mgl_normalize_layout_qualifiers(
             normalized, sizeof(normalized),
-            paren_open, qualifier_len, binding);
+            paren_open, qualifier_len, binding, "std140");
         if (norm_len == 0 || norm_len >= sizeof(normalized)) {
             cursor = paren_close + 1;
             continue;
@@ -372,6 +415,195 @@ static bool mgl_patch_uniform_block_bindings(char *src, size_t src_capacity)
         memmove(uniform_kw + repl_len, uniform_kw + old_len, tail_len + 1);
         memcpy(uniform_kw, replacement, repl_len);
         cursor = uniform_kw + repl_len;
+        patched = true;
+    }
+
+    return patched;
+}
+
+static bool mgl_patch_shader_storage_block_bindings(char *src, size_t src_capacity)
+{
+    char *cursor = src;
+    bool patched = false;
+    MGLLocalBindingEntry local_bindings[MGL_MAX_UBO_BINDINGS] = {0};
+    int local_binding_count = 0;
+
+    if (!src || src_capacity == 0) {
+        return false;
+    }
+
+    while (*cursor) {
+        char *layout = strstr(cursor, "layout(");
+        if (!layout) {
+            break;
+        }
+
+        char *paren_open = layout + 7;
+        char *paren_close = strchr(paren_open, ')');
+        if (!paren_close) {
+            cursor = layout + 7;
+            continue;
+        }
+
+        char *after_paren = paren_close + 1;
+        while (*after_paren && isspace((unsigned char)*after_paren)) {
+            after_paren++;
+        }
+        if (strncmp(after_paren, "buffer", 6) != 0) {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        char *name_start = after_paren + 6;
+        while (*name_start && isspace((unsigned char)*name_start)) {
+            name_start++;
+        }
+        if (!isalpha((unsigned char)*name_start) && *name_start != '_') {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        char block_name[128];
+        size_t bn = 0;
+        char *p = name_start;
+        while ((*p == '_' || isalnum((unsigned char)*p)) && bn + 1 < sizeof(block_name)) {
+            block_name[bn++] = *p++;
+        }
+        block_name[bn] = '\0';
+        if (bn == 0) {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        char *after_name = p;
+        while (*after_name && isspace((unsigned char)*after_name)) {
+            after_name++;
+        }
+        if (*after_name != '{') {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        int binding = mgl_get_or_assign_local_binding(local_bindings,
+                                                      &local_binding_count,
+                                                      block_name);
+        char normalized[256];
+        size_t qualifier_len = (size_t)(paren_close - paren_open);
+        size_t norm_len = mgl_normalize_layout_qualifiers(
+            normalized, sizeof(normalized),
+            paren_open, qualifier_len, binding, "std430");
+        if (norm_len == 0 || norm_len >= sizeof(normalized)) {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        char replacement[320];
+        int repl_total = snprintf(replacement, sizeof(replacement),
+                                  "layout(%.*s) buffer ",
+                                  (int)norm_len, normalized);
+        if (repl_total < 0 || (size_t)repl_total >= sizeof(replacement)) {
+            cursor = paren_close + 1;
+            continue;
+        }
+
+        size_t repl_len = (size_t)repl_total;
+        size_t old_len = (size_t)(after_paren + 6 - layout);
+        if (repl_len <= old_len) {
+            memcpy(layout, replacement, repl_len);
+            if (repl_len < old_len) {
+                memset(layout + repl_len, ' ', old_len - repl_len);
+            }
+            cursor = layout + old_len;
+            patched = true;
+        } else {
+            size_t tail_len = strlen(layout + old_len);
+            size_t used = strlen(src);
+            size_t grow = repl_len - old_len;
+            if (used + grow + 1 >= src_capacity) {
+                cursor = layout + old_len;
+                continue;
+            }
+            memmove(layout + repl_len, layout + old_len, tail_len + 1);
+            memcpy(layout, replacement, repl_len);
+            cursor = layout + repl_len;
+            patched = true;
+        }
+    }
+
+    cursor = src;
+    while (*cursor) {
+        char *buffer_kw = strstr(cursor, "buffer");
+        if (!buffer_kw) {
+            break;
+        }
+
+        int before = buffer_kw == src ? 0 : buffer_kw[-1];
+        int after = buffer_kw[6];
+        if (mgl_is_identifier_char(before) || mgl_is_identifier_char(after)) {
+            cursor = buffer_kw + 6;
+            continue;
+        }
+
+        char *prev = buffer_kw;
+        while (prev > src && isspace((unsigned char)prev[-1])) {
+            prev--;
+        }
+        if (prev > src && prev[-1] == ')') {
+            cursor = buffer_kw + 6;
+            continue;
+        }
+
+        char *name_start = buffer_kw + 6;
+        while (*name_start && isspace((unsigned char)*name_start)) {
+            name_start++;
+        }
+        if (!isalpha((unsigned char)*name_start) && *name_start != '_') {
+            cursor = buffer_kw + 6;
+            continue;
+        }
+
+        char block_name[128];
+        size_t bn = 0;
+        char *p = name_start;
+        while ((*p == '_' || isalnum((unsigned char)*p)) && bn + 1 < sizeof(block_name)) {
+            block_name[bn++] = *p++;
+        }
+        block_name[bn] = '\0';
+
+        char *after_name = p;
+        while (*after_name && isspace((unsigned char)*after_name)) {
+            after_name++;
+        }
+        if (*after_name != '{') {
+            cursor = buffer_kw + 6;
+            continue;
+        }
+
+        int binding = mgl_get_or_assign_local_binding(local_bindings,
+                                                      &local_binding_count,
+                                                      block_name);
+        char replacement[256];
+        int repl_total = snprintf(replacement, sizeof(replacement),
+                                  "layout(std430, binding = %d) buffer ",
+                                  binding);
+        if (repl_total < 0 || (size_t)repl_total >= sizeof(replacement)) {
+            cursor = buffer_kw + 6;
+            continue;
+        }
+
+        size_t repl_len = (size_t)repl_total;
+        size_t old_len = (size_t)(name_start - buffer_kw);
+        size_t tail_len = strlen(buffer_kw + old_len);
+        size_t used = strlen(src);
+        size_t grow = repl_len - old_len;
+        if (repl_len < old_len || used + grow + 1 >= src_capacity) {
+            cursor = buffer_kw + old_len;
+            continue;
+        }
+
+        memmove(buffer_kw + repl_len, buffer_kw + old_len, tail_len + 1);
+        memcpy(buffer_kw, replacement, repl_len);
+        cursor = buffer_kw + repl_len;
         patched = true;
     }
 
@@ -518,6 +750,34 @@ static void mgl_downgrade_derivative_control_intrinsics(char *src)
     mgl_replace_glsl_identifier_with_shorter(src, "fwidthCoarse", "fwidth");
 }
 
+static const glslang_resource_t *mgl_glslang_resource(void)
+{
+    static glslang_resource_t resource;
+    static bool initialized = false;
+
+    if (!initialized) {
+        resource = *glslang_default_resource();
+        resource.max_atomic_counter_bindings = MAX_BINDABLE_BUFFERS;
+        resource.max_compute_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_geometry_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+        resource.max_compute_atomic_counters = 1024;
+        resource.max_vertex_atomic_counters = 1024;
+        resource.max_tess_control_atomic_counters = 1024;
+        resource.max_tess_evaluation_atomic_counters = 1024;
+        resource.max_geometry_atomic_counters = 1024;
+        resource.max_fragment_atomic_counters = 1024;
+        resource.max_combined_atomic_counters = 1024;
+        initialized = true;
+    }
+
+    return &resource;
+}
+
 const char *getShaderTypeStr(GLuint type)
 {
     static const char *types[] = {"VERTEX_SHADER", "FRAGMENT_SHADER",
@@ -660,7 +920,8 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         /* Inject explicit UBO bindings for desktop GLSL sources that omit them.
          * Newer glslang/SPIR-V paths may require these at parse time. */
         bool ubo_patched = mgl_patch_uniform_block_bindings(modified_src, modified_src_size);
-        if (ubo_patched) {
+        bool ssbo_patched = mgl_patch_shader_storage_block_bindings(modified_src, modified_src_size);
+        if (ubo_patched || ssbo_patched) {
             mgl_upgrade_version_for_bindings(modified_src);
             mgl_ensure_420pack_extension(modified_src, modified_src_size);
         }
@@ -680,7 +941,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
      * This avoids forcing explicit layout(binding=...) in vanilla MC GLSL 330.
      */
     input->messages = GLSLANG_MSG_RELAXED_ERRORS_BIT;
-    input->resource = glslang_default_resource();
+    input->resource = mgl_glslang_resource();
 
     input->force_default_version_and_profile = 0;
 }

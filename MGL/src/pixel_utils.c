@@ -247,6 +247,8 @@ GLuint sizeForType(GLenum type)
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
             return sizeof(uint32_t);
 
         default:
@@ -340,6 +342,8 @@ GLuint sizeForFormatType(GLenum format, GLenum type)
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
             return sizeof(uint32_t);
 
         case GL_HALF_FLOAT:

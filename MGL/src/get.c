@@ -416,7 +416,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x0D17: RET_TYPE_VAR(type, zoom_y); break; // GL_ZOOM_Y
         case 0x0D30: RET_TYPE_VAR(type, max_eval_order); break; // GL_MAX_EVAL_ORDER
         case 0x0D31: RET_TYPE_VAR(type, max_lights); break; // GL_MAX_LIGHTS
-        case 0x0D32: RET_TYPE_VAR(type, max_clip_planes); break; // GL_MAX_CLIP_PLANES
+        case 0x0D32: RET_TYPE_VAR(type, max_clip_distances); break; // GL_MAX_CLIP_DISTANCES / GL_MAX_CLIP_PLANES
         case 0x0D34: RET_TYPE_VAR(type, max_pixel_map_table); break; // GL_MAX_PIXEL_MAP_TABLE
         case 0x0D35: RET_TYPE_VAR(type, max_attrib_stack_depth); break; // GL_MAX_ATTRIB_STACK_DEPTH
         case 0x0D36: RET_TYPE_VAR(type, max_modelview_stack_depth); break; // GL_MAX_MODELVIEW_STACK_DEPTH
@@ -621,12 +621,36 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8A33: RET_TYPE_VAR(type, max_combined_fragment_uniform_components); break; // GL_MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
         case 0x8A34: RET_TYPE_VAR(type, uniform_buffer_offset_alignment); break; // GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT
         case 0x8C29: RET_TYPE_VAR(type, max_geometry_texture_image_units); break; // GL_MAX_GEOMETRY_TEXTURE_IMAGE_UNITS
+        case 0x8DE0: // GL_MAX_GEOMETRY_OUTPUT_VERTICES
+            switch(type) {
+                case kBool: RET_BOOL(256);
+                case kInt: RET_INT(256);
+                case kFloat: RET_FLOAT(256);
+                case kDouble: RET_DOUBLE(256);
+            }
+            break;
+        case 0x8DE1: // GL_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS
+            switch(type) {
+                case kBool: RET_BOOL(1024);
+                case kInt: RET_INT(1024);
+                case kFloat: RET_FLOAT(1024);
+                case kDouble: RET_DOUBLE(1024);
+            }
+            break;
         case 0x8C8A: // GL_MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
             switch(type) {
                 case kBool: RET_BOOL(64);
                 case kInt: RET_INT(64);
                 case kFloat: RET_FLOAT(64);
                 case kDouble: RET_DOUBLE(64);
+            }
+            break;
+        case GL_MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS:
+            switch(type) {
+                case kBool: RET_BOOL(MAX_BINDABLE_BUFFERS);
+                case kInt: RET_INT(MAX_BINDABLE_BUFFERS);
+                case kFloat: RET_FLOAT(MAX_BINDABLE_BUFFERS);
+                case kDouble: RET_DOUBLE(MAX_BINDABLE_BUFFERS);
             }
             break;
         case 0x8DDF: RET_TYPE_VAR(type, max_geometry_uniform_components); break; // GL_MAX_GEOMETRY_UNIFORM_COMPONENTS
@@ -642,11 +666,37 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x9123: RET_TYPE_VAR(type, max_geometry_input_components); break; // GL_MAX_GEOMETRY_INPUT_COMPONENTS
         case 0x9124: RET_TYPE_VAR(type, max_geometry_output_components); break; // GL_MAX_GEOMETRY_OUTPUT_COMPONENTS
         case 0x9125: RET_TYPE_VAR(type, max_fragment_input_components); break; // GL_MAX_FRAGMENT_INPUT_COMPONENTS
+        case 0x8E5A: // GL_MAX_GEOMETRY_SHADER_INVOCATIONS
+            switch(type) {
+                case kBool: RET_BOOL(32);
+                case kInt: RET_INT(32);
+                case kFloat: RET_FLOAT(32);
+                case kDouble: RET_DOUBLE(32);
+            }
+            break;
         case 0x9126: RET_TYPE_VAR(type, context_profile_mask); break; // GL_CONTEXT_PROFILE_MASK
         case 0x8E4F: RET_TYPE_VAR(type, provoking_vertex); break; // GL_PROVOKING_VERTEX
         case 0x9111: RET_TYPE_VAR(type, max_server_wait_timeout); break; // GL_MAX_SERVER_WAIT_TIMEOUT
         case 0x8D57: RET_TYPE_VAR(type, max_framebuffer_samples); break; // GL_MAX_SAMPLES
         case 0x8E59: RET_TYPE_VAR(type, max_sample_mask_words); break; // GL_MAX_SAMPLE_MASK_WORDS
+        case 0x8F38: // GL_MAX_IMAGE_UNITS
+        case 0x90CF: // GL_MAX_COMBINED_IMAGE_UNIFORMS
+        case 0x91BD: // GL_MAX_COMPUTE_IMAGE_UNIFORMS
+            switch(type) {
+                case kBool: RET_BOOL(8);
+                case kInt: RET_INT(8);
+                case kFloat: RET_FLOAT(8);
+                case kDouble: RET_DOUBLE(8);
+            }
+            break;
+        case 0x906D: // GL_MAX_IMAGE_SAMPLES
+            switch(type) {
+                case kBool: RET_BOOL(0);
+                case kInt: RET_INT(0);
+                case kFloat: RET_FLOAT(0);
+                case kDouble: RET_DOUBLE(0);
+            }
+            break;
         case 0x9104: RET_TYPE_VAR(type, texture_binding_2d_multisample); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE
         case 0x9105: RET_TYPE_VAR(type, texture_binding_2d_multisample_array); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY
         case 0x910E: RET_TYPE_VAR(type, max_color_texture_samples); break; // GL_MAX_COLOR_TEXTURE_SAMPLES
@@ -678,6 +728,16 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x87FE: RET_TYPE_VAR(type, num_program_binary_formats); break; // GL_NUM_PROGRAM_BINARY_FORMATS
         case 0x87FF: RET_TYPE_VAR(type, program_binary_formats); break; // GL_PROGRAM_BINARY_FORMATS
         case 0x825A: RET_TYPE_VAR(type, program_pipeline_binding); break; // GL_PROGRAM_PIPELINE_BINDING
+        case GL_TRANSFORM_FEEDBACK_BINDING: {
+            GLuint binding = (ctx && ctx->state.transform_feedback) ? ctx->state.transform_feedback->name : 0u;
+            switch(type) {
+                case kBool: RET_BOOL(binding);
+                case kInt: RET_INT(binding);
+                case kFloat: RET_FLOAT(binding);
+                case kDouble: RET_DOUBLE(binding);
+            }
+            break;
+        }
         case 0x825B: RET_TYPE_VAR(type, max_viewports); break; // GL_MAX_VIEWPORTS
         case 0x825C: RET_TYPE_VAR(type, viewport_subpixel_bits); break; // GL_VIEWPORT_SUBPIXEL_BITS
         case 0x825D: RET_TYPE_VAR(type, viewport_bounds_range); break; // GL_VIEWPORT_BOUNDS_RANGE

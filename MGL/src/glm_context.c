@@ -240,6 +240,18 @@ GLMContext createGLMContext(GLenum format, GLenum type,
         STATE(var.max_draw_buffers) = MAX_COLOR_ATTACHMENTS;
     }
 
+    if (STATE(var.max_clip_distances) == 0 ||
+        STATE(var.max_clip_distances) > MAX_CLIP_DISTANCES ||
+        STATE(var.max_clip_distances) == 0x01010101u)
+    {
+        fprintf(stderr,
+                "MGL WARNING: GL_MAX_CLIP_DISTANCES state value suspicious (%u), using fallback %u\n",
+                STATE(var.max_clip_distances),
+                MAX_CLIP_DISTANCES);
+        STATE(var.max_clip_distances) = MAX_CLIP_DISTANCES;
+    }
+    STATE(var.max_clip_planes) = STATE(var.max_clip_distances);
+
     if (STATE(max_color_attachments) > MAX_COLOR_ATTACHMENTS) {
         fprintf(stderr,
                 "MGL WARNING: max_color_attachments %u exceeds backend cap %u; clamping\n",

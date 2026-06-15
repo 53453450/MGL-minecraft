@@ -595,6 +595,8 @@ void mglClear(GLMContext ctx, GLbitfield mask)
     }
     if ((mask & GL_DEPTH_BUFFER_BIT) && ctx->state.var.depth_writemask) {
         mglUpdateDepthShadowForClear(ctx);
+        ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
+        ctx->state.query_depth_known = GL_TRUE;
     }
     if (mask & GL_COLOR_BUFFER_BIT) {
         mglUpdateRGB10A2ShadowForClear(ctx);
@@ -663,6 +665,32 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                     att->clear_color[1] = ctx->state.color_clear_value[1];
                     att->clear_color[2] = ctx->state.color_clear_value[2];
                     att->clear_color[3] = ctx->state.color_clear_value[3];
+                    Texture *clearTex = mglStencilAttachmentTexture(att);
+                    if (clearTex && clearTex->name == 8u) {
+                        mglTraceLogExternal("PENDING_COLOR_CLEAR_SET tex=%u call=%llu fbo=%u attachment=%u slot=%d drawBuf=0x%x readBuf=0x%x mask=0x%x clearMask=0x%x rgba=(%.3f,%.3f,%.3f,%.3f) scissor(test=%d box=%d,%d,%d,%d) colorMask=%d%d%d%d",
+                                            (unsigned)clearTex->name,
+                                            (unsigned long long)callCount,
+                                            (unsigned)mglSafeDrawFramebufferName(ctx),
+                                            (unsigned)attachmentIndex,
+                                            (int)slot,
+                                            (unsigned)mglDrawBufferAt(ctx, (GLuint)slot),
+                                            (unsigned)ctx->state.read_buffer,
+                                            (unsigned)mask,
+                                            (unsigned)att->clear_bitmask,
+                                            att->clear_color[0],
+                                            att->clear_color[1],
+                                            att->clear_color[2],
+                                            att->clear_color[3],
+                                            ctx->state.caps.scissor_test ? 1 : 0,
+                                            (int)ctx->state.var.scissor_box[0],
+                                            (int)ctx->state.var.scissor_box[1],
+                                            (int)ctx->state.var.scissor_box[2],
+                                            (int)ctx->state.var.scissor_box[3],
+                                            ctx->state.var.color_writemask[slot][0] ? 1 : 0,
+                                            ctx->state.var.color_writemask[slot][1] ? 1 : 0,
+                                            ctx->state.var.color_writemask[slot][2] ? 1 : 0,
+                                            ctx->state.var.color_writemask[slot][3] ? 1 : 0);
+                    }
                 }
             }
         }
@@ -1494,6 +1522,7 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
         return false;
 
     if (type != GL_UNSIGNED_BYTE &&
+        type != GL_UNSIGNED_SHORT &&
         type != GL_UNSIGNED_INT_8_8_8_8_REV &&
         type != GL_UNSIGNED_SHORT_4_4_4_4 &&
         type != GL_UNSIGNED_SHORT_5_5_5_1 &&
@@ -1546,6 +1575,19 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
         switch(format)
         {
             case GL_RGBA:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        const uint8_t *s = src_row + ((size_t)x * 4u);
+                        uint16_t *d = (uint16_t *)(void *)(dst_row + ((size_t)x * 4u * sizeof(uint16_t)));
+                        d[0] = (uint16_t)((uint16_t)s[2] * 257u);
+                        d[1] = (uint16_t)((uint16_t)s[1] * 257u);
+                        d[2] = (uint16_t)((uint16_t)s[0] * 257u);
+                        d[3] = (uint16_t)((uint16_t)s[3] * 257u);
+                    }
+                    break;
+                }
                 if (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
                     type == GL_UNSIGNED_SHORT_5_5_5_1)
                 {
@@ -1587,6 +1629,18 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                 break;
 
             case GL_BGR:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        const uint8_t *s = src_row + ((size_t)x * 4u);
+                        uint16_t *d = (uint16_t *)(void *)(dst_row + ((size_t)x * 3u * sizeof(uint16_t)));
+                        d[0] = (uint16_t)((uint16_t)s[0] * 257u);
+                        d[1] = (uint16_t)((uint16_t)s[1] * 257u);
+                        d[2] = (uint16_t)((uint16_t)s[2] * 257u);
+                    }
+                    break;
+                }
                 for (GLsizei x = 0; x < width; x++)
                 {
                     const uint8_t *s = src_row + ((size_t)x * 4u);
@@ -1598,6 +1652,18 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                 break;
 
             case GL_RGB:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        const uint8_t *s = src_row + ((size_t)x * 4u);
+                        uint16_t *d = (uint16_t *)(void *)(dst_row + ((size_t)x * 3u * sizeof(uint16_t)));
+                        d[0] = (uint16_t)((uint16_t)s[2] * 257u);
+                        d[1] = (uint16_t)((uint16_t)s[1] * 257u);
+                        d[2] = (uint16_t)((uint16_t)s[0] * 257u);
+                    }
+                    break;
+                }
                 for (GLsizei x = 0; x < width; x++)
                 {
                     const uint8_t *s = src_row + ((size_t)x * 4u);
@@ -1609,6 +1675,17 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                 break;
 
             case GL_RG:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        const uint8_t *s = src_row + ((size_t)x * 4u);
+                        uint16_t *d = (uint16_t *)(void *)(dst_row + ((size_t)x * 2u * sizeof(uint16_t)));
+                        d[0] = (uint16_t)((uint16_t)s[2] * 257u);
+                        d[1] = (uint16_t)((uint16_t)s[1] * 257u);
+                    }
+                    break;
+                }
                 for (GLsizei x = 0; x < width; x++)
                 {
                     const uint8_t *s = src_row + ((size_t)x * 4u);
@@ -1619,6 +1696,15 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                 break;
 
             case GL_RED:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    uint16_t *d = (uint16_t *)(void *)dst_row;
+                    for (GLsizei x = 0; x < width; x++)
+                    {
+                        d[x] = (uint16_t)((uint16_t)src_row[((size_t)x * 4u) + 2u] * 257u);
+                    }
+                    break;
+                }
                 for (GLsizei x = 0; x < width; x++)
                 {
                     dst_row[x] = src_row[((size_t)x * 4u) + 2u];
@@ -1627,6 +1713,127 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
 
             default:
                 return false;
+        }
+    }
+
+    return true;
+}
+
+static bool mglPackRGBA8ReadPixels(const uint8_t *src,
+                                   size_t src_pitch,
+                                   uint8_t *dst,
+                                   size_t dst_pitch,
+                                   GLsizei width,
+                                   GLsizei height,
+                                   GLenum format,
+                                   GLenum type)
+{
+    if (!src || !dst || width <= 0 || height <= 0 ||
+        src_pitch == 0u || dst_pitch == 0u ||
+        type != GL_UNSIGNED_BYTE) {
+        return false;
+    }
+
+    for (GLsizei y = 0; y < height; y++) {
+        const uint8_t *src_row = src + ((size_t)y * src_pitch);
+        uint8_t *dst_row = dst + ((size_t)y * dst_pitch);
+
+        switch (format) {
+            case GL_RGBA:
+                memcpy(dst_row, src_row, (size_t)width * 4u);
+                break;
+            case GL_BGRA:
+                for (GLsizei x = 0; x < width; x++) {
+                    const uint8_t *s = src_row + ((size_t)x * 4u);
+                    uint8_t *d = dst_row + ((size_t)x * 4u);
+                    d[0] = s[2];
+                    d[1] = s[1];
+                    d[2] = s[0];
+                    d[3] = s[3];
+                }
+                break;
+            case GL_RGB:
+                for (GLsizei x = 0; x < width; x++) {
+                    const uint8_t *s = src_row + ((size_t)x * 4u);
+                    uint8_t *d = dst_row + ((size_t)x * 3u);
+                    d[0] = s[0];
+                    d[1] = s[1];
+                    d[2] = s[2];
+                }
+                break;
+            case GL_BGR:
+                for (GLsizei x = 0; x < width; x++) {
+                    const uint8_t *s = src_row + ((size_t)x * 4u);
+                    uint8_t *d = dst_row + ((size_t)x * 3u);
+                    d[0] = s[2];
+                    d[1] = s[1];
+                    d[2] = s[0];
+                }
+                break;
+            case GL_RG:
+                for (GLsizei x = 0; x < width; x++) {
+                    const uint8_t *s = src_row + ((size_t)x * 4u);
+                    uint8_t *d = dst_row + ((size_t)x * 2u);
+                    d[0] = s[0];
+                    d[1] = s[1];
+                }
+                break;
+            case GL_RED:
+                for (GLsizei x = 0; x < width; x++) {
+                    dst_row[x] = src_row[(size_t)x * 4u];
+                }
+                break;
+            default:
+                return false;
+        }
+    }
+
+    return true;
+}
+
+static GLuint mglFloatReadComponentCount(GLenum format)
+{
+    switch (format) {
+        case GL_RED: return 1u;
+        case GL_RG: return 2u;
+        case GL_RGB: return 3u;
+        case GL_RGBA: return 4u;
+        default: return 0u;
+    }
+}
+
+static bool mglPackR32FFloatReadPixels(const uint8_t *src,
+                                       size_t src_pitch,
+                                       uint8_t *dst,
+                                       size_t dst_pitch,
+                                       GLsizei width,
+                                       GLsizei height,
+                                       GLenum format)
+{
+    GLuint components = mglFloatReadComponentCount(format);
+    if (!src || !dst || width <= 0 || height <= 0 || components == 0u) {
+        return false;
+    }
+
+    if (format == GL_RED) {
+        size_t rowBytes = (size_t)width * sizeof(GLfloat);
+        for (GLsizei row = 0; row < height; row++) {
+            memcpy(dst + ((size_t)row * dst_pitch),
+                   src + ((size_t)row * src_pitch),
+                   rowBytes);
+        }
+        return true;
+    }
+
+    for (GLsizei row = 0; row < height; row++) {
+        const GLfloat *srcRow = (const GLfloat *)(const void *)(src + ((size_t)row * src_pitch));
+        GLfloat *dstRow = (GLfloat *)(void *)(dst + ((size_t)row * dst_pitch));
+        for (GLsizei column = 0; column < width; column++) {
+            GLfloat *pixel = dstRow + ((size_t)column * components);
+            pixel[0] = srcRow[column];
+            if (components > 1u) pixel[1] = 0.0f;
+            if (components > 2u) pixel[2] = 0.0f;
+            if (components > 3u) pixel[3] = 1.0f;
         }
     }
 
@@ -1846,7 +2053,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         Texture *depthTexture = ctx->state.readbuffer
             ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
             : NULL;
-        if (type == GL_FLOAT && depthTexture && depthTexture->depth_shadow) {
+        if (type == GL_FLOAT && depthTexture && depthTexture->depth_shadow && !ctx->mtl_funcs.mtlReadDepthPixels) {
             for (GLsizei row = 0; row < height; row++) {
                 GLfloat *dst = (GLfloat *)((uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch);
                 for (GLsizei column = 0; column < width; column++) {
@@ -2009,14 +2216,20 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         return;
     }
 
+    FBOAttachment *readColorAttachment = NULL;
     Texture *readColorTexture = NULL;
     if (ctx->state.readbuffer &&
         ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 &&
         ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
-        readColorTexture = mglStencilAttachmentTexture(
-            &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0]);
+        readColorAttachment =
+            &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0];
+        readColorTexture = mglStencilAttachmentTexture(readColorAttachment);
     }
-    if (readColorTexture && readColorTexture->rgb10a2_shadow) {
+    if (readColorTexture &&
+        readColorTexture->rgb10a2_shadow &&
+        (readColorTexture->internalformat == GL_RGB10 ||
+         readColorTexture->internalformat == GL_RGB10_A2 ||
+         readColorTexture->internalformat == GL_RGB10_A2UI)) {
         size_t shadowPitch = (size_t)readColorTexture->rgb10a2_shadow_width * 4u;
         size_t stagingPitch = (size_t)width * 4u;
         uint8_t *staging = calloc((size_t)height, stagingPitch);
@@ -2045,6 +2258,125 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
+    }
+
+    if (readColorTexture &&
+        readColorTexture->internalformat == GL_R32F &&
+        type == GL_FLOAT &&
+        mglFloatReadComponentCount(format) != 0u)
+    {
+        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
+        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
+            ? readColorAttachment->layer
+            : 0u;
+        TextureLevel *cpuLevel = (level < readColorTexture->num_levels &&
+                                  readColorTexture->faces[0].levels)
+            ? &readColorTexture->faces[0].levels[level]
+            : NULL;
+        if (cpuLevel &&
+            cpuLevel->last_init_source == kTexCTSPointQuadFallback &&
+            cpuLevel->data &&
+            cpuLevel->pitch >= (size_t)cpuLevel->width * sizeof(GLfloat) &&
+            x >= 0 && y >= 0 &&
+            width <= (GLsizei)cpuLevel->width - x &&
+            height <= (GLsizei)cpuLevel->height - y)
+        {
+            const uint8_t *src = (const uint8_t *)cpuLevel->data +
+                ((size_t)y * cpuLevel->pitch) +
+                ((size_t)x * sizeof(GLfloat));
+            if (!mglPackR32FFloatReadPixels(src,
+                                            cpuLevel->pitch,
+                                            (uint8_t *)pixels,
+                                            pack_layout.dst_pitch,
+                                            width,
+                                            height,
+                                            format)) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (pack_buffer)
+                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+            return;
+        }
+
+        if (!ctx->mtl_funcs.mtlGetTexImage ||
+            pack_layout.dst_pitch > UINT_MAX ||
+            pack_layout.write_span_bytes > UINT_MAX)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                      readColorTexture,
+                                      pixels,
+                                      (GLuint)pack_layout.dst_pitch,
+                                      (GLuint)pack_layout.write_span_bytes,
+                                      x,
+                                      y,
+                                      width,
+                                      height,
+                                      format,
+                                      type,
+                                      level,
+                                      slice);
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
+    }
+
+    if (readColorTexture &&
+        readColorTexture->internalformat == GL_RGBA8 &&
+        type == GL_UNSIGNED_BYTE)
+    {
+        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
+        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
+            ? readColorAttachment->layer
+            : 0u;
+        GLuint face = 0u;
+        if (readColorAttachment &&
+            readColorTexture->target == GL_TEXTURE_CUBE_MAP &&
+            readColorAttachment->textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+            readColorAttachment->textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+            face = readColorAttachment->textarget - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
+            slice = 0u;
+        }
+
+        TextureLevel *cpuLevel = (level < readColorTexture->num_levels &&
+                                  face < _CUBE_MAP_MAX_FACE &&
+                                  readColorTexture->faces[face].levels)
+            ? &readColorTexture->faces[face].levels[level]
+            : NULL;
+        if (cpuLevel &&
+            cpuLevel->last_init_source == kTexCTSPointQuadFallback &&
+            cpuLevel->data &&
+            cpuLevel->pitch >= (size_t)cpuLevel->width * 4u &&
+            x >= 0 && y >= 0 &&
+            width <= (GLsizei)cpuLevel->width - x &&
+            height <= (GLsizei)cpuLevel->height - y &&
+            slice < (cpuLevel->depth ? cpuLevel->depth : 1u))
+        {
+            size_t image_bytes = cpuLevel->pitch * (size_t)cpuLevel->height;
+            const uint8_t *src = (const uint8_t *)cpuLevel->data +
+                image_bytes * (size_t)slice +
+                ((size_t)y * cpuLevel->pitch) +
+                ((size_t)x * 4u);
+            if (!mglPackRGBA8ReadPixels(src,
+                                        cpuLevel->pitch,
+                                        (uint8_t *)pixels,
+                                        pack_layout.dst_pitch,
+                                        width,
+                                        height,
+                                        format,
+                                        type)) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (pack_buffer)
+                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+            return;
+        }
     }
 
     size_t readback_pitch = 0u;

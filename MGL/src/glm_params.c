@@ -347,6 +347,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_COMBINED_ATOMIC_COUNTERS,&glm_ctx->state.var.max_combined_atomic_counters);
     glGetIntegerv(GL_MAX_ELEMENT_INDEX,&glm_ctx->state.var.max_element_index);
     glGetIntegerv(GL_MAX_COMPUTE_UNIFORM_BLOCKS,&glm_ctx->state.var.max_compute_uniform_blocks);
+    if (glm_ctx->state.var.max_compute_uniform_blocks == 0 ||
+        glm_ctx->state.var.max_compute_uniform_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_compute_uniform_blocks = MAX_BINDABLE_BUFFERS;
+    }
     glGetIntegerv(GL_MAX_COMPUTE_TEXTURE_IMAGE_UNITS,&glm_ctx->state.var.max_compute_texture_image_units);
     if (glm_ctx->state.var.max_compute_texture_image_units == 0 ||
         glm_ctx->state.var.max_compute_texture_image_units == 0x01010101u ||
@@ -384,6 +388,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_FRAMEBUFFER_WIDTH,&glm_ctx->state.var.max_framebuffer_width);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_HEIGHT,&glm_ctx->state.var.max_framebuffer_height);
     glGetIntegerv(GL_MAX_FRAMEBUFFER_LAYERS,&glm_ctx->state.var.max_framebuffer_layers);
+    if (glm_ctx->state.var.max_framebuffer_layers < 256) {
+        glm_ctx->state.var.max_framebuffer_layers = 256;
+    }
     glGetIntegerv(GL_MAX_FRAMEBUFFER_SAMPLES,&glm_ctx->state.var.max_framebuffer_samples);
     glGetIntegerv(GL_MAX_COLOR_ATTACHMENTS,&glm_ctx->state.max_color_attachments);
     glGetIntegerv(GL_SHADER_STORAGE_BUFFER_BINDING,&glm_ctx->state.var.shader_storage_buffer_binding);

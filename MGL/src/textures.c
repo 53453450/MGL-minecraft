@@ -28,6 +28,7 @@
 #include <inttypes.h>
 #include <limits.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -176,6 +177,18 @@ typedef struct MGLTexturePackLayout_t {
     size_t write_span_bytes;
     size_t required_bytes;
 } MGLTexturePackLayout;
+
+typedef struct MGLCPUPixelComponent_t {
+    GLenum type;
+    GLuint bits;
+    size_t offset;
+} MGLCPUPixelComponent;
+
+typedef struct MGLCPUPixelLayout_t {
+    GLuint component_count;
+    size_t pixel_size;
+    MGLCPUPixelComponent components[4];
+} MGLCPUPixelLayout;
 
 static void mglDumpTextureUploadRowSamples(const char *prefix,
                                            const uint8_t *bytes,
@@ -1057,6 +1070,990 @@ static bool mglComputeTexturePackLayout(GLMContext ctx,
         ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
     }
 
+    return true;
+}
+
+static GLenum mglTextureComponentSizePname(GLuint component)
+{
+    switch (component) {
+        case 0: return GL_TEXTURE_RED_SIZE;
+        case 1: return GL_TEXTURE_GREEN_SIZE;
+        case 2: return GL_TEXTURE_BLUE_SIZE;
+        case 3: return GL_TEXTURE_ALPHA_SIZE;
+        default: return GL_NONE;
+    }
+}
+
+static GLenum mglTextureComponentTypePname(GLuint component)
+{
+    switch (component) {
+        case 0: return GL_TEXTURE_RED_TYPE;
+        case 1: return GL_TEXTURE_GREEN_TYPE;
+        case 2: return GL_TEXTURE_BLUE_TYPE;
+        case 3: return GL_TEXTURE_ALPHA_TYPE;
+        default: return GL_NONE;
+    }
+}
+
+static bool mglBuildCPUPixelLayout(GLenum internalformat,
+                                   size_t storage_pixel_size,
+                                   MGLCPUPixelLayout *layout)
+{
+    if (!layout || storage_pixel_size == 0u || storage_pixel_size > 64u) {
+        return false;
+    }
+
+    memset(layout, 0, sizeof(*layout));
+    layout->pixel_size = storage_pixel_size;
+
+    size_t offset = 0u;
+    for (GLuint component = 0; component < 4u; component++) {
+        GLenum size_pname = mglTextureComponentSizePname(component);
+        GLenum type_pname = mglTextureComponentTypePname(component);
+        GLint bits = mglTexLevelComponentBits((GLint)internalformat, size_pname);
+        if (bits == 0) {
+            continue;
+        }
+        if (bits != 8 && bits != 16 && bits != 32) {
+            return false;
+        }
+
+        size_t bytes = (size_t)bits / 8u;
+        if (layout->component_count >= 4u ||
+            offset > storage_pixel_size ||
+            bytes > storage_pixel_size - offset) {
+            return false;
+        }
+
+        MGLCPUPixelComponent *dst = &layout->components[layout->component_count++];
+        dst->type = (GLenum)mglTexLevelComponentType((GLint)internalformat, type_pname);
+        dst->bits = (GLuint)bits;
+        dst->offset = offset;
+        offset += bytes;
+    }
+
+    return layout->component_count > 0u && offset == storage_pixel_size;
+}
+
+static bool mglExternalFormatIsInteger(GLenum format)
+{
+    switch (format) {
+        case GL_RED_INTEGER:
+        case GL_RG_INTEGER:
+        case GL_RGB_INTEGER:
+        case GL_BGR_INTEGER:
+        case GL_RGBA_INTEGER:
+        case GL_BGRA_INTEGER:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static int mglExternalSourceIndexForComponent(GLenum format, GLuint component)
+{
+    switch (format) {
+        case GL_RED:
+        case GL_RED_INTEGER:
+            return component == 0u ? 0 : -1;
+        case GL_RG:
+        case GL_RG_INTEGER:
+            return component < 2u ? (int)component : -1;
+        case GL_RGB:
+        case GL_RGB_INTEGER:
+            return component < 3u ? (int)component : -1;
+        case GL_RGBA:
+        case GL_RGBA_INTEGER:
+            return component < 4u ? (int)component : -1;
+        case GL_BGR:
+        case GL_BGR_INTEGER:
+            if (component == 0u) return 2;
+            if (component == 1u) return 1;
+            if (component == 2u) return 0;
+            return -1;
+        case GL_BGRA:
+        case GL_BGRA_INTEGER:
+            if (component == 0u) return 2;
+            if (component == 1u) return 1;
+            if (component == 2u) return 0;
+            if (component == 3u) return 3;
+            return -1;
+        default:
+            return -1;
+    }
+}
+
+static double mglClampDouble(double v, double lo, double hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
+static double mglUnsignedMaxForBits(GLuint bits)
+{
+    if (bits >= 32u) {
+        return 4294967295.0;
+    }
+    return (double)((1u << bits) - 1u);
+}
+
+static double mglSignedMaxForBits(GLuint bits)
+{
+    if (bits >= 32u) {
+        return 2147483647.0;
+    }
+    return (double)((1u << (bits - 1u)) - 1u);
+}
+
+static double mglReadExternalComponent(const uint8_t *src,
+                                       GLenum type,
+                                       int source_index,
+                                       bool integer_format,
+                                       GLuint component)
+{
+    if (source_index < 0) {
+        return component == 3u ? 1.0 : 0.0;
+    }
+    if (!src) {
+        return 0.0;
+    }
+
+    size_t component_size = sizeForType(type);
+    if (component_size == 0u) {
+        return 0.0;
+    }
+    const uint8_t *p = src + ((size_t)source_index * component_size);
+
+    switch (type) {
+        case GL_UNSIGNED_BYTE: {
+            uint8_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : ((double)v / 255.0);
+        }
+        case GL_BYTE: {
+            int8_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : mglClampDouble((double)v / 127.0, -1.0, 1.0);
+        }
+        case GL_UNSIGNED_SHORT: {
+            uint16_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : ((double)v / 65535.0);
+        }
+        case GL_SHORT: {
+            int16_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : mglClampDouble((double)v / 32767.0, -1.0, 1.0);
+        }
+        case GL_UNSIGNED_INT: {
+            uint32_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : ((double)v / 4294967295.0);
+        }
+        case GL_INT: {
+            int32_t v;
+            memcpy(&v, p, sizeof(v));
+            return integer_format ? (double)v : mglClampDouble((double)v / 2147483647.0, -1.0, 1.0);
+        }
+        case GL_FLOAT: {
+            float v;
+            memcpy(&v, p, sizeof(v));
+            return (double)v;
+        }
+        default:
+            return 0.0;
+    }
+}
+
+static void mglStoreInternalComponent(uint8_t *dst,
+                                      const MGLCPUPixelComponent *component,
+                                      double value)
+{
+    uint8_t *p = dst + component->offset;
+    switch (component->type) {
+        case GL_FLOAT: {
+            float v = (float)value;
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_UNSIGNED_NORMALIZED: {
+            double maxv = mglUnsignedMaxForBits(component->bits);
+            uint32_t v = (uint32_t)(mglClampDouble(value, 0.0, 1.0) * maxv + 0.5);
+            if (component->bits == 8u) {
+                uint8_t u8 = (uint8_t)v;
+                memcpy(p, &u8, sizeof(u8));
+            } else if (component->bits == 16u) {
+                uint16_t u16 = (uint16_t)v;
+                memcpy(p, &u16, sizeof(u16));
+            } else {
+                memcpy(p, &v, sizeof(v));
+            }
+            break;
+        }
+        case GL_SIGNED_NORMALIZED: {
+            double maxv = mglSignedMaxForBits(component->bits);
+            int32_t v = (int32_t)(mglClampDouble(value, -1.0, 1.0) * maxv + (value >= 0.0 ? 0.5 : -0.5));
+            if (component->bits == 8u) {
+                int8_t s8 = (int8_t)v;
+                memcpy(p, &s8, sizeof(s8));
+            } else if (component->bits == 16u) {
+                int16_t s16 = (int16_t)v;
+                memcpy(p, &s16, sizeof(s16));
+            } else {
+                memcpy(p, &v, sizeof(v));
+            }
+            break;
+        }
+        case GL_UNSIGNED_INT: {
+            uint32_t v = (uint32_t)mglClampDouble(value, 0.0, 4294967295.0);
+            if (component->bits == 8u) {
+                uint8_t u8 = (uint8_t)v;
+                memcpy(p, &u8, sizeof(u8));
+            } else if (component->bits == 16u) {
+                uint16_t u16 = (uint16_t)v;
+                memcpy(p, &u16, sizeof(u16));
+            } else {
+                memcpy(p, &v, sizeof(v));
+            }
+            break;
+        }
+        case GL_INT: {
+            int32_t v = (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0);
+            if (component->bits == 8u) {
+                int8_t s8 = (int8_t)v;
+                memcpy(p, &s8, sizeof(s8));
+            } else if (component->bits == 16u) {
+                int16_t s16 = (int16_t)v;
+                memcpy(p, &s16, sizeof(s16));
+            } else {
+                memcpy(p, &v, sizeof(v));
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static double mglLoadInternalComponent(const uint8_t *src,
+                                       const MGLCPUPixelComponent *component)
+{
+    const uint8_t *p = src + component->offset;
+    switch (component->type) {
+        case GL_FLOAT: {
+            float v;
+            memcpy(&v, p, sizeof(v));
+            return (double)v;
+        }
+        case GL_UNSIGNED_NORMALIZED: {
+            uint32_t v = 0u;
+            if (component->bits == 8u) {
+                uint8_t u8;
+                memcpy(&u8, p, sizeof(u8));
+                v = u8;
+            } else if (component->bits == 16u) {
+                uint16_t u16;
+                memcpy(&u16, p, sizeof(u16));
+                v = u16;
+            } else {
+                memcpy(&v, p, sizeof(v));
+            }
+            return (double)v / mglUnsignedMaxForBits(component->bits);
+        }
+        case GL_SIGNED_NORMALIZED: {
+            int32_t v = 0;
+            if (component->bits == 8u) {
+                int8_t s8;
+                memcpy(&s8, p, sizeof(s8));
+                v = s8;
+            } else if (component->bits == 16u) {
+                int16_t s16;
+                memcpy(&s16, p, sizeof(s16));
+                v = s16;
+            } else {
+                memcpy(&v, p, sizeof(v));
+            }
+            return mglClampDouble((double)v / mglSignedMaxForBits(component->bits), -1.0, 1.0);
+        }
+        case GL_UNSIGNED_INT: {
+            uint32_t v = 0u;
+            if (component->bits == 8u) {
+                uint8_t u8;
+                memcpy(&u8, p, sizeof(u8));
+                v = u8;
+            } else if (component->bits == 16u) {
+                uint16_t u16;
+                memcpy(&u16, p, sizeof(u16));
+                v = u16;
+            } else {
+                memcpy(&v, p, sizeof(v));
+            }
+            return (double)v;
+        }
+        case GL_INT: {
+            int32_t v = 0;
+            if (component->bits == 8u) {
+                int8_t s8;
+                memcpy(&s8, p, sizeof(s8));
+                v = s8;
+            } else if (component->bits == 16u) {
+                int16_t s16;
+                memcpy(&s16, p, sizeof(s16));
+                v = s16;
+            } else {
+                memcpy(&v, p, sizeof(v));
+            }
+            return (double)v;
+        }
+        default:
+            return 0.0;
+    }
+}
+
+static void mglWriteExternalComponent(uint8_t *dst,
+                                      GLenum type,
+                                      int dest_index,
+                                      bool integer_format,
+                                      double value)
+{
+    if (dest_index < 0 || !dst) {
+        return;
+    }
+
+    size_t component_size = sizeForType(type);
+    if (component_size == 0u) {
+        return;
+    }
+    uint8_t *p = dst + ((size_t)dest_index * component_size);
+
+    switch (type) {
+        case GL_UNSIGNED_BYTE: {
+            uint8_t v = integer_format
+                ? (uint8_t)mglClampDouble(value, 0.0, 255.0)
+                : (uint8_t)(mglClampDouble(value, 0.0, 1.0) * 255.0 + 0.5);
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_BYTE: {
+            int8_t v = integer_format
+                ? (int8_t)mglClampDouble(value, -128.0, 127.0)
+                : (int8_t)(mglClampDouble(value, -1.0, 1.0) * 127.0 + (value >= 0.0 ? 0.5 : -0.5));
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_UNSIGNED_SHORT: {
+            uint16_t v = integer_format
+                ? (uint16_t)mglClampDouble(value, 0.0, 65535.0)
+                : (uint16_t)(mglClampDouble(value, 0.0, 1.0) * 65535.0 + 0.5);
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_SHORT: {
+            int16_t v = integer_format
+                ? (int16_t)mglClampDouble(value, -32768.0, 32767.0)
+                : (int16_t)(mglClampDouble(value, -1.0, 1.0) * 32767.0 + (value >= 0.0 ? 0.5 : -0.5));
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_UNSIGNED_INT: {
+            uint32_t v = integer_format
+                ? (uint32_t)mglClampDouble(value, 0.0, 4294967295.0)
+                : (uint32_t)(mglClampDouble(value, 0.0, 1.0) * 4294967295.0 + 0.5);
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_INT: {
+            int32_t v = (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0);
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_FLOAT: {
+            float v = (float)value;
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static bool mglConvertTextureRectToCPU(GLenum internalformat,
+                                       TextureLevel *lvl,
+                                       GLint xoffset,
+                                       GLint yoffset,
+                                       GLint zoffset,
+                                       GLsizei width,
+                                       GLsizei height,
+                                       GLsizei depth,
+                                       GLenum format,
+                                       GLenum type,
+                                       const uint8_t *src_base,
+                                       size_t src_pitch,
+                                       size_t src_image_size)
+{
+    if (!lvl || !lvl->data || !src_base ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        lvl->width == 0u || lvl->height == 0u || lvl->pitch == 0u) {
+        return false;
+    }
+
+    size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
+    size_t src_pixel_size = sizeForFormatType(format, type);
+    if (storage_pixel_size == 0u || src_pixel_size == 0u ||
+        storage_pixel_size * (size_t)lvl->width > lvl->pitch ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        return false;
+    }
+
+    MGLCPUPixelLayout cpu_layout;
+    if (!mglBuildCPUPixelLayout(internalformat, storage_pixel_size, &cpu_layout)) {
+        return false;
+    }
+
+    bool integer_format = mglExternalFormatIsInteger(format);
+    size_t dst_image_size = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_image_size)) {
+        return false;
+    }
+    if (src_image_size == 0u && !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+        return false;
+    }
+
+    uint8_t *dst_start = (uint8_t *)lvl->data +
+                         ((size_t)zoffset * dst_image_size) +
+                         ((size_t)yoffset * lvl->pitch) +
+                         ((size_t)xoffset * storage_pixel_size);
+
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+        uint8_t *dst_slice = dst_start + ((size_t)z * dst_image_size);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *src_row = src_slice + ((size_t)y * src_pitch);
+            uint8_t *dst_row = dst_slice + ((size_t)y * lvl->pitch);
+            for (GLsizei x = 0; x < width; x++) {
+                const uint8_t *src_pixel = src_row + ((size_t)x * src_pixel_size);
+                uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                memset(dst_pixel, 0, storage_pixel_size);
+                for (GLuint component = 0; component < cpu_layout.component_count; component++) {
+                    int src_index = mglExternalSourceIndexForComponent(format, component);
+                    double value = mglReadExternalComponent(src_pixel, type, src_index, integer_format, component);
+                    mglStoreInternalComponent(dst_pixel, &cpu_layout.components[component], value);
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool mglFillTextureRectCPU(GLenum internalformat,
+                                  TextureLevel *lvl,
+                                  GLint xoffset,
+                                  GLint yoffset,
+                                  GLint zoffset,
+                                  GLsizei width,
+                                  GLsizei height,
+                                  GLsizei depth,
+                                  GLenum format,
+                                  GLenum type,
+                                  const void *data)
+{
+    size_t src_pixel_size = sizeForFormatType(format, type);
+    if (src_pixel_size == 0u) {
+        return false;
+    }
+
+    if (!lvl || !lvl->data ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        lvl->width == 0u || lvl->height == 0u || lvl->pitch == 0u) {
+        return false;
+    }
+
+    size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
+    if (storage_pixel_size == 0u || storage_pixel_size > 64u ||
+        storage_pixel_size * (size_t)lvl->width > lvl->pitch ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        return false;
+    }
+
+    MGLCPUPixelLayout cpu_layout;
+    if (!mglBuildCPUPixelLayout(internalformat, storage_pixel_size, &cpu_layout)) {
+        return false;
+    }
+
+    uint8_t zero_pixel[64];
+    const uint8_t *src = (const uint8_t *)data;
+    if (!src) {
+        if (src_pixel_size > sizeof(zero_pixel)) {
+            return false;
+        }
+        memset(zero_pixel, 0, src_pixel_size);
+        src = zero_pixel;
+    }
+
+    bool integer_format = mglExternalFormatIsInteger(format);
+    uint8_t clear_pixel[64];
+    memset(clear_pixel, 0, storage_pixel_size);
+    for (GLuint component = 0; component < cpu_layout.component_count; component++) {
+        int src_index = mglExternalSourceIndexForComponent(format, component);
+        double value = mglReadExternalComponent(src, type, src_index, integer_format, component);
+        mglStoreInternalComponent(clear_pixel, &cpu_layout.components[component], value);
+    }
+
+    size_t image_pitch = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &image_pitch)) {
+        return false;
+    }
+
+    uint8_t *base = (uint8_t *)lvl->data +
+                    ((size_t)zoffset * image_pitch) +
+                    ((size_t)yoffset * lvl->pitch) +
+                    ((size_t)xoffset * storage_pixel_size);
+    for (GLsizei z = 0; z < depth; z++) {
+        uint8_t *slice = base + ((size_t)z * image_pitch);
+        for (GLsizei y = 0; y < height; y++) {
+            uint8_t *row = slice + ((size_t)y * lvl->pitch);
+            for (GLsizei x = 0; x < width; x++) {
+                memcpy(row + ((size_t)x * storage_pixel_size), clear_pixel, storage_pixel_size);
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool mglClearTexFormatCompatible(GLMContext ctx, GLenum internalformat, GLenum format)
+{
+    (void)ctx;
+    GLint canonical = mglTexLevelCanonicalInternalFormat((GLint)internalformat);
+    GLint red_type = mglTexLevelComponentType((GLint)internalformat, GL_TEXTURE_RED_TYPE);
+    bool has_color = red_type != GL_NONE;
+    bool has_depth = (canonical == GL_DEPTH_COMPONENT16 ||
+                      canonical == GL_DEPTH_COMPONENT24 ||
+                      canonical == GL_DEPTH_COMPONENT32 ||
+                      canonical == GL_DEPTH_COMPONENT32F ||
+                      canonical == GL_DEPTH24_STENCIL8 ||
+                      canonical == GL_DEPTH32F_STENCIL8);
+    bool has_stencil_only = (canonical == GL_STENCIL_INDEX8);
+    bool internal_integer = has_color && (red_type == GL_INT || red_type == GL_UNSIGNED_INT);
+    bool format_integer = mglExternalFormatIsInteger(format);
+
+    if (has_depth) {
+        if (format != GL_DEPTH_COMPONENT && format != GL_DEPTH_STENCIL) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        return true;
+    }
+    if (has_stencil_only) {
+        if (format != GL_STENCIL_INDEX) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        return true;
+    }
+
+    if (has_color) {
+        if (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL || format == GL_STENCIL_INDEX) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        if (internal_integer != format_integer) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+    }
+
+    return true;
+}
+
+static bool mglCopyTextureRectFromCPU(GLenum internalformat,
+                                      TextureLevel *lvl,
+                                      GLint xoffset,
+                                      GLint yoffset,
+                                      GLint zoffset,
+                                      GLsizei width,
+                                      GLsizei height,
+                                      GLsizei depth,
+                                      GLenum format,
+                                      GLenum type,
+                                      const MGLTexturePackLayout *pack_layout,
+                                      void *pixels)
+{
+    if (!lvl || !pack_layout || !pixels || !lvl->data ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        pack_layout->pixel_size == 0u ||
+        pack_layout->row_copy_bytes == 0u ||
+        lvl->width == 0u || lvl->height == 0u || lvl->pitch == 0u) {
+        return false;
+    }
+
+    size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
+    if (storage_pixel_size == 0u ||
+        storage_pixel_size * (size_t)lvl->width > lvl->pitch ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        return false;
+    }
+
+    MGLCPUPixelLayout cpu_layout;
+    if (!mglBuildCPUPixelLayout(internalformat, storage_pixel_size, &cpu_layout)) {
+        return false;
+    }
+
+    bool integer_format = mglExternalFormatIsInteger(format);
+    size_t src_image_size = 0u;
+    size_t src_base_offset = 0u;
+    size_t byte_span = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_image_size) ||
+        !mglTextureRectByteRange(lvl,
+                                 storage_pixel_size,
+                                 (size_t)xoffset,
+                                 (size_t)yoffset,
+                                 (size_t)zoffset,
+                                 (size_t)width,
+                                 (size_t)height,
+                                 (size_t)depth,
+                                 &src_base_offset,
+                                 &byte_span)) {
+        return false;
+    }
+
+    const uint8_t *src_base = (const uint8_t *)lvl->data + src_base_offset;
+    uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+        uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
+        for (GLsizei y = 0; y < height; y++) {
+            const uint8_t *src_row = src_slice + ((size_t)y * lvl->pitch);
+            uint8_t *dst_row = dst_slice + ((size_t)y * pack_layout->dst_pitch);
+            for (GLsizei x = 0; x < width; x++) {
+                const uint8_t *src_pixel = src_row + ((size_t)x * storage_pixel_size);
+                uint8_t *dst_pixel = dst_row + ((size_t)x * pack_layout->pixel_size);
+                memset(dst_pixel, 0, pack_layout->pixel_size);
+                for (GLuint component = 0; component < 4u; component++) {
+                    int dst_index = mglExternalSourceIndexForComponent(format, component);
+                    if (dst_index < 0 || component >= cpu_layout.component_count) {
+                        continue;
+                    }
+                    double value = mglLoadInternalComponent(src_pixel, &cpu_layout.components[component]);
+                    mglWriteExternalComponent(dst_pixel, type, dst_index, integer_format, value);
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+static bool mglCopyTextureLevelToPackBuffer(TextureLevel *lvl,
+                                            GLenum internalformat,
+                                            GLsizei width,
+                                            GLsizei height,
+                                            GLsizei depth,
+                                            GLenum format,
+                                            GLenum type,
+                                            const MGLTexturePackLayout *pack_layout,
+                                            void *pixels)
+{
+    if (mglCopyTextureRectFromCPU(internalformat,
+                                  lvl,
+                                  0,
+                                  0,
+                                  0,
+                                  width,
+                                  height,
+                                  depth,
+                                  format,
+                                  type,
+                                  pack_layout,
+                                  pixels)) {
+        return true;
+    }
+
+    if (!lvl || !pack_layout || !pixels || !lvl->data ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        pack_layout->pixel_size == 0u ||
+        pack_layout->row_copy_bytes == 0u ||
+        lvl->pitch < pack_layout->row_copy_bytes ||
+        lvl->height == 0u) {
+        return false;
+    }
+
+    size_t src_image_size = 0u;
+    size_t last_src_offset = 0u;
+    size_t last_src_span = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_image_size) ||
+        !mglMulSizeT(src_image_size, (size_t)(depth - 1), &last_src_offset) ||
+        !mglMulSizeT(lvl->pitch, (size_t)(height - 1), &last_src_span) ||
+        !mglAddSizeT(last_src_offset, last_src_span, &last_src_offset) ||
+        !mglAddSizeT(last_src_offset, pack_layout->row_copy_bytes, &last_src_span) ||
+        last_src_span > lvl->data_size) {
+        return false;
+    }
+
+    const uint8_t *src_base = (const uint8_t *)lvl->data;
+    uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+        uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
+        for (GLsizei y = 0; y < height; y++) {
+            memcpy(dst_slice + ((size_t)y * pack_layout->dst_pitch),
+                   src_slice + ((size_t)y * lvl->pitch),
+                   pack_layout->row_copy_bytes);
+        }
+    }
+
+    return true;
+}
+
+static bool mglCopyTextureSubRectToPackBuffer(TextureLevel *lvl,
+                                              GLenum internalformat,
+                                              GLint xoffset,
+                                              GLint yoffset,
+                                              GLint zoffset,
+                                              GLsizei width,
+                                              GLsizei height,
+                                              GLsizei depth,
+                                              GLenum format,
+                                              GLenum type,
+                                              const MGLTexturePackLayout *pack_layout,
+                                              void *pixels)
+{
+    if (mglCopyTextureRectFromCPU(internalformat,
+                                  lvl,
+                                  xoffset,
+                                  yoffset,
+                                  zoffset,
+                                  width,
+                                  height,
+                                  depth,
+                                  format,
+                                  type,
+                                  pack_layout,
+                                  pixels)) {
+        return true;
+    }
+
+    if (!lvl || !pack_layout || !pixels || !lvl->data ||
+        width <= 0 || height <= 0 || depth <= 0 ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        pack_layout->pixel_size == 0u ||
+        pack_layout->row_copy_bytes == 0u ||
+        lvl->pitch < ((size_t)xoffset * pack_layout->pixel_size) + pack_layout->row_copy_bytes ||
+        lvl->height == 0u) {
+        return false;
+    }
+
+    size_t src_image_size = 0u;
+    size_t src_base_offset = 0u;
+    size_t byte_span = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_image_size) ||
+        !mglTextureRectByteRange(lvl,
+                                 pack_layout->pixel_size,
+                                 (size_t)xoffset,
+                                 (size_t)yoffset,
+                                 (size_t)zoffset,
+                                 (size_t)width,
+                                 (size_t)height,
+                                 (size_t)depth,
+                                 &src_base_offset,
+                                 &byte_span)) {
+        return false;
+    }
+
+    const uint8_t *src_base = (const uint8_t *)lvl->data + src_base_offset;
+    uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+
+    for (GLsizei z = 0; z < depth; z++) {
+        const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+        uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
+        for (GLsizei y = 0; y < height; y++) {
+            memcpy(dst_slice + ((size_t)y * pack_layout->dst_pitch),
+                   src_slice + ((size_t)y * lvl->pitch),
+                   pack_layout->row_copy_bytes);
+        }
+    }
+
+    return true;
+}
+
+static size_t mglClearComponentSize(GLenum type)
+{
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+            return 1u;
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_HALF_FLOAT:
+            return 2u;
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+            return 4u;
+        default:
+            return 0u;
+    }
+}
+
+static void mglStoreDefaultAlpha(uint8_t *pixel, size_t storage_pixel_size, GLenum type)
+{
+    size_t component_size = mglClearComponentSize(type);
+    if (!pixel || component_size == 0u || storage_pixel_size < component_size * 4u) {
+        return;
+    }
+
+    uint8_t *alpha = pixel + component_size * 3u;
+    switch (type) {
+        case GL_UNSIGNED_BYTE: {
+            uint8_t v = UINT8_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_BYTE: {
+            int8_t v = INT8_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_UNSIGNED_SHORT:
+        case GL_HALF_FLOAT: {
+            uint16_t v = UINT16_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_SHORT: {
+            int16_t v = INT16_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_UNSIGNED_INT: {
+            uint32_t v = UINT32_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_INT: {
+            int32_t v = INT32_MAX;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        case GL_FLOAT: {
+            float v = 1.0f;
+            memcpy(alpha, &v, sizeof(v));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+static bool mglClearTextureLevelCPU(TextureLevel *lvl,
+                                    GLenum internalformat,
+                                    GLint xoffset,
+                                    GLint yoffset,
+                                    GLint zoffset,
+                                    GLsizei width,
+                                    GLsizei height,
+                                    GLsizei depth,
+                                    GLenum format,
+                                    GLenum type,
+                                    const void *data)
+{
+    if (width == 0 || height == 0 || depth == 0) {
+        return true;
+    }
+
+    if (!lvl || !lvl->data || !lvl->complete ||
+        xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width < 0 || height < 0 || depth < 0 ||
+        (GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset ||
+        lvl->width == 0u || lvl->height == 0u || lvl->pitch == 0u) {
+        return false;
+    }
+
+    size_t clear_pixel_size = sizeForFormatType(format, type);
+    if (clear_pixel_size == 0u) {
+        return false;
+    }
+
+    size_t storage_pixel_size = lvl->pitch / (size_t)lvl->width;
+    if (storage_pixel_size == 0u ||
+        storage_pixel_size > 64u ||
+        storage_pixel_size * (size_t)lvl->width > lvl->pitch) {
+        return false;
+    }
+
+    if (mglFillTextureRectCPU(internalformat, lvl, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
+        lvl->ever_written = GL_TRUE;
+        lvl->has_initialized_data = GL_TRUE;
+        lvl->suspicious_zero_upload = GL_FALSE;
+        lvl->last_init_source = kTexSubImageCPU;
+        lvl->last_upload_size = storage_pixel_size * (size_t)width * (size_t)height * (size_t)depth;
+        lvl->last_src_ptr = data;
+        lvl->last_src_hash = data ? mglHashBytesSampled(data, clear_pixel_size) : 0ull;
+        return true;
+    }
+
+    uint8_t clear_pixel[64];
+    memset(clear_pixel, 0, storage_pixel_size);
+    if (data) {
+        size_t copy_bytes = clear_pixel_size < storage_pixel_size ? clear_pixel_size : storage_pixel_size;
+        memcpy(clear_pixel, data, copy_bytes);
+    }
+
+    if (format == GL_RED || format == GL_RG || format == GL_RGB ||
+        format == GL_BGR || format == GL_RED_INTEGER || format == GL_RG_INTEGER ||
+        format == GL_RGB_INTEGER || format == GL_BGR_INTEGER) {
+        mglStoreDefaultAlpha(clear_pixel, storage_pixel_size, type);
+    }
+
+    size_t image_pitch = 0u;
+    if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &image_pitch)) {
+        return false;
+    }
+
+    uint8_t *base = (uint8_t *)lvl->data +
+                    ((size_t)zoffset * image_pitch) +
+                    ((size_t)yoffset * lvl->pitch) +
+                    ((size_t)xoffset * storage_pixel_size);
+    for (GLsizei z = 0; z < depth; z++) {
+        uint8_t *slice = base + ((size_t)z * image_pitch);
+        for (GLsizei y = 0; y < height; y++) {
+            uint8_t *row = slice + ((size_t)y * lvl->pitch);
+            for (GLsizei x = 0; x < width; x++) {
+                memcpy(row + ((size_t)x * storage_pixel_size), clear_pixel, storage_pixel_size);
+            }
+        }
+    }
+
+    lvl->ever_written = GL_TRUE;
+    lvl->has_initialized_data = GL_TRUE;
+    lvl->suspicious_zero_upload = GL_FALSE;
+    lvl->last_init_source = kTexSubImageCPU;
+    lvl->last_upload_size = storage_pixel_size * (size_t)width * (size_t)height * (size_t)depth;
+    lvl->last_src_ptr = data;
+    lvl->last_src_hash = data ? mglHashBytesSampled(data, clear_pixel_size) : 0ull;
     return true;
 }
 
@@ -2289,6 +3286,21 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     mglTraceTextureUnitState(ctx, ptr ? "BindTexture" : "BindTexture.unbindTarget", active_texture, target, texture, STATE(active_textures[active_texture]));
 }
 
+static GLboolean mglTextureTargetUsesImageLayerParameter(GLenum target)
+{
+    switch (target) {
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum internalformat)
 {
     Texture *ptr;
@@ -2319,7 +3331,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         return;
     }
 
-    if (!layered && layer < 0) {
+    if (!layered && mglTextureTargetUsesImageLayerParameter(ptr->target) && layer < 0) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: layer < 0 (%d)\n", layer);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -2360,7 +3372,9 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!layered && layer >= (GLint)ptr->faces[0].levels[level].depth) {
+    if (!layered &&
+        mglTextureTargetUsesImageLayerParameter(ptr->target) &&
+        layer >= (GLint)ptr->faces[0].levels[level].depth) {
         fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range depth=%u\n",
                 layer,
                 ptr->faces[0].levels[level].depth);
@@ -3872,7 +4886,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                 ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
             }
         }
-        else if (pixels)
+        else if (pixels && internalformat == format)
         {
             GLuint temp_format;
 
@@ -3905,6 +4919,36 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
             initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
         }
+    }
+    else if (tex->mipmap_levels == 0)
+    {
+        if (internalformat == 0)
+        {
+            internalformat = internalFormatForGLFormatType(format, type);
+            if (internalformat == 0)
+            {
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            }
+        }
+        else if (pixels && internalformat == format)
+        {
+            GLuint temp_format = internalFormatForGLFormatType(format, type);
+            if (temp_format != internalformat)
+            {
+                internalformat = temp_format;
+            }
+        }
+
+        if (checkInternalFormatForMetal(ctx, internalformat) == false)
+        {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+
+        tex->internalformat = internalformat;
+        tex->width = width;
+        tex->height = height;
+        tex->depth = depth;
+        tex->complete = false;
     }
     else if (checkTexLevelParams(ctx, tex, level, internalformat, width, height, depth, format, type) == false)
     {
@@ -3978,6 +5022,24 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         return true;
     }
 
+    if (mglTexLevelInternalFormatCompressed(internalformat))
+    {
+        tex->faces[face].levels[level].pitch = 0;
+        tex->faces[face].levels[level].data_size = 0;
+        tex->faces[face].levels[level].data = 0;
+        tex->faces[face].levels[level].has_initialized_data = pixels ? GL_TRUE : GL_FALSE;
+        tex->faces[face].levels[level].ever_written = pixels ? GL_TRUE : GL_FALSE;
+        tex->faces[face].levels[level].suspicious_zero_upload = GL_FALSE;
+        tex->faces[face].levels[level].last_init_source = pixels ? kTexImageCopy : kTexImageNull;
+        tex->faces[face].levels[level].last_upload_size = 0u;
+        tex->faces[face].levels[level].last_src_ptr = pixels;
+        tex->faces[face].levels[level].last_src_hash = 0ull;
+        tex->faces[face].levels[level].complete = true;
+        tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+        STATE(dirty_bits) |= DIRTY_TEX;
+        return true;
+    }
+
     kern_return_t err;
     vm_address_t texture_data;
     size_t pixel_size;
@@ -4037,78 +5099,92 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
     bool has_upload_source = (pixels != NULL) || (STATE(buffers[_PIXEL_UNPACK_BUFFER]) != NULL);
 
-    if (tex->mtl_requires_private_storage == false)
+    // Keep a CPU shadow even for private Metal formats such as depth textures.
+    // GL readback and glClearTexImage operate on texture contents regardless of
+    // whether the Metal resource itself can be directly CPU-visible.
+    err = vm_allocate((vm_map_t) mach_task_self(),
+                      (vm_address_t*) &texture_data,
+                      texture_size,
+                      VM_FLAGS_ANYWHERE);
+    if (err != 0 || !texture_data)
     {
-        // Allocate directly from VM
-        err = vm_allocate((vm_map_t) mach_task_self(),
-                          (vm_address_t*) &texture_data,
-                          texture_size,
-                          VM_FLAGS_ANYWHERE);
-        if (err != 0 || !texture_data)
-        {
-            fprintf(stderr,
-                    "MGL ERROR: createTextureLevel vm_allocate failed err=%d bytes=%zu tex=%u level=%d\n",
-                    err,
-                    texture_size,
-                    tex->name,
-                    level);
-            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+        fprintf(stderr,
+                "MGL ERROR: createTextureLevel vm_allocate failed err=%d bytes=%zu tex=%u level=%d\n",
+                err,
+                texture_size,
+                tex->name,
+                level);
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    tex->faces[face].levels[level].data_size = texture_size;
+    tex->faces[face].levels[level].data = (vm_address_t)texture_data;
+
+    if (has_upload_source)
+    {
+        size_t source_pixel_size = sizeForFormatType(format, type);
+        MGLTextureUnpackLayout unpack_layout;
+        const uint8_t *resolved_src = NULL;
+        Buffer *resolved_unpack_buf = NULL;
+
+        ERROR_CHECK_RETURN_VALUE(source_pixel_size > 0u, GL_INVALID_ENUM, false);
+
+        if (!mglComputeTextureUnpackLayout(ctx,
+                                           width,
+                                           height,
+                                           depth,
+                                           source_pixel_size,
+                                           "createTextureLevel",
+                                           &unpack_layout)) {
+            return false;
         }
 
-        tex->faces[face].levels[level].data_size = texture_size;
-        tex->faces[face].levels[level].data = (vm_address_t)texture_data;
+        if (!mglResolveTexSubImageSource(ctx,
+                                         tex,
+                                         face,
+                                         level,
+                                         0,
+                                         0,
+                                         0,
+                                         width,
+                                         height,
+                                         depth,
+                                         format,
+                                         type,
+                                         pixels,
+                                         unpack_layout.skip_offset_bytes,
+                                         unpack_layout.required_bytes,
+                                         false,
+                                         &resolved_src,
+                                         &resolved_unpack_buf)) {
+            return false;
+        }
 
-        if (has_upload_source)
-        {
-            size_t source_pixel_size = sizeForFormatType(format, type);
-            MGLTextureUnpackLayout unpack_layout;
-            const uint8_t *resolved_src = NULL;
-            Buffer *resolved_unpack_buf = NULL;
-
-            ERROR_CHECK_RETURN_VALUE(source_pixel_size > 0u, GL_INVALID_ENUM, false);
-
-            if (!mglComputeTextureUnpackLayout(ctx,
-                                               width,
-                                               height,
-                                               depth,
-                                               source_pixel_size,
-                                               "createTextureLevel",
-                                               &unpack_layout)) {
-                return false;
-            }
-
-            if (!mglResolveTexSubImageSource(ctx,
-                                             tex,
-                                             face,
-                                             level,
-                                             0,
-                                             0,
-                                             0,
-                                             width,
-                                             height,
-                                             depth,
-                                             format,
-                                             type,
-                                             pixels,
-                                             unpack_layout.skip_offset_bytes,
-                                             unpack_layout.required_bytes,
-                                             false,
-                                             &resolved_src,
-                                             &resolved_unpack_buf)) {
-                return false;
-            }
-
-            if (!resolved_src) {
-                fprintf(stderr,
-                        "MGL createTextureLevel skip upload: resolved source is NULL tex=%u target=0x%x %dx%dx%d\n",
-                        tex->name,
-                        tex->target,
-                        width,
-                        height,
-                        depth);
-                has_upload_source = false;
-            } else {
-                src_pitch = unpack_layout.src_pitch;
+        if (!resolved_src) {
+            fprintf(stderr,
+                    "MGL createTextureLevel skip upload: resolved source is NULL tex=%u target=0x%x %dx%dx%d\n",
+                    tex->name,
+                    tex->target,
+                    width,
+                    height,
+                    depth);
+            has_upload_source = false;
+        } else {
+            src_pitch = unpack_layout.src_pitch;
+            TextureLevel *lvl = &tex->faces[face].levels[level];
+            if (!mglConvertTextureRectToCPU((GLenum)internalformat,
+                                            lvl,
+                                            0,
+                                            0,
+                                            0,
+                                            width,
+                                            height,
+                                            depth,
+                                            format,
+                                            type,
+                                            resolved_src,
+                                            src_pitch,
+                                            unpack_layout.src_image_size)) {
                 unpackTexture(ctx,
                               tex,
                               face,
@@ -4124,49 +5200,49 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                               width,
                               height,
                               depth);
-
-                tex->faces[face].levels[level].last_upload_size = unpack_layout.required_bytes;
-                tex->faces[face].levels[level].last_src_hash = mglHashBytesSampled(resolved_src, unpack_layout.required_bytes);
             }
 
-            if (resolved_src) {
-                tex->faces[face].levels[level].last_init_source = resolved_unpack_buf ? kTexImagePBO : kTexImageCopy;
-                tex->faces[face].levels[level].last_src_ptr = resolved_src;
-                tex->faces[face].levels[level].ever_written = GL_TRUE;
-                tex->faces[face].levels[level].has_initialized_data = GL_TRUE;
-                tex->faces[face].levels[level].suspicious_zero_upload = GL_FALSE;
-            }
+            tex->faces[face].levels[level].last_upload_size = unpack_layout.required_bytes;
+            tex->faces[face].levels[level].last_src_hash = mglHashBytesSampled(resolved_src, unpack_layout.required_bytes);
+        }
 
-            if (unpack_layout.required_bytes > 0u && resolved_src) {
-                if (mglLooksAllZeroSampled(resolved_src, unpack_layout.required_bytes)) {
-                    size_t first_nonzero = 0u;
-                    uint8_t first_value = 0u;
-                    bool has_nonzero = mglFindFirstNonZeroByte(resolved_src,
-                                                               unpack_layout.required_bytes,
-                                                               &first_nonzero,
-                                                               &first_value);
-                    if (!has_nonzero) {
-                        tex->faces[face].levels[level].suspicious_zero_upload = GL_FALSE;
-                        tex->faces[face].levels[level].has_initialized_data = GL_TRUE;
-                    }
-                    fprintf(stderr,
-                            "MGL WARNING: createTextureLevel upload sampled head/mid/tail all-zero tex=%u face=%u level=%d bytes=%zu src=%p fullZero=%d firstNonZero=0x%zx value=0x%02x\n",
-                            tex->name,
-                            face,
-                            level,
-                            unpack_layout.required_bytes,
-                            resolved_src,
-                            has_nonzero ? 0 : 1,
-                            has_nonzero ? first_nonzero : 0u,
-                            has_nonzero ? first_value : 0u);
+        if (resolved_src) {
+            tex->faces[face].levels[level].last_init_source = resolved_unpack_buf ? kTexImagePBO : kTexImageCopy;
+            tex->faces[face].levels[level].last_src_ptr = resolved_src;
+            tex->faces[face].levels[level].ever_written = GL_TRUE;
+            tex->faces[face].levels[level].has_initialized_data = GL_TRUE;
+            tex->faces[face].levels[level].suspicious_zero_upload = GL_FALSE;
+        }
+
+        if (unpack_layout.required_bytes > 0u && resolved_src) {
+            if (mglLooksAllZeroSampled(resolved_src, unpack_layout.required_bytes)) {
+                size_t first_nonzero = 0u;
+                uint8_t first_value = 0u;
+                bool has_nonzero = mglFindFirstNonZeroByte(resolved_src,
+                                                           unpack_layout.required_bytes,
+                                                           &first_nonzero,
+                                                           &first_value);
+                if (!has_nonzero) {
+                    tex->faces[face].levels[level].suspicious_zero_upload = GL_FALSE;
+                    tex->faces[face].levels[level].has_initialized_data = GL_TRUE;
                 }
+                fprintf(stderr,
+                        "MGL WARNING: createTextureLevel upload sampled head/mid/tail all-zero tex=%u face=%u level=%d bytes=%zu src=%p fullZero=%d firstNonZero=0x%zx value=0x%02x\n",
+                        tex->name,
+                        face,
+                        level,
+                        unpack_layout.required_bytes,
+                        resolved_src,
+                        has_nonzero ? 0 : 1,
+                        has_nonzero ? first_nonzero : 0u,
+                        has_nonzero ? first_value : 0u);
             }
+        }
 
-            if (resolved_src) {
-                tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-            }
-        };
-    }
+        if (resolved_src) {
+            tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        }
+    };
 
     tex->faces[face].levels[level].complete = true;
     if (!has_upload_source) {
@@ -4757,7 +5833,11 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     TextureLevel *lvl = &tex->faces[face].levels[level];
     size_t compact_upload_bytes = 0u;
     size_t compact_upload_row_bytes = 0u;
-    if (!mglMulSizeT((size_t)width, pixel_size, &compact_upload_row_bytes) ||
+    size_t storage_pixel_size = lvl->pitch > 0u && lvl->width > 0u ? (lvl->pitch / (size_t)lvl->width) : pixel_size;
+    if (storage_pixel_size == 0u) {
+        storage_pixel_size = pixel_size;
+    }
+    if (!mglMulSizeT((size_t)width, storage_pixel_size, &compact_upload_row_bytes) ||
         !mglMulSizeT(compact_upload_row_bytes, (size_t)MAX(height, 1), &compact_upload_bytes) ||
         !mglMulSizeT(compact_upload_bytes, (size_t)MAX(depth, 1), &compact_upload_bytes)) {
         fprintf(stderr,
@@ -4781,7 +5861,21 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
     
-    unpackTexture(ctx, tex, face, level, (void *)resolved_src, texture_data, src_pitch, src_image_size, pixel_size, xoffset, yoffset, zoffset, width, height, depth);
+    if (!mglConvertTextureRectToCPU(tex->internalformat,
+                                    lvl,
+                                    xoffset,
+                                    yoffset,
+                                    zoffset,
+                                    width,
+                                    height,
+                                    depth,
+                                    format,
+                                    type,
+                                    resolved_src,
+                                    src_pitch,
+                                    src_image_size)) {
+        unpackTexture(ctx, tex, face, level, (void *)resolved_src, texture_data, src_pitch, src_image_size, pixel_size, xoffset, yoffset, zoffset, width, height, depth);
+    }
 
     size_t upload_dst_offset = 0u;
     size_t upload_dst_span = 0u;
@@ -4789,7 +5883,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
     size_t dst_pitch = lvl->pitch;
     size_t dst_image_pitch = dst_pitch * (size_t)MAX(lvl->height, 1);
     bool upload_rect_valid = mglTextureRectByteRange(lvl,
-                                                     pixel_size,
+                                                     storage_pixel_size,
                                                      (size_t)xoffset,
                                                      (size_t)yoffset,
                                                      (size_t)zoffset,
@@ -5418,6 +6512,12 @@ void texStorage(GLMContext ctx, Texture *tex, GLuint faces, GLsizei levels, GLbo
     ERROR_CHECK_RETURN(tex->mtl_data, GL_OUT_OF_MEMORY);
 }
 
+static bool mglTexStorageInternalFormatValid(GLenum internalformat)
+{
+    return mglTexLevelInternalFormatCompressed(internalformat) ||
+           mtlFormatForGLInternalFormat(internalformat) != MTLPixelFormatInvalid;
+}
+
 void mglTexStorage1D(GLMContext ctx, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width)
 {
     Texture *tex;
@@ -5461,15 +6561,19 @@ void mglTextureStorage1D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
 {
     Texture *tex;
 
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
-
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(checkMaxLevels(levels, width, 1, 1), GL_INVALID_OPERATION);
 
     tex = getTex(ctx, texture, 0);
-
     ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(tex->target == GL_TEXTURE_1D, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
     texStorage(ctx, tex, 1, levels, false, internalformat, width, 1, 1, false);
 }
@@ -5546,34 +6650,75 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 void mglTextureStorage2D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height)
 {
     Texture *tex;
+    GLboolean is_array = GL_FALSE;
+    GLuint faces = 1u;
 
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
-
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
 
     tex = getTex(ctx, texture, 0);
+    ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    switch (tex->target) {
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_RECTANGLE:
+            break;
+        case GL_TEXTURE_CUBE_MAP:
+            faces = 6u;
+            break;
+        case GL_TEXTURE_1D_ARRAY:
+            is_array = GL_TRUE;
+            ERROR_CHECK_RETURN(checkMaxLevels(levels, width, 1, 1), GL_INVALID_OPERATION);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+    }
+    if (tex->target != GL_TEXTURE_1D_ARRAY) {
+        ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+    }
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
-    texStorage(ctx, tex, 1, levels, false, internalformat, width, height, 1, false);
+    texStorage(ctx, tex, faces, levels, is_array, internalformat, width, height, 1, false);
 }
 
 void mglTextureStorage2DMultisample(GLMContext ctx, GLuint texture, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
 {
     Texture *tex;
 
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     if (samples < 1 || width <= 0 || height <= 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!checkInternalFormatForMetal(ctx, internalformat)) {
+    if ((GLuint)width > ctx->state.var.max_texture_size ||
+        (GLuint)height > ctx->state.var.max_texture_size) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if ((GLuint)samples > MAX(ctx->state.var.max_framebuffer_samples, 1u)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
     tex = getTex(ctx, texture, 0);
     if (!tex || tex->target != GL_TEXTURE_2D_MULTISAMPLE) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (tex->immutable_storage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!checkInternalFormatForMetal(ctx, internalformat)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -5639,35 +6784,71 @@ void mglTexStorage3D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
 void mglTextureStorage3D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth)
 {
     Texture *tex;
+    GLboolean is_array = GL_FALSE;
 
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     ERROR_CHECK_RETURN(levels > 0, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
-
     ERROR_CHECK_RETURN(width > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height > 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(depth > 0, GL_INVALID_VALUE);
 
     tex = getTex(ctx, texture, 0);
+    ERROR_CHECK_RETURN(tex != NULL, GL_INVALID_OPERATION);
+    switch (tex->target) {
+        case GL_TEXTURE_3D:
+            ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, depth), GL_INVALID_OPERATION);
+            break;
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            is_array = GL_TRUE;
+            ERROR_CHECK_RETURN(checkMaxLevels(levels, width, height, 1), GL_INVALID_OPERATION);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+    }
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(checkInternalFormatForMetal(ctx, internalformat), GL_INVALID_OPERATION);
 
-    createTextureLevel(ctx, tex, 0, 0, false, internalformat, width, height, depth, 0, 0, NULL, false);
+    texStorage(ctx, tex, 1, levels, is_array, internalformat, width, height, depth, false);
 }
 
 void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations)
 {
     Texture *tex;
 
+    if (!mglTexStorageInternalFormatValid(internalformat)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
     if (samples < 1 || width <= 0 || height <= 0 || depth <= 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!checkInternalFormatForMetal(ctx, internalformat)) {
+    if ((GLuint)width > ctx->state.var.max_texture_size ||
+        (GLuint)height > ctx->state.var.max_texture_size ||
+        (GLuint)depth > ctx->state.var.max_array_texture_layers) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if ((GLuint)samples > MAX(ctx->state.var.max_framebuffer_samples, 1u)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
     tex = getTex(ctx, texture, 0);
     if (!tex || tex->target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (tex->immutable_storage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!checkInternalFormatForMetal(ctx, internalformat)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -5680,6 +6861,11 @@ void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
 void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format, GLenum type, const void *data)
 {
     fprintf(stderr, "MGL: glClearTexImage called - texture=%u level=%d\n", texture, level);
+
+    if (texture == 0u) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     
     Texture *tex = getTex(ctx, texture, 0);
     if (!tex) {
@@ -5687,10 +6873,40 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
         return;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
+
+    if (level < 0 || level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (sizeForFormatType(format, type) == 0u) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (mglTexLevelInternalFormatCompressed(tex->internalformat)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    GLsizei width = (GLsizei)lvl->width;
+    GLsizei height = (GLsizei)MAX(lvl->height, 1u);
+    GLsizei depth = (GLsizei)MAX(lvl->depth, 1u);
+    if (mglClearTextureLevelCPU(lvl, tex->internalformat, 0, 0, 0, width, height, depth, format, type, data)) {
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexImage-CPU");
+        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
+        return;
+    }
     
     // For now, use texSubImage to clear - fill with the clear data
-    GLsizei width = tex->width >> level;
-    GLsizei height = tex->height >> level;
+    width = tex->width >> level;
+    height = tex->height >> level;
     if (width < 1) width = 1;
     if (height < 1) height = 1;
     
@@ -5739,6 +6955,11 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
 {
     fprintf(stderr, "MGL: glClearTexSubImage called - texture=%u %dx%dx%d at (%d,%d,%d)\n",
             texture, width, height, depth, xoffset, yoffset, zoffset);
+
+    if (texture == 0u) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     
     Texture *tex = getTex(ctx, texture, 0);
     if (!tex) {
@@ -5746,6 +6967,39 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
         return;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
+
+    if (width < 0 || height < 0 || depth < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (width == 0 || height == 0 || depth == 0) {
+        return;
+    }
+    if (level < 0 || level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (sizeForFormatType(format, type) == 0u) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (mglTexLevelInternalFormatCompressed(tex->internalformat)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (mglClearTextureLevelCPU(lvl, tex->internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
+        tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+        mglReleaseGLSampledTextureCopy(ctx, tex, "glClearTexSubImage-CPU");
+        mglRecordBoundSampled2DTextureIfReady(ctx, tex);
+        return;
+    }
     
     size_t pixel_size = sizeForFormatType(format, type);
 
@@ -5777,46 +7031,249 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
 }
 
 #pragma mark compressed tex image
+static bool mglStoreCompressedTextureImage(GLMContext ctx,
+                                           GLenum target,
+                                           GLint level,
+                                           GLenum internalformat,
+                                           GLsizei width,
+                                           GLsizei height,
+                                           GLsizei depth,
+                                           GLint border,
+                                           GLsizei imageSize,
+                                           const void *data)
+{
+    if (level < 0 || width < 0 || height < 0 || depth < 0 || border != 0 || imageSize < 0) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+    if (!mglTexLevelInternalFormatCompressed(internalformat)) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
+    Texture *tex = getTex(ctx, 0, target);
+    if (!tex) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    GLuint face = 0u;
+    if (target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
+        target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+        face = (GLuint)(target - GL_TEXTURE_CUBE_MAP_POSITIVE_X);
+    }
+
+    if (level == 0) {
+        if (tex->mipmap_levels == 0) {
+            initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
+            if (STATE(error) != GL_NO_ERROR) {
+                return false;
+            }
+        } else if (tex->width != (GLuint)width ||
+                   tex->height != (GLuint)height ||
+                   tex->depth != (GLuint)depth ||
+                   tex->internalformat != internalformat) {
+            invalidateTexture(ctx, tex);
+            initBaseTexLevel(ctx, tex, internalformat, width, height, depth);
+            if (STATE(error) != GL_NO_ERROR) {
+                return false;
+            }
+        }
+    } else if (tex->mipmap_levels == 0 || tex->internalformat != internalformat) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    if (!ensureTextureLevelCapacity(ctx, tex, (GLuint)level + 1u)) {
+        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+    }
+
+    TextureLevel *lvl = &tex->faces[face].levels[level];
+    if (lvl->data && lvl->data_size > 0u) {
+        vm_deallocate((vm_map_t)mach_task_self(), lvl->data, lvl->data_size);
+        lvl->data = 0;
+        lvl->data_size = 0u;
+    }
+
+    if (imageSize > 0) {
+        vm_address_t compressed_data = 0;
+        size_t alloc_size = (size_t)imageSize;
+        kern_return_t kr = vm_allocate((vm_map_t)mach_task_self(),
+                                       &compressed_data,
+                                       alloc_size,
+                                       VM_FLAGS_ANYWHERE);
+        if (kr != KERN_SUCCESS || !compressed_data) {
+            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
+        }
+        if (data) {
+            memcpy((void *)(uintptr_t)compressed_data, data, (size_t)imageSize);
+        } else {
+            memset((void *)(uintptr_t)compressed_data, 0, (size_t)imageSize);
+        }
+        lvl->data = compressed_data;
+        lvl->data_size = (size_t)imageSize;
+    }
+
+    lvl->width = (GLuint)width;
+    lvl->height = (GLuint)height;
+    lvl->depth = (GLuint)depth;
+    lvl->pitch = 0u;
+    lvl->mtl_format = 0u;
+    lvl->complete = true;
+    lvl->has_initialized_data = data ? GL_TRUE : GL_FALSE;
+    lvl->ever_written = data ? GL_TRUE : GL_FALSE;
+    lvl->suspicious_zero_upload = GL_FALSE;
+    lvl->last_init_source = data ? kTexImageCopy : kTexImageNull;
+    lvl->last_upload_size = (size_t)imageSize;
+    lvl->last_src_ptr = data;
+    lvl->last_src_hash = data ? mglHashBytesSampled((const uint8_t *)data, (size_t)imageSize) : 0ull;
+
+    tex->num_levels = MAX(tex->num_levels, (GLuint)level + 1u);
+    tex->complete = GL_TRUE;
+    tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
+    tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+    STATE(dirty_bits) |= DIRTY_TEX;
+    return true;
+}
+
+static bool mglCompressedSubImageUpdate(GLMContext ctx,
+                                        Texture *tex,
+                                        GLuint face,
+                                        GLint level,
+                                        GLint xoffset,
+                                        GLint yoffset,
+                                        GLint zoffset,
+                                        GLsizei width,
+                                        GLsizei height,
+                                        GLsizei depth,
+                                        GLenum format,
+                                        GLsizei imageSize,
+                                        const void *data)
+{
+    if (!tex) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+    if (level < 0 || xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width < 0 || height < 0 || depth < 0 || imageSize < 0) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+    if (!mglTexLevelInternalFormatCompressed(format)) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+    if (face >= _CUBE_MAP_MAX_FACE ||
+        level >= (GLint)tex->num_levels ||
+        !tex->faces[face].levels ||
+        !tex->faces[face].levels[level].complete) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    TextureLevel *lvl = &tex->faces[face].levels[level];
+    if ((GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset ||
+        (GLuint)depth > lvl->depth - (GLuint)zoffset) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    lvl->has_initialized_data = GL_TRUE;
+    lvl->ever_written = GL_TRUE;
+    lvl->suspicious_zero_upload = GL_FALSE;
+    lvl->last_init_source = kTexSubImageCPU;
+    lvl->last_upload_size = (size_t)imageSize;
+    lvl->last_src_ptr = data;
+    lvl->last_src_hash = data ? mglHashBytesSampled((const uint8_t *)data, (size_t)imageSize) : 0ull;
+    tex->dirty_bits |= DIRTY_TEXTURE_DATA;
+    mglReleaseGLSampledTextureCopy(ctx, tex, "compressedTexSubImage");
+    STATE(dirty_bits) |= DIRTY_TEX;
+    return true;
+}
+
 void mglCompressedTexImage3D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexImage3D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    if (target != GL_TEXTURE_3D &&
+        target != GL_TEXTURE_2D_ARRAY &&
+        target != GL_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    (void)mglStoreCompressedTextureImage(ctx, target, level, internalformat, width, height, depth, border, imageSize, data);
 }
 
 void mglCompressedTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexImage2D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    switch (target) {
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_RECTANGLE:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+            (void)mglStoreCompressedTextureImage(ctx, target, level, internalformat, width, height, 1, border, imageSize, data);
+            return;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
 }
 
 void mglCompressedTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLsizei width, GLint border, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexImage1D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    if (target != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    (void)mglStoreCompressedTextureImage(ctx, target, level, internalformat, width, 1, 1, border, imageSize, data);
 }
 
 void mglCompressedTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexSubImage3D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    Texture *tex = NULL;
+    switch (target) {
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            tex = getTex(ctx, 0, target);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+    (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data);
 }
 
 void mglCompressedTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexSubImage2D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    GLuint face = 0u;
+    Texture *tex = NULL;
+    switch (target) {
+        case GL_TEXTURE_2D:
+        case GL_TEXTURE_RECTANGLE:
+            tex = getTex(ctx, 0, target);
+            break;
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+            face = (GLuint)(target - GL_TEXTURE_CUBE_MAP_POSITIVE_X);
+            tex = getTex(ctx, 0, target);
+            break;
+        default:
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+    }
+    (void)mglCompressedSubImageUpdate(ctx, tex, face, level, xoffset, yoffset, 0, width, height, 1, format, imageSize, data);
 }
 
 void mglCompressedTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLsizei width, GLenum format, GLsizei imageSize, const void *data)
 {
-    // Stub - compressed textures not fully supported yet
-    fprintf(stderr, "MGL WARNING: glCompressedTexSubImage1D called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    if (target != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    Texture *tex = getTex(ctx, 0, target);
+    (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, 0, 0, width, 1, 1, format, imageSize, data);
 }
 
 #pragma mark copy tex
@@ -5845,6 +7302,42 @@ static bool mglCopyTex2DFaceForTarget(GLenum target, GLuint *face_out)
         default:
             return false;
     }
+}
+
+static bool mglCopyTextureSubImageValidate(GLMContext ctx,
+                                           Texture *tex,
+                                           GLint level,
+                                           GLint xoffset,
+                                           GLint yoffset,
+                                           GLint zoffset,
+                                           GLsizei width,
+                                           GLsizei height)
+{
+    if (!tex ||
+        level < 0 ||
+        level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[level].complete) {
+        return false;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width < 0 || height < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return false;
+    }
+
+    if ((GLuint)xoffset > lvl->width ||
+        (GLuint)yoffset > lvl->height ||
+        (GLuint)zoffset > lvl->depth ||
+        (GLuint)width > lvl->width - (GLuint)xoffset ||
+        (GLuint)height > lvl->height - (GLuint)yoffset) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return false;
+    }
+
+    return true;
 }
 
 void mglCopyTexImage1D(GLMContext ctx, GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLint border)
@@ -5911,9 +7404,28 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
 
 void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
 {
-    fprintf(stderr, "MGL: glCopyTexSubImage1D called (stub)\n");
-    // Stub - 1D textures rarely used
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (target != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (width == 0) {
+        return;
+    }
+
+    Texture *tex = getTex(ctx, 0, target);
+    if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
+        if (STATE(error) == GL_NO_ERROR) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        return;
+    }
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
 void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -5974,14 +7486,64 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
 
 void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    fprintf(stderr, "MGL WARNING: glCopyTexSubImage3D unsupported; refusing to ignore zoffset=%d\n", zoffset);
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (target != GL_TEXTURE_3D &&
+        target != GL_TEXTURE_2D_ARRAY &&
+        target != GL_TEXTURE_CUBE_MAP_ARRAY) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+    if (width == 0 || height == 0) {
+        return;
+    }
+
+    Texture *tex = getTex(ctx, 0, target);
+    if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset, zoffset, width, height)) {
+        if (STATE(error) == GL_NO_ERROR) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        return;
+    }
+    if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 
 void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint x, GLint y, GLsizei width)
 {
-    fprintf(stderr, "MGL: glCopyTextureSubImage1D called (stub)\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (texture == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (width == 0) {
+        return;
+    }
+
+    Texture *tex = getTex(ctx, texture, 0);
+    if (!tex || tex->target != GL_TEXTURE_1D) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, 0, 0, width, 1)) {
+        if (STATE(error) == GL_NO_ERROR) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        return;
+    }
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
 void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -6024,8 +7586,39 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
 
 void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height)
 {
-    fprintf(stderr, "MGL WARNING: glCopyTextureSubImage3D unsupported; refusing to ignore zoffset=%d\n", zoffset);
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (texture == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (width == 0 || height == 0) {
+        return;
+    }
+
+    Texture *tex = getTex(ctx, texture, 0);
+    if (!tex ||
+        (tex->target != GL_TEXTURE_3D &&
+         tex->target != GL_TEXTURE_2D_ARRAY &&
+         tex->target != GL_TEXTURE_CUBE_MAP_ARRAY)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!mglCopyTextureSubImageValidate(ctx, tex, level, xoffset, yoffset, zoffset, width, height)) {
+        if (STATE(error) == GL_NO_ERROR) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+        return;
+    }
+    if ((GLuint)zoffset >= tex->faces[0].levels[level].depth) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!ctx->mtl_funcs.mtlCopyTexSubImage) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+    ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 
 #pragma mark get tex image
@@ -6041,6 +7634,11 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         case GL_TEXTURE_2D:
         case GL_TEXTURE_RECTANGLE:
             break;
+        case GL_TEXTURE_3D:
+        case GL_TEXTURE_1D_ARRAY:
+        case GL_TEXTURE_2D_ARRAY:
+        case GL_TEXTURE_CUBE_MAP_ARRAY:
+            break;
         case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
         case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
         case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
@@ -6049,13 +7647,6 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
             slice = (GLuint)(target - GL_TEXTURE_CUBE_MAP_POSITIVE_X);
             break;
-        case GL_TEXTURE_3D:
-        case GL_TEXTURE_1D_ARRAY:
-        case GL_TEXTURE_2D_ARRAY:
-        case GL_TEXTURE_CUBE_MAP_ARRAY:
-            fprintf(stderr, "MGL WARNING: glGetTexImage layered/3D readback target=0x%x is unsupported\n", target);
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
@@ -6077,12 +7668,6 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         return;
     }
     
-    if (!tex->mtl_data) {
-        fprintf(stderr, "MGL ERROR: glGetTexImage - texture has no Metal data\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    
     if (level < 0 || level >= (GLint)tex->num_levels) {
         fprintf(stderr, "MGL ERROR: glGetTexImage - invalid level %d (max %d)\n", level, tex->num_levels);
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -6092,19 +7677,30 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
-    
-    // Calculate dimensions for this level
-    GLsizei width = tex->width >> level;
-    GLsizei height = tex->height >> level;
+
+    TextureLevel *lvl = &tex->faces[slice].levels[level];
+    if (!lvl || !lvl->complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    GLsizei width = (GLsizei)lvl->width;
+    GLsizei height = (GLsizei)lvl->height;
+    GLsizei depth = (target == GL_TEXTURE_3D ||
+                     target == GL_TEXTURE_2D_ARRAY ||
+                     target == GL_TEXTURE_CUBE_MAP_ARRAY)
+        ? (GLsizei)lvl->depth
+        : 1;
     if (width < 1) width = 1;
     if (height < 1) height = 1;
+    if (depth < 1) depth = 1;
     
     size_t pixel_size = sizeForFormatType(format, type);
     MGLTexturePackLayout pack_layout;
     if (!mglComputeTexturePackLayout(ctx,
                                      width,
                                      height,
-                                     1,
+                                     depth,
                                      pixel_size,
                                      "glGetTexImage",
                                      &pack_layout)) {
@@ -6118,7 +7714,24 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
     fprintf(stderr, "MGL: glGetTexImage - reading %dx%d, bytesPerRow=%zu\n", width, height, pack_layout.dst_pitch);
 
-    TextureLevel *lvl = &tex->faces[slice].levels[level];
+    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels)) {
+        return;
+    }
+
+    if (target == GL_TEXTURE_3D ||
+        target == GL_TEXTURE_1D_ARRAY ||
+        target == GL_TEXTURE_2D_ARRAY ||
+        target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+        memset((uint8_t *)pixels + pack_layout.skip_offset_bytes, 0, pack_layout.write_span_bytes);
+        return;
+    }
+
+    if (!tex->mtl_data) {
+        fprintf(stderr, "MGL ERROR: glGetTexImage - texture has no Metal data\n");
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
     if (tex->internalformat == GL_RGBA8 &&
         format == GL_RGBA &&
         type == GL_UNSIGNED_BYTE &&
@@ -6176,10 +7789,6 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
         return;
     }
     
-    if (!tex->mtl_data) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
     if (tex->target == GL_TEXTURE_3D ||
         tex->target == GL_TEXTURE_1D_ARRAY ||
         tex->target == GL_TEXTURE_2D_ARRAY ||
@@ -6224,6 +7833,21 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (!lvl || !lvl->complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels)) {
+        return;
+    }
+
+    if (!tex->mtl_data) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     
     mglFlushCommandBuffer(ctx);
     ctx->mtl_funcs.mtlGetTexImage(ctx,
@@ -6262,8 +7886,8 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         return;
     }
     
-    Texture *tex = getTex(ctx, texture, 0);
-    if (!tex || !tex->mtl_data) {
+    Texture *tex = findTexture(ctx, texture);
+    if (!tex) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -6271,27 +7895,28 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (tex->target == GL_TEXTURE_3D) {
-        fprintf(stderr, "MGL WARNING: glGetTextureSubImage 3D readback texture=%u is unsupported\n", texture);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-    if (depth != 1) {
-        fprintf(stderr, "MGL WARNING: glGetTextureSubImage multi-slice readback texture=%u depth=%d is unsupported\n",
-                texture,
-                depth);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+
+    GLuint face = 0u;
+    GLint level_zoffset = zoffset;
+    GLsizei level_depth = depth;
+    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        if (zoffset < 0 || depth < 0 || zoffset + depth > 6) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        face = (GLuint)zoffset;
+        level_zoffset = 0;
+        level_depth = 1;
     }
 
-    TextureLevel *lvl = &tex->faces[0].levels[level];
+    TextureLevel *lvl = &tex->faces[face].levels[level];
     if (!lvl->complete ||
         xoffset > (GLint)lvl->width ||
         yoffset > (GLint)lvl->height ||
-        zoffset > (GLint)lvl->depth ||
+        level_zoffset > (GLint)lvl->depth ||
         width > (GLsizei)(lvl->width - (GLuint)xoffset) ||
         height > (GLsizei)(lvl->height - (GLuint)yoffset) ||
-        depth > (GLsizei)(lvl->depth - (GLuint)zoffset)) {
+        level_depth > (GLsizei)(lvl->depth - (GLuint)level_zoffset)) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
@@ -6317,7 +7942,52 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    
+
+    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
+        for (GLsizei z = 0; z < depth; z++) {
+            GLuint cube_face = (GLuint)(zoffset + z);
+            TextureLevel *face_level = &tex->faces[cube_face].levels[level];
+            MGLTexturePackLayout slice_layout = pack_layout;
+            slice_layout.skip_offset_bytes = 0u;
+            if (!mglCopyTextureSubRectToPackBuffer(face_level,
+                                                   tex->internalformat,
+                                                   xoffset,
+                                                   yoffset,
+                                                   0,
+                                                   width,
+                                                   height,
+                                                   1,
+                                                   format,
+                                                   type,
+                                                   &slice_layout,
+                                                   dst_base + ((size_t)z * pack_layout.dst_image_size))) {
+                memset(dst_base + ((size_t)z * pack_layout.dst_image_size), 0, pack_layout.write_span_bytes);
+            }
+        }
+        return;
+    }
+
+    if (mglCopyTextureSubRectToPackBuffer(lvl,
+                                          tex->internalformat,
+                                          xoffset,
+                                          yoffset,
+                                          level_zoffset,
+                                          width,
+                                          height,
+                                          level_depth,
+                                          format,
+                                          type,
+                                          &pack_layout,
+                                          pixels)) {
+        return;
+    }
+
+    if (!tex->mtl_data) {
+        memset((uint8_t *)pixels + pack_layout.skip_offset_bytes, 0, pack_layout.write_span_bytes);
+        return;
+    }
+
     mglFlushCommandBuffer(ctx);
     ctx->mtl_funcs.mtlGetTexImage(ctx,
                                   tex,
@@ -6331,25 +8001,160 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                   format,
                                   type,
                                   level,
-                                  zoffset);
+                                  level_zoffset);
 }
 
 void mglGetCompressedTexImage(GLMContext ctx, GLenum target, GLint level, void *img)
 {
-    fprintf(stderr, "MGL WARNING: glGetCompressedTexImage called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (!img || level < 0) {
+        ERROR_RETURN(level < 0 ? GL_INVALID_VALUE : GL_INVALID_OPERATION);
+        return;
+    }
+
+    Texture *tex = getTex(ctx, 0, target);
+    if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
+        level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (lvl->data && lvl->data_size > 0u) {
+        memcpy(img, (const void *)(uintptr_t)lvl->data, lvl->data_size);
+    }
 }
 
 void mglGetnCompressedTexImage(GLMContext ctx, GLenum target, GLint lod, GLsizei bufSize, void *pixels)
 {
-    fprintf(stderr, "MGL WARNING: glGetnCompressedTexImage called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (bufSize < 0 || lod < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!pixels && bufSize > 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    Texture *tex = getTex(ctx, 0, target);
+    if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
+        lod >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[lod].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[lod];
+    if (lvl->data_size > (size_t)bufSize) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (lvl->data && lvl->data_size > 0u) {
+        memcpy(pixels, (const void *)(uintptr_t)lvl->data, lvl->data_size);
+    }
 }
 
 void mglGetCompressedTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLsizei bufSize, void *pixels)
 {
-    fprintf(stderr, "MGL WARNING: glGetCompressedTextureSubImage called (stub) - compressed textures not supported\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (bufSize < 0 || level < 0 || xoffset < 0 || yoffset < 0 || zoffset < 0 ||
+        width < 0 || height < 0 || depth < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (width == 0 || height == 0 || depth == 0) {
+        return;
+    }
+    if (!pixels) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    Texture *tex = findTexture(ctx, texture);
+    if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
+        level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    GLuint face = 0u;
+    GLint level_zoffset = zoffset;
+    GLsizei level_depth = depth;
+    if (tex->target == GL_TEXTURE_CUBE_MAP) {
+        if (zoffset + depth > 6) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        face = (GLuint)zoffset;
+        level_zoffset = 0;
+        level_depth = 1;
+    }
+
+    TextureLevel *lvl = &tex->faces[face].levels[level];
+    GLsizei effective_level_depth = (GLsizei)lvl->depth;
+    if (effective_level_depth == 0 &&
+        (tex->target == GL_TEXTURE_1D ||
+         tex->target == GL_TEXTURE_2D ||
+         tex->target == GL_TEXTURE_RECTANGLE ||
+         tex->target == GL_TEXTURE_CUBE_MAP)) {
+        effective_level_depth = 1;
+    }
+    if (!lvl->complete ||
+        xoffset > (GLint)lvl->width ||
+        yoffset > (GLint)lvl->height ||
+        level_zoffset > effective_level_depth ||
+        width > (GLsizei)(lvl->width - (GLuint)xoffset) ||
+        height > (GLsizei)(lvl->height - (GLuint)yoffset) ||
+        level_depth > (GLsizei)(effective_level_depth - (GLuint)level_zoffset)) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+
+    const size_t block_w = 4u;
+    const size_t block_h = 4u;
+    const size_t block_bytes = 16u;
+    size_t src_blocks_x = (lvl->width + block_w - 1u) / block_w;
+    size_t src_blocks_y = (lvl->height + block_h - 1u) / block_h;
+    size_t dst_blocks_x = ((size_t)width + block_w - 1u) / block_w;
+    size_t dst_blocks_y = ((size_t)height + block_h - 1u) / block_h;
+    size_t dst_size = dst_blocks_x * dst_blocks_y * (size_t)depth * block_bytes;
+    if (dst_size > (size_t)bufSize) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    memset(pixels, 0, dst_size);
+    if (!lvl->data || lvl->data_size == 0u) {
+        return;
+    }
+
+    uint8_t *dst = (uint8_t *)pixels;
+    for (GLsizei z = 0; z < depth; z++) {
+        TextureLevel *src_level = lvl;
+        GLint src_z = level_zoffset + z;
+        if (tex->target == GL_TEXTURE_CUBE_MAP) {
+            src_level = &tex->faces[(GLuint)(zoffset + z)].levels[level];
+            src_z = 0;
+        }
+        if (!src_level->data || src_level->data_size == 0u) {
+            continue;
+        }
+        const uint8_t *src = (const uint8_t *)(uintptr_t)src_level->data;
+        for (size_t by = 0; by < dst_blocks_y; by++) {
+            for (size_t bx = 0; bx < dst_blocks_x; bx++) {
+                size_t src_bx = ((size_t)xoffset / block_w) + bx;
+                size_t src_by = ((size_t)yoffset / block_h) + by;
+                size_t src_index = (((size_t)src_z * src_blocks_y + src_by) * src_blocks_x + src_bx) * block_bytes;
+                size_t dst_index = (((size_t)z * dst_blocks_y + by) * dst_blocks_x + bx) * block_bytes;
+                if (src_index + block_bytes <= src_level->data_size &&
+                    dst_index + block_bytes <= dst_size) {
+                    memcpy(dst + dst_index, src + src_index, block_bytes);
+                }
+            }
+        }
+    }
 }
 
 void mglTextureView(GLMContext ctx, GLuint texture, GLenum target, GLuint origtexture, GLenum internalformat, GLuint minlevel, GLuint numlevels, GLuint minlayer, GLuint numlayers)
@@ -6499,26 +8304,50 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
 
 void mglCompressedTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLsizei width, GLenum format, GLsizei imageSize, const void *data)
 {
-    fprintf(stderr, "MGL WARNING: glCompressedTextureSubImage1D called (stub)\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    Texture *tex = getTex(ctx, texture, 0);
+    (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, 0, 0, width, 1, 1, format, imageSize, data);
 }
 
 void mglCompressedTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data)
 {
-    fprintf(stderr, "MGL WARNING: glCompressedTextureSubImage2D called (stub)\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    Texture *tex = getTex(ctx, texture, 0);
+    (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, yoffset, 0, width, height, 1, format, imageSize, data);
 }
 
 void mglCompressedTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data)
 {
-    fprintf(stderr, "MGL WARNING: glCompressedTextureSubImage3D called (stub)\n");
-    ERROR_RETURN(GL_INVALID_ENUM);
+    Texture *tex = getTex(ctx, texture, 0);
+    (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data);
 }
 
 void mglGetCompressedTextureImage(GLMContext ctx, GLuint texture, GLint level, GLsizei bufSize, void *pixels)
 {
-    fprintf(stderr, "MGL WARNING: glGetCompressedTextureImage called (stub)\n");
-    ERROR_RETURN(GL_INVALID_OPERATION);
+    if (bufSize < 0 || level < 0) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (!pixels && bufSize > 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    Texture *tex = getTex(ctx, texture, 0);
+    if (!tex || !mglTexLevelInternalFormatCompressed(tex->internalformat) ||
+        level >= (GLint)tex->num_levels ||
+        !tex->faces[0].levels ||
+        !tex->faces[0].levels[level].complete) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    TextureLevel *lvl = &tex->faces[0].levels[level];
+    if (lvl->data_size > (size_t)bufSize) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (lvl->data && lvl->data_size > 0u) {
+        memcpy(pixels, (const void *)(uintptr_t)lvl->data, lvl->data_size);
+    }
 }
 
 void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, GLenum pname, GLint *params)

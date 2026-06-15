@@ -2,6 +2,40 @@
 #sessionInfo releaseId 0x1ac9ff38
 #sessionInfo targetName "MGL"
 #sessionInfo logFormatVersion "0.3.4"
-#sessionInfo commandLineParameters "--deqp-runmode=stdout-caselist --deqp-case=KHR-GL46.* --deqp-surface-type=fbo --deqp-visibility=hidden"
+#sessionInfo vendor "Mike Larson"
+#sessionInfo renderer "MGL"
+#sessionInfo commandLineParameters "--deqp-case=KHR-GL46.constant_expressions.array_abs_ivec2_geometry --deqp-surface-type=fbo --deqp-surface-width=256 --deqp-surface-height=256 --deqp-visibility=hidden --deqp-log-images=disable --deqp-log-shader-sources=disable --deqp-log-decompiled-spirv=disable"
 
 #beginSession
+
+#beginTestCaseResult KHR-GL46.constant_expressions.array_abs_ivec2_geometry
+<?xml version="1.0" encoding="UTF-8"?>
+<TestCaseResult CasePath="KHR-GL46.constant_expressions.array_abs_ivec2_geometry" Version="0.3.4" CaseType="SelfValidate">
+ <ShaderProgram LinkStatus="OK">
+  <InfoLog></InfoLog>
+  <VertexShader CompileStatus="OK">
+   <ShaderSource></ShaderSource>
+   <InfoLog></InfoLog>
+</VertexShader>
+  <FragmentShader CompileStatus="OK">
+   <ShaderSource></ShaderSource>
+   <InfoLog></InfoLog>
+</FragmentShader>
+  <GeometryShader CompileStatus="OK">
+   <ShaderSource></ShaderSource>
+   <InfoLog></InfoLog>
+</GeometryShader>
+</ShaderProgram>
+ <Number Name="VertexCompileTime" Description="Vertex shader compile time" Tag="Time" Unit="ms">248.266006</Number>
+ <Number Name="FragmentCompileTime" Description="Fragment shader compile time" Tag="Time" Unit="ms">3.198000</Number>
+ <Number Name="GeometryCompileTime" Description="Geometry shader compile time" Tag="Time" Unit="ms">2.484000</Number>
+ <Number Name="LinkTime" Description="Link time" Tag="Time" Unit="ms">63.092999</Number>
+ <Number Name="TestDuration" Description="Test case duration in microseconds" Tag="Time" Unit="us">338928</Number>
+ <Result StatusCode="Pass">Pass</Result>
+</TestCaseResult>
+
+#endTestCaseResult
+
+Run took 0.39 seconds
+
+#endSession

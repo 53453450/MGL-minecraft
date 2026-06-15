@@ -584,6 +584,9 @@ int _glfwInitCocoa(void)
 
     [NSApp setDelegate:_glfw.ns.delegate];
 
+    if (![[NSRunningApplication currentApplication] isFinishedLaunching])
+        [NSApp finishLaunching];
+
     NSEvent* (^block)(NSEvent*) = ^ NSEvent* (NSEvent* event)
     {
         if ([event modifierFlags] & NSEventModifierFlagCommand)
@@ -621,9 +624,6 @@ int _glfwInitCocoa(void)
         return GLFW_FALSE;
 
     _glfwPollMonitorsCocoa();
-
-    if (![[NSRunningApplication currentApplication] isFinishedLaunching])
-        [NSApp run];
 
     // In case we are unbundled, make us a proper UI application
     if (_glfw.hints.init.ns.menubar)
@@ -679,4 +679,3 @@ void _glfwTerminateCocoa(void)
 
     } // autoreleasepool
 }
-

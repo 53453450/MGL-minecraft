@@ -182,10 +182,11 @@ MGL_TRACE_LOG_PROGRAMS=91,92,93
 
 ### Minecraft GL 最小复现
 
-仓库内提供了两个面向 Minecraft 1.21.11 渲染路径的最小复现 case，用于验证 MGL 是否正确覆盖相关 OpenGL 调用：
+仓库内提供了三个面向 Minecraft 1.21.11 渲染路径的最小复现 case，用于验证 MGL 是否正确覆盖相关 OpenGL 调用：
 
 - `cloud-tbo-vertexid`: 云渲染路径，覆盖 `isamplerBuffer`、`GL_R8I` texture buffer、`gl_VertexID` 和大规模 indexed draw。
 - `rt-pingpong-blur`: 后处理路径，覆盖 FBO ping-pong、RGBA8 render target 采样和 blur pass。
+- `focused-tail-rendergraph`: 基于真实 trace tail 的渲染图路径，覆盖 DSA FBO attach/detach、mapped buffer flush、indexed/baseVertex GUI draw、运行时 render target 创建、六段 blur pass 和 final blit。
 
 构建：
 
@@ -205,6 +206,7 @@ make repro
 ```bash
 ./build/repro/minecraft_gl_repro cloud-tbo-vertexid
 ./build/repro/minecraft_gl_repro rt-pingpong-blur
+./build/repro/minecraft_gl_repro focused-tail-rendergraph
 ```
 
 输出图片默认写入当前运行目录下的 `mgl-repro-output/`。也可以用 `MGL_REPRO_OUTPUT_DIR` 指定输出目录：

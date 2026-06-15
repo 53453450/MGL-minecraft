@@ -2149,7 +2149,11 @@ bool checkUniformParams(GLMContext ctx, GLint location)
         return false;
     }
 
-    if (location < 0) {
+    if (location == -1) {
+        return false;
+    }
+
+    if (location < -1) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return false;
     }
