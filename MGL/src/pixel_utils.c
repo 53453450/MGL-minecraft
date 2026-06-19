@@ -80,6 +80,8 @@ GLuint numComponentsForFormat(GLenum format)
     {
         case GL_RED:
         case GL_RED_INTEGER:
+        case GL_GREEN:
+        case GL_BLUE:
         case GL_STENCIL_INDEX:
         case GL_DEPTH_COMPONENT:
         case GL_DEPTH_STENCIL:
@@ -203,6 +205,10 @@ GLuint numComponentsForFormat(GLenum format)
         case 0x8d90: // alternate GL_RGBA16UI
             return 4;
 
+        case 0x8d95: // GL_GREEN_INTEGER
+        case 0x8d96: // GL_BLUE_INTEGER
+            return 1;
+
         default:
             // Unknown format - return 4 as safe fallback instead of crashing
             fprintf(stderr, "MGL WARNING: numComponentsForFormat unknown format 0x%x, assuming 4 components\n", format);
@@ -230,6 +236,9 @@ GLuint sizeForType(GLenum type)
 
         case GL_FLOAT:
             return sizeof(float);
+
+        case GL_HALF_FLOAT:
+            return sizeof(uint16_t);
 
         case GL_UNSIGNED_BYTE_3_3_2:
         case GL_UNSIGNED_BYTE_2_3_3_REV:
@@ -522,6 +531,7 @@ GLenum verifyInternalFormatType(GLint internalformat, GLenum format, GLenum type
         case GL_UNSIGNED_INT:
         case GL_INT:
         case GL_FLOAT:
+        case GL_HALF_FLOAT:
             break;
 
         case GL_UNSIGNED_BYTE_3_3_2:
@@ -540,7 +550,7 @@ GLenum verifyInternalFormatType(GLint internalformat, GLenum format, GLenum type
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            if (format != GL_RGBA || format != GL_BGRA)
+            if (format != GL_RGBA && format != GL_BGRA)
                 return GL_INVALID_OPERATION;
             break;
     }
@@ -589,6 +599,7 @@ GLboolean validFormatType(GLuint format, GLuint type)
         case GL_UNSIGNED_INT:
         case GL_INT:
         case GL_FLOAT:
+        case GL_HALF_FLOAT:
             return true;
 
         case GL_UNSIGNED_BYTE_3_3_2:
@@ -1065,6 +1076,9 @@ GLuint bicountForFormatType(GLenum format, GLenum type, GLenum component)
 
         case GL_FLOAT:
             return 32;
+
+        case GL_HALF_FLOAT:
+            return 16;
 
         case GL_UNSIGNED_BYTE_3_3_2:
         case GL_UNSIGNED_BYTE_2_3_3_REV:
@@ -1868,6 +1882,18 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
             }
             break;
 
+        case GL_HALF_FLOAT:
+            switch(format)
+            {
+                case GL_RED: return GL_R16F;
+                case GL_RG: return GL_RG16F;
+                case GL_RGB: return GL_RGB16F;
+                case GL_RGBA: return GL_RGBA16F;
+                default:
+                    return 0;
+            }
+            break;
+
         case GL_UNSIGNED_BYTE_3_3_2:
             return 0;
 
@@ -2516,6 +2542,17 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
             }
             break;
 
+        case GL_HALF_FLOAT:
+            switch(gl_format)
+            {
+                case GL_RED: return MTLPixelFormatR16Float;
+                case GL_RG: return MTLPixelFormatRG16Float;
+                case GL_RGBA: return MTLPixelFormatRGBA16Float;
+                default:
+                    return 0;
+            }
+            break;
+
         case GL_UNSIGNED_BYTE_3_3_2:
             return 0;
 
@@ -2597,4 +2634,40 @@ MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
     }
 
     return mtl_format;
+}
+
+#include <math.h>
+#include <string.h>
+
+float mglHalfToFloat(uint16_t value)
+{
+    uint32_t sign = (uint32_t)(value >> 15u);
+    uint32_t exponent = (value >> 10u) & 31u;
+    uint32_t mantissa = value & 1023u;
+    float result;
+    if (exponent == 0u) {
+        result = ldexpf((float)mantissa, -24);
+    } else if (exponent == 31u) {
+        result = mantissa ? NAN : INFINITY;
+    } else {
+        result = ldexpf(1.0f + (float)mantissa / 1024.0f, (int)exponent - 15);
+    }
+    return sign ? -result : result;
+}
+
+uint16_t mglFloatToHalf(float value)
+{
+    uint32_t f;
+    memcpy(&f, &value, sizeof(f));
+    uint32_t sign = (f >> 16u) & 0x8000u;
+    int32_t exp = ((int32_t)(f >> 23u) & 0xff) - 112;
+    uint32_t mant = f & 0x7fffffu;
+    if (exp <= 0) {
+        mant = (mant | 0x800000u) >> (1 - exp);
+        return (uint16_t)(sign | (mant >> 13u));
+    }
+    if (exp >= 31) {
+        return (uint16_t)(sign | 0x7c00u);
+    }
+    return (uint16_t)(sign | ((uint32_t)exp << 10u) | (mant >> 13u));
 }

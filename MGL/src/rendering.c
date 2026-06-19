@@ -1526,7 +1526,12 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
         type != GL_UNSIGNED_INT_8_8_8_8_REV &&
         type != GL_UNSIGNED_SHORT_4_4_4_4 &&
         type != GL_UNSIGNED_SHORT_5_5_5_1 &&
-        type != GL_FLOAT)
+        type != GL_FLOAT &&
+        type != GL_HALF_FLOAT &&
+        type != GL_BYTE &&
+        type != GL_SHORT &&
+        type != GL_INT &&
+        type != GL_UNSIGNED_INT)
         return false;
 
     for (GLsizei y = 0; y < height; y++)
@@ -1565,8 +1570,115 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                     case GL_RED:
                         d[0] = r;
                         break;
+                    case GL_GREEN:
+                        d[0] = g;
+                        break;
+                    case GL_BLUE:
+                        d[0] = b;
+                        break;
+                    case GL_ALPHA:
+                        d[0] = a;
+                        break;
                     default:
                         return false;
+                }
+            }
+            continue;
+        }
+
+        if (type == GL_HALF_FLOAT)
+        {
+            for (GLsizei x = 0; x < width; x++)
+            {
+                const uint8_t *s = src_row + ((size_t)x * 4u);
+                uint16_t *d = (uint16_t *)(void *)(dst_row + ((size_t)x * (size_t)sizeForFormatType(format, type)));
+                const float r = (float)s[2] / 255.0f;
+                const float g = (float)s[1] / 255.0f;
+                const float b = (float)s[0] / 255.0f;
+                const float a = (float)s[3] / 255.0f;
+
+                switch(format)
+                {
+                    case GL_BGRA:
+                        d[0] = mglFloatToHalf(b); d[1] = mglFloatToHalf(g); d[2] = mglFloatToHalf(r); d[3] = mglFloatToHalf(a);
+                        break;
+                    case GL_RGBA:
+                        d[0] = mglFloatToHalf(r); d[1] = mglFloatToHalf(g); d[2] = mglFloatToHalf(b); d[3] = mglFloatToHalf(a);
+                        break;
+                    case GL_BGR:
+                        d[0] = mglFloatToHalf(b); d[1] = mglFloatToHalf(g); d[2] = mglFloatToHalf(r);
+                        break;
+                    case GL_RGB:
+                        d[0] = mglFloatToHalf(r); d[1] = mglFloatToHalf(g); d[2] = mglFloatToHalf(b);
+                        break;
+                    case GL_RG:
+                        d[0] = mglFloatToHalf(r); d[1] = mglFloatToHalf(g);
+                        break;
+                    case GL_RED:
+                        d[0] = mglFloatToHalf(r);
+                        break;
+                    case GL_GREEN:
+                        d[0] = mglFloatToHalf(g);
+                        break;
+                    case GL_BLUE:
+                        d[0] = mglFloatToHalf(b);
+                        break;
+                    case GL_ALPHA:
+                        d[0] = mglFloatToHalf(a);
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            continue;
+        }
+
+        /* Integer scalar types reading from a BGRA8 UNORM framebuffer.
+         * GL spec: fixed-point framebuffer data read into an integer type is
+         * the fixed-point value scaled to the integer's (unsigned/positive)
+         * range and clamped. */
+        if (type == GL_BYTE || type == GL_SHORT ||
+            type == GL_INT || type == GL_UNSIGNED_INT) {
+            size_t comp_size = sizeForType(type);
+            size_t dst_comp_bytes = (size_t)sizeForFormatType(format, type);
+            for (GLsizei x = 0; x < width; x++) {
+                const uint8_t *s = src_row + ((size_t)x * 4u);
+                /* BGRA8 source: RGBA = (s[2], s[1], s[0], s[3]) */
+                const unsigned cv[4] = { s[2], s[1], s[0], s[3] };
+                uint8_t *dst_pixel = dst_row + ((size_t)x * dst_comp_bytes);
+                int slots = 0;
+                int src_idx[4] = {0, 0, 0, 0};
+                switch (format) {
+                    case GL_RGBA: slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; break;
+                    case GL_BGRA: slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; break;
+                    case GL_RGB:  slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; break;
+                    case GL_BGR:  slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; break;
+                    case GL_RG:   slots = 2; src_idx[0]=0; src_idx[1]=1; break;
+                    case GL_RED:  slots = 1; src_idx[0]=0; break;
+                    case GL_GREEN: slots = 1; src_idx[0]=1; break;
+                    case GL_BLUE:  slots = 1; src_idx[0]=2; break;
+                    case GL_ALPHA: slots = 1; src_idx[0]=3; break;
+                    default: return false;
+                }
+                for (int c = 0; c < slots; ++c) {
+                    unsigned v = cv[src_idx[c]];
+                    uint8_t *out = dst_pixel + (size_t)c * comp_size;
+                    if (type == GL_BYTE) {
+                        int8_t iv = (v > 127u) ? 127 : (int8_t)v;
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_SHORT) {
+                        int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
+                        if (scaled > 32767) scaled = 32767;
+                        int16_t iv = (int16_t)scaled;
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_INT) {
+                        uint32_t iv = (uint32_t)v * 16843009u; /* 0x01010101 */
+                        memcpy(out, &iv, sizeof(iv));
+                    } else { /* GL_INT */
+                        int32_t scaled = (int32_t)((uint32_t)v * 2147483647u / 255u);
+                        if (scaled > 2147483647) scaled = 2147483647;
+                        memcpy(out, &scaled, sizeof(scaled));
+                    }
                 }
             }
             continue;
@@ -1709,6 +1821,43 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                 {
                     dst_row[x] = src_row[((size_t)x * 4u) + 2u];
                 }
+                break;
+
+            /* Single-channel reads from BGRA8: staging is s[0]=B, s[1]=G, s[2]=R, s[3]=A */
+            case GL_GREEN:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    uint16_t *d = (uint16_t *)(void *)dst_row;
+                    for (GLsizei x = 0; x < width; x++)
+                        d[x] = (uint16_t)((uint16_t)src_row[((size_t)x * 4u) + 1u] * 257u);
+                    break;
+                }
+                for (GLsizei x = 0; x < width; x++)
+                    dst_row[x] = src_row[((size_t)x * 4u) + 1u];
+                break;
+
+            case GL_BLUE:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    uint16_t *d = (uint16_t *)(void *)dst_row;
+                    for (GLsizei x = 0; x < width; x++)
+                        d[x] = (uint16_t)((uint16_t)src_row[((size_t)x * 4u) + 0u] * 257u);
+                    break;
+                }
+                for (GLsizei x = 0; x < width; x++)
+                    dst_row[x] = src_row[((size_t)x * 4u) + 0u];
+                break;
+
+            case GL_ALPHA:
+                if (type == GL_UNSIGNED_SHORT)
+                {
+                    uint16_t *d = (uint16_t *)(void *)dst_row;
+                    for (GLsizei x = 0; x < width; x++)
+                        d[x] = (uint16_t)((uint16_t)src_row[((size_t)x * 4u) + 3u] * 257u);
+                    break;
+                }
+                for (GLsizei x = 0; x < width; x++)
+                    dst_row[x] = src_row[((size_t)x * 4u) + 3u];
                 break;
 
             default:
@@ -2407,6 +2556,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     }
 
     ctx->mtl_funcs.mtlReadDrawable(ctx, (void *)buffer_data, (GLuint)readback_pitch, (GLuint)readback_size, x, y, width, height);
+
 
     if (!mglPackBGRA8ReadPixels((const uint8_t *)buffer_data,
                                 readback_pitch,

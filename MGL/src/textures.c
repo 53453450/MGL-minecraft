@@ -50,6 +50,7 @@ extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname,
 extern void mglTraceLogExternal(const char *fmt, ...);
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
+extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
 extern GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname);
 extern GLint mglTexLevelComponentType(GLint internalformat, GLenum pname);
 
@@ -1150,6 +1151,61 @@ static bool mglExternalFormatIsInteger(GLenum format)
     }
 }
 
+static bool mglInternalFormatIsInteger(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_R8I: case GL_R16I: case GL_R32I:
+        case GL_RG8I: case GL_RG16I: case GL_RG32I:
+        case GL_RGB8I: case GL_RGB16I: case GL_RGB32I:
+        case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I:
+        case GL_R8UI: case GL_R16UI: case GL_R32UI:
+        case GL_RG8UI: case GL_RG16UI: case GL_RG32UI:
+        case GL_RGB8UI: case GL_RGB16UI: case GL_RGB32UI:
+        case GL_RGBA8UI: case GL_RGBA16UI: case GL_RGBA32UI:
+        case GL_RGB10_A2UI:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool mglInternalFormatIsDepthStencil(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_STENCIL_INDEX:
+        case GL_STENCIL_INDEX1:
+        case GL_STENCIL_INDEX4:
+        case GL_STENCIL_INDEX8:
+        case GL_STENCIL_INDEX16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool mglPixelTransferTypeIsInteger(GLenum type)
+{
+    switch (type) {
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE:
+        case GL_SHORT:
+        case GL_UNSIGNED_SHORT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static int mglExternalSourceIndexForComponent(GLenum format, GLuint component)
 {
     switch (format) {
@@ -1261,6 +1317,11 @@ static double mglReadExternalComponent(const uint8_t *src,
             memcpy(&v, p, sizeof(v));
             return (double)v;
         }
+        case GL_HALF_FLOAT: {
+            uint16_t v;
+            memcpy(&v, p, sizeof(v));
+            return (double)mglHalfToFloat(v);
+        }
         default:
             return 0.0;
     }
@@ -1274,6 +1335,11 @@ static void mglStoreInternalComponent(uint8_t *dst,
     switch (component->type) {
         case GL_FLOAT: {
             float v = (float)value;
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_HALF_FLOAT: {
+            uint16_t v = mglFloatToHalf((float)value);
             memcpy(p, &v, sizeof(v));
             break;
         }
@@ -1345,6 +1411,11 @@ static double mglLoadInternalComponent(const uint8_t *src,
             float v;
             memcpy(&v, p, sizeof(v));
             return (double)v;
+        }
+        case GL_HALF_FLOAT: {
+            uint16_t v;
+            memcpy(&v, p, sizeof(v));
+            return (double)mglHalfToFloat(v);
         }
         case GL_UNSIGNED_NORMALIZED: {
             uint32_t v = 0u;
@@ -1470,6 +1541,11 @@ static void mglWriteExternalComponent(uint8_t *dst,
         }
         case GL_FLOAT: {
             float v = (float)value;
+            memcpy(p, &v, sizeof(v));
+            break;
+        }
+        case GL_HALF_FLOAT: {
+            uint16_t v = mglFloatToHalf((float)value);
             memcpy(p, &v, sizeof(v));
             break;
         }
@@ -4647,6 +4723,8 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
         case 0x190a: // GL_LUMINANCE_ALPHA
         case 0x8000: // GL_COLOR_INDEX (legacy)
         case 0x8d97: // GL_ALPHA_INTEGER
+        case 0x8d96: // GL_BLUE_INTEGER
+        case 0x8d95: // GL_GREEN_INTEGER
         case 0x8d9c: // GL_LUMINANCE_INTEGER_EXT
         case 0x8d9d: // GL_LUMINANCE_ALPHA_INTEGER_EXT
             break;
@@ -4706,6 +4784,35 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
         default:
             fprintf(stderr, "MGL WARNING: verifyInternalFormat unknown type 0x%x\n", type);
             break;
+    }
+
+    /* Rule: integer transfer format cannot be paired with float/half-float type. */
+    if (mglExternalFormatIsInteger(format) &&
+        (type == GL_FLOAT || type == GL_HALF_FLOAT)) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    /* Rule: depth/stencil transfer format must match a depth/stencil
+     * internalformat, and vice versa. (CTS glcPackedPixelsTests isFormatValid.) */
+    {
+        bool fmt_ds = (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL ||
+                       format == GL_STENCIL_INDEX);
+        bool ifmt_ds = mglInternalFormatIsDepthStencil(internalformat);
+        if (fmt_ds != ifmt_ds) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+    }
+
+    /* Rule: integer transfer format requires an integer internalformat, and
+     * a non-integer transfer format requires a non-integer internalformat.
+     * (CTS glcPackedPixelsTests isFormatValid: GL core path.) This is what
+     * makes e.g. compressed_RED + BGR_INTEGER + UNSIGNED_BYTE invalid. */
+    {
+        bool fmt_int = mglExternalFormatIsInteger(format);
+        bool ifmt_int = mglInternalFormatIsInteger(internalformat);
+        if (fmt_int != ifmt_int) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
     }
 
     return true;
@@ -5020,6 +5127,22 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
         STATE(dirty_bits) |= DIRTY_TEX;
         return true;
+    }
+
+    if (mglTexLevelInternalFormatCompressed(internalformat))
+    {
+        /*
+         * glTexImage* with a generic/sized compressed internalformat and
+         * uncompressed (format,type) data: GL spec requires the driver to
+         * compress on upload. Metal cannot do arbitrary on-upload compression,
+         * so remap to the sized *uncompressed* equivalent and fall through to
+         * normal uncompressed storage. This preserves data round-trip (the
+         * common conformance check) without implementing RGTC/BPTC/ETC2
+         * encoders. (Pre-compressed block data goes through glCompressedTexImage,
+         * a separate path — mglStoreCompressedTextureImage — and does not reach
+         * here, so this only affects the uncompressed-upload case.)
+         */
+        internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
     }
 
     if (mglTexLevelInternalFormatCompressed(internalformat))
@@ -5401,7 +5524,7 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     }
 
     // verifyFormatType sets the error
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), 0);
+    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(border == 0, GL_INVALID_VALUE);
 
@@ -5520,7 +5643,7 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
 
     // verifyFormatType sets the error
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), 0);
+    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
@@ -6211,7 +6334,7 @@ void texSubImage1D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), 0);
+    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
 
@@ -6264,7 +6387,7 @@ bool texSubImage2D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
 
     lvl = &tex->faces[face].levels[level];
     ERROR_CHECK_RETURN_VALUE(lvl->complete, GL_INVALID_OPERATION, false);
-    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), 0, false);
+    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
 
     ERROR_CHECK_RETURN_VALUE(width >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(height >= 0, GL_INVALID_VALUE, false);
@@ -6412,7 +6535,7 @@ bool texSubImage3D(GLMContext ctx, Texture *tex, GLint level, GLint xoffset, GLi
     lvl = &tex->faces[0].levels[level];
     ERROR_CHECK_RETURN_VALUE(lvl->complete, GL_INVALID_OPERATION, false);
 
-    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), 0, false);
+    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
 
     ERROR_CHECK_RETURN_VALUE(width >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(height >= 0, GL_INVALID_VALUE, false);
@@ -7651,14 +7774,52 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
             ERROR_RETURN(GL_INVALID_ENUM);
             return;
     }
+    Buffer *pack_buffer = NULL;
     if (STATE(buffers[_PIXEL_PACK_BUFFER])) {
-        fprintf(stderr, "MGL WARNING: glGetTexImage with GL_PIXEL_PACK_BUFFER is unsupported\n");
+        Buffer *ptr = STATE(buffers[_PIXEL_PACK_BUFFER]);
+
+        if (ptr->mapped) {
+            GLboolean persistent_map =
+                ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) != 0u) &&
+                ((ptr->access_flags & GL_MAP_PERSISTENT_BIT) != 0u);
+            if (!persistent_map) {
+                fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer is mapped non-persistently\n");
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+        }
+
+        if (ptr->size < 0) {
+            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer has negative size\n");
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        if (!ptr->data.buffer_data) {
+            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack buffer has no CPU storage\n");
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+        pack_buffer = ptr;
+    }
+    if (!STATE(buffers[_PIXEL_PACK_BUFFER]) && !pixels) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    if (!pixels) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+
+    /* If a PIXEL_PACK_BUFFER is bound, the `pixels` argument is actually a
+     * byte offset into that buffer. Redirect it to the real CPU backing
+     * storage, mirroring the mglReadPixels PBO path. */
+    if (pack_buffer) {
+        uintptr_t offset = (uintptr_t)pixels;
+        uint8_t *base = (uint8_t *)(uintptr_t)pack_buffer->data.buffer_data;
+        if (offset > (uintptr_t)pack_buffer->size) {
+            fprintf(stderr, "MGL Error: glGetTexImage: pixel pack offset overflow off=%" PRIuPTR " size=%lld\n",
+                    offset, (long long)pack_buffer->size);
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        pixels = (void *)(base + offset);
     }
 
     Texture *tex = getTex(ctx, 0, target);
@@ -7714,7 +7875,11 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
     fprintf(stderr, "MGL: glGetTexImage - reading %dx%d, bytesPerRow=%zu\n", width, height, pack_layout.dst_pitch);
 
-    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels)) {
+    bool render_target_needs_readback =
+        tex->is_render_target && tex->mtl_render_target_write_version != 0u;
+
+    if (!render_target_needs_readback &&
+        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels)) {
         return;
     }
 
@@ -7722,6 +7887,35 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         target == GL_TEXTURE_1D_ARRAY ||
         target == GL_TEXTURE_2D_ARRAY ||
         target == GL_TEXTURE_CUBE_MAP_ARRAY) {
+        if (render_target_needs_readback) {
+            if (!tex->mtl_data) {
+                fprintf(stderr, "MGL ERROR: glGetTexImage - layered render target has no Metal data\n");
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+
+            mglFlushCommandBuffer(ctx);
+            uint8_t *dst_base = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
+            for (GLsizei z = 0; z < depth; z++) {
+                ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                              tex,
+                                              dst_base + ((size_t)z * pack_layout.dst_image_size),
+                                              (GLuint)pack_layout.dst_pitch,
+                                              (GLuint)pack_layout.dst_image_size,
+                                              0,
+                                              0,
+                                              width,
+                                              height,
+                                              format,
+                                              type,
+                                              level,
+                                              (GLuint)z);
+                if (STATE(error) != GL_NO_ERROR) {
+                    return;
+                }
+            }
+            return;
+        }
         memset((uint8_t *)pixels + pack_layout.skip_offset_bytes, 0, pack_layout.write_span_bytes);
         return;
     }
@@ -7839,6 +8033,7 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+
 
     if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels)) {
         return;
@@ -8407,7 +8602,6 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
 
     tex_level = &tex->faces[0].levels[level];
     internalformat = tex->internalformat;
-
     switch (pname) {
         case GL_TEXTURE_WIDTH:
             *params = (GLint)tex_level->width;
@@ -8445,10 +8639,12 @@ void mglGetTextureLevelParameteriv(GLMContext ctx, GLuint texture, GLint level, 
             *params = mglTexLevelComponentType(internalformat, pname);
             break;
         case GL_TEXTURE_SAMPLES:
-            *params = 0;
+            *params = (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                       tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) ? (GLint)tex->samples : 0;
             break;
         case GL_TEXTURE_FIXED_SAMPLE_LOCATIONS:
-            *params = GL_TRUE;
+            *params = (tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                       tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY) ? tex->fixed_sample_locations : GL_TRUE;
             break;
         case GL_TEXTURE_SHARED_SIZE:
             *params = (mglTexLevelCanonicalInternalFormat(internalformat) == GL_RGB9_E5) ? 5 : 0;

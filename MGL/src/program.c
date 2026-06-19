@@ -1668,6 +1668,7 @@ static GLint mglKnownPlainUniformLocationForName(const char *name)
     if (!strcmp(name, "CameraOffset"))   return 14;
     if (!strcmp(name, "UseRgss"))        return 15;
     if (!strcmp(name, "ChunkVisibility")) return 16;
+    if (!strcmp(name, "texture_layer")) return 15;
 
     return -1;
 }
@@ -2685,10 +2686,12 @@ void mglDeleteProgram(GLMContext ctx, GLuint program)
 
     if (!ptr)
     {
-        // // CRITICAL FIX: Handle error gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
-        STATE(error) = GL_INVALID_OPERATION; // Silent ignore if not found? OpenGL says GL_INVALID_VALUE usually, but delete is often silent for 0.
-        // But if program != 0 and not found, it's GL_INVALID_VALUE.
+        // Per GL spec, glDeleteProgram silently ignores names that do not
+        // correspond to an existing program object (including names that were
+        // already deleted). Do NOT set a sticky GL error here — leaving
+        // GL_INVALID_OPERATION set would poison the next API call's
+        // glGetError() check (e.g. glDeleteFramebuffers), surfacing as a
+        // spurious CTS crash.
         return;
     }
 
@@ -6791,13 +6794,22 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             *params = mglActiveUniformBlockMaxNameLength(pptr);
             break;
         case GL_COMPUTE_WORK_GROUP_SIZE:
-            if (!pptr->linked_glsl_program || !pptr->shader_slots[_COMPUTE_SHADER]) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
+            /*
+             * Per the spec, querying GL_COMPUTE_WORK_GROUP_SIZE on a program
+             * with no linked compute stage must return {0,0,0}; it does NOT
+             * generate an error. (GL_INVALID_OPERATION is only raised when the
+             * program itself is not linked, which is handled by the function
+             * preamble.)
+             */
+            if (pptr->linked_glsl_program && pptr->shader_slots[_COMPUTE_SHADER]) {
+                params[0] = pptr->local_workgroup_size.x;
+                params[1] = pptr->local_workgroup_size.y;
+                params[2] = pptr->local_workgroup_size.z;
+            } else {
+                params[0] = 0;
+                params[1] = 0;
+                params[2] = 0;
             }
-            params[0] = pptr->local_workgroup_size.x;
-            params[1] = pptr->local_workgroup_size.y;
-            params[2] = pptr->local_workgroup_size.z;
             break;
         default:
             fprintf(stderr, "mglGetProgramiv: unhandled pname 0x%x\n", pname);

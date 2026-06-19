@@ -165,8 +165,8 @@ static size_t mgl_normalize_layout_qualifiers(char *dst, size_t dst_capacity,
             (tok_len == 6 && memcmp(start, "shared", 6) == 0)) {
             continue;
         }
-        if ((tok_len == 5 && memcmp(start, "std140", 5) == 0) ||
-            (tok_len == 5 && memcmp(start, "std430", 5) == 0)) {
+        if ((tok_len == 6 && memcmp(start, "std140", 6) == 0) ||
+            (tok_len == 6 && memcmp(start, "std430", 6) == 0)) {
             layout_written = 1;
         }
 
@@ -680,7 +680,12 @@ static void mgl_upgrade_version_for_bindings(char *src)
         return;
     }
 
-    snprintf(replacement, sizeof(replacement), "#version 420 core");
+    bool is_es = (profile[0] != '\0' && strcmp(profile, "es") == 0);
+    if (is_es) {
+        snprintf(replacement, sizeof(replacement), "#version 320 es");
+    } else {
+        snprintf(replacement, sizeof(replacement), "#version 420 core");
+    }
     old_len = (size_t)(newline - version_line);
     new_len = strlen(replacement);
 
@@ -840,14 +845,18 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
      */
     int glsl_version = 330; /* Default to GLSL 3.30 - minimum for SPIR-V */
     int original_version = 330;
+    bool is_es_profile = false;
     const char *version_str = strstr(src, "#version");
+    char profile_str[32] = {0};
     if (version_str) {
         int scanned_version;
-        if (sscanf(version_str, "#version %d", &scanned_version) == 1) {
+        if (sscanf(version_str, "#version %d %31s", &scanned_version, profile_str) >= 1) {
             original_version = scanned_version;
             glsl_version = scanned_version;
-            /* Upgrade legacy GLSL versions to 330 minimum for SPIR-V */
-            if (glsl_version < 330) {
+            if (profile_str[0] != '\0' && strcmp(profile_str, "es") == 0) {
+                is_es_profile = true;
+            }
+            if (!is_es_profile && glsl_version < 330) {
                 glsl_version = 330;
             }
         }
@@ -887,9 +896,9 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
     } else {
         strcpy(modified_src, src);
 
-        if (original_version < 330) {
-            fprintf(stderr, "[MGL] Upgrading GLSL shader from version %d to %d\n",
-                    original_version, glsl_version);
+        if (original_version < glsl_version) {
+            fprintf(stderr, "[MGL] Upgrading GLSL shader from version %d to %d%s\n",
+                    original_version, glsl_version, is_es_profile ? " (es)" : "");
 
             /* Find and replace #version line */
             char *version_line = strstr(modified_src, "#version");
@@ -901,7 +910,8 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
                     fprintf(stderr, "[MGL] WARNING: newline not found after #version\n");
                 } else {
                     char version_buf[64];
-                    snprintf(version_buf, sizeof(version_buf), "#version %d core", glsl_version);
+                    snprintf(version_buf, sizeof(version_buf), "#version %d%s",
+                             glsl_version, is_es_profile ? " es" : " core");
                     size_t old_len = (size_t)(newline - version_line);
                     size_t new_len = strlen(version_buf);
 
@@ -927,7 +937,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         }
         mgl_downgrade_derivative_control_intrinsics(modified_src);
 
-        if (strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
+        if (!is_es_profile && strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
             glsl_version = 420;
         }
 
@@ -935,7 +945,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
     }
 
     input->default_version = glsl_version;
-    input->default_profile = GLSLANG_CORE_PROFILE;
+    input->default_profile = is_es_profile ? GLSLANG_ES_PROFILE : GLSLANG_CORE_PROFILE;
     /* Use relaxed OpenGL-style validation at shader compile stage.
      * Program-level link/map_io will assign/validate resource interfaces.
      * This avoids forcing explicit layout(binding=...) in vanilla MC GLSL 330.

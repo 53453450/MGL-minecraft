@@ -44,6 +44,9 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type);
 MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format);
 MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
 
+float mglHalfToFloat(uint16_t value);
+uint16_t mglFloatToHalf(float value);
+
 
 #ifndef API_AVAILABLE
 #define API_AVAILABLE(...) __API_AVAILABLE_GET_MACRO(__VA_ARGS__,__API_AVAILABLE7, __API_AVAILABLE6, __API_AVAILABLE5, __API_AVAILABLE4, __API_AVAILABLE3, __API_AVAILABLE2, __API_AVAILABLE1, 0)(__VA_ARGS__)

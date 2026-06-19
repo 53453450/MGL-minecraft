@@ -217,6 +217,58 @@ bool mglTexLevelInternalFormatCompressed(GLint internalformat)
     }
 }
 
+/*
+ * Map a generic/sized compressed internalformat to its sized *uncompressed*
+ * equivalent, so that glTexImage* with an uncompressed (format,type) upload and
+ * a compressed internalformat faithfully stores the data instead of being
+ * discarded. Metal cannot compress arbitrary uncompressed data on upload, so
+ * we store uncompressed; this preserves data round-trip (the common CTS check)
+ * without implementing RGTC/BPTC/ETC2 encoders. Returns the original
+ * internalformat unchanged if it is not one of the generic/RGTC compressed
+ * enums (sized block-compressed formats like S3TC/DXT are left for the
+ * glCompressedTexImage path).
+ */
+GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat)
+{
+    switch (mglTexLevelCanonicalInternalFormat(internalformat))
+    {
+        case GL_COMPRESSED_RED:
+        case GL_COMPRESSED_RED_RGTC1:
+        case GL_COMPRESSED_SIGNED_RED_RGTC1:
+            return GL_R8;
+        case GL_COMPRESSED_RG:
+        case GL_COMPRESSED_RG_RGTC2:
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+            return GL_RG8;
+        case GL_COMPRESSED_RGB:
+        case GL_COMPRESSED_RGB8_ETC2:
+        case GL_COMPRESSED_SRGB8_ETC2:
+        case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+            return GL_RGB8;
+        case GL_COMPRESSED_RGBA:
+        case GL_COMPRESSED_RGBA8_ETC2_EAC:
+        case GL_COMPRESSED_RGBA_BPTC_UNORM:
+            return GL_RGBA8;
+        case GL_COMPRESSED_SRGB:
+            return GL_SRGB8;
+        case GL_COMPRESSED_SRGB_ALPHA:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+        case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+            return GL_SRGB8_ALPHA8;
+        case GL_COMPRESSED_R11_EAC:
+        case GL_COMPRESSED_SIGNED_R11_EAC:
+            return GL_R8;
+        case GL_COMPRESSED_RG11_EAC:
+        case GL_COMPRESSED_SIGNED_RG11_EAC:
+            return GL_RG8;
+        default:
+            return internalformat;
+    }
+}
+
 static bool mglTexLevelInternalFormatSignedInteger(GLint internalformat)
 {
     switch (mglTexLevelCanonicalInternalFormat(internalformat))
@@ -347,8 +399,11 @@ GLint mglTexLevelComponentType(GLint internalformat, GLenum pname)
         return GL_INT;
     if (mglTexLevelInternalFormatUnsignedInteger(canonical))
         return GL_UNSIGNED_INT;
-    if (mglTexLevelInternalFormatFloat(canonical))
+    if (mglTexLevelInternalFormatFloat(canonical)) {
+        GLint bits = mglTexLevelComponentBits(canonical, sizePname);
+        if (bits == 16) return GL_HALF_FLOAT;
         return GL_FLOAT;
+    }
     if (mglTexLevelInternalFormatSignedNormalized(canonical))
         return GL_SIGNED_NORMALIZED;
     return GL_UNSIGNED_NORMALIZED;

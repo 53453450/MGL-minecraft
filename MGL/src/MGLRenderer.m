@@ -49,6 +49,12 @@
 #import "glm_context.h"
 #import "mgl_safety.h"
 
+float mglHalfToFloat(uint16_t value);
+uint16_t mglFloatToHalf(float value);
+typedef unsigned int GLenum;
+typedef unsigned int GLuint;
+GLuint sizeForType(GLenum type);
+
 #if __has_include(<Metal/MTL4Compiler.h>) && __has_include(<Metal/MTL4LibraryDescriptor.h>)
 #import <Metal/MTL4Compiler.h>
 #import <Metal/MTL4LibraryDescriptor.h>
@@ -60,6 +66,8 @@
 #define TRACE_FUNCTION()    DEBUG_PRINT("%s\n", __FUNCTION__);
 
 GLuint numComponentsForFormat(GLenum format);
+
+extern void mglDrawBuffer(GLMContext ctx, GLenum buf);
 
 extern void mglDrawBuffer(GLMContext ctx, GLenum buf);
 extern bool mglTryCPUTransformFeedbackCapture(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseInstance);
@@ -193,6 +201,14 @@ static BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
     }
 }
 
+static GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot)
+{
+    if (!drawCtx || drawCtx->state.draw_buffer_count == 1u) {
+        return 0u;
+    }
+    return drawBufferSlot;
+}
+
 typedef struct MGLMetalAttachmentSubresource_t {
     NSUInteger level;
     NSUInteger slice;
@@ -244,6 +260,42 @@ static MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(
     }
 
     return subresource;
+}
+
+static BOOL mglMetalRenderPassColorAttachmentMatchesSubresource(MTLRenderPassColorAttachmentDescriptor *descriptor,
+                                                                MGLMetalAttachmentSubresource subresource)
+{
+    if (!descriptor) {
+        return NO;
+    }
+
+    return descriptor.level == subresource.level &&
+           descriptor.slice == subresource.slice &&
+           descriptor.depthPlane == subresource.depthPlane;
+}
+
+static BOOL mglMetalRenderPassDepthAttachmentMatchesSubresource(MTLRenderPassDepthAttachmentDescriptor *descriptor,
+                                                                MGLMetalAttachmentSubresource subresource)
+{
+    if (!descriptor) {
+        return NO;
+    }
+
+    return descriptor.level == subresource.level &&
+           descriptor.slice == subresource.slice &&
+           descriptor.depthPlane == subresource.depthPlane;
+}
+
+static BOOL mglMetalRenderPassStencilAttachmentMatchesSubresource(MTLRenderPassStencilAttachmentDescriptor *descriptor,
+                                                                  MGLMetalAttachmentSubresource subresource)
+{
+    if (!descriptor) {
+        return NO;
+    }
+
+    return descriptor.level == subresource.level &&
+           descriptor.slice == subresource.slice &&
+           descriptor.depthPlane == subresource.depthPlane;
 }
 
 static BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
@@ -328,22 +380,6 @@ static float mglMetalUnsignedFloatComponent(uint32_t value, uint32_t mantissaBit
     }
     return ldexpf(1.0f + (float)mantissa / (float)(1u << mantissaBits),
                   (int)exponent - 15);
-}
-
-static float mglMetalHalfToFloat(uint16_t value)
-{
-    uint32_t sign = (uint32_t)(value >> 15u);
-    uint32_t exponent = (value >> 10u) & 31u;
-    uint32_t mantissa = value & 1023u;
-    float result;
-    if (exponent == 0u) {
-        result = ldexpf((float)mantissa, -24);
-    } else if (exponent == 31u) {
-        result = mantissa ? NAN : INFINITY;
-    } else {
-        result = ldexpf(1.0f + (float)mantissa / 1024.0f, (int)exponent - 15);
-    }
-    return sign ? -result : result;
 }
 
 static float mglMetalSnorm16ToFloat(int16_t value)
@@ -507,10 +543,10 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
             } else if (sourceIsRGBA16Float) {
                 uint16_t components[4] = {0u, 0u, 0u, 0u};
                 memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[2]));
-                d[1] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[0]));
-                d[3] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[3]));
+                d[0] = mglMetalFloatToUnorm8(mglHalfToFloat(components[2]));
+                d[1] = mglMetalFloatToUnorm8(mglHalfToFloat(components[1]));
+                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(components[0]));
+                d[3] = mglMetalFloatToUnorm8(mglHalfToFloat(components[3]));
             } else if (sourceIsRG11B10Float) {
                 uint32_t packed = 0u;
                 memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
@@ -535,15 +571,15 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
                 uint16_t components[2] = {0u, 0u};
                 memcpy(components, srcRow + x * sizeof(components), sizeof(components));
                 d[0] = 0u;
-                d[1] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(components[0]));
+                d[1] = mglMetalFloatToUnorm8(mglHalfToFloat(components[1]));
+                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(components[0]));
                 d[3] = 255u;
             } else if (sourceIsR16Float) {
                 uint16_t component = 0u;
                 memcpy(&component, srcRow + x * sizeof(component), sizeof(component));
                 d[0] = 0u;
                 d[1] = 0u;
-                d[2] = mglMetalFloatToUnorm8(mglMetalHalfToFloat(component));
+                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(component));
                 d[3] = 255u;
             } else if (sourceIsRGBA16Unorm) {
                 uint16_t components[4] = {0u, 0u, 0u, 0u};
@@ -667,7 +703,14 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
 
     if (type != GL_UNSIGNED_BYTE &&
         type != GL_UNSIGNED_INT_8_8_8_8 &&
-        type != GL_UNSIGNED_INT_8_8_8_8_REV) {
+        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
+        type != GL_FLOAT &&
+        type != GL_BYTE &&
+        type != GL_SHORT &&
+        type != GL_INT &&
+        type != GL_UNSIGNED_INT &&
+        type != GL_UNSIGNED_SHORT &&
+        type != GL_HALF_FLOAT) {
         return NO;
     }
 
@@ -713,6 +756,69 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         return NO;
     }
 
+    /* Scalar integer / half-float readback from BGRA8 UNORM source.
+     * Components are scaled to the destination type's unsigned range. */
+    if (type == GL_BYTE || type == GL_SHORT ||
+        type == GL_INT || type == GL_UNSIGNED_INT ||
+        type == GL_UNSIGNED_SHORT || type == GL_HALF_FLOAT ||
+        type == GL_FLOAT) {
+        NSUInteger compBytes = (NSUInteger)sizeForType(type);
+        int slots = 0;
+        int srcIdx[4] = {0,0,0,0};
+        switch (format) {
+            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
+            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
+            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
+            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
+            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
+            case GL_RED:  slots = 1; srcIdx[0]=0; break;
+            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=0; break;
+            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
+            default: return NO;
+        }
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                const uint8_t *s = srcRow + (x * 4u);
+                const unsigned cv[4] = { s[2], s[1], s[0], s[3] };
+                uint8_t *dp = dstRow + (x * dstPixelBytes);
+                for (int c = 0; c < slots; ++c) {
+                    unsigned v = cv[srcIdx[c]];
+                    uint8_t *out = dp + (NSUInteger)c * compBytes;
+                    if (type == GL_BYTE) {
+                        int8_t iv = (v > 127u) ? 127 : (int8_t)v;
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_SHORT) {
+                        uint16_t iv = (uint16_t)((uint32_t)v * 257u);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_SHORT) {
+                        int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
+                        if (scaled > 32767) scaled = 32767;
+                        int16_t iv = (int16_t)scaled;
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_INT) {
+                        uint32_t iv = (uint32_t)v * 16843009u;
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_INT) {
+                        int32_t scaled = (int32_t)((uint32_t)v * 2147483647u / 255u);
+                        if (scaled > 2147483647) scaled = 2147483647;
+                        memcpy(out, &scaled, sizeof(scaled));
+                    } else if (type == GL_FLOAT) {
+                        float fv = (float)v / 255.0f;
+                        memcpy(out, &fv, sizeof(fv));
+                    } else { /* GL_HALF_FLOAT */
+                        uint16_t iv = mglFloatToHalf((float)v / 255.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    }
+                }
+            }
+        }
+        return YES;
+    }
+
     for (NSUInteger y = 0; y < height; y++) {
         const uint8_t *srcRow = src + (y * srcBytesPerRow);
         NSUInteger dstY = flipY ? (height - 1u - y) : y;
@@ -737,13 +843,21 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                     d[3] = a;
                     break;
                 case GL_RGBA:
-                    if (dstPixelBytes != 4u) {
+                    if (dstPixelBytes != 4u && (type != GL_FLOAT || dstPixelBytes != 16u)) {
                         return NO;
                     }
-                    d[0] = r;
-                    d[1] = g;
-                    d[2] = b;
-                    d[3] = a;
+                    if (type == GL_FLOAT) {
+                        float *fd = (float *)d;
+                        fd[0] = (float)r / 255.0f;
+                        fd[1] = (float)g / 255.0f;
+                        fd[2] = (float)b / 255.0f;
+                        fd[3] = (float)a / 255.0f;
+                    } else {
+                        d[0] = r;
+                        d[1] = g;
+                        d[2] = b;
+                        d[3] = a;
+                    }
                     break;
                 case GL_BGR:
                     if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 3u) {
@@ -12401,11 +12515,13 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         case MTLTextureType1DArray:
             return _TEXTURE_1D_ARRAY;
         case MTLTextureType2D:
-        case MTLTextureType2DMultisample:
             return _TEXTURE_2D;
+        case MTLTextureType2DMultisample:
+            return _TEXTURE_2D_MULTISAMPLE;
         case MTLTextureType2DArray:
-        case MTLTextureType2DMultisampleArray:
             return _TEXTURE_2D_ARRAY;
+        case MTLTextureType2DMultisampleArray:
+            return _TEXTURE_2D_MULTISAMPLE_ARRAY;
         case MTLTextureType3D:
             return _TEXTURE_3D;
         case MTLTextureTypeCube:
@@ -15738,6 +15854,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         GLuint attachmentIndex = 0u;
+        GLuint colorSlot = mglMetalColorSlotForDrawBuffer(ctx, i);
+        if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
+            continue;
+        }
         BOOL drawSlotPresent =
             mglMetalResolveFboDrawAttachmentIndex(ctx,
                                                   mglMetalDrawBufferAt(ctx, i),
@@ -15758,9 +15878,16 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             expected = (__bridge id<MTLTexture>)(tex->mtl_data);
         }
 
-        id<MTLTexture> actual = _renderPassDescriptor.colorAttachments[i].texture;
+        id<MTLTexture> actual = _renderPassDescriptor.colorAttachments[colorSlot].texture;
         if (actual != expected) {
             return false;
+        }
+
+        if (attachment && actual) {
+            MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(attachment);
+            if (!mglMetalRenderPassColorAttachmentMatchesSubresource(_renderPassDescriptor.colorAttachments[colorSlot], subresource)) {
+                return false;
+            }
         }
 
         if (i + 1u >= MAX_COLOR_ATTACHMENTS ||
@@ -15784,6 +15911,12 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     if (_renderPassDescriptor.depthAttachment.texture != expectedDepth) {
         return false;
     }
+    if (fbo->depth.texture && expectedDepth) {
+        MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
+        if (!mglMetalRenderPassDepthAttachmentMatchesSubresource(_renderPassDescriptor.depthAttachment, subresource)) {
+            return false;
+        }
+    }
 
     id<MTLTexture> expectedStencil = nil;
     if (fbo->stencil.texture) {
@@ -15798,6 +15931,12 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     }
     if (_renderPassDescriptor.stencilAttachment.texture != expectedStencil) {
         return false;
+    }
+    if (fbo->stencil.texture && expectedStencil) {
+        MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
+        if (!mglMetalRenderPassStencilAttachmentMatchesSubresource(_renderPassDescriptor.stencilAttachment, subresource)) {
+            return false;
+        }
     }
 
     return true;
@@ -17857,6 +17996,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         for (int i = 0; i < drawBufferCount; i++)
         {
             GLuint attachmentIndex = 0u;
+            GLuint colorSlot = mglMetalColorSlotForDrawBuffer(ctx, (GLuint)i);
+            if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
+                continue;
+            }
             if (mglMetalResolveFboDrawAttachmentIndex(ctx,
                                                       mglMetalDrawBufferAt(ctx, (GLuint)i),
                                                       &attachmentIndex) &&
@@ -17880,11 +18023,11 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
                 MGLMetalAttachmentSubresource subresource =
                     mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
-                _renderPassDescriptor.colorAttachments[i].texture =
+                _renderPassDescriptor.colorAttachments[colorSlot].texture =
                     mglApplySRGBStateToRenderTarget((__bridge id<MTLTexture> _Nullable)(tex->mtl_data), ctx);
-                _renderPassDescriptor.colorAttachments[i].level = subresource.level;
-                _renderPassDescriptor.colorAttachments[i].slice = subresource.slice;
-                _renderPassDescriptor.colorAttachments[i].depthPlane = subresource.depthPlane;
+                _renderPassDescriptor.colorAttachments[colorSlot].level = subresource.level;
+                _renderPassDescriptor.colorAttachments[colorSlot].slice = subresource.slice;
+                _renderPassDescriptor.colorAttachments[colorSlot].depthPlane = subresource.depthPlane;
 
                 // Keep render pass dimensions aligned with attached color targets.
                 // Some FBO paths use textures (not renderbuffers), and Metal still requires
@@ -18166,12 +18309,16 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
         for (int i = 0; i < drawBufferCount; ++i) {
             GLuint attachmentIndex = 0u;
+            GLuint colorSlot = mglMetalColorSlotForDrawBuffer(ctx, (GLuint)i);
+            if (colorSlot >= MAX_COLOR_ATTACHMENTS) {
+                continue;
+            }
             if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
                                                        mglMetalDrawBufferAt(ctx, (GLuint)i),
                                                        &attachmentIndex) ||
                 attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
                 ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
-                _renderPassDescriptor.colorAttachments[i].loadAction = MTLLoadActionLoad;
+                _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
                 continue;
             }
 
@@ -18210,13 +18357,13 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                                 (ctx && ctx->state.caps.depth_test) ? 1 : 0,
                                 (ctx && ctx->state.var.depth_writemask) ? 1 : 0);
                 }
-                _renderPassDescriptor.colorAttachments[i].clearColor =
+                _renderPassDescriptor.colorAttachments[colorSlot].clearColor =
                     MTLClearColorMake(att->clear_color[0],
                                       att->clear_color[1],
                                       att->clear_color[2],
                                       att->clear_color[3]);
-                _renderPassDescriptor.colorAttachments[i].loadAction = MTLLoadActionClear;
-                _renderPassDescriptor.colorAttachments[i].storeAction = MTLStoreActionStore;
+                _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionClear;
+                _renderPassDescriptor.colorAttachments[colorSlot].storeAction = MTLStoreActionStore;
                 
                 att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
                 mglMarkTextureLevelRenderTargetWritten(attachmentTextureForClear, att->level);
@@ -18224,7 +18371,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 fboColorClearCount++;
                 fboColorClearMask |= (GLbitfield)(1u << attachmentIndex);
             } else {
-                _renderPassDescriptor.colorAttachments[i].loadAction = MTLLoadActionLoad;
+                _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
             }
         }
 
@@ -19212,6 +19359,7 @@ create_new_command_buffer:
     if (!texture || !bytes || bytesPerRow == 0 || bytesPerImage == 0 || width == 0) {
         return false;
     }
+
 
     if ([self shouldSkipGPUOperations]) {
         NSLog(@"MGL AGX: Skipping texture upload during recovery");
@@ -26426,8 +26574,8 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     }
 
     MTLRegion readRegion = region;
-    BOOL flipRenderTargetRows = (tex->is_render_target && region.size.height > 1u);
-    if (tex->is_render_target && region.size.height > 0u) {
+    BOOL flipRenderTargetRows = NO;
+    if (flipRenderTargetRows && tex->is_render_target && region.size.height > 0u) {
         NSUInteger levelHeight = MAX((NSUInteger)1u, texture.height >> level);
         if (region.origin.y > levelHeight ||
             region.size.height > levelHeight - region.origin.y) {
@@ -26456,9 +26604,24 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     // MTLStorageModePrivate textures cannot be read directly with getBytes:.
     // Use a blit-to-buffer path to convert GPU-private tiled memory to linear CPU memory.
     if (texture.storageMode == MTLStorageModePrivate) {
-        NSUInteger rowBytes = useBGRA8Conversion
-            ? readRegion.size.width * 4u
-            : (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
+        /* When useBGRA8Conversion is set but the source texture is not actually
+         * 4 bytes-per-pixel (e.g. RGBA32Float is 16 bpp), the staging buffer
+         * must be sized for the *source* pixel format, not the BGRA8 intermediate.
+         * The blit copies raw source data into staging; conversion happens afterwards. */
+        NSUInteger sourceBpp = mglMetalReadbackBytesPerPixel(texture.pixelFormat);
+        BOOL sourceIsBGRA8 =
+            (texture.pixelFormat == MTLPixelFormatBGRA8Unorm ||
+             texture.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
+             texture.pixelFormat == MTLPixelFormatRGBA8Unorm ||
+             texture.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
+        NSUInteger rowBytes;
+        if (useBGRA8Conversion && !sourceIsBGRA8 && sourceBpp > 0u) {
+            rowBytes = readRegion.size.width * sourceBpp;
+        } else if (useBGRA8Conversion) {
+            rowBytes = readRegion.size.width * 4u;
+        } else {
+            rowBytes = (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
+        }
         NSUInteger imageBytes = rowBytes * readRegion.size.height;
         NSUInteger totalBytes = imageBytes;
         if (!useBGRA8Conversion && bytesPerImage > 0 && readRegion.size.depth > 1) {

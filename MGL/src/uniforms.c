@@ -385,6 +385,9 @@ static GLint mglKnownPlainUniformLocation(const char *name)
     if (mglSafeCStringEquals(name, "ChunkVisibility")) {
         return 16;
     }
+    if (mglSafeCStringEquals(name, "texture_layer")) {
+        return 15;
+    }
 
     return -1;
 }
