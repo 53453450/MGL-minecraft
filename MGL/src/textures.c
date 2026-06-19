@@ -4776,9 +4776,10 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
             ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_STENCIL, GL_INVALID_OPERATION, false);
             break;
         
-        // Packed float types for special formats
+        // Packed float types: each packs 3 channels, valid only with GL_RGB/GL_BGR.
         case 0x8c3b: // GL_UNSIGNED_INT_10F_11F_11F_REV
         case 0x8c3e: // GL_UNSIGNED_INT_5_9_9_9_REV
+            ERROR_CHECK_RETURN_VALUE((format == GL_RGB || format == GL_BGR), GL_INVALID_OPERATION, false);
             break;
             
         default:
