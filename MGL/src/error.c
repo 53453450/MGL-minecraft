@@ -59,10 +59,18 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
         return 0;
 
     /* Minecraft startup performs a lot of texture probing/update patterns.
-     * Treat transient INVALID_OPERATION from texture paths as non-fatal
-     * compatibility warnings so createTexture() does not abort startup. */
-    if (strstr(func, "mglTex") != NULL) return 1;
-    if (strstr(func, "mglTexture") != NULL) return 1;
+     * Treat transient INVALID_OPERATION from texture functions as non-fatal
+     * compatibility warnings so createTexture() does not abort startup.
+     *
+     * EXCEPTION: functions containing "Image" (mglTexImage2D, mglTexSubImage2D,
+     * mglTextureImage2D, etc.) perform format/type validation that CTS relies
+     * on via glGetError().  Their errors must NOT be swallowed. */
+    if (strstr(func, "mglTex") != NULL || strstr(func, "mglTexture") != NULL)
+    {
+        if (strstr(func, "Image") != NULL)
+            return 0;  /* validation error - report it */
+        return 1;      /* transient error - swallow it */
+    }
     if (strstr(func, "texSubImage") != NULL) return 1;
     if (strstr(func, "generateMipmaps") != NULL) return 1;
     if (strstr(func, "createTextureLevel") != NULL) return 1;

@@ -13,6 +13,7 @@
 #include "spirv_cross_c.h"
 #include "mgl.h"
 #include "draw_command.h"
+#include "pixel_utils.h"
 
 #ifndef MGL_VERBOSE_TEXBUFFER_LOGS
 #define MGL_VERBOSE_TEXBUFFER_LOGS 0
@@ -151,6 +152,8 @@ extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer);
 extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
 extern void mglTraceLogExternal(const char *fmt, ...);
+// Forward declaration for renderbuffer lookup from framebuffers.c
+extern Renderbuffer *findRenderbuffer(GLMContext ctx, GLuint renderbuffer);
 
 typedef struct QueryObject_t {
 	GLuint name;
@@ -165,7 +168,7 @@ typedef struct QueryObject_t {
 
 static HashTable s_query_table;
 static GLboolean s_query_table_initialized = GL_FALSE;
-static GLuint s_active_query_by_target[8];
+static GLuint s_active_query_by_target[18];
 static GLuint64 s_fake_timestamp_counter = 1;
 
 static QueryObject *mgl_find_query(GLuint id);
@@ -213,6 +216,17 @@ static int mgl_query_target_slot(GLenum target)
 		case GL_PRIMITIVES_GENERATED: return 3;
 		case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN: return 4;
 		case GL_TIME_ELAPSED: return 5;
+		case GL_VERTICES_SUBMITTED: return 6;
+		case GL_PRIMITIVES_SUBMITTED: return 7;
+		case GL_VERTEX_SHADER_INVOCATIONS: return 8;
+		case GL_TESS_CONTROL_SHADER_PATCHES: return 9;
+		case GL_TESS_EVALUATION_SHADER_INVOCATIONS: return 10;
+		case GL_GEOMETRY_SHADER_INVOCATIONS: return 11;
+		case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED: return 12;
+		case GL_FRAGMENT_SHADER_INVOCATIONS: return 13;
+		case GL_COMPUTE_SHADER_INVOCATIONS: return 14;
+		case GL_CLIPPING_INPUT_PRIMITIVES: return 15;
+		case GL_CLIPPING_OUTPUT_PRIMITIVES: return 16;
 		default: return -1;
 	}
 }
@@ -225,7 +239,18 @@ static GLboolean mgl_is_query_create_target(GLenum target)
 	       target == GL_PRIMITIVES_GENERATED ||
 	       target == GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN ||
 	       target == GL_TIME_ELAPSED ||
-	       target == GL_TIMESTAMP;
+	       target == GL_TIMESTAMP ||
+	       target == GL_VERTICES_SUBMITTED ||
+	       target == GL_PRIMITIVES_SUBMITTED ||
+	       target == GL_VERTEX_SHADER_INVOCATIONS ||
+	       target == GL_TESS_CONTROL_SHADER_PATCHES ||
+	       target == GL_TESS_EVALUATION_SHADER_INVOCATIONS ||
+	       target == GL_GEOMETRY_SHADER_INVOCATIONS ||
+	       target == GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED ||
+	       target == GL_FRAGMENT_SHADER_INVOCATIONS ||
+	       target == GL_COMPUTE_SHADER_INVOCATIONS ||
+	       target == GL_CLIPPING_INPUT_PRIMITIVES ||
+	       target == GL_CLIPPING_OUTPUT_PRIMITIVES;
 }
 
 static GLboolean mgl_query_target_is_sample(GLenum target)
@@ -455,6 +480,24 @@ static void mgl_finish_query_result(QueryObject *q)
 		case GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN:
 			if (!q->primitive_result_known)
 				q->result = q->saw_draw ? 1u : 0u;
+			break;
+		/* GL_ARB_pipeline_statistics_query targets.  MGL does not sample
+		 * real GPU stage counters, so report a deterministic nonzero value
+		 * when a draw occurred within the query's begin/end interval.  This
+		 * satisfies the GL_QUERY_COUNTER_BITS / begin-query API gates and
+		 * the nonzero-when-drawn value checks. */
+		case GL_VERTICES_SUBMITTED:
+		case GL_PRIMITIVES_SUBMITTED:
+		case GL_VERTEX_SHADER_INVOCATIONS:
+		case GL_TESS_CONTROL_SHADER_PATCHES:
+		case GL_TESS_EVALUATION_SHADER_INVOCATIONS:
+		case GL_GEOMETRY_SHADER_INVOCATIONS:
+		case GL_GEOMETRY_SHADER_PRIMITIVES_EMITTED:
+		case GL_FRAGMENT_SHADER_INVOCATIONS:
+		case GL_COMPUTE_SHADER_INVOCATIONS:
+		case GL_CLIPPING_INPUT_PRIMITIVES:
+		case GL_CLIPPING_OUTPUT_PRIMITIVES:
+			q->result = q->saw_draw ? 1u : 0u;
 			break;
 		case GL_TIME_ELAPSED:
 			q->result = s_fake_timestamp_counter++;
@@ -1684,47 +1727,455 @@ void mglColorP4uiv(GLMContext ctx, GLenum type, const GLuint *color)
 
 static bool mglCopyImageTextureLevelExists(const Texture *tex, GLint level)
 {
-	if (!tex || level < 0 || (GLuint)level >= tex->mipmap_levels ||
-	    !tex->faces[0].levels)
+	if (!tex || level < 0)
+		return false;
+
+	/* Level 0 always exists if the texture has been allocated. */
+	if (level == 0) {
+		return (tex->width > 0 || tex->height > 0 || tex->depth > 0);
+	}
+
+	if ((GLuint)level >= tex->mipmap_levels || !tex->faces[0].levels)
 		return false;
 
 	return tex->faces[0].levels[level].complete == GL_TRUE;
 }
 
+/* Check if a texture is "complete" for CopyImageSubData purposes.
+ * A texture is complete if all levels from base_level to
+ * min(max_level, mipmap_levels-1) are allocated and complete.
+ * Renderbuffers are always considered complete (they only have level 0). */
+static bool mglCopyImageIsTextureComplete(const Texture *tex, GLenum target)
+{
+	if (!tex)
+		return false;
+
+	/* Renderbuffers only have level 0 and are always complete. */
+	if (target == GL_RENDERBUFFER)
+		return true;
+
+	/* Must have at least one level allocated. */
+	if (tex->num_levels == 0 || !tex->faces[0].levels)
+		return false;
+
+	GLuint base = tex->params.base_level;
+	GLuint max = tex->params.max_level;
+
+	/* Clamp max to the mipmap capacity. */
+	if (max >= tex->mipmap_levels)
+		max = tex->mipmap_levels - 1;
+
+	/* If max < base, the texture is incomplete. */
+	if (max < base)
+		return false;
+
+	/* Check that all levels from base to max are complete. */
+	for (GLuint i = base; i <= max; i++) {
+		if (!tex->faces[0].levels[i].complete)
+			return false;
+	}
+
+	return true;
+}
+
+/* Resolve a CopyImageSubData name/target pair to a Texture object.
+ * Renderbuffers are backed by a Texture internally, so we map them
+ * through findRenderbuffer().
+ *
+ * Returns:
+ *   tex      - success, the Texture* is returned
+ *   NULL     - resolution failed; *err_out is set to the GL error code
+ *              (GL_INVALID_VALUE if the name is not a valid object at all,
+ *               GL_INVALID_ENUM if the name is valid but the target does
+ *               not match the object). */
+static Texture *mglCopyImageResolveTarget(GLMContext ctx, GLuint name, GLenum target, GLenum *err_out)
+{
+	if (!ctx || name == 0) {
+		if (err_out) *err_out = GL_INVALID_VALUE;
+		return NULL;
+	}
+
+	if (target == GL_RENDERBUFFER) {
+		Renderbuffer *rbo = findRenderbuffer(ctx, name);
+		if (!rbo) {
+			/* Could be a texture name used with GL_RENDERBUFFER target,
+			 * which is a target mismatch (INVALID_ENUM). */
+			Texture *tex = findTexture(ctx, name);
+			if (err_out) *err_out = tex ? GL_INVALID_ENUM : GL_INVALID_VALUE;
+			return NULL;
+		}
+		if (!rbo->tex) {
+			if (err_out) *err_out = GL_INVALID_VALUE;
+			return NULL;
+		}
+		if (err_out) *err_out = GL_NO_ERROR;
+		return rbo->tex;
+	}
+
+	Texture *tex = findTexture(ctx, name);
+	if (!tex) {
+		/* Not a texture name.  For non-RENDERBUFFER targets, a name that
+		 * doesn't correspond to any texture object is INVALID_VALUE. */
+		if (err_out) *err_out = GL_INVALID_VALUE;
+		return NULL;
+	}
+
+	/* For real texture objects, the target must match what was bound
+	 * at creation time.  Cube-map face targets (GL_TEXTURE_CUBE_MAP_*)
+	 * are accepted by the GL spec as aliases of GL_TEXTURE_CUBE_MAP. */
+	if (tex->target == GL_TEXTURE_CUBE_MAP) {
+		switch (target) {
+			case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
+			case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
+			case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
+			case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
+			case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
+			case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
+			case GL_TEXTURE_CUBE_MAP:
+				if (err_out) *err_out = GL_NO_ERROR;
+				return tex;
+			default:
+				if (err_out) *err_out = GL_INVALID_ENUM;
+				return NULL;
+		}
+	}
+
+	if (tex->target != target) {
+		if (err_out) *err_out = GL_INVALID_ENUM;
+		return NULL;
+	}
+
+	if (err_out) *err_out = GL_NO_ERROR;
+	return tex;
+}
+
+/* Check if a target is valid for CopyImageSubData.  Returns true for
+ * targets that can be used with CopyImageSubData, false for targets
+ * like GL_TEXTURE_BUFFER, GL_PROXY_*, and individual cube-map face
+ * targets (which must be expressed as GL_TEXTURE_CUBE_MAP). */
+static bool mglCopyImageIsValidTarget(GLenum target)
+{
+	switch (target) {
+		case GL_RENDERBUFFER:
+		case GL_TEXTURE_1D:
+		case GL_TEXTURE_1D_ARRAY:
+		case GL_TEXTURE_2D:
+		case GL_TEXTURE_2D_ARRAY:
+		case GL_TEXTURE_2D_MULTISAMPLE:
+		case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+		case GL_TEXTURE_3D:
+		case GL_TEXTURE_CUBE_MAP:
+		case GL_TEXTURE_CUBE_MAP_ARRAY:
+		case GL_TEXTURE_RECTANGLE:
+			return true;
+		default:
+			return false;
+	}
+}
+
+/* Return the effective size in bytes of an internal format for
+ * CopyImageSubData compatibility checking.
+ *
+ * For uncompressed formats this is the pixel size; for compressed
+ * formats it is the block size (bytes per compressed block).  A return
+ * value of 0 means the size could not be determined. */
+static GLuint mglCopyImageFormatSize(GLenum internalformat)
+{
+	GLuint pixel_size = sizeForInternalFormat(internalformat, 0, 0);
+	if (pixel_size > 0) {
+		return pixel_size;
+	}
+
+	/* Compressed formats — return the block size. */
+	switch (internalformat) {
+		case GL_COMPRESSED_RED:
+		case GL_COMPRESSED_SRGB:
+		case GL_COMPRESSED_RED_RGTC1:
+		case GL_COMPRESSED_SIGNED_RED_RGTC1:
+		case GL_COMPRESSED_RGB8_ETC2:
+		case GL_COMPRESSED_SRGB8_ETC2:
+		case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+		case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+		case GL_COMPRESSED_R11_EAC:
+		case GL_COMPRESSED_SIGNED_R11_EAC:
+			return 8;
+		case GL_COMPRESSED_RG:
+		case GL_COMPRESSED_RGBA:
+		case GL_COMPRESSED_SRGB_ALPHA:
+		case GL_COMPRESSED_RG_RGTC2:
+		case GL_COMPRESSED_SIGNED_RG_RGTC2:
+		case GL_COMPRESSED_RGBA_BPTC_UNORM:
+		case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+		case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+		case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+		case GL_COMPRESSED_RGBA8_ETC2_EAC:
+		case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+		case GL_COMPRESSED_RG11_EAC:
+		case GL_COMPRESSED_SIGNED_RG11_EAC:
+			return 16;
+		default:
+			return 0;
+	}
+}
+
+/* Return the block width and height for a compressed format.
+ * Returns true if the format is compressed, false otherwise. */
+static bool mglCopyImageCompressedBlockDims(GLenum internalformat, GLuint *bw, GLuint *bh)
+{
+	switch (internalformat) {
+		case GL_COMPRESSED_RED:
+		case GL_COMPRESSED_SRGB:
+		case GL_COMPRESSED_RED_RGTC1:
+		case GL_COMPRESSED_SIGNED_RED_RGTC1:
+		case GL_COMPRESSED_RGB8_ETC2:
+		case GL_COMPRESSED_SRGB8_ETC2:
+		case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+		case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+		case GL_COMPRESSED_R11_EAC:
+		case GL_COMPRESSED_SIGNED_R11_EAC:
+		case GL_COMPRESSED_RG:
+		case GL_COMPRESSED_RGBA:
+		case GL_COMPRESSED_SRGB_ALPHA:
+		case GL_COMPRESSED_RG_RGTC2:
+		case GL_COMPRESSED_SIGNED_RG_RGTC2:
+		case GL_COMPRESSED_RGBA_BPTC_UNORM:
+		case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+		case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+		case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+		case GL_COMPRESSED_RGBA8_ETC2_EAC:
+		case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+		case GL_COMPRESSED_RG11_EAC:
+		case GL_COMPRESSED_SIGNED_RG11_EAC:
+			if (bw) *bw = 4;
+			if (bh) *bh = 4;
+			return true;
+		default:
+			if (bw) *bw = 1;
+			if (bh) *bh = 1;
+			return false;
+	}
+}
+
 void mglCopyImageSubData(GLMContext ctx, GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth)
 {
-	fprintf(stderr, "MGL: glCopyImageSubData src=%u dst=%u %dx%dx%d\n",
-	        srcName, dstName, srcWidth, srcHeight, srcDepth);
-	
-	// Find source and destination textures
-	Texture *srcTex = findTexture(ctx, srcName);
-	Texture *dstTex = findTexture(ctx, dstName);
-	
-	if (!srcTex || !dstTex) {
-		fprintf(stderr, "MGL ERROR: CopyImageSubData - texture not found src=%p dst=%p\n",
-		        srcTex, dstTex);
+	/* Validate target enums first — invalid targets produce GL_INVALID_ENUM. */
+	if (!mglCopyImageIsValidTarget(srcTarget) ||
+	    !mglCopyImageIsValidTarget(dstTarget)) {
+		ERROR_RETURN(GL_INVALID_ENUM);
 		return;
 	}
 
+	/* Validate texture names */
+	if (srcName == 0 || dstName == 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	/* Resolve source and destination textures (renderbuffers map to
+	 * their internal Texture). */
+	GLenum src_err = GL_NO_ERROR;
+	GLenum dst_err = GL_NO_ERROR;
+	Texture *srcTex = mglCopyImageResolveTarget(ctx, srcName, srcTarget, &src_err);
+	Texture *dstTex = mglCopyImageResolveTarget(ctx, dstName, dstTarget, &dst_err);
+
+	if (!srcTex || !dstTex) {
+		/* Prefer INVALID_ENUM over INVALID_VALUE when the name was valid
+		 * but the target did not match. */
+		GLenum err = GL_INVALID_VALUE;
+		if (src_err == GL_INVALID_ENUM || dst_err == GL_INVALID_ENUM)
+			err = GL_INVALID_ENUM;
+		ERROR_RETURN(err);
+		return;
+	}
+
+	/* Validate width/height/depth are non-negative */
+	if (srcWidth < 0 || srcHeight < 0 || srcDepth < 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	/* Renderbuffers only have level 0 and are 2D. */
+	if (srcTarget == GL_RENDERBUFFER && srcLevel != 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (dstTarget == GL_RENDERBUFFER && dstLevel != 0) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	/* Validate mip levels exist */
 	if (!mglCopyImageTextureLevelExists(srcTex, srcLevel) ||
 	    !mglCopyImageTextureLevelExists(dstTex, dstLevel)) {
-		fprintf(stderr,
-		        "MGL ERROR: CopyImageSubData - undefined mip level src=%d/%u dst=%d/%u\n",
-		        srcLevel, srcTex->mipmap_levels, dstLevel, dstTex->mipmap_levels);
 		ERROR_RETURN(GL_INVALID_VALUE);
-	}
-	
-	if (!srcTex->mtl_data || !dstTex->mtl_data) {
-		fprintf(stderr, "MGL ERROR: CopyImageSubData - no Metal data src=%p dst=%p\n",
-		        srcTex->mtl_data, dstTex->mtl_data);
 		return;
+	}
+
+	/* Validate texture completeness — GL spec requires both textures to
+	 * be texture complete or mipmap complete for CopyImageSubData. */
+	{
+		bool src_complete = mglCopyImageIsTextureComplete(srcTex, srcTarget);
+		bool dst_complete = mglCopyImageIsTextureComplete(dstTex, dstTarget);
+		if (!src_complete || !dst_complete) {
+			ERROR_RETURN(GL_INVALID_OPERATION);
+			return;
+		}
+	}
+
+	/* Validate source region is within bounds.
+	 *
+	 * For array textures (GL_TEXTURE_1D_ARRAY, GL_TEXTURE_2D_ARRAY),
+	 * the array size dimension must NOT be scaled by mip level — only
+	 * the spatial dimensions (width, and for 2D arrays, height) are
+	 * halved at each level.  MGL stores the 1D-array size in height
+	 * and the 2D-array size in depth. */
+	{
+		GLuint src_w = srcTex->width;
+		GLuint src_h = srcTex->height;
+		GLuint src_d = srcTex->depth;
+		bool src_is_2d_array = (srcTarget == GL_TEXTURE_2D_ARRAY);
+		bool src_is_1d_array = (srcTarget == GL_TEXTURE_1D_ARRAY);
+		if (srcLevel > 0) {
+			src_w >>= srcLevel;
+			if (!src_is_1d_array)
+				src_h >>= srcLevel;
+			if (!src_is_2d_array)
+				src_d >>= srcLevel;
+			if (src_w == 0) src_w = 1;
+			if (src_h == 0) src_h = 1;
+			if (src_d == 0) src_d = 1;
+		}
+		if (srcTarget == GL_TEXTURE_CUBE_MAP) {
+			src_d = 6;
+		}
+		if (srcTarget == GL_RENDERBUFFER) {
+			src_d = 1;
+		}
+		/* For 1D array textures, MGL stores the array size in height.
+		 * CopyImageSubData interprets srcY as the texel y coordinate
+		 * (must be 0 for 1D) and srcZ as the layer index. */
+		if (src_is_1d_array) {
+			src_d = src_h;
+			src_h = 1;
+		}
+		if (srcTarget == GL_TEXTURE_1D) {
+			src_h = 1;
+		}
+		if ((GLint)src_w < srcX + srcWidth ||
+		    (GLint)src_h < srcY + srcHeight ||
+		    (GLint)src_d < srcZ + srcDepth) {
+			ERROR_RETURN(GL_INVALID_VALUE);
+			return;
+		}
+	}
+
+	/* Validate destination region is within bounds */
+	{
+		GLuint dst_w = dstTex->width;
+		GLuint dst_h = dstTex->height;
+		GLuint dst_d = dstTex->depth;
+		bool dst_is_2d_array = (dstTarget == GL_TEXTURE_2D_ARRAY);
+		bool dst_is_1d_array = (dstTarget == GL_TEXTURE_1D_ARRAY);
+		if (dstLevel > 0) {
+			dst_w >>= dstLevel;
+			if (!dst_is_1d_array)
+				dst_h >>= dstLevel;
+			if (!dst_is_2d_array)
+				dst_d >>= dstLevel;
+			if (dst_w == 0) dst_w = 1;
+			if (dst_h == 0) dst_h = 1;
+			if (dst_d == 0) dst_d = 1;
+		}
+		if (dstTarget == GL_TEXTURE_CUBE_MAP) {
+			dst_d = 6;
+		}
+		if (dstTarget == GL_RENDERBUFFER) {
+			dst_d = 1;
+		}
+		if (dst_is_1d_array) {
+			dst_d = dst_h;
+			dst_h = 1;
+		}
+		if (dstTarget == GL_TEXTURE_1D) {
+			dst_h = 1;
+		}
+		if ((GLint)dst_w < dstX + srcWidth ||
+		    (GLint)dst_h < dstY + srcHeight ||
+		    (GLint)dst_d < dstZ + srcDepth) {
+			ERROR_RETURN(GL_INVALID_VALUE);
+			return;
+		}
+	}
+
+	/* Validate compressed format alignment — for compressed formats,
+	 * srcX, srcY, srcWidth, srcHeight must be multiples of the block
+	 * size.  Same for destination coordinates.
+	 *
+	 * Use compressed_internalformat (the original compressed format)
+	 * when available, because MGL remaps compressed internalformats to
+	 * their uncompressed equivalents for storage. */
+	{
+		GLuint src_bw, src_bh, dst_bw, dst_bh;
+		GLenum src_fmt = srcTex->compressed_internalformat ? srcTex->compressed_internalformat : srcTex->internalformat;
+		GLenum dst_fmt = dstTex->compressed_internalformat ? dstTex->compressed_internalformat : dstTex->internalformat;
+		bool src_compressed = mglCopyImageCompressedBlockDims(src_fmt, &src_bw, &src_bh);
+		bool dst_compressed = mglCopyImageCompressedBlockDims(dst_fmt, &dst_bw, &dst_bh);
+
+		if (src_compressed) {
+			if ((srcX % (GLint)src_bw) != 0 || (srcY % (GLint)src_bh) != 0 ||
+			    (srcWidth % (GLsizei)src_bw) != 0 || (srcHeight % (GLsizei)src_bh) != 0) {
+				ERROR_RETURN(GL_INVALID_VALUE);
+				return;
+			}
+		}
+		if (dst_compressed) {
+			if ((dstX % (GLint)dst_bw) != 0 || (dstY % (GLint)dst_bh) != 0 ||
+			    (srcWidth % (GLsizei)dst_bw) != 0 || (srcHeight % (GLsizei)dst_bh) != 0) {
+				ERROR_RETURN(GL_INVALID_VALUE);
+				return;
+			}
+		}
+	}
+
+	/* Validate format compatibility — GL 4.6 spec requires that source
+	 * and destination have the same effective pixel size (bytes per
+	 * pixel for uncompressed formats, bytes per block for compressed
+	 * formats).  Identical internal formats are always compatible.
+	 *
+	 * Use compressed_internalformat when available so that a texture
+	 * created with a compressed internalformat is compared by its block
+	 * size, not the remapped uncompressed storage format. */
+	{
+		GLenum src_fmt = srcTex->compressed_internalformat ? srcTex->compressed_internalformat : srcTex->internalformat;
+		GLenum dst_fmt = dstTex->compressed_internalformat ? dstTex->compressed_internalformat : dstTex->internalformat;
+		if (src_fmt != dst_fmt) {
+			GLuint src_size = mglCopyImageFormatSize(src_fmt);
+			GLuint dst_size = mglCopyImageFormatSize(dst_fmt);
+			if (src_size == 0 || dst_size == 0 || src_size != dst_size) {
+				ERROR_RETURN(GL_INVALID_OPERATION);
+				return;
+			}
+		}
+	}
+
+	/* Validate multisample compatibility — mixing multisampled and
+	 * non-multisampled targets is not allowed.  Different sample counts
+	 * between two multisampled textures are permitted by the spec. */
+	{
+		bool src_ms = (srcTarget == GL_TEXTURE_2D_MULTISAMPLE ||
+		               srcTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
+		bool dst_ms = (dstTarget == GL_TEXTURE_2D_MULTISAMPLE ||
+		               dstTarget == GL_TEXTURE_2D_MULTISAMPLE_ARRAY);
+		if (src_ms != dst_ms) {
+			ERROR_RETURN(GL_INVALID_OPERATION);
+			return;
+		}
 	}
 
 	if (!ctx->mtl_funcs.mtlCopyImageSubData) {
-		fprintf(stderr, "MGL WARNING: CopyImageSubData backend missing; treating as no-op\n");
 		return;
 	}
-	
+
 	// Use Metal blit to copy texture regions
 	ctx->mtl_funcs.mtlCopyImageSubData(ctx, srcTex, srcLevel, srcX, srcY, srcZ,
 	                                    dstTex, dstLevel, dstX, dstY, dstZ,
@@ -2181,6 +2632,11 @@ void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bu
 		case GL_ATOMIC_COUNTER_BUFFER_REFERENCED_BY_COMPUTE_SHADER:
 			*params = referenced_by_stage[_COMPUTE_SHADER] ? GL_TRUE : GL_FALSE;
 			break;
+		case GL_ATOMIC_COUNTER_BUFFER_BINDING:
+			/* The atomic-counter buffer's GL binding point is its
+			 * layout(binding=) value; <bufferIndex> IS that binding. */
+			*params = (GLint)bufferIndex;
+			break;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);
 			break;
@@ -2363,11 +2819,51 @@ void mglGetMultisamplefv(GLMContext ctx, GLenum pname, GLuint index, GLfloat *va
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
-	
-	// Metal uses fixed sample positions based on sample count
-	// Return reasonable default positions (center for simplicity)
-	val[0] = 0.5f;
-	val[1] = 0.5f;
+	if (!val)
+		return;
+
+	/* Metal's standard sample positions, indexed by sample count and then
+	 * by sample index.  These must match exactly what the MSL built-in
+	 * get_sample_position() returns in the shader, so the CPU-side query
+	 * (glGetMultisamplefv) and the GPU-side gl_SamplePosition agree. */
+	GLsizei samples = 1;
+	if (ctx && ctx->state.framebuffer) {
+		Framebuffer *fbo = ctx->state.framebuffer;
+		GLint sc = (GLint)fbo->default_samples;
+		if (sc <= 1) {
+			FBOAttachment *a = &fbo->color_attachments[0];
+			if (a && a->texture && a->buf.tex) {
+				sc = (GLint)((Texture *)a->buf.tex)->samples;
+			}
+		}
+		if (sc > 1)
+			samples = sc;
+	}
+
+	static const GLfloat s_pos_2[2][2]  = { {0.25f, 0.25f}, {0.75f, 0.75f} };
+	static const GLfloat s_pos_4[4][2]  = { {0.375f, 0.125f}, {0.875f, 0.375f},
+	                                        {0.125f, 0.875f}, {0.625f, 0.625f} };
+	/* 8x and 16x Metal standard positions for completeness. */
+	static const GLfloat s_pos_8[8][2]  = {
+		{0.5625f, 0.3125f}, {0.4375f, 0.6875f}, {0.8125f, 0.5625f}, {0.3125f, 0.1875f},
+		{0.1875f, 0.8125f}, {0.0625f, 0.4375f}, {0.6875f, 0.9375f}, {0.9375f, 0.0625f} };
+
+	if (samples == 2 && index < 2) {
+		val[0] = s_pos_2[index][0];
+		val[1] = s_pos_2[index][1];
+	} else if (samples == 4 && index < 4) {
+		val[0] = s_pos_4[index][0];
+		val[1] = s_pos_4[index][1];
+	} else if (samples == 8 && index < 8) {
+		val[0] = s_pos_8[index][0];
+		val[1] = s_pos_8[index][1];
+	} else if (index == 0) {
+		/* 1x or out-of-range: center. */
+		val[0] = 0.5f;
+		val[1] = 0.5f;
+	} else {
+		STATE(error) = GL_INVALID_VALUE;
+	}
 }
 
 void mglGetObjectLabel(GLMContext ctx, GLenum identifier, GLuint name, GLsizei bufSize, GLsizei *length, GLchar *label)
@@ -2452,7 +2948,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 				break;
 			}
 
-			GLint max_len = 1;
+			GLint max_len = 0;
 			for (int t = 0; t < res_type_count; t++)
 			{
 				int res_type = res_types[t];
@@ -3812,8 +4308,8 @@ void mglResumeTransformFeedback(GLMContext ctx)
 
 void mglSampleMaski(GLMContext ctx, GLuint maskNumber, GLbitfield mask)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	ERROR_CHECK_RETURN(maskNumber < ctx->state.var.max_sample_mask_words, GL_INVALID_VALUE);
+	ctx->state.var.sample_mask_value = mask;
 }
 
 void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *v)

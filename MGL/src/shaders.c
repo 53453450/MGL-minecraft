@@ -755,13 +755,271 @@ static void mgl_downgrade_derivative_control_intrinsics(char *src)
     mgl_replace_glsl_identifier_with_shorter(src, "fwidthCoarse", "fwidth");
 }
 
-static const glslang_resource_t *mgl_glslang_resource(void)
+/* In-place replacement of an identifier with another (possibly longer) name.
+ * Whole-word match; skips member access (foo.bar) so built-in block members
+ * are left alone. Grows the buffer in place if replacement is longer. */
+static void mgl_replace_identifier(char *src, size_t src_capacity,
+                                   const char *needle, const char *replacement)
+{
+    size_t needle_len;
+    size_t replacement_len;
+    long diff;
+    char *cursor;
+
+    if (!src || !needle || !replacement || src_capacity == 0) {
+        return;
+    }
+
+    needle_len = strlen(needle);
+    replacement_len = strlen(replacement);
+    if (needle_len == 0) {
+        return;
+    }
+
+    diff = (long)replacement_len - (long)needle_len;
+
+    cursor = src;
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        int before = cursor == src ? 0 : cursor[-1];
+        int after = cursor[needle_len];
+        if (mgl_is_identifier_char(before) || mgl_is_identifier_char(after)) {
+            cursor += needle_len;
+            continue;
+        }
+        if (before == '.') {
+            cursor += needle_len;
+            continue;
+        }
+
+        if (diff > 0) {
+            size_t tail_len = strlen(cursor + needle_len);
+            size_t used = (size_t)(cursor - src) + needle_len + tail_len + 1;
+            if (used + (size_t)diff > src_capacity) {
+                cursor += needle_len;
+                continue;
+            }
+            memmove(cursor + replacement_len,
+                    cursor + needle_len,
+                    tail_len + 1);
+        } else if (diff < 0) {
+            size_t tail_len = strlen(cursor + needle_len);
+            memmove(cursor + replacement_len,
+                    cursor + needle_len,
+                    tail_len + 1);
+        }
+
+        memcpy(cursor, replacement, replacement_len);
+        cursor += replacement_len;
+    }
+}
+
+/* Remove a `#extension NAME : ...` directive (blanked to preserve line numbers). */
+static bool mgl_strip_extension(char *src, const char *ext_name)
+{
+    if (!src || !ext_name || !*ext_name) {
+        return false;
+    }
+    bool found = false;
+    char *cursor = src;
+    size_t ext_len = strlen(ext_name);
+
+    while ((cursor = strstr(cursor, "#extension")) != NULL) {
+        char *line_start = cursor;
+        char *p = cursor + 10;
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (strncmp(p, ext_name, ext_len) == 0) {
+            char next = p[ext_len];
+            if (next == '\0' || isspace((unsigned char)next) || next == ':') {
+                char *line_end = strchr(line_start, '\n');
+                if (line_end) {
+                    memset(line_start, ' ', (size_t)(line_end - line_start));
+                    cursor = line_end + 1;
+                } else {
+                    memset(line_start, ' ', strlen(line_start));
+                    cursor = line_start + strlen(line_start);
+                }
+                found = true;
+                continue;
+            }
+        }
+        char *line_end = strchr(cursor, '\n');
+        if (line_end) {
+            cursor = line_end + 1;
+        } else {
+            break;
+        }
+    }
+    return found;
+}
+
+/* Neutralise `#ifndef macro_name` by replacing with `#if 0`. */
+static void mgl_neutralise_ifndef(char *src, const char *macro_name)
+{
+    if (!src || !macro_name || !*macro_name) {
+        return;
+    }
+    char pattern[128];
+    snprintf(pattern, sizeof(pattern), "#ifndef %s", macro_name);
+    char *p = src;
+    while ((p = strstr(p, pattern)) != NULL) {
+        memset(p, ' ', strlen(pattern));
+        memcpy(p, "#if 0", 5);
+        p += strlen(pattern);
+    }
+}
+
+/* Neutralise `#if !macro_name` / `#if ! macro_name` guards by replacing with
+ * `#if 0`.  After stripping an #extension directive, the macro is no longer
+ * defined, so a `#if !MACRO` guard would take the (wrong) "true" branch and
+ * surface a deliberately-broken #error/message.  Blank to the same length so
+ * column numbers in any subsequent compile diagnostics are preserved. */
+static void mgl_neutralise_if_not(char *src, const char *macro_name)
+{
+    if (!src || !macro_name || !*macro_name) {
+        return;
+    }
+    /* Build "#if !" then optional spaces then the macro name (whole word). */
+    char prefix[160];
+    int n = snprintf(prefix, sizeof(prefix), "#if !");
+    if (n <= 0 || (size_t)n >= sizeof(prefix)) {
+        return;
+    }
+    char *p = src;
+    while ((p = strstr(p, prefix)) != NULL) {
+        /* Skip spaces between '!' and the macro name. */
+        char *q = p + n;
+        while (*q == ' ' || *q == '\t') {
+            q++;
+        }
+        /* Whole-word match of macro_name. */
+        size_t mlen = strlen(macro_name);
+        if (strncmp(q, macro_name, mlen) != 0) {
+            p += n;
+            continue;
+        }
+        /* The char after the macro must not be an identifier char (else we
+         * matched a prefix of a longer name). */
+        char after = q[mlen];
+        if ((after >= 'A' && after <= 'Z') ||
+            (after >= 'a' && after <= 'z') ||
+            (after >= '0' && after <= '9') ||
+            after == '_') {
+            p += n;
+            continue;
+        }
+        /* Blank the matched region ("#if !MACRO") and write "#if 0". */
+        size_t region = (size_t)(q + mlen - p);
+        memset(p, ' ', region);
+        memcpy(p, "#if 0", 5);
+        p += region;
+    }
+}
+
+static void mgl_upgrade_version_at_least(char *src, int min_version)
+{
+    if (!src) {
+        return;
+    }
+    char *version_line = strstr(src, "#version");
+    if (!version_line) {
+        return;
+    }
+    int version = 0;
+    char profile[32] = {0};
+    if (sscanf(version_line, "#version %d %31s", &version, profile) < 1) {
+        return;
+    }
+    if (version >= min_version) {
+        return;
+    }
+    char *newline = strchr(version_line, '\n');
+    if (!newline) {
+        return;
+    }
+    bool is_es = (profile[0] != '\0' && strcmp(profile, "es") == 0);
+    char replacement[64];
+    snprintf(replacement, sizeof(replacement), "#version %d%s",
+             min_version, is_es ? " es" : " core");
+    size_t old_len = (size_t)(newline - version_line);
+    size_t new_len = strlen(replacement);
+    if (new_len <= old_len) {
+        memset(version_line, ' ', old_len);
+        memcpy(version_line, replacement, new_len);
+    } else {
+        size_t rest = strlen(newline);
+        memmove(version_line + new_len, newline, rest + 1);
+        memcpy(version_line, replacement, new_len);
+    }
+}
+
+static void mgl_inject_after_version(char *src, size_t src_capacity,
+                                      const char *text,
+                                      bool skip_preprocessor)
+{
+    if (!src || !text || src_capacity == 0) {
+        return;
+    }
+
+    size_t text_len = strlen(text);
+    if (text_len == 0) {
+        return;
+    }
+
+    size_t src_len = strlen(src);
+    if (src_len + text_len + 1 > src_capacity) {
+        return;
+    }
+
+    char *version_line = strstr(src, "#version");
+    char *insert_point;
+    if (version_line) {
+        char *newline = strchr(version_line, '\n');
+        if (newline) {
+            insert_point = newline + 1;
+        } else {
+            insert_point = version_line + strlen(version_line);
+        }
+    } else {
+        insert_point = src;
+    }
+
+    if (skip_preprocessor) {
+        while (*insert_point) {
+            char *line_start = insert_point;
+            char *p = line_start;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            if (*p == '#' || *p == '\n' || *p == '\0') {
+                char *nl = strchr(line_start, '\n');
+                if (nl) {
+                    insert_point = nl + 1;
+                } else {
+                    insert_point = line_start + strlen(line_start);
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+    }
+
+    size_t tail_len = strlen(insert_point);
+    memmove(insert_point + text_len, insert_point, tail_len + 1);
+    memcpy(insert_point, text, text_len);
+}
+
+static const glslang_resource_t *mgl_glslang_resource(GLMContext ctx)
 {
     static glslang_resource_t resource;
     static bool initialized = false;
 
     if (!initialized) {
         resource = *glslang_default_resource();
+        /* Align glslang compile-time resource limits with the values MGL
+         * reports via glGetIntegerv so shader builtins (gl_Max*) agree. */
         resource.max_atomic_counter_bindings = MAX_BINDABLE_BUFFERS;
         resource.max_compute_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
         resource.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
@@ -778,6 +1036,19 @@ static const glslang_resource_t *mgl_glslang_resource(void)
         resource.max_fragment_atomic_counters = 1024;
         resource.max_combined_atomic_counters = 1024;
         initialized = true;
+    }
+
+    /* Apply per-context limits on every call so gl_Max* builtins track the
+     * values reported by glGetIntegerv (e.g. gl_MaxCullDistances). */
+    if (ctx) {
+        resource.max_clip_distances = ctx->state.var.max_clip_distances;
+        if (ctx->state.var.max_cull_distances) {
+            resource.max_cull_distances = ctx->state.var.max_cull_distances;
+        }
+        if (ctx->state.var.max_combined_clip_and_cull_distances) {
+            resource.max_combined_clip_and_cull_distances =
+                ctx->state.var.max_combined_clip_and_cull_distances;
+        }
     }
 
     return &resource;
@@ -862,6 +1133,27 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         }
     }
 
+    /* Translate ES GLSL versions to desktop GLSL equivalents.
+     * glslang's OpenGL client does not fully support ES profile shaders
+     * with SPIR-V output, so we upgrade ES sources to the equivalent
+     * desktop version and strip ES-only extension directives. */
+    bool es_translated = false;
+    if (is_es_profile) {
+        es_translated = true;
+        int desktop_version = 450;
+        if (glsl_version >= 320) {
+            desktop_version = 460;
+        } else if (glsl_version >= 310) {
+            desktop_version = 450;
+        } else if (glsl_version >= 300) {
+            desktop_version = 330;
+        } else {
+            desktop_version = 330;
+        }
+        glsl_version = desktop_version;
+        is_es_profile = false;
+    }
+
     /* Set client_version to match GLSL version for SPIR-V targeting
      * This prevents "forced to be (450, core)" error when using GLSL 330 shaders
      * Must be set AFTER version detection above
@@ -937,6 +1229,95 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         }
         mgl_downgrade_derivative_control_intrinsics(modified_src);
 
+        /* GL_ARB_cull_distance is commented out in glslang's Versions.h,
+         * so it is not recognized.  It is core in GLSL 4.50, so strip the
+         * directive and upgrade the shader version to 4.50. */
+        if (mgl_strip_extension(modified_src, "GL_ARB_cull_distance")) {
+            mgl_upgrade_version_at_least(modified_src, 450);
+            if (glsl_version < 450) {
+                glsl_version = 450;
+            }
+            input->client_version = GLSLANG_TARGET_OPENGL_450;
+            /* Shaders may guard against the extension being absent with
+             * #ifndef GL_ARB_cull_distance / #error / #endif.  Since we
+             * stripped the #extension directive, the macro is no longer
+             * defined and the #error would fire.  glslang reserves names
+             * beginning with "GL_" so we cannot #define it ourselves.
+             * Instead, neutralise the #ifndef so the guard never triggers. */
+            mgl_neutralise_ifndef(modified_src, "GL_ARB_cull_distance");
+        }
+
+        /* Metal does not support gl_CullDistance as a built-in.  SPIRV-Cross
+         * generates incorrect Metal code for gl_CullDistance arrays (it
+         * flattens them into individual members but still references the
+         * array form).  Replace gl_CullDistance with a regular user-defined
+         * output/inout variable so SPIRV-Cross treats it as a normal
+         * varying instead of a built-in.  Cull distance functionality will
+         * not actually cull primitives, but the shader will compile and
+         * clip distance tests will work correctly.
+         *
+         * Skip the replacement for shaders that explicitly redeclare the
+         * gl_PerVertex block (tessellation/geometry passthrough shaders).
+         * In those blocks, gl_CullDistance is a built-in member and cannot
+         * be renamed to a user-defined name without causing "block
+         * redeclaration has extra members" errors. */
+        if (modified_src && strstr(modified_src, "gl_CullDistance") &&
+            !strstr(modified_src, "gl_PerVertex")) {
+            mgl_replace_identifier(modified_src, modified_src_size, "gl_CullDistance", "mgl_CullDistance");
+
+            /* gl_CullDistance is a built-in in GLSL, implicitly declared.
+             * After renaming to mgl_CullDistance it's a user-defined
+             * variable that must be explicitly declared.  If the shader
+             * didn't redeclare gl_CullDistance (relying on the implicit
+             * built-in declaration), inject the missing declaration. */
+            if (strstr(modified_src, "mgl_CullDistance") &&
+                !strstr(modified_src, "float mgl_CullDistance[")) {
+                const char *decl = (type == GL_VERTEX_SHADER)
+                    ? "out float mgl_CullDistance[8];\n"
+                    : "in float mgl_CullDistance[8];\n";
+                mgl_inject_after_version(modified_src, modified_src_size, decl, true);
+            }
+        }
+
+        /* When translating ES shaders to desktop GLSL, strip ES-only
+         * extension directives that are already built-in in desktop GLSL. */
+        if (es_translated) {
+            static const char *es_extensions[] = {
+                "GL_OES_sample_variables",
+                "GL_OES_shader_image_atomic",
+                "GL_OES_texture_buffer",
+                "GL_OES_geometry_shader",
+                "GL_OES_gpu_shader5",
+                "GL_OES_texture_storage_multisample_2d_array",
+                "GL_OES_shader_storage_multisample_2d_array",
+                "GL_OES_EGL_image_external",
+                "GL_OES_EGL_image_external_essl3",
+                "GL_OES_standard_derivatives",
+                "GL_OES_texture_3D",
+                "GL_EXT_shader_io_blocks",
+                "GL_EXT_geometry_shader",
+                "GL_EXT_gpu_shader5",
+                "GL_EXT_texture_buffer",
+                "GL_EXT_primitive_bounding_box",
+                "GL_EXT_blend_minmax",
+                "GL_ANDROID_extension_pack_es31a",
+                "GL_NV_shader_noperspective_interpolation",
+                NULL
+            };
+            for (int i = 0; es_extensions[i]; i++) {
+                if (mgl_strip_extension(modified_src, es_extensions[i])) {
+                    /* After stripping the #extension directive the macro is
+                     * no longer defined, so any `#ifndef` / `#if !` guard
+                     * that tests for the extension would take the wrong
+                     * branch and surface a deliberately-broken #error.
+                     * Neutralise both guard forms, exactly as the
+                     * GL_ARB_cull_distance path does. */
+                    mgl_neutralise_ifndef(modified_src, es_extensions[i]);
+                    mgl_neutralise_if_not(modified_src, es_extensions[i]);
+                }
+            }
+        }
+
         if (!is_es_profile && strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
             glsl_version = 420;
         }
@@ -951,7 +1332,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
      * This avoids forcing explicit layout(binding=...) in vanilla MC GLSL 330.
      */
     input->messages = GLSLANG_MSG_RELAXED_ERRORS_BIT;
-    input->resource = mgl_glslang_resource();
+    input->resource = mgl_glslang_resource(ctx);
 
     input->force_default_version_and_profile = 0;
 }

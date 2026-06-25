@@ -1060,6 +1060,31 @@ static GLboolean mglFramebufferAttachmentHasStorage(GLMContext ctx, FBOAttachmen
            level->depth > 0u;
 }
 
+/* Returns the GL internalformat of the texture level backing `att`, or 0 if
+ * the attachment has no backing texture.  Used for renderability checks. */
+static GLint mglFramebufferAttachmentInternalFormat(GLMContext ctx, FBOAttachment *att)
+{
+    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
+    GLuint face = 0u;
+
+    if (!tex) {
+        return 0;
+    }
+
+    if (isCubeMapTarget(ctx, att->textarget)) {
+        face = textureIndexFromTarget(ctx, att->textarget);
+    }
+
+    if (face >= _CUBE_MAP_MAX_FACE ||
+        !tex->faces[face].levels ||
+        att->level >= tex->mipmap_levels ||
+        att->level >= tex->num_levels) {
+        return 0;
+    }
+
+    return (GLint)tex->internalformat;
+}
+
 static GLboolean mglFramebufferHasAnyAttachment(Framebuffer *fbo)
 {
     if (!fbo) {
@@ -1147,6 +1172,13 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             continue;
         }
         if (!mglFramebufferAttachmentHasStorage(ctx, &fbo->color_attachments[i])) {
+            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        }
+        /* Color attachments must use a color-renderable internal format.
+         * Non-renderable formats (SNORM, RGB-only, compressed, luminance,
+         * etc.) cause the framebuffer to be incomplete per GL 4.6 spec. */
+        GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
+        if (ifmt != 0 && !mglIsColorRenderableInternalFormat(ifmt)) {
             return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
         }
     }
@@ -1326,7 +1358,7 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
 
     tex->access = GL_READ_WRITE;
     tex->is_render_target = true;
-    
+
     ctx->state.renderbuffer->tex = tex;
 }
 

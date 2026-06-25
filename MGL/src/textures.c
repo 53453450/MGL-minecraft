@@ -27,6 +27,7 @@
 #include <execinfo.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -53,6 +54,7 @@ extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
 extern GLint mglTexLevelComponentBits(GLint internalformat, GLenum pname);
 extern GLint mglTexLevelComponentType(GLint internalformat, GLenum pname);
+extern size_t mglPixelTypeDatumBytes(GLenum type);
 
 #ifndef MGL_VERBOSE_TEXTURE_UPLOAD_LOGS
 #define MGL_VERBOSE_TEXTURE_UPLOAD_LOGS 0
@@ -179,15 +181,25 @@ typedef struct MGLTexturePackLayout_t {
     size_t required_bytes;
 } MGLTexturePackLayout;
 
+/* Custom component types for packed float formats (R11F_G11F_B10F).
+ * These don't correspond to real GL enums; they're internal markers used
+ * only by MGLCPUPixelComponent.type to select the correct float encoding
+ * in mglStoreInternalComponent / mglLoadInternalComponent. */
+#define MGL_FLOAT11  0x8FF0u
+#define MGL_FLOAT10  0x8FF1u
+
 typedef struct MGLCPUPixelComponent_t {
     GLenum type;
     GLuint bits;
     size_t offset;
+    GLuint bit_offset;
+    size_t storage_size;
 } MGLCPUPixelComponent;
 
 typedef struct MGLCPUPixelLayout_t {
     GLuint component_count;
     size_t pixel_size;
+    bool packed;
     MGLCPUPixelComponent components[4];
 } MGLCPUPixelLayout;
 
@@ -1014,7 +1026,7 @@ static bool mglComputeTexturePackLayout(GLMContext ctx,
     size_t skip_pixels_bytes = 0u;
     size_t skip_rows_bytes = 0u;
     size_t skip_images_bytes = 0u;
-    GLint skip_images = depth > 1 ? ctx->state.pack.skip_images : 0;
+    GLint skip_images = ctx->state.pack.skip_images;
     if (!mglMulSizeT((size_t)ctx->state.pack.skip_pixels, pixel_size, &skip_pixels_bytes) ||
         !mglMulSizeT((size_t)ctx->state.pack.skip_rows, layout->dst_pitch, &skip_rows_bytes) ||
         !mglMulSizeT((size_t)skip_images, layout->dst_image_size, &skip_images_bytes) ||
@@ -1096,6 +1108,155 @@ static GLenum mglTextureComponentTypePname(GLuint component)
     }
 }
 
+static bool mglPackedCPUPixelLayoutForInternalFormat(GLenum internalformat,
+                                                     size_t storage_pixel_size,
+                                                     MGLCPUPixelLayout *layout)
+{
+    if (!layout || storage_pixel_size == 0u || storage_pixel_size > sizeof(uint64_t)) {
+        return false;
+    }
+
+    size_t expected_size = sizeForInternalFormat(internalformat, 0, 0);
+    if (expected_size != storage_pixel_size) {
+        return false;
+    }
+
+    /* GL_RGB10_A2 / GL_RGB10_A2UI / GL_RGB10: Metal's RGB10A2 pixel format
+     * uses the same LSB-first bit layout as GL_UNSIGNED_INT_2_10_10_10_REV.
+     * GL_RGB10 has no alpha in the GL format but Metal stores it as RGB10A2,
+     * so include the 2-bit alpha in the layout (defaults to 1.0 on upload
+     * via mglReadExternalComponent, skipped on download for RGB formats).
+     * Build a LSB-first packed layout so CPU conversion produces the correct
+     * bit pattern for Metal. */
+    if (internalformat == GL_RGB10_A2 || internalformat == GL_RGB10_A2UI ||
+        internalformat == GL_RGB10) {
+        if (storage_pixel_size != 4u) {
+            return false;
+        }
+        memset(layout, 0, sizeof(*layout));
+        layout->pixel_size = 4u;
+        layout->packed = true;
+        /* LSB-first: R[0:9], G[10:19], B[20:29], A[30:31] */
+        GLuint bits[4] = {10u, 10u, 10u, 2u};
+        GLuint bit_offset = 0u;
+        for (GLuint i = 0u; i < 4u; i++) {
+            layout->components[i].type =
+                (internalformat == GL_RGB10_A2UI) ? GL_UNSIGNED_INT : GL_UNSIGNED_NORMALIZED;
+            layout->components[i].bits = bits[i];
+            layout->components[i].offset = 0u;
+            layout->components[i].bit_offset = bit_offset;
+            layout->components[i].storage_size = 4u;
+            bit_offset += bits[i];
+        }
+        layout->component_count = 4u;
+        return true;
+    }
+
+    /* GL_RGB4 / GL_RGB5: Metal upconverts these to RGBA8Unorm, but the CPU
+     * shadow data is stored as GL_UNSIGNED_SHORT_5_6_5 (5+6+5 = 16 bits,
+     * no unused bits).  The nominal GL bit counts (4+4+4=12 or 5+5+5=15)
+     * leave unused bits which cause the generic packed path to reject them.
+     * Use the actual 5_6_5 storage layout so CPU conversion matches what
+     * mglCreateRGBA8ExpandedUpload expects.  MSB-first: R[11:15], G[5:10],
+     * B[0:4]. */
+    if (internalformat == GL_RGB4 || internalformat == GL_RGB5) {
+        if (storage_pixel_size != 2u) {
+            return false;
+        }
+        memset(layout, 0, sizeof(*layout));
+        layout->pixel_size = 2u;
+        layout->packed = true;
+        GLuint bits[3] = {5u, 6u, 5u};
+        GLuint bit_offset = 16u;  /* MSB-first */
+        for (GLuint i = 0u; i < 3u; i++) {
+            bit_offset -= bits[i];
+            layout->components[i].type = GL_UNSIGNED_NORMALIZED;
+            layout->components[i].bits = bits[i];
+            layout->components[i].offset = 0u;
+            layout->components[i].bit_offset = bit_offset;
+            layout->components[i].storage_size = 2u;
+        }
+        layout->component_count = 3u;
+        return true;
+    }
+
+    /* GL_R11F_G11F_B10F: Metal's RG11B10Float uses the same LSB-first bit
+     * layout as GL_UNSIGNED_INT_10F_11F_11F_REV.  R and G are 11-bit floats
+     * (5-bit exp, 6-bit mantissa), B is a 10-bit float (5-bit exp, 5-bit
+     * mantissa).  All are unsigned (no sign bit).  Build a LSB-first packed
+     * layout with custom MGL_FLOAT11/MGL_FLOAT10 component types so the
+     * correct float encoding is used during CPU conversion. */
+    if (internalformat == GL_R11F_G11F_B10F) {
+        if (storage_pixel_size != 4u) {
+            return false;
+        }
+        memset(layout, 0, sizeof(*layout));
+        layout->pixel_size = 4u;
+        layout->packed = true;
+        /* LSB-first: R[0:10], G[11:21], B[22:31] */
+        GLuint bits[3] = {11u, 11u, 10u};
+        GLenum types[3] = {MGL_FLOAT11, MGL_FLOAT11, MGL_FLOAT10};
+        GLuint bit_offset = 0u;
+        for (GLuint i = 0u; i < 3u; i++) {
+            layout->components[i].type = types[i];
+            layout->components[i].bits = bits[i];
+            layout->components[i].offset = 0u;
+            layout->components[i].bit_offset = bit_offset;
+            layout->components[i].storage_size = 4u;
+            bit_offset += bits[i];
+        }
+        layout->component_count = 3u;
+        return true;
+    }
+
+    /* Only use the packed path for formats with at least one non-byte-aligned
+     * component (e.g. RGB565, RGBA4, RGB10_A2, R11F_G11F_B10F).  Formats whose
+     * components are all 8/16/32 bits (R8, RG16F, R16I, R32F, RGBA8, ...) are
+     * handled by the original path in mglBuildCPUPixelLayout which preserves
+     * the correct component type (INT, FLOAT, ...) instead of forcing
+     * UNSIGNED_NORMALIZED. */
+    bool has_non_byte_aligned = false;
+
+    GLuint total_bits = storage_pixel_size * 8u;
+    GLuint component_count = 0u;
+    for (GLuint component = 0u; component < 4u; component++) {
+        GLenum component_name = component == 0u ? GL_RED :
+                                component == 1u ? GL_GREEN :
+                                component == 2u ? GL_BLUE : GL_ALPHA;
+        GLuint bits = bitcountForInternalFormat(internalformat, component_name);
+        if (bits == 0u) {
+            continue;
+        }
+        if (bits > 32u ||
+            bits > total_bits ||
+            component_count >= 4u) {
+            return false;
+        }
+        if (bits != 8u && bits != 16u && bits != 32u) {
+            has_non_byte_aligned = true;
+        }
+        total_bits -= bits;
+        MGLCPUPixelComponent *dst = &layout->components[component_count++];
+        dst->type = GL_UNSIGNED_NORMALIZED;
+        dst->bits = bits;
+        dst->offset = 0u;
+        dst->bit_offset = total_bits;
+        dst->storage_size = storage_pixel_size;
+    }
+
+
+    if (component_count == 0u ||
+        total_bits != 0u ||
+        !has_non_byte_aligned) {
+        return false;
+    }
+
+    layout->component_count = component_count;
+    layout->pixel_size = storage_pixel_size;
+    layout->packed = true;
+    return true;
+}
+
 static bool mglBuildCPUPixelLayout(GLenum internalformat,
                                    size_t storage_pixel_size,
                                    MGLCPUPixelLayout *layout)
@@ -1104,8 +1265,42 @@ static bool mglBuildCPUPixelLayout(GLenum internalformat,
         return false;
     }
 
+    /* Compressed internalformats are stored uncompressed (see
+     * mglCompressedInternalFormatToSizedUncompressed).  Map them to their
+     * sized uncompressed equivalents so component bits/type lookup succeeds. */
+    internalformat = (GLenum)mglCompressedInternalFormatToSizedUncompressed((GLint)internalformat);
+
     memset(layout, 0, sizeof(*layout));
     layout->pixel_size = storage_pixel_size;
+
+    /* Formats that Metal upconverts to RGBA8Unorm.  These have nominal bit
+     * widths (4/5/1 bits) but Metal stores them as 8-bit per component.
+     * Build a layout matching the Metal storage (4 x 8-bit unorm) so the
+     * CPU conversion correctly scales values between the external format
+     * and the Metal storage.  The 4th component (alpha) defaults to 1.0
+     * for RGB-only formats via mglReadExternalComponent. */
+    if (storage_pixel_size == 4u &&
+        (internalformat == GL_RGB4 ||
+         internalformat == GL_RGB5 ||
+         internalformat == GL_RGBA4 ||
+         internalformat == GL_RGB5_A1 ||
+         internalformat == GL_R3_G3_B2 ||
+         internalformat == GL_RGBA2)) {
+        for (GLuint i = 0u; i < 4u; i++) {
+            MGLCPUPixelComponent *dst = &layout->components[i];
+            dst->type = GL_UNSIGNED_NORMALIZED;
+            dst->bits = 8u;
+            dst->offset = i;
+            dst->bit_offset = 0u;
+            dst->storage_size = 1u;
+        }
+        layout->component_count = 4u;
+        return true;
+    }
+
+    if (mglPackedCPUPixelLayoutForInternalFormat(internalformat, storage_pixel_size, layout)) {
+        return true;
+    }
 
     size_t offset = 0u;
     for (GLuint component = 0; component < 4u; component++) {
@@ -1130,7 +1325,28 @@ static bool mglBuildCPUPixelLayout(GLenum internalformat,
         dst->type = (GLenum)mglTexLevelComponentType((GLint)internalformat, type_pname);
         dst->bits = (GLuint)bits;
         dst->offset = offset;
+        dst->bit_offset = 0u;
+        dst->storage_size = bytes;
         offset += bytes;
+    }
+
+    /* Metal has no RGB-only pixel formats, so RGB internal formats are
+     * upconverted to RGBA.  When the GL internal format has no alpha but
+     * the storage pixel size includes space for it, add an implicit alpha
+     * component so the CPU buffer layout matches the Metal texture. */
+    if (offset < storage_pixel_size && layout->component_count > 0u &&
+        layout->component_count < 4u) {
+        size_t remaining = storage_pixel_size - offset;
+        if (remaining == 1u || remaining == 2u || remaining == 4u) {
+            MGLCPUPixelComponent *dst = &layout->components[layout->component_count++];
+            /* Use the same type as the first component (unorm/snorm/int/float). */
+            dst->type = layout->components[0].type;
+            dst->bits = (GLuint)(remaining * 8u);
+            dst->offset = offset;
+            dst->bit_offset = 0u;
+            dst->storage_size = remaining;
+            offset = storage_pixel_size;
+        }
     }
 
     return layout->component_count > 0u && offset == storage_pixel_size;
@@ -1145,6 +1361,87 @@ static bool mglExternalFormatIsInteger(GLenum format)
         case GL_BGR_INTEGER:
         case GL_RGBA_INTEGER:
         case GL_BGRA_INTEGER:
+        case 0x8d95: /* GL_GREEN_INTEGER */
+        case 0x8d96: /* GL_BLUE_INTEGER */
+        case 0x8d97: /* GL_ALPHA_INTEGER */
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Accepted pixel-transfer `format` values for the (format,type) unpack path of
+ * glTex(Sub)Image*.  Mirrors the set in verifyInternalFormatAndFormatType plus
+ * the colour-index/depth/stencil transfer formats.  Used to reject unknown
+ * formats (e.g. the smallest positive int not in this set) with GL_INVALID_ENUM.
+ */
+static bool mglIsValidPixelTransferFormat(GLenum format)
+{
+    switch (format) {
+        case GL_RED:
+        case GL_RG:
+        case GL_RGB:
+        case GL_BGR:
+        case GL_RGBA:
+        case GL_BGRA:
+        case GL_RED_INTEGER:
+        case GL_RG_INTEGER:
+        case GL_RGB_INTEGER:
+        case GL_BGR_INTEGER:
+        case GL_RGBA_INTEGER:
+        case GL_BGRA_INTEGER:
+        case GL_STENCIL_INDEX:
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_STENCIL:
+        /* Legacy (deprecated but still emitted by virglrenderer). */
+        case 0x1906: /* GL_ALPHA */
+        case 0x1909: /* GL_LUMINANCE */
+        case 0x190a: /* GL_LUMINANCE_ALPHA */
+        case 0x8000: /* GL_COLOR_INDEX (legacy) */
+        case 0x8d96: /* GL_GREEN_INTEGER */
+        case 0x8d97: /* GL_BLUE_INTEGER */
+        case 0x8d9c: /* GL_LUMINANCE_INTEGER_EXT */
+        case 0x8d9d: /* GL_LUMINANCE_ALPHA_INTEGER_EXT */
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Accepted pixel-transfer `type` values for the (format,type) unpack path.
+ * Matches the set the CTS enumerates as the valid type constants; unknown
+ * values (e.g. the smallest positive int not in this set) are rejected with
+ * GL_INVALID_ENUM before upload.
+ */
+static bool mglIsValidPixelTransferType(GLenum type)
+{
+    switch (type) {
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_HALF_FLOAT:
+        case GL_FLOAT:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_24_8:
+        case 0x8c3b: /* GL_UNSIGNED_INT_10F_11F_11F_REV */
+        case 0x8c3e: /* GL_UNSIGNED_INT_5_9_9_9_REV */
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
             return true;
         default:
             return false;
@@ -1185,6 +1482,21 @@ static bool mglInternalFormatIsDepthStencil(GLint internalformat)
         case GL_STENCIL_INDEX4:
         case GL_STENCIL_INDEX8:
         case GL_STENCIL_INDEX16:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Returns true if the internal format is a combined depth-stencil format
+ * (i.e. has both depth and stencil components).  Used by GetTexImage and
+ * ReadPixels to validate GL_DEPTH_STENCIL read format. */
+static bool mglInternalFormatIsCombinedDepthStencil(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
             return true;
         default:
             return false;
@@ -1254,6 +1566,84 @@ static double mglUnsignedMaxForBits(GLuint bits)
     return (double)((1u << bits) - 1u);
 }
 
+static uint64_t mglReadUnsignedLE(const uint8_t *src, size_t bytes)
+{
+    uint64_t value = 0u;
+    if (!src) {
+        return 0u;
+    }
+    if (bytes > sizeof(value)) {
+        bytes = sizeof(value);
+    }
+    for (size_t i = 0; i < bytes; i++) {
+        value |= ((uint64_t)src[i]) << (i * 8u);
+    }
+    return value;
+}
+
+static void mglWriteUnsignedLE(uint8_t *dst, size_t bytes, uint64_t value)
+{
+    if (!dst) {
+        return;
+    }
+    if (bytes > sizeof(value)) {
+        bytes = sizeof(value);
+    }
+    for (size_t i = 0; i < bytes; i++) {
+        dst[i] = (uint8_t)((value >> (i * 8u)) & 0xffu);
+    }
+}
+
+/* Swap bytes within each element of size element_size in a pixel buffer.
+ * Mirrors the GL_UNPACK_SWAP_BYTES / GL_PACK_SWAP_BYTES semantics: each
+ * multi-byte element datum has its bytes reversed. 1-byte elements are
+ * left untouched. */
+static void mglSwapPixelBytes(uint8_t *pixel, size_t pixel_size, size_t element_size)
+{
+    if (!pixel || element_size <= 1u || pixel_size == 0u) {
+        return;
+    }
+    size_t offset = 0u;
+    while (offset + element_size <= pixel_size) {
+        for (size_t i = 0u; i < element_size / 2u; i++) {
+            uint8_t tmp = pixel[offset + i];
+            pixel[offset + i] = pixel[offset + element_size - 1u - i];
+            pixel[offset + element_size - 1u - i] = tmp;
+        }
+        offset += element_size;
+    }
+}
+
+static double mglUnpackUnsignedFloatBits(uint32_t value, uint32_t mantissa_bits)
+{
+    if (mantissa_bits == 0u || mantissa_bits > 23u) {
+        return 0.0;
+    }
+
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = value & mantissa_mask;
+    uint32_t exponent = (value >> mantissa_bits) & 0x1fu;
+    if (exponent == 0u) {
+        double denom = (double)(1u << mantissa_bits);
+        return ((double)mantissa / denom) / 16384.0;
+    }
+    if (exponent == 31u) {
+        return 1.0;
+    }
+
+    double significand = 1.0 + ((double)mantissa / (double)(1u << mantissa_bits));
+    int exp = (int)exponent - 15;
+    while (exp > 0) {
+        significand *= 2.0;
+        exp--;
+    }
+    while (exp < 0) {
+        significand *= 0.5;
+        exp++;
+    }
+    return significand;
+}
+
 static double mglSignedMaxForBits(GLuint bits)
 {
     if (bits >= 32u) {
@@ -1273,6 +1663,119 @@ static double mglReadExternalComponent(const uint8_t *src,
     }
     if (!src) {
         return 0.0;
+    }
+
+    uint64_t packed = 0u;
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2:
+            packed = mglReadUnsignedLE(src, sizeof(uint8_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 5u) & 0x7u); return integer_format ? (double)v : (double)v / 7.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 2u) & 0x7u); return integer_format ? (double)v : (double)v / 7.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)(packed & 0x3u); return integer_format ? (double)v : (double)v / 3.0; }
+            return 1.0;
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint8_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0x7u); return integer_format ? (double)v : (double)v / 7.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 3u) & 0x7u); return integer_format ? (double)v : (double)v / 7.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 6u) & 0x3u); return integer_format ? (double)v : (double)v / 3.0; }
+            return 1.0;
+        case GL_UNSIGNED_SHORT_5_6_5:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 11u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 5u) & 0x3fu); return integer_format ? (double)v : (double)v / 63.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)(packed & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            return 1.0;
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 5u) & 0x3fu); return integer_format ? (double)v : (double)v / 63.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 11u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            return 1.0;
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 12u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 8u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 4u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)(packed & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            return 0.0;
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 4u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 8u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)((packed >> 12u) & 0xfu); return integer_format ? (double)v : (double)v / 15.0; }
+            return 0.0;
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 11u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 6u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 1u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)(packed & 0x1u); return integer_format ? (double)v : (double)v; }
+            return 0.0;
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint16_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 5u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 10u) & 0x1fu); return integer_format ? (double)v : (double)v / 31.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)((packed >> 15u) & 0x1u); return integer_format ? (double)v : (double)v; }
+            return 0.0;
+        case GL_UNSIGNED_INT_8_8_8_8:
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 24u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 16u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 8u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)(packed & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            return 0.0;
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 8u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 16u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)((packed >> 24u) & 0xffu); return integer_format ? (double)v : (double)v / 255.0; }
+            return 0.0;
+        case GL_UNSIGNED_INT_10_10_10_2:
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            if (component == 0u) { uint32_t v = (uint32_t)((packed >> 22u) & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 12u) & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 2u) & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)(packed & 0x3u); return integer_format ? (double)v : (double)v / 3.0; }
+            return 0.0;
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            if (component == 0u) { uint32_t v = (uint32_t)(packed & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 1u) { uint32_t v = (uint32_t)((packed >> 10u) & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 2u) { uint32_t v = (uint32_t)((packed >> 20u) & 0x3ffu); return integer_format ? (double)v : (double)v / 1023.0; }
+            if (component == 3u) { uint32_t v = (uint32_t)((packed >> 30u) & 0x3u); return integer_format ? (double)v : (double)v / 3.0; }
+            return 0.0;
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            if (component == 0u) return mglClampDouble(mglUnpackUnsignedFloatBits((uint32_t)(packed & 0x7ffu), 6u), 0.0, 1.0);
+            if (component == 1u) return mglClampDouble(mglUnpackUnsignedFloatBits((uint32_t)((packed >> 11u) & 0x7ffu), 6u), 0.0, 1.0);
+            if (component == 2u) return mglClampDouble(mglUnpackUnsignedFloatBits((uint32_t)((packed >> 22u) & 0x3ffu), 5u), 0.0, 1.0);
+            return 1.0;
+        case GL_UNSIGNED_INT_5_9_9_9_REV: {
+            packed = mglReadUnsignedLE(src, sizeof(uint32_t));
+            uint32_t exponent = (uint32_t)((packed >> 27u) & 0x1fu);
+            double scale = 0.0;
+            if (exponent != 0u) {
+                scale = 1.0 / 512.0;
+                int exp = (int)exponent - 15;
+                while (exp > 0) {
+                    scale *= 2.0;
+                    exp--;
+                }
+                while (exp < 0) {
+                    scale *= 0.5;
+                    exp++;
+                }
+            }
+            if (component == 0u) return mglClampDouble((double)(packed & 0x1ffu) * scale, 0.0, 1.0);
+            if (component == 1u) return mglClampDouble((double)((packed >> 9u) & 0x1ffu) * scale, 0.0, 1.0);
+            if (component == 2u) return mglClampDouble((double)((packed >> 18u) & 0x1ffu) * scale, 0.0, 1.0);
+            return 1.0;
+        }
+        default:
+            break;
     }
 
     size_t component_size = sizeForType(type);
@@ -1327,6 +1830,42 @@ static double mglReadExternalComponent(const uint8_t *src,
     }
 }
 
+/* Forward declarations for packed float conversion functions defined below. */
+static uint32_t mglFloatToFloat11(float v);
+static uint32_t mglFloatToFloat10(float v);
+
+/* Unpack an 11-bit unsigned float (UE11) to float.
+ * 5-bit exponent (bias 15), 6-bit mantissa, no sign bit. */
+static float mglUE11ToFloat(uint32_t v)
+{
+    uint32_t exponent = (v >> 6u) & 31u;
+    uint32_t mantissa = v & 63u;
+    if (exponent == 0u) {
+        if (mantissa == 0u) return 0.0f;
+        return ldexpf((float)mantissa, -24);
+    }
+    if (exponent == 31u) {
+        return mantissa ? NAN : INFINITY;
+    }
+    return ldexpf(1.0f + (float)mantissa / 64.0f, (int)exponent - 15);
+}
+
+/* Unpack a 10-bit unsigned float (UE10) to float.
+ * 5-bit exponent (bias 15), 5-bit mantissa, no sign bit. */
+static float mglUE10ToFloat(uint32_t v)
+{
+    uint32_t exponent = (v >> 5u) & 31u;
+    uint32_t mantissa = v & 31u;
+    if (exponent == 0u) {
+        if (mantissa == 0u) return 0.0f;
+        return ldexpf((float)mantissa, -24);
+    }
+    if (exponent == 31u) {
+        return mantissa ? NAN : INFINITY;
+    }
+    return ldexpf(1.0f + (float)mantissa / 32.0f, (int)exponent - 15);
+}
+
 static void mglStoreInternalComponent(uint8_t *dst,
                                       const MGLCPUPixelComponent *component,
                                       double value)
@@ -1346,7 +1885,16 @@ static void mglStoreInternalComponent(uint8_t *dst,
         case GL_UNSIGNED_NORMALIZED: {
             double maxv = mglUnsignedMaxForBits(component->bits);
             uint32_t v = (uint32_t)(mglClampDouble(value, 0.0, 1.0) * maxv + 0.5);
-            if (component->bits == 8u) {
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                packed &= ~(mask << component->bit_offset);
+                packed |= (((uint64_t)v) & mask) << component->bit_offset;
+                mglWriteUnsignedLE(p, component->storage_size, packed);
+            } else if (component->bits == 8u) {
                 uint8_t u8 = (uint8_t)v;
                 memcpy(p, &u8, sizeof(u8));
             } else if (component->bits == 16u) {
@@ -1372,8 +1920,23 @@ static void mglStoreInternalComponent(uint8_t *dst,
             break;
         }
         case GL_UNSIGNED_INT: {
-            uint32_t v = (uint32_t)mglClampDouble(value, 0.0, 4294967295.0);
-            if (component->bits == 8u) {
+            /* Clamp to the component's bit-width range, not the full 32-bit range.
+             * Per OpenGL spec, integer values must be clamped to the destination
+             * type range, not masked/truncated. */
+            double uintMax = (component->bits >= 32u) ? 4294967295.0 :
+                             (double)((1ull << component->bits) - 1ull);
+            uint32_t v = (uint32_t)mglClampDouble(value, 0.0, uintMax);
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                /* Packed layout: read-modify-write to preserve other components. */
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                packed &= ~(mask << component->bit_offset);
+                packed |= (((uint64_t)v) & mask) << component->bit_offset;
+                mglWriteUnsignedLE(p, component->storage_size, packed);
+            } else if (component->bits == 8u) {
                 uint8_t u8 = (uint8_t)v;
                 memcpy(p, &u8, sizeof(u8));
             } else if (component->bits == 16u) {
@@ -1385,8 +1948,26 @@ static void mglStoreInternalComponent(uint8_t *dst,
             break;
         }
         case GL_INT: {
-            int32_t v = (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0);
-            if (component->bits == 8u) {
+            /* Clamp to the component's bit-width range, not the full 32-bit range.
+             * Per OpenGL spec, integer values must be clamped to the destination
+             * type range, not masked/truncated. */
+            double intMax = (component->bits >= 32u) ? 2147483647.0 :
+                            (double)((1ll << (component->bits - 1u)) - 1ll);
+            double intMin = (component->bits >= 32u) ? -2147483648.0 :
+                            -(double)(1ll << (component->bits - 1u));
+            int32_t v = (int32_t)mglClampDouble(value, intMin, intMax);
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                /* Packed layout: read-modify-write to preserve other components. */
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                uint64_t uval = (uint64_t)(int64_t)v & mask;
+                packed &= ~(mask << component->bit_offset);
+                packed |= uval << component->bit_offset;
+                mglWriteUnsignedLE(p, component->storage_size, packed);
+            } else if (component->bits == 8u) {
                 int8_t s8 = (int8_t)v;
                 memcpy(p, &s8, sizeof(s8));
             } else if (component->bits == 16u) {
@@ -1395,6 +1976,24 @@ static void mglStoreInternalComponent(uint8_t *dst,
             } else {
                 memcpy(p, &v, sizeof(v));
             }
+            break;
+        }
+        case MGL_FLOAT11: {
+            uint32_t f11 = mglFloatToFloat11((float)value);
+            uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+            uint64_t mask = (1ull << component->bits) - 1ull;
+            packed &= ~(mask << component->bit_offset);
+            packed |= ((uint64_t)f11 & mask) << component->bit_offset;
+            mglWriteUnsignedLE(p, component->storage_size, packed);
+            break;
+        }
+        case MGL_FLOAT10: {
+            uint32_t f10 = mglFloatToFloat10((float)value);
+            uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+            uint64_t mask = (1ull << component->bits) - 1ull;
+            packed &= ~(mask << component->bit_offset);
+            packed |= ((uint64_t)f10 & mask) << component->bit_offset;
+            mglWriteUnsignedLE(p, component->storage_size, packed);
             break;
         }
         default:
@@ -1419,7 +2018,14 @@ static double mglLoadInternalComponent(const uint8_t *src,
         }
         case GL_UNSIGNED_NORMALIZED: {
             uint32_t v = 0u;
-            if (component->bits == 8u) {
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                v = (uint32_t)((packed >> component->bit_offset) & mask);
+            } else if (component->bits == 8u) {
                 uint8_t u8;
                 memcpy(&u8, p, sizeof(u8));
                 v = u8;
@@ -1449,7 +2055,15 @@ static double mglLoadInternalComponent(const uint8_t *src,
         }
         case GL_UNSIGNED_INT: {
             uint32_t v = 0u;
-            if (component->bits == 8u) {
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                /* Packed layout: extract component from packed word. */
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                v = (uint32_t)((packed >> component->bit_offset) & mask);
+            } else if (component->bits == 8u) {
                 uint8_t u8;
                 memcpy(&u8, p, sizeof(u8));
                 v = u8;
@@ -1464,7 +2078,20 @@ static double mglLoadInternalComponent(const uint8_t *src,
         }
         case GL_INT: {
             int32_t v = 0;
-            if (component->bits == 8u) {
+            if (component->storage_size > 0u &&
+                component->storage_size <= sizeof(uint64_t) &&
+                (component->bit_offset != 0u ||
+                 component->bits != component->storage_size * 8u)) {
+                /* Packed layout: extract component from packed word. */
+                uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+                uint64_t mask = component->bits >= 64u ? UINT64_MAX : ((1ull << component->bits) - 1ull);
+                uint32_t uval = (uint32_t)((packed >> component->bit_offset) & mask);
+                /* Sign-extend from component->bits to 32 bits. */
+                if (component->bits < 32u && (uval & (1u << (component->bits - 1u)))) {
+                    uval |= 0xFFFFFFFFu << component->bits;
+                }
+                v = (int32_t)uval;
+            } else if (component->bits == 8u) {
                 int8_t s8;
                 memcpy(&s8, p, sizeof(s8));
                 v = s8;
@@ -1477,9 +2104,170 @@ static double mglLoadInternalComponent(const uint8_t *src,
             }
             return (double)v;
         }
+        case MGL_FLOAT11: {
+            uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+            uint64_t mask = (1ull << component->bits) - 1ull;
+            uint32_t v = (uint32_t)((packed >> component->bit_offset) & mask);
+            return (double)mglUE11ToFloat(v);
+        }
+        case MGL_FLOAT10: {
+            uint64_t packed = mglReadUnsignedLE(p, component->storage_size);
+            uint64_t mask = (1ull << component->bits) - 1ull;
+            uint32_t v = (uint32_t)((packed >> component->bit_offset) & mask);
+            return (double)mglUE10ToFloat(v);
+        }
         default:
             return 0.0;
     }
+}
+
+/* Pack a float into 11-bit unsigned float (UE11) format used by
+ * GL_UNSIGNED_INT_10F_11F_11F_REV. 6-bit mantissa, 5-bit exponent. */
+static uint32_t mglFloatToFloat11(float v)
+{
+    if (v <= 0.0f) return 0u;
+    if (v >= 65024.0f) return 0x7ffu; /* max/inf */
+    /* Convert to IEEE-754 half float first, then extract mantissa/exponent */
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        /* Denormalized in float11 */
+        int shift = -14 - ieee_exp;
+        if (shift >= 11) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 6 + shift);
+        return m & 0x3fu;
+    }
+    if (ieee_exp >= 16) return 0x7ffu;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 6);
+    return (exp << 6) | mant;
+}
+
+/* Pack a float into 10-bit unsigned float (UE10) format.
+ * 5-bit mantissa, 5-bit exponent. */
+static uint32_t mglFloatToFloat10(float v)
+{
+    if (v <= 0.0f) return 0u;
+    if (v >= 64512.0f) return 0x3ffu;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 10) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 5 + shift);
+        return m & 0x1fu;
+    }
+    if (ieee_exp >= 16) return 0x3ffu;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 5);
+    return (exp << 5) | mant;
+}
+
+/* Pack a float into shared exponent format (GL_UNSIGNED_INT_5_9_9_9_REV).
+ * 9-bit mantissa per channel, 5-bit shared exponent.
+ * The value is represented as: mantissa * 2^(exponent - 24) / 512
+ * Per the GL spec, the shared exponent format uses:
+ *   value = mantissa / 512 * 2^(exponent - 15)
+ * where mantissa is 9 bits (0-511) and exponent is 5 bits (0-31). */
+static void mglFloatToSharedExp(float v, uint32_t *mantissa, uint32_t *exponent)
+{
+    if (v <= 0.0f) { *mantissa = 0; *exponent = 0; return; }
+    if (v >= 1.0f) v = 1.0f;
+    /* Convert to the shared exponent representation.
+     * value = (mantissa / 512) * 2^(exponent - 15)
+     * We want to find the smallest exponent such that mantissa fits in 9 bits.
+     * Start with exponent = 0 and increase until mantissa < 512. */
+    int e = 0;
+    /* value = mantissa * 2^(e - 15) / 512 = mantissa * 2^(e - 24) */
+    /* mantissa = value * 2^(24 - e) */
+    double m = (double)v * 8388608.0; /* v * 2^23 */
+    e = 0;
+    while (m >= 512.0 && e < 30) { m *= 0.5; e++; }
+    while (m < 256.0 && e > 0) { m *= 2.0; e--; }
+    uint32_t mi = (uint32_t)(m + 0.5);
+    if (mi > 511) { mi = 511; }
+    if (mi < 256 && e > 0) { /* keep at least 256 for precision */ }
+    *mantissa = mi;
+    *exponent = (uint32_t)e;
+}
+
+/* Pack 3 RGB floats into GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) format.
+ * All 3 mantissas share one 5-bit exponent. Implements the shared exponent
+ * algorithm from the GL spec (and matches CTS glcPackedPixelsTests
+ * unpack_UNSIGNED_INT_5_9_9_9_REV). */
+static uint32_t mglPackRGBToSharedExp(double red, double green, double blue)
+{
+    const int N     = 9;   /* mantissa bits */
+    const int B     = 15;  /* exponent bias */
+    const int E_max = 31;  /* max exponent */
+
+    /* sharedExpMax = (2^N - 1) / 2^N * 2^(E_max - B) */
+    double shared_exp_max = ((double)((1 << N) - 1) / (double)(1 << N)) *
+                            ldexp(1.0, E_max - B);
+
+    double red_c   = fmax(0.0, fmin(shared_exp_max, red));
+    double green_c = fmax(0.0, fmin(shared_exp_max, green));
+    double blue_c  = fmax(0.0, fmin(shared_exp_max, blue));
+
+    double max_c = fmax(fmax(red_c, green_c), blue_c);
+
+    double exp_p;
+    if (max_c <= 0.0) {
+        exp_p = 0.0;
+    } else {
+        /* CTS formula: exp_p = max(-B-1, floor(log2(max_c))) + 1 + B */
+        exp_p = fmax((double)(-B - 1), floor(log2(max_c))) + 1.0 + (double)B;
+    }
+
+    /* Check if max_s overflows; if so, increment exp_s.
+     * CTS: max_s = floor(max_c / 2^(exp_p - B - N) + 0.5)
+     * if max_s >= 2^N, exp_s = exp_p + 1, else exp_s = exp_p */
+    double scale_p = ldexp(1.0, (int)exp_p - B - N);
+    double max_s = floor(max_c / scale_p + 0.5);
+
+    int exp_s;
+    if (max_s >= (double)(1 << N)) {
+        exp_s = (int)exp_p + 1;
+    } else {
+        exp_s = (int)exp_p;
+    }
+    if (exp_s < 0) exp_s = 0;
+    if (exp_s > E_max) exp_s = E_max;
+
+    /* scale = 2^(exp_s - B - N) per CTS */
+    double scale = ldexp(1.0, exp_s - B - N);
+
+    uint32_t red_s   = (uint32_t)floor(red_c   / scale + 0.5);
+    uint32_t green_s = (uint32_t)floor(green_c / scale + 0.5);
+    uint32_t blue_s  = (uint32_t)floor(blue_c  / scale + 0.5);
+
+    if (red_s > 511u) red_s = 511u;
+    if (green_s > 511u) green_s = 511u;
+    if (blue_s > 511u) blue_s = 511u;
+
+    return red_s | (green_s << 9) | (blue_s << 18) | ((uint32_t)exp_s << 27);
+}
+
+/* Unpack a GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) packed value to 3 doubles.
+ * Layout: R[0:8], G[9:17], B[18:26], shared_exp[27:31].
+ * CTS: value = mantissa * 2^(exponent - B - N)  where N=9, B=15. */
+static void mglUnpackSharedExp(uint32_t packed, double *r, double *g, double *b)
+{
+    const int N = 9;
+    const int B = 15;
+    uint32_t mant_r = packed & 511u;
+    uint32_t mant_g = (packed >> 9u) & 511u;
+    uint32_t mant_b = (packed >> 18u) & 511u;
+    uint32_t exp = (packed >> 27u) & 31u;
+
+    double scale = ldexp(1.0, (int)exp - B - N);
+    *r = (double)mant_r * scale;
+    *g = (double)mant_g * scale;
+    *b = (double)mant_b * scale;
 }
 
 static void mglWriteExternalComponent(uint8_t *dst,
@@ -1490,6 +2278,93 @@ static void mglWriteExternalComponent(uint8_t *dst,
 {
     if (dest_index < 0 || !dst) {
         return;
+    }
+
+    switch (type) {
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV: {
+            uint8_t bits = 0u;
+            uint8_t shift = 0u;
+            size_t storage_size = sizeForType(type);
+            switch (type) {
+                case GL_UNSIGNED_BYTE_3_3_2:
+                    bits = dest_index == 0 ? 3u : dest_index == 1 ? 3u : 2u;
+                    shift = dest_index == 0 ? 5u : dest_index == 1 ? 2u : 0u;
+                    break;
+                case GL_UNSIGNED_BYTE_2_3_3_REV:
+                    bits = dest_index == 0 ? 3u : dest_index == 1 ? 3u : 2u;
+                    shift = dest_index == 0 ? 0u : dest_index == 1 ? 3u : 6u;
+                    break;
+                case GL_UNSIGNED_SHORT_5_6_5:
+                    bits = dest_index == 1 ? 6u : 5u;
+                    shift = dest_index == 0 ? 11u : dest_index == 1 ? 5u : 0u;
+                    break;
+                case GL_UNSIGNED_SHORT_5_6_5_REV:
+                    bits = dest_index == 1 ? 6u : 5u;
+                    shift = dest_index == 0 ? 0u : dest_index == 1 ? 5u : 11u;
+                    break;
+                case GL_UNSIGNED_SHORT_4_4_4_4:
+                    bits = 4u;
+                    shift = (uint8_t)(12u - ((uint8_t)dest_index * 4u));
+                    break;
+                case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+                    bits = 4u;
+                    shift = (uint8_t)((uint8_t)dest_index * 4u);
+                    break;
+                case GL_UNSIGNED_SHORT_5_5_5_1:
+                    bits = dest_index == 3 ? 1u : 5u;
+                    shift = dest_index == 0 ? 11u : dest_index == 1 ? 6u : dest_index == 2 ? 1u : 0u;
+                    break;
+                case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+                    bits = dest_index == 3 ? 1u : 5u;
+                    shift = dest_index == 0 ? 0u : dest_index == 1 ? 5u : dest_index == 2 ? 10u : 15u;
+                    break;
+                case GL_UNSIGNED_INT_8_8_8_8:
+                    bits = 8u;
+                    shift = (uint8_t)(24u - ((uint8_t)dest_index * 8u));
+                    break;
+                case GL_UNSIGNED_INT_8_8_8_8_REV:
+                    bits = 8u;
+                    shift = (uint8_t)((uint8_t)dest_index * 8u);
+                    break;
+                case GL_UNSIGNED_INT_10_10_10_2:
+                    bits = dest_index == 3 ? 2u : 10u;
+                    shift = dest_index == 0 ? 22u : dest_index == 1 ? 12u : dest_index == 2 ? 2u : 0u;
+                    break;
+                case GL_UNSIGNED_INT_2_10_10_10_REV:
+                    bits = dest_index == 3 ? 2u : 10u;
+                    shift = dest_index == 0 ? 0u : dest_index == 1 ? 10u : dest_index == 2 ? 20u : 30u;
+                    break;
+                default:
+                    break;
+            }
+            uint64_t maxv = bits >= 64u ? UINT64_MAX : ((1ull << bits) - 1ull);
+            /* For integer formats, clamp the value directly to [0, maxv].
+             * For normalized formats, scale from [0,1] to [0, maxv]. */
+            uint64_t iv;
+            if (integer_format) {
+                iv = (uint64_t)mglClampDouble(value, 0.0, (double)maxv);
+            } else {
+                iv = (uint64_t)(mglClampDouble(value, 0.0, 1.0) * (double)maxv + 0.5);
+            }
+            uint64_t packed = mglReadUnsignedLE(dst, storage_size);
+            packed &= ~(maxv << shift);
+            packed |= (iv & maxv) << shift;
+            mglWriteUnsignedLE(dst, storage_size, packed);
+            return;
+        }
+        default:
+            break;
     }
 
     size_t component_size = sizeForType(type);
@@ -1530,12 +2405,14 @@ static void mglWriteExternalComponent(uint8_t *dst,
         case GL_UNSIGNED_INT: {
             uint32_t v = integer_format
                 ? (uint32_t)mglClampDouble(value, 0.0, 4294967295.0)
-                : (uint32_t)(mglClampDouble(value, 0.0, 1.0) * 4294967295.0 + 0.5);
+                : (uint32_t)(mglClampDouble(value, -1.0, 1.0) * 4294967295.0 + (value >= 0.0 ? 0.5 : -0.5));
             memcpy(p, &v, sizeof(v));
             break;
         }
         case GL_INT: {
-            int32_t v = (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0);
+            int32_t v = integer_format
+                ? (int32_t)mglClampDouble(value, -2147483648.0, 2147483647.0)
+                : (int32_t)(mglClampDouble(value, -1.0, 1.0) * 2147483647.0 + (value >= 0.0 ? 0.5 : -0.5));
             memcpy(p, &v, sizeof(v));
             break;
         }
@@ -1549,9 +2426,71 @@ static void mglWriteExternalComponent(uint8_t *dst,
             memcpy(p, &v, sizeof(v));
             break;
         }
+        case GL_UNSIGNED_INT_10F_11F_11F_REV: {
+            /* Packed unsigned float: R=11f (bits 0-10), G=11f (bits 11-21),
+             * B=10f (bits 22-31). Only valid for GL_RGB format. */
+            uint32_t packed = mglReadUnsignedLE(dst, sizeof(uint32_t));
+            float fv = (float)mglClampDouble(value, 0.0, 1.0);
+            if (dest_index == 0) {
+                packed = (packed & ~0x7ffu) | (mglFloatToFloat11(fv) & 0x7ffu);
+            } else if (dest_index == 1) {
+                packed = (packed & ~(0x7ffu << 11u)) | ((mglFloatToFloat11(fv) & 0x7ffu) << 11u);
+            } else if (dest_index == 2) {
+                packed = (packed & ~(0x3ffu << 22u)) | ((mglFloatToFloat10(fv) & 0x3ffu) << 22u);
+            }
+            mglWriteUnsignedLE(dst, sizeof(uint32_t), packed);
+            break;
+        }
+        case GL_UNSIGNED_INT_5_9_9_9_REV: {
+            uint32_t packed = mglReadUnsignedLE(dst, sizeof(uint32_t));
+            float fv = (float)mglClampDouble(value, 0.0, 1.0);
+            uint32_t mantissa, exponent;
+            mglFloatToSharedExp(fv, &mantissa, &exponent);
+            if (dest_index == 0) {
+                packed = (packed & ~0x1ffu) | (mantissa & 0x1ffu);
+            } else if (dest_index == 1) {
+                packed = (packed & ~(0x1ffu << 9u)) | ((mantissa & 0x1ffu) << 9u);
+            } else if (dest_index == 2) {
+                packed = (packed & ~(0x1ffu << 18u)) | ((mantissa & 0x1ffu) << 18u);
+            } else if (dest_index == 3) {
+                packed = (packed & ~(0x1fu << 27u)) | ((exponent & 0x1fu) << 27u);
+            }
+            mglWriteUnsignedLE(dst, sizeof(uint32_t), packed);
+            break;
+        }
         default:
             break;
     }
+}
+
+/* Check if the external format/type produces the exact same bit layout as
+ * the internal format's CPU storage.  When true, upload/download can use
+ * raw memcpy instead of per-component unpack/repack through double, which
+ * avoids precision loss for packed float formats (R11F_G11F_B10F, RGB9_E5)
+ * and unnecessary work for packed integer formats (RGB10_A2, RGB10_A2UI). */
+static bool mglIsIdentityPackedFormat(GLenum internalformat, GLenum format, GLenum type)
+{
+    /* R11F_G11F_B10F: GL_UNSIGNED_INT_10F_11F_11F_REV has the same
+     * LSB-first bit layout as Metal's RG11B10Float CPU storage. */
+    if (internalformat == GL_R11F_G11F_B10F &&
+        (format == GL_RGB || format == GL_BGR) &&
+        type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        return true;
+    }
+    /* RGB10_A2 / RGB10_A2UI: GL_UNSIGNED_INT_2_10_10_10_REV has the same
+     * LSB-first bit layout as Metal's RGB10A2 CPU storage. */
+    if ((internalformat == GL_RGB10_A2 || internalformat == GL_RGB10_A2UI) &&
+        (format == GL_RGBA || format == GL_BGRA) &&
+        type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+        return true;
+    }
+    /* RGB9_E5: GL_UNSIGNED_INT_5_9_9_9_REV has the same bit layout. */
+    if (internalformat == GL_RGB9_E5 &&
+        (format == GL_RGB || format == GL_BGR) &&
+        type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+        return true;
+    }
+    return false;
 }
 
 static bool mglConvertTextureRectToCPU(GLenum internalformat,
@@ -1566,7 +2505,8 @@ static bool mglConvertTextureRectToCPU(GLenum internalformat,
                                        GLenum type,
                                        const uint8_t *src_base,
                                        size_t src_pitch,
-                                       size_t src_image_size)
+                                       size_t src_image_size,
+                                       bool swap_bytes)
 {
     if (!lvl || !lvl->data || !src_base ||
         xoffset < 0 || yoffset < 0 || zoffset < 0 ||
@@ -1588,8 +2528,164 @@ static bool mglConvertTextureRectToCPU(GLenum internalformat,
         return false;
     }
 
+    /* Fast path: when the external format/type produces the exact same bit
+     * layout as the internal format's CPU storage, do a raw memcpy.  This
+     * avoids precision loss from per-component unpack/repack through double
+     * (e.g. R11F_G11F_B10F mantissa bits being cleared). */
+    if (storage_pixel_size == src_pixel_size &&
+        mglIsIdentityPackedFormat(internalformat, format, type) && !swap_bytes) {
+        size_t dst_img_size = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
+            return false;
+        }
+        if (src_image_size == 0u && !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+            return false;
+        }
+        size_t row_bytes = (size_t)width * storage_pixel_size;
+        uint8_t *dst_base = (uint8_t *)lvl->data +
+                            ((size_t)zoffset * dst_img_size) +
+                            ((size_t)yoffset * lvl->pitch) +
+                            ((size_t)xoffset * storage_pixel_size);
+        for (GLsizei z = 0; z < depth; z++) {
+            const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+            uint8_t *dst_slice = dst_base + ((size_t)z * dst_img_size);
+            for (GLsizei y = 0; y < height; y++) {
+                memcpy(dst_slice + ((size_t)y * lvl->pitch),
+                       src_slice + ((size_t)y * src_pitch),
+                       row_bytes);
+            }
+        }
+        return true;
+    }
+
     MGLCPUPixelLayout cpu_layout;
     if (!mglBuildCPUPixelLayout(internalformat, storage_pixel_size, &cpu_layout)) {
+        /* GL_RGB9_E5 has a shared exponent that cannot be handled by the
+         * per-component layout model.  Handle it with a dedicated path. */
+        if (internalformat == GL_RGB9_E5 && storage_pixel_size == 4u) {
+            bool integer_fmt = mglExternalFormatIsInteger(format);
+            size_t dst_img_size = 0u;
+            if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
+                return false;
+            }
+            if (src_image_size == 0u && !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+                return false;
+            }
+            uint8_t *dst_base = (uint8_t *)lvl->data +
+                                ((size_t)zoffset * dst_img_size) +
+                                ((size_t)yoffset * lvl->pitch) +
+                                ((size_t)xoffset * storage_pixel_size);
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            for (GLsizei z = 0; z < depth; z++) {
+                const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+                uint8_t *dst_slice = dst_base + ((size_t)z * dst_img_size);
+                for (GLsizei y = 0; y < height; y++) {
+                    const uint8_t *src_row = src_slice + ((size_t)y * src_pitch);
+                    uint8_t *dst_row = dst_slice + ((size_t)y * lvl->pitch);
+                    for (GLsizei x = 0; x < width; x++) {
+                        const uint8_t *src_pixel = src_row + ((size_t)x * src_pixel_size);
+                        uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                        uint8_t swapped_pixel[32];
+                        const uint8_t *read_pixel = src_pixel;
+                        if (swap_bytes && elem_size > 1u && src_pixel_size <= sizeof(swapped_pixel)) {
+                            memcpy(swapped_pixel, src_pixel, src_pixel_size);
+                            mglSwapPixelBytes(swapped_pixel, src_pixel_size, elem_size);
+                            read_pixel = swapped_pixel;
+                        }
+                        memset(dst_pixel, 0, storage_pixel_size);
+                        /* If external type is already GL_UNSIGNED_INT_5_9_9_9_REV,
+                         * the data is in native shared-exp format; copy directly. */
+                        if (type == GL_UNSIGNED_INT_5_9_9_9_REV && !integer_fmt) {
+                            uint32_t packed = (uint32_t)mglReadUnsignedLE(read_pixel, sizeof(uint32_t));
+                            mglWriteUnsignedLE(dst_pixel, sizeof(uint32_t), packed);
+                        } else {
+                            /* Map internal R/G/B to external source indices (handles BGR/BGRA). */
+                            int sr = mglExternalSourceIndexForComponent(format, 0);
+                            int sg = mglExternalSourceIndexForComponent(format, 1);
+                            int sb = mglExternalSourceIndexForComponent(format, 2);
+                            GLuint rr = (sr >= 0) ? (GLuint)sr : 0u;
+                            GLuint rg = (sg >= 0) ? (GLuint)sg : 1u;
+                            GLuint rb = (sb >= 0) ? (GLuint)sb : 2u;
+                            double r = mglReadExternalComponent(read_pixel, type, sr, integer_fmt, rr);
+                            double g = mglReadExternalComponent(read_pixel, type, sg, integer_fmt, rg);
+                            double b = mglReadExternalComponent(read_pixel, type, sb, integer_fmt, rb);
+                            uint32_t packed = mglPackRGBToSharedExp(r, g, b);
+                            mglWriteUnsignedLE(dst_pixel, sizeof(uint32_t), packed);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        /* Depth/stencil combined formats: convert external data to
+         * canonical CPU shadow storage.
+         * GL_DEPTH32F_STENCIL8: 5 bytes (float depth + uint8 stencil)
+         * GL_DEPTH24_STENCIL8: 4 bytes (uint32: 24-bit depth high [31:8], 8-bit stencil low [7:0]) */
+        if (mglInternalFormatIsCombinedDepthStencil(internalformat) &&
+            (format == GL_DEPTH_STENCIL || format == GL_DEPTH_COMPONENT)) {
+            bool integer_fmt = mglExternalFormatIsInteger(format);
+            size_t dst_img_size = 0u;
+            if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &dst_img_size)) {
+                return false;
+            }
+            if (src_image_size == 0u && !mglMulSizeT(src_pitch, (size_t)height, &src_image_size)) {
+                return false;
+            }
+            uint8_t *dst_base_ds = (uint8_t *)lvl->data +
+                                   ((size_t)zoffset * dst_img_size) +
+                                   ((size_t)yoffset * lvl->pitch) +
+                                   ((size_t)xoffset * storage_pixel_size);
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            for (GLsizei z = 0; z < depth; z++) {
+                const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
+                uint8_t *dst_slice = dst_base_ds + ((size_t)z * dst_img_size);
+                for (GLsizei y = 0; y < height; y++) {
+                    const uint8_t *src_row = src_slice + ((size_t)y * src_pitch);
+                    uint8_t *dst_row = dst_slice + ((size_t)y * lvl->pitch);
+                    for (GLsizei x = 0; x < width; x++) {
+                        const uint8_t *src_pixel = src_row + ((size_t)x * src_pixel_size);
+                        uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                        uint8_t swapped_pixel[32];
+                        const uint8_t *read_pixel = src_pixel;
+                        if (swap_bytes && elem_size > 1u && src_pixel_size <= sizeof(swapped_pixel)) {
+                            memcpy(swapped_pixel, src_pixel, src_pixel_size);
+                            mglSwapPixelBytes(swapped_pixel, src_pixel_size, elem_size);
+                            read_pixel = swapped_pixel;
+                        }
+                        memset(dst_pixel, 0, storage_pixel_size);
+                        GLfloat depthVal = 0.0f;
+                        uint8_t stencilVal = 0u;
+                        if (format == GL_DEPTH_STENCIL) {
+                            if (type == GL_UNSIGNED_INT_24_8) {
+                                uint32_t packed;
+                                memcpy(&packed, read_pixel, sizeof(uint32_t));
+                                depthVal = (GLfloat)(packed >> 8) / 16777215.0f;
+                                stencilVal = (uint8_t)(packed & 0xffu);
+                            } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
+                                memcpy(&depthVal, read_pixel, sizeof(float));
+                                uint32_t s;
+                                memcpy(&s, read_pixel + 4, sizeof(uint32_t));
+                                stencilVal = (uint8_t)(s & 0xffu);
+                            }
+                        } else { /* GL_DEPTH_COMPONENT */
+                            double d = mglReadExternalComponent(read_pixel, type, 0, integer_fmt, 0);
+                            depthVal = (GLfloat)d;
+                        }
+                        if (internalformat == GL_DEPTH32F_STENCIL8) {
+                            memcpy(dst_pixel, &depthVal, sizeof(float));
+                            if (storage_pixel_size >= 5u)
+                                dst_pixel[4] = stencilVal;
+                        } else { /* GL_DEPTH24_STENCIL8 */
+                            uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
+                                              (uint32_t)stencilVal;
+                            memcpy(dst_pixel, &packed, sizeof(uint32_t));
+                        }
+                    }
+                }
+            }
+            return true;
+        }
         return false;
     }
 
@@ -1607,6 +2703,22 @@ static bool mglConvertTextureRectToCPU(GLenum internalformat,
                          ((size_t)yoffset * lvl->pitch) +
                          ((size_t)xoffset * storage_pixel_size);
 
+    /* DEBUG: trace first few source and destination pixels */
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG mglConvertTextureRectToCPU: internalformat=0x%x format=0x%x type=0x%x "
+                "width=%d height=%d depth=%d src_pitch=%zu src_image_size=%zu storage_pixel_size=%zu "
+                "src_pixel_size=%zu src_base=%p lvl->data=%p lvl->pitch=%zu lvl->width=%u lvl->height=%u\n",
+                internalformat, format, type, width, height, depth, src_pitch, src_image_size,
+                storage_pixel_size, src_pixel_size, (const void *)src_base, (void *)lvl->data,
+                lvl->pitch, lvl->width, lvl->height);
+        fprintf(stderr, "  src first 16 bytes:");
+        for (int i = 0; i < 16 && i < (int)(src_pitch * height); i++)
+            fprintf(stderr, " %02x", src_base[i]);
+        fprintf(stderr, "\n");
+    }
+
+    size_t element_size = mglPixelTypeDatumBytes(type);
+
     for (GLsizei z = 0; z < depth; z++) {
         const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
         uint8_t *dst_slice = dst_start + ((size_t)z * dst_image_size);
@@ -1616,14 +2728,30 @@ static bool mglConvertTextureRectToCPU(GLenum internalformat,
             for (GLsizei x = 0; x < width; x++) {
                 const uint8_t *src_pixel = src_row + ((size_t)x * src_pixel_size);
                 uint8_t *dst_pixel = dst_row + ((size_t)x * storage_pixel_size);
+                uint8_t swapped_pixel[32];
+                const uint8_t *read_pixel = src_pixel;
+                if (swap_bytes && element_size > 1u && src_pixel_size <= sizeof(swapped_pixel)) {
+                    memcpy(swapped_pixel, src_pixel, src_pixel_size);
+                    mglSwapPixelBytes(swapped_pixel, src_pixel_size, element_size);
+                    read_pixel = swapped_pixel;
+                }
                 memset(dst_pixel, 0, storage_pixel_size);
                 for (GLuint component = 0; component < cpu_layout.component_count; component++) {
                     int src_index = mglExternalSourceIndexForComponent(format, component);
-                    double value = mglReadExternalComponent(src_pixel, type, src_index, integer_format, component);
+                    GLuint read_component = (src_index >= 0) ? (GLuint)src_index : component;
+                    double value = mglReadExternalComponent(read_pixel, type, src_index, integer_format, read_component);
                     mglStoreInternalComponent(dst_pixel, &cpu_layout.components[component], value);
                 }
             }
         }
+    }
+
+    /* DEBUG: trace first few destination pixels after upload */
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "  dst first 16 bytes:");
+        for (int i = 0; i < 16 && i < (int)(lvl->pitch * height); i++)
+            fprintf(stderr, " %02x", ((uint8_t *)lvl->data)[i]);
+        fprintf(stderr, "\n");
     }
 
     return true;
@@ -1763,7 +2891,8 @@ static bool mglCopyTextureRectFromCPU(GLenum internalformat,
                                       GLenum format,
                                       GLenum type,
                                       const MGLTexturePackLayout *pack_layout,
-                                      void *pixels)
+                                      void *pixels,
+                                      bool swap_bytes)
 {
     if (!lvl || !pack_layout || !pixels || !lvl->data ||
         xoffset < 0 || yoffset < 0 || zoffset < 0 ||
@@ -1786,8 +2915,162 @@ static bool mglCopyTextureRectFromCPU(GLenum internalformat,
         return false;
     }
 
+    /* Fast path: when the external format/type produces the exact same bit
+     * layout as the internal format's CPU storage, do a raw memcpy.  This
+     * avoids precision loss from per-component unpack/repack through double
+     * (e.g. R11F_G11F_B10F mantissa bits being cleared). */
+    if (storage_pixel_size == pack_layout->pixel_size &&
+        mglIsIdentityPackedFormat(internalformat, format, type) && !swap_bytes) {
+        size_t src_img_size = 0u;
+        size_t src_base_off = 0u;
+        size_t byte_span_tmp = 0u;
+        if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_img_size) ||
+            !mglTextureRectByteRange(lvl, storage_pixel_size,
+                                     (size_t)xoffset, (size_t)yoffset, (size_t)zoffset,
+                                     (size_t)width, (size_t)height, (size_t)depth,
+                                     &src_base_off, &byte_span_tmp)) {
+            return false;
+        }
+        const uint8_t *src_base = (const uint8_t *)lvl->data + src_base_off;
+        uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+        size_t row_bytes = (size_t)width * storage_pixel_size;
+        for (GLsizei z = 0; z < depth; z++) {
+            const uint8_t *src_slice = src_base + ((size_t)z * src_img_size);
+            uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
+            for (GLsizei y = 0; y < height; y++) {
+                memcpy(dst_slice + ((size_t)y * pack_layout->dst_pitch),
+                       src_slice + ((size_t)y * lvl->pitch),
+                       row_bytes);
+            }
+        }
+        return true;
+    }
+
     MGLCPUPixelLayout cpu_layout;
     if (!mglBuildCPUPixelLayout(internalformat, storage_pixel_size, &cpu_layout)) {
+        /* GL_RGB9_E5 has a shared exponent that cannot be handled by the
+         * per-component layout model.  Handle it with a dedicated path. */
+        if (internalformat == GL_RGB9_E5 && storage_pixel_size == 4u) {
+            bool integer_fmt = mglExternalFormatIsInteger(format);
+            size_t src_img_size = 0u;
+            size_t src_base_off = 0u;
+            size_t byte_span_tmp = 0u;
+            if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_img_size) ||
+                !mglTextureRectByteRange(lvl, storage_pixel_size,
+                                         (size_t)xoffset, (size_t)yoffset, (size_t)zoffset,
+                                         (size_t)width, (size_t)height, (size_t)depth,
+                                         &src_base_off, &byte_span_tmp)) {
+                return false;
+            }
+            const uint8_t *src_base_se = (const uint8_t *)lvl->data + src_base_off;
+            uint8_t *dst_base_se = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            for (GLsizei z = 0; z < depth; z++) {
+                const uint8_t *src_slice = src_base_se + ((size_t)z * src_img_size);
+                uint8_t *dst_slice = dst_base_se + ((size_t)z * pack_layout->dst_image_size);
+                for (GLsizei y = 0; y < height; y++) {
+                    const uint8_t *src_row = src_slice + ((size_t)y * lvl->pitch);
+                    uint8_t *dst_row = dst_slice + ((size_t)y * pack_layout->dst_pitch);
+                    for (GLsizei x = 0; x < width; x++) {
+                        const uint8_t *src_pixel = src_row + ((size_t)x * storage_pixel_size);
+                        uint8_t *dst_pixel = dst_row + ((size_t)x * pack_layout->pixel_size);
+                        memset(dst_pixel, 0, pack_layout->pixel_size);
+                        uint32_t packed = (uint32_t)mglReadUnsignedLE(src_pixel, sizeof(uint32_t));
+                        /* If external type is GL_UNSIGNED_INT_5_9_9_9_REV,
+                         * the data is already in native format; copy directly. */
+                        if (type == GL_UNSIGNED_INT_5_9_9_9_REV && !integer_fmt) {
+                            mglWriteUnsignedLE(dst_pixel, sizeof(uint32_t), packed);
+                            if (swap_bytes) {
+                                mglSwapPixelBytes(dst_pixel, sizeof(uint32_t), sizeof(uint32_t));
+                            }
+                            continue;
+                        }
+                        double r, g, b;
+                        mglUnpackSharedExp(packed, &r, &g, &b);
+                        /* Map GL_RGB components to external format order.
+                         * Skip components that are not present in the external
+                         * format (e.g. GL_RED only has R, so G and B are skipped). */
+                        for (int c = 0; c < 3; c++) {
+                            int dst_idx = mglExternalSourceIndexForComponent(format, (GLuint)c);
+                            if (dst_idx < 0) continue;
+                            double val = (c == 0) ? r : (c == 1) ? g : b;
+                            mglWriteExternalComponent(dst_pixel, type, dst_idx, integer_fmt, val);
+                        }
+                        if (swap_bytes && elem_size > 1u) {
+                            mglSwapPixelBytes(dst_pixel, pack_layout->pixel_size, elem_size);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        /* Depth/stencil combined formats: convert from canonical CPU
+         * shadow storage to the requested external format.
+         * GL_DEPTH32F_STENCIL8: 5 bytes (float depth + uint8 stencil)
+         * GL_DEPTH24_STENCIL8: 4 bytes (uint32: 24-bit depth high [31:8], 8-bit stencil low [7:0]) */
+        if (mglInternalFormatIsCombinedDepthStencil(internalformat) &&
+            (format == GL_DEPTH_STENCIL || format == GL_DEPTH_COMPONENT ||
+             format == GL_STENCIL_INDEX)) {
+            bool integer_fmt = mglExternalFormatIsInteger(format);
+            size_t src_img_size = 0u;
+            size_t src_base_off = 0u;
+            size_t byte_span_tmp = 0u;
+            if (!mglMulSizeT(lvl->pitch, (size_t)lvl->height, &src_img_size) ||
+                !mglTextureRectByteRange(lvl, storage_pixel_size,
+                                         (size_t)xoffset, (size_t)yoffset, (size_t)zoffset,
+                                         (size_t)width, (size_t)height, (size_t)depth,
+                                         &src_base_off, &byte_span_tmp)) {
+                return false;
+            }
+            const uint8_t *src_base_ds = (const uint8_t *)lvl->data + src_base_off;
+            uint8_t *dst_base_ds = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            for (GLsizei z = 0; z < depth; z++) {
+                const uint8_t *src_slice = src_base_ds + ((size_t)z * src_img_size);
+                uint8_t *dst_slice = dst_base_ds + ((size_t)z * pack_layout->dst_image_size);
+                for (GLsizei y = 0; y < height; y++) {
+                    const uint8_t *src_row = src_slice + ((size_t)y * lvl->pitch);
+                    uint8_t *dst_row = dst_slice + ((size_t)y * pack_layout->dst_pitch);
+                    for (GLsizei x = 0; x < width; x++) {
+                        const uint8_t *src_pixel = src_row + ((size_t)x * storage_pixel_size);
+                        uint8_t *dst_pixel = dst_row + ((size_t)x * pack_layout->pixel_size);
+                        memset(dst_pixel, 0, pack_layout->pixel_size);
+                        GLfloat depthVal = 0.0f;
+                        uint8_t stencilVal = 0u;
+                        if (internalformat == GL_DEPTH32F_STENCIL8) {
+                            memcpy(&depthVal, src_pixel, sizeof(float));
+                            if (storage_pixel_size >= 5u)
+                                stencilVal = src_pixel[4];
+                        } else { /* GL_DEPTH24_STENCIL8 */
+                            uint32_t packed;
+                            memcpy(&packed, src_pixel, sizeof(uint32_t));
+                            depthVal = (GLfloat)(packed >> 8) / 16777215.0f;
+                            stencilVal = (uint8_t)(packed & 0xffu);
+                        }
+                        if (format == GL_DEPTH_STENCIL) {
+                            if (type == GL_UNSIGNED_INT_24_8) {
+                                uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
+                                                  (uint32_t)stencilVal;
+                                memcpy(dst_pixel, &packed, sizeof(uint32_t));
+                            } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
+                                memcpy(dst_pixel, &depthVal, sizeof(float));
+                                uint32_t s = (uint32_t)stencilVal;
+                                memcpy(dst_pixel + 4, &s, sizeof(uint32_t));
+                            }
+                        } else if (format == GL_DEPTH_COMPONENT) {
+                            mglWriteExternalComponent(dst_pixel, type, 0, integer_fmt, (double)depthVal);
+                        } else { /* GL_STENCIL_INDEX */
+                            mglWriteExternalComponent(dst_pixel, type, 0, true, (double)stencilVal);
+                        }
+                        if (swap_bytes && elem_size > 1u) {
+                            mglSwapPixelBytes(dst_pixel, pack_layout->pixel_size, elem_size);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
         return false;
     }
 
@@ -1812,6 +3095,20 @@ static bool mglCopyTextureRectFromCPU(GLenum internalformat,
     const uint8_t *src_base = (const uint8_t *)lvl->data + src_base_offset;
     uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
 
+    /* DEBUG: trace first few source and destination pixels for GetTexImage */
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG mglCopyTextureRectFromCPU: internalformat=0x%x format=0x%x type=0x%x "
+                "width=%d height=%d depth=%d skip_offset=%zu dst_pitch=%zu dst_image_size=%zu "
+                "storage_pixel_size=%zu pixel_size=%zu src_base=%p dst_base=%p\n",
+                internalformat, format, type, width, height, depth,
+                pack_layout->skip_offset_bytes, pack_layout->dst_pitch, pack_layout->dst_image_size,
+                storage_pixel_size, pack_layout->pixel_size, (const void *)src_base, (void *)dst_base);
+        fprintf(stderr, "  src (texture) first 16 bytes:");
+        for (int i = 0; i < 16 && i < (int)(lvl->pitch * lvl->height); i++)
+            fprintf(stderr, " %02x", src_base[i]);
+        fprintf(stderr, "\n");
+    }
+
     for (GLsizei z = 0; z < depth; z++) {
         const uint8_t *src_slice = src_base + ((size_t)z * src_image_size);
         uint8_t *dst_slice = dst_base + ((size_t)z * pack_layout->dst_image_size);
@@ -1822,6 +3119,32 @@ static bool mglCopyTextureRectFromCPU(GLenum internalformat,
                 const uint8_t *src_pixel = src_row + ((size_t)x * storage_pixel_size);
                 uint8_t *dst_pixel = dst_row + ((size_t)x * pack_layout->pixel_size);
                 memset(dst_pixel, 0, pack_layout->pixel_size);
+
+                /* GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) packs 3 RGB
+                 * mantissas into a single 32-bit word with one shared
+                 * 5-bit exponent. The per-component path cannot handle this
+                 * because each mantissa must use the same exponent (computed
+                 * from the max of the 3 values). Handle it specially. */
+                if (type == GL_UNSIGNED_INT_5_9_9_9_REV &&
+                    !integer_format &&
+                    pack_layout->pixel_size >= sizeof(uint32_t)) {
+                    double r = (cpu_layout.component_count > 0u)
+                        ? mglLoadInternalComponent(src_pixel, &cpu_layout.components[0])
+                        : 0.0;
+                    double g = (cpu_layout.component_count > 1u)
+                        ? mglLoadInternalComponent(src_pixel, &cpu_layout.components[1])
+                        : 0.0;
+                    double b = (cpu_layout.component_count > 2u)
+                        ? mglLoadInternalComponent(src_pixel, &cpu_layout.components[2])
+                        : 0.0;
+                    uint32_t packed = mglPackRGBToSharedExp(r, g, b);
+                    mglWriteUnsignedLE(dst_pixel, sizeof(uint32_t), packed);
+                    if (swap_bytes) {
+                        mglSwapPixelBytes(dst_pixel, sizeof(uint32_t), sizeof(uint32_t));
+                    }
+                    continue;
+                }
+
                 for (GLuint component = 0; component < 4u; component++) {
                     int dst_index = mglExternalSourceIndexForComponent(format, component);
                     if (dst_index < 0 || component >= cpu_layout.component_count) {
@@ -1829,6 +3152,13 @@ static bool mglCopyTextureRectFromCPU(GLenum internalformat,
                     }
                     double value = mglLoadInternalComponent(src_pixel, &cpu_layout.components[component]);
                     mglWriteExternalComponent(dst_pixel, type, dst_index, integer_format, value);
+                }
+
+                if (swap_bytes) {
+                    size_t element_size = mglPixelTypeDatumBytes(type);
+                    if (element_size > 1u) {
+                        mglSwapPixelBytes(dst_pixel, pack_layout->pixel_size, element_size);
+                    }
                 }
             }
         }
@@ -1845,7 +3175,8 @@ static bool mglCopyTextureLevelToPackBuffer(TextureLevel *lvl,
                                             GLenum format,
                                             GLenum type,
                                             const MGLTexturePackLayout *pack_layout,
-                                            void *pixels)
+                                            void *pixels,
+                                            bool swap_bytes)
 {
     if (mglCopyTextureRectFromCPU(internalformat,
                                   lvl,
@@ -1858,7 +3189,19 @@ static bool mglCopyTextureLevelToPackBuffer(TextureLevel *lvl,
                                   format,
                                   type,
                                   pack_layout,
-                                  pixels)) {
+                                  pixels,
+                                  swap_bytes)) {
+        if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+            uint8_t *dst_base = (uint8_t *)pixels + pack_layout->skip_offset_bytes;
+            fprintf(stderr, "MGL DEBUG mglCopyTextureLevelToPackBuffer OUTPUT: fmt=0x%x type=0x%x dst_pitch=%zu "
+                    "first 24 bytes:",
+                    format, type, pack_layout->dst_pitch);
+            size_t total = pack_layout->dst_pitch * (size_t)height;
+            if (total > 24) total = 24;
+            for (size_t i = 0; i < total; i++)
+                fprintf(stderr, " %02x", dst_base[i]);
+            fprintf(stderr, "\n");
+        }
         return true;
     }
 
@@ -1910,7 +3253,8 @@ static bool mglCopyTextureSubRectToPackBuffer(TextureLevel *lvl,
                                               GLenum format,
                                               GLenum type,
                                               const MGLTexturePackLayout *pack_layout,
-                                              void *pixels)
+                                              void *pixels,
+                                              bool swap_bytes)
 {
     if (mglCopyTextureRectFromCPU(internalformat,
                                   lvl,
@@ -1923,7 +3267,8 @@ static bool mglCopyTextureSubRectToPackBuffer(TextureLevel *lvl,
                                   format,
                                   type,
                                   pack_layout,
-                                  pixels)) {
+                                  pixels,
+                                  swap_bytes)) {
         return true;
     }
 
@@ -2084,6 +3429,7 @@ static bool mglClearTextureLevelCPU(TextureLevel *lvl,
         lvl->ever_written = GL_TRUE;
         lvl->has_initialized_data = GL_TRUE;
         lvl->suspicious_zero_upload = GL_FALSE;
+        lvl->metal_data_authoritative = GL_FALSE;
         lvl->last_init_source = kTexSubImageCPU;
         lvl->last_upload_size = storage_pixel_size * (size_t)width * (size_t)height * (size_t)depth;
         lvl->last_src_ptr = data;
@@ -2126,6 +3472,7 @@ static bool mglClearTextureLevelCPU(TextureLevel *lvl,
     lvl->ever_written = GL_TRUE;
     lvl->has_initialized_data = GL_TRUE;
     lvl->suspicious_zero_upload = GL_FALSE;
+    lvl->metal_data_authoritative = GL_FALSE;
     lvl->last_init_source = kTexSubImageCPU;
     lvl->last_upload_size = storage_pixel_size * (size_t)width * (size_t)height * (size_t)depth;
     lvl->last_src_ptr = data;
@@ -2209,7 +3556,7 @@ static bool mglComputeTextureUnpackLayout(GLMContext ctx,
     size_t skip_pixels_bytes = 0u;
     size_t skip_rows_bytes = 0u;
     size_t skip_images_bytes = 0u;
-    GLint skip_images = depth > 1 ? ctx->state.unpack.skip_images : 0;
+    GLint skip_images = ctx->state.unpack.skip_images;
     if (!mglMulSizeT((size_t)ctx->state.unpack.skip_pixels, pixel_size, &skip_pixels_bytes) ||
         !mglMulSizeT((size_t)ctx->state.unpack.skip_rows, layout->src_pitch, &skip_rows_bytes) ||
         !mglMulSizeT((size_t)skip_images, layout->src_image_size, &skip_images_bytes) ||
@@ -2370,7 +3717,7 @@ static bool mglResolveTexSubImageSource(GLMContext ctx,
                     unpack_name,
                     raw_value,
                     (long long)unpack_buf->size);
-            ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
 
         size_t pbo_size = (size_t)unpack_buf->size;
@@ -2378,13 +3725,26 @@ static bool mglResolveTexSubImageSource(GLMContext ctx,
         size_t effective_off = 0u;
         size_t end_off = 0u;
 
+        /* D: when a PBO is bound, `pixels` is a byte offset that must be evenly
+         * divisible by the size in bytes of a single datum indicated by `type`. */
+        size_t datum_bytes = mglPixelTypeDatumBytes(type);
+        if (datum_bytes > 0u && (raw_off % datum_bytes) != 0u) {
+            fprintf(stderr,
+                    "MGL ERROR: texSubImage source resolve: PBO offset not divisible by datum unpack=%u off=%zu datum=%zu type=0x%x\n",
+                    unpack_name,
+                    raw_off,
+                    datum_bytes,
+                    type);
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+
         if (!mglAddSizeT(raw_off, skip_offset_bytes, &effective_off)) {
             fprintf(stderr,
                     "MGL ERROR: texSubImage source resolve: PBO offset addition overflow unpack=%u rawOff=%zu skipOff=%zu\n",
                     unpack_name,
                     raw_off,
                     skip_offset_bytes);
-            ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
 
         if (required_bytes > 0u) {
@@ -2394,7 +3754,7 @@ static bool mglResolveTexSubImageSource(GLMContext ctx,
                         unpack_name,
                         effective_off,
                         required_bytes);
-                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
             }
             if (effective_off > pbo_size || end_off > pbo_size) {
                 fprintf(stderr,
@@ -2405,7 +3765,7 @@ static bool mglResolveTexSubImageSource(GLMContext ctx,
                         effective_off,
                         required_bytes,
                         pbo_size);
-                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
             }
         }
 
@@ -3381,8 +4741,11 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
 {
     Texture *ptr;
 
-    if (unit >= TEXTURE_UNITS) {
-        fprintf(stderr, "MGL Error: mglBindImageTexture: unit >= TEXTURE_UNITS (%d)\n", unit);
+    /* Per the GL 4.6 spec, glBindImageTexture generates GL_INVALID_VALUE if
+     * <unit> is greater than or equal to GL_MAX_IMAGE_UNITS.  MGL reports
+     * GL_MAX_IMAGE_UNITS == 8 (independent of TEXTURE_UNITS == 128). */
+    if (unit >= ctx->state.var.max_image_units) {
+        fprintf(stderr, "MGL Error: mglBindImageTexture: unit >= max_image_units (%d)\n", unit);
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
@@ -3480,6 +4843,38 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
     ctx->state.dirty_bits |= DIRTY_IMAGE_UNIT_STATE;
 }
 
+/* Callback for mglHashTableForEach: detach a deleted texture from every FBO
+ * attachment that still holds a raw pointer to it.  Runs before the texture
+ * is freed so the pointer is still valid for comparison. */
+static void mglDetachTextureFromFramebuffers(GLuint name, void *data, void *user)
+{
+    (void)name;
+    Framebuffer *fbo = (Framebuffer *)data;
+    Texture *deleted = (Texture *)user;
+
+    if (!fbo || !deleted) {
+        return;
+    }
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (fbo->color_attachments[i].buf.tex == deleted) {
+            fbo->color_attachments[i].buf.tex = NULL;
+            fbo->color_attachments[i].texture = 0u;
+            fbo->dirty_bits |= DIRTY_FBO_TEX;
+        }
+    }
+    if (fbo->depth.buf.tex == deleted) {
+        fbo->depth.buf.tex = NULL;
+        fbo->depth.texture = 0u;
+        fbo->dirty_bits |= DIRTY_FBO_TEX;
+    }
+    if (fbo->stencil.buf.tex == deleted) {
+        fbo->stencil.buf.tex = NULL;
+        fbo->stencil.texture = 0u;
+        fbo->dirty_bits |= DIRTY_FBO_TEX;
+    }
+}
+
 void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 {
     if (!ctx || n <= 0 || !textures)
@@ -3538,6 +4933,16 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
             }
 
             invalidateTexture(ctx, tex);
+
+            /* OpenGL spec: when a texture is deleted, it is detached from any
+             * framebuffer it is bound to.  MGL stores raw Texture* pointers in
+             * FBOAttachment.buf.tex; without clearing them here the pointers
+             * become dangling after free(tex) below, causing use-after-free
+             * crashes in later draw calls that scan FBO attachments (e.g.
+             * mglFindFramebufferColorTexturePairedWithDepth). */
+            mglHashTableForEach(&STATE(framebuffer_table),
+                                mglDetachTextureFromFramebuffers, tex);
+
             deleteHashElement(&STATE(texture_table), name);
             free(tex);
         }
@@ -4138,6 +5543,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->genmipmaps = GL_FALSE;
     tex->mtl_requires_private_storage = GL_FALSE;
     tex->internalformat = 0;
+    tex->compressed_internalformat = 0;
     tex->width = 0;
     tex->height = 0;
     tex->depth = 0;
@@ -4151,6 +5557,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->mtl_gl_sampled_format = 0;
     tex->mtl_gl_sampled_write_version = 0;
     tex->mtl_render_target_write_version = 0;
+    tex->metal_data_authoritative = GL_FALSE;
     tex->texture_buffer = NULL;
     tex->texture_buffer_offset = 0;
     tex->texture_buffer_size = 0;
@@ -4191,6 +5598,7 @@ void initBaseTexLevel(GLMContext ctx, Texture *tex, GLint internalformat, GLsize
     tex->height = height;
     tex->depth = depth;
     tex->complete = false;
+    tex->metal_data_authoritative = GL_FALSE;
 
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
     {
@@ -4679,12 +6087,14 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
         case GL_DEPTH_COMPONENT24:
         case GL_DEPTH_COMPONENT32:
         case GL_DEPTH_COMPONENT32F:
-            ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_COMPONENT, GL_INVALID_OPERATION, false);
+            /* CTS allows any depth/stencil format for depth internal formats. */
+            ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL, GL_INVALID_OPERATION, false);
             break;
-            
+
         case GL_DEPTH24_STENCIL8:
         case GL_DEPTH32F_STENCIL8:
-            ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_STENCIL, GL_INVALID_OPERATION, false);
+            /* CTS allows GL_DEPTH_COMPONENT or GL_DEPTH_STENCIL for depth/stencil formats. */
+            ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL, GL_INVALID_OPERATION, false);
             break;
             
         case GL_STENCIL_INDEX8:
@@ -4698,6 +6108,55 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
             // Log warning but don't error - many formats work even if not explicitly listed
             fprintf(stderr, "MGL WARNING: verifyInternalFormat unknown internalformat 0x%x\n", internalformat);
             break;
+    }
+
+    /* Integer/non-integer compatibility check (OpenGL 4.6 Table 8.3):
+     * Integer pixel formats require integer internal formats and vice versa. */
+    bool format_is_integer = (format == GL_RED_INTEGER   ||
+                              format == GL_RG_INTEGER    ||
+                              format == GL_RGB_INTEGER   ||
+                              format == GL_BGR_INTEGER   ||
+                              format == GL_RGBA_INTEGER  ||
+                              format == GL_BGRA_INTEGER  ||
+                              format == 0x8d96 /*GL_BLUE_INTEGER*/  ||
+                              format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
+                              format == 0x8d97 /*GL_ALPHA_INTEGER*/);
+
+    bool internal_is_integer = (internalformat == GL_R8I       ||
+                                internalformat == GL_R8UI      ||
+                                internalformat == GL_R16I      ||
+                                internalformat == GL_R16UI     ||
+                                internalformat == GL_R32I      ||
+                                internalformat == GL_R32UI     ||
+                                internalformat == GL_RG8I      ||
+                                internalformat == GL_RG8UI     ||
+                                internalformat == GL_RG16I     ||
+                                internalformat == GL_RG16UI    ||
+                                internalformat == GL_RG32I     ||
+                                internalformat == GL_RG32UI    ||
+                                internalformat == GL_RGB8I     ||
+                                internalformat == GL_RGB8UI    ||
+                                internalformat == GL_RGB16I    ||
+                                internalformat == GL_RGB16UI   ||
+                                internalformat == GL_RGB32I    ||
+                                internalformat == GL_RGB32UI   ||
+                                internalformat == GL_RGBA8I    ||
+                                internalformat == GL_RGBA8UI   ||
+                                internalformat == GL_RGBA16I   ||
+                                internalformat == GL_RGBA16UI  ||
+                                internalformat == GL_RGBA32I   ||
+                                internalformat == GL_RGBA32UI  ||
+                                internalformat == GL_RGB10_A2UI);
+
+    if (format_is_integer != internal_is_integer)
+    {
+        /* Allow depth/stencil formats to pass through - they are neither
+         * integer nor non-integer in the traditional sense. */
+        if (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL ||
+            format == GL_STENCIL_INDEX)
+            /* ok */;
+        else
+            return false;
     }
 
     switch(format)
@@ -4751,7 +6210,7 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
         case GL_UNSIGNED_BYTE_2_3_3_REV:
         case GL_UNSIGNED_SHORT_5_6_5:
         case GL_UNSIGNED_SHORT_5_6_5_REV:
-            ERROR_CHECK_RETURN_VALUE(format == GL_RGB,GL_INVALID_OPERATION, false);
+            ERROR_CHECK_RETURN_VALUE(format == GL_RGB || format == GL_RGB_INTEGER,GL_INVALID_OPERATION, false);
             break;
 
         case GL_UNSIGNED_SHORT_4_4_4_4:
@@ -4762,10 +6221,8 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            // Allow RGBA, BGRA, and integer variants (RGBA_INTEGER, RGB_INTEGER, BGRA_INTEGER)
-            ERROR_CHECK_RETURN_VALUE((format == GL_RGBA || format == GL_BGRA || 
-                                      format == GL_RGBA_INTEGER || format == GL_RGB_INTEGER ||
-                                      format == GL_BGRA_INTEGER), GL_INVALID_OPERATION, false);
+            ERROR_CHECK_RETURN_VALUE((format == GL_RGBA || format == GL_BGRA ||
+                                      format == GL_RGBA_INTEGER || format == GL_BGRA_INTEGER), GL_INVALID_OPERATION, false);
             break;
             
         case GL_UNSIGNED_INT_24_8:
@@ -4776,15 +6233,23 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
             ERROR_CHECK_RETURN_VALUE(format == GL_DEPTH_STENCIL, GL_INVALID_OPERATION, false);
             break;
         
-        // Packed float types: each packs 3 channels, valid only with GL_RGB/GL_BGR.
+        // Packed float types: each packs 3 channels, valid only with GL_RGB.
         case 0x8c3b: // GL_UNSIGNED_INT_10F_11F_11F_REV
         case 0x8c3e: // GL_UNSIGNED_INT_5_9_9_9_REV
-            ERROR_CHECK_RETURN_VALUE((format == GL_RGB || format == GL_BGR), GL_INVALID_OPERATION, false);
+            ERROR_CHECK_RETURN_VALUE(format == GL_RGB, GL_INVALID_OPERATION, false);
             break;
             
         default:
             fprintf(stderr, "MGL WARNING: verifyInternalFormat unknown type 0x%x\n", type);
             break;
+    }
+
+    /* Rule: GL_DEPTH_STENCIL format requires GL_UNSIGNED_INT_24_8 or
+     * GL_FLOAT_32_UNSIGNED_INT_24_8_REV type. (CTS isFormatValid.) */
+    if (format == GL_DEPTH_STENCIL &&
+        type != GL_UNSIGNED_INT_24_8 &&
+        type != GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
     }
 
     /* Rule: integer transfer format cannot be paired with float/half-float type. */
@@ -4982,7 +6447,21 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
         return true;
     }
-    
+
+    /* Remap compressed internalformat to sized uncompressed equivalent early,
+     * so that all downstream comparisons (level==0 base-level change check,
+     * Metal format selection, storage allocation) see the actual uncompressed
+     * storage format.  This prevents false-positive base-level invalidation
+     * when glTexImage* is called multiple times for the same texture (e.g.
+     * CubeMap face uploads) with a compressed internalformat: without this
+     * early remap, the second call would see internalformat=compressed but
+     * tex->internalformat=uncompressed and invalidate the whole texture. */
+    if (mglTexLevelInternalFormatCompressed(internalformat))
+    {
+        tex->compressed_internalformat = internalformat;
+        internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
+    }
+
     if (level == 0)
     {
         if (internalformat == 0)
@@ -5002,8 +6481,11 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
             temp_format = internalFormatForGLFormatType(format, type);
 
             // MGL doesn't support pixel format conversion
-            // If mismatch, use the format that matches the incoming data
-            if (temp_format != internalformat)
+            // If mismatch, use the format that matches the incoming data.
+            // If temp_format is 0 (unknown mapping), keep the original
+            // internalformat so unsized formats like GL_DEPTH_COMPONENT fall
+            // back to mtlFormatForGLInternalFormat() which knows how to handle them.
+            if (temp_format != 0 && temp_format != internalformat)
             {
                 internalformat = temp_format;
             }
@@ -5130,22 +6612,9 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         return true;
     }
 
-    if (mglTexLevelInternalFormatCompressed(internalformat))
-    {
-        /*
-         * glTexImage* with a generic/sized compressed internalformat and
-         * uncompressed (format,type) data: GL spec requires the driver to
-         * compress on upload. Metal cannot do arbitrary on-upload compression,
-         * so remap to the sized *uncompressed* equivalent and fall through to
-         * normal uncompressed storage. This preserves data round-trip (the
-         * common conformance check) without implementing RGTC/BPTC/ETC2
-         * encoders. (Pre-compressed block data goes through glCompressedTexImage,
-         * a separate path — mglStoreCompressedTextureImage — and does not reach
-         * here, so this only affects the uncompressed-upload case.)
-         */
-        internalformat = mglCompressedInternalFormatToSizedUncompressed(internalformat);
-    }
-
+    /* Compressed internalformat was already remapped to uncompressed above.
+     * If it's still compressed (e.g. a format not in our remap table), treat
+     * as a no-op storage to avoid crashing on unknown compressed formats. */
     if (mglTexLevelInternalFormatCompressed(internalformat))
     {
         tex->faces[face].levels[level].pitch = 0;
@@ -5308,7 +6777,8 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
                                             type,
                                             resolved_src,
                                             src_pitch,
-                                            unpack_layout.src_image_size)) {
+                                            unpack_layout.src_image_size,
+                                            ctx->state.unpack.swap_bytes == GL_TRUE)) {
                 unpackTexture(ctx,
                               tex,
                               face,
@@ -5383,6 +6853,79 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
     mglReleaseGLSampledTextureCopy(ctx, tex, "texImage");
     STATE(dirty_bits) |= DIRTY_TEX;
 
+    /* Populate depth_shadow for depth internal formats so that
+     * glReadPixels(GL_DEPTH_COMPONENT) can read back uploaded data. */
+    if (has_upload_source && !proxy && face == 0u && level == 0 &&
+        mglInternalFormatIsDepthStencil(internalformat) &&
+        internalformat != GL_STENCIL_INDEX8 &&
+        internalformat != GL_STENCIL_INDEX &&
+        internalformat != GL_DEPTH_STENCIL) {
+        GLuint mtl_fmt = mtlFormatForGLInternalFormat(internalformat);
+        if (mtl_fmt == MTLPixelFormatDepth16Unorm ||
+            mtl_fmt == MTLPixelFormatDepth32Float ||
+            mtl_fmt == MTLPixelFormatDepth24Unorm_Stencil8 ||
+            mtl_fmt == MTLPixelFormatDepth32Float_Stencil8) {
+            if (!tex->depth_shadow ||
+                tex->depth_shadow_width != tex->width ||
+                tex->depth_shadow_height != tex->height) {
+                free(tex->depth_shadow);
+                tex->depth_shadow = calloc((size_t)tex->width * tex->height, sizeof(GLfloat));
+                tex->depth_shadow_width = tex->depth_shadow ? tex->width : 0u;
+                tex->depth_shadow_height = tex->depth_shadow ? tex->height : 0u;
+            }
+            if (tex->depth_shadow) {
+                uint8_t *src = (uint8_t *)tex->faces[face].levels[level].data;
+                size_t src_pitch = tex->faces[face].levels[level].pitch;
+                /* Use the GL internal format (not the Metal format) to determine
+                 * the CPU shadow pixel layout, because multiple GL formats map
+                 * to the same Metal format but have different CPU storage. */
+                GLint canonical = mglTexLevelCanonicalInternalFormat(internalformat);
+                size_t pixel_size = sizeForInternalFormat(canonical, 0, 0);
+                if (src && src_pitch > 0u && pixel_size > 0u) {
+                    for (GLuint row = 0u; row < tex->height; row++) {
+                        uint8_t *p = src + (size_t)row * src_pitch;
+                        for (GLuint col = 0u; col < tex->width; col++) {
+                            uint8_t *pixel = p + (size_t)col * pixel_size;
+                            GLfloat d = 0.0f;
+                            switch (canonical) {
+                                case GL_DEPTH_COMPONENT16:
+                                    d = (GLfloat)((uint16_t *)pixel)[0] / 65535.0f;
+                                    break;
+                                case GL_DEPTH_COMPONENT24: {
+                                    /* 24-bit depth stored in 3 bytes (LE). */
+                                    uint32_t v = (uint32_t)pixel[0] |
+                                                 ((uint32_t)pixel[1] << 8) |
+                                                 ((uint32_t)pixel[2] << 16);
+                                    d = (GLfloat)v / 16777215.0f;
+                                    break;
+                                }
+                                case GL_DEPTH_COMPONENT32:
+                                case GL_DEPTH_COMPONENT32F:
+                                    d = ((GLfloat *)pixel)[0];
+                                    break;
+                                case GL_DEPTH24_STENCIL8: {
+                                    /* 4 bytes: depth high 24 [31:8], stencil low 8 [7:0]. */
+                                    uint32_t v;
+                                    memcpy(&v, pixel, sizeof(uint32_t));
+                                    d = (GLfloat)(v >> 8) / 16777215.0f;
+                                    break;
+                                }
+                                case GL_DEPTH32F_STENCIL8:
+                                    /* 5 bytes: float depth + uint8 stencil. */
+                                    d = ((GLfloat *)pixel)[0];
+                                    break;
+                                default:
+                                    d = 0.0f;
+                                    break;
+                            }
+                            tex->depth_shadow[(size_t)row * tex->width + col] = d;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if (!proxy) {
         mglRecordBoundSampled2DTextureIfReady(ctx, tex);
     }
@@ -5420,6 +6963,7 @@ void mglTexImage1D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
                 format,
                 type,
                 target);
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
@@ -5449,12 +6993,6 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     GLboolean is_array;
     GLboolean proxy;
     bool created_ok;
-
-    if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS) {
-        fprintf(stderr,
-                "MGL: mglTexImage2D called - target=0x%x, level=%d, internalformat=0x%x, width=%d, height=%d, border=%d, format=0x%x, type=0x%x, pixels=%p\n",
-                target, level, internalformat, width, height, border, format, type, pixels);
-    }
 
     face = 0;
     is_array = false;
@@ -5526,6 +7064,10 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     // verifyFormatType sets the error
     ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
+
+    /* CTS isFormatValid INPUT_TEXIMAGE: GL_STENCIL_INDEX format is not allowed
+     * for glTexImage2D/3D. */
+    ERROR_CHECK_RETURN(format != GL_STENCIL_INDEX, GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(border == 0, GL_INVALID_VALUE);
 
@@ -5645,6 +7187,21 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     // verifyFormatType sets the error
     ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
+
+    /* CTS isFormatValid INPUT_TEXIMAGE: GL_STENCIL_INDEX format is not allowed
+     * for glTexImage2D/3D. */
+    ERROR_CHECK_RETURN(format != GL_STENCIL_INDEX, GL_INVALID_OPERATION);
+
+    /* CTS isFormatValid: 3D textures must not use compressed RGTC formats
+     * or depth/stencil internal formats. */
+    if (target == GL_TEXTURE_3D) {
+        bool is_rgtc = (internalformat == GL_COMPRESSED_RED_RGTC1 ||
+                        internalformat == GL_COMPRESSED_SIGNED_RED_RGTC1 ||
+                        internalformat == GL_COMPRESSED_RG_RGTC2 ||
+                        internalformat == GL_COMPRESSED_SIGNED_RG_RGTC2);
+        ERROR_CHECK_RETURN(!is_rgtc, GL_INVALID_OPERATION);
+        ERROR_CHECK_RETURN(!mglInternalFormatIsDepthStencil(internalformat), GL_INVALID_OPERATION);
+    }
 
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(height >= 0, GL_INVALID_VALUE);
@@ -5997,7 +7554,8 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                     type,
                                     resolved_src,
                                     src_pitch,
-                                    src_image_size)) {
+                                    src_image_size,
+                                    ctx->state.unpack.swap_bytes == GL_TRUE)) {
         unpackTexture(ctx, tex, face, level, (void *)resolved_src, texture_data, src_pitch, src_image_size, pixel_size, xoffset, yoffset, zoffset, width, height, depth);
     }
 
@@ -6227,6 +7785,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         ctx->mtl_funcs.mtlTexSubImage(ctx, tex, buf, src_offset, src_pitch, src_image_size, src_size, face, level, width, height, depth, xoffset, yoffset, zoffset);
         lvl->ever_written = GL_TRUE;
         lvl->suspicious_zero_upload = GL_FALSE;
+        lvl->metal_data_authoritative = GL_FALSE;
         lvl->has_initialized_data = GL_TRUE;
         lvl->last_init_source = kTexSubImagePBO;
         lvl->last_upload_size = required_bytes;
@@ -6250,6 +7809,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
 
     lvl->ever_written = GL_TRUE;
     lvl->suspicious_zero_upload = GL_FALSE;
+    lvl->metal_data_authoritative = GL_FALSE;
     lvl->has_initialized_data = GL_TRUE;
     lvl->last_init_source = resolved_unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
     lvl->last_upload_size = required_bytes;
@@ -6335,9 +7895,19 @@ void texSubImage1D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
+    /* A/B: format and type must each be an accepted transfer constant. */
+    ERROR_CHECK_RETURN(mglIsValidPixelTransferFormat(format), GL_INVALID_ENUM);
+    ERROR_CHECK_RETURN(mglIsValidPixelTransferType(type), GL_INVALID_ENUM);
+
+    /* E: level must not exceed log2 of the implementation's max texture size. */
+    ERROR_CHECK_RETURN(level < (GLint)tex->num_levels, GL_INVALID_VALUE);
+
     ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION);
 
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
+
+    /* F: xoffset must not be less than -border (border is 0 here). */
+    ERROR_CHECK_RETURN(xoffset >= 0, GL_INVALID_VALUE);
 
     ERROR_CHECK_RETURN(width + xoffset <= tex->width, GL_INVALID_VALUE);
 
@@ -6388,6 +7958,11 @@ bool texSubImage2D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
 
     lvl = &tex->faces[face].levels[level];
     ERROR_CHECK_RETURN_VALUE(lvl->complete, GL_INVALID_OPERATION, false);
+
+    /* A/B: format and type must each be an accepted transfer constant. */
+    ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferFormat(format), GL_INVALID_ENUM, false);
+    ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferType(type), GL_INVALID_ENUM, false);
+
     ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
 
     ERROR_CHECK_RETURN_VALUE(width >= 0, GL_INVALID_VALUE, false);
@@ -6535,6 +8110,10 @@ bool texSubImage3D(GLMContext ctx, Texture *tex, GLint level, GLint xoffset, GLi
     ERROR_CHECK_RETURN_VALUE(tex->faces[0].levels != NULL, GL_INVALID_OPERATION, false);
     lvl = &tex->faces[0].levels[level];
     ERROR_CHECK_RETURN_VALUE(lvl->complete, GL_INVALID_OPERATION, false);
+
+    /* A/B: format and type must each be an accepted transfer constant. */
+    ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferFormat(format), GL_INVALID_ENUM, false);
+    ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferType(type), GL_INVALID_ENUM, false);
 
     ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
 
@@ -6943,8 +8522,10 @@ void mglTextureStorage3D(GLMContext ctx, GLuint texture, GLsizei levels, GLenum 
 void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations)
 {
     Texture *tex;
+    fprintf(stderr, "MGL DBG: mglTextureStorage3DMultisample tex=%u samples=%d ifmt=0x%x size=%dx%dx%d\n", texture, samples, internalformat, width, height, depth);
 
     if (!mglTexStorageInternalFormatValid(internalformat)) {
+        fprintf(stderr, "MGL DBG: storage3Dms invalid enum 0x%x\n", internalformat);
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
     }
@@ -6965,19 +8546,23 @@ void mglTextureStorage3DMultisample(GLMContext ctx, GLuint texture, GLsizei samp
 
     tex = getTex(ctx, texture, 0);
     if (!tex || tex->target != GL_TEXTURE_2D_MULTISAMPLE_ARRAY) {
+        fprintf(stderr, "MGL DBG: storage3Dms fail tex=%p target=0x%x\n", (void*)tex, tex ? tex->target : 0);
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     if (tex->immutable_storage) {
+        fprintf(stderr, "MGL DBG: storage3Dms fail immutable\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
     if (!checkInternalFormatForMetal(ctx, internalformat)) {
+        fprintf(stderr, "MGL DBG: storage3Dms fail checkInternalFormatForMetal 0x%x\n", internalformat);
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
-    (void)mglTextureStorageMultisampleMetadata(ctx, tex, GL_TEXTURE_2D_MULTISAMPLE_ARRAY, samples, internalformat, width, height, depth, fixedsamplelocations, GL_FALSE);
+    bool ok = mglTextureStorageMultisampleMetadata(ctx, tex, GL_TEXTURE_2D_MULTISAMPLE_ARRAY, samples, internalformat, width, height, depth, fixedsamplelocations, GL_FALSE);
+    fprintf(stderr, "MGL DBG: storage3Dms result=%d error=%d\n", (int)ok, STATE(error));
 }
 
 
@@ -7190,6 +8775,7 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
             if (STATE(error) != GL_NO_ERROR) {
                 return false;
             }
+            tex->compressed_internalformat = internalformat;
         } else if (tex->width != (GLuint)width ||
                    tex->height != (GLuint)height ||
                    tex->depth != (GLuint)depth ||
@@ -7199,6 +8785,7 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
             if (STATE(error) != GL_NO_ERROR) {
                 return false;
             }
+            tex->compressed_internalformat = internalformat;
         }
     } else if (tex->mipmap_levels == 0 || tex->internalformat != internalformat) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
@@ -7215,6 +8802,28 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
         lvl->data_size = 0u;
     }
 
+    /*
+     * When GL_PIXEL_UNPACK_BUFFER is bound, `data` is a byte offset into that
+     * buffer, not a CPU pointer.  Resolve it (rejecting mapped / out-of-range
+     * sources with a real GL error) before memcpy/hash, otherwise a small offset
+     * dereferences an unmapped address and segfaults.  No PBO bound: data is a
+     * CPU pointer (may be NULL) and is used as-is.
+     */
+    const uint8_t *resolved_src = (const uint8_t *)data;
+    Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
+    if (unpack_buf) {
+        const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, unpack_buf);
+        if (unpack_buf->mapped || !pbo_data) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        uintptr_t raw_off = (uintptr_t)data;
+        if (raw_off > (uintptr_t)unpack_buf->size ||
+            (size_t)imageSize > (size_t)unpack_buf->size - raw_off) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        resolved_src = pbo_data + raw_off;
+    }
+
     if (imageSize > 0) {
         vm_address_t compressed_data = 0;
         size_t alloc_size = (size_t)imageSize;
@@ -7225,8 +8834,8 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
         if (kr != KERN_SUCCESS || !compressed_data) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
-        if (data) {
-            memcpy((void *)(uintptr_t)compressed_data, data, (size_t)imageSize);
+        if (resolved_src) {
+            memcpy((void *)(uintptr_t)compressed_data, resolved_src, (size_t)imageSize);
         } else {
             memset((void *)(uintptr_t)compressed_data, 0, (size_t)imageSize);
         }
@@ -7240,13 +8849,15 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
     lvl->pitch = 0u;
     lvl->mtl_format = 0u;
     lvl->complete = true;
-    lvl->has_initialized_data = data ? GL_TRUE : GL_FALSE;
-    lvl->ever_written = data ? GL_TRUE : GL_FALSE;
+    lvl->has_initialized_data = resolved_src ? GL_TRUE : GL_FALSE;
+    lvl->ever_written = resolved_src ? GL_TRUE : GL_FALSE;
     lvl->suspicious_zero_upload = GL_FALSE;
-    lvl->last_init_source = data ? kTexImageCopy : kTexImageNull;
+    lvl->metal_data_authoritative = GL_FALSE;
+    lvl->last_init_source = (resolved_src && unpack_buf) ? kTexImagePBO
+                                                         : (resolved_src ? kTexImageCopy : kTexImageNull);
     lvl->last_upload_size = (size_t)imageSize;
-    lvl->last_src_ptr = data;
-    lvl->last_src_hash = data ? mglHashBytesSampled((const uint8_t *)data, (size_t)imageSize) : 0ull;
+    lvl->last_src_ptr = resolved_src;
+    lvl->last_src_hash = resolved_src ? mglHashBytesSampled(resolved_src, (size_t)imageSize) : 0ull;
 
     tex->num_levels = MAX(tex->num_levels, (GLuint)level + 1u);
     tex->complete = GL_TRUE;
@@ -7254,6 +8865,57 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
     tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
     STATE(dirty_bits) |= DIRTY_TEX;
     return true;
+}
+
+/*
+ * The six generic compressed internal formats are never valid as the `format`
+ * argument to glCompressedTex(Sub)Image* — only concrete (sized) block formats
+ * are.  CompressedTextureSubImage* must raise GL_INVALID_ENUM for them.
+ */
+static bool mglIsGenericCompressedFormat(GLenum format)
+{
+    switch (format) {
+        case GL_COMPRESSED_RED:
+        case GL_COMPRESSED_RG:
+        case GL_COMPRESSED_RGB:
+        case GL_COMPRESSED_RGBA:
+        case GL_COMPRESSED_SRGB:
+        case GL_COMPRESSED_SRGB_ALPHA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/*
+ * Compressed block formats that are defined over a 2-D block (RGTC2, BPTC,
+ * S3TC/DXT, ETC2, EAC) require a height and are therefore illegal as the
+ * format of a CompressedTexSubImage1D update.  Used to raise GL_INVALID_ENUM
+ * for the 1D target, matching the spec rule that these formats are not 1D.
+ */
+static bool mglCompressedFormatRequiresHeight(GLenum format)
+{
+    switch (mglTexLevelCanonicalInternalFormat((GLint)format)) {
+        case GL_COMPRESSED_RG_RGTC2:
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+        case GL_COMPRESSED_RGBA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+        case GL_COMPRESSED_RGB8_ETC2:
+        case GL_COMPRESSED_SRGB8_ETC2:
+        case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_RGBA8_ETC2_EAC:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+        case GL_COMPRESSED_R11_EAC:
+        case GL_COMPRESSED_SIGNED_R11_EAC:
+        case GL_COMPRESSED_RG11_EAC:
+        case GL_COMPRESSED_SIGNED_RG11_EAC:
+            return true;
+        default:
+            return false;
+    }
 }
 
 static bool mglCompressedSubImageUpdate(GLMContext ctx,
@@ -7280,6 +8942,10 @@ static bool mglCompressedSubImageUpdate(GLMContext ctx,
     if (!mglTexLevelInternalFormatCompressed(format)) {
         ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
     }
+    /* G (1D): block formats that require a height are not valid for a 1-D texture. */
+    if (tex->target == GL_TEXTURE_1D && mglCompressedFormatRequiresHeight(format)) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
     if (face >= _CUBE_MAP_MAX_FACE ||
         level >= (GLint)tex->num_levels ||
         !tex->faces[face].levels ||
@@ -7297,13 +8963,62 @@ static bool mglCompressedSubImageUpdate(GLMContext ctx,
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
     }
 
+    /* I: imageSize must be consistent with the compressed image data the
+     * implementation reports for this level.  MGL stores the generic compressed
+     * internalformats uncompressed and reports GL_TEXTURE_COMPRESSED_IMAGE_SIZE
+     * as the (page-aligned) level data_size, so a CompressedTexSubImage update
+     * whose imageSize differs from that reported size is inconsistent. */
+    if ((size_t)imageSize != lvl->data_size) {
+        ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+    }
+
+    /* J: CompressedTexSubImage is not allowed on TEXTURE_RECTANGLE textures. */
+    if (tex->target == GL_TEXTURE_RECTANGLE) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    /*
+     * When GL_PIXEL_UNPACK_BUFFER is bound, `data` is a byte offset into that
+     * buffer, not a CPU pointer.  Resolve it (and reject mapped / out-of-range
+     * sources with a real GL error) before any deref, otherwise hashing a small
+     * offset like 0x400 segfaults.  No PBO bound: data is a CPU pointer (may be
+     * NULL) and is used as-is, matching the historical behaviour.
+     */
+    const uint8_t *resolved_src = (const uint8_t *)data;
+    Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
+    if (unpack_buf) {
+        const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, unpack_buf);
+        if (unpack_buf->mapped || !pbo_data) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        uintptr_t raw_off = (uintptr_t)data;
+        if (raw_off > (uintptr_t)unpack_buf->size ||
+            (size_t)imageSize > (size_t)unpack_buf->size - raw_off) {
+            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+        }
+        resolved_src = pbo_data + raw_off;
+    }
+
+    /* H: the update format must match the texture's stored internalformat. */
+    if (format != (GLenum)tex->internalformat) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    /* G: the six generic compressed formats are never a valid CompressedTexSubImage
+     * format.  Checked last so that dimension / imageSize / rectangle / PBO errors
+     * (which CTS probes with these same generic values) take precedence. */
+    if (mglIsGenericCompressedFormat(format)) {
+        ERROR_RETURN_VALUE(GL_INVALID_ENUM, false);
+    }
+
     lvl->has_initialized_data = GL_TRUE;
     lvl->ever_written = GL_TRUE;
     lvl->suspicious_zero_upload = GL_FALSE;
-    lvl->last_init_source = kTexSubImageCPU;
+    lvl->metal_data_authoritative = GL_FALSE;
+    lvl->last_init_source = unpack_buf ? kTexSubImagePBO : kTexSubImageCPU;
     lvl->last_upload_size = (size_t)imageSize;
-    lvl->last_src_ptr = data;
-    lvl->last_src_hash = data ? mglHashBytesSampled((const uint8_t *)data, (size_t)imageSize) : 0ull;
+    lvl->last_src_ptr = resolved_src;
+    lvl->last_src_hash = resolved_src ? mglHashBytesSampled(resolved_src, (size_t)imageSize) : 0ull;
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     mglReleaseGLSampledTextureCopy(ctx, tex, "compressedTexSubImage");
     STATE(dirty_bits) |= DIRTY_TEX;
@@ -7749,8 +9464,6 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
 
 void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, GLenum type, void *pixels)
 {
-    fprintf(stderr, "MGL: glGetTexImage called - target=0x%x level=%d format=0x%x type=0x%x\n",
-            target, level, format, type);
     GLuint slice = 0;
 
     switch (target) {
@@ -7835,6 +9548,36 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG glGetTexImage ENTER: target=0x%x internalformat=0x%x format=0x%x type=0x%x level=%d\n",
+                target, tex->internalformat, format, type, level);
+    }
+    if (!verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type)) {
+        if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+            fprintf(stderr, "MGL DEBUG glGetTexImage: verifyInternalFormatAndFormatType FAILED for fmt=0x%x type=0x%x\n",
+                    format, type);
+        }
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    /* GetTexImage-specific validation (CTS isFormatValid OUTPUT_GETTEXIMAGE):
+     * GL_DEPTH_STENCIL requires combined depth-stencil internal format;
+     * GL_STENCIL_INDEX requires stencil or combined depth-stencil internal format. */
+    if (format == GL_DEPTH_STENCIL && !mglInternalFormatIsCombinedDepthStencil(tex->internalformat)) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (format == GL_STENCIL_INDEX) {
+        bool is_stencil = (tex->internalformat == GL_STENCIL_INDEX ||
+                           tex->internalformat == GL_STENCIL_INDEX1 ||
+                           tex->internalformat == GL_STENCIL_INDEX4 ||
+                           tex->internalformat == GL_STENCIL_INDEX8 ||
+                           tex->internalformat == GL_STENCIL_INDEX16);
+        if (!is_stencil && !mglInternalFormatIsCombinedDepthStencil(tex->internalformat)) {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+    }
     if (sizeForFormatType(format, type) == 0u) {
         ERROR_RETURN(GL_INVALID_ENUM);
         return;
@@ -7874,15 +9617,33 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         return;
     }
 
-    fprintf(stderr, "MGL: glGetTexImage - reading %dx%d, bytesPerRow=%zu\n", width, height, pack_layout.dst_pitch);
-
     bool render_target_needs_readback =
-        tex->is_render_target && tex->mtl_render_target_write_version != 0u;
+        (tex->is_render_target && tex->mtl_render_target_write_version != 0u) ||
+        tex->metal_data_authoritative ||
+        lvl->metal_data_authoritative;
+
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG glGetTexImage: target=0x%x internalformat=0x%x format=0x%x type=0x%x "
+                "width=%d height=%d depth=%d is_render_target=%d mtl_rt_write_ver=%u "
+                "tex_metal_auth=%d lvl_metal_auth=%d mtl_data=%p lvl->data=%p lvl->pitch=%zu\n",
+                target, tex->internalformat, format, type, width, height, depth,
+                tex->is_render_target, tex->mtl_render_target_write_version,
+                tex->metal_data_authoritative, lvl->metal_data_authoritative,
+                (void*)tex->mtl_data, (void*)lvl->data, lvl->pitch);
+    }
 
     if (!render_target_needs_readback &&
-        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels)) {
+        mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, depth, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
+        if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+            fprintf(stderr, "MGL DEBUG glGetTexImage: used CPU path (mglCopyTextureLevelToPackBuffer)\n");
+        }
         return;
     }
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG glGetTexImage: CPU path not taken, render_target_needs_readback=%d\n",
+                render_target_needs_readback);
+    }
+
 
     if (target == GL_TEXTURE_3D ||
         target == GL_TEXTURE_1D_ARRAY ||
@@ -7890,7 +9651,6 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         target == GL_TEXTURE_CUBE_MAP_ARRAY) {
         if (render_target_needs_readback) {
             if (!tex->mtl_data) {
-                fprintf(stderr, "MGL ERROR: glGetTexImage - layered render target has no Metal data\n");
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
@@ -7921,13 +9681,30 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         return;
     }
 
+    /* If the texture has no Metal data, try the CPU data fallback first.
+     * If that fails, let mtlGetTexImage handle Metal texture creation via
+     * bindMTLTexture. */
     if (!tex->mtl_data) {
-        fprintf(stderr, "MGL ERROR: glGetTexImage - texture has no Metal data\n");
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+        /* CPU data fallback: use stored CPU data directly if available */
+        if (lvl->data && lvl->pitch >= (size_t)width * pixel_size &&
+            (tex->internalformat == GL_RGBA8 || tex->internalformat == GL_RGB8) &&
+            format == GL_RGBA && type == GL_UNSIGNED_BYTE) {
+            uint8_t *dst = (uint8_t *)pixels + pack_layout.skip_offset_bytes;
+            const uint8_t *src = (const uint8_t *)lvl->data;
+            size_t rowBytes = (size_t)width * pixel_size;
+            for (GLsizei y = 0; y < height; y++) {
+                memcpy(dst + ((size_t)y * pack_layout.dst_pitch),
+                       src + ((size_t)y * lvl->pitch),
+                       rowBytes);
+            }
+            return;
+        }
+        /* No CPU fallback available - let mtlGetTexImage try to create
+         * the Metal texture on-demand via bindMTLTexture. */
     }
 
-    if (tex->internalformat == GL_RGBA8 &&
+    if (tex->mtl_data &&
+        tex->internalformat == GL_RGBA8 &&
         format == GL_RGBA &&
         type == GL_UNSIGNED_BYTE &&
         lvl->last_init_source == kTexCTSPointQuadFallback &&
@@ -7963,7 +9740,6 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
 
 void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum format, GLenum type, GLsizei bufSize, void *pixels)
 {
-    fprintf(stderr, "MGL: glGetTextureImage called - texture=%u level=%d\n", texture, level);
     if (bufSize < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
@@ -8036,7 +9812,7 @@ void mglGetTextureImage(GLMContext ctx, GLuint texture, GLint level, GLenum form
     }
 
 
-    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels)) {
+    if (mglCopyTextureLevelToPackBuffer(lvl, tex->internalformat, width, height, 1, format, type, &pack_layout, pixels, ctx->state.pack.swap_bytes == GL_TRUE)) {
         return;
     }
 
@@ -8157,7 +9933,8 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                                    format,
                                                    type,
                                                    &slice_layout,
-                                                   dst_base + ((size_t)z * pack_layout.dst_image_size))) {
+                                                   dst_base + ((size_t)z * pack_layout.dst_image_size),
+                                                   ctx->state.pack.swap_bytes == GL_TRUE)) {
                 memset(dst_base + ((size_t)z * pack_layout.dst_image_size), 0, pack_layout.write_span_bytes);
             }
         }
@@ -8175,7 +9952,8 @@ void mglGetTextureSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xo
                                           format,
                                           type,
                                           &pack_layout,
-                                          pixels)) {
+                                          pixels,
+                                          ctx->state.pack.swap_bytes == GL_TRUE)) {
         return;
     }
 
@@ -8502,9 +10280,7 @@ void mglCompressedTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level,
 {
     Texture *tex = getTex(ctx, texture, 0);
     (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, 0, 0, width, 1, 1, format, imageSize, data);
-}
-
-void mglCompressedTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data)
+}void mglCompressedTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data)
 {
     Texture *tex = getTex(ctx, texture, 0);
     (void)mglCompressedSubImageUpdate(ctx, tex, 0, level, xoffset, yoffset, 0, width, height, 1, format, imageSize, data);

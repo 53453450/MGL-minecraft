@@ -288,6 +288,7 @@ GLuint bufferIndexFromTarget(GLMContext ctx, GLenum target)
         case GL_COPY_WRITE_BUFFER: return _COPY_WRITE_BUFFER;
         case GL_DISPATCH_INDIRECT_BUFFER: return _DISPATCH_INDIRECT_BUFFER;
         case GL_DRAW_INDIRECT_BUFFER: return _DRAW_INDIRECT_BUFFER;
+        case GL_PARAMETER_BUFFER_ARB: return _PARAMETER_BUFFER;
         case GL_SHADER_STORAGE_BUFFER: return _SHADER_STORAGE_BUFFER;
 
         default:
@@ -398,6 +399,7 @@ bool checkTarget(GLMContext ctx, GLenum target)
         case GL_COPY_WRITE_BUFFER:
         case GL_DISPATCH_INDIRECT_BUFFER:
         case GL_DRAW_INDIRECT_BUFFER:
+        case GL_PARAMETER_BUFFER_ARB:
         case GL_SHADER_STORAGE_BUFFER:
             return true;
     }
@@ -449,6 +451,9 @@ static void mglSetGenericBufferBinding(GLMContext ctx, GLenum target, GLuint nam
         case GL_DISPATCH_INDIRECT_BUFFER:
             STATE_VAR(dispatch_indirect_buffer_binding) = name;
             break;
+        case GL_DRAW_INDIRECT_BUFFER:
+            STATE_VAR(draw_indirect_buffer_binding) = name;
+            break;
         case GL_SHADER_STORAGE_BUFFER:
             STATE_VAR(shader_storage_buffer_binding) = name;
             break;
@@ -474,6 +479,8 @@ static void mglClearGenericBufferBindingName(GLMContext ctx, GLuint name)
         STATE_VAR(uniform_buffer_binding) = 0u;
     if (STATE_VAR(dispatch_indirect_buffer_binding) == name)
         STATE_VAR(dispatch_indirect_buffer_binding) = 0u;
+    if (STATE_VAR(draw_indirect_buffer_binding) == name)
+        STATE_VAR(draw_indirect_buffer_binding) = 0u;
     if (STATE_VAR(shader_storage_buffer_binding) == name)
         STATE_VAR(shader_storage_buffer_binding) = 0u;
 }
@@ -2447,6 +2454,15 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
+    /* For read maps, ensure all pending GPU operations (including compute
+     * dispatches) are complete before the CPU reads the buffer contents. */
+    if (access == GL_READ_ONLY || access == GL_READ_WRITE) {
+        mglFlushCommandBuffer(ctx);
+        if (ctx->mtl_funcs.mtlFlush) {
+            ctx->mtl_funcs.mtlFlush(ctx, true);
+        }
+    }
+
     ptr->mapped = GL_TRUE;
     ptr->access = access;
     ptr->access_flags = 0;
@@ -2750,6 +2766,18 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
         }
     }
 
+    /* For read maps, ensure all pending GPU operations (including compute
+     * dispatches) are complete before the CPU reads the buffer contents.
+     * Compute dispatches are encoded directly into the Metal command buffer
+     * and are not tracked by mglFlushPendingDrawsForBuffer, so we must commit
+     * and wait here to guarantee visibility of GPU writes. */
+    if (access_flags & GL_MAP_READ_BIT) {
+        mglFlushCommandBuffer(ctx);
+        if (ctx->mtl_funcs.mtlFlush) {
+            ctx->mtl_funcs.mtlFlush(ctx, true);
+        }
+    }
+
     ptr->access = 0;
     ptr->mapped_offset = offset;
     ptr->mapped_length = length;
@@ -2900,6 +2928,15 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
             mglFlushPendingDrawsForBuffer(ctx, ptr);
         } else {
             mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, length);
+        }
+    }
+
+    /* For read maps, ensure all pending GPU operations (including compute
+     * dispatches) are complete before the CPU reads the buffer contents. */
+    if (access & GL_MAP_READ_BIT) {
+        mglFlushCommandBuffer(ctx);
+        if (ctx->mtl_funcs.mtlFlush) {
+            ctx->mtl_funcs.mtlFlush(ctx, true);
         }
     }
 

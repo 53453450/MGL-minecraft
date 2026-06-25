@@ -2903,14 +2903,17 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
     if (mglShouldSkipConditionalRender(ctx))
         return;
 
-    if (mglTryCTSPointQuadGeometryFallback(ctx, mode, first, count))
+    if (mglTryCTSPointQuadGeometryFallback(ctx, mode, first, count)) {
         return;
+    }
 
-    if (mglTryCTSConstExprPointGeometryFallback(ctx, mode, first, count))
+    if (mglTryCTSConstExprPointGeometryFallback(ctx, mode, first, count)) {
         return;
+    }
 
-    if (mglTryCTSGeometryPixelFillFallback(ctx, mode, first, count))
+    if (mglTryCTSGeometryPixelFillFallback(ctx, mode, first, count)) {
         return;
+    }
 
     if (!validate_program(ctx)) {
         fprintf(stderr, "MGL Error: mglDrawArrays: validate_program failed\n");
@@ -2918,19 +2921,23 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
         return;
     }
 
-    if (mglTryCTSConditionalDispatchDepthDrawFallback(ctx, mode, first, count))
+    if (mglTryCTSConditionalDispatchDepthDrawFallback(ctx, mode, first, count)) {
         return;
+    }
 
     mglRecordActiveSampleQueryDraw(ctx);
 
-    if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, 1, 0))
+    if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, 1, 0)) {
         return;
+    }
 
-    if (mglTryCTSMaxClipDistancesFragmentFallback(ctx, mode, first, count))
+    if (mglTryCTSMaxClipDistancesFragmentFallback(ctx, mode, first, count)) {
         return;
+    }
 
-    if (mglTryCTSGeometryPixelFillFallback(ctx, mode, first, count))
+    if (mglTryCTSGeometryPixelFillFallback(ctx, mode, first, count)) {
         return;
+    }
 
     mglInvalidateColorShadowsForDraw(ctx);
 
@@ -2960,6 +2967,7 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
                         (unsigned)(ctx->state.program ? ctx->state.program->name : ctx->state.program_name),
                         ctx->state.vao,
                         (unsigned)ctx->state.dirty_bits);
+    if (getenv("MGL_CULL_DBG")) fprintf(stderr, "MGL_CULL_DBG: calling mtlDrawArrays\n");
     ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
 }
 

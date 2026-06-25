@@ -258,7 +258,11 @@ GLuint sizeForType(GLenum type)
         case GL_UNSIGNED_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_10F_11F_11F_REV:
         case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
             return sizeof(uint32_t);
+
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 8u;
 
         default:
             fprintf(stderr, "MGL WARNING: sizeForType unknown type 0x%x, assuming 4 bytes\n", type);
@@ -353,7 +357,11 @@ GLuint sizeForFormatType(GLenum format, GLenum type)
         case GL_UNSIGNED_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_10F_11F_11F_REV:
         case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
             return sizeof(uint32_t);
+
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 8u;
 
         case GL_HALF_FLOAT:
             return sizeof(uint16_t) * numComponentsForFormat(format);
@@ -364,6 +372,50 @@ GLuint sizeForFormatType(GLenum format, GLenum type)
     }
 
     return 0;
+}
+
+size_t mglPixelTypeDatumBytes(GLenum type)
+{
+    switch (type) {
+        /* Single-byte storage. */
+        case GL_UNSIGNED_BYTE:
+        case GL_BYTE:
+        case GL_UNSIGNED_BYTE_3_3_2:
+        case GL_UNSIGNED_BYTE_2_3_3_REV:
+            return 1u;
+
+        /* Two-byte storage. */
+        case GL_UNSIGNED_SHORT:
+        case GL_SHORT:
+        case GL_HALF_FLOAT:
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_5_6_5_REV:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_4_4_4_4_REV:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+        case GL_UNSIGNED_SHORT_1_5_5_5_REV:
+            return 2u;
+
+        /* Four-byte storage. */
+        case GL_UNSIGNED_INT:
+        case GL_INT:
+        case GL_FLOAT:
+        case GL_UNSIGNED_INT_8_8_8_8:
+        case GL_UNSIGNED_INT_8_8_8_8_REV:
+        case GL_UNSIGNED_INT_10_10_10_2:
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_24_8:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            return 4u;
+
+        /* Eight-byte storage. */
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 8u;
+
+        default:
+            return 0u;
+    }
 }
 
 GLenum verifyInternalFormatType(GLint internalformat, GLenum format, GLenum type)
@@ -604,26 +656,25 @@ GLboolean validFormatType(GLuint format, GLuint type)
 
         case GL_UNSIGNED_BYTE_3_3_2:
         case GL_UNSIGNED_SHORT_5_6_5:
-            RETURN_FALSE_ON_FAILURE(format == GL_RGB);
-            break;
-
         case GL_UNSIGNED_BYTE_2_3_3_REV:
         case GL_UNSIGNED_SHORT_5_6_5_REV:
-            RETURN_FALSE_ON_FAILURE(format == GL_BGR);
+            RETURN_FALSE_ON_FAILURE(format == GL_RGB);
             break;
 
         case GL_UNSIGNED_SHORT_4_4_4_4:
         case GL_UNSIGNED_SHORT_5_5_5_1:
         case GL_UNSIGNED_INT_8_8_8_8:
         case GL_UNSIGNED_INT_10_10_10_2:
-            RETURN_FALSE_ON_FAILURE(format == GL_RGBA);
-            break;
-
         case GL_UNSIGNED_SHORT_4_4_4_4_REV:
         case GL_UNSIGNED_SHORT_1_5_5_5_REV:
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            RETURN_FALSE_ON_FAILURE(format == GL_BGRA);
+            RETURN_FALSE_ON_FAILURE(format == GL_RGBA || format == GL_BGRA);
+            break;
+
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            RETURN_FALSE_ON_FAILURE(format == GL_RGB);
             break;
 
         default:
@@ -781,13 +832,18 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type)
             return bitsToBytes(30);
 
         case GL_RGB12:
-            return bitsToBytes(36);
+            /* Metal has no 12-bit format; stored as RGBA16Unorm (16-bit/comp).
+             * CTS uses GL_UNSIGNED_SHORT (6 bytes/pixel). */
+            return bitsToBytes(48);
 
         case GL_RGB16:
             return bitsToBytes(48);
 
         case GL_RGBA2:
-            return bitsToBytes(8);
+            /* GL_RGBA2 nominally uses 2 bits/component, but CTS uploads and
+             * reads back with GL_UNSIGNED_SHORT_4_4_4_4 (4 bits/component).
+             * Store as 4 bits/component (2 bytes/pixel) to preserve precision. */
+            return bitsToBytes(16);
 
         case GL_RGBA4:
             return bitsToBytes(16);
@@ -802,7 +858,9 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type)
             return bitsToBytes(32);
 
         case GL_RGBA12:
-            return bitsToBytes(48);
+            /* Metal has no 12-bit format; stored as RGBA16Unorm (16-bit/comp).
+             * CTS uses GL_UNSIGNED_SHORT (8 bytes/pixel). */
+            return bitsToBytes(64);
 
         case GL_RGBA16:
             return bitsToBytes(64);
@@ -821,9 +879,6 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type)
 
         case GL_DEPTH_COMPONENT32:
             return bitsToBytes(32);
-
-        case GL_SRGB:
-            return bitsToBytes(24);
 
         case GL_SRGB8:
             return bitsToBytes(24);
@@ -1040,6 +1095,45 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type)
         case GL_COMPRESSED_SIGNED_RG11_EAC:
             return 0;   // return 0 on compressed
 
+        /* Unsized internal formats - must match mtlFormatForGLInternalFormat
+         * so the CPU buffer pitch matches the Metal texture pixel size. */
+        case GL_RED:
+            return bitsToBytes(8);   // R8Unorm
+        case GL_RG:
+            return bitsToBytes(16);  // RG8Unorm
+        case GL_RGB:
+        case GL_RGBA:
+            return bitsToBytes(32);  // RGBA8Unorm (Metal has no RGB-only)
+        case GL_SRGB:
+            return bitsToBytes(32);  // RGBA8Unorm_sRGB
+        case GL_DEPTH_COMPONENT:
+            return bitsToBytes(32);  // Depth32Float
+        case GL_DEPTH_STENCIL:
+            return bitsToBytes(40);  // Depth32Float_Stencil8
+        case GL_STENCIL_INDEX:
+            return bitsToBytes(8);   // Stencil8
+
+        /* Legacy luminance/alpha sized formats - must match
+         * mtlFormatForGLInternalFormat mappings. */
+        case GL_ALPHA8:
+        case GL_LUMINANCE8:
+            return bitsToBytes(8);   // R8Unorm
+        case GL_ALPHA16:
+        case GL_LUMINANCE16:
+            return bitsToBytes(16);  // R16Unorm
+        case GL_ALPHA32F_ARB:
+        case GL_LUMINANCE32F_ARB:
+            return bitsToBytes(32);  // R32Float
+        case GL_ALPHA16F_ARB:
+        case GL_LUMINANCE16F_ARB:
+            return bitsToBytes(16);  // R16Float
+        case GL_LUMINANCE_ALPHA32F_ARB:
+            return bitsToBytes(64);  // RG32Float
+        case GL_LUMINANCE_ALPHA16F_ARB:
+            return bitsToBytes(32);  // RG16Float
+        case 0x8045: // GL_LUMINANCE8_ALPHA8
+            return bitsToBytes(16);  // RG8Unorm
+
         default:
             if (internalformat)
             {
@@ -1205,9 +1299,9 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
         case GL_RGB12:
             switch(component)
             {
-                case GL_RED: return 12;
-                case GL_GREEN: return 12;
-                case GL_BLUE: return 12;
+                case GL_RED: return 16;
+                case GL_GREEN: return 16;
+                case GL_BLUE: return 16;
                 case GL_ALPHA: return 0;
             }
             break;
@@ -1225,10 +1319,10 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
         case GL_RGBA2:
             switch(component)
             {
-                case GL_RED: return 2;
-                case GL_GREEN: return 2;
-                case GL_BLUE: return 2;
-                case GL_ALPHA: return 2;
+                case GL_RED: return 4;
+                case GL_GREEN: return 4;
+                case GL_BLUE: return 4;
+                case GL_ALPHA: return 4;
             }
             break;
 
@@ -1253,7 +1347,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA8:
-            return 8;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 8;
+            }
+            break;
 
         case GL_RGB10_A2:
             switch(component)
@@ -1266,10 +1364,18 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA12:
-            return 12;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 12;
+            }
+            break;
 
         case GL_RGBA16:
-            return 16;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 16;
+            }
+            break;
 
         case GL_COMPRESSED_RGB:
             return 0;   // return 0 on compressed
@@ -1278,13 +1384,13 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             return 0;   // return 0 on compressed
 
         case GL_DEPTH_COMPONENT16:
-            return 16;
+            return component == GL_DEPTH ? 16 : 0;
 
         case GL_DEPTH_COMPONENT24:
-            return 24;
+            return component == GL_DEPTH ? 24 : 0;
 
         case GL_DEPTH_COMPONENT32:
-            return 32;
+            return component == GL_DEPTH ? 32 : 0;
 
         case GL_SRGB:
         case GL_SRGB8:
@@ -1299,7 +1405,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
 
         case GL_SRGB_ALPHA:
         case GL_SRGB8_ALPHA8:
-            return 8;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 8;
+            }
+            break;
 
         case GL_COMPRESSED_SRGB:
             return 0;   // return 0 on compressed
@@ -1314,7 +1424,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             return 0;   // return 0 on compressed
 
         case GL_RGBA32F:
-            return 32;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 32;
+            }
+            break;
 
         case GL_RGB32F:
             switch(component)
@@ -1327,7 +1441,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA16F:
-            return 16;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 16;
+            }
+            break;
 
         case GL_RGB16F:
             switch(component)
@@ -1360,7 +1478,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA32UI:
-            return 32;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 32;
+            }
+            break;
 
         case GL_RGB32UI:
             switch(component)
@@ -1373,7 +1495,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA16UI:
-            return 16;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 16;
+            }
+            break;
 
         case GL_RGB16UI:
             switch(component)
@@ -1386,7 +1512,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA8UI:
-            return 8;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 8;
+            }
+            break;
 
         case GL_RGB8UI:
             switch(component)
@@ -1399,7 +1529,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA32I:
-            return 32;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 32;
+            }
+            break;
 
         case GL_RGB32I:
             switch(component)
@@ -1412,7 +1546,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA16I:
-            return 16;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 16;
+            }
+            break;
 
         case GL_RGB16I:
             switch(component)
@@ -1425,7 +1563,11 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_RGBA8I:
-            return 8;
+            switch(component)
+            {
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 8;
+            }
+            break;
 
         case GL_RGB8I:
             switch(component)
@@ -1438,7 +1580,7 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_DEPTH_COMPONENT32F:
-            return 32;
+            return component == GL_DEPTH ? 32 : 0;
 
         case GL_DEPTH32F_STENCIL8:
             switch(component)
@@ -1457,16 +1599,16 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
             break;
 
         case GL_STENCIL_INDEX1:
-            return 1; // retBits(1);
+            return component == GL_STENCIL ? 1 : 0;
 
         case GL_STENCIL_INDEX4:
-            return 4; // retBits(4);
+            return component == GL_STENCIL ? 4 : 0;
 
         case GL_STENCIL_INDEX8:
-            return 8;
+            return component == GL_STENCIL ? 8 : 0;
 
         case GL_STENCIL_INDEX16:
-            return 16;
+            return component == GL_STENCIL ? 16 : 0;
 
         case GL_COMPRESSED_RED_RGTC1:
             return 0;   // return 0 on compressed
@@ -1802,6 +1944,8 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_BGR: return GL_RGB8;  /* BGR treated as RGB */
                 case GL_RGBA: return GL_RGBA8;
                 case GL_BGRA: return GL_RGBA8;  /* BGRA treated as RGBA */
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT16;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1814,6 +1958,8 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_RG: return GL_RG8_SNORM;
                 case GL_RGB: return GL_RGB8_SNORM;
                 case GL_RGBA: return GL_RGBA8_SNORM;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT16;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1826,6 +1972,8 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_RG: return GL_RG16;
                 case GL_RGB: return GL_RGB16;
                 case GL_RGBA: return GL_RGBA16;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT16;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1838,6 +1986,8 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_RG: return GL_RG16_SNORM;
                 case GL_RGB: return GL_RGB16_SNORM;
                 case GL_RGBA: return GL_RGBA16_SNORM;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT16;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1846,10 +1996,17 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
         case GL_UNSIGNED_INT:
             switch(format)
             {
-                case GL_RED: return GL_R32UI;
-                case GL_RG: return GL_RG32UI;
-                case GL_RGB: return GL_RGB32UI;
-                case GL_RGBA: return GL_RGBA32UI;
+                /* Non-integer formats with integer types: resolve to float
+                 * sized formats, NOT integer formats. GL_RED/GL_RG/GL_RGB/
+                 * GL_RGBA are non-integer (UNORM) formats; using GL_UNSIGNED_INT
+                 * as the type does NOT make the texture integer. Only
+                 * GL_*_INTEGER formats create integer textures. */
+                case GL_RED: return GL_R32F;
+                case GL_RG: return GL_RG32F;
+                case GL_RGB: return GL_RGB32F;
+                case GL_RGBA: return GL_RGBA32F;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT24;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1858,10 +2015,13 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
         case GL_INT:
             switch(format)
             {
-                case GL_RED: return GL_R32I;
-                case GL_RG: return GL_RG32I;
-                case GL_RGB: return GL_RGB32I;
-                case GL_RGBA: return GL_RGBA32I;
+                /* See comment above: non-integer formats stay non-integer. */
+                case GL_RED: return GL_R32F;
+                case GL_RG: return GL_RG32F;
+                case GL_RGB: return GL_RGB32F;
+                case GL_RGBA: return GL_RGBA32F;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT32F;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1876,7 +2036,7 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_RGBA: return GL_RGBA32F;
                 case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT32F;
                 case GL_DEPTH_STENCIL: return GL_DEPTH32F_STENCIL8;
-
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1889,6 +2049,8 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
                 case GL_RG: return GL_RG16F;
                 case GL_RGB: return GL_RGB16F;
                 case GL_RGBA: return GL_RGBA16F;
+                case GL_DEPTH_COMPONENT: return GL_DEPTH_COMPONENT32F;
+                case GL_STENCIL_INDEX: return GL_STENCIL_INDEX8;
                 default:
                     return 0;
             }
@@ -1918,6 +2080,16 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type)
         case GL_UNSIGNED_INT_8_8_8_8_REV:
             return GL_RGBA8;
 
+        case GL_UNSIGNED_INT_24_8:
+            if (format == GL_DEPTH_STENCIL)
+                return GL_DEPTH24_STENCIL8;
+            return 0;
+
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            if (format == GL_DEPTH_STENCIL)
+                return GL_DEPTH32F_STENCIL8;
+            return 0;
+
         default:
             fprintf(stderr,
                     "MGL WARNING: internalFormatForGLFormatType unknown type 0x%x format 0x%x\n",
@@ -1936,19 +2108,19 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatRGBA8Unorm;  // Upconvert to RGBA8
             
         case GL_RGB8:
+            return MTLPixelFormatRGBA8Unorm;  // Metal doesn't have RGB-only formats
+
         case GL_RGB10:
+            return MTLPixelFormatRGB10A2Unorm;  // 10-bit per channel
+
         case GL_RGB12:
         case GL_RGB16:
-            return MTLPixelFormatRGBA8Unorm;  // Metal doesn't have RGB-only formats
+            return MTLPixelFormatRGBA16Unorm;  // 16-bit per channel
             
         case GL_RGBA2:
-            return MTLPixelFormatRGBA8Unorm;  // Upconvert
-            
         case GL_RGBA4:
-            return MTLPixelFormatABGR4Unorm;
-            
         case GL_RGB5_A1:
-            return MTLPixelFormatBGR5A1Unorm;
+            return MTLPixelFormatRGBA8Unorm;  // Upconvert to avoid ABGR4/BGR5A1 bit order mismatch
 
         case GL_RGBA8:
             return MTLPixelFormatRGBA8Unorm;    // working format
@@ -1964,7 +2136,7 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatRGB10A2Unorm;    // working format
 
         case GL_RGBA12:
-            return MTLPixelFormatInvalid;
+            return MTLPixelFormatRGBA16Unorm;  // Upconvert 12-bit to 16-bit
 
         case GL_RGBA16:
             return MTLPixelFormatRGBA16Unorm;    // working format
@@ -1996,13 +2168,13 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatDepth32Float;
 
         case GL_SRGB:
-            return MTLPixelFormatInvalid;
+            return MTLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
 
         case GL_SRGB8:
             return MTLPixelFormatRGBA8Unorm_sRGB;
 
         case GL_SRGB_ALPHA:
-            return MTLPixelFormatInvalid;
+            return MTLPixelFormatRGBA8Unorm_sRGB;  // Upconvert to RGBA8 sRGB
 
         case GL_SRGB8_ALPHA8:
             return MTLPixelFormatRGBA8Unorm_sRGB;
@@ -2015,7 +2187,7 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             }
 
         case GL_COMPRESSED_SRGB_ALPHA:
-            return MTLPixelFormatInvalid;
+            return MTLPixelFormatRGBA8Unorm_sRGB;  // Decompress to RGBA8 sRGB
 
         case GL_COMPRESSED_RED:
             if (__builtin_available(macOS 11.0, *)) {
@@ -2432,6 +2604,170 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
     return MTLPixelFormatInvalid;
 }
 
+GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
+{
+    /* GL 4.6 required color-renderable formats (Table 8.11).
+     * Matches the list used by the CTS packed_pixels isFBOImageAttachValid
+     * for non-ES contexts.  Unsized base formats are canonicalised first. */
+    switch (internalformat)
+    {
+        /* Unsized base formats - canonicalise to sized equivalents.
+         * GL_RED->R8, GL_RG->RG8, GL_RGB->RGB8, GL_RGBA->RGBA8 are all
+         * color-renderable.  GL_SRGB is not (SRGB8 is not in the required
+         * list), but GL_SRGB_ALPHA->SRGB8_ALPHA8 is. */
+        case GL_RED: return GL_TRUE;
+        case GL_RG: return GL_TRUE;
+        case GL_RGB: return GL_TRUE;
+        case GL_RGBA: return GL_TRUE;
+        case GL_SRGB: return GL_FALSE;
+        case GL_SRGB_ALPHA: return GL_TRUE;
+
+        /* Required color-renderable sized formats (CTS colorRenderableFrmats). */
+        case GL_RGBA32F:
+        case GL_RGBA32I:
+        case GL_RGBA32UI:
+        case GL_RGBA16:
+        case GL_RGBA16F:
+        case GL_RGBA16I:
+        case GL_RGBA16UI:
+        case GL_RGBA8:
+        case GL_RGBA8I:
+        case GL_RGBA8UI:
+        case GL_SRGB8_ALPHA8:
+        case GL_RGB10_A2:
+        case GL_RGB10_A2UI:
+        case GL_RGB5_A1:
+        case GL_RGBA4:
+        case GL_R11F_G11F_B10F:
+        case GL_RGB565:
+        case GL_RG32F:
+        case GL_RG32I:
+        case GL_RG32UI:
+        case GL_RG16:
+        case GL_RG16F:
+        case GL_RG16I:
+        case GL_RG16UI:
+        case GL_RG8:
+        case GL_RG8I:
+        case GL_RG8UI:
+        case GL_R32F:
+        case GL_R32I:
+        case GL_R32UI:
+        case GL_R16F:
+        case GL_R16I:
+        case GL_R16UI:
+        case GL_R16:
+        case GL_R8:
+        case GL_R8I:
+        case GL_R8UI:
+            return GL_TRUE;
+
+        /* Depth/stencil formats - not color renderable. */
+        case GL_DEPTH_COMPONENT:
+        case GL_DEPTH_COMPONENT16:
+        case GL_DEPTH_COMPONENT24:
+        case GL_DEPTH_COMPONENT32:
+        case GL_DEPTH_COMPONENT32F:
+        case GL_DEPTH_STENCIL:
+        case GL_DEPTH24_STENCIL8:
+        case GL_DEPTH32F_STENCIL8:
+        case GL_STENCIL_INDEX:
+        case GL_STENCIL_INDEX1:
+        case GL_STENCIL_INDEX4:
+        case GL_STENCIL_INDEX8:
+        case GL_STENCIL_INDEX16:
+            return GL_FALSE;
+
+        /* Compressed formats - not color renderable as FBO attachments. */
+        case GL_COMPRESSED_RED:
+        case GL_COMPRESSED_RG:
+        case GL_COMPRESSED_RGB:
+        case GL_COMPRESSED_RGBA:
+        case GL_COMPRESSED_SRGB:
+        case GL_COMPRESSED_SRGB_ALPHA:
+        case GL_COMPRESSED_RED_RGTC1:
+        case GL_COMPRESSED_SIGNED_RED_RGTC1:
+        case GL_COMPRESSED_RG_RGTC2:
+        case GL_COMPRESSED_SIGNED_RG_RGTC2:
+        case GL_COMPRESSED_RGBA_BPTC_UNORM:
+        case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
+        case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+        case GL_COMPRESSED_RGB8_ETC2:
+        case GL_COMPRESSED_SRGB8_ETC2:
+        case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_SRGB8_PUNCHTHROUGH_ALPHA1_ETC2:
+        case GL_COMPRESSED_RGBA8_ETC2_EAC:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ETC2_EAC:
+        case GL_COMPRESSED_R11_EAC:
+        case GL_COMPRESSED_SIGNED_R11_EAC:
+        case GL_COMPRESSED_RG11_EAC:
+        case GL_COMPRESSED_SIGNED_RG11_EAC:
+            return GL_FALSE;
+
+        /* Legacy luminance/alpha formats - not color renderable in core profile. */
+        case GL_ALPHA:
+        case GL_ALPHA8:
+        case GL_ALPHA16:
+        case GL_ALPHA32F_ARB:
+        case GL_ALPHA16F_ARB:
+        case GL_LUMINANCE:
+        case GL_LUMINANCE8:
+        case GL_LUMINANCE16:
+        case GL_LUMINANCE32F_ARB:
+        case GL_LUMINANCE16F_ARB:
+        case GL_LUMINANCE_ALPHA:
+        case GL_LUMINANCE_ALPHA32F_ARB:
+        case GL_LUMINANCE_ALPHA16F_ARB:
+            return GL_FALSE;
+
+        /* SNORM formats - not in the required color-renderable list. */
+        case GL_R8_SNORM:
+        case GL_RG8_SNORM:
+        case GL_RGB8_SNORM:
+        case GL_RGBA8_SNORM:
+        case GL_R16_SNORM:
+        case GL_RG16_SNORM:
+        case GL_RGB16_SNORM:
+        case GL_RGBA16_SNORM:
+            return GL_FALSE;
+
+        /* RGB-only sized formats not in the required list. */
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB16:
+        case GL_RGB16F:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+        case GL_RGB9_E5:
+        case GL_RGB10:
+        case GL_RGB12:
+            return GL_FALSE;
+
+        /* RGB32F/I/UI are mapped to RGBA32 Metal formats which are
+         * color-renderable.  Treating them as color-renderable avoids
+         * InternalError in CTS direct_state_access tests that use these
+         * formats for framebuffer attachments. */
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+            return GL_TRUE;
+
+        /* Other non-required formats. */
+        case GL_R3_G3_B2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGBA2:
+        case GL_RGBA12:
+            return GL_FALSE;
+
+        default:
+            return GL_FALSE;
+    }
+}
+
 MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
 {
     switch(gl_format)
@@ -2603,6 +2939,9 @@ MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type)
     }
 }
 
+extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
+extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);
+
 MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
 {
     MTLPixelFormat mtl_format;
@@ -2621,6 +2960,18 @@ MTLPixelFormat mtlPixelFormatForGLTex(Texture * tex)
                 "MGL WARNING: mtlPixelFormatForGLTex texture %u has no internal format\n",
                 tex->name);
         return MTLPixelFormatInvalid;
+    }
+
+    /* glTexImage* with a compressed internalformat stores data uncompressed
+     * (see mglCompressedInternalFormatToSizedUncompressed remap in
+     * createTextureLevel). The Metal texture must match the uncompressed
+     * data layout, not the compressed internalformat. glCompressedTexImage*
+     * stores data with pitch==0 and still needs the compressed Metal format. */
+    if (mglTexLevelInternalFormatCompressed((GLint)internal_format) &&
+        tex->faces[0].levels &&
+        tex->faces[0].levels[0].pitch > 0u)
+    {
+        internal_format = (GLenum)mglCompressedInternalFormatToSizedUncompressed((GLint)internal_format);
     }
 
     mtl_format = mtlFormatForGLInternalFormat(internal_format);

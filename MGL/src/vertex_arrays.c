@@ -498,7 +498,10 @@ void mglVertexAttribPointer(GLMContext ctx, GLuint index, GLint size, GLenum typ
 {
     VertexArray *vao;
 
-    ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+    if (index >= MAX_ATTRIBS) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
@@ -661,7 +664,10 @@ void mglEnableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    /* GL 4.6: if <vaobj> is not the name of an existing vertex-array
+     * object, the error is GL_INVALID_OPERATION (not GL_INVALID_VALUE, which
+     * is reserved for numeric indices like <index>). */
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     if ((ptr->enabled_attribs & (0x1 << index)) != 0)
         return;
@@ -684,7 +690,7 @@ void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     if ((ptr->enabled_attribs & (0x1 << index)) == 0)
         return;
@@ -757,7 +763,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     if (buffer == 0)
     {
@@ -831,7 +837,7 @@ void mglVertexArrayAttribBinding(GLMContext ctx, GLuint vaobj, GLuint attribinde
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setVertexBindingIndex(ctx, ptr, attribindex, bindingindex);
 }
@@ -839,6 +845,7 @@ void mglVertexArrayAttribBinding(GLMContext ctx, GLuint vaobj, GLuint attribinde
 void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     switch(type)
     {
@@ -908,7 +915,7 @@ void mglVertexArrayAttribFormat(GLMContext ctx, GLuint vaobj, GLuint attribindex
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribFormat(ctx, ptr, attribindex, size, type, normalized, relativeoffset);
 }
@@ -916,6 +923,7 @@ void mglVertexArrayAttribFormat(GLMContext ctx, GLuint vaobj, GLuint attribindex
 void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     switch(type)
     {
@@ -980,7 +988,7 @@ void mglVertexArrayAttribIFormat(GLMContext ctx, GLuint vaobj, GLuint attribinde
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribIFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
@@ -988,6 +996,7 @@ void mglVertexArrayAttribIFormat(GLMContext ctx, GLuint vaobj, GLuint attribinde
 void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(relativeoffset <= ctx->state.var.max_vertex_attrib_relative_offset, GL_INVALID_VALUE);
 
     switch(type)
     {
@@ -1042,7 +1051,7 @@ void mglVertexArrayAttribLFormat(GLMContext ctx, GLuint vaobj, GLuint attribinde
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setAttribLFormat(ctx, ptr, attribindex, size, type, relativeoffset);
 }
@@ -1111,7 +1120,7 @@ void mglVertexArrayBindingDivisor(GLMContext ctx, GLuint vaobj, GLuint bindingin
 
     ptr = getVAO(ctx, vaobj);
 
-    ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
     setBindingDivisor(ctx, ptr, bindingindex, divisor);
 }

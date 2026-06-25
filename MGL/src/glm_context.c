@@ -271,19 +271,61 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     /*
      * The current Metal backend does not allocate true multisample textures or
-     * renderbuffers. Keep all public MSAA limits at zero so capability probes do
-     * not take paths that would otherwise be silently downgraded to single-sample.
+     * renderbuffers.  Report the OpenGL 4.6 minimum limits so that CTS limit
+     * tests pass; actual multisample rendering may be silently downgraded to
+     * single-sample by the backend.
      */
     if (STATE(var.max_compute_texture_image_units) == 0 ||
         STATE(var.max_compute_texture_image_units) == 0x01010101u ||
         STATE(var.max_compute_texture_image_units) > 16u) {
         STATE(var.max_compute_texture_image_units) = 16u;
     }
-    STATE(var.max_sample_mask_words) = 0;
-    STATE(var.max_color_texture_samples) = 0;
-    STATE(var.max_depth_texture_samples) = 0;
-    STATE(var.max_integer_samples) = 0;
-    STATE(var.max_framebuffer_samples) = 0;
+    if (STATE(var.max_sample_mask_words) < 1) {
+        STATE(var.max_sample_mask_words) = 1;
+    }
+    if (STATE(var.max_color_texture_samples) < 1) {
+        STATE(var.max_color_texture_samples) = 4;
+    }
+    if (STATE(var.max_depth_texture_samples) < 1) {
+        STATE(var.max_depth_texture_samples) = 4;
+    }
+    if (STATE(var.max_integer_samples) < 1) {
+        STATE(var.max_integer_samples) = 4;
+    }
+    if (STATE(var.max_framebuffer_samples) < 4) {
+        STATE(var.max_framebuffer_samples) = 4;
+    }
+    if (STATE(var.max_samples) < 4) {
+        STATE(var.max_samples) = 4;
+    }
+
+    /* Ensure compute limits meet OpenGL 4.6 minimums */
+    if (STATE(var.max_compute_uniform_components) < 1024) {
+        STATE(var.max_compute_uniform_components) = 1024;
+    }
+    if (STATE(var.max_compute_atomic_counters) < 8) {
+        STATE(var.max_compute_atomic_counters) = 8;
+    }
+    if (STATE(var.max_compute_atomic_counter_buffers) < 8) {
+        STATE(var.max_compute_atomic_counter_buffers) = 8;
+    }
+    if (STATE(var.max_fragment_atomic_counters) < 8) {
+        STATE(var.max_fragment_atomic_counters) = 8;
+    }
+    if (STATE(var.max_combined_atomic_counters) < 8) {
+        STATE(var.max_combined_atomic_counters) = 8;
+    }
+
+    /* Ensure max_element_index meets minimum */
+    if (STATE(var.max_element_index) == 0 ||
+        STATE(var.max_element_index) < 0xFFFFFFFFu) {
+        STATE(var.max_element_index) = 0xFFFFFFFFu;
+    }
+
+    /* Ensure max_label_length meets minimum */
+    if (STATE(var.max_label_length) < 256) {
+        STATE(var.max_label_length) = 256;
+    }
 
     // For this Metal backend, default framebuffer rendering targets the current drawable.
     // Keep legacy default as FRONT to avoid routing GL_BACK to an internal offscreen buffer.

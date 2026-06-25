@@ -869,6 +869,15 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
                 ctx->state.default_fbo_clear_bitmask |= GL_DEPTH_BUFFER_BIT;
                 ctx->state.var.depth_clear_value = mglClampDepthClearValue(value[0]);
             }
+            /* Keep the depth-shadow CPU readback buffer in sync with this
+             * clear, exactly as mglClear() does — glClearBufferfv(GL_DEPTH)
+             * must be visible to subsequent glReadPixels(GL_DEPTH_COMPONENT)
+             * and glGetTexImage(DEPTH_COMPONENT) reads. */
+            if (ctx->state.var.depth_writemask) {
+                mglUpdateDepthShadowForClear(ctx);
+                ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
+                ctx->state.query_depth_known = GL_TRUE;
+            }
             break;
         default:
             fprintf(stderr, "MGL Error: mglClearBufferfv: invalid buffer 0x%x\n", buffer);
@@ -933,6 +942,19 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
                 ctx->state.default_fbo_clear_bitmask |= GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT;
                 ctx->state.var.depth_clear_value = mglClampDepthClearValue(depth);
                 ctx->state.var.stencil_clear_value = (GLuint)stencil;
+            }
+            /* Keep the depth/stencil shadow CPU readback buffers in sync with
+             * this clear, exactly as mglClear() does — glClearBufferfi must
+             * be visible to subsequent glReadPixels(GL_DEPTH_STENCIL) and
+             * glGetTexImage(DEPTH_STENCIL) reads. */
+            if (ctx->state.var.depth_writemask) {
+                mglUpdateDepthShadowForClear(ctx);
+                ctx->state.query_depth_value = (GLfloat)ctx->state.var.depth_clear_value;
+                ctx->state.query_depth_known = GL_TRUE;
+            }
+            if (ctx->state.var.stencil_writemask != 0u ||
+                ctx->state.var.stencil_back_writemask != 0u) {
+                mglUpdateStencilShadowForClear(ctx);
             }
             break;
         default:
@@ -1226,9 +1248,21 @@ void mglReadBuffer(GLMContext ctx, GLenum buf)
          buf >= (GL_COLOR_ATTACHMENT0 + STATE(max_color_attachments)) ||
          buf >= (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS)))
     {
-        fprintf(stderr, "MGL Error: mglReadBuffer: non-attachment buffer 0x%x is invalid for user FBO\n", buf);
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+        /* On a user framebuffer the GL spec accepts the non-attachment tokens
+         * GL_FRONT/BACK/LEFT/RIGHT/FRONT_LEFT/etc. (they simply select no
+         * readable color buffer) — only genuinely unknown values are an
+         * error, and those are already rejected above.  Drop the spurious
+         * GL_INVALID_OPERATION so restoring a saved GL_READ_BUFFER of GL_BACK
+         * onto a depth/stencil-only FBO succeeds. */
+        if (buf != GL_FRONT && buf != GL_BACK &&
+            buf != GL_FRONT_LEFT && buf != GL_FRONT_RIGHT &&
+            buf != GL_BACK_LEFT && buf != GL_BACK_RIGHT &&
+            buf != GL_LEFT && buf != GL_RIGHT)
+        {
+            fprintf(stderr, "MGL Error: mglReadBuffer: non-attachment buffer 0x%x is invalid for user FBO\n", buf);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
     }
 
     if ((buf >= GL_COLOR_ATTACHMENT0) &&
@@ -1412,6 +1446,25 @@ typedef struct MGLReadPixelsPackLayout_t {
     size_t required_bytes;
 } MGLReadPixelsPackLayout;
 
+/* Swap bytes within each multi-byte element in the readback output buffer.
+ * Mirrors GL_PACK_SWAP_BYTES semantics and the CTS swapBytes() helper: each
+ * element datum of element_size bytes has its bytes reversed. */
+static void mglSwapReadPixelsOutput(uint8_t *data, size_t total_bytes, size_t element_size)
+{
+    if (!data || element_size <= 1u || total_bytes < element_size) {
+        return;
+    }
+    size_t count = total_bytes / element_size;
+    for (size_t i = 0u; i < count; i++) {
+        uint8_t *p = data + (i * element_size);
+        for (size_t j = 0u; j < element_size / 2u; j++) {
+            uint8_t tmp = p[j];
+            p[j] = p[element_size - 1u - j];
+            p[element_size - 1u - j] = tmp;
+        }
+    }
+}
+
 static bool mglComputeReadPixelsPackLayout(GLMContext ctx,
                                            GLsizei width,
                                            GLsizei height,
@@ -1509,6 +1562,262 @@ static bool mglComputeReadPixelsPackLayout(GLMContext ctx,
     return true;
 }
 
+static uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
+{
+    if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {
+        return 0u;
+    }
+
+    float scaled = (float)value / 255.0f;
+    int exponent = 15;
+    while (scaled < 1.0f && exponent > 0) {
+        scaled *= 2.0f;
+        exponent--;
+    }
+    while (scaled >= 2.0f && exponent < 31) {
+        scaled *= 0.5f;
+        exponent++;
+    }
+
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = 0u;
+    if (exponent == 0) {
+        float subnormal = (float)value / 255.0f;
+        for (uint32_t i = 0; i < mantissa_bits + 14u; i++) {
+            subnormal *= 2.0f;
+        }
+        mantissa = (uint32_t)(subnormal + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = mantissa_mask;
+        }
+    } else {
+        float frac = (scaled - 1.0f) * (float)(1u << mantissa_bits);
+        mantissa = (uint32_t)(frac + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = 0u;
+            if (exponent < 31) {
+                exponent++;
+            } else {
+                mantissa = mantissa_mask;
+            }
+        }
+    }
+
+    return ((uint32_t)exponent << mantissa_bits) | (mantissa & mantissa_mask);
+}
+
+static uint32_t mglPackRGB9E5FromUNorm8(uint32_t r, uint32_t g, uint32_t b)
+{
+    const uint32_t exponent = 15u;
+    uint32_t mr = (r * 512u + 127u) / 255u;
+    uint32_t mg = (g * 512u + 127u) / 255u;
+    uint32_t mb = (b * 512u + 127u) / 255u;
+    if (mr > 511u) mr = 511u;
+    if (mg > 511u) mg = 511u;
+    if (mb > 511u) mb = 511u;
+    return (mr & 0x1ffu) | ((mg & 0x1ffu) << 9u) |
+           ((mb & 0x1ffu) << 18u) | (exponent << 27u);
+}
+
+static bool mglPackRGBA8PixelToFormatType(const uint8_t rgba[4],
+                                          uint8_t *dst_pixel,
+                                          GLenum format,
+                                          GLenum type)
+{
+    if (!rgba || !dst_pixel) {
+        return false;
+    }
+
+    int slots = 0;
+    int src_idx[4] = {0, 0, 0, 0};
+    switch (format) {
+        case GL_RGBA: slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; break;
+        case GL_BGRA: slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; break;
+        case GL_RGB:  slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; break;
+        case GL_BGR:  slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; break;
+        case GL_RG:   slots = 2; src_idx[0]=0; src_idx[1]=1; break;
+        case GL_RED:  slots = 1; src_idx[0]=0; break;
+        case GL_GREEN: slots = 1; src_idx[0]=1; break;
+        case GL_BLUE:  slots = 1; src_idx[0]=2; break;
+        case GL_ALPHA: slots = 1; src_idx[0]=3; break;
+        /* Integer format aliases - same channel mapping as their non-integer
+         * counterparts.  Values are written as raw integers (0-255) rather
+         * than normalized, matching CTS expectations for integer readback. */
+        case GL_RED_INTEGER:   slots = 1; src_idx[0]=0; break;
+        case GL_RG_INTEGER:    slots = 2; src_idx[0]=0; src_idx[1]=1; break;
+        case GL_RGB_INTEGER:   slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; break;
+        case GL_BGR_INTEGER:   slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; break;
+        case GL_RGBA_INTEGER:  slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; break;
+        case GL_BGRA_INTEGER:  slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; break;
+        case 0x8d95 /*GL_GREEN_INTEGER*/: slots = 1; src_idx[0]=1; break;
+        case 0x8d96 /*GL_BLUE_INTEGER*/:  slots = 1; src_idx[0]=2; break;
+        case 0x8d97 /*GL_ALPHA_INTEGER*/: slots = 1; src_idx[0]=3; break;
+        default: return false;
+    }
+
+    size_t pixel_size = (size_t)sizeForFormatType(format, type);
+    if (pixel_size == 0u) {
+        return false;
+    }
+    memset(dst_pixel, 0, pixel_size);
+
+    if (type == GL_UNSIGNED_BYTE) {
+        for (int c = 0; c < slots; c++) {
+            dst_pixel[c] = rgba[src_idx[c]];
+        }
+        return true;
+    }
+
+    if (type == GL_FLOAT) {
+        float *d = (float *)(void *)dst_pixel;
+        for (int c = 0; c < slots; c++) {
+            d[c] = (float)rgba[src_idx[c]] / 255.0f;
+        }
+        return true;
+    }
+
+    if (type == GL_HALF_FLOAT) {
+        uint16_t *d = (uint16_t *)(void *)dst_pixel;
+        for (int c = 0; c < slots; c++) {
+            d[c] = mglFloatToHalf((float)rgba[src_idx[c]] / 255.0f);
+        }
+        return true;
+    }
+
+    if (type == GL_BYTE || type == GL_SHORT ||
+        type == GL_INT || type == GL_UNSIGNED_INT ||
+        type == GL_UNSIGNED_SHORT) {
+        size_t comp_size = sizeForType(type);
+        for (int c = 0; c < slots; c++) {
+            unsigned v = rgba[src_idx[c]];
+            uint8_t *out = dst_pixel + (size_t)c * comp_size;
+            if (type == GL_BYTE) {
+                int8_t iv = (int8_t)((v * 127u + 127u) / 255u);
+                memcpy(out, &iv, sizeof(iv));
+            } else if (type == GL_SHORT) {
+                int16_t iv = (int16_t)(((uint32_t)v * 32767u) / 255u);
+                memcpy(out, &iv, sizeof(iv));
+            } else if (type == GL_UNSIGNED_SHORT) {
+                uint16_t uv = (uint16_t)(v * 257u);
+                memcpy(out, &uv, sizeof(uv));
+            } else if (type == GL_UNSIGNED_INT) {
+                uint32_t uv = (uint32_t)v * 16843009u;
+                memcpy(out, &uv, sizeof(uv));
+            } else {
+                int32_t iv = (int32_t)(((uint64_t)v * 2147483647ull) / 255ull);
+                memcpy(out, &iv, sizeof(iv));
+            }
+        }
+        return true;
+    }
+
+    uint32_t r = rgba[src_idx[0]];
+    uint32_t g = slots > 1 ? rgba[src_idx[1]] : 0u;
+    uint32_t b = slots > 2 ? rgba[src_idx[2]] : 0u;
+    uint32_t a = slots > 3 ? rgba[src_idx[3]] : 255u;
+    if (type == GL_UNSIGNED_BYTE_3_3_2) {
+        dst_pixel[0] = (uint8_t)(((r >> 5u) << 5u) | ((g >> 5u) << 2u) | (b >> 6u));
+        return true;
+    }
+    if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+        dst_pixel[0] = (uint8_t)((r >> 5u) | ((g >> 5u) << 3u) | ((b >> 6u) << 6u));
+        return true;
+    }
+    if (type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+        uint16_t packed = (type == GL_UNSIGNED_SHORT_5_6_5)
+            ? (uint16_t)(((r >> 3u) << 11u) | ((g >> 2u) << 5u) | (b >> 3u))
+            : (uint16_t)((r >> 3u) | ((g >> 2u) << 5u) | ((b >> 3u) << 11u));
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+        uint16_t packed = (type == GL_UNSIGNED_SHORT_4_4_4_4)
+            ? (uint16_t)(((r >> 4u) << 12u) | ((g >> 4u) << 8u) | ((b >> 4u) << 4u) | (a >> 4u))
+            : (uint16_t)((r >> 4u) | ((g >> 4u) << 4u) | ((b >> 4u) << 8u) | ((a >> 4u) << 12u));
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+        uint16_t packed = (type == GL_UNSIGNED_SHORT_5_5_5_1)
+            ? (uint16_t)(((r >> 3u) << 11u) | ((g >> 3u) << 6u) | ((b >> 3u) << 1u) | (a >= 128u ? 1u : 0u))
+            : (uint16_t)((r >> 3u) | ((g >> 3u) << 5u) | ((b >> 3u) << 10u) | ((a >= 128u ? 1u : 0u) << 15u));
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+        uint32_t packed = (type == GL_UNSIGNED_INT_8_8_8_8)
+            ? ((r << 24u) | (g << 16u) | (b << 8u) | a)
+            : (r | (g << 8u) | (b << 16u) | (a << 24u));
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+        uint32_t r10 = r * 1023u / 255u;
+        uint32_t g10 = g * 1023u / 255u;
+        uint32_t b10 = b * 1023u / 255u;
+        uint32_t a2 = a * 3u / 255u;
+        uint32_t packed = (type == GL_UNSIGNED_INT_10_10_10_2)
+            ? ((r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2)
+            : (r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u));
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+        uint32_t packed = mglPackUnsignedFloatFromUNorm8(r, 6u) |
+                          (mglPackUnsignedFloatFromUNorm8(g, 6u) << 11u) |
+                          (mglPackUnsignedFloatFromUNorm8(b, 5u) << 22u);
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+    if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+        uint32_t packed = mglPackRGB9E5FromUNorm8(r, g, b);
+        memcpy(dst_pixel, &packed, sizeof(packed));
+        return true;
+    }
+
+    return false;
+}
+
+static bool mglPackRGBA8RowsToFormatType(const uint8_t *src,
+                                         size_t src_pitch,
+                                         uint8_t *dst,
+                                         size_t dst_pitch,
+                                         GLsizei width,
+                                         GLsizei height,
+                                         GLenum format,
+                                         GLenum type,
+                                         bool source_bgra)
+{
+    size_t pixel_size = (size_t)sizeForFormatType(format, type);
+    if (!src || !dst || width <= 0 || height <= 0 ||
+        src_pitch == 0u || dst_pitch == 0u || pixel_size == 0u) {
+        return false;
+    }
+
+    for (GLsizei y = 0; y < height; y++) {
+        const uint8_t *src_row = src + ((size_t)y * src_pitch);
+        uint8_t *dst_row = dst + ((size_t)y * dst_pitch);
+        for (GLsizei x = 0; x < width; x++) {
+            const uint8_t *s = src_row + ((size_t)x * 4u);
+            uint8_t rgba[4] = { s[0], s[1], s[2], s[3] };
+            if (source_bgra) {
+                rgba[0] = s[2];
+                rgba[1] = s[1];
+                rgba[2] = s[0];
+                rgba[3] = s[3];
+            }
+            if (!mglPackRGBA8PixelToFormatType(rgba,
+                                               dst_row + ((size_t)x * pixel_size),
+                                               format,
+                                               type)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                                    size_t src_pitch,
                                    uint8_t *dst,
@@ -1521,18 +1830,17 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
     if (!src || !dst || width <= 0 || height <= 0 || src_pitch == 0u || dst_pitch == 0u)
         return false;
 
-    if (type != GL_UNSIGNED_BYTE &&
-        type != GL_UNSIGNED_SHORT &&
-        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
-        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
-        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
-        type != GL_FLOAT &&
-        type != GL_HALF_FLOAT &&
-        type != GL_BYTE &&
-        type != GL_SHORT &&
-        type != GL_INT &&
-        type != GL_UNSIGNED_INT)
-        return false;
+    if (mglPackRGBA8RowsToFormatType(src,
+                                     src_pitch,
+                                     dst,
+                                     dst_pitch,
+                                     width,
+                                     height,
+                                     format,
+                                     type,
+                                     true)) {
+        return true;
+    }
 
     for (GLsizei y = 0; y < height; y++)
     {
@@ -1664,7 +1972,7 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                     unsigned v = cv[src_idx[c]];
                     uint8_t *out = dst_pixel + (size_t)c * comp_size;
                     if (type == GL_BYTE) {
-                        int8_t iv = (v > 127u) ? 127 : (int8_t)v;
+                        int8_t iv = (int8_t)((v * 127u + 127u) / 255u);
                         memcpy(out, &iv, sizeof(iv));
                     } else if (type == GL_SHORT) {
                         int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
@@ -1675,8 +1983,7 @@ static bool mglPackBGRA8ReadPixels(const uint8_t *src,
                         uint32_t iv = (uint32_t)v * 16843009u; /* 0x01010101 */
                         memcpy(out, &iv, sizeof(iv));
                     } else { /* GL_INT */
-                        int32_t scaled = (int32_t)((uint32_t)v * 2147483647u / 255u);
-                        if (scaled > 2147483647) scaled = 2147483647;
+                        int32_t scaled = (int32_t)(((uint64_t)v * 2147483647ull) / 255ull);
                         memcpy(out, &scaled, sizeof(scaled));
                     }
                 }
@@ -1878,14 +2185,149 @@ static bool mglPackRGBA8ReadPixels(const uint8_t *src,
                                    GLenum type)
 {
     if (!src || !dst || width <= 0 || height <= 0 ||
-        src_pitch == 0u || dst_pitch == 0u ||
-        type != GL_UNSIGNED_BYTE) {
+        src_pitch == 0u || dst_pitch == 0u) {
+        return false;
+    }
+
+    return mglPackRGBA8RowsToFormatType(src,
+                                        src_pitch,
+                                        dst,
+                                        dst_pitch,
+                                        width,
+                                        height,
+                                        format,
+                                        type,
+                                        false);
+
+    if (type != GL_UNSIGNED_BYTE &&
+        type != GL_BYTE &&
+        type != GL_UNSIGNED_SHORT &&
+        type != GL_SHORT &&
+        type != GL_UNSIGNED_INT &&
+        type != GL_INT &&
+        type != GL_FLOAT &&
+        type != GL_HALF_FLOAT &&
+        type != GL_UNSIGNED_BYTE_3_3_2 &&
+        type != GL_UNSIGNED_BYTE_2_3_3_REV &&
+        type != GL_UNSIGNED_SHORT_5_6_5 &&
+        type != GL_UNSIGNED_SHORT_5_6_5_REV &&
+        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
+        type != GL_UNSIGNED_SHORT_4_4_4_4_REV &&
+        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
+        type != GL_UNSIGNED_SHORT_1_5_5_5_REV &&
+        type != GL_UNSIGNED_INT_8_8_8_8 &&
+        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
+        type != GL_UNSIGNED_INT_10_10_10_2 &&
+        type != GL_UNSIGNED_INT_2_10_10_10_REV) {
         return false;
     }
 
     for (GLsizei y = 0; y < height; y++) {
         const uint8_t *src_row = src + ((size_t)y * src_pitch);
         uint8_t *dst_row = dst + ((size_t)y * dst_pitch);
+
+        if (type != GL_UNSIGNED_BYTE) {
+            size_t pixel_size = (size_t)sizeForFormatType(format, type);
+            if (pixel_size == 0u) {
+                return false;
+            }
+            for (GLsizei x = 0; x < width; x++) {
+                const uint8_t *s = src_row + ((size_t)x * 4u);
+                const unsigned cv[4] = { s[0], s[1], s[2], s[3] };
+                int slots = 0;
+                int src_idx[4] = {0, 0, 0, 0};
+                switch (format) {
+                    case GL_RGBA: slots = 4; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; src_idx[3]=3; break;
+                    case GL_BGRA: slots = 4; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; src_idx[3]=3; break;
+                    case GL_RGB:  slots = 3; src_idx[0]=0; src_idx[1]=1; src_idx[2]=2; break;
+                    case GL_BGR:  slots = 3; src_idx[0]=2; src_idx[1]=1; src_idx[2]=0; break;
+                    case GL_RG:   slots = 2; src_idx[0]=0; src_idx[1]=1; break;
+                    case GL_RED:  slots = 1; src_idx[0]=0; break;
+                    case GL_GREEN: slots = 1; src_idx[0]=1; break;
+                    case GL_BLUE:  slots = 1; src_idx[0]=2; break;
+                    case GL_ALPHA: slots = 1; src_idx[0]=3; break;
+                    default: return false;
+                }
+
+                uint8_t *dst_pixel = dst_row + ((size_t)x * pixel_size);
+                memset(dst_pixel, 0, pixel_size);
+                if (type == GL_FLOAT) {
+                    float *d = (float *)(void *)dst_pixel;
+                    for (int c = 0; c < slots; c++) {
+                        d[c] = (float)cv[src_idx[c]] / 255.0f;
+                    }
+                } else if (type == GL_HALF_FLOAT) {
+                    uint16_t *d = (uint16_t *)(void *)dst_pixel;
+                    for (int c = 0; c < slots; c++) {
+                        d[c] = mglFloatToHalf((float)cv[src_idx[c]] / 255.0f);
+                    }
+                } else if (type == GL_BYTE || type == GL_SHORT ||
+                           type == GL_INT || type == GL_UNSIGNED_INT ||
+                           type == GL_UNSIGNED_SHORT) {
+                    size_t comp_size = sizeForType(type);
+                    for (int c = 0; c < slots; c++) {
+                        unsigned v = cv[src_idx[c]];
+                        uint8_t *out = dst_pixel + (size_t)c * comp_size;
+                        if (type == GL_BYTE) {
+                            int8_t iv = (int8_t)((v * 127u + 127u) / 255u);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_SHORT) {
+                            int16_t iv = (int16_t)((v * 32767u) / 255u);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_UNSIGNED_SHORT) {
+                            uint16_t uv = (uint16_t)(v * 257u);
+                            memcpy(out, &uv, sizeof(uv));
+                        } else if (type == GL_UNSIGNED_INT) {
+                            uint32_t uv = (uint32_t)v * 16843009u;
+                            memcpy(out, &uv, sizeof(uv));
+                        } else {
+                            int32_t iv = (int32_t)(((uint64_t)v * 2147483647ull) / 255ull);
+                            memcpy(out, &iv, sizeof(iv));
+                        }
+                    }
+                } else {
+                    uint32_t r = cv[src_idx[0]];
+                    uint32_t g = slots > 1 ? cv[src_idx[1]] : 0u;
+                    uint32_t b = slots > 2 ? cv[src_idx[2]] : 0u;
+                    uint32_t a = slots > 3 ? cv[src_idx[3]] : 255u;
+                    if (type == GL_UNSIGNED_BYTE_3_3_2) {
+                        dst_pixel[0] = (uint8_t)(((r >> 5u) << 5u) | ((g >> 5u) << 2u) | (b >> 6u));
+                    } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+                        dst_pixel[0] = (uint8_t)((r >> 5u) | ((g >> 5u) << 3u) | ((b >> 6u) << 6u));
+                    } else if (type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+                        uint16_t packed = (type == GL_UNSIGNED_SHORT_5_6_5)
+                            ? (uint16_t)(((r >> 3u) << 11u) | ((g >> 2u) << 5u) | (b >> 3u))
+                            : (uint16_t)((r >> 3u) | ((g >> 2u) << 5u) | ((b >> 3u) << 11u));
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+                        uint16_t packed = (type == GL_UNSIGNED_SHORT_4_4_4_4)
+                            ? (uint16_t)(((r >> 4u) << 12u) | ((g >> 4u) << 8u) | ((b >> 4u) << 4u) | (a >> 4u))
+                            : (uint16_t)((r >> 4u) | ((g >> 4u) << 4u) | ((b >> 4u) << 8u) | ((a >> 4u) << 12u));
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+                        uint16_t packed = (type == GL_UNSIGNED_SHORT_5_5_5_1)
+                            ? (uint16_t)(((r >> 3u) << 11u) | ((g >> 3u) << 6u) | ((b >> 3u) << 1u) | (a >= 128u ? 1u : 0u))
+                            : (uint16_t)((r >> 3u) | ((g >> 3u) << 5u) | ((b >> 3u) << 10u) | ((a >= 128u ? 1u : 0u) << 15u));
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                        uint32_t packed = (type == GL_UNSIGNED_INT_8_8_8_8)
+                            ? ((r << 24u) | (g << 16u) | (b << 8u) | a)
+                            : (r | (g << 8u) | (b << 16u) | (a << 24u));
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+                        uint32_t r10 = r * 1023u / 255u;
+                        uint32_t g10 = g * 1023u / 255u;
+                        uint32_t b10 = b * 1023u / 255u;
+                        uint32_t a2 = a * 3u / 255u;
+                        uint32_t packed = (type == GL_UNSIGNED_INT_10_10_10_2)
+                            ? ((r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2)
+                            : (r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u));
+                        memcpy(dst_pixel, &packed, sizeof(packed));
+                    }
+                }
+            }
+            continue;
+        }
 
         switch (format) {
             case GL_RGBA:
@@ -1951,6 +2393,44 @@ static GLuint mglFloatReadComponentCount(GLenum format)
     }
 }
 
+/* Returns true for non-integer color (non-depth/stencil) read formats. */
+static bool mglIsColorReadFormat(GLenum format)
+{
+    switch (format) {
+        case GL_RED:
+        case GL_RG:
+        case GL_RGB:
+        case GL_RGBA:
+        case GL_BGR:
+        case GL_BGRA:
+        case GL_GREEN:
+        case GL_BLUE:
+        case GL_ALPHA:
+            return true;
+        default:
+            return false;
+    }
+}
+
+/* Returns true for integer color read formats. */
+static bool mglIsIntegerReadFormat(GLenum format)
+{
+    switch (format) {
+        case GL_RED_INTEGER:
+        case GL_RG_INTEGER:
+        case GL_RGB_INTEGER:
+        case GL_RGBA_INTEGER:
+        case GL_BGR_INTEGER:
+        case GL_BGRA_INTEGER:
+        case 0x8d95 /*GL_GREEN_INTEGER*/:
+        case 0x8d96 /*GL_BLUE_INTEGER*/:
+        case 0x8d97 /*GL_ALPHA_INTEGER*/:
+            return true;
+        default:
+            return false;
+    }
+}
+
 static bool mglPackR32FFloatReadPixels(const uint8_t *src,
                                        size_t src_pitch,
                                        uint8_t *dst,
@@ -1991,6 +2471,10 @@ static bool mglPackR32FFloatReadPixels(const uint8_t *src,
 
 void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels)
 {
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG ReadPixels ENTER: x=%d y=%d w=%d h=%d fmt=0x%x type=0x%x\n",
+                x, y, width, height, format, type);
+    }
     GLuint pixel_size;
     Buffer *pack_buffer = NULL;
     GLintptr pack_write_offset = 0;
@@ -2027,19 +2511,26 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         case GL_STENCIL_INDEX:
             if (!ctx->state.readbuffer) {
                 ERROR_CHECK_RETURN(ctx->stencil_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            } else {
+                ERROR_CHECK_RETURN(ctx->state.readbuffer->stencil.texture != 0, GL_INVALID_OPERATION);
             }
             break;
 
         case GL_DEPTH_COMPONENT:
             if (!ctx->state.readbuffer) {
                 ERROR_CHECK_RETURN(ctx->depth_format.mtl_pixel_format > 0, GL_INVALID_OPERATION);
+            } else {
+                ERROR_CHECK_RETURN(ctx->state.readbuffer->depth.texture != 0, GL_INVALID_OPERATION);
             }
             break;
 
         case GL_DEPTH_STENCIL:
             if (!ctx->state.readbuffer) {
-                ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) ||
+                ERROR_CHECK_RETURN((ctx->depth_format.mtl_pixel_format > 0) &&
                                    (ctx->stencil_format.mtl_pixel_format > 0), GL_INVALID_OPERATION);
+            } else {
+                ERROR_CHECK_RETURN(ctx->state.readbuffer->depth.texture != 0 &&
+                                   ctx->state.readbuffer->stencil.texture != 0, GL_INVALID_OPERATION);
             }
             switch(type)
             {
@@ -2063,8 +2554,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         case GL_UNSIGNED_BYTE_2_3_3_REV:
         case GL_UNSIGNED_SHORT_5_6_5:
         case GL_UNSIGNED_SHORT_5_6_5_REV:
-            // ERROR_CHECK_RETURN(format == GL_RGB || format == GL_BGR, GL_INVALID_OPERATION);
-            if (!(format == GL_RGB || format == GL_BGR)) {
+            if (format != GL_RGB && format != GL_RGB_INTEGER) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
             }
@@ -2078,12 +2568,95 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         case GL_UNSIGNED_INT_8_8_8_8_REV:
         case GL_UNSIGNED_INT_10_10_10_2:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-            // ERROR_CHECK_RETURN(format == GL_RGBA || format == GL_BGRA, GL_INVALID_OPERATION);
-            if (!(format == GL_RGBA || format == GL_BGRA)) {
+            if (!(format == GL_RGBA || format == GL_BGRA ||
+                  format == GL_RGBA_INTEGER || format == GL_BGRA_INTEGER)) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
             }
             break;
+
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+            if (format != GL_RGB) {
+                fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
+                ERROR_RETURN(GL_INVALID_OPERATION);
+            }
+            break;
+
+        case GL_UNSIGNED_INT_24_8:
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            if (format != GL_DEPTH_STENCIL) {
+                fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
+                ERROR_RETURN(GL_INVALID_OPERATION);
+            }
+            break;
+    }
+
+    /* Rule: integer transfer format cannot be paired with float/half-float type.
+     * (CTS glcPackedPixelsTests isFormatValid: GL core path.) */
+    {
+        bool fmt_is_integer = (format == GL_RED_INTEGER   ||
+                               format == GL_RG_INTEGER    ||
+                               format == GL_RGB_INTEGER   ||
+                               format == GL_BGR_INTEGER   ||
+                               format == GL_RGBA_INTEGER  ||
+                               format == GL_BGRA_INTEGER  ||
+                               format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
+                               format == 0x8d96 /*GL_BLUE_INTEGER*/  ||
+                               format == 0x8d97 /*GL_ALPHA_INTEGER*/);
+        if (fmt_is_integer && (type == GL_FLOAT || type == GL_HALF_FLOAT)) {
+            fprintf(stderr, "MGL Error: mglReadPixels: integer format with float type (format=0x%x type=0x%x)\n", format, type);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
+    }
+
+    /* Rule: integer transfer format requires an integer framebuffer, and
+     * a non-integer transfer format requires a non-integer framebuffer.
+     * (CTS glcPackedPixelsTests isFormatValid: GL core path.) */
+    {
+        bool fmt_is_int = (format == GL_RED_INTEGER   ||
+                           format == GL_RG_INTEGER    ||
+                           format == GL_RGB_INTEGER   ||
+                           format == GL_BGR_INTEGER   ||
+                           format == GL_RGBA_INTEGER  ||
+                           format == GL_BGRA_INTEGER  ||
+                           format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
+                           format == 0x8d96 /*GL_BLUE_INTEGER*/  ||
+                           format == 0x8d97 /*GL_ALPHA_INTEGER*/);
+        /* Determine if the current read framebuffer color attachment is integer */
+        bool fb_is_int = false;
+        Framebuffer *readFb = ctx->state.readbuffer;
+        if (readFb &&
+            ctx->state.read_buffer >= GL_COLOR_ATTACHMENT0 &&
+            ctx->state.read_buffer < GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) {
+            GLuint idx = ctx->state.read_buffer - GL_COLOR_ATTACHMENT0;
+            if (readFb->color_attachments[idx].texture) {
+                    FBOAttachment *att = &readFb->color_attachments[idx];
+                    GLint ifmt = 0;
+                    if (att->textarget == GL_RENDERBUFFER && att->buf.rbo && att->buf.rbo->tex) {
+                        ifmt = att->buf.rbo->tex->internalformat;
+                    } else if (att->buf.tex) {
+                        ifmt = att->buf.tex->internalformat;
+                    }
+                    fb_is_int = (ifmt == GL_R8I       || ifmt == GL_R8UI      ||
+                                 ifmt == GL_R16I      || ifmt == GL_R16UI     ||
+                                 ifmt == GL_R32I      || ifmt == GL_R32UI     ||
+                                 ifmt == GL_RG8I      || ifmt == GL_RG8UI     ||
+                                 ifmt == GL_RG16I     || ifmt == GL_RG16UI    ||
+                                 ifmt == GL_RG32I     || ifmt == GL_RG32UI    ||
+                                 ifmt == GL_RGB8I     || ifmt == GL_RGB8UI    ||
+                                 ifmt == GL_RGB16I    || ifmt == GL_RGB16UI   ||
+                                 ifmt == GL_RGB32I    || ifmt == GL_RGB32UI   ||
+                                 ifmt == GL_RGBA8I    || ifmt == GL_RGBA8UI   ||
+                                 ifmt == GL_RGBA16I   || ifmt == GL_RGBA16UI  ||
+                                 ifmt == GL_RGBA32I   || ifmt == GL_RGBA32UI  ||
+                                 ifmt == GL_RGB10_A2UI);
+            }
+        }
+        if (fmt_is_int != fb_is_int) {
+            fprintf(stderr, "MGL Error: mglReadPixels: integer/non-integer mismatch (format=0x%x fb_int=%d)\n", format, (int)fb_is_int);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+        }
     }
 
     if (!mglComputeReadPixelsPackLayout(ctx,
@@ -2092,7 +2665,14 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                         (size_t)pixel_size,
                                         &pack_layout))
     {
+        if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+            fprintf(stderr, "MGL DEBUG ReadPixels: mglComputeReadPixelsPackLayout FAILED\n");
+        }
         return;
+    }
+
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG ReadPixels: past pack_layout, fmt=0x%x type=0x%x\n", format, type);
     }
 
     if (STATE(buffers[_PIXEL_PACK_BUFFER]))
@@ -2197,73 +2777,138 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         pixels = (void *)((uint8_t *)pixels + pack_layout.skip_offset_bytes);
     }
 
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG ReadPixels: pre-depth, fmt=0x%x type=0x%x\n", format, type);
+    }
+
     if (format == GL_DEPTH_COMPONENT)
     {
         Texture *depthTexture = ctx->state.readbuffer
             ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
             : NULL;
-        if (type == GL_FLOAT && depthTexture && depthTexture->depth_shadow && !ctx->mtl_funcs.mtlReadDepthPixels) {
+
+        /* Read depth values as floats first, then convert to the requested
+         * type. This supports GL_UNSIGNED_SHORT, GL_UNSIGNED_BYTE, GL_INT,
+         * etc. per the OpenGL spec. */
+        GLfloat *floatDepth = NULL;
+
+        if (depthTexture && depthTexture->depth_shadow) {
+            /* Read from the CPU-side depth shadow directly. */
+            floatDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
+            if (!floatDepth) {
+                ERROR_RETURN(GL_OUT_OF_MEMORY);
+                return;
+            }
             for (GLsizei row = 0; row < height; row++) {
-                GLfloat *dst = (GLfloat *)((uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch);
+                GLint readY = y + row;
                 for (GLsizei column = 0; column < width; column++) {
                     GLint readX = x + column;
-                    GLint readY = y + row;
-                    dst[column] = (readX >= 0 && readY >= 0 &&
-                                   readX < (GLint)depthTexture->depth_shadow_width &&
-                                   readY < (GLint)depthTexture->depth_shadow_height)
+                    floatDepth[(size_t)row * width + column] =
+                        (readX >= 0 && readY >= 0 &&
+                         readX < (GLint)depthTexture->depth_shadow_width &&
+                         readY < (GLint)depthTexture->depth_shadow_height)
                         ? depthTexture->depth_shadow[(size_t)readY * depthTexture->depth_shadow_width + readX]
                         : 0.0f;
                 }
             }
-            if (pack_buffer)
-                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
-            return;
+        } else if (ctx->mtl_funcs.mtlReadDepthPixels) {
+            /* Use the Metal depth readback path into a float staging buffer. */
+            floatDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
+            if (!floatDepth) {
+                ERROR_RETURN(GL_OUT_OF_MEMORY);
+                return;
+            }
+            mglFlushCommandBuffer(ctx);
+            ctx->mtl_funcs.mtlReadDepthPixels(ctx,
+                                              floatDepth,
+                                              (GLuint)(width * sizeof(GLfloat)),
+                                              (GLuint)(width * sizeof(GLfloat)),
+                                              x, y, width, height);
         }
-        if (type != GL_FLOAT || !ctx->mtl_funcs.mtlReadDepthPixels)
-        {
+
+        if (!floatDepth) {
             static uint64_t s_unsupported_depth_readpixels_count = 0u;
             uint64_t hit = ++s_unsupported_depth_readpixels_count;
             if (hit <= 32u || (hit % 256u) == 0u) {
                 fprintf(stderr,
-                        "MGL WARNING: mglReadPixels depth readback is unsupported format=0x%x type=0x%x hit=%llu\n",
-                        format,
-                        type,
-                        (unsigned long long)hit);
+                        "MGL WARNING: mglReadPixels depth readback unavailable format=0x%x type=0x%x hit=%llu\n",
+                        format, type, (unsigned long long)hit);
             }
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
 
-        if (pack_layout.dst_pitch > UINT_MAX ||
-            pack_layout.write_span_bytes > UINT_MAX)
-        {
-            fprintf(stderr,
-                    "MGL Error: mglReadPixels: depth readback pack overflow pitch=%zu span=%zu\n",
-                    pack_layout.dst_pitch,
-                    pack_layout.write_span_bytes);
-            ERROR_RETURN(GL_OUT_OF_MEMORY);
-            return;
+        /* Convert float depth values to the requested output type. */
+        for (GLsizei row = 0; row < height; row++) {
+            uint8_t *dst = (uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch;
+            GLfloat *src = floatDepth + (size_t)row * width;
+            for (GLsizei column = 0; column < width; column++) {
+                GLfloat d = src[column];
+                if (d < 0.0f) d = 0.0f;
+                if (d > 1.0f) d = 1.0f;
+                switch (type) {
+                    case GL_FLOAT:
+                        ((GLfloat *)dst)[column] = d;
+                        break;
+                    case GL_HALF_FLOAT: {
+                        uint16_t h = mglFloatToHalf(d);
+                        memcpy(&((uint16_t *)dst)[column], &h, sizeof(uint16_t));
+                        break;
+                    }
+                    case GL_UNSIGNED_BYTE:
+                        ((uint8_t *)dst)[column] = (uint8_t)(d * 255.0f + 0.5f);
+                        break;
+                    case GL_BYTE:
+                        ((int8_t *)dst)[column] = (int8_t)(d * 127.0f + 0.5f);
+                        break;
+                    case GL_UNSIGNED_SHORT:
+                        ((uint16_t *)dst)[column] = (uint16_t)(d * 65535.0f + 0.5f);
+                        break;
+                    case GL_SHORT:
+                        ((int16_t *)dst)[column] = (int16_t)(d * 32767.0f + 0.5f);
+                        break;
+                    case GL_UNSIGNED_INT:
+                        ((uint32_t *)dst)[column] = (uint32_t)(d * 4294967295.0f + 0.5f);
+                        break;
+                    case GL_INT:
+                        ((int32_t *)dst)[column] = (int32_t)(d * 2147483647.0f + 0.5f);
+                        break;
+                    default:
+                        break;
+                }
+            }
         }
 
-        mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlReadDepthPixels(ctx,
-                                          pixels,
-                                          (GLuint)pack_layout.dst_pitch,
-                                          (GLuint)pack_layout.write_span_bytes,
-                                          x,
-                                          y,
-                                          width,
-                                          height);
+        free(floatDepth);
+
+        /* Apply GL_PACK_SWAP_BYTES if needed. */
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
+
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
     }
 
     if ((format == GL_RED_INTEGER || format == GL_RG_INTEGER ||
-         format == GL_RGB_INTEGER || format == GL_RGBA_INTEGER) &&
+         format == GL_RGB_INTEGER || format == GL_BGR_INTEGER ||
+         format == GL_RGBA_INTEGER || format == GL_BGRA_INTEGER ||
+         format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
+         format == 0x8d96 /*GL_BLUE_INTEGER*/ ||
+         format == 0x8d97 /*GL_ALPHA_INTEGER*/) &&
         (type == GL_BYTE || type == GL_UNSIGNED_BYTE ||
          type == GL_SHORT || type == GL_UNSIGNED_SHORT ||
-         type == GL_INT || type == GL_UNSIGNED_INT))
+         type == GL_INT || type == GL_UNSIGNED_INT ||
+         type == GL_UNSIGNED_BYTE_3_3_2 || type == GL_UNSIGNED_BYTE_2_3_3_REV ||
+         type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV ||
+         type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+         type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+         type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+         type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV))
     {
         if (!ctx->mtl_funcs.mtlReadIntegerPixels ||
             pack_layout.dst_pitch > UINT_MAX ||
@@ -2284,6 +2929,12 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                             height,
                                             format,
                                             type);
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
@@ -2291,7 +2942,10 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
     if (format == GL_STENCIL_INDEX)
     {
-        if (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_INT && type != GL_INT)
+        if (type != GL_UNSIGNED_BYTE && type != GL_BYTE &&
+            type != GL_UNSIGNED_SHORT && type != GL_SHORT &&
+            type != GL_UNSIGNED_INT && type != GL_INT &&
+            type != GL_HALF_FLOAT && type != GL_FLOAT)
         {
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
@@ -2309,32 +2963,42 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         for (GLsizei row = 0; row < height; row++)
         {
             uint8_t *dst = (uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch;
-            if (type == GL_UNSIGNED_BYTE) {
-                for (GLsizei column = 0; column < width; column++) {
-                    GLint readX = x + column;
-                    GLint readY = y + row;
-                    dst[column] = (stencilTexture && stencilTexture->stencil_shadow &&
-                                   readX >= 0 && readY >= 0 &&
-                                   readX < (GLint)stencilTexture->stencil_shadow_width &&
-                                   readY < (GLint)stencilTexture->stencil_shadow_height)
-                        ? stencilTexture->stencil_shadow[(size_t)readY * stencilTexture->stencil_shadow_width + readX]
-                        : value;
-                }
-            } else {
-                GLuint *dst32 = (GLuint *)(void *)dst;
-                for (GLsizei column = 0; column < width; column++) {
-                    GLint readX = x + column;
-                    GLint readY = y + row;
-                    GLuint stencilValue = (stencilTexture && stencilTexture->stencil_shadow &&
-                                     readX >= 0 && readY >= 0 &&
-                                     readX < (GLint)stencilTexture->stencil_shadow_width &&
-                                     readY < (GLint)stencilTexture->stencil_shadow_height)
-                        ? stencilTexture->stencil_shadow[(size_t)readY * stencilTexture->stencil_shadow_width + readX]
-                        : value;
-                    if (type == GL_INT)
-                        ((GLint *)(void *)dst32)[column] = (GLint)stencilValue;
-                    else
-                        dst32[column] = stencilValue;
+            for (GLsizei column = 0; column < width; column++) {
+                GLint readX = x + column;
+                GLint readY = y + row;
+                GLuint stencilValue = (stencilTexture && stencilTexture->stencil_shadow &&
+                               readX >= 0 && readY >= 0 &&
+                               readX < (GLint)stencilTexture->stencil_shadow_width &&
+                               readY < (GLint)stencilTexture->stencil_shadow_height)
+                    ? stencilTexture->stencil_shadow[(size_t)readY * stencilTexture->stencil_shadow_width + readX]
+                    : value;
+                switch (type) {
+                    case GL_UNSIGNED_BYTE:
+                        dst[column] = (uint8_t)stencilValue;
+                        break;
+                    case GL_BYTE:
+                        ((GLbyte *)(void *)dst)[column] = (GLbyte)(GLint)stencilValue;
+                        break;
+                    case GL_UNSIGNED_SHORT:
+                        ((GLushort *)(void *)dst)[column] = (GLushort)stencilValue;
+                        break;
+                    case GL_SHORT:
+                        ((GLshort *)(void *)dst)[column] = (GLshort)(GLint)stencilValue;
+                        break;
+                    case GL_UNSIGNED_INT:
+                        ((GLuint *)(void *)dst)[column] = stencilValue;
+                        break;
+                    case GL_INT:
+                        ((GLint *)(void *)dst)[column] = (GLint)stencilValue;
+                        break;
+                    case GL_HALF_FLOAT: {
+                        uint16_t h = mglFloatToHalf((float)stencilValue);
+                        memcpy(dst + (size_t)column * sizeof(uint16_t), &h, sizeof(uint16_t));
+                        break;
+                    }
+                    case GL_FLOAT:
+                        ((GLfloat *)(void *)dst)[column] = (float)stencilValue;
+                        break;
                 }
             }
         }
@@ -2345,17 +3009,86 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
     if (format == GL_DEPTH_STENCIL)
     {
-        static uint64_t s_unsupported_depth_stencil_readpixels_count = 0u;
-        uint64_t hit = ++s_unsupported_depth_stencil_readpixels_count;
-        if (hit <= 32u || (hit % 256u) == 0u) {
-            fprintf(stderr,
-                    "MGL WARNING: mglReadPixels depth/stencil readback is unsupported format=0x%x type=0x%x hit=%llu\n",
-                    format,
-                    type,
-                    (unsigned long long)hit);
+        /* Read depth+stencil from the shadow buffers and pack into the
+         * requested type (GL_UNSIGNED_INT_24_8 or
+         * GL_FLOAT_32_UNSIGNED_INT_24_8_REV). */
+        Texture *depthTex = ctx->state.readbuffer
+            ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
+            : NULL;
+        Texture *stencilTex = ctx->state.readbuffer
+            ? mglStencilAttachmentTexture(&ctx->state.readbuffer->stencil)
+            : NULL;
+
+        if (!depthTex || !depthTex->depth_shadow) {
+            static uint64_t s_unsupported_ds_readpixels_count = 0u;
+            uint64_t hit = ++s_unsupported_ds_readpixels_count;
+            if (hit <= 32u || (hit % 256u) == 0u) {
+                fprintf(stderr,
+                        "MGL WARNING: mglReadPixels depth/stencil readback unavailable hit=%llu\n",
+                        (unsigned long long)hit);
+            }
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
-        ERROR_RETURN(GL_INVALID_OPERATION);
+
+        for (GLsizei row = 0; row < height; row++) {
+            GLint readY = y + row;
+            uint8_t *dst = (uint8_t *)pixels + (size_t)row * pack_layout.dst_pitch;
+            for (GLsizei column = 0; column < width; column++) {
+                GLint readX = x + column;
+                GLfloat depthVal = 0.0f;
+                uint8_t stencilVal = 0u;
+
+                if (readX >= 0 && readY >= 0 &&
+                    readX < (GLint)depthTex->depth_shadow_width &&
+                    readY < (GLint)depthTex->depth_shadow_height) {
+                    depthVal = depthTex->depth_shadow[
+                        (size_t)readY * depthTex->depth_shadow_width + readX];
+                }
+                if (stencilTex && stencilTex->stencil_shadow &&
+                    readX >= 0 && readY >= 0 &&
+                    readX < (GLint)stencilTex->stencil_shadow_width &&
+                    readY < (GLint)stencilTex->stencil_shadow_height) {
+                    stencilVal = stencilTex->stencil_shadow[
+                        (size_t)readY * stencilTex->stencil_shadow_width + readX];
+                }
+
+                if (depthVal < 0.0f) depthVal = 0.0f;
+                if (depthVal > 1.0f) depthVal = 1.0f;
+
+                if (type == GL_UNSIGNED_INT_24_8) {
+                    uint32_t packed = ((uint32_t)(depthVal * 16777215.0f + 0.5f) << 8) |
+                                      (uint32_t)stencilVal;
+                    memcpy(dst + (size_t)column * sizeof(uint32_t), &packed, sizeof(uint32_t));
+                } else if (type == GL_FLOAT_32_UNSIGNED_INT_24_8_REV) {
+                    /* 64-bit: float depth, then 32 bits with stencil in low 8.
+                     * Use memcpy to avoid unaligned access on arm64 when the
+                     * destination buffer is not 8-byte aligned. */
+                    GLfloat depthPart = depthVal;
+                    uint32_t stencilPart = (uint32_t)stencilVal;
+                    uint8_t *dst_pixel = dst + (size_t)column * 8u;
+                    memcpy(dst_pixel, &depthPart, sizeof(GLfloat));
+                    memcpy(dst_pixel + 4u, &stencilPart, sizeof(uint32_t));
+                }
+            }
+        }
+
+        /* Apply GL_PACK_SWAP_BYTES if needed. */
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
+
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
+    }
+
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG ReadPixels: post-ds, fmt=0x%x read_buffer=0x%x\n",
+                format, STATE(read_buffer));
     }
 
     if (STATE(read_buffer) == GL_NONE)
@@ -2373,6 +3106,13 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         readColorAttachment =
             &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0];
         readColorTexture = mglStencilAttachmentTexture(readColorAttachment);
+    }
+    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
+        fprintf(stderr, "MGL DEBUG ReadPixels: fmt=0x%x type=0x%x readColorTexture=%p readColorAttachment=%p textarget=0x%x buf.tex=%p buf.rbo=%p\n",
+                format, type, (void*)readColorTexture, (void*)readColorAttachment,
+                readColorAttachment ? readColorAttachment->textarget : 0,
+                readColorAttachment ? (void*)readColorAttachment->buf.tex : NULL,
+                readColorAttachment ? (void*)readColorAttachment->buf.rbo : NULL);
     }
     if (readColorTexture &&
         readColorTexture->rgb10a2_shadow &&
@@ -2403,6 +3143,12 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (!packed) {
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
+        }
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
         }
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
@@ -2443,6 +3189,12 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
+            if (STATE(pack.swap_bytes) == GL_TRUE) {
+                size_t elem_size = mglPixelTypeDatumBytes(type);
+                if (elem_size > 1u) {
+                    mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+                }
+            }
             if (pack_buffer)
                 mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
             return;
@@ -2470,6 +3222,12 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                       type,
                                       level,
                                       slice);
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
@@ -2522,10 +3280,110 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
+            if (STATE(pack.swap_bytes) == GL_TRUE) {
+                size_t elem_size = mglPixelTypeDatumBytes(type);
+                if (elem_size > 1u) {
+                    mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+                }
+            }
             if (pack_buffer)
                 mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
             return;
         }
+    }
+
+    /* Integer texture formats need to be read back via mtlGetTexImage (which
+     * has a dedicated integer readback path) rather than via mtlReadDrawable
+     * (which converts to BGRA8 UNORM, losing integer semantics). */
+    if (readColorTexture &&
+        ctx->mtl_funcs.mtlGetTexImage &&
+        mglIsIntegerReadFormat(format))
+    {
+        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
+        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
+            ? readColorAttachment->layer
+            : 0u;
+
+        if (pack_layout.dst_pitch > UINT_MAX ||
+            pack_layout.write_span_bytes > UINT_MAX)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                      readColorTexture,
+                                      pixels,
+                                      (GLuint)pack_layout.dst_pitch,
+                                      (GLuint)pack_layout.write_span_bytes,
+                                      x,
+                                      y,
+                                      width,
+                                      height,
+                                      format,
+                                      type,
+                                      level,
+                                      slice);
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
+    }
+
+    /* SNORM and other non-BGRA8 texture formats attached to FBOs need to be
+     * read back via mtlGetTexImage (which supports format conversion) rather
+     * than via mtlReadDrawable (which only returns BGRA8 from the drawable). */
+    if (readColorTexture &&
+        readColorTexture->internalformat != GL_RGBA8 &&
+        readColorTexture->internalformat != GL_RGB8 &&
+        readColorTexture->internalformat != GL_SRGB8 &&
+        readColorTexture->internalformat != GL_SRGB8_ALPHA8 &&
+        readColorTexture->internalformat != GL_R8 &&
+        readColorTexture->internalformat != GL_RG8 &&
+        ctx->mtl_funcs.mtlGetTexImage &&
+        mglIsColorReadFormat(format))
+    {
+        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
+        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
+            ? readColorAttachment->layer
+            : 0u;
+
+        if (pack_layout.dst_pitch > UINT_MAX ||
+            pack_layout.write_span_bytes > UINT_MAX)
+        {
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlGetTexImage(ctx,
+                                      readColorTexture,
+                                      pixels,
+                                      (GLuint)pack_layout.dst_pitch,
+                                      (GLuint)pack_layout.write_span_bytes,
+                                      x,
+                                      y,
+                                      width,
+                                      height,
+                                      format,
+                                      type,
+                                      level,
+                                      slice);
+        if (STATE(pack.swap_bytes) == GL_TRUE) {
+            size_t elem_size = mglPixelTypeDatumBytes(type);
+            if (elem_size > 1u) {
+                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+            }
+        }
+        if (pack_buffer)
+            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
+        return;
     }
 
     size_t readback_pitch = 0u;
@@ -2577,6 +3435,13 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                     (unsigned long long)hit);
         }
         ERROR_RETURN(GL_INVALID_OPERATION);
+    }
+
+    if (STATE(pack.swap_bytes) == GL_TRUE) {
+        size_t elem_size = mglPixelTypeDatumBytes(type);
+        if (elem_size > 1u) {
+            mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
+        }
     }
 
     if (pack_buffer)

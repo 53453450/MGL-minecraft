@@ -86,6 +86,7 @@ enum {
     _COPY_WRITE_BUFFER,
     _DISPATCH_INDIRECT_BUFFER,
     _DRAW_INDIRECT_BUFFER,
+    _PARAMETER_BUFFER,
     _MAX_BUFFER_TYPES
 };
 
@@ -236,7 +237,7 @@ typedef struct BufferBaseTarget_t {
     Buffer      *buf;
 } BufferBaseTarget;
 
-#define MAX_BINDABLE_BUFFERS    16
+#define MAX_BINDABLE_BUFFERS    84
 #define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
 typedef struct BufferBase_t {
     BufferBaseTarget    buffers[MAX_BINDABLE_BUFFERS];
@@ -296,6 +297,7 @@ typedef struct TextureLevel_t {
     size_t last_upload_size;
     const void *last_src_ptr;
     uint64_t last_src_hash;
+    GLboolean metal_data_authoritative; /* per-level: Metal data is more recent than CPU data (e.g. after blit) */
 } TextureLevel;
 
 enum {
@@ -336,6 +338,7 @@ typedef struct Texture_t {
 
     // base level params
     GLenum internalformat;
+    GLenum compressed_internalformat; // original compressed format if tex was created with compressed internalformat via glTexImage*, 0 otherwise
     GLuint width;
     GLuint height;
     GLuint depth;
@@ -353,6 +356,7 @@ typedef struct Texture_t {
     GLuint  mtl_gl_sampled_format;
     GLuint  mtl_gl_sampled_write_version;
     GLuint  mtl_render_target_write_version;
+    GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
     GLsizeiptr texture_buffer_size;

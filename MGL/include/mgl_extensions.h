@@ -1,6 +1,6 @@
 #ifndef mgl_extensions_h
 #define mgl_extensions_h
 
-#define MGL_NUM_EXTENSIONS 19
+#define MGL_NUM_EXTENSIONS 20
 
 #endif /* mgl_extensions_h */

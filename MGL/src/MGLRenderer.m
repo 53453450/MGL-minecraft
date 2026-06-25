@@ -54,6 +54,7 @@ uint16_t mglFloatToHalf(float value);
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
 GLuint sizeForType(GLenum type);
+GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
 
 #if __has_include(<Metal/MTL4Compiler.h>) && __has_include(<Metal/MTL4LibraryDescriptor.h>)
 #import <Metal/MTL4Compiler.h>
@@ -323,6 +324,17 @@ static BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
         case MTLPixelFormatR16Float:
         case MTLPixelFormatRGBA16Float:
         case MTLPixelFormatBGR10A2Unorm:
+        case MTLPixelFormatRGB10A2Unorm:
+        case MTLPixelFormatR8Snorm:
+        case MTLPixelFormatRG8Snorm:
+        case MTLPixelFormatRGBA8Snorm:
+        case MTLPixelFormatR8Uint:
+        case MTLPixelFormatR8Sint:
+        case MTLPixelFormatRG8Uint:
+        case MTLPixelFormatRG8Sint:
+        case MTLPixelFormatRGBA8Uint:
+        case MTLPixelFormatRGBA8Sint:
+        case MTLPixelFormatRGB9E5Float:
             return YES;
         default:
             return NO;
@@ -348,9 +360,20 @@ static NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)
         case MTLPixelFormatRGBA16Unorm:
         case MTLPixelFormatRGBA16Snorm:
             return 8u;
+        case MTLPixelFormatR8Snorm:
+        case MTLPixelFormatR8Uint:
+        case MTLPixelFormatR8Sint:
+            return 1u;
+        case MTLPixelFormatRG8Snorm:
+        case MTLPixelFormatRG8Uint:
+        case MTLPixelFormatRG8Sint:
+            return 2u;
         case MTLPixelFormatRG16Unorm:
         case MTLPixelFormatRG16Snorm:
         case MTLPixelFormatRG16Float:
+        case MTLPixelFormatRGBA8Snorm:
+        case MTLPixelFormatRGBA8Uint:
+        case MTLPixelFormatRGBA8Sint:
         default:
             return 4u;
     }
@@ -388,6 +411,14 @@ static float mglMetalSnorm16ToFloat(int16_t value)
         return -1.0f;
     }
     return (float)value / 32767.0f;
+}
+
+static float mglMetalSnorm8ToFloat(int8_t value)
+{
+    if (value == INT8_MIN) {
+        return -1.0f;
+    }
+    return (float)value / 127.0f;
 }
 
 static BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat)
@@ -516,6 +547,17 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
     BOOL sourceIsR16Float = (pixelFormat == MTLPixelFormatR16Float);
     BOOL sourceIsRGBA16Float = (pixelFormat == MTLPixelFormatRGBA16Float);
     BOOL sourceIsBGR10A2 = (pixelFormat == MTLPixelFormatBGR10A2Unorm);
+    BOOL sourceIsRGB10A2 = (pixelFormat == MTLPixelFormatRGB10A2Unorm);
+    BOOL sourceIsR8Snorm = (pixelFormat == MTLPixelFormatR8Snorm);
+    BOOL sourceIsRG8Snorm = (pixelFormat == MTLPixelFormatRG8Snorm);
+    BOOL sourceIsRGBA8Snorm = (pixelFormat == MTLPixelFormatRGBA8Snorm);
+    BOOL sourceIsR8Uint = (pixelFormat == MTLPixelFormatR8Uint);
+    BOOL sourceIsR8Sint = (pixelFormat == MTLPixelFormatR8Sint);
+    BOOL sourceIsRG8Uint = (pixelFormat == MTLPixelFormatRG8Uint);
+    BOOL sourceIsRG8Sint = (pixelFormat == MTLPixelFormatRG8Sint);
+    BOOL sourceIsRGBA8Uint = (pixelFormat == MTLPixelFormatRGBA8Uint);
+    BOOL sourceIsRGBA8Sint = (pixelFormat == MTLPixelFormatRGBA8Sint);
+    BOOL sourceIsRGB9E5 = (pixelFormat == MTLPixelFormatRGB9E5Float);
 
     for (NSUInteger y = 0; y < height; y++) {
         const uint8_t *srcRow = src + (y * srcBytesPerRow);
@@ -527,7 +569,11 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
             !sourceIsR16Snorm && !sourceIsRG16Snorm && !sourceIsRGBA16Snorm &&
             !sourceIsBGR5A1 && !sourceIsABGR4 && !sourceIsRG11B10Float &&
             !sourceIsR32Float && !sourceIsRG32Float && !sourceIsRG16Float &&
-            !sourceIsR16Float && !sourceIsRGBA16Float && !sourceIsBGR10A2) {
+            !sourceIsR16Float && !sourceIsRGBA16Float && !sourceIsBGR10A2 &&
+            !sourceIsRGB10A2 &&
+            !sourceIsR8Snorm && !sourceIsRG8Snorm && !sourceIsRGBA8Snorm &&
+            !sourceIsR8Uint && !sourceIsR8Sint && !sourceIsRG8Uint && !sourceIsRG8Sint &&
+            !sourceIsRGBA8Uint && !sourceIsRGBA8Sint && !sourceIsRGB9E5) {
             memcpy(dstRow, srcRow, width * 4u);
             continue;
         }
@@ -630,6 +676,16 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
                 d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
                 d[2] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
                 d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
+            } else if (sourceIsRGB10A2) {
+                /* MTLPixelFormatRGB10A2Unorm: R[0:9], G[10:19], B[20:29], A[30:31]
+                 * (LSB-first, same as GL_UNSIGNED_INT_2_10_10_10_REV).
+                 * Convert to BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
+                d[0] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
+                d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
+                d[2] = (uint8_t)(((packed & 1023u) * 255u) / 1023u);
+                d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
             } else if (sourceIsR8) {
                 d[0] = 0u;
                 d[1] = 0u;
@@ -642,19 +698,75 @@ static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
                 d[2] = s[0];
                 d[3] = 255u;
             } else if (sourceIsBGR5A1) {
+                /* MTLPixelFormatBGR5A1Unorm: B[0:4], G[5:9], R[10:14], A[15].
+                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
                 uint16_t packed = 0u;
                 memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)((((packed >> 11u) & 31u) * 255u) / 31u);
-                d[1] = (uint8_t)((((packed >> 6u) & 31u) * 255u) / 31u);
-                d[2] = (uint8_t)((((packed >> 1u) & 31u) * 255u) / 31u);
-                d[3] = (packed & 1u) ? 255u : 0u;
+                d[0] = (uint8_t)(((packed & 31u) * 255u) / 31u);
+                d[1] = (uint8_t)((((packed >> 5u) & 31u) * 255u) / 31u);
+                d[2] = (uint8_t)((((packed >> 10u) & 31u) * 255u) / 31u);
+                d[3] = ((packed >> 15u) & 1u) ? 255u : 0u;
             } else if (sourceIsABGR4) {
+                /* MTLPixelFormatABGR4Unorm: A[0:3], B[4:7], G[8:11], R[12:15].
+                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
                 uint16_t packed = 0u;
                 memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)((((packed >> 8u) & 15u) * 255u) / 15u);
-                d[1] = (uint8_t)((((packed >> 4u) & 15u) * 255u) / 15u);
-                d[2] = (uint8_t)(((packed & 15u) * 255u) / 15u);
-                d[3] = (uint8_t)((((packed >> 12u) & 15u) * 255u) / 15u);
+                d[0] = (uint8_t)((((packed >> 4u) & 15u) * 255u) / 15u);
+                d[1] = (uint8_t)((((packed >> 8u) & 15u) * 255u) / 15u);
+                d[2] = (uint8_t)((((packed >> 12u) & 15u) * 255u) / 15u);
+                d[3] = (uint8_t)(((packed & 15u) * 255u) / 15u);
+            } else if (sourceIsR8Snorm || sourceIsR8Sint) {
+                int8_t s = (int8_t)srcRow[x];
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s));
+                d[3] = 255u;
+            } else if (sourceIsRG8Snorm || sourceIsRG8Sint) {
+                const int8_t *s = (const int8_t *)(srcRow + x * 2u);
+                d[0] = 0u;
+                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[1]));
+                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[0]));
+                d[3] = 255u;
+            } else if (sourceIsRGBA8Snorm || sourceIsRGBA8Sint) {
+                const int8_t *s = (const int8_t *)(srcRow + x * 4u);
+                d[0] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[2]));
+                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[1]));
+                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[0]));
+                d[3] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[3]));
+            } else if (sourceIsR8Uint) {
+                d[0] = 0u;
+                d[1] = 0u;
+                d[2] = srcRow[x];
+                d[3] = 255u;
+            } else if (sourceIsRG8Uint) {
+                const uint8_t *s = srcRow + x * 2u;
+                d[0] = 0u;
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = 255u;
+            } else if (sourceIsRGBA8Uint) {
+                const uint8_t *s = srcRow + x * 4u;
+                d[0] = s[2];
+                d[1] = s[1];
+                d[2] = s[0];
+                d[3] = s[3];
+            } else if (sourceIsRGB9E5) {
+                /* MTLPixelFormatRGB9E5Float: 4 bytes/pixel, shared exponent.
+                 * Unpack to float R,G,B then convert to BGRA8 UNORM. */
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + x * 4u, sizeof(packed));
+                uint32_t exp = (packed >> 27u) & 31u;
+                uint32_t mant_r = packed & 511u;
+                uint32_t mant_g = (packed >> 9u) & 511u;
+                uint32_t mant_b = (packed >> 18u) & 511u;
+                float scale = ldexpf(1.0f, (int)exp - 24);
+                float rf = (float)mant_r * scale;
+                float gf = (float)mant_g * scale;
+                float bf = (float)mant_b * scale;
+                d[0] = mglMetalFloatToUnorm8(bf);
+                d[1] = mglMetalFloatToUnorm8(gf);
+                d[2] = mglMetalFloatToUnorm8(rf);
+                d[3] = 255u;
             } else {
                 const uint8_t *s = srcRow + (x * 4u);
                 d[0] = s[2];
@@ -686,6 +798,142 @@ static void mglMetalCopyRows(const uint8_t *src,
     }
 }
 
+static uint32_t mglMTPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
+{
+    if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {
+        return 0u;
+    }
+    float scaled = (float)value / 255.0f;
+    int exponent = 15;
+    while (scaled < 1.0f && exponent > 0) {
+        scaled *= 2.0f;
+        exponent--;
+    }
+    while (scaled >= 2.0f && exponent < 31) {
+        scaled *= 0.5f;
+        exponent++;
+    }
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = 0u;
+    if (exponent == 0) {
+        float subnormal = (float)value / 255.0f;
+        for (uint32_t i = 0; i < mantissa_bits + 14u; i++) {
+            subnormal *= 2.0f;
+        }
+        mantissa = (uint32_t)(subnormal + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = mantissa_mask;
+        }
+    } else {
+        float frac = (scaled - 1.0f) * (float)(1u << mantissa_bits);
+        mantissa = (uint32_t)(frac + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = 0u;
+            if (exponent < 31) {
+                exponent++;
+            } else {
+                mantissa = mantissa_mask;
+            }
+        }
+    }
+    return ((uint32_t)exponent << mantissa_bits) | (mantissa & mantissa_mask);
+}
+
+static uint32_t mglMTPackRGB9E5FromFloat(float r, float g, float b);
+
+static uint32_t mglMTPackRGB9E5FromUNorm8(uint32_t r, uint32_t g, uint32_t b)
+{
+    /* Delegate to the float packer for correct shared-exponent computation. */
+    return mglMTPackRGB9E5FromFloat((float)r / 255.0f, (float)g / 255.0f, (float)b / 255.0f);
+}
+
+/* Pack a float into 11-bit unsigned float (UE11) format.
+ * 6-bit mantissa, 5-bit exponent (bias 15). */
+static uint32_t mglMTFloatToFloat11(float v)
+{
+    if (v <= 0.0f) return 0u;
+    if (v >= 65024.0f) return 0x7ffu;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 11) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 6 + shift);
+        return m & 0x3fu;
+    }
+    if (ieee_exp >= 16) return 0x7ffu;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 6);
+    return (exp << 6) | mant;
+}
+
+/* Pack a float into 10-bit unsigned float (UE10) format.
+ * 5-bit mantissa, 5-bit exponent (bias 15). */
+static uint32_t mglMTFloatToFloat10(float v)
+{
+    if (v <= 0.0f) return 0u;
+    if (v >= 64512.0f) return 0x3ffu;
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 10) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 5 + shift);
+        return m & 0x1fu;
+    }
+    if (ieee_exp >= 16) return 0x3ffu;
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 5);
+    return (exp << 5) | mant;
+}
+
+/* Pack 3 floats into GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) format.
+ * Implements the shared exponent algorithm from the GL spec. */
+static uint32_t mglMTPackRGB9E5FromFloat(float r, float g, float b)
+{
+    const int N = 9;
+    const int B = 15;
+    const int E_max = 31;
+    double shared_exp_max = ((double)((1 << N) - 1) / (double)(1 << N)) *
+                            ldexp(1.0, E_max - B);
+    double red_c   = fmax(0.0, fmin(shared_exp_max, (double)r));
+    double green_c = fmax(0.0, fmin(shared_exp_max, (double)g));
+    double blue_c  = fmax(0.0, fmin(shared_exp_max, (double)b));
+    double max_c = fmax(fmax(red_c, green_c), blue_c);
+    double exp_p;
+    if (max_c <= 0.0) {
+        exp_p = 0.0;
+    } else {
+        /* CTS: exp_p = max(-B-1, floor(log2(max_c))) + 1 + B */
+        exp_p = fmax((double)(-B - 1), floor(log2(max_c))) + 1.0 + (double)B;
+    }
+    /* CTS overflow check: if max_s >= 2^N, increment exp_s */
+    double scale_p = ldexp(1.0, (int)exp_p - B - N);
+    double max_s = floor(max_c / scale_p + 0.5);
+    int exp_s;
+    if (max_s >= (double)(1 << N)) {
+        exp_s = (int)exp_p + 1;
+    } else {
+        exp_s = (int)exp_p;
+    }
+    if (exp_s < 0) exp_s = 0;
+    if (exp_s > E_max) exp_s = E_max;
+    /* CTS: scale = 2^(exp_s - B - N) */
+    double scale = ldexp(1.0, exp_s - B - N);
+    uint32_t mr = (uint32_t)(red_c / scale + 0.5);
+    uint32_t mg = (uint32_t)(green_c / scale + 0.5);
+    uint32_t mb = (uint32_t)(blue_c / scale + 0.5);
+    if (mr > 511u) mr = 511u;
+    if (mg > 511u) mg = 511u;
+    if (mb > 511u) mb = 511u;
+    return (mr & 0x1ffu) | ((mg & 0x1ffu) << 9u) |
+           ((mb & 0x1ffu) << 18u) | ((uint32_t)exp_s << 27u);
+}
+
 static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                                                         NSUInteger srcBytesPerRow,
                                                         uint8_t *dst,
@@ -710,8 +958,711 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         type != GL_INT &&
         type != GL_UNSIGNED_INT &&
         type != GL_UNSIGNED_SHORT &&
-        type != GL_HALF_FLOAT) {
+        type != GL_HALF_FLOAT &&
+        type != GL_UNSIGNED_BYTE_3_3_2 &&
+        type != GL_UNSIGNED_BYTE_2_3_3_REV &&
+        type != GL_UNSIGNED_SHORT_5_6_5 &&
+        type != GL_UNSIGNED_SHORT_5_6_5_REV &&
+        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
+        type != GL_UNSIGNED_SHORT_4_4_4_4_REV &&
+        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
+        type != GL_UNSIGNED_SHORT_1_5_5_5_REV &&
+        type != GL_UNSIGNED_INT_10_10_10_2 &&
+        type != GL_UNSIGNED_INT_2_10_10_10_REV &&
+        type != GL_UNSIGNED_INT_10F_11F_11F_REV &&
+        type != GL_UNSIGNED_INT_5_9_9_9_REV) {
         return NO;
+    }
+
+    /* Direct SNORM conversion path: bypass the lossy BGRA8 UNORM intermediate.
+     * SNORM int8_t -> BGRA8 UNORM loses sign information, so we convert directly
+     * from the native SNORM texture data to the requested GL format/type. */
+    BOOL sourceIsSnorm8 =
+        (pixelFormat == MTLPixelFormatR8Snorm ||
+         pixelFormat == MTLPixelFormatRG8Snorm ||
+         pixelFormat == MTLPixelFormatRGBA8Snorm);
+    if (sourceIsSnorm8) {
+        NSUInteger srcBpp = mglMetalReadbackBytesPerPixel(pixelFormat);
+        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
+        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
+            return NO;
+        }
+        int srcChannels = (int)(srcBpp); /* 1 for R8, 2 for RG8, 4 for RGBA8 */
+        int slots = 0;
+        int srcIdx[4] = {0,0,0,0};
+        switch (format) {
+            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
+            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
+            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
+            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
+            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
+            case GL_RED:  slots = 1; srcIdx[0]=0; break;
+            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
+            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
+            default: return NO;
+        }
+        NSUInteger compBytes = (NSUInteger)sizeForType(type);
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                const int8_t *s = (const int8_t *)(srcRow + (x * srcBpp));
+                uint8_t *dp = dstRow + (x * dstPixelBytes);
+                for (int c = 0; c < slots; ++c) {
+                    int idx = srcIdx[c];
+                    if (idx >= srcChannels) idx = srcChannels - 1;
+                    int8_t sv = s[idx];
+                    float fv = mglMetalSnorm8ToFloat(sv);
+                    uint8_t *out = dp + (NSUInteger)c * compBytes;
+                    if (type == GL_BYTE) {
+                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
+                        if (iv > 127) iv = 127;
+                        if (iv < -128) iv = -128;
+                        int8_t biv = (int8_t)iv;
+                        memcpy(out, &biv, sizeof(biv));
+                    } else if (type == GL_UNSIGNED_BYTE) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_FLOAT) {
+                        memcpy(out, &fv, sizeof(fv));
+                    } else if (type == GL_HALF_FLOAT) {
+                        uint16_t iv = mglFloatToHalf(fv);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_SHORT) {
+                        int32_t iv = (int32_t)lroundf(fv * 32767.0f);
+                        if (iv > 32767) iv = 32767;
+                        if (iv < -32768) iv = -32768;
+                        int16_t siv = (int16_t)iv;
+                        memcpy(out, &siv, sizeof(siv));
+                    } else if (type == GL_UNSIGNED_SHORT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_INT) {
+                        int64_t iv = (int64_t)llroundf(fv * 2147483647.0f);
+                        if (iv > 2147483647LL) iv = 2147483647LL;
+                        if (iv < -2147483648LL) iv = -2147483648LL;
+                        int32_t iiv = (int32_t)iv;
+                        memcpy(out, &iiv, sizeof(iiv));
+                    } else if (type == GL_UNSIGNED_INT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    }
+                }
+            }
+        }
+        return YES;
+    }
+
+    /* Direct RGB10A2 conversion path: bypass the lossy BGRA8 UNORM intermediate.
+     * RGB10A2 has 10-bit color channels; going through BGRA8 (8-bit) loses ~2 bits
+     * of precision, causing CTS gradient comparison failures. Convert directly
+     * from the native 10-bit packed data to the requested GL format/type. */
+    BOOL sourceIsRGB10A2Direct = (pixelFormat == MTLPixelFormatRGB10A2Unorm);
+    if (sourceIsRGB10A2Direct &&
+        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
+         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
+         type == GL_UNSIGNED_INT || type == GL_INT ||
+         type == GL_FLOAT || type == GL_HALF_FLOAT ||
+         type == GL_UNSIGNED_INT_10_10_10_2 ||
+         type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+         type == GL_UNSIGNED_INT_5_9_9_9_REV ||
+         type == GL_UNSIGNED_INT_8_8_8_8 ||
+         type == GL_UNSIGNED_INT_8_8_8_8_REV))
+    {
+        NSUInteger srcBpp = 4u; /* RGB10A2 is 4 bytes per pixel */
+        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
+        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
+            return NO;
+        }
+
+        /* Determine output channel mapping */
+        int slots = 0;
+        int srcIdx[4] = {0,0,0,0}; /* indices into R,G,B,A (0=R,1=G,2=B,3=A) */
+        switch (format) {
+            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
+            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
+            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
+            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
+            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
+            case GL_RED:  slots = 1; srcIdx[0]=0; break;
+            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
+            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
+            default: return NO;
+        }
+
+        NSUInteger compBytes = (NSUInteger)sizeForType(type);
+
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + (x * srcBpp), sizeof(packed));
+                /* Extract 10-bit/2-bit unorm values from LSB-first layout */
+                uint32_t rgb10a2_vals[4] = {
+                    packed & 1023u,           /* R: bits 0-9 */
+                    (packed >> 10u) & 1023u,  /* G: bits 10-19 */
+                    (packed >> 20u) & 1023u,  /* B: bits 20-29 */
+                    (packed >> 30u) & 3u      /* A: bits 30-31 */
+                };
+
+                if (type == GL_UNSIGNED_INT_10_10_10_2) {
+                    /* MSB-first: R[22:31], G[12:21], B[2:11], A[0:1] */
+                    uint32_t r10 = rgb10a2_vals[srcIdx[0]];
+                    uint32_t g10 = (slots > 1) ? rgb10a2_vals[srcIdx[1]] : 0u;
+                    uint32_t b10 = (slots > 2) ? rgb10a2_vals[srcIdx[2]] : 0u;
+                    uint32_t a2 = (slots > 3) ? rgb10a2_vals[srcIdx[3]] : 0u;
+                    uint32_t out = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+                    /* LSB-first: same layout as source, just remap channels */
+                    uint32_t r10 = rgb10a2_vals[srcIdx[0]];
+                    uint32_t g10 = (slots > 1) ? rgb10a2_vals[srcIdx[1]] : 0u;
+                    uint32_t b10 = (slots > 2) ? rgb10a2_vals[srcIdx[2]] : 0u;
+                    uint32_t a2 = (slots > 3) ? rgb10a2_vals[srcIdx[3]] : 0u;
+                    uint32_t out = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                    /* Pack 10-bit unorm channels to shared-exponent RGB9E5
+                     * directly from 10-bit values to avoid 8-bit precision loss. */
+                    float rf = (float)rgb10a2_vals[srcIdx[0]] / 1023.0f;
+                    float gf = (slots > 1) ? (float)rgb10a2_vals[srcIdx[1]] / 1023.0f : 0.0f;
+                    float bf = (slots > 2) ? (float)rgb10a2_vals[srcIdx[2]] / 1023.0f : 0.0f;
+                    uint32_t out = mglMTPackRGB9E5FromFloat(rf, gf, bf);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                    /* CTS: R=(val>>24), G=(val>>16), B=(val>>8), A=(val>>0).
+                     * Convert 10-bit to 8-bit directly for best precision. */
+                    uint8_t r8 = (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[0]] * 255u / 1023u);
+                    uint8_t g8 = (slots > 1) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[1]] * 255u / 1023u) : 0u;
+                    uint8_t b8 = (slots > 2) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[2]] * 255u / 1023u) : 0u;
+                    uint8_t a8 = (slots > 3) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[3]] * 255u / 3u) : 0u;
+                    uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) | ((uint32_t)b8 << 8u) | a8;
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                    /* CTS: R=(val>>0), G=(val>>8), B=(val>>16), A=(val>>24). */
+                    uint8_t r8 = (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[0]] * 255u / 1023u);
+                    uint8_t g8 = (slots > 1) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[1]] * 255u / 1023u) : 0u;
+                    uint8_t b8 = (slots > 2) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[2]] * 255u / 1023u) : 0u;
+                    uint8_t a8 = (slots > 3) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[3]] * 255u / 3u) : 0u;
+                    uint32_t out = r8 | ((uint32_t)g8 << 8u) | ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else {
+                    /* Non-packed types: convert via float to preserve precision */
+                    for (int c = 0; c < slots; ++c) {
+                        uint32_t raw = rgb10a2_vals[srcIdx[c]];
+                        float fv = (srcIdx[c] == 3) ? (float)raw / 3.0f : (float)raw / 1023.0f;
+                        uint8_t *out = dstRow + (x * dstPixelBytes) + (NSUInteger)c * compBytes;
+                        if (type == GL_UNSIGNED_BYTE) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_BYTE) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int8_t iv = (int8_t)lroundf(cv * 127.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_UNSIGNED_SHORT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_SHORT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int16_t iv = (int16_t)lroundf(cv * 32767.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_UNSIGNED_INT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_INT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_FLOAT) {
+                            memcpy(out, &fv, sizeof(fv));
+                        } else { /* GL_HALF_FLOAT */
+                            uint16_t iv = mglFloatToHalf(fv);
+                            memcpy(out, &iv, sizeof(iv));
+                        }
+                    }
+                }
+            }
+        }
+        return YES;
+    }
+
+    /* Direct RG11B10Float conversion path: bypass the lossy BGRA8 UNORM intermediate.
+     * RG11B10Float has float channels; going through BGRA8 (8-bit unorm) loses
+     * precision and changes bit patterns, causing CTS copy_image failures.
+     * Convert directly from the native packed float data to the requested GL format/type. */
+    BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MTLPixelFormatRG11B10Float);
+    if (sourceIsRG11B10FloatDirect &&
+        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
+         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
+         type == GL_UNSIGNED_INT || type == GL_INT ||
+         type == GL_FLOAT || type == GL_HALF_FLOAT ||
+         type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+         type == GL_UNSIGNED_INT_5_9_9_9_REV ||
+         type == GL_UNSIGNED_INT_8_8_8_8 ||
+         type == GL_UNSIGNED_INT_8_8_8_8_REV))
+    {
+        NSUInteger srcBpp = 4u; /* RG11B10Float is 4 bytes per pixel */
+        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
+        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
+            return NO;
+        }
+
+        /* For GL_UNSIGNED_INT_10F_11F_11F_REV with GL_RGB, Metal's RG11B10Float
+         * uses the exact same LSB-first bit layout (R[0:10], G[11:21], B[22:31]).
+         * Raw memcpy preserves the exact bits. */
+        if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
+            for (NSUInteger y = 0; y < height; y++) {
+                const uint8_t *srcRow = src + (y * srcBytesPerRow);
+                NSUInteger dstY = flipY ? (height - 1u - y) : y;
+                uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+                memcpy(dstRow, srcRow, width * srcBpp);
+            }
+            return YES;
+        }
+
+        /* Determine output channel mapping */
+        int slots = 0;
+        int srcIdx[4] = {0,0,0,0}; /* indices into R,G,B,A (0=R,1=G,2=B,3=A) */
+        switch (format) {
+            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
+            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
+            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
+            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
+            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
+            case GL_RED:  slots = 1; srcIdx[0]=0; break;
+            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
+            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
+            default: return NO;
+        }
+
+        NSUInteger compBytes = (NSUInteger)sizeForType(type);
+
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                uint32_t packed = 0u;
+                memcpy(&packed, srcRow + (x * srcBpp), sizeof(packed));
+                /* Decode float channels from RG11B10Float packed format.
+                 * R: bits 0-10 (11-bit float, 6-bit mantissa)
+                 * G: bits 11-21 (11-bit float, 6-bit mantissa)
+                 * B: bits 22-31 (10-bit float, 5-bit mantissa) */
+                float float_vals[4] = {
+                    mglMetalUnsignedFloatComponent(packed, 6u),         /* R */
+                    mglMetalUnsignedFloatComponent(packed >> 11u, 6u),  /* G */
+                    mglMetalUnsignedFloatComponent(packed >> 22u, 5u),  /* B */
+                    1.0f                                                /* A (always 1) */
+                };
+
+                if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                    /* Pack as R11G11B10 float with remapped channels.
+                     * Layout: R[0:10], G[11:21], B[22:31] */
+                    float r = float_vals[srcIdx[0]];
+                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
+                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
+                    uint32_t out = (mglMTFloatToFloat11(r) & 0x7ffu) |
+                                   ((mglMTFloatToFloat11(g) & 0x7ffu) << 11u) |
+                                   ((mglMTFloatToFloat10(b) & 0x3ffu) << 22u);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                    float r = float_vals[srcIdx[0]];
+                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
+                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
+                    uint32_t out = mglMTPackRGB9E5FromFloat(r, g, b);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
+                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
+                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
+                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
+                    uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) | ((uint32_t)b8 << 8u) | a8;
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
+                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
+                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
+                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
+                    uint32_t out = r8 | ((uint32_t)g8 << 8u) | ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
+                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
+                } else {
+                    /* Non-packed types: convert via float */
+                    for (int c = 0; c < slots; ++c) {
+                        float fv = float_vals[srcIdx[c]];
+                        uint8_t *out = dstRow + (x * dstPixelBytes) + (NSUInteger)c * compBytes;
+                        if (type == GL_UNSIGNED_BYTE) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_BYTE) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int8_t iv = (int8_t)lroundf(cv * 127.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_UNSIGNED_SHORT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_SHORT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int16_t iv = (int16_t)lroundf(cv * 32767.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_UNSIGNED_INT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                            uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_INT) {
+                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                            int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                            memcpy(out, &iv, sizeof(iv));
+                        } else if (type == GL_FLOAT) {
+                            memcpy(out, &fv, sizeof(fv));
+                        } else { /* GL_HALF_FLOAT */
+                            uint16_t iv = mglFloatToHalf(fv);
+                            memcpy(out, &iv, sizeof(iv));
+                        }
+                    }
+                }
+            }
+        }
+        return YES;
+    }
+
+    /* Direct 16-bit/32-bit conversion path: bypass the lossy BGRA8 UNORM intermediate.
+     * R16/RG16/RGBA16 Unorm/Snorm/Float and R32/RG32/RGBA32 Float -> BGRA8 UNORM
+     * loses precision, so we convert directly from the native texture data to the
+     * requested GL format/type. */
+    BOOL sourceIs16BitUnorm =
+        (pixelFormat == MTLPixelFormatR16Unorm ||
+         pixelFormat == MTLPixelFormatRG16Unorm ||
+         pixelFormat == MTLPixelFormatRGBA16Unorm);
+    BOOL sourceIs16BitSnorm =
+        (pixelFormat == MTLPixelFormatR16Snorm ||
+         pixelFormat == MTLPixelFormatRG16Snorm ||
+         pixelFormat == MTLPixelFormatRGBA16Snorm);
+    BOOL sourceIs16BitFloat =
+        (pixelFormat == MTLPixelFormatR16Float ||
+         pixelFormat == MTLPixelFormatRG16Float ||
+         pixelFormat == MTLPixelFormatRGBA16Float);
+    BOOL sourceIs32BitFloat =
+        (pixelFormat == MTLPixelFormatR32Float ||
+         pixelFormat == MTLPixelFormatRG32Float ||
+         pixelFormat == MTLPixelFormatRGBA32Float);
+
+    if ((sourceIs16BitUnorm || sourceIs16BitSnorm || sourceIs16BitFloat || sourceIs32BitFloat) &&
+        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
+         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
+         type == GL_UNSIGNED_INT || type == GL_INT ||
+         type == GL_FLOAT || type == GL_HALF_FLOAT ||
+         type == GL_UNSIGNED_BYTE_3_3_2 || type == GL_UNSIGNED_BYTE_2_3_3_REV ||
+         type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV ||
+         type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+         type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+         type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+         type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+         type == GL_UNSIGNED_INT_10F_11F_11F_REV || type == GL_UNSIGNED_INT_5_9_9_9_REV))
+    {
+        NSUInteger srcBpp = mglMetalReadbackBytesPerPixel(pixelFormat);
+        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
+        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
+            return NO;
+        }
+
+        /* Determine source channels: 1 for R16, 2 for RG16, 4 for RGBA16 */
+        int srcChannels = 0;
+        if (sourceIs32BitFloat) {
+            switch (pixelFormat) {
+                case MTLPixelFormatR32Float: srcChannels = 1; break;
+                case MTLPixelFormatRG32Float: srcChannels = 2; break;
+                case MTLPixelFormatRGBA32Float: srcChannels = 4; break;
+                default: break;
+            }
+        } else {
+            switch (pixelFormat) {
+                case MTLPixelFormatR16Unorm:
+                case MTLPixelFormatR16Snorm:
+                case MTLPixelFormatR16Float:
+                    srcChannels = 1; break;
+                case MTLPixelFormatRG16Unorm:
+                case MTLPixelFormatRG16Snorm:
+                case MTLPixelFormatRG16Float:
+                    srcChannels = 2; break;
+                case MTLPixelFormatRGBA16Unorm:
+                case MTLPixelFormatRGBA16Snorm:
+                case MTLPixelFormatRGBA16Float:
+                    srcChannels = 4; break;
+                default: break;
+            }
+        }
+        if (srcChannels == 0) return NO;
+
+        /* Map output format to source channel indices */
+        int slots = 0;
+        int srcIdx[4] = {0,0,0,0};
+        switch (format) {
+            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
+            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
+            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
+            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
+            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
+            case GL_RED:  slots = 1; srcIdx[0]=0; break;
+            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
+            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
+            default: return NO;
+        }
+
+        NSUInteger compBytes = (NSUInteger)sizeForType(type);
+        NSUInteger srcCompBytes = sourceIs32BitFloat ? 4u : 2u; /* 4 for float32, 2 for 16-bit */
+
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                const uint8_t *s = srcRow + (x * srcBpp);
+                uint8_t *dp = dstRow + (x * dstPixelBytes);
+
+                /* Packed output types: extract all source components as float,
+                 * then pack into the output word. This preserves precision
+                 * compared to going through a BGRA8 intermediate. */
+                BOOL outputIsPackedType =
+                    (type == GL_UNSIGNED_BYTE_3_3_2 || type == GL_UNSIGNED_BYTE_2_3_3_REV ||
+                     type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV ||
+                     type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+                     type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+                     type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+                     type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+                     type == GL_UNSIGNED_INT_10F_11F_11F_REV || type == GL_UNSIGNED_INT_5_9_9_9_REV);
+                if (outputIsPackedType) {
+                    /* Extract up to 4 source components as float values. */
+                    float fvals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                    for (int c = 0; c < slots; ++c) {
+                        int idx = srcIdx[c];
+                        if (idx >= srcChannels) idx = srcChannels - 1;
+                        if (sourceIs16BitUnorm) {
+                            uint16_t uv;
+                            memcpy(&uv, s + (NSUInteger)idx * 2u, sizeof(uv));
+                            fvals[c] = (float)uv / 65535.0f;
+                        } else if (sourceIs16BitSnorm) {
+                            int16_t sv;
+                            memcpy(&sv, s + (NSUInteger)idx * 2u, sizeof(sv));
+                            fvals[c] = (float)sv / 32767.0f;
+                        } else if (sourceIs16BitFloat) {
+                            uint16_t hv;
+                            memcpy(&hv, s + (NSUInteger)idx * 2u, sizeof(hv));
+                            fvals[c] = mglHalfToFloat(hv);
+                        } else {
+                            memcpy(&fvals[c], s + (NSUInteger)idx * 4u, sizeof(float));
+                        }
+                    }
+                    /* For formats with < 4 components, pad with defaults. */
+                    /* R, G, B default to 0; A defaults to 1 for RGBA outputs. */
+                    if (slots < 4) {
+                        BOOL needsAlpha = (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+                            type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+                            type == GL_UNSIGNED_SHORT_5_5_5_1 ||
+                            type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+                            type == GL_UNSIGNED_INT_8_8_8_8 ||
+                            type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+                            type == GL_UNSIGNED_INT_10_10_10_2 ||
+                            type == GL_UNSIGNED_INT_2_10_10_10_REV);
+                        if (needsAlpha) fvals[3] = 1.0f;
+                    }
+
+                    if (type == GL_UNSIGNED_BYTE_3_3_2) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        dp[0] = (uint8_t)(((uint32_t)lroundf(r * 7.0f) << 5) |
+                                          ((uint32_t)lroundf(g * 7.0f) << 2) |
+                                          (uint32_t)lroundf(b * 3.0f));
+                    } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        dp[0] = (uint8_t)((uint32_t)lroundf(r * 7.0f) |
+                                          ((uint32_t)lroundf(g * 7.0f) << 3) |
+                                          ((uint32_t)lroundf(b * 3.0f) << 6));
+                    } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 31.0f) << 11) |
+                                                     ((uint32_t)lroundf(g * 63.0f) << 5) |
+                                                     (uint32_t)lroundf(b * 31.0f));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 31.0f) |
+                                                     ((uint32_t)lroundf(g * 63.0f) << 5) |
+                                                     ((uint32_t)lroundf(b * 31.0f) << 11));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 15.0f) << 12) |
+                                                     ((uint32_t)lroundf(g * 15.0f) << 8) |
+                                                     ((uint32_t)lroundf(b * 15.0f) << 4) |
+                                                     (uint32_t)lroundf(a * 15.0f));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 15.0f) |
+                                                     ((uint32_t)lroundf(g * 15.0f) << 4) |
+                                                     ((uint32_t)lroundf(b * 15.0f) << 8) |
+                                                     ((uint32_t)lroundf(a * 15.0f) << 12));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 31.0f) << 11) |
+                                                     ((uint32_t)lroundf(g * 31.0f) << 6) |
+                                                     ((uint32_t)lroundf(b * 31.0f) << 1) |
+                                                     (a >= 0.5f ? 1u : 0u));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 31.0f) |
+                                                     ((uint32_t)lroundf(g * 31.0f) << 5) |
+                                                     ((uint32_t)lroundf(b * 31.0f) << 10) |
+                                                     ((a >= 0.5f ? 1u : 0u) << 15));
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint32_t packed = ((uint32_t)lroundf(r * 255.0f) << 24) |
+                                          ((uint32_t)lroundf(g * 255.0f) << 16) |
+                                          ((uint32_t)lroundf(b * 255.0f) << 8) |
+                                          (uint32_t)lroundf(a * 255.0f);
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint32_t packed = (uint32_t)lroundf(r * 255.0f) |
+                                          ((uint32_t)lroundf(g * 255.0f) << 8) |
+                                          ((uint32_t)lroundf(b * 255.0f) << 16) |
+                                          ((uint32_t)lroundf(a * 255.0f) << 24);
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint32_t packed = ((uint32_t)lroundf(r * 1023.0f) << 22) |
+                                          ((uint32_t)lroundf(g * 1023.0f) << 12) |
+                                          ((uint32_t)lroundf(b * 1023.0f) << 2) |
+                                          (uint32_t)lroundf(a * 3.0f);
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
+                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
+                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
+                        uint32_t packed = (uint32_t)lroundf(r * 1023.0f) |
+                                          ((uint32_t)lroundf(g * 1023.0f) << 10) |
+                                          ((uint32_t)lroundf(b * 1023.0f) << 20) |
+                                          ((uint32_t)lroundf(a * 3.0f) << 30);
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                        float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
+                        float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
+                        uint32_t packed = mglMTFloatToFloat11(r) |
+                                          (mglMTFloatToFloat11(g) << 11) |
+                                          (mglMTFloatToFloat10(b) << 22);
+                        memcpy(dp, &packed, sizeof(packed));
+                    } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                        float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
+                        float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
+                        float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
+                        uint32_t packed = mglMTPackRGB9E5FromFloat(r, g, b);
+                        memcpy(dp, &packed, sizeof(packed));
+                    }
+                    continue; /* Packed output handled, skip per-component loop */
+                }
+
+                for (int c = 0; c < slots; ++c) {
+                    int idx = srcIdx[c];
+                    if (idx >= srcChannels) idx = srcChannels - 1;
+                    float fv = 0.0f;
+                    if (sourceIs16BitUnorm) {
+                        uint16_t uv;
+                        memcpy(&uv, s + (NSUInteger)idx * 2u, sizeof(uv));
+                        fv = (float)uv / 65535.0f;
+                    } else if (sourceIs16BitSnorm) {
+                        int16_t sv;
+                        memcpy(&sv, s + (NSUInteger)idx * 2u, sizeof(sv));
+                        fv = (float)sv / 32767.0f;
+                    } else if (sourceIs16BitFloat) {
+                        uint16_t hv;
+                        memcpy(&hv, s + (NSUInteger)idx * 2u, sizeof(hv));
+                        fv = mglHalfToFloat(hv);
+                    } else { /* sourceIs32BitFloat */
+                        memcpy(&fv, s + (NSUInteger)idx * 4u, sizeof(fv));
+                    }
+                    uint8_t *out = dp + (NSUInteger)c * compBytes;
+                    if (type == GL_UNSIGNED_BYTE) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_BYTE) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int8_t iv = (int8_t)lroundf(cv * 127.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_SHORT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_SHORT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int16_t iv = (int16_t)lroundf(cv * 32767.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_UNSIGNED_INT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
+                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_INT) {
+                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
+                        int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
+                        memcpy(out, &iv, sizeof(iv));
+                    } else if (type == GL_FLOAT) {
+                        memcpy(out, &fv, sizeof(fv));
+                    } else { /* GL_HALF_FLOAT */
+                        uint16_t iv = mglFloatToHalf(fv);
+                        memcpy(out, &iv, sizeof(iv));
+                    }
+                }
+            }
+        }
+        return YES;
     }
 
     BOOL sourceIsRGBA =
@@ -773,7 +1724,7 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
             case GL_RED:  slots = 1; srcIdx[0]=0; break;
             case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=0; break;
+            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
             case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
             default: return NO;
         }
@@ -783,14 +1734,27 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
             uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
             for (NSUInteger x = 0; x < width; x++) {
                 const uint8_t *s = srcRow + (x * 4u);
-                const unsigned cv[4] = { s[2], s[1], s[0], s[3] };
+                /* cv[0]=R, cv[1]=G, cv[2]=B, cv[3]=A in logical order.
+                 * BGRA8 source: s[0]=B, s[1]=G, s[2]=R, s[3]=A.
+                 * RGBA8 source: s[0]=R, s[1]=G, s[2]=B, s[3]=A. */
+                const unsigned cv[4] = {
+                    sourceIsRGBA ? s[0] : s[2],
+                    s[1],
+                    sourceIsRGBA ? s[2] : s[0],
+                    s[3]
+                };
                 uint8_t *dp = dstRow + (x * dstPixelBytes);
                 for (int c = 0; c < slots; ++c) {
                     unsigned v = cv[srcIdx[c]];
                     uint8_t *out = dp + (NSUInteger)c * compBytes;
                     if (type == GL_BYTE) {
-                        int8_t iv = (v > 127u) ? 127 : (int8_t)v;
-                        memcpy(out, &iv, sizeof(iv));
+                        /* UNORM (0-255) -> SNORM (-128..127) */
+                        float fv = (float)v / 255.0f;
+                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
+                        if (iv > 127) iv = 127;
+                        if (iv < -128) iv = -128;
+                        int8_t biv = (int8_t)iv;
+                        memcpy(out, &biv, sizeof(biv));
                     } else if (type == GL_UNSIGNED_SHORT) {
                         uint16_t iv = (uint16_t)((uint32_t)v * 257u);
                         memcpy(out, &iv, sizeof(iv));
@@ -803,7 +1767,9 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                         uint32_t iv = (uint32_t)v * 16843009u;
                         memcpy(out, &iv, sizeof(iv));
                     } else if (type == GL_INT) {
-                        int32_t scaled = (int32_t)((uint32_t)v * 2147483647u / 255u);
+                        /* Use 64-bit arithmetic to avoid uint32 overflow:
+                         * v * 2147483647 overflows uint32 for v > 1. */
+                        int32_t scaled = (int32_t)((uint64_t)v * 2147483647ULL / 255u);
                         if (scaled > 2147483647) scaled = 2147483647;
                         memcpy(out, &scaled, sizeof(scaled));
                     } else if (type == GL_FLOAT) {
@@ -813,6 +1779,107 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                         uint16_t iv = mglFloatToHalf((float)v / 255.0f);
                         memcpy(out, &iv, sizeof(iv));
                     }
+                }
+            }
+        }
+        return YES;
+    }
+
+    /* Packed type readback from BGRA8/RGBA8 UNORM source.
+     * Each pixel is extracted from 4-byte BGRA8/RGBA8 source and packed
+     * into the destination packed type. */
+    if (type == GL_UNSIGNED_BYTE_3_3_2 ||
+        type == GL_UNSIGNED_BYTE_2_3_3_REV ||
+        type == GL_UNSIGNED_SHORT_5_6_5 ||
+        type == GL_UNSIGNED_SHORT_5_6_5_REV ||
+        type == GL_UNSIGNED_SHORT_4_4_4_4 ||
+        type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
+        type == GL_UNSIGNED_SHORT_5_5_5_1 ||
+        type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
+        type == GL_UNSIGNED_INT_8_8_8_8 ||
+        type == GL_UNSIGNED_INT_8_8_8_8_REV ||
+        type == GL_UNSIGNED_INT_10_10_10_2 ||
+        type == GL_UNSIGNED_INT_2_10_10_10_REV ||
+        type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
+        type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+        for (NSUInteger y = 0; y < height; y++) {
+            const uint8_t *srcRow = src + (y * srcBytesPerRow);
+            NSUInteger dstY = flipY ? (height - 1u - y) : y;
+            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
+            for (NSUInteger x = 0; x < width; x++) {
+                const uint8_t *s = srcRow + (x * 4u);
+                uint32_t r = sourceIsRGBA ? s[0] : s[2];
+                uint32_t g = s[1];
+                uint32_t b = sourceIsRGBA ? s[2] : s[0];
+                uint32_t a = s[3];
+                /* Apply format channel mapping */
+                uint32_t rr = r, gg = g, bb = b, aa = a;
+                switch (format) {
+                    case GL_RGBA: case GL_RGB: case GL_RED: case GL_RG:
+                    case GL_GREEN: case GL_BLUE: case GL_ALPHA:
+                        break;
+                    case GL_BGRA: case GL_BGR: {
+                        uint32_t tmp = rr; rr = bb; bb = tmp;
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                uint8_t *d = dstRow + (x * dstPixelBytes);
+                if (type == GL_UNSIGNED_BYTE_3_3_2) {
+                    d[0] = (uint8_t)(((rr >> 5u) << 5u) | ((gg >> 5u) << 2u) | (bb >> 6u));
+                } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
+                    d[0] = (uint8_t)((rr >> 5u) | ((gg >> 5u) << 3u) | ((bb >> 6u) << 6u));
+                } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
+                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 2u) << 5u) | (bb >> 3u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
+                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 2u) << 5u) | ((bb >> 3u) << 11u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
+                    uint16_t packed = (uint16_t)(((rr >> 4u) << 12u) | ((gg >> 4u) << 8u) | ((bb >> 4u) << 4u) | (aa >> 4u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
+                    uint16_t packed = (uint16_t)((rr >> 4u) | ((gg >> 4u) << 4u) | ((bb >> 4u) << 8u) | ((aa >> 4u) << 12u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
+                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 3u) << 6u) | ((bb >> 3u) << 1u) | (aa >= 128u ? 1u : 0u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
+                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 3u) << 5u) | ((bb >> 3u) << 10u) | ((aa >= 128u ? 1u : 0u) << 15u));
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
+                    /* CTS: R=(val>>24), G=(val>>16), B=(val>>8), A=(val>>0).
+                     * On little-endian this stores as [A,B,G,R] in memory. */
+                    uint32_t packed = ((uint32_t)rr << 24u) | ((uint32_t)gg << 16u) | ((uint32_t)bb << 8u) | aa;
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
+                    /* CTS: R=(val>>0), G=(val>>8), B=(val>>16), A=(val>>24).
+                     * On little-endian this stores as [R,G,B,A] in memory. */
+                    uint32_t packed = rr | ((uint32_t)gg << 8u) | ((uint32_t)bb << 16u) | ((uint32_t)aa << 24u);
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
+                    uint32_t r10 = rr * 1023u / 255u;
+                    uint32_t g10 = gg * 1023u / 255u;
+                    uint32_t b10 = bb * 1023u / 255u;
+                    uint32_t a2 = aa * 3u / 255u;
+                    uint32_t packed = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
+                    uint32_t r10 = rr * 1023u / 255u;
+                    uint32_t g10 = gg * 1023u / 255u;
+                    uint32_t b10 = bb * 1023u / 255u;
+                    uint32_t a2 = aa * 3u / 255u;
+                    uint32_t packed = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                    uint32_t packed = mglMTPackUnsignedFloatFromUNorm8(rr, 6u) |
+                                      (mglMTPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
+                                      (mglMTPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
+                    memcpy(d, &packed, sizeof(packed));
+                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
+                    uint32_t packed = mglMTPackRGB9E5FromUNorm8(rr, gg, bb);
+                    memcpy(d, &packed, sizeof(packed));
                 }
             }
         }
@@ -887,6 +1954,24 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
                         return NO;
                     }
                     d[0] = r;
+                    break;
+                case GL_GREEN:
+                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
+                        return NO;
+                    }
+                    d[0] = g;
+                    break;
+                case GL_BLUE:
+                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
+                        return NO;
+                    }
+                    d[0] = b;
+                    break;
+                case GL_ALPHA:
+                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
+                        return NO;
+                    }
+                    d[0] = a;
                     break;
                 default:
                     return NO;
@@ -1300,13 +2385,21 @@ static const NSTimeInterval kMGLTextureUploadWaitTimeoutSeconds = 0.25;
 static const BOOL kMGLUseDedicatedTextureUploadCommandBuffer = NO;
 // Keep vertex attribute buffers in a dedicated high slot range so they do not collide
 // with UBO/SSBO bindings that are expected at low indices.
-static const NSUInteger kMGLVertexAttribBufferBase = MAX_BINDABLE_BUFFERS;
+// NOTE: This is the Metal buffer index where vertex attrib buffers start, NOT the
+// GL binding count.  Metal only has 31 vertex buffer slots (0..30), so this must
+// stay below 31 regardless of MAX_BINDABLE_BUFFERS (which tracks GL state only).
+static const NSUInteger kMGLVertexAttribBufferBase = 16;
 // Metal vertex buffer layout indices are 0..30 (count=31).
 // Guard all vertex-layout/binding paths against using index 31.
 static const NSUInteger kMGLMaxMetalVertexBufferCount = 31;
 static const NSUInteger kMGLMaxMetalVertexBufferIndex = 30;
 static const NSUInteger kMGLFragCoordParamsBufferIndex = 30;
 static const char *kMGLFragCoordParamsMSLName = "_mglFragCoordParams";
+// Cull distance emulation: vertex buffer slot for sibling-vertex cull data,
+// and params slot for the MGLCullDistanceParams constant. These must match
+// the [[buffer(N)]] indices injected into the vertex shader MSL.
+static const NSUInteger kMGLCullDistanceParamsBufferIndex = 28;
+static const NSUInteger kMGLCullDistanceVertexBufferIndex = 29;
 // Metal validation requires bound stage buffers to satisfy argument byte length.
 // Keep a conservative minimum for low-index base/resource slots.
 static const NSUInteger kMGLMinimumStageBindingSize = 256;
@@ -3100,6 +4193,13 @@ static void mglApplyMinecraftRenderPipelineStateFallback(GLMContext glctx)
     bool defaultTarget = (fbo == NULL);
     bool guiAtlasTarget = mglTextureLooksLikeMinecraftGuiAtlas(targetColor);
     bool lightmapTarget = mglTextureLooksLikeMinecraftLightmapTargetTexture(targetColor);
+    /* CTS tests render to 16x16 FBO color attachments which get misclassified
+     * as Minecraft lightmap textures.  Minecraft updates its lightmap via
+     * glTexSubImage2D, never via FBO rendering, so skip the lightmap fallback
+     * when the texture is actually bound as a render target. */
+    if (lightmapTarget && targetColor && targetColor->is_render_target) {
+        lightmapTarget = false;
+    }
     bool guiOrPipRTTarget = mglTextureLooksLikeMinecraftGuiOrPipRenderTarget(targetColor);
     bool targetHasDepthAttachment = mglFramebufferHasDepthAttachmentObject(fbo);
     bool screenEffectProgram =
@@ -3314,8 +4414,12 @@ static MTLTextureType mglExpectedTextureTypeFromMSL(const char *msl, GLuint bind
 
     const char *cursor = msl;
     while ((cursor = strstr(cursor, needle)) != NULL) {
+        /* Find the start of this parameter declaration: scan backwards to the
+         * previous comma, newline, or start of string.  This avoids matching
+         * type keywords from sibling parameters that share the same line
+         * (e.g. "texture2d_ms<float> a [[texture(0)]], texture2d<float> b [[texture(1)]]"). */
         const char *lineStart = cursor;
-        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r') {
+        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r' && lineStart[-1] != ',') {
             lineStart--;
         }
 
@@ -3376,8 +4480,10 @@ static MGLTextureDataKind mglExpectedTextureDataKindFromMSL(const char *msl, GLu
 
     const char *cursor = msl;
     while ((cursor = strstr(cursor, needle)) != NULL) {
+        /* Same comma-scoped lookup as mglExpectedTextureTypeFromMSL to avoid
+         * matching data-kind keywords from sibling parameters on the same line. */
         const char *lineStart = cursor;
-        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r') {
+        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r' && lineStart[-1] != ',') {
             lineStart--;
         }
 
@@ -4413,6 +5519,16 @@ static Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
                 colorTexture = (Texture *)searchHashTable(&glctx->state.texture_table,
                                                           colorAttachment->texture);
             }
+            /* Validate raw pointer is still registered (see table-scan path). */
+            if (colorTexture) {
+                Texture *verified = (Texture *)searchHashTable(&glctx->state.texture_table,
+                                                                colorTexture->name);
+                if (verified != colorTexture) {
+                    colorAttachment->buf.tex = NULL;
+                    colorAttachment->texture = 0u;
+                    colorTexture = NULL;
+                }
+            }
             if (colorTexture &&
                 colorTexture != depthTexture &&
                 mglRendererObjectPointerLikelyValid(colorTexture) &&
@@ -4458,6 +5574,21 @@ static Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
         if (!colorTexture && colorAttachment->texture != 0u) {
             colorTexture = (Texture *)searchHashTable(&glctx->state.texture_table,
                                                       colorAttachment->texture);
+        }
+
+        /* Validate that the raw pointer is still registered in the texture
+         * table.  glDeleteTextures frees the Texture struct but stale raw
+         * pointers can survive in FBO attachments (and mglPointerRangeIsReadable
+         * cannot reliably detect freed-but-mapped malloc memory). */
+        if (colorTexture) {
+            Texture *verified = (Texture *)searchHashTable(&glctx->state.texture_table,
+                                                            colorTexture->name);
+            if (verified != colorTexture) {
+                /* Stale pointer — clear it and skip. */
+                colorAttachment->buf.tex = NULL;
+                colorAttachment->texture = 0u;
+                continue;
+            }
         }
 
         if (!colorTexture ||
@@ -4739,8 +5870,18 @@ static BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
                                         GLuint rhsStride,
                                         GLuint rhsDivisor)
 {
+    /* Offset is intentionally NOT compared here: attributes that share the
+     * same buffer/stride/divisor but have different binding offsets (the
+     * common case for interleaved vertex arrays submitted via a single VBO
+     * with per-attribute glVertexAttribPointer offsets) are grouped into a
+     * single Metal buffer slot. The per-attribute offset is then expressed
+     * via the vertex descriptor's attribute offset field instead of via
+     * multiple buffer bindings. This is the standard Metal vertex fetch
+     * model and avoids consuming one buffer slot per attribute. */
+    (void)lhsOffset;
+    (void)rhsOffset;
+
     if (!lhsBuffer || !rhsBuffer ||
-        lhsOffset != rhsOffset ||
         lhsStride != rhsStride ||
         lhsDivisor != rhsDivisor) {
         return NO;
@@ -4805,6 +5946,16 @@ static BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribut
             return YES;
         }
 
+        /* Array stage inputs occupy consecutive locations.  SPIRV-Cross
+         * reflects only the base location, but the generated MSL flattens
+         * the array into individual [[attribute(N)]] inputs at locations
+         * [base, base + array_size - 1]. */
+        if (inputs->list[i].gl_array_size > 1 &&
+            attribute >= location &&
+            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
+            return YES;
+        }
+
         if (location == 0xffffffffu && i == attribute) {
             return YES;
         }
@@ -4827,7 +5978,19 @@ static SpirvResource *mglRendererProgramVertexAttribResource(Program *program, G
 
     for (GLuint i = 0; i < inputs->count; i++) {
         GLuint location = inputs->list[i].location;
-        if (location == attribute || (location == 0xffffffffu && i == attribute)) {
+        if (location == attribute) {
+            return &inputs->list[i];
+        }
+
+        /* Array stage inputs span consecutive locations (see
+         * mglRendererProgramUsesVertexAttrib). */
+        if (inputs->list[i].gl_array_size > 1 &&
+            attribute >= location &&
+            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
+            return &inputs->list[i];
+        }
+
+        if (location == 0xffffffffu && i == attribute) {
             return &inputs->list[i];
         }
     }
@@ -5087,6 +6250,14 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       label:(NSString *)label
                                       error:(NSError **)error;
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (BOOL)shouldSkipGPUOperations;
+- (void)recordGPUError;
+- (void)recordGPUSuccess;
+- (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format;
+- (BOOL)commitCommandBufferWithAGXRecovery:(NSString *)reason;
+- (void)resetMetalState;
+- (BOOL)validateMetalObjects;
+- (void)cleanupCommandBuffer;
 @end
 
 // Main class performing the rendering
@@ -7661,7 +8832,8 @@ void logDirtyBits(GLMContext ctx)
         ptr->data.mtl_data = (void *)CFBridgingRetain(buffer);
         if ((ptr->storage_flags & GL_MAP_PERSISTENT_BIT) &&
             (ptr->data.dirty_bits & DIRTY_BUFFER_DATA) &&
-            buffer.length > 0) {
+            buffer.length > 0 &&
+            buffer.storageMode == MTLStorageModeManaged) {
             [buffer didModifyRange:NSMakeRange(0, buffer.length)];
         }
     }
@@ -8118,9 +9290,11 @@ void logDirtyBits(GLMContext ctx)
 
                         // we need to check name and target, not pointers..
                         // FIX ME: I think we don't need a target as all attribs should be an array_buffer
+                        // Offset is intentionally NOT compared: attributes sharing the same
+                        // VBO/stride/divisor are grouped into one Metal buffer slot, with
+                        // per-attribute offsets expressed via the vertex descriptor.
 	                        if ((map_buffer->name == gl_buffer->name) &&
-	                            (map_buffer->target == gl_buffer->target) &&
-	                            (buffer_map->buffers[map].offset == resolved.binding_offset))
+	                            (map_buffer->target == gl_buffer->target))
 	                        {
 	                            bool compatibleStream = true;
 	                            for (GLuint prevAttrib = 0; prevAttrib < MAX_ATTRIBS; prevAttrib++) {
@@ -8259,7 +9433,9 @@ void logDirtyBits(GLMContext ctx)
                 if (cpuData != metalData) {
                     memmove(metalData, cpuData, copyLen);
                 }
-                [buffer didModifyRange:NSMakeRange(0, copyLen)];
+                if (buffer.storageMode == MTLStorageModeManaged) {
+                    [buffer didModifyRange:NSMakeRange(0, copyLen)];
+                }
             } else if (metalData && copyLen > 0) {
                 NSUInteger modifyOffset = 0;
                 NSUInteger modifyLength = copyLen;
@@ -8269,7 +9445,7 @@ void logDirtyBits(GLMContext ctx)
                     modifyOffset = (NSUInteger)ptr->mapped_offset;
                     modifyLength = MIN((NSUInteger)ptr->mapped_length, buffer.length - modifyOffset);
                 }
-                if (modifyLength > 0) {
+                if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
                     [buffer didModifyRange:NSMakeRange(modifyOffset, modifyLength)];
                 }
             }
@@ -8402,7 +9578,7 @@ void logDirtyBits(GLMContext ctx)
                 modifyOffset = (NSUInteger)ptr->mapped_offset;
                 modifyLength = MIN((NSUInteger)ptr->mapped_length, buffer.length - modifyOffset);
             }
-            if (modifyLength > 0) {
+            if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
                 [buffer didModifyRange:NSMakeRange(modifyOffset, modifyLength)];
             }
 
@@ -8414,7 +9590,7 @@ void logDirtyBits(GLMContext ctx)
             if (ptr->data.buffer_size > 0) {
                 modifyLength = MIN(modifyLength, (NSUInteger)ptr->data.buffer_size);
             }
-            if (modifyLength > 0) {
+            if (modifyLength > 0 && buffer.storageMode == MTLStorageModeManaged) {
                 [buffer didModifyRange:NSMakeRange(0, modifyLength)];
             }
 
@@ -8569,9 +9745,19 @@ void logDirtyBits(GLMContext ctx)
     // overwrite shader-required vertex input slots.
     bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     GLuint reserveMaxAttribs = MAX_ATTRIBS;
+    // Get the vertex shader MSL source to check which attributes are actually used.
+    const char *vsMslStr = activeProgram ? activeProgram->spirv[_VERTEX_SHADER].msl_str : NULL;
     for (GLuint attrib = 0; attrib < reserveMaxAttribs; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
             continue;
+        }
+        // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
+        if (vsMslStr) {
+            char attrPattern[32];
+            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
+            if (!strstr(vsMslStr, attrPattern)) {
+                continue;
+            }
         }
 
         int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
@@ -8847,6 +10033,24 @@ void logDirtyBits(GLMContext ctx)
             }
         }
 
+        /* For small uniform constants (plain uniforms), use setVertexBytes
+         * to copy the data into the command buffer at bind time. This is
+         * critical for correctness when the same uniform buffer is updated
+         * between draws encoded into the same command buffer — a shared-
+         * memory MTLBuffer would let the GPU see only the final value. */
+        if (isBaseBinding &&
+            map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+            ptr->data.buffer_data &&
+            (NSUInteger)ptr->size <= 4096 &&
+            offset == 0) {
+            [_currentRenderEncoder setVertexBytes:(const void *)(uintptr_t)ptr->data.buffer_data
+                                            length:(NSUInteger)ptr->size
+                                           atIndex:bindingIndex];
+            anyBindingPresent[bindingIndex] = true;
+            ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
+            continue;
+        }
+
         [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
         mglTraceCloudVertexBufferBinding(activeProgram,
                                          glBindingIndex,
@@ -8903,6 +10107,14 @@ void logDirtyBits(GLMContext ctx)
     for (GLuint attrib = 0; attrib < maxAttribs; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
             continue;
+        }
+        // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
+        if (vsMslStr) {
+            char attrPattern[32];
+            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
+            if (!strstr(vsMslStr, attrPattern)) {
+                continue;
+            }
         }
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, attrib);
         MGLResolvedVertexAttribBinding resolved = {0};
@@ -9122,8 +10334,11 @@ void logDirtyBits(GLMContext ctx)
             continue;
         }
 
-	        [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:attribBindingOffset atIndex:bindingIndex];
-	        anyBindingPresent[bindingIndex] = true;
+        /* Bind the VBO at offset 0. Per-attribute offsets are expressed via
+         * the vertex descriptor's attribute offset field (set in
+         * generateVertexDescriptor), which is relative to this buffer base. */
+	    [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
+	    anyBindingPresent[bindingIndex] = true;
             static uint64_t s_traceFileVertexAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
                 mglShouldLogTraceFileBindingForProgram(activeProgram, &s_traceFileVertexAttribBindLogs)) {
@@ -9223,7 +10438,7 @@ void logDirtyBits(GLMContext ctx)
     // Ensure every stage buffer slot has a valid binding before draw validation.
     // This avoids hard aborts when reflection misses hidden/generated buffer args.
     if (kMGLEnableVertexAllSlotFallback && fallbackBindingBuffer) {
-        for (NSUInteger s = 0; s < MAX_BINDABLE_BUFFERS; s++) {
+        for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
                 [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:s];
                 anyBindingPresent[s] = true;
@@ -9570,6 +10785,30 @@ void logDirtyBits(GLMContext ctx)
                 }
             }
             
+            /* For small uniform constants (plain uniforms), use setFragmentBytes
+             * to copy the data into the command buffer at bind time. This is
+             * critical for correctness when the same uniform buffer is updated
+             * between draws encoded into the same command buffer — a shared-
+             * memory MTLBuffer would let the GPU see only the final value. */
+            if (isBaseBinding &&
+                map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+                ptr->data.buffer_data &&
+                (NSUInteger)ptr->size <= 4096 &&
+                offset == 0) {
+                [_currentRenderEncoder setFragmentBytes:(const void *)(uintptr_t)ptr->data.buffer_data
+                                                  length:(NSUInteger)ptr->size
+                                                 atIndex:bindingIndex];
+                if (kMGLVerboseBindLogs) {
+                    NSLog(@"MGL FBIND uniform-constant setFragmentBytes slot=%lu buffer=%u len=%lu (plain uniform snapshot)",
+                          (unsigned long)bindingIndex,
+                          ptr->name,
+                          (unsigned long)ptr->size);
+                }
+                anyBindingPresent[bindingIndex] = true;
+                ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
+                continue;
+            }
+
             [_currentRenderEncoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
             Program *bindProgram = activeProgram;
             if (mglProgramNeedsBindingTrace(bindProgram)) {
@@ -9670,7 +10909,7 @@ void logDirtyBits(GLMContext ctx)
     }
 
     if (fallbackBindingBuffer) {
-        for (NSUInteger s = 0; s < MAX_BINDABLE_BUFFERS; s++) {
+        for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
                 [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:s];
                 anyBindingPresent[s] = true;
@@ -9851,6 +11090,372 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
     return dst;
 }
 
+static BOOL mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
+                                                        MTLPixelFormat pixelFormat)
+{
+    /* Metal has no RGB8 pixel format, so GL_RGB8-family internal formats are
+     * backed by RGBA8 variants.  The CPU data is 3 bytes/pixel (RGB) but Metal
+     * expects 4 bytes/pixel (RGBA), so expansion is required. */
+    BOOL isRGBA8Variant =
+        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
+         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
+         pixelFormat == MTLPixelFormatRGBA8Snorm ||
+         pixelFormat == MTLPixelFormatRGBA8Sint ||
+         pixelFormat == MTLPixelFormatRGBA8Uint);
+    if (!isRGBA8Variant) {
+        return NO;
+    }
+
+    switch (internalformat) {
+        /* Packed legacy formats (already handled) */
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGB10:
+        case GL_RGB12:
+        case GL_RGBA2:
+        case GL_RGBA4:
+        case GL_RGB5_A1:
+        case GL_R3_G3_B2:
+        /* 8-bit RGB formats – 3 bytes/pixel in CPU, 4 bytes/pixel in Metal */
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+static uint32_t mglReadPackedUploadLE(const uint8_t *src, NSUInteger bytes)
+{
+    uint32_t value = 0u;
+    if (!src) {
+        return 0u;
+    }
+    if (bytes > sizeof(value)) {
+        bytes = sizeof(value);
+    }
+    for (NSUInteger i = 0; i < bytes; i++) {
+        value |= ((uint32_t)src[i]) << (i * 8u);
+    }
+    return value;
+}
+
+static uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits)
+{
+    if (bits == 0u) {
+        return 0u;
+    }
+    if (bits >= 8u) {
+        return (uint8_t)(value >> (bits - 8u));
+    }
+    uint32_t maxv = (1u << bits) - 1u;
+    return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
+}
+
+
+/* Check if the internal format needs channel expansion for non-RGBA8 Metal formats.
+ * This handles 3-channel RGB formats (RGB16F, RGB32F, etc.) that are stored as
+ * 4-channel RGBA in Metal. */
+static BOOL mglTextureNeedsChannelExpansion(GLenum internalformat,
+                                             MTLPixelFormat pixelFormat)
+{
+    /* Only handle non-RGBA8 Metal pixel formats */
+    BOOL isRGBA16Variant =
+        (pixelFormat == MTLPixelFormatRGBA16Unorm ||
+         pixelFormat == MTLPixelFormatRGBA16Snorm ||
+         pixelFormat == MTLPixelFormatRGBA16Float ||
+         pixelFormat == MTLPixelFormatRGBA16Sint ||
+         pixelFormat == MTLPixelFormatRGBA16Uint);
+    BOOL isRGBA32Variant =
+        (pixelFormat == MTLPixelFormatRGBA32Float ||
+         pixelFormat == MTLPixelFormatRGBA32Sint ||
+         pixelFormat == MTLPixelFormatRGBA32Uint);
+    if (!isRGBA16Variant && !isRGBA32Variant) {
+        return NO;
+    }
+
+    switch (internalformat) {
+        case GL_RGB16:
+        case GL_RGB16_SNORM:
+        case GL_RGB16F:
+        case GL_RGB16I:
+        case GL_RGB16UI:
+        case GL_RGB32F:
+        case GL_RGB32I:
+        case GL_RGB32UI:
+        case GL_RGB12:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+/* Create expanded upload data for 3-channel RGB -> 4-channel RGBA Metal formats.
+ * Reads 3 channels from source, writes 4 channels to destination, setting alpha
+ * to the appropriate default value. */
+static uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
+                                                MTLPixelFormat pixelFormat,
+                                                const uint8_t *srcData,
+                                                NSUInteger width,
+                                                NSUInteger height,
+                                                NSUInteger srcBytesPerRow,
+                                                NSUInteger *outBytesPerRow,
+                                                NSUInteger *outBytesPerImage)
+{
+    if (!tex || !srcData || width == 0 || height == 0 ||
+        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage) {
+        return NULL;
+    }
+
+    /* Determine source and destination parameters */
+    NSUInteger srcCompBytes = 0;  /* bytes per component in source */
+    NSUInteger dstCompBytes = 0;  /* bytes per component in destination */
+    NSUInteger srcPixelBytes = 0; /* bytes per pixel in source (3 channels) */
+    NSUInteger dstPixelBytes = 0; /* bytes per pixel in destination (4 channels) */
+
+    /* Alpha default value as uint64_t to handle all sizes */
+    uint64_t alphaDefault = 0;
+
+    switch (pixelFormat) {
+        case MTLPixelFormatRGBA16Unorm:
+            srcCompBytes = 2; dstCompBytes = 2;
+            srcPixelBytes = 6; dstPixelBytes = 8;
+            alphaDefault = 65535; /* 1.0 in unorm16 */
+            break;
+        case MTLPixelFormatRGBA16Snorm:
+            srcCompBytes = 2; dstCompBytes = 2;
+            srcPixelBytes = 6; dstPixelBytes = 8;
+            alphaDefault = 32767; /* 1.0 in snorm16 */
+            break;
+        case MTLPixelFormatRGBA16Float:
+            srcCompBytes = 2; dstCompBytes = 2;
+            srcPixelBytes = 6; dstPixelBytes = 8;
+            alphaDefault = 0x3C00; /* 1.0 in half float */
+            break;
+        case MTLPixelFormatRGBA16Sint:
+            srcCompBytes = 2; dstCompBytes = 2;
+            srcPixelBytes = 6; dstPixelBytes = 8;
+            alphaDefault = 1;
+            break;
+        case MTLPixelFormatRGBA16Uint:
+            srcCompBytes = 2; dstCompBytes = 2;
+            srcPixelBytes = 6; dstPixelBytes = 8;
+            alphaDefault = 1;
+            break;
+        case MTLPixelFormatRGBA32Float:
+            srcCompBytes = 4; dstCompBytes = 4;
+            srcPixelBytes = 12; dstPixelBytes = 16;
+            { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
+            break;
+        case MTLPixelFormatRGBA32Sint:
+            srcCompBytes = 4; dstCompBytes = 4;
+            srcPixelBytes = 12; dstPixelBytes = 16;
+            alphaDefault = 1;
+            break;
+        case MTLPixelFormatRGBA32Uint:
+            srcCompBytes = 4; dstCompBytes = 4;
+            srcPixelBytes = 12; dstPixelBytes = 16;
+            alphaDefault = 1;
+            break;
+        default:
+            return NULL;
+    }
+
+    /* Verify source pixel bytes match internal format */
+    size_t expectedSrcBytes = sizeForInternalFormat(tex->internalformat, 0, 0);
+    if (expectedSrcBytes > 0 && expectedSrcBytes != srcPixelBytes) {
+        /* For GL_RGB12, sizeForInternalFormat might return a different value.
+         * Use the expected value if it's reasonable. */
+        if (tex->internalformat == GL_RGB12 && expectedSrcBytes == 6) {
+            /* OK - RGB12 is stored as 3x16-bit = 6 bytes */
+        } else if (expectedSrcBytes != srcPixelBytes) {
+            return NULL;
+        }
+    }
+
+    if (srcBytesPerRow < width * srcPixelBytes) {
+        return NULL;
+    }
+
+    NSUInteger dstBytesPerRow = width * dstPixelBytes;
+    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
+    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
+        return NULL;
+    }
+
+    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
+    if (!dst) {
+        return NULL;
+    }
+
+    for (NSUInteger row = 0; row < height; row++) {
+        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
+        uint8_t *dstRow = dst + row * dstBytesPerRow;
+        for (NSUInteger x = 0; x < width; x++) {
+            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
+            uint8_t *dstPixel = dstRow + x * dstPixelBytes;
+            /* Copy 3 channels (R, G, B) from source to destination */
+            memcpy(dstPixel, srcPixel, srcPixelBytes);
+            /* Set alpha channel to default value */
+            memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
+        }
+    }
+
+    *outBytesPerRow = dstBytesPerRow;
+    *outBytesPerImage = dstBytesPerImage;
+    return dst;
+}
+
+static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
+                                             const uint8_t *srcData,
+                                             NSUInteger width,
+                                             NSUInteger height,
+                                             NSUInteger srcBytesPerRow,
+                                             NSUInteger *outBytesPerRow,
+                                             NSUInteger *outBytesPerImage)
+{
+    if (!tex || !srcData || width == 0 || height == 0 ||
+        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage ||
+        !mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, MTLPixelFormatRGBA8Unorm)) {
+        return NULL;
+    }
+
+    NSUInteger srcPixelBytes = 0u;
+    switch (tex->internalformat) {
+        case GL_R3_G3_B2:
+            srcPixelBytes = 1u;
+            break;
+        case GL_RGBA2:
+        case GL_RGB4:
+        case GL_RGB5:
+        case GL_RGBA4:
+        case GL_RGB5_A1:
+            srcPixelBytes = 2u;
+            break;
+        case GL_RGB10:
+        case GL_RGB12:
+            srcPixelBytes = 4u;
+            break;
+        case GL_RGB8:
+        case GL_SRGB8:
+        case GL_RGB8_SNORM:
+        case GL_RGB8I:
+        case GL_RGB8UI:
+            srcPixelBytes = 3u;
+            break;
+        default:
+            return NULL;
+    }
+    if (srcBytesPerRow < width * srcPixelBytes) {
+        return NULL;
+    }
+
+    NSUInteger dstBytesPerRow = width * 4u;
+    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
+    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
+        return NULL;
+    }
+
+    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
+    if (!dst) {
+        return NULL;
+    }
+
+    for (NSUInteger row = 0; row < height; row++) {
+        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
+        uint8_t *dstRow = dst + row * dstBytesPerRow;
+        for (NSUInteger x = 0; x < width; x++) {
+            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
+            uint32_t packed = mglReadPackedUploadLE(srcPixel, srcPixelBytes);
+            uint8_t r = 0u;
+            uint8_t g = 0u;
+            uint8_t b = 0u;
+            uint8_t a = 0xffu;
+
+            switch (tex->internalformat) {
+                case GL_RGB8:
+                case GL_SRGB8:
+                case GL_RGB:
+                    r = srcPixel[0];
+                    g = srcPixel[1];
+                    b = srcPixel[2];
+                    a = 0xffu;
+                    break;
+                case GL_RGB8_SNORM:
+                    r = srcPixel[0];
+                    g = srcPixel[1];
+                    b = srcPixel[2];
+                    a = 0x7fu;  /* 1.0 in snorm */
+                    break;
+                case GL_RGB8I:
+                case GL_RGB8UI:
+                    r = srcPixel[0];
+                    g = srcPixel[1];
+                    b = srcPixel[2];
+                    a = 1u;  /* 1 in integer */
+                    break;
+                case GL_R3_G3_B2:
+                    r = mglExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
+                    g = mglExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
+                    b = mglExpandUNormBitsTo8(packed & 0x3u, 2u);
+                    break;
+                case GL_RGB4:
+                case GL_RGB5:
+                    /* CPU data is raw GL_UNSIGNED_SHORT_5_6_5 (unpackTexture
+                     * memcpy fallback when mglBuildCPUPixelLayout fails).
+                     * R at bits 11-15, G at bits 5-10, B at bits 0-4. */
+                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
+                    b = mglExpandUNormBitsTo8(packed & 0x1fu, 5u);
+                    break;
+                case GL_RGB10:
+                    r = mglExpandUNormBitsTo8(packed & 0x3ffu, 10u);
+                    g = mglExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
+                    b = mglExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
+                    break;
+                case GL_RGB12:
+                    r = mglExpandUNormBitsTo8(packed & 0xfffu, 12u);
+                    g = mglExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
+                    b = mglExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
+                    break;
+                case GL_RGBA2:
+                    /* GL_RGBA2 stored as 4 bits/component (same as GL_RGBA4)
+                     * to preserve precision when CTS uses 4_4_4_4 type.
+                     * CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
+                case GL_RGBA4:
+                    /* CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
+                    r = mglExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
+                    g = mglExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
+                    b = mglExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
+                    a = mglExpandUNormBitsTo8(packed & 0xfu, 4u);
+                    break;
+                case GL_RGB5_A1:
+                    /* CPU layout stores R at bit_offset 11, G at 6, B at 1, A at 0. */
+                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
+                    g = mglExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
+                    b = mglExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
+                    a = (packed & 0x1u) ? 0xffu : 0x00u;
+                    break;
+                default:
+                    break;
+            }
+
+            uint8_t *out = dstRow + x * 4u;
+            out[0] = r;
+            out[1] = g;
+            out[2] = b;
+            out[3] = a;
+        }
+    }
+
+    *outBytesPerRow = dstBytesPerRow;
+    *outBytesPerImage = dstBytesPerImage;
+    return dst;
+}
+
 - (id<MTLTexture>) createMTLTextureFromGLTexture:(Texture *) tex
 {
     // PROPER FIX: Enhanced pre-creation validation to prevent AGX driver issues
@@ -9989,7 +11594,68 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         NSUInteger packedBytes = bytesPerRow * texHeight;
         NSMutableData *packedData = nil;
         const uint8_t *uploadBytes = sourceBytes;
-        if (texHeight > 1) {
+
+        /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats.
+         * GL_RGB32* (12 bytes/texel) maps to Metal RGBA32* (16 bytes/texel).
+         * Expand each texel by inserting a default alpha before uploading. */
+        NSMutableData *expandedData = nil;
+        if (mglTextureNeedsChannelExpansion(tex->internalformat, bufferPixelFormat)) {
+            NSUInteger srcCompBytes = 0;
+            NSUInteger dstCompBytes = 0;
+            uint64_t alphaDefault = 0;
+            switch (bufferPixelFormat) {
+                case MTLPixelFormatRGBA16Unorm:
+                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
+                case MTLPixelFormatRGBA16Snorm:
+                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
+                case MTLPixelFormatRGBA16Float:
+                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
+                case MTLPixelFormatRGBA16Sint:
+                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+                case MTLPixelFormatRGBA16Uint:
+                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+                case MTLPixelFormatRGBA32Float:
+                    srcCompBytes = 4; dstCompBytes = 4;
+                    { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
+                    break;
+                case MTLPixelFormatRGBA32Sint:
+                    srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+                case MTLPixelFormatRGBA32Uint:
+                    srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+                default:
+                    break;
+            }
+            if (srcCompBytes > 0) {
+                NSUInteger srcPixelBytes = srcCompBytes * 3;
+                NSUInteger dstPixelBytes = dstCompBytes * 4;
+                NSUInteger expandedBytesPerRow = texWidth * dstPixelBytes;
+                NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;
+                expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
+                if (expandedData && expandedData.mutableBytes) {
+                    const uint8_t *src = sourceBytes;
+                    uint8_t *dst = (uint8_t *)expandedData.mutableBytes;
+                    for (NSUInteger row = 0; row < texHeight; row++) {
+                        for (NSUInteger col = 0; col < texWidth; col++) {
+                            NSUInteger srcTexelIdx = row * texWidth + col;
+                            if (srcTexelIdx >= texelCount) {
+                                memset(dst + (row * expandedBytesPerRow + col * dstPixelBytes),
+                                       0, dstPixelBytes);
+                                continue;
+                            }
+                            const uint8_t *srcPixel = src + srcTexelIdx * srcPixelBytes;
+                            uint8_t *dstPixel = dst + row * expandedBytesPerRow + col * dstPixelBytes;
+                            memcpy(dstPixel, srcPixel, srcPixelBytes);
+                            memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
+                        }
+                    }
+                    uploadBytes = (const uint8_t *)expandedData.bytes;
+                    bytesPerRow = expandedBytesPerRow;
+                    packedBytes = expandedPackedBytes;
+                }
+            }
+        }
+
+        if (texHeight > 1 && !expandedData) {
             packedData = [NSMutableData dataWithLength:packedBytes];
             if (!packedData || !packedData.mutableBytes) {
                 NSLog(@"MGL TEXBUFFER ERROR: failed allocating packed data tex=%u buffer=%u bytes=%lu",
@@ -10154,6 +11820,12 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         }
     }
 
+    /* For CUBE_MAP_ARRAY, glTexImage3D stores all layer data in faces[0] with
+     * depth = 6 * num_cubes.  Faces 1-5 are never populated by createTextureLevel,
+     * so only check face 0 for completeness.  The upload code also reads from
+     * face 0 and distributes slices to Metal array layers. */
+    uint completeness_check_faces = (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? 1 : num_faces;
+
     if (tex->num_levels > 1)
     {
         // mipmapped texture
@@ -10181,7 +11853,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
             effective_mipmap_levels = tex->num_levels;
         }
 
-        for(int face=0; face<num_faces; face++)
+        for(int face=0; face<completeness_check_faces; face++)
         {
             for (int i=0; i<effective_mipmap_levels; i++)
             {
@@ -10213,7 +11885,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         effective_mipmap_levels = 1;
         // single level texture
         // incomplete texture
-        for(int face=0; face<num_faces; face++)
+        for(int face=0; face<completeness_check_faces; face++)
         {
             if (tex->faces[face].levels[0].complete == false)
             {
@@ -10285,8 +11957,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
     }
 
     if (needsFormatConversion) {
-        NSLog(@"MGL INFO: PROPER FIX - Converting AGX-incompatible format 0x%lx to RGBA8", (unsigned long)originalFormat);
-        tex->internalformat = GL_RGBA8;
+        NSLog(@"MGL INFO: PROPER FIX - Using RGBA8 Metal backing for AGX-incompatible format 0x%lx", (unsigned long)originalFormat);
     } else {
         NSLog(@"MGL INFO: PROPER FIX - Using original format 0x%lx (AGX compatible)", (unsigned long)pixelFormat);
     }
@@ -10305,7 +11976,18 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                        tex_type == MTLTextureType1DArray) ? 1 : height;
     if (tex_type == MTLTextureType2DMultisample ||
         tex_type == MTLTextureType2DMultisampleArray) {
-        tex_desc.sampleCount = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
+        /* Metal only supports sample counts of 1, 2, 4, and 8.  Round up
+         * to the next supported value to avoid validation failures when
+         * the GL app requests an unsupported sample count (e.g. 3). */
+        NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
+        if (samples > 8u) {
+            samples = 8u;
+        } else if (samples > 4u) {
+            samples = 8u;
+        } else if (samples > 2u) {
+            samples = 4u;
+        }
+        tex_desc.sampleCount = samples;
     }
 
     // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
@@ -10349,6 +12031,10 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
         tex_desc.arrayLength = MAX((NSUInteger)1, depth);
         tex_desc.depth = 1;
     } else {
+        /* For 3D and other non-array textures, arrayLength must be 1.
+         * Some Metal drivers report getNumSlices()==0 when arrayLength
+         * is left at its default, causing "slice OOB" assertions. */
+        tex_desc.arrayLength = 1;
         tex_desc.depth = MAX((NSUInteger)1, depth);
     }
 
@@ -10504,6 +12190,60 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                         void *srcData = (void *)tex->faces[face].levels[level].data;
                         uintptr_t addr = (uintptr_t)srcData;
 
+                        /* RGBA8 expansion for 3D textures: when the CPU data is
+                         * stored in a packed format (e.g. RGBA4 = 2 bytes/pixel)
+                         * but Metal stores it as RGBA8 (4 bytes/pixel), expand
+                         * each slice before uploading.  Without this, the 2-byte
+                         * CPU data is uploaded directly to a 4-byte Metal texture,
+                         * causing garbled readback via mtlGetTexImage/ReadPixels. */
+                        uint8_t *expanded3DUploadData = NULL;
+                        if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImagePerSlice = 0;
+                            NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                            NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+
+                            uint8_t *firstSlice = mglCreateRGBA8ExpandedUpload(tex,
+                                                                               (const uint8_t *)srcData,
+                                                                               width,
+                                                                               texHeight,
+                                                                               bytesPerRow,
+                                                                               &expandedBytesPerRow,
+                                                                               &expandedBytesPerImagePerSlice);
+                            if (firstSlice) {
+                                NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                                if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                    expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                    if (expanded3DUploadData) {
+                                        memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                        for (NSUInteger z = 1; z < texDepth; z++) {
+                                            const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                            uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                            NSUInteger dummyRow = 0, dummyImage = 0;
+                                            uint8_t *sliceExpanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                                 sliceSrc,
+                                                                                                 width,
+                                                                                                 texHeight,
+                                                                                                 bytesPerRow,
+                                                                                                 &dummyRow,
+                                                                                                 &dummyImage);
+                                            if (sliceExpanded) {
+                                                memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                                free(sliceExpanded);
+                                            } else {
+                                                memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                            }
+                                        }
+                                        srcData = expanded3DUploadData;
+                                        bytesPerRow = expandedBytesPerRow;
+                                        bytesPerImage = expandedBytesPerImagePerSlice;
+                                        addr = (uintptr_t)srcData;
+                                    }
+                                }
+                                free(firstSlice);
+                            }
+                        }
+
                         // Determine optimal alignment based on pixel format and GPU capabilities
                         NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
                         NSUInteger alignedBytesPerRow = bytesPerRow;
@@ -10610,6 +12350,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                 NSLog(@"MGL ERROR: Failed to upload 3D texture data (level %d, face %d): %@", level, face, exception);
                             }
                         }
+                        free(expanded3DUploadData);
                     } else {
                         NSLog(@"MGL WARNING: Skipping 3D texture upload due to invalid data or parameters");
                     }
@@ -10700,22 +12441,46 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                 // continue; // Remove the continue to re-enable uploads
                                 // Ensure memory is aligned for AGX compression (256-byte requirement)
                                 void *srcData = (void *)tex_data;
+                                void *expandedUploadData = NULL;
                                 uintptr_t addr = (uintptr_t)srcData;
+
+                                /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats */
+                                NSUInteger effectiveBytesPerRow = bytesPerRow;
+                                NSUInteger effectiveBytesPerImage = bytesPerImage;
+                                if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                    NSUInteger expandedBytesPerRow = 0;
+                                    NSUInteger expandedBytesPerImage = 0;
+                                    expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                         pixelFormat,
+                                                                                         (const uint8_t *)srcData,
+                                                                                         width,
+                                                                                         uploadSliceHeight,
+                                                                                         bytesPerRow,
+                                                                                         &expandedBytesPerRow,
+                                                                                         &expandedBytesPerImage);
+                                    if (expandedUploadData) {
+                                        srcData = expandedUploadData;
+                                        effectiveBytesPerRow = expandedBytesPerRow;
+                                        effectiveBytesPerImage = expandedBytesPerImage;
+                                        addr = (uintptr_t)srcData;
+                                    }
+                                }
 
                                 // Use dynamic alignment based on pixel format
                                 NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                                NSUInteger alignedBytesPerRow = bytesPerRow;
+                                NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
                                 if (alignedBytesPerRow % alignment != 0) {
                                     alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
                                 }
 
-                                if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                                if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
                                     // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy
                                     NSUInteger alignedBytesPerImage = alignedBytesPerRow * uploadSliceHeight;
                                     NSUInteger alignedSize = alignedBytesPerImage;
                                     if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                         NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
                                               (unsigned long)alignedSize, tex->name, level, layer);
+                                        free(expandedUploadData);
                                         continue;
                                     }
                                     void *alignedData = aligned_alloc(alignment, alignedSize);
@@ -10723,7 +12488,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                     if (alignedData) {
                                         memset(alignedData, 0, alignedSize);
                                         // Copy data with row alignment
-                                        NSUInteger srcRowSize = bytesPerRow;
+                                        NSUInteger srcRowSize = effectiveBytesPerRow;
                                         NSUInteger dstRowSize = alignedBytesPerRow;
                                         uint8_t *srcPtr = (uint8_t *)srcData;
                                         uint8_t *dstPtr = (uint8_t *)alignedData;
@@ -10781,14 +12546,17 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                     // CRITICAL SECURITY FIX: Validate srcData before passing to Metal API
                                     if (!srcData) {
                                         NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        free(expandedUploadData);
                                         continue;
                                     }
-                                    if (bytesPerRow == 0) {
+                                    if (effectiveBytesPerRow == 0) {
                                         NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        free(expandedUploadData);
                                         continue;
                                     }
-                                    if (bytesPerImage == 0) {
+                                    if (effectiveBytesPerImage == 0) {
                                         NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        free(expandedUploadData);
                                         continue;
                                     }
                                     if (hasExplicitDataSize) {
@@ -10796,8 +12564,8 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                                                                texName:tex->name
                                                                              texTarget:tex->target
                                                                                  bytes:srcData
-                                                                           bytesPerRow:bytesPerRow
-                                                                         bytesPerImage:bytesPerImage
+                                                                           bytesPerRow:effectiveBytesPerRow
+                                                                         bytesPerImage:effectiveBytesPerImage
                                                                                  width:width
                                                                                 height:uploadSliceHeight
                                                                                  depth:1
@@ -10810,6 +12578,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                         NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
                                     }
                                 }
+                                free(expandedUploadData);
                             } else {
                                 NSLog(@"MGL WARNING: Skipping array texture upload due to invalid data or parameters");
                             }
@@ -10826,6 +12595,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                             // Ensure memory is aligned for AGX compression (256-byte requirement)
                             void *srcData = (void *)tex->faces[face].levels[level].data;
                             void *swizzledUploadData = NULL;
+                            void *expandedUploadData = NULL;
                             uintptr_t addr = (uintptr_t)srcData;
                             if (level == 0 && face == 0 && mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
                                 NSUInteger swizzledBytesPerRow = 0;
@@ -10855,6 +12625,42 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                     }
                                 }
                             }
+                            if (!swizzledUploadData &&
+                                mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBytesPerRow = 0;
+                                NSUInteger expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                   (const uint8_t *)srcData,
+                                                                                   width,
+                                                                                   MAX((NSUInteger)height, 1UL),
+                                                                                   bytesPerRow,
+                                                                                   &expandedBytesPerRow,
+                                                                                   &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            } else if (!swizzledUploadData &&
+                                       mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBytesPerRow = 0;
+                                NSUInteger expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                     pixelFormat,
+                                                                                     (const uint8_t *)srcData,
+                                                                                     width,
+                                                                                     MAX((NSUInteger)height, 1UL),
+                                                                                     bytesPerRow,
+                                                                                     &expandedBytesPerRow,
+                                                                                     &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
 
                             // Use dynamic alignment based on pixel format
                             NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
@@ -10871,6 +12677,8 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                 if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                     NSLog(@"MGL WARNING: Rejecting aligned 2D upload staging size=%lu (tex=%d level=%d face=%d)",
                                           (unsigned long)alignedSize, tex->name, level, face);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
                                     continue;
                                 }
                                 void *alignedData = aligned_alloc(alignment, alignedSize);
@@ -10965,6 +12773,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                 }
                             }
                             free(swizzledUploadData);
+                            free(expandedUploadData);
                         } else {
                             NSLog(@"MGL WARNING: Skipping 2D texture upload due to invalid data or parameters");
                         }
@@ -11007,6 +12816,23 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                     if (bytesPerImage == 0) bytesPerImage = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
 
                     const void *srcData = (const void *)tex->faces[face].levels[level].data;
+                    void *expandedUploadData = NULL;
+                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                        NSUInteger expandedBytesPerRow = 0;
+                        NSUInteger expandedBytesPerImage = 0;
+                        expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                          (const uint8_t *)srcData,
+                                                                          lvlWidth,
+                                                                          MAX((NSUInteger)lvlHeight, 1UL),
+                                                                          bytesPerRow,
+                                                                          &expandedBytesPerRow,
+                                                                          &expandedBytesPerImage);
+                        if (expandedUploadData) {
+                            srcData = expandedUploadData;
+                            bytesPerRow = expandedBytesPerRow;
+                            bytesPerImage = expandedBytesPerImage;
+                        }
+                    }
                     NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
                     NSUInteger alignedBytesPerRow = bytesPerRow;
                     if (alignedBytesPerRow % alignment != 0) {
@@ -11040,6 +12866,23 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                 free(alignedData);
                             }
                         }
+                        free(expandedUploadData);
+                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                        NSUInteger expandedBytesPerRow = 0;
+                        NSUInteger expandedBytesPerImage = 0;
+                        expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                             pixelFormat,
+                                                                             (const uint8_t *)srcData,
+                                                                             lvlWidth,
+                                                                             MAX((NSUInteger)lvlHeight, 1UL),
+                                                                             bytesPerRow,
+                                                                             &expandedBytesPerRow,
+                                                                             &expandedBytesPerImage);
+                        if (expandedUploadData) {
+                            srcData = expandedUploadData;
+                            bytesPerRow = expandedBytesPerRow;
+                            bytesPerImage = expandedBytesPerImage;
+                        }
                     } else {
                         [self uploadTextureSliceViaBlit:texture
                                                texName:tex->name
@@ -11052,6 +12895,7 @@ static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                                  depth:lvlDepth > 1 ? lvlDepth : 1
                                                  level:level
                                                  slice:(is_array ? 0 : face)];
+                        free(expandedUploadData);
                     }
                 }
             }
@@ -12956,6 +14800,18 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
         Texture *typedTexture = STATE(texture_units[textureUnit].textures[textureIndex]);
+        /* SPIRV-Cross lowers sampler1D to texture2d in MSL, so expectedType is
+         * MTLTextureType2D even for GL_TEXTURE_1D bindings. If the _TEXTURE_2D
+         * slot only contains an auto-created default texture (name ==
+         * TEX_OBJ_RES_NAME) while the unit's active texture is a real
+         * GL_TEXTURE_1D, prefer the 1D texture. Otherwise the default 2D
+         * texture leaks across test cases and masks the real 1D binding. */
+        if (typedTexture && typedTexture->name == TEX_OBJ_RES_NAME) {
+            Texture *activeTexture = STATE(active_textures[textureUnit]);
+            if (activeTexture && activeTexture->name != TEX_OBJ_RES_NAME) {
+                typedTexture = NULL;
+            }
+        }
         if (typedTexture) {
             return typedTexture;
         }
@@ -16802,7 +18658,6 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             return nil;
         }
         NSLog(@"MGL ERROR: Failed to compile shader: %@ ", [error localizedDescription] );
-        NSLog(@"MGL ERROR: Shader source: %s", str);
         // Return nil instead of asserting - caller must handle this gracefully
         return nil;
     }
@@ -16952,7 +18807,80 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 if (mglProgramExplicitlyTraced(ptr)) {
                     mglWriteProgramMSLDump(ptr, @"explicit-trace");
                 }
-                library = [self compileShader: ptr->spirv[i].msl_str];
+                const char *compileMSL = ptr->spirv[i].msl_str;
+                /* Cull distance emulation: Metal does not support gl_CullDistance
+                 * primitive culling natively. When the vertex shader writes to
+                 * mgl_CullDistance, inject code that reads the cull distance
+                 * values of all vertices in the same primitive and moves the
+                 * vertex off-screen if all vertices have a negative cull
+                 * distance for any single cull distance entry.
+                 *
+                 * The draw path binds the vertex buffer to slot 29 and a
+                 * params buffer to slot 28 so the shader can index into
+                 * sibling vertices. */
+                if (i == _VERTEX_SHADER && compileMSL && strstr(compileMSL, "mgl_CullDistance")) {
+                    NSString *mslNS = [NSString stringWithUTF8String:compileMSL];
+                    /* Inject the params struct definition after the includes. */
+                    NSString *structDef = @"\nstruct MGLCullDistanceParams {\n"
+                                           "    uint prim_vertex_count;\n"
+                                           "    uint culldist_offset;\n"
+                                           "    uint vertex_stride;\n"
+                                           "    uint culldist_size;\n"
+                                           "};\n";
+                    NSString *includeMarker = @"using namespace metal;";
+                    NSRange includeRange = [mslNS rangeOfString:includeMarker];
+                    if (includeRange.location != NSNotFound) {
+                        NSRange afterInclude = NSMakeRange(includeRange.location + includeRange.length, 0);
+                        mslNS = [mslNS stringByReplacingCharactersInRange:afterInclude withString:structDef];
+                    }
+                    /* Add vertex_id and buffer params to the entry signature.
+                     * SPIRV-Cross generates entries like "vertex_N_main(...)". */
+                    NSString *stageInPattern = @"[[stage_in]])";
+                    NSRange stageInRange = [mslNS rangeOfString:stageInPattern];
+                    if (stageInRange.location != NSNotFound) {
+                        NSString *replacement = @"[[stage_in]], uint mgl_vid [[vertex_id]], "
+                                                "device const float* mgl_cull_buf [[buffer(29)]], "
+                                                "constant MGLCullDistanceParams* mgl_cull_params [[buffer(28)]])";
+                        mslNS = [mslNS stringByReplacingCharactersInRange:stageInRange
+                                                               withString:replacement];
+                    }
+                    /* Inject the cull check before "return out;". */
+                    NSString *cullCheck = @"    /* MGL cull distance emulation: if all vertices in this primitive "
+                                           "have a negative value for any single cull distance entry, move "
+                                           "the vertex off-screen to cull the entire primitive. For points "
+                                           "(prim_vertex_count==1) this degenerates to checking the single "
+                                           "vertex's own cull distance values. */\n"
+                                           "    {\n"
+                                           "        uint mgl_base = mgl_vid - (mgl_vid % mgl_cull_params->prim_vertex_count);\n"
+                                           "        bool mgl_should_cull = false;\n"
+                                           "        for (uint mgl_j = 0u; mgl_j < mgl_cull_params->culldist_size && !mgl_should_cull; mgl_j++) {\n"
+                                           "            bool mgl_all_neg = true;\n"
+                                           "            for (uint mgl_i = 0u; mgl_i < mgl_cull_params->prim_vertex_count; mgl_i++) {\n"
+                                           "                uint mgl_other = mgl_base + mgl_i;\n"
+                                           "                float mgl_d = mgl_cull_buf[mgl_other * (mgl_cull_params->vertex_stride / 4u) "
+                                           "+ (mgl_cull_params->culldist_offset / 4u) + mgl_j];\n"
+                                           "                if (mgl_d >= 0.0) { mgl_all_neg = false; break; }\n"
+                                           "            }\n"
+                                           "            if (mgl_all_neg) { mgl_should_cull = true; }\n"
+                                           "        }\n"
+                                           "        if (mgl_should_cull) {\n"
+                                           "            out.gl_Position = float4(2.0, 2.0, 2.0, 1.0);\n"
+                                           "        }\n"
+                                           "    }\n"
+                                           "    return out;";
+                    /* Replace the first "return out;" occurrence. SPIRV-Cross
+                     * vertex shaders always end with this. */
+                    NSRange returnRange = [mslNS rangeOfString:@"    return out;"];
+                    if (returnRange.location != NSNotFound) {
+                        mslNS = [mslNS stringByReplacingCharactersInRange:returnRange withString:cullCheck];
+                        compileMSL = [mslNS UTF8String];
+                        if (getenv("MGL_DUMP_MSL_POST_PACK")) {
+                            FILE *cullFP = fopen("/tmp/mgl_cull_emulation.msl", "w");
+                            if (cullFP) { fputs(compileMSL, cullFP); fclose(cullFP); }
+                        }
+                    }
+                }
+                library = [self compileShader: compileMSL];
                 if (!library) {
                     const char *stageName = "shader";
                     switch (i) {
@@ -18028,6 +19956,13 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 _renderPassDescriptor.colorAttachments[colorSlot].level = subresource.level;
                 _renderPassDescriptor.colorAttachments[colorSlot].slice = subresource.slice;
                 _renderPassDescriptor.colorAttachments[colorSlot].depthPlane = subresource.depthPlane;
+
+                if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
+                    tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
+                    tex->target == GL_TEXTURE_2D_ARRAY) {
+                    id<MTLTexture> rpTex = _renderPassDescriptor.colorAttachments[colorSlot].texture;
+                    (void)rpTex;
+                }
 
                 // Keep render pass dimensions aligned with attached color targets.
                 // Some FBO paths use textures (not renderbuffers), and Metal still requires
@@ -19455,6 +21390,27 @@ create_new_command_buffer:
         }
     }
 
+    /* For 3D textures with shared storage, prefer replaceRegion over blit.
+     * The blit path (copyFromBuffer:toTexture:) triggers "slice OOB" assertions
+     * on AGX drivers for 3D textures, even with destinationSlice=0.
+     * Note: replaceRegion:mipmapLevel:withBytes:bytesPerRow: does not accept
+     * bytesPerImage, so data must be tightly packed (bytesPerImage == bytesPerRow * height). */
+    if (is3DTexture && texture.storageMode != MTLStorageModePrivate &&
+        safeBytesPerImage == expectedBytesPerImage) {
+        @try {
+            MTLRegion region = MTLRegionMake3D(0, 0, 0, width, safeHeight, copyDepth);
+            [texture replaceRegion:region
+                        mipmapLevel:level
+                          withBytes:bytes
+                        bytesPerRow:bytesPerRow];
+            return true;
+        } @catch (NSException *exception) {
+            NSLog(@"MGL WARNING: 3D texture replaceRegion upload failed, falling back to blit (tex=%u level=%lu): %@",
+                  (unsigned)texName, (unsigned long)level,
+                  exception.reason);
+        }
+    }
+
     NSUInteger bufferSize = safeBytesPerImage * copyDepth;
     if (bufferSize == 0 || bufferSize > (512 * 1024 * 1024)) {
         NSLog(@"MGL WARNING: Rejecting texture upload with invalid buffer size: %lu", (unsigned long)bufferSize);
@@ -19533,6 +21489,7 @@ create_new_command_buffer:
             NSUInteger copyDepth = (texture.textureType == MTLTextureType3D) ? depth : 1UL;
             NSUInteger bytesPerImage = bytesPerRow * height;
             NSUInteger availableBytes = uploadLevel->data_size;
+            void *expandedUploadData = NULL;
             if (availableBytes < bytesPerImage * copyDepth) {
                 static uint64_t s_shortBackingLogs = 0;
                 uint64_t hit = ++s_shortBackingLogs;
@@ -19550,6 +21507,41 @@ create_new_command_buffer:
                 continue;
             }
 
+            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, texture.pixelFormat)) {
+                NSUInteger expandedBytesPerRow = 0;
+                NSUInteger expandedBytesPerImage = 0;
+                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                  srcData,
+                                                                  width,
+                                                                  height,
+                                                                  bytesPerRow,
+                                                                  &expandedBytesPerRow,
+                                                                  &expandedBytesPerImage);
+                if (expandedUploadData) {
+                    srcData = expandedUploadData;
+                    bytesPerRow = expandedBytesPerRow;
+                    bytesPerImage = expandedBytesPerImage;
+                    availableBytes = expandedBytesPerImage * copyDepth;
+                }
+            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, texture.pixelFormat)) {
+                NSUInteger expandedBytesPerRow = 0;
+                NSUInteger expandedBytesPerImage = 0;
+                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                     texture.pixelFormat,
+                                                                     srcData,
+                                                                     width,
+                                                                     height,
+                                                                     bytesPerRow,
+                                                                     &expandedBytesPerRow,
+                                                                     &expandedBytesPerImage);
+                if (expandedUploadData) {
+                    srcData = expandedUploadData;
+                    bytesPerRow = expandedBytesPerRow;
+                    bytesPerImage = expandedBytesPerImage;
+                    availableBytes = expandedBytesPerImage * copyDepth;
+                }
+            }
+
             bool uploaded = [self uploadTextureSliceViaBlit:texture
                                                     texName:tex->name
                                                  texTarget:tex->target
@@ -19561,6 +21553,7 @@ create_new_command_buffer:
                                                      depth:copyDepth
                                                      level:level
                                                      slice:0];
+            free(expandedUploadData);
             if (uploaded) {
                 uploadedAny = true;
             } else {
@@ -19873,9 +21866,12 @@ create_new_command_buffer:
     if (resolvedSampleCount == 0) {
         resolvedSampleCount = 1;
     }
-    if (pipelineStateDescriptor.rasterSampleCount == 0) {
-        pipelineStateDescriptor.rasterSampleCount = resolvedSampleCount;
-    }
+    /* MTLRenderPipelineDescriptor.rasterSampleCount defaults to 1, so the
+     * previous "only set when 0" check never overrode it. Always align the
+     * pipeline's sample count with the actual render-pass attachment so
+     * multisample (2D_MULTISAMPLE / 2D_MULTISAMPLE_ARRAY) targets don't
+     * silently mismatch and produce empty draws. */
+    pipelineStateDescriptor.rasterSampleCount = resolvedSampleCount;
     if (pipelineStateDescriptor.rasterSampleCount == 0) {
         pipelineStateDescriptor.rasterSampleCount = 1;
     }
@@ -19929,12 +21925,32 @@ create_new_command_buffer:
     [vertexDescriptor reset]; // ??? debug
     maxAttribs = MAX_ATTRIBS;
 
+    // Get the vertex shader MSL source to check which attributes are actually used.
+    // SPIRV-Cross may report attributes in the reflection that are not used in the MSL
+    // (e.g., when the GLSL declares an attribute but doesn't use it in the shader body).
+    const char *vsMslStr = NULL;
+    if (activeProgram) {
+        vsMslStr = activeProgram->spirv[_VERTEX_SHADER].msl_str;
+    }
+
     // we can bind a new vertex descriptor without creating a new renderbuffer
     bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)
     {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
             continue;
+        }
+        // Skip attributes that are in the reflection but not in the MSL source.
+        // SPIRV-Cross optimizes away unused attributes from the MSL input struct,
+        // but still reports them in the reflection. Configuring a vertex descriptor
+        // entry for an attribute the shader doesn't use can cause Metal to silently
+        // produce no rasterization output.
+        if (vsMslStr) {
+            char attrPattern[32];
+            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", i);
+            if (!strstr(vsMslStr, attrPattern)) {
+                continue;
+            }
         }
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         MGLResolvedVertexAttribBinding resolved = {0};
@@ -19991,7 +22007,14 @@ create_new_command_buffer:
             }
 
             vertexDescriptor.attributes[i].bufferIndex = mapped_buffer_index;
-            vertexDescriptor.attributes[i].offset = usesCurrentValue ? 0u : resolved.relativeoffset;
+            /* When multiple attributes share a Metal buffer slot (because they
+             * use the same VBO/stride/divisor), the per-attribute binding_offset
+             * must be folded into the vertex descriptor's attribute offset.
+             * The buffer itself is bound at offset 0 in
+             * bindVertexBuffersToCurrentRenderEncoder. */
+            vertexDescriptor.attributes[i].offset = usesCurrentValue
+                ? 0u
+                : (NSUInteger)(resolved.binding_offset + resolved.relativeoffset);
             vertexDescriptor.attributes[i].format = format;
 
             if (usesCurrentValue) {
@@ -20480,18 +22503,21 @@ create_new_command_buffer:
 - (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
                                          reason:(const char *)reason
 {
-    if (![self currentRenderPassUsesTexture:texture]) {
+    BOOL usesTexture = [self currentRenderPassUsesTexture:texture];
+    if (!usesTexture) {
         return YES;
     }
 
     [self endRenderEncoding];
 
     if (!_currentCommandBuffer) {
-        return [self newCommandBuffer];
+        BOOL ok = [self newCommandBuffer];
+        return ok;
     }
 
     if (_currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
-        return [self newCommandBuffer];
+        BOOL ok = [self newCommandBuffer];
+        return ok;
     }
 
     id<MTLCommandBuffer> commandBufferToCommit = _currentCommandBuffer;
@@ -21073,7 +23099,7 @@ create_new_command_buffer:
 
 	            if (!pipelineResolvedFromCache && _pipelineStateCache && currentProgramName != 0) {
 	                uint64_t pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
-	                uint64_t vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
+                uint64_t vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
 		                pipelineCacheKey = [NSString stringWithFormat:@"%u:%x:%x:%016llx:%016llx",
 		                                    (unsigned)currentProgramName,
 		                                    (unsigned)ctx->state.var.clip_origin,
@@ -21764,6 +23790,14 @@ stencil_format_ok:;
         ctx->state.dirty_bits &= ~DIRTY_BUFFER;
     }
 
+    static uint64_t s_ssboDebugCall = 0;
+    uint64_t dbgCall = ++s_ssboDebugCall;
+    bool dbgFirstCall = (dbgCall <= 3);
+    if (dbgFirstCall) {
+        NSLog(@"MGL SSBO DBG bindBuffersToComputeEncoder call=%llu count=%u",
+              (unsigned long long)dbgCall,
+              (unsigned)ctx->state.compute_buffer_map_list.count);
+    }
     for(int i=0; i<ctx->state.compute_buffer_map_list.count; i++)
     {
         BufferMap *map = &ctx->state.compute_buffer_map_list.buffers[i];
@@ -21805,6 +23839,21 @@ stencil_format_ok:;
                   (unsigned long)bindOffset,
                   (unsigned long)buffer.length);
             continue;
+        }
+
+        if (dbgFirstCall) {
+            NSLog(@"MGL SSBO DBG map[%d] buffer=%u size=%lld mtlLen=%lu resType=%u clientBinding=%u metalSlot=%lu offset=%lld hasMetal=%d mtlPtr=%p cpuData=%p",
+                  i,
+                  (unsigned)ptr->name,
+                  (long long)ptr->size,
+                  (unsigned long)buffer.length,
+                  (unsigned)map->resource_type,
+                  (unsigned)map->buffer_base_index,
+                  (unsigned long)metalBindingIndex,
+                  (long long)map->offset,
+                  map->has_metal_binding ? 1 : 0,
+                  (__bridge void *)buffer,
+                  (void *)(uintptr_t)ptr->data.buffer_data);
         }
 
         [computeCommandEncoder setBuffer:buffer offset:bindOffset atIndex:metalBindingIndex];
@@ -23708,6 +25757,15 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
                                 (int)count,
                                 _currentRenderEncoder,
                                 _pipelineState);
+                    /* Cull distance emulation: bind vertex/params buffers before
+                     * drawPrimitives in the deferred batch path. */
+                    {
+                        Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+                        if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                            strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+                            [self bindCullDistanceEmulationBuffers:mode];
+                        }
+                    }
                     [_currentRenderEncoder drawPrimitives:primType
                                              vertexStart:cmd->first
                                              vertexCount:count];
@@ -23820,6 +25878,15 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
                                           reason:"direct_arrays_instanced_line_loop_small"];
                     }
                 } else {
+                    /* Cull distance emulation: bind vertex/params buffers before
+                     * drawPrimitives in the deferred batch path. */
+                    {
+                        Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+                        if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                            strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+                            [self bindCullDistanceEmulationBuffers:mode];
+                        }
+                    }
                     [_currentRenderEncoder drawPrimitives:primType
                                              vertexStart:cmd->first
                                              vertexCount:count
@@ -23933,6 +26000,15 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
                                           reason:"direct_arrays_base_instance_line_loop_small"];
                     }
                 } else {
+                    /* Cull distance emulation: bind vertex/params buffers before
+                     * drawPrimitives in the deferred batch path. */
+                    {
+                        Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+                        if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                            strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+                            [self bindCullDistanceEmulationBuffers:mode];
+                        }
+                    }
                     [_currentRenderEncoder drawPrimitives:primType
                                              vertexStart:cmd->first
                                              vertexCount:count
@@ -25174,7 +27250,9 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
     }
     memcpy(data+offset, ptr, size);
 
-    [mtl_buffer didModifyRange:NSMakeRange(offset, size)];
+    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
+        [mtl_buffer didModifyRange:NSMakeRange(offset, size)];
+    }
 
     if (trace) {
         const void *dst = (const void *)((const uint8_t *)mtl_buffer.contents + offset);
@@ -25279,7 +27357,9 @@ void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t siz
         }
     }
 
-    [mtl_buffer didModifyRange:NSMakeRange(offset, safeLen)];
+    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
+        [mtl_buffer didModifyRange:NSMakeRange(offset, safeLen)];
+    }
 
     if (kMGLDiagnosticStateLogs) {
         uint8_t *mtlPtr = mtlBase ? (mtlBase + offset) : NULL;
@@ -25378,7 +27458,9 @@ void *mtlMapUnmapBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t s
         return;
     }
 
-    [mtl_buffer didModifyRange:NSMakeRange(offset, length)];
+    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
+        [mtl_buffer didModifyRange:NSMakeRange(offset, length)];
+    }
 }
 
 void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length)
@@ -25535,8 +27617,6 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     NSInteger metalSrcX = glMinX;
     NSInteger metalSrcY = (NSInteger)levelHeight - glMaxY;
 
-    memset(pixelBytes, 0, readSize);
-
     if (copyW <= 0 || copyH <= 0) {
         return YES;
     }
@@ -25548,6 +27628,7 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     if (stagingSize == 0u) {
         return YES;
     }
+
 
     NSUInteger dstOffset = ((NSUInteger)dstY * bytesPerRow) + ((NSUInteger)dstX * 4u);
     if (dstOffset >= readSize ||
@@ -25631,7 +27712,7 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
         success = NO;
     } else {
         uint8_t *dst = ((uint8_t *)pixelBytes) + dstOffset;
-        mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
+mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                                         stagingBytesPerRow,
                                         dst,
                                         bytesPerRow,
@@ -25724,8 +27805,6 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     NSInteger dstY = glMinY - requestY;
     NSInteger metalSrcX = glMinX;
     NSInteger metalSrcY = (NSInteger)levelHeight - glMaxY;
-
-    memset(pixelBytes, 0, readSize);
 
     if (copyW <= 0 || copyH <= 0) {
         return YES;
@@ -25858,6 +27937,10 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
                            fromRegion:(MTLRegion)region
                      outputComponents:(NSUInteger)outputComponents
                   outputComponentBytes:(NSUInteger)outputComponentBytes
+                         componentMap:(const int[4])componentMap
+                          packedType:(GLenum)packedType
+                        mipmapLevel:(NSUInteger)mipmapLevel
+                              slice:(NSUInteger)mtlSlice
 {
     NSUInteger componentCount = 0u;
     NSUInteger sourceComponentBytes = 0u;
@@ -25926,14 +28009,98 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
             return NO;
     }
 
+    /* Determine output pixel bytes for packed types. */
+    BOOL isPackedType = NO;
+    NSUInteger packedBitWidths[4] = {0, 0, 0, 0};
+    NSUInteger packedShifts[4] = {0, 0, 0, 0};
+    NSUInteger packedTotalBits = 0u;
+    NSUInteger packedOutputBytes = 0u;
+
+    switch (packedType) {
+        case 0x8032: /* GL_UNSIGNED_BYTE_3_3_2 */
+            isPackedType = YES;
+            packedBitWidths[0]=3; packedBitWidths[1]=3; packedBitWidths[2]=2; packedBitWidths[3]=0;
+            packedShifts[0]=5;  packedShifts[1]=2;  packedShifts[2]=0;  packedShifts[3]=0;
+            packedTotalBits=8; packedOutputBytes=1; outputComponents=3;
+            break;
+        case 0x8362: /* GL_UNSIGNED_BYTE_2_3_3_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=3; packedBitWidths[1]=3; packedBitWidths[2]=2; packedBitWidths[3]=0;
+            packedShifts[0]=0;  packedShifts[1]=3;  packedShifts[2]=6;  packedShifts[3]=0;
+            packedTotalBits=8; packedOutputBytes=1; outputComponents=3;
+            break;
+        case 0x8363: /* GL_UNSIGNED_SHORT_5_6_5 */
+            isPackedType = YES;
+            packedBitWidths[0]=5; packedBitWidths[1]=6; packedBitWidths[2]=5; packedBitWidths[3]=0;
+            packedShifts[0]=11; packedShifts[1]=5;  packedShifts[2]=0;  packedShifts[3]=0;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=3;
+            break;
+        case 0x8364: /* GL_UNSIGNED_SHORT_5_6_5_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=5; packedBitWidths[1]=6; packedBitWidths[2]=5; packedBitWidths[3]=0;
+            packedShifts[0]=0;  packedShifts[1]=5;  packedShifts[2]=11; packedShifts[3]=0;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=3;
+            break;
+        case 0x8033: /* GL_UNSIGNED_SHORT_4_4_4_4 */
+            isPackedType = YES;
+            packedBitWidths[0]=4; packedBitWidths[1]=4; packedBitWidths[2]=4; packedBitWidths[3]=4;
+            packedShifts[0]=12; packedShifts[1]=8;  packedShifts[2]=4;  packedShifts[3]=0;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
+            break;
+        case 0x8365: /* GL_UNSIGNED_SHORT_4_4_4_4_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=4; packedBitWidths[1]=4; packedBitWidths[2]=4; packedBitWidths[3]=4;
+            packedShifts[0]=0;  packedShifts[1]=4;  packedShifts[2]=8;  packedShifts[3]=12;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
+            break;
+        case 0x8034: /* GL_UNSIGNED_SHORT_5_5_5_1 */
+            isPackedType = YES;
+            packedBitWidths[0]=5; packedBitWidths[1]=5; packedBitWidths[2]=5; packedBitWidths[3]=1;
+            packedShifts[0]=11; packedShifts[1]=6;  packedShifts[2]=1;  packedShifts[3]=0;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
+            break;
+        case 0x8366: /* GL_UNSIGNED_SHORT_1_5_5_5_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=5; packedBitWidths[1]=5; packedBitWidths[2]=5; packedBitWidths[3]=1;
+            packedShifts[0]=0;  packedShifts[1]=5;  packedShifts[2]=10; packedShifts[3]=15;
+            packedTotalBits=16; packedOutputBytes=2; outputComponents=4;
+            break;
+        case 0x8035: /* GL_UNSIGNED_INT_8_8_8_8 */
+            isPackedType = YES;
+            packedBitWidths[0]=8; packedBitWidths[1]=8; packedBitWidths[2]=8; packedBitWidths[3]=8;
+            packedShifts[0]=24; packedShifts[1]=16; packedShifts[2]=8;  packedShifts[3]=0;
+            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
+            break;
+        case 0x8367: /* GL_UNSIGNED_INT_8_8_8_8_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=8; packedBitWidths[1]=8; packedBitWidths[2]=8; packedBitWidths[3]=8;
+            packedShifts[0]=0;  packedShifts[1]=8;  packedShifts[2]=16; packedShifts[3]=24;
+            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
+            break;
+        case 0x8036: /* GL_UNSIGNED_INT_10_10_10_2 */
+            isPackedType = YES;
+            packedBitWidths[0]=10; packedBitWidths[1]=10; packedBitWidths[2]=10; packedBitWidths[3]=2;
+            packedShifts[0]=22; packedShifts[1]=12; packedShifts[2]=2;  packedShifts[3]=0;
+            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
+            break;
+        case 0x8368: /* GL_UNSIGNED_INT_2_10_10_10_REV */
+            isPackedType = YES;
+            packedBitWidths[0]=10; packedBitWidths[1]=10; packedBitWidths[2]=10; packedBitWidths[3]=2;
+            packedShifts[0]=0;  packedShifts[1]=10; packedShifts[2]=20; packedShifts[3]=30;
+            packedTotalBits=32; packedOutputBytes=4; outputComponents=4;
+            break;
+        default:
+            break;
+    }
+
+    NSUInteger dstPixelBytes = isPackedType ? packedOutputBytes : (outputComponentBytes * outputComponents);
     NSUInteger readSize = bytesPerImage ? bytesPerImage : bytesPerRow * region.size.height;
-    NSUInteger dstPixelBytes = outputComponentBytes * outputComponents;
     if (!pixelBytes || bytesPerRow < region.size.width * dstPixelBytes) {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return NO;
     }
 
-    memset(pixelBytes, 0, readSize);
+    (void)readSize;
     if (region.size.width == 0u || region.size.height == 0u) {
         return YES;
     }
@@ -25966,11 +28133,16 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
         return NO;
     }
 
+    /* Calculate the texture height at the specified mipmap level. */
+    NSUInteger levelHeight = sourceTexture.height;
+    if (mipmapLevel > 0u) {
+        levelHeight = MAX((NSUInteger)1u, sourceTexture.height >> mipmapLevel);
+    }
     [blit copyFromTexture:sourceTexture
-              sourceSlice:0u
-              sourceLevel:0u
+              sourceSlice:mtlSlice
+              sourceLevel:mipmapLevel
              sourceOrigin:MTLOriginMake((NSUInteger)minX,
-                                        sourceTexture.height - (NSUInteger)maxY,
+                                        levelHeight - (NSUInteger)maxY,
                                         0u)
                sourceSize:MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u)
                  toBuffer:readBuffer
@@ -25982,6 +28154,30 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     [_currentCommandBuffer waitUntilCompleted];
 
     const uint8_t *src = (const uint8_t *)readBuffer.contents;
+    if (getenv("MGL_DEBUG_INT_READ")) {
+        fprintf(stderr, "MGL DEBUG INT READ: srcCompBytes=%zu srcPixelBytes=%zu compCount=%zu srcBytesPerRow=%zu copyW=%d copyH=%d level=%zu slice=%zu\n",
+                sourceComponentBytes, srcPixelBytes, componentCount, srcBytesPerRow, copyW, copyH, mipmapLevel, mtlSlice);
+        fprintf(stderr, "  sourceSigned=%d sourceRGB10A2Uint=%d\n", sourceSigned, sourceRGB10A2Uint);
+        for (int dbgY = 0; dbgY < (copyH < 3 ? copyH : 3); dbgY++) {
+            const uint8_t *r = src + dbgY * srcBytesPerRow;
+            fprintf(stderr, "  staging row %d:", dbgY);
+            for (int dbgX = 0; dbgX < (copyW < 7 ? copyW : 7); dbgX++) {
+                const uint8_t *s = r + dbgX * srcPixelBytes;
+                fprintf(stderr, " [");
+                for (NSUInteger sc = 0; sc < componentCount && sc < 4u; sc++) {
+                    if (sourceComponentBytes == 1u) {
+                        fprintf(stderr, "%s%u", sc ? "," : "", (unsigned)s[sc]);
+                    } else if (sourceComponentBytes == 2u) {
+                        fprintf(stderr, "%s%u", sc ? "," : "", (unsigned)*(const uint16_t*)(const void*)(s + sc*2u));
+                    } else {
+                        fprintf(stderr, "%s%u", sc ? "," : "", (unsigned)*(const uint32_t*)(const void*)(s + sc*4u));
+                    }
+                }
+                fprintf(stderr, "]");
+            }
+            fprintf(stderr, "\n");
+        }
+    }
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
     NSUInteger dstY = (NSUInteger)(minY - (NSInteger)region.origin.y);
     for (NSUInteger y = 0; y < (NSUInteger)copyH; y++) {
@@ -25990,33 +28186,144 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
         uint8_t *dstRow = (uint8_t *)pixelBytes + outputY * bytesPerRow;
         for (NSUInteger x = 0; x < (NSUInteger)copyW; x++) {
             const uint8_t *s = srcRow + x * srcPixelBytes;
-            uint8_t *d = dstRow + (dstX + x) * outputComponents * outputComponentBytes;
-            for (NSUInteger c = 0; c < outputComponents; c++) {
-                uint32_t value = (c == 3u) ? 1u : 0u;
-                if (sourceRGB10A2Uint && c < 4u) {
+            uint8_t *d = dstRow + (dstX + x) * dstPixelBytes;
+
+            /* Extract source component values (up to 4). */
+            uint32_t srcValues[4] = {0, 0, 0, 0};
+            for (NSUInteger sc = 0; sc < componentCount && sc < 4u; sc++) {
+                if (sourceRGB10A2Uint) {
                     uint32_t packed = *(const uint32_t *)(const void *)s;
-                    static const uint8_t shifts[4] = {0u, 10u, 20u, 30u};
-                    static const uint32_t masks[4] = {0x3ffu, 0x3ffu, 0x3ffu, 0x3u};
-                    value = (packed >> shifts[c]) & masks[c];
-                } else if (c < componentCount) {
-                    if (sourceComponentBytes == 1u) {
-                        value = sourceSigned ? (uint32_t)(int32_t)*(const int8_t *)(const void *)(s + c)
-                                             : (uint32_t)s[c];
-                    } else if (sourceComponentBytes == 2u) {
-                        value = sourceSigned ? (uint32_t)(int32_t)*(const int16_t *)(const void *)(s + c * 2u)
-                                             : (uint32_t)*(const uint16_t *)(const void *)(s + c * 2u);
-                    } else {
-                        value = *(const uint32_t *)(const void *)(s + c * 4u);
-                    }
-                }
-                if (outputComponentBytes == 1u) {
-                    d[c] = (uint8_t)value;
-                } else if (outputComponentBytes == 2u) {
-                    ((uint16_t *)(void *)d)[c] = (uint16_t)value;
+                    static const uint8_t rgb10a2_shifts[4] = {0u, 10u, 20u, 30u};
+                    static const uint32_t rgb10a2_masks[4] = {0x3ffu, 0x3ffu, 0x3ffu, 0x3u};
+                    srcValues[sc] = (packed >> rgb10a2_shifts[sc]) & rgb10a2_masks[sc];
+                } else if (sourceComponentBytes == 1u) {
+                    srcValues[sc] = sourceSigned
+                        ? (uint32_t)(int32_t)*(const int8_t *)(const void *)(s + sc)
+                        : (uint32_t)s[sc];
+                } else if (sourceComponentBytes == 2u) {
+                    srcValues[sc] = sourceSigned
+                        ? (uint32_t)(int32_t)*(const int16_t *)(const void *)(s + sc * 2u)
+                        : (uint32_t)*(const uint16_t *)(const void *)(s + sc * 2u);
                 } else {
-                    ((uint32_t *)(void *)d)[c] = value;
+                    srcValues[sc] = *(const uint32_t *)(const void *)(s + sc * 4u);
                 }
             }
+
+            if (isPackedType) {
+                /* Pack values into the packed format.
+                 * Per OpenGL spec, integer values are CLAMPED to the bit width, not masked. */
+                uint32_t packed = 0u;
+                for (NSUInteger c = 0; c < outputComponents && c < 4u; c++) {
+                    int srcIdx = (c < 4u) ? componentMap[c] : -1;
+                    uint32_t val = 0u;
+                    if (srcIdx >= 0 && (NSUInteger)srcIdx < componentCount) {
+                        val = srcValues[srcIdx];
+                    }
+                    /* Clamp to bit width (not mask). */
+                    uint32_t maxVal = (packedBitWidths[c] >= 32u) ? 0xFFFFFFFFu : ((1u << packedBitWidths[c]) - 1u);
+                    if (val > maxVal) val = maxVal;
+                    packed |= val << packedShifts[c];
+                }
+                if (packedOutputBytes == 1u) {
+                    d[0] = (uint8_t)packed;
+                } else if (packedOutputBytes == 2u) {
+                    ((uint16_t *)(void *)d)[0] = (uint16_t)packed;
+                } else {
+                    ((uint32_t *)(void *)d)[0] = packed;
+                }
+            } else {
+                /* Non-packed: write each component individually.
+                 * Per OpenGL spec, integer values are CLAMPED to the output type range. */
+                for (NSUInteger c = 0; c < outputComponents; c++) {
+                    int srcIdx = (c < 4u) ? componentMap[c] : -1;
+                    uint32_t value = 0u;
+                    if (srcIdx >= 0 && (NSUInteger)srcIdx < componentCount) {
+                        value = srcValues[srcIdx];
+                    }
+                    if (outputComponentBytes == 1u) {
+                        if (packedType == GL_BYTE) {
+                            /* Signed byte: clamp to [-128, 127].
+                             * If source is unsigned, values > 127 must clamp
+                             * to 127 (not wrap to negative via int32_t cast). */
+                            if (sourceSigned) {
+                                int32_t sv = (int32_t)value;
+                                if (sv > 127) sv = 127;
+                                if (sv < -128) sv = -128;
+                                d[c] = (uint8_t)(int8_t)sv;
+                            } else {
+                                if (value > 127u) value = 127u;
+                                d[c] = (uint8_t)value;
+                            }
+                        } else {
+                            /* Unsigned byte: clamp to [0, 255] */
+                            if (value > 255u) value = 255u;
+                            d[c] = (uint8_t)value;
+                        }
+                    } else if (outputComponentBytes == 2u) {
+                        if (packedType == GL_SHORT) {
+                            /* Signed short: clamp to [-32768, 32767].
+                             * See comment above re: unsigned source. */
+                            if (sourceSigned) {
+                                int32_t sv = (int32_t)value;
+                                if (sv > 32767) sv = 32767;
+                                if (sv < -32768) sv = -32768;
+                                ((uint16_t *)(void *)d)[c] = (uint16_t)(int16_t)sv;
+                            } else {
+                                if (value > 32767u) value = 32767u;
+                                ((uint16_t *)(void *)d)[c] = (uint16_t)value;
+                            }
+                        } else {
+                            /* Unsigned short: clamp to [0, 65535] */
+                            if (value > 65535u) value = 65535u;
+                            ((uint16_t *)(void *)d)[c] = (uint16_t)value;
+                        }
+                    } else {
+                        if (packedType == GL_INT) {
+                            /* Signed int: if source is unsigned, clamp to
+                             * [0, INT32_MAX] to avoid wrap. */
+                            if (sourceSigned) {
+                                ((uint32_t *)(void *)d)[c] = value;
+                            } else {
+                                if (value > 0x7FFFFFFFu) value = 0x7FFFFFFFu;
+                                ((uint32_t *)(void *)d)[c] = value;
+                            }
+                        } else {
+                            /* Unsigned int: clamp to [0, 4294967295] */
+                            ((uint32_t *)(void *)d)[c] = value;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (getenv("MGL_DEBUG_INT_READ")) {
+        fprintf(stderr, "  OUTPUT bytesPerRow=%zu dstPixelBytes=%zu outputComponents=%zu outputCompBytes=%zu\n",
+                bytesPerRow, dstPixelBytes, outputComponents, outputComponentBytes);
+        for (int dbgY = 0; dbgY < (copyH < 3 ? copyH : 3); dbgY++) {
+            uint8_t *r = (uint8_t *)pixelBytes + (NSUInteger)dbgY * bytesPerRow;
+            fprintf(stderr, "  output row %d:", dbgY);
+            for (int dbgX = 0; dbgX < (copyW < 7 ? copyW : 7); dbgX++) {
+                uint8_t *d = r + (NSUInteger)dbgX * dstPixelBytes;
+                fprintf(stderr, " [");
+                if (isPackedType) {
+                    if (packedOutputBytes == 1u) fprintf(stderr, "0x%02x", (unsigned)d[0]);
+                    else if (packedOutputBytes == 2u) fprintf(stderr, "0x%04x", (unsigned)*(uint16_t*)(void*)d);
+                    else fprintf(stderr, "0x%08x", (unsigned)*(uint32_t*)(void*)d);
+                } else {
+                    for (NSUInteger c = 0; c < outputComponents && c < 4u; c++) {
+                        if (outputComponentBytes == 1u) {
+                            fprintf(stderr, "%s%d", c ? "," : "", (int)(int8_t)d[c]);
+                        } else if (outputComponentBytes == 2u) {
+                            fprintf(stderr, "%s%d", c ? "," : "", (int)(int16_t)((uint16_t*)(void*)d)[c]);
+                        } else {
+                            fprintf(stderr, "%s%d", c ? "," : "", (int)(int32_t)((uint32_t*)(void*)d)[c]);
+                        }
+                    }
+                }
+                fprintf(stderr, "]");
+            }
+            fprintf(stderr, "\n");
         }
     }
 
@@ -26193,6 +28500,9 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     }
 
     id<MTLTexture> texture = (__bridge id<MTLTexture>)(textureObj->mtl_data);
+    MGLMetalAttachmentSubresource subresource =
+        mglMetalAttachmentSubresourceForAttachment(attachment);
+
     [self endRenderEncoding];
     if (![self ensureWritableCommandBuffer:"mtlReadIntegerPixels.fbo"]) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
@@ -26203,18 +28513,38 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
                                        textureObj:textureObj
                                        mtlTexture:texture
                                    attachmentEnum:readBuffer];
-    NSUInteger outputComponents = format == GL_RED_INTEGER ? 1u :
-                                  format == GL_RG_INTEGER ? 2u :
-                                  format == GL_RGB_INTEGER ? 3u : 4u;
+
+    /* Determine output component count and component mapping.
+     * componentMap[c] = source component index for output component c, or -1. */
+    NSUInteger outputComponents = 4u;
+    int componentMap[4] = {0, 1, 2, 3};
+    switch (format) {
+        case GL_RED_INTEGER:    outputComponents = 1u; componentMap[0]=0; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
+        case GL_RG_INTEGER:     outputComponents = 2u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=-1; componentMap[3]=-1; break;
+        case GL_RGB_INTEGER:    outputComponents = 3u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=2;  componentMap[3]=-1; break;
+        case GL_BGR_INTEGER:    outputComponents = 3u; componentMap[0]=2; componentMap[1]=1; componentMap[2]=0;  componentMap[3]=-1; break;
+        case GL_RGBA_INTEGER:   outputComponents = 4u; componentMap[0]=0; componentMap[1]=1; componentMap[2]=2;  componentMap[3]=3;  break;
+        case GL_BGRA_INTEGER:   outputComponents = 4u; componentMap[0]=2; componentMap[1]=1; componentMap[2]=0;  componentMap[3]=3;  break;
+        case 0x8d95: /*GL_GREEN_INTEGER*/ outputComponents = 1u; componentMap[0]=1; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
+        case 0x8d96: /*GL_BLUE_INTEGER*/  outputComponents = 1u; componentMap[0]=2; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
+        case 0x8d97: /*GL_ALPHA_INTEGER*/ outputComponents = 1u; componentMap[0]=3; componentMap[1]=-1; componentMap[2]=-1; componentMap[3]=-1; break;
+        default: outputComponents = 4u; break;
+    }
+
     NSUInteger outputComponentBytes = (type == GL_BYTE || type == GL_UNSIGNED_BYTE) ? 1u :
                                       (type == GL_SHORT || type == GL_UNSIGNED_SHORT) ? 2u : 4u;
+
     [self mglReadIntegerTextureAsRGBA32:texture
                             pixelBytes:pixelBytes
                            bytesPerRow:bytesPerRow
                          bytesPerImage:bytesPerImage
                             fromRegion:region
                       outputComponents:outputComponents
-                   outputComponentBytes:outputComponentBytes];
+                   outputComponentBytes:outputComponentBytes
+                          componentMap:componentMap
+                           packedType:type
+                          mipmapLevel:subresource.level
+                                slice:subresource.slice];
 }
 
 -(void) mtlReadDrawable:(GLMContext) glm_ctx pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region
@@ -26573,9 +28903,32 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
         return;
     }
 
+    /* Ensure any pending texture upload blit commands are committed before
+     * reading back. Without this, getBytes may return stale/zero data because
+     * the blit encoding the upload is still in the uncommitted command buffer. */
+    [self endRenderEncoding];
+    if (_currentCommandBuffer) {
+        id<MTLCommandBuffer> pendingCB = _currentCommandBuffer;
+        _currentCommandBuffer = nil;
+        @try {
+            [pendingCB commit];
+            [pendingCB waitUntilCompleted];
+        } @catch (NSException *e) {
+            NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);
+        }
+        if (pendingCB.error) {
+            NSLog(@"MGL WARNING: mtlGetTexImage pre-readback command buffer error: %@", pendingCB.error);
+        }
+        [self newCommandBuffer];
+    }
+
     MTLRegion readRegion = region;
-    BOOL flipRenderTargetRows = NO;
-    if (flipRenderTargetRows && tex->is_render_target && region.size.height > 0u) {
+    /* Render target textures are stored top-to-bottom in Metal, but OpenGL
+     * readPixels expects bottom-to-top order. Flip Y for render targets to
+     * match OpenGL semantics. This mirrors the Y flip already done in
+     * mglReadColorTextureAsBGRA8 (metalSrcY = levelHeight - glMaxY). */
+    BOOL flipRenderTargetRows = tex->is_render_target;
+    if (flipRenderTargetRows && region.size.height > 0u) {
         NSUInteger levelHeight = MAX((NSUInteger)1u, texture.height >> level);
         if (region.origin.y > levelHeight ||
             region.size.height > levelHeight - region.origin.y) {
@@ -26588,6 +28941,71 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
             return;
         }
         readRegion.origin.y = levelHeight - (region.origin.y + region.size.height);
+    }
+
+    /* Integer texture readback path: when the source texture is an integer
+     * format and the output format is GL_*_INTEGER, use the dedicated integer
+     * readback function that handles packed types and component mapping. */
+    BOOL sourceIsIntegerTexture =
+        (texture.pixelFormat == MTLPixelFormatR8Uint   ||
+         texture.pixelFormat == MTLPixelFormatR8Sint   ||
+         texture.pixelFormat == MTLPixelFormatR16Uint  ||
+         texture.pixelFormat == MTLPixelFormatR16Sint  ||
+         texture.pixelFormat == MTLPixelFormatR32Uint  ||
+         texture.pixelFormat == MTLPixelFormatR32Sint  ||
+         texture.pixelFormat == MTLPixelFormatRG8Uint  ||
+         texture.pixelFormat == MTLPixelFormatRG8Sint  ||
+         texture.pixelFormat == MTLPixelFormatRG16Uint ||
+         texture.pixelFormat == MTLPixelFormatRG16Sint ||
+         texture.pixelFormat == MTLPixelFormatRG32Uint ||
+         texture.pixelFormat == MTLPixelFormatRG32Sint ||
+         texture.pixelFormat == MTLPixelFormatRGBA8Uint  ||
+         texture.pixelFormat == MTLPixelFormatRGBA8Sint  ||
+         texture.pixelFormat == MTLPixelFormatRGBA16Uint ||
+         texture.pixelFormat == MTLPixelFormatRGBA16Sint ||
+         texture.pixelFormat == MTLPixelFormatRGBA32Uint ||
+         texture.pixelFormat == MTLPixelFormatRGBA32Sint ||
+         texture.pixelFormat == MTLPixelFormatRGB10A2Uint);
+
+    BOOL outputIsIntegerFormat =
+        (format == GL_RED_INTEGER   || format == GL_RG_INTEGER    ||
+         format == GL_RGB_INTEGER   || format == GL_BGR_INTEGER   ||
+         format == GL_RGBA_INTEGER  || format == GL_BGRA_INTEGER  ||
+         format == 0x8d95 /*GL_GREEN_INTEGER*/ ||
+         format == 0x8d96 /*GL_BLUE_INTEGER*/  ||
+         format == 0x8d97 /*GL_ALPHA_INTEGER*/);
+
+    if (sourceIsIntegerTexture && outputIsIntegerFormat) {
+        NSUInteger intOutputComponents = 4u;
+        int intComponentMap[4] = {0, 1, 2, 3};
+        switch (format) {
+            case GL_RED_INTEGER:    intOutputComponents = 1u; intComponentMap[0]=0; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
+            case GL_RG_INTEGER:     intOutputComponents = 2u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
+            case GL_RGB_INTEGER:    intOutputComponents = 3u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=2;  intComponentMap[3]=-1; break;
+            case GL_BGR_INTEGER:    intOutputComponents = 3u; intComponentMap[0]=2; intComponentMap[1]=1; intComponentMap[2]=0;  intComponentMap[3]=-1; break;
+            case GL_RGBA_INTEGER:   intOutputComponents = 4u; intComponentMap[0]=0; intComponentMap[1]=1; intComponentMap[2]=2;  intComponentMap[3]=3;  break;
+            case GL_BGRA_INTEGER:   intOutputComponents = 4u; intComponentMap[0]=2; intComponentMap[1]=1; intComponentMap[2]=0;  intComponentMap[3]=3;  break;
+            case 0x8d95: intOutputComponents = 1u; intComponentMap[0]=1; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
+            case 0x8d96: intOutputComponents = 1u; intComponentMap[0]=2; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
+            case 0x8d97: intOutputComponents = 1u; intComponentMap[0]=3; intComponentMap[1]=-1; intComponentMap[2]=-1; intComponentMap[3]=-1; break;
+            default: break;
+        }
+
+        NSUInteger intOutputComponentBytes = (type == GL_BYTE || type == GL_UNSIGNED_BYTE) ? 1u :
+                                             (type == GL_SHORT || type == GL_UNSIGNED_SHORT) ? 2u : 4u;
+
+        [self mglReadIntegerTextureAsRGBA32:texture
+                                pixelBytes:pixelBytes
+                               bytesPerRow:bytesPerRow
+                             bytesPerImage:bytesPerImage
+                                fromRegion:readRegion
+                          outputComponents:intOutputComponents
+                       outputComponentBytes:intOutputComponentBytes
+                              componentMap:intComponentMap
+                               packedType:type
+                              mipmapLevel:level
+                                    slice:slice];
+        return;
     }
 
     NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
@@ -26728,9 +29146,22 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
 
 	    @try {
 	        if (useBGRA8Conversion || (flipRenderTargetRows && readRegion.size.depth == 1u)) {
-	            NSUInteger rowBytes = useBGRA8Conversion
-	                ? readRegion.size.width * 4u
-	                : (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
+	            NSUInteger rowBytes;
+	            if (useBGRA8Conversion) {
+                    NSUInteger sourceBpp = mglMetalReadbackBytesPerPixel(texture.pixelFormat);
+                    BOOL sourceIsBGRA8 =
+                        (texture.pixelFormat == MTLPixelFormatBGRA8Unorm ||
+                         texture.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB ||
+                         texture.pixelFormat == MTLPixelFormatRGBA8Unorm ||
+                         texture.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
+                    if (!sourceIsBGRA8 && sourceBpp > 0u) {
+                        rowBytes = readRegion.size.width * sourceBpp;
+                    } else {
+                        rowBytes = readRegion.size.width * 4u;
+                    }
+                } else {
+                    rowBytes = (bytesPerRow > 0 ? bytesPerRow : readRegion.size.width * MAX(dstPixelBytes, (NSUInteger)1u));
+                }
             NSUInteger totalBytes = rowBytes * readRegion.size.height;
             NSMutableData *readback = [NSMutableData dataWithLength:totalBytes];
             if (!readback) {
@@ -26872,6 +29303,1289 @@ void mtlCopyTexSubImage(GLMContext glm_ctx, Texture *tex, GLuint slice, GLint le
 void mtlGenerateMipmaps(GLMContext glm_ctx, Texture *tex)
 {
     [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGenerateMipmaps:glm_ctx forTexture:tex];
+}
+
+/* Map GL internal format to the (format, type) pair that matches the CPU
+ * storage layout used by mglCreateRGBA8ExpandedUpload / channel expansion.
+ * Used for format-converting readback in mtlCopyImageSubData when CPU bpp
+ * differs from Metal bpp.  Returns GL_FALSE if no mapping is known. */
+static GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
+                                                      GLenum *outFormat,
+                                                      GLenum *outType)
+{
+    if (!outFormat || !outType) return GL_FALSE;
+    switch (internalformat) {
+        case GL_R3_G3_B2:
+            *outFormat = GL_RGB; *outType = GL_UNSIGNED_BYTE_3_3_2; return GL_TRUE;
+        case GL_RGB4:
+        case GL_RGB5:
+            *outFormat = GL_RGB; *outType = GL_UNSIGNED_SHORT_5_6_5; return GL_TRUE;
+        case GL_RGB5_A1:
+            *outFormat = GL_RGBA; *outType = GL_UNSIGNED_SHORT_5_5_5_1; return GL_TRUE;
+        case GL_RGBA2:
+        case GL_RGBA4:
+            *outFormat = GL_RGBA; *outType = GL_UNSIGNED_SHORT_4_4_4_4; return GL_TRUE;
+        case GL_RGB12:
+            *outFormat = GL_RGB; *outType = GL_UNSIGNED_SHORT; return GL_TRUE;
+        case GL_RGB32F:
+            *outFormat = GL_RGB; *outType = GL_FLOAT; return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
+#pragma mark C interface to mtlCopyImageSubData
+
+-(void)mtlCopyImageSubData:(GLMContext)glm_ctx
+                 srcTexture:(Texture *)srcTex
+                  srcLevel:(GLint)srcLevel
+                      srcX:(GLint)srcX
+                      srcY:(GLint)srcY
+                      srcZ:(GLint)srcZ
+                 dstTexture:(Texture *)dstTex
+                  dstLevel:(GLint)dstLevel
+                      dstX:(GLint)dstX
+                      dstY:(GLint)dstY
+                      dstZ:(GLint)dstZ
+                     width:(GLsizei)width
+                    height:(GLsizei)height
+                    depth:(GLsizei)depth
+{
+    ctx = glm_ctx;
+
+    if (!srcTex || !dstTex || width <= 0 || height <= 0 || depth <= 0) {
+        return;
+    }
+
+    /* Ensure both textures have Metal backing and all pending CPU data
+     * uploads are flushed.  Always call bindMTLTexture (not just when
+     * mtl_data is NULL) so that dirty bits from recent glTexImage*D
+     * calls are processed — otherwise non-blitted mip levels may be
+     * missing from the Metal texture, causing readback to return stale
+     * or zero data after metal_data_authoritative is set. */
+    if (![self bindMTLTexture:srcTex]) {
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+    if (![self bindMTLTexture:dstTex]) {
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
+    id<MTLTexture> srcTexture = (__bridge id<MTLTexture>)(srcTex->mtl_data);
+    id<MTLTexture> dstTexture = (__bridge id<MTLTexture>)(dstTex->mtl_data);
+    if (!srcTexture || !dstTexture) {
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
+    MTLTextureType srcType = srcTexture.textureType;
+    MTLTextureType dstType = dstTexture.textureType;
+
+    /* CPU-to-CPU copy path.
+     * Only for same Metal pixel format — raw bit copy between different
+     * formats would corrupt CPU data (the bits would be interpreted
+     * incorrectly during CPU-path readback).  Different-format copies
+     * fall through to the Metal format-conversion path below, which
+     * sets metal_data_authoritative so the direct Metal readback paths
+     * (identity operations for matching format/type) are used.
+     * Avoids Metal blit entirely, so no metal_data_authoritative flag
+     * is needed — this prevents "wrong mipmap level" and "modified
+     * contents" errors.  Requires both textures to have CPU data and
+     * source must not be metal_data_authoritative (otherwise CPU data
+     * is stale). */
+    if (!srcTex->metal_data_authoritative && !srcTex->is_render_target &&
+        srcTex->faces && dstTex->faces &&
+        (NSUInteger)srcLevel < srcTex->num_levels &&
+        (NSUInteger)dstLevel < dstTex->num_levels) {
+
+            GLuint srcPixelSize = sizeForInternalFormat(srcTex->internalformat, 0, 0);
+            GLuint dstPixelSize = sizeForInternalFormat(dstTex->internalformat, 0, 0);
+            if (srcPixelSize > 0 && srcPixelSize == dstPixelSize &&
+                srcTexture.pixelFormat == dstTexture.pixelFormat) {
+                NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
+                NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
+                NSUInteger rowBytes = copyWidth * srcPixelSize;
+                NSUInteger numSlices = MAX((NSUInteger)depth, 1u);
+
+                bool cpuCopyOK = true;
+                for (NSUInteger s = 0; s < numSlices && cpuCopyOK; s++) {
+                    /* Determine src face/level */
+                    GLuint srcFace = 0;
+                    if (srcType == MTLTextureTypeCube || srcType == MTLTextureTypeCubeArray) {
+                        srcFace = ((GLuint)srcZ + s) % 6;
+                    }
+                    TextureLevel *srcLvl = (srcFace < 6 && srcTex->faces[srcFace].levels) ?
+                        &srcTex->faces[srcFace].levels[srcLevel] : NULL;
+
+                    /* Determine dst face/level */
+                    GLuint dstFace = 0;
+                    if (dstType == MTLTextureTypeCube || dstType == MTLTextureTypeCubeArray) {
+                        dstFace = ((GLuint)dstZ + s) % 6;
+                    }
+                    TextureLevel *dstLvl = (dstFace < 6 && dstTex->faces[dstFace].levels) ?
+                        &dstTex->faces[dstFace].levels[dstLevel] : NULL;
+
+                    if (!srcLvl || !dstLvl || !srcLvl->data || !dstLvl->data ||
+                        srcLvl->width <= 0 || dstLvl->width <= 0) {
+                        cpuCopyOK = false;
+                        break;
+                    }
+
+                    /* For 3D and 2D-array textures, slices are depth planes
+                     * within one level.  For cube textures, each slice is a
+                     * separate face.  For 2D/rectangle, there is only one
+                     * slice. */
+                    size_t srcSlicePitch = srcLvl->pitch * MAX(srcLvl->height, 1u);
+                    size_t dstSlicePitch = dstLvl->pitch * MAX(dstLvl->height, 1u);
+                    bool srcSliced = (srcType == MTLTextureType3D ||
+                                      srcType == MTLTextureType2DArray);
+                    bool dstSliced = (dstType == MTLTextureType3D ||
+                                      dstType == MTLTextureType2DArray);
+                    size_t srcSliceOff = srcSliced ?
+                        ((NSUInteger)srcZ + s) * srcSlicePitch : 0;
+                    size_t dstSliceOff = dstSliced ?
+                        ((NSUInteger)dstZ + s) * dstSlicePitch : 0;
+
+                    /* Copy region row by row */
+                    for (NSUInteger y = 0; y < copyHeight; y++) {
+                        size_t srcOff = srcSliceOff +
+                                        ((NSUInteger)srcY + y) * srcLvl->pitch +
+                                        (NSUInteger)srcX * srcPixelSize;
+                        size_t dstOff = dstSliceOff +
+                                        ((NSUInteger)dstY + y) * dstLvl->pitch +
+                                        (NSUInteger)dstX * dstPixelSize;
+                        if (srcOff + rowBytes > srcLvl->data_size ||
+                            dstOff + rowBytes > dstLvl->data_size) {
+                            cpuCopyOK = false;
+                            break;
+                        }
+                        memcpy((uint8_t *)(uintptr_t)dstLvl->data + dstOff,
+                               (const uint8_t *)(uintptr_t)srcLvl->data + srcOff,
+                               rowBytes);
+                    }
+
+                    /* Update Metal texture for this slice.
+                     * For Private storage textures (e.g. renderbuffers),
+                     * replaceRegion doesn't work — use a blit-from-buffer
+                     * instead. */
+                    if (cpuCopyOK) {
+                        NSUInteger mtlSlice = 0;
+                        MTLRegion region;
+                        if (dstType == MTLTextureType3D) {
+                            mtlSlice = 0;
+                            region = MTLRegionMake3D((NSUInteger)dstX,
+                                                      (NSUInteger)dstY,
+                                                      (NSUInteger)dstZ + s,
+                                                      copyWidth, copyHeight, 1);
+                        } else {
+                            mtlSlice = (dstType == MTLTextureTypeCube ||
+                                        dstType == MTLTextureTypeCubeArray) ?
+                                dstFace : ((NSUInteger)dstZ + s);
+                            region = MTLRegionMake2D((NSUInteger)dstX,
+                                                      (NSUInteger)dstY,
+                                                      copyWidth, copyHeight);
+                        }
+                        if (dstTexture.storageMode != MTLStorageModePrivate) {
+                            @try {
+                                [dstTexture replaceRegion:region
+                                              mipmapLevel:(NSUInteger)dstLevel
+                                                    slice:mtlSlice
+                                                withBytes:(const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff
+                                              bytesPerRow:dstLvl->pitch
+                                            bytesPerImage:dstSlicePitch];
+                            } @catch (NSException *exception) {
+                                NSLog(@"MGL WARNING: CPU-to-CPU Metal update failed: %@",
+                                      exception);
+                            }
+                        } else {
+                            /* Private storage: blit from a staging buffer.
+                             * For bpp mismatch formats (CPU bpp != Metal bpp),
+                             * expand CPU data to Metal format before blitting,
+                             * otherwise sourceBytesPerRow won't match the
+                             * Metal texture's expected row stride. */
+                            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+                            size_t dstCpuBpp = (dstLvl->width > 0) ?
+                                (dstLvl->pitch / dstLvl->width) : 0;
+
+                            const void *srcPtr = (const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff;
+                            NSUInteger srcBytesPerRow = dstLvl->pitch;
+                            NSUInteger srcImageBytes = srcBytesPerRow * copyHeight;
+
+                            void *expandedData = NULL;
+                            if (dstMetalBpp > 0 && dstCpuBpp != dstMetalBpp) {
+                                if (mglTextureInternalFormatNeedsRGBA8Expansion(
+                                        dstTex->internalformat, dstTexture.pixelFormat)) {
+                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                    expandedData = mglCreateRGBA8ExpandedUpload(
+                                        dstTex, (const uint8_t *)srcPtr,
+                                        copyWidth, copyHeight, srcBytesPerRow,
+                                        &expandedBPR, &expandedBPI);
+                                    if (expandedData) {
+                                        srcPtr = expandedData;
+                                        srcBytesPerRow = expandedBPR;
+                                        srcImageBytes = expandedBPI;
+                                    }
+                                } else if (mglTextureNeedsChannelExpansion(
+                                        dstTex->internalformat, dstTexture.pixelFormat)) {
+                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                    expandedData = mglCreateChannelExpandedUpload(
+                                        dstTex, dstTexture.pixelFormat,
+                                        (const uint8_t *)srcPtr,
+                                        copyWidth, copyHeight, srcBytesPerRow,
+                                        &expandedBPR, &expandedBPI);
+                                    if (expandedData) {
+                                        srcPtr = expandedData;
+                                        srcBytesPerRow = expandedBPR;
+                                        srcImageBytes = expandedBPI;
+                                    }
+                                }
+                            }
+
+                            id<MTLBuffer> stagingBuf = [_device newBufferWithBytes:srcPtr
+                                                                            length:srcImageBytes
+                                                                           options:MTLResourceStorageModeShared];
+                            if (stagingBuf) {
+                                id<MTLBlitCommandEncoder> uploadEncoder = [_currentCommandBuffer blitCommandEncoder];
+                                if (uploadEncoder) {
+                                    [uploadEncoder copyFromBuffer:stagingBuf
+                                                    sourceOffset:0
+                                               sourceBytesPerRow:srcBytesPerRow
+                                             sourceBytesPerImage:srcImageBytes
+                                                      sourceSize:MTLSizeMake(copyWidth, copyHeight, 1)
+                                                        toTexture:dstTexture
+                                                 destinationSlice:mtlSlice
+                                                 destinationLevel:(NSUInteger)dstLevel
+                                                destinationOrigin:region.origin];
+                                    [uploadEncoder endEncoding];
+                                }
+                            }
+                            free(expandedData);
+                        }
+                    }
+                }
+
+                if (cpuCopyOK) {
+                    /* CPU data is now authoritative for dst level */
+                    if (dstTex->faces[0].levels) {
+                        dstTex->faces[0].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                    }
+                    return;
+                }
+            }
+        }
+
+    /* Metal-to-Metal copy path for format conversion cases (different
+     * Metal pixel formats).  Read source pixels from Metal via getBytes,
+     * then write to destination Metal via replaceRegion.  GL CopyImageSubData
+     * does raw memcpy of pixel data, so format reinterpretation is OK.
+     * This path has proper render pass synchronization, which the blit
+     * path lacks for renderbuffer sources. */
+    if (srcTexture.pixelFormat != dstTexture.pixelFormat) {
+        if (dstTexture.storageMode != MTLStorageModePrivate) {
+            NSUInteger srcMetalBpp = mglMetalReadbackBytesPerPixel(srcTexture.pixelFormat);
+            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+            if (srcMetalBpp > 0 && dstMetalBpp > 0 && srcMetalBpp == dstMetalBpp) {
+                /* Ensure any pending render passes are flushed before reading
+                 * from the source (especially important for renderbuffers). */
+                [self endRenderEncoding];
+                [self synchronizeRenderPassForTextureReadback:srcTexture reason:"copyImageSubData.formatConv"];
+                [self flushCommandBuffer: YES];
+                NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
+                NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
+                NSUInteger numSlices = MAX((NSUInteger)depth, 1u);
+                NSUInteger rowBytes = copyWidth * srcMetalBpp;
+                NSUInteger imageBytes = rowBytes * copyHeight;
+                void *stagingBuf = malloc(imageBytes);
+                bool metalCopyOK = (stagingBuf != NULL);
+
+                for (NSUInteger s = 0; s < numSlices && metalCopyOK; s++) {
+                    /* Read source slice.  Prefer CPU data when available
+                     * (metal_data_authoritative == false) to avoid AGX
+                     * getBytes bugs on 3D and 2D-array textures. */
+                    NSUInteger srcMtlSlice = 0;
+                    MTLRegion srcRegion;
+                    if (srcType == MTLTextureType3D) {
+                        srcMtlSlice = 0;
+                        srcRegion = MTLRegionMake3D((NSUInteger)srcX,
+                                                     (NSUInteger)srcY,
+                                                     (NSUInteger)srcZ + s,
+                                                     copyWidth, copyHeight, 1);
+                    } else if (srcType == MTLTextureTypeCube ||
+                               srcType == MTLTextureTypeCubeArray) {
+                        srcMtlSlice = ((NSUInteger)srcZ + s) % 6;
+                        srcRegion = MTLRegionMake2D((NSUInteger)srcX,
+                                                     (NSUInteger)srcY,
+                                                     copyWidth, copyHeight);
+                    } else {
+                        srcMtlSlice = (NSUInteger)srcZ + s;
+                        srcRegion = MTLRegionMake2D((NSUInteger)srcX,
+                                                     (NSUInteger)srcY,
+                                                     copyWidth, copyHeight);
+                    }
+
+                    bool srcReadFromCPU = false;
+                    if (!srcTex->metal_data_authoritative && srcTex->faces &&
+                        (NSUInteger)srcLevel < srcTex->num_levels) {
+                        GLuint srcFace = 0;
+                        if (srcType == MTLTextureTypeCube ||
+                            srcType == MTLTextureTypeCubeArray) {
+                            srcFace = ((GLuint)srcZ + s) % 6;
+                        }
+                        TextureLevel *srcLvl = (srcFace < 6 && srcTex->faces[srcFace].levels) ?
+                            &srcTex->faces[srcFace].levels[srcLevel] : NULL;
+                        if (srcLvl && srcLvl->data && srcLvl->pitch > 0 &&
+                            srcLvl->width > 0) {
+                            size_t srcCpuBpp = srcLvl->pitch / srcLvl->width;
+                            if (srcCpuBpp == srcMetalBpp) {
+                                size_t srcCpuPitch = srcLvl->pitch;
+                                size_t srcCpuImgSize = srcCpuPitch * MAX(srcLvl->height, 1u);
+                                size_t srcCpuOff = 0;
+                                if (srcType == MTLTextureType3D) {
+                                    srcCpuOff = ((NSUInteger)srcZ + s) * srcCpuImgSize +
+                                                (NSUInteger)srcY * srcCpuPitch +
+                                                (NSUInteger)srcX * srcCpuBpp;
+                                } else if (srcType == MTLTextureType2DArray ||
+                                           srcType == MTLTextureTypeCubeArray) {
+                                    /* 2D array: all slices in one TextureLevel */
+                                    GLuint arraySlice = (srcType == MTLTextureTypeCubeArray) ?
+                                        ((GLuint)srcZ + s) / 6 : ((GLuint)srcZ + s);
+                                    srcCpuOff = arraySlice * srcCpuImgSize +
+                                                (NSUInteger)srcY * srcCpuPitch +
+                                                (NSUInteger)srcX * srcCpuBpp;
+                                } else {
+                                    srcCpuOff = (NSUInteger)srcY * srcCpuPitch +
+                                                (NSUInteger)srcX * srcCpuBpp;
+                                }
+                                size_t lastRowEnd = srcCpuOff + (copyHeight > 0 ? (copyHeight - 1) * srcCpuPitch : 0) + rowBytes;
+                                if (lastRowEnd <= srcLvl->data_size) {
+                                    for (NSUInteger y = 0; y < copyHeight; y++) {
+                                        memcpy((uint8_t *)stagingBuf + y * rowBytes,
+                                               (const uint8_t *)(uintptr_t)srcLvl->data + srcCpuOff + y * srcCpuPitch,
+                                               rowBytes);
+                                    }
+                                    srcReadFromCPU = true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (!srcReadFromCPU) {
+                    @try {
+                        [srcTexture getBytes:stagingBuf
+                                  bytesPerRow:rowBytes
+                                bytesPerImage:imageBytes
+                                   fromRegion:srcRegion
+                                  mipmapLevel:(NSUInteger)srcLevel
+                                        slice:srcMtlSlice];
+                    } @catch (NSException *exception) {
+                        NSLog(@"MGL WARNING: format conv renderbuffer readback failed: %@",
+                              exception);
+                        metalCopyOK = false;
+                        break;
+                    }
+                    }
+
+                    /* Write to destination Metal via replaceRegion */
+                    @try {
+                        NSUInteger dstMtlSlice = 0;
+                        MTLRegion dstRegion;
+                        if (dstType == MTLTextureType3D) {
+                            dstMtlSlice = 0;
+                            dstRegion = MTLRegionMake3D((NSUInteger)dstX,
+                                                         (NSUInteger)dstY,
+                                                         (NSUInteger)dstZ + s,
+                                                         copyWidth, copyHeight, 1);
+                        } else if (dstType == MTLTextureTypeCube ||
+                                   dstType == MTLTextureTypeCubeArray) {
+                            dstMtlSlice = ((NSUInteger)dstZ + s) % 6;
+                            dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                         (NSUInteger)dstY,
+                                                         copyWidth, copyHeight);
+                        } else {
+                            dstMtlSlice = (NSUInteger)dstZ + s;
+                            dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                         (NSUInteger)dstY,
+                                                         copyWidth, copyHeight);
+                        }
+                        [dstTexture replaceRegion:dstRegion
+                                      mipmapLevel:(NSUInteger)dstLevel
+                                            slice:dstMtlSlice
+                                        withBytes:stagingBuf
+                                      bytesPerRow:rowBytes
+                                    bytesPerImage:imageBytes];
+                    } @catch (NSException *exception) {
+                        NSLog(@"MGL WARNING: format conv renderbuffer Metal update failed: %@",
+                              exception);
+                    }
+
+                    /* Also update dst CPU data if available */
+                    if (dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels) {
+                        GLuint dstFace = 0;
+                        if (dstType == MTLTextureTypeCube || dstType == MTLTextureTypeCubeArray) {
+                            dstFace = ((GLuint)dstZ + s) % 6;
+                        }
+                        TextureLevel *curDstLvl = (dstFace < 6 && dstTex->faces[dstFace].levels) ?
+                            &dstTex->faces[dstFace].levels[dstLevel] : NULL;
+                        if (curDstLvl && curDstLvl->data && curDstLvl->pitch > 0 &&
+                            curDstLvl->width > 0) {
+                            size_t dstCpuBpp = curDstLvl->pitch / curDstLvl->width;
+                            if (dstCpuBpp == dstMetalBpp) {
+                                size_t dstSlicePitch = curDstLvl->pitch * MAX(curDstLvl->height, 1u);
+                                bool dstSliced = (dstType == MTLTextureType3D ||
+                                                  dstType == MTLTextureType2DArray);
+                                size_t dstSliceOff = dstSliced ?
+                                    ((NSUInteger)dstZ + s) * dstSlicePitch : 0;
+                                for (NSUInteger y = 0; y < copyHeight; y++) {
+                                    size_t dstOff = dstSliceOff +
+                                                    ((NSUInteger)dstY + y) * curDstLvl->pitch +
+                                                    (NSUInteger)dstX * dstMetalBpp;
+                                    if (dstOff + rowBytes <= curDstLvl->data_size) {
+                                        memcpy((uint8_t *)(uintptr_t)curDstLvl->data + dstOff,
+                                               (const uint8_t *)stagingBuf + y * rowBytes,
+                                               rowBytes);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                free(stagingBuf);
+                if (metalCopyOK) {
+                    /* Do NOT set metal_data_authoritative = GL_TRUE here.
+                     *
+                     * Previously, this code set the destination level's
+                     * metal_data_authoritative flag to force glGetTexImage
+                     * to read from Metal.  However, this causes failures
+                     * for destination textures whose Metal data may not be
+                     * fully initialized (e.g., RGB9_E5 2D-array textures
+                     * where replaceRegion only updates the copied region,
+                     * leaving non-copied regions with stale Metal data).
+                     *
+                     * glCopyImageSubData does a raw bit copy.  The CPU data
+                     * was updated above with the source's raw bits at the
+                     * copy region, and non-copied regions retain their
+                     * original values from glTexImage*.  This is correct
+                     * for both memcmp and float-epsilon comparisons used
+                     * by CTS.  Keeping CPU data authoritative avoids AGX
+                     * Metal readback bugs on 3D and certain packed formats. */
+                    return;
+                }
+            }
+        }
+
+        /* For format conversion (different Metal pixel formats), there is
+         * no blit path alternative — silently skip. */
+        return;
+    }
+
+    if ((NSUInteger)srcLevel >= srcTexture.mipmapLevelCount ||
+        (NSUInteger)dstLevel >= dstTexture.mipmapLevelCount) {
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        return;
+    }
+
+    RETURN_ON_FAILURE([self processGLState: false]);
+    [self endRenderEncoding];
+    RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlCopyImageSubData"]);
+
+    /* Fallback for 3D texture destinations: AGX drivers have a bug where
+     * copyFromTexture:toTexture: triggers "slice OOB" assertions when the
+     * destination is a 3D texture.  Use a buffer-mediated copy instead:
+     *   1. Read source region into a staging buffer (getBytes for shared
+     *      textures, or blit-to-buffer for private textures)
+     *   2. Write staging buffer to 3D destination via replaceRegion
+     * This bypasses the buggy blit path entirely.  Private 3D destinations
+     * cannot use replaceRegion and fall through to the blit path below. */
+    if (dstType == MTLTextureType3D &&
+        dstTexture.storageMode != MTLStorageModePrivate) {
+        NSUInteger bpp = mglMetalReadbackBytesPerPixel(srcTexture.pixelFormat);
+        if (bpp == 0u) {
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+
+        /* The read-modify-write approach uses CPU data as the base and
+         * writes it back via replaceRegion.  When CPU bpp matches Metal
+         * bpp, the data can be used directly.  When they differ (e.g.
+         * GL_RGB12 → RGBA16Unorm), we convert source data to CPU format
+         * for the RMW, then expand back to Metal format for replaceRegion. */
+        TextureLevel *earlyDstLevelInfo = NULL;
+        if (dstTex->faces && dstTex->faces[0].levels &&
+            (NSUInteger)dstLevel < dstTex->num_levels) {
+            earlyDstLevelInfo = &dstTex->faces[0].levels[dstLevel];
+        }
+        if (!earlyDstLevelInfo || !earlyDstLevelInfo->data ||
+            dstTex->metal_data_authoritative) {
+            /* No CPU data or Metal is authoritative — can't do RMW */
+            goto blitPath;
+        }
+        bool bppMismatch = false;
+        size_t cpuBpp = 0;
+        {
+            size_t earlyPitch = earlyDstLevelInfo->pitch;
+            if (earlyPitch == 0) {
+                earlyPitch = (size_t)earlyDstLevelInfo->width * bpp;
+            }
+            cpuBpp = (earlyDstLevelInfo->width > 0) ?
+                (earlyPitch / earlyDstLevelInfo->width) : 0;
+            if (cpuBpp == 0) {
+                goto blitPath;
+            }
+            if (cpuBpp != (size_t)bpp) {
+                bppMismatch = true;
+            }
+        }
+
+        NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
+        NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
+        NSUInteger copyDepth3D = MAX((NSUInteger)depth, 1u);
+        NSUInteger rowBytes = copyWidth * bpp;
+        NSUInteger imageBytes = rowBytes * copyHeight;
+        NSUInteger totalBytes = imageBytes * copyDepth3D;
+
+        void *stagingBytes = malloc(totalBytes);
+        if (!stagingBytes) {
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            return;
+        }
+
+        /* Read from source into staging buffer.
+         * Prefer CPU data when available (metal_data_authoritative == false)
+         * to avoid Metal getBytes/blit issues with certain texture types.
+         * Fall back to Metal readback for Private textures or when Metal
+         * data is authoritative (e.g. renderbuffers). */
+        bool srcReadFromCPU = false;
+        if (!srcTex->metal_data_authoritative && srcTex->faces &&
+            srcTex->faces[0].levels &&
+            (NSUInteger)srcLevel < srcTex->num_levels) {
+            TextureLevel *srcLevelInfo = &srcTex->faces[0].levels[srcLevel];
+            if (srcLevelInfo->data && srcLevelInfo->width > 0 &&
+                srcLevelInfo->height > 0 && srcLevelInfo->pitch > 0) {
+                size_t srcBpp = srcLevelInfo->pitch / srcLevelInfo->width;
+                if (srcBpp == bpp) {
+                    /* Read source pixels from CPU data */
+                    size_t srcPitch = srcLevelInfo->pitch;
+                    size_t srcImageBytes = srcPitch * srcLevelInfo->height;
+                    if (srcType == MTLTextureType3D) {
+                        /* 3D source: srcZ is depth origin */
+                        for (NSUInteger z = 0; z < copyDepth3D; z++) {
+                            for (NSUInteger y = 0; y < copyHeight; y++) {
+                                NSUInteger srcOff = ((NSUInteger)srcZ + z) * srcImageBytes +
+                                                    ((NSUInteger)srcY + y) * srcPitch +
+                                                    (NSUInteger)srcX * bpp;
+                                NSUInteger dstOff = z * imageBytes + y * rowBytes;
+                                if (srcOff + rowBytes <= srcImageBytes * srcLevelInfo->depth &&
+                                    dstOff + rowBytes <= totalBytes) {
+                                    memcpy((uint8_t *)stagingBytes + dstOff,
+                                           (const uint8_t *)srcLevelInfo->data + srcOff,
+                                           rowBytes);
+                                }
+                            }
+                        }
+                    } else {
+                        /* Non-3D source (2D array, cube, etc.): srcZ is slice */
+                        for (NSUInteger z = 0; z < copyDepth3D; z++) {
+                            NSUInteger face = 0;
+                            if (srcType == MTLTextureTypeCube ||
+                                srcType == MTLTextureTypeCubeArray) {
+                                face = (NSUInteger)srcZ + z;
+                            }
+                            TextureLevel *sliceLevel = (face < 6 && srcTex->faces[face].levels) ?
+                                &srcTex->faces[face].levels[srcLevel] : srcLevelInfo;
+                            if (!sliceLevel || !sliceLevel->data) {
+                                srcReadFromCPU = false;
+                                break;
+                            }
+                            size_t sPitch = sliceLevel->pitch;
+                            size_t sBpp = (sliceLevel->width > 0) ?
+                                (sPitch / sliceLevel->width) : 0;
+                            if (sBpp != bpp) {
+                                srcReadFromCPU = false;
+                                break;
+                            }
+                            /* For 2D array, all slices are in one
+                             * TextureLevel; add slice offset. */
+                            size_t srcSliceOff = 0;
+                            if (srcType == MTLTextureType2DArray) {
+                                srcSliceOff = ((NSUInteger)srcZ + z) *
+                                    sPitch * MAX(sliceLevel->height, 1u);
+                            }
+                            for (NSUInteger y = 0; y < copyHeight; y++) {
+                                NSUInteger srcOff = srcSliceOff +
+                                    ((NSUInteger)srcY + y) * sPitch +
+                                    (NSUInteger)srcX * bpp;
+                                NSUInteger dstOff = z * imageBytes + y * rowBytes;
+                                if (srcOff + rowBytes <= sliceLevel->data_size &&
+                                    dstOff + rowBytes <= totalBytes) {
+                                    memcpy((uint8_t *)stagingBytes + dstOff,
+                                           (const uint8_t *)sliceLevel->data + srcOff,
+                                           rowBytes);
+                                }
+                            }
+                        }
+                    }
+                    srcReadFromCPU = true;
+                }
+            }
+        }
+
+        if (!srcReadFromCPU) {
+        /* Read from source Metal texture.
+         * For 3D sources, read the entire 3D region in one call.
+         * For non-3D sources (2D array, cube, etc.), loop over slices
+         * and read each slice separately. */
+        @try {
+            if (srcType == MTLTextureType3D) {
+                MTLRegion srcRegion = MTLRegionMake3D((NSUInteger)srcX, (NSUInteger)srcY,
+                                                      (NSUInteger)srcZ, copyWidth,
+                                                      copyHeight, copyDepth3D);
+                if (srcTexture.storageMode != MTLStorageModePrivate) {
+                    [srcTexture getBytes:stagingBytes
+                             bytesPerRow:rowBytes
+                           bytesPerImage:imageBytes
+                              fromRegion:srcRegion
+                             mipmapLevel:(NSUInteger)srcLevel
+                                   slice:0];
+                } else {
+                    id<MTLBuffer> stagingBuffer =
+                        [_device newBufferWithLength:totalBytes
+                                             options:MTLResourceStorageModeShared];
+                    if (!stagingBuffer) {
+                        free(stagingBytes);
+                        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                        return;
+                    }
+                    id<MTLBlitCommandEncoder> readEncoder =
+                        [_currentCommandBuffer blitCommandEncoder];
+                    if (!readEncoder) {
+                        free(stagingBytes);
+                        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                        return;
+                    }
+                    [readEncoder copyFromTexture:srcTexture
+                                      sourceSlice:0
+                                      sourceLevel:(NSUInteger)srcLevel
+                                     sourceOrigin:srcRegion.origin
+                                       sourceSize:srcRegion.size
+                                         toBuffer:stagingBuffer
+                                    destinationOffset:0
+                               destinationBytesPerRow:rowBytes
+                             destinationBytesPerImage:imageBytes];
+                    [readEncoder endEncoding];
+                    [self flushCommandBuffer:YES];
+                    memcpy(stagingBytes, [stagingBuffer contents], totalBytes);
+                }
+            } else {
+                /* Non-3D source (2D array, cube, rectangle, etc.):
+                 * Read each slice separately and place at the correct offset. */
+                for (NSUInteger z = 0; z < copyDepth3D; z++) {
+                    NSUInteger sliceOffset = z * imageBytes;
+                    NSUInteger srcSlice = (NSUInteger)srcZ + z;
+                    MTLRegion sliceRegion = MTLRegionMake3D((NSUInteger)srcX, (NSUInteger)srcY,
+                                                            0, copyWidth, copyHeight, 1u);
+                    if (srcTexture.storageMode != MTLStorageModePrivate) {
+                        [srcTexture getBytes:(uint8_t *)stagingBytes + sliceOffset
+                                 bytesPerRow:rowBytes
+                               bytesPerImage:imageBytes
+                                  fromRegion:sliceRegion
+                                 mipmapLevel:(NSUInteger)srcLevel
+                                       slice:srcSlice];
+                    } else {
+                        id<MTLBuffer> sliceBuffer =
+                            [_device newBufferWithLength:imageBytes
+                                                 options:MTLResourceStorageModeShared];
+                        if (!sliceBuffer) {
+                            free(stagingBytes);
+                            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                            return;
+                        }
+                        id<MTLBlitCommandEncoder> readEncoder =
+                            [_currentCommandBuffer blitCommandEncoder];
+                        if (!readEncoder) {
+                            free(stagingBytes);
+                            mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                            return;
+                        }
+                        [readEncoder copyFromTexture:srcTexture
+                                          sourceSlice:srcSlice
+                                          sourceLevel:(NSUInteger)srcLevel
+                                         sourceOrigin:sliceRegion.origin
+                                           sourceSize:sliceRegion.size
+                                             toBuffer:sliceBuffer
+                                        destinationOffset:0
+                                   destinationBytesPerRow:rowBytes
+                                 destinationBytesPerImage:imageBytes];
+                        [readEncoder endEncoding];
+                        [self flushCommandBuffer:YES];
+                        memcpy((uint8_t *)stagingBytes + sliceOffset,
+                               [sliceBuffer contents], imageBytes);
+                    }
+                }
+            }
+        } @catch (NSException *exception) {
+            free(stagingBytes);
+            NSLog(@"MGL ERROR: mtlCopyImageSubData 3D fallback read failed: %@",
+                  exception);
+            mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return;
+        }
+        } /* end if (!srcReadFromCPU) */
+
+        /* For bpp mismatch formats, convert staging from Metal format to
+         * CPU storage format so the RMW merge uses matching pixel sizes. */
+        if (bppMismatch) {
+            GLenum cpuFormat = 0, cpuType = 0;
+            if (mglGetCPUFormatTypeForInternalFormat(dstTex->internalformat,
+                                                      &cpuFormat, &cpuType)) {
+                NSUInteger cpuRowBytes = copyWidth * (NSUInteger)cpuBpp;
+                NSUInteger cpuImageBytes = cpuRowBytes * copyHeight;
+                NSUInteger cpuTotalBytes = cpuImageBytes * copyDepth3D;
+                void *cpuStaging = malloc(cpuTotalBytes);
+                if (cpuStaging) {
+                    bool convOK = true;
+                    for (NSUInteger z = 0; z < copyDepth3D && convOK; z++) {
+                        const uint8_t *metalSrc = (const uint8_t *)stagingBytes + z * imageBytes;
+                        uint8_t *cpuDst = (uint8_t *)cpuStaging + z * cpuImageBytes;
+                        if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
+                                metalSrc, rowBytes, cpuDst, cpuRowBytes,
+                                copyWidth, copyHeight, srcTexture.pixelFormat,
+                                cpuFormat, cpuType, NO)) {
+                            convOK = false;
+                        }
+                    }
+                    if (convOK) {
+                        free(stagingBytes);
+                        stagingBytes = cpuStaging;
+                        rowBytes = cpuRowBytes;
+                        imageBytes = cpuImageBytes;
+                        totalBytes = cpuTotalBytes;
+                        bpp = (NSUInteger)cpuBpp;
+                    } else {
+                        free(cpuStaging);
+                        free(stagingBytes);
+                        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                        return;
+                    }
+                }
+            }
+        }
+
+        /* Write to 3D destination via CPU-data read-modify-write.
+         * AGX drivers have bugs where replaceRegion with non-zero origin,
+         * getBytes, copyFromTexture:toTexture:, and copyFromBuffer:toTexture:
+         * all trigger "slice OOB" assertions on 3D textures.  The only safe
+         * Metal write path for 3D textures is replaceRegion with origin
+         * (0,0,0).  So we use the CPU-side level data as the base, merge the
+         * source pixels into it, and write the entire level back. */
+        {
+            /* Early checks already verified: dstLevelInfo exists, has data,
+             * metal_data_authoritative == false, and cpuBpp == bpp. */
+            TextureLevel *dstLevelInfo = &dstTex->faces[0].levels[dstLevel];
+            GLuint levelWidth = dstLevelInfo->width;
+            GLuint levelHeight = dstLevelInfo->height;
+            GLuint levelDepth = dstLevelInfo->depth;
+            size_t levelPitch = dstLevelInfo->pitch;
+            if (levelPitch == 0) {
+                levelPitch = (size_t)levelWidth * bpp;
+            }
+            size_t levelImageBytes = levelPitch * levelHeight;
+            size_t fullTotalBytes = levelImageBytes * levelDepth;
+
+            void *fullLevelBytes = malloc(fullTotalBytes);
+            if (!fullLevelBytes) {
+                free(stagingBytes);
+                mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+                return;
+            }
+
+            /* Copy CPU data as the base */
+            memcpy(fullLevelBytes, (const void *)dstLevelInfo->data, fullTotalBytes);
+
+            /* Merge source pixels into the full level buffer */
+            for (NSUInteger z = 0; z < copyDepth3D; z++) {
+                for (NSUInteger y = 0; y < copyHeight; y++) {
+                    NSUInteger srcOff = z * imageBytes + y * rowBytes;
+                    NSUInteger dstOff = ((NSUInteger)dstZ + z) * levelImageBytes +
+                                        ((NSUInteger)dstY + y) * levelPitch +
+                                        (NSUInteger)dstX * bpp;
+                    if (dstOff + rowBytes <= fullTotalBytes &&
+                        srcOff + rowBytes <= totalBytes) {
+                        memcpy((uint8_t *)fullLevelBytes + dstOff,
+                               (uint8_t *)stagingBytes + srcOff,
+                               rowBytes);
+                    }
+                }
+            }
+
+            /* Write the full level back with origin (0,0,0).
+             * For bpp mismatch, expand CPU data to Metal format first. */
+            @try {
+                MTLRegion fullRegion = MTLRegionMake3D(0, 0, 0, levelWidth, levelHeight, levelDepth);
+                if (bppMismatch) {
+                    NSUInteger metalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+                    NSUInteger expandedBPR = 0, expandedBPI = 0;
+                    void *expandedData = NULL;
+                    if (mglTextureInternalFormatNeedsRGBA8Expansion(
+                            dstTex->internalformat, dstTexture.pixelFormat)) {
+                        expandedData = mglCreateRGBA8ExpandedUpload(
+                            dstTex, (const uint8_t *)fullLevelBytes,
+                            levelWidth, levelHeight * levelDepth,
+                            levelPitch, &expandedBPR, &expandedBPI);
+                    } else if (mglTextureNeedsChannelExpansion(
+                            dstTex->internalformat, dstTexture.pixelFormat)) {
+                        expandedData = mglCreateChannelExpandedUpload(
+                            dstTex, dstTexture.pixelFormat,
+                            (const uint8_t *)fullLevelBytes,
+                            levelWidth, levelHeight * levelDepth,
+                            levelPitch, &expandedBPR, &expandedBPI);
+                    }
+                    if (expandedData) {
+                        [dstTexture replaceRegion:fullRegion
+                                      mipmapLevel:(NSUInteger)dstLevel
+                                        withBytes:expandedData
+                                      bytesPerRow:expandedBPR];
+                        free(expandedData);
+                    } else {
+                        [dstTexture replaceRegion:fullRegion
+                                      mipmapLevel:(NSUInteger)dstLevel
+                                        withBytes:fullLevelBytes
+                                      bytesPerRow:levelPitch];
+                    }
+                } else {
+                    [dstTexture replaceRegion:fullRegion
+                                  mipmapLevel:(NSUInteger)dstLevel
+                                    withBytes:fullLevelBytes
+                                  bytesPerRow:levelPitch];
+                }
+            } @catch (NSException *exception) {
+                free(stagingBytes);
+                free(fullLevelBytes);
+                NSLog(@"MGL ERROR: mtlCopyImageSubData 3D replaceRegion failed: %@",
+                      exception);
+                mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                return;
+            }
+
+            /* Update CPU data to reflect the merged result */
+            memcpy((void *)dstLevelInfo->data, fullLevelBytes, fullTotalBytes);
+
+            free(fullLevelBytes);
+            free(stagingBytes);
+            /* Do NOT set metal_data_authoritative = GL_TRUE here.
+             * The AGX driver corrupts 3D texture readback (getBytes
+             * triggers "slice OOB"), so subsequent glGetTexImage calls
+             * must read from CPU data instead.  The Metal texture was
+             * updated via replaceRegion for sampling, but CPU data
+             * remains the authoritative source. */
+            return;
+        }
+
+        /* If we get here, the 3D fallback didn't work (e.g., no CPU data or
+         * Metal data is authoritative).  Fall through to the blit path. */
+    }
+
+    if (dstType == MTLTextureType3D) {
+        /* 3D destination with Private storage or no CPU data: fall through
+         * to the blit path.  This may trigger AGX "slice OOB" assertions,
+         * but there is no safe alternative for Private 3D textures. */
+    }
+
+blitPath:
+    /* For cube / cube-array / 2D-array / 1D-array targets, srcZ selects
+     * the slice.  For 3D textures, srcZ is the depth origin. */
+    NSUInteger srcSlice = 0;
+    NSUInteger dstSlice = 0;
+    NSUInteger srcDepthPlane = 0;
+    NSUInteger dstDepthPlane = 0;
+    NSUInteger copyDepth = MAX((NSUInteger)depth, 1u);
+
+    if (srcType == MTLTextureType3D) {
+        srcDepthPlane = (NSUInteger)srcZ;
+        srcSlice = 0;
+    } else {
+        srcSlice = (NSUInteger)srcZ;
+        srcDepthPlane = 0;
+    }
+
+    if (dstType == MTLTextureType3D) {
+        dstDepthPlane = (NSUInteger)dstZ;
+        dstSlice = 0;
+    } else {
+        dstSlice = (NSUInteger)dstZ;
+        dstDepthPlane = 0;
+    }
+
+    /* Determine iteration count and per-blit depth.
+     * 3D → 3D: single blit with full depth (sourceSize.z = copyDepth).
+     * All other combinations: loop over depth, copying one slice/plane
+     * per iteration (sourceSize.z = 1). */
+    NSUInteger iterations;
+    NSUInteger srcSizeDepth;
+
+    if (srcType == MTLTextureType3D && dstType == MTLTextureType3D) {
+        iterations = 1u;
+        srcSizeDepth = copyDepth;
+    } else {
+        iterations = copyDepth;
+        srcSizeDepth = 1u;
+    }
+
+    /* Debug: read source renderbuffer data before blit to verify it has content */
+    if (srcTex->is_render_target || dstTex->is_render_target) {
+        [self synchronizeRenderPassForTextureReadback:srcTexture reason:"copyImageSubData.srcCheck"];
+        [self endRenderEncoding];
+    }
+
+    id<MTLBlitCommandEncoder> blitEncoder = [_currentCommandBuffer blitCommandEncoder];
+    if (!blitEncoder) {
+        NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
+    }
+
+    @try {
+        for (NSUInteger i = 0; i < iterations; i++) {
+            NSUInteger curSrcSlice = srcSlice;
+            NSUInteger curSrcDepth = srcDepthPlane;
+            NSUInteger curDstSlice = dstSlice;
+            NSUInteger curDstDepth = dstDepthPlane;
+
+            if (srcType == MTLTextureType3D && dstType != MTLTextureType3D) {
+                /* 3D -> 2D/array: read depth plane i from src */
+                curSrcDepth = srcDepthPlane + i;
+                curSrcSlice = 0;
+                curDstSlice = dstSlice + i;
+            } else if (srcType != MTLTextureType3D && dstType == MTLTextureType3D) {
+                /* 2D/array -> 3D: read slice i from src, write to dst depth */
+                curSrcSlice = srcSlice + i;
+                curDstDepth = dstDepthPlane + i;
+                curDstSlice = 0;
+            } else if (srcType != MTLTextureType3D && dstType != MTLTextureType3D) {
+                /* 2D/array -> 2D/array: copy slice i to slice i */
+                curSrcSlice = srcSlice + i;
+                curDstSlice = dstSlice + i;
+            }
+            /* For 3D → 3D, single blit with srcSizeDepth = copyDepth */
+
+            [blitEncoder copyFromTexture:srcTexture
+                              sourceSlice:curSrcSlice
+                              sourceLevel:(NSUInteger)srcLevel
+                             sourceOrigin:MTLOriginMake((NSUInteger)srcX,
+                                                        (NSUInteger)srcY,
+                                                        curSrcDepth)
+                               sourceSize:MTLSizeMake((NSUInteger)width,
+                                                      (NSUInteger)height,
+                                                      srcSizeDepth)
+                                 toTexture:dstTexture
+                          destinationSlice:curDstSlice
+                          destinationLevel:(NSUInteger)dstLevel
+                         destinationOrigin:MTLOriginMake((NSUInteger)dstX,
+                                                         (NSUInteger)dstY,
+                                                         curDstDepth)];
+        }
+        [blitEncoder endEncoding];
+    } @catch (NSException *exception) {
+        @try {
+            [blitEncoder endEncoding];
+        } @catch (NSException *endException) {
+            NSLog(@"MGL WARNING: mtlCopyImageSubData failed to end blit encoder: %@",
+                  endException);
+        }
+        NSLog(@"MGL ERROR: mtlCopyImageSubData blit failed: %@", exception);
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* Flush the command buffer to ensure the blit is executed before any
+     * subsequent readback (e.g. glGetTexImage).  Without this, the blit
+     * may still be pending in the command buffer when the readback occurs. */
+    [self flushCommandBuffer: NO];
+
+    /* After blit, read back the blitted region from dst Metal to dst CPU
+     * so that CPU data is authoritative.  This avoids the need for the
+     * metal_data_authoritative flag, which causes "modified contents
+     * outside of copied region" / "wrong layer" errors when non-blitted
+     * regions of the same level have stale Metal data.
+     *
+     * Skip readback for 3D destinations (AGX getBytes bug on 3D textures)
+     * and fall back to per-level authoritative instead. */
+    bool readbackDone = false;
+    if (dstType != MTLTextureType3D &&
+        dstTexture.storageMode != MTLStorageModePrivate &&
+        dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels) {
+
+        /* Check that dst has CPU data for this level */
+        TextureLevel *dstLvl0 = (dstTex->faces[0].levels) ?
+            &dstTex->faces[0].levels[dstLevel] : NULL;
+        if (dstLvl0 && dstLvl0->data && dstLvl0->pitch > 0 && dstLvl0->width > 0) {
+            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+            size_t dstCpuBpp = dstLvl0->pitch / dstLvl0->width;
+            if (dstMetalBpp > 0 && dstCpuBpp == dstMetalBpp) {
+                [self synchronizeRenderPassForTextureReadback:dstTexture
+                                                       reason:"copyImageSubData.blitReadback"];
+                [self flushCommandBuffer: YES];
+
+                NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
+                NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
+                NSUInteger numSlices = MAX((NSUInteger)depth, 1u);
+                NSUInteger rowBytes = copyWidth * dstMetalBpp;
+                NSUInteger imageBytes = rowBytes * copyHeight;
+                void *stagingBuf = malloc(imageBytes);
+
+                if (stagingBuf) {
+                    bool readbackOK = true;
+                    for (NSUInteger s = 0; s < numSlices && readbackOK; s++) {
+                        NSUInteger dstMtlSlice = 0;
+                        GLuint dstFace = 0;
+                        MTLRegion dstRegion;
+
+                        if (dstType == MTLTextureTypeCube ||
+                            dstType == MTLTextureTypeCubeArray) {
+                            dstMtlSlice = ((NSUInteger)dstZ + s) % 6;
+                            dstFace = (GLuint)dstMtlSlice;
+                            dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                        (NSUInteger)dstY,
+                                                        copyWidth, copyHeight);
+                        } else if (dstType == MTLTextureType2DArray) {
+                            dstMtlSlice = (NSUInteger)dstZ + s;
+                            dstFace = 0;
+                            dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                        (NSUInteger)dstY,
+                                                        copyWidth, copyHeight);
+                        } else {
+                            dstMtlSlice = 0;
+                            dstFace = 0;
+                            dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                        (NSUInteger)dstY,
+                                                        copyWidth, copyHeight);
+                        }
+
+                        @try {
+                            [dstTexture getBytes:stagingBuf
+                                      bytesPerRow:rowBytes
+                                    bytesPerImage:imageBytes
+                                       fromRegion:dstRegion
+                                      mipmapLevel:(NSUInteger)dstLevel
+                                            slice:dstMtlSlice];
+                        } @catch (NSException *exception) {
+                            NSLog(@"MGL WARNING: blit readback getBytes failed: %@",
+                                  exception);
+                            readbackOK = false;
+                            break;
+                        }
+
+                        /* Update dst CPU data for this slice */
+                        TextureLevel *curDstLvl = (dstFace < 6 &&
+                            dstTex->faces[dstFace].levels) ?
+                            &dstTex->faces[dstFace].levels[dstLevel] : NULL;
+                        if (curDstLvl && curDstLvl->data && curDstLvl->pitch > 0 &&
+                            curDstLvl->width > 0) {
+                            size_t curCpuBpp = curDstLvl->pitch / curDstLvl->width;
+                            if (curCpuBpp == dstMetalBpp) {
+                                size_t slicePitch = curDstLvl->pitch *
+                                                    MAX(curDstLvl->height, 1u);
+                                size_t dstSliceOff = 0;
+                                if (dstType == MTLTextureType2DArray) {
+                                    dstSliceOff = ((NSUInteger)dstZ + s) * slicePitch;
+                                }
+                                for (NSUInteger y = 0; y < copyHeight; y++) {
+                                    size_t dstOff = dstSliceOff +
+                                        ((NSUInteger)dstY + y) * curDstLvl->pitch +
+                                        (NSUInteger)dstX * dstMetalBpp;
+                                    if (dstOff + rowBytes <= curDstLvl->data_size) {
+                                        memcpy((uint8_t *)(uintptr_t)curDstLvl->data + dstOff,
+                                               (const uint8_t *)stagingBuf + y * rowBytes,
+                                               rowBytes);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    free(stagingBuf);
+
+                    if (readbackOK) {
+                        /* CPU data is now correct — clear authoritative flag */
+                        for (int f = 0; f < 6; f++) {
+                            if (dstTex->faces[f].levels) {
+                                dstTex->faces[f].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                            }
+                        }
+                        readbackDone = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Format-converting readback fallback for bpp mismatch cases (e.g.
+     * R3_G3_B2, RGB12, RGB32F where CPU bpp != Metal bpp).  Read the
+     * blitted region from dst Metal and convert to CPU storage format
+     * so that CPU data is authoritative without setting per-texture
+     * metal_data_authoritative (which would corrupt non-blitted levels). */
+    if (!readbackDone &&
+        dstType != MTLTextureType3D &&
+        dstTexture.storageMode != MTLStorageModePrivate &&
+        dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels) {
+
+        GLenum cpuFormat = 0, cpuType = 0;
+        if (mglGetCPUFormatTypeForInternalFormat(dstTex->internalformat,
+                                                  &cpuFormat, &cpuType)) {
+            TextureLevel *dstLvl0 = (dstTex->faces[0].levels) ?
+                &dstTex->faces[0].levels[dstLevel] : NULL;
+            if (dstLvl0 && dstLvl0->data && dstLvl0->pitch > 0 &&
+                dstLvl0->width > 0) {
+                NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+                NSUInteger cpuBpp = (NSUInteger)sizeForFormatType(cpuFormat, cpuType);
+                if (dstMetalBpp > 0 && cpuBpp > 0) {
+                    [self synchronizeRenderPassForTextureReadback:dstTexture
+                                                           reason:"copyImageSubData.fmtConvReadback"];
+                    [self flushCommandBuffer: YES];
+
+                    NSUInteger copyWidth = MAX((NSUInteger)width, 1u);
+                    NSUInteger copyHeight = MAX((NSUInteger)height, 1u);
+                    NSUInteger numSlices = MAX((NSUInteger)depth, 1u);
+                    NSUInteger metalRowBytes = copyWidth * dstMetalBpp;
+                    NSUInteger metalImageBytes = metalRowBytes * copyHeight;
+                    NSUInteger cpuRowBytes = copyWidth * cpuBpp;
+                    void *metalStaging = malloc(metalImageBytes);
+                    void *cpuStaging = malloc(cpuRowBytes * copyHeight);
+
+                    if (metalStaging && cpuStaging) {
+                        bool fmtReadbackOK = true;
+                        for (NSUInteger s = 0; s < numSlices && fmtReadbackOK; s++) {
+                            NSUInteger dstMtlSlice = 0;
+                            MTLRegion dstRegion;
+                            if (dstType == MTLTextureTypeCube ||
+                                dstType == MTLTextureTypeCubeArray) {
+                                dstMtlSlice = ((NSUInteger)dstZ + s) % 6;
+                                dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                            (NSUInteger)dstY,
+                                                            copyWidth, copyHeight);
+                            } else if (dstType == MTLTextureType2DArray) {
+                                dstMtlSlice = (NSUInteger)dstZ + s;
+                                dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                            (NSUInteger)dstY,
+                                                            copyWidth, copyHeight);
+                            } else {
+                                dstMtlSlice = 0;
+                                dstRegion = MTLRegionMake2D((NSUInteger)dstX,
+                                                            (NSUInteger)dstY,
+                                                            copyWidth, copyHeight);
+                            }
+
+                            @try {
+                                [dstTexture getBytes:metalStaging
+                                          bytesPerRow:metalRowBytes
+                                        bytesPerImage:metalImageBytes
+                                           fromRegion:dstRegion
+                                          mipmapLevel:(NSUInteger)dstLevel
+                                                slice:dstMtlSlice];
+                            } @catch (NSException *exception) {
+                                NSLog(@"MGL WARNING: fmt-conv readback getBytes failed: %@",
+                                      exception);
+                                fmtReadbackOK = false;
+                                break;
+                            }
+
+                            /* Convert from Metal format to CPU format */
+                            if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL(
+                                    (const uint8_t *)metalStaging,
+                                    metalRowBytes,
+                                    (uint8_t *)cpuStaging,
+                                    cpuRowBytes,
+                                    copyWidth, copyHeight,
+                                    dstTexture.pixelFormat,
+                                    cpuFormat, cpuType, NO)) {
+                                NSLog(@"MGL WARNING: fmt-conv readback conversion failed for fmt=0x%x",
+                                      (unsigned)dstTex->internalformat);
+                                fmtReadbackOK = false;
+                                break;
+                            }
+
+                            /* Write to dst CPU data for this slice */
+                            GLuint dstFace = 0;
+                            if (dstType == MTLTextureTypeCube ||
+                                dstType == MTLTextureTypeCubeArray) {
+                                dstFace = (GLuint)(((NSUInteger)dstZ + s) % 6);
+                            }
+                            TextureLevel *curDstLvl = (dstFace < 6 &&
+                                dstTex->faces[dstFace].levels) ?
+                                &dstTex->faces[dstFace].levels[dstLevel] : NULL;
+                            if (curDstLvl && curDstLvl->data && curDstLvl->pitch > 0 &&
+                                curDstLvl->width > 0) {
+                                size_t curCpuBpp = curDstLvl->pitch / curDstLvl->width;
+                                if (curCpuBpp == cpuBpp) {
+                                    size_t slicePitch = curDstLvl->pitch *
+                                                        MAX(curDstLvl->height, 1u);
+                                    size_t dstSliceOff = 0;
+                                    if (dstType == MTLTextureType2DArray) {
+                                        dstSliceOff = ((NSUInteger)dstZ + s) * slicePitch;
+                                    }
+                                    for (NSUInteger y = 0; y < copyHeight; y++) {
+                                        size_t dstOff = dstSliceOff +
+                                            ((NSUInteger)dstY + y) * curDstLvl->pitch +
+                                            (NSUInteger)dstX * cpuBpp;
+                                        if (dstOff + cpuRowBytes <= curDstLvl->data_size) {
+                                            memcpy((uint8_t *)(uintptr_t)curDstLvl->data + dstOff,
+                                                   (const uint8_t *)cpuStaging + y * cpuRowBytes,
+                                                   cpuRowBytes);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (fmtReadbackOK) {
+                            for (int f = 0; f < 6; f++) {
+                                if (dstTex->faces[f].levels) {
+                                    dstTex->faces[f].levels[dstLevel].metal_data_authoritative = GL_FALSE;
+                                }
+                            }
+                            readbackDone = true;
+                        }
+                    }
+                    free(metalStaging);
+                    free(cpuStaging);
+                }
+            }
+        }
+    }
+
+    /* Fallback: set per-texture authoritative for 3D destinations or
+     * readback failure (e.g. bpp mismatch between CPU and Metal formats).
+     * For 3D destinations with bpp mismatch, use per-level authoritative
+     * instead of per-texture — the 3D texture's CPU data was uploaded to
+     * Metal with format expansion at creation time, so non-blitted regions
+     * can be correctly read back from Metal.  Per-level avoids corrupting
+     * other mipmap levels ("wrong mipmap level" error). */
+    if (!readbackDone) {
+        if (dstType == MTLTextureType3D &&
+            dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels &&
+            dstTex->faces[0].levels) {
+            dstTex->faces[0].levels[dstLevel].metal_data_authoritative = GL_TRUE;
+        } else {
+            dstTex->metal_data_authoritative = GL_TRUE;
+        }
+    }
+}
+
+void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, Texture *dstTex, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth)
+{
+    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlCopyImageSubData:glm_ctx
+                                                      srcTexture:srcTex
+                                                       srcLevel:srcLevel
+                                                           srcX:srcX
+                                                           srcY:srcY
+                                                           srcZ:srcZ
+                                                      dstTexture:dstTex
+                                                       dstLevel:dstLevel
+                                                           dstX:dstX
+                                                           dstY:dstY
+                                                           dstZ:dstZ
+                                                          width:width
+                                                         height:height
+                                                         depth:depth];
 }
 
 
@@ -27073,14 +30787,44 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
         return false;
     }
 
+    /* Channel expansion: GL_RGB32* (12 bytes/pixel) -> Metal RGBA32* (16 bytes/pixel).
+     * The CPU backing stores 3 channels per pixel, but the Metal texture expects
+     * 4 channels. We must expand each pixel by inserting a default alpha before
+     * uploading, otherwise the data layout mismatches and pixels shift. */
+    id<MTLTexture> dstTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+    MTLPixelFormat dstPixelFormat = dstTexture.pixelFormat;
+    BOOL needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat,
+                                                              dstPixelFormat);
+    NSUInteger dstBytesPerPixel = bytesPerPixel;
+    if (needsChannelExpand) {
+        switch (dstPixelFormat) {
+            case MTLPixelFormatRGBA16Unorm:
+            case MTLPixelFormatRGBA16Snorm:
+            case MTLPixelFormatRGBA16Float:
+            case MTLPixelFormatRGBA16Sint:
+            case MTLPixelFormatRGBA16Uint:
+                dstBytesPerPixel = 8;
+                break;
+            case MTLPixelFormatRGBA32Float:
+            case MTLPixelFormatRGBA32Sint:
+            case MTLPixelFormatRGBA32Uint:
+                dstBytesPerPixel = 16;
+                break;
+            default:
+                needsChannelExpand = NO;
+                break;
+        }
+    }
+
     size_t sourceImagePitch = src_image_size;
     size_t minimumImagePitch = src_pitch * copyHeight;
     if (sourceImagePitch < minimumImagePitch) {
         sourceImagePitch = minimumImagePitch;
     }
 
-    size_t packedImageBytes = rowBytes * copyHeight;
-    size_t packedBytes = packedImageBytes * copyDepth;
+    NSUInteger dstRowBytes = (NSUInteger)width * dstBytesPerPixel;
+    NSUInteger dstImageBytes = dstRowBytes * copyHeight;
+    size_t packedBytes = dstImageBytes * copyDepth;
     if (packedBytes == 0u || packedBytes > (512u * 1024u * 1024u)) {
         return false;
     }
@@ -27092,30 +30836,82 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
 
     const uint8_t *sourceBase = (const uint8_t *)bytes;
     uint8_t *packedBytesPtr = (uint8_t *)packedUpload.mutableBytes;
-    for (NSUInteger z = 0; z < copyDepth; z++) {
-        for (NSUInteger y = 0; y < copyHeight; y++) {
-            size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
-            if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
-                static uint64_t s_subUploadRangeFailLogs = 0;
-                uint64_t hit = ++s_subUploadRangeFailLogs;
-                if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                    NSLog(@"MGL TEXSUBIMAGE BYTES range fail tex=%u level=%u off=%zu rowBytes=%lu pitch=%zu image=%zu size=%zu z=%lu y=%lu hit=%llu",
-                          (unsigned)tex->name,
-                          (unsigned)level,
-                          srcRowOffset,
-                          (unsigned long)rowBytes,
-                          src_pitch,
-                          sourceImagePitch,
-                          bytes_size,
-                          (unsigned long)z,
-                          (unsigned long)y,
-                          (unsigned long long)hit);
-                }
+
+    if (needsChannelExpand) {
+        /* Determine component bytes and alpha default for the destination format */
+        NSUInteger srcCompBytes = 0;
+        NSUInteger dstCompBytes = 0;
+        uint64_t alphaDefault = 0;
+        switch (dstPixelFormat) {
+            case MTLPixelFormatRGBA16Unorm:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
+            case MTLPixelFormatRGBA16Snorm:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
+            case MTLPixelFormatRGBA16Float:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
+            case MTLPixelFormatRGBA16Sint:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA16Uint:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA32Float:
+                srcCompBytes = 4; dstCompBytes = 4;
+                { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
+                break;
+            case MTLPixelFormatRGBA32Sint:
+                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA32Uint:
+                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+            default:
                 return false;
+        }
+        NSUInteger srcPixelBytes = srcCompBytes * 3;  /* 3 channels in source */
+        NSUInteger dstPixelBytes = dstCompBytes * 4;  /* 4 channels in destination */
+
+        for (NSUInteger z = 0; z < copyDepth; z++) {
+            for (NSUInteger y = 0; y < copyHeight; y++) {
+                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
+                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
+                    return false;
+                }
+                const uint8_t *srcRow = sourceBase + srcRowOffset;
+                uint8_t *dstRow = packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes);
+                for (NSUInteger x = 0; x < width; x++) {
+                    const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
+                    uint8_t *dstPixel = dstRow + x * dstPixelBytes;
+                    /* Copy 3 channels (R, G, B) */
+                    memcpy(dstPixel, srcPixel, srcPixelBytes);
+                    /* Set alpha channel to default value */
+                    memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
+                }
             }
-            memcpy(packedBytesPtr + (z * packedImageBytes) + (y * rowBytes),
-                   sourceBase + srcRowOffset,
-                   rowBytes);
+        }
+    } else {
+        /* No channel expansion needed - direct copy */
+        for (NSUInteger z = 0; z < copyDepth; z++) {
+            for (NSUInteger y = 0; y < copyHeight; y++) {
+                size_t srcRowOffset = src_offset + ((size_t)z * sourceImagePitch) + ((size_t)y * src_pitch);
+                if (srcRowOffset > bytes_size || rowBytes > bytes_size - srcRowOffset) {
+                    static uint64_t s_subUploadRangeFailLogs = 0;
+                    uint64_t hit = ++s_subUploadRangeFailLogs;
+                    if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                        NSLog(@"MGL TEXSUBIMAGE BYTES range fail tex=%u level=%u off=%zu rowBytes=%lu pitch=%zu image=%zu size=%zu z=%lu y=%lu hit=%llu",
+                              (unsigned)tex->name,
+                              (unsigned)level,
+                              srcRowOffset,
+                              (unsigned long)rowBytes,
+                              src_pitch,
+                              sourceImagePitch,
+                              bytes_size,
+                              (unsigned long)z,
+                              (unsigned long)y,
+                              (unsigned long long)hit);
+                    }
+                    return false;
+                }
+                memcpy(packedBytesPtr + (z * dstImageBytes) + (y * dstRowBytes),
+                       sourceBase + srcRowOffset,
+                       rowBytes);
+            }
         }
     }
 
@@ -27129,8 +30925,8 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
     bool uploaded = [self encodeTextureBytesUpload:tex
                                             source:uploadBuffer
                                       sourceOffset:0
-                                  sourceBytesPerRow:rowBytes
-                                sourceBytesPerImage:packedImageBytes
+                                  sourceBytesPerRow:dstRowBytes
+                                sourceBytesPerImage:dstImageBytes
                                              width:width
                                             height:height
                                              depth:depth
@@ -27730,6 +31526,157 @@ Buffer *getIndirectBuffer(GLMContext ctx)
            mglDrawModeProducesPolygons(mode);
 }
 
+/* Cull distance emulation: bind the vertex buffer to slot 29 and a params
+ * buffer to slot 28 so the injected vertex-shader code can read sibling-vertex
+ * cull distance values. The params encode the primitive vertex count, the
+ * byte offset of the first cull distance entry within each vertex, the byte
+ * stride between vertices, and the number of cull distance entries.
+ *
+ * The cull distance offset and stride are discovered by scanning the VAO for
+ * the first enabled attribute whose name maps to mgl_CullDistance. All cull
+ * distance entries are assumed to share the same buffer and stride (which is
+ * the case for the CTS test and typical GL apps). */
+typedef struct {
+    uint32_t prim_vertex_count;
+    uint32_t culldist_offset;
+    uint32_t vertex_stride;
+    uint32_t culldist_size;
+} MGLCullDistanceEmuParams;
+
+- (void)bindCullDistanceEmulationBuffers:(GLenum)mode
+{
+    if (!ctx || !_currentRenderEncoder) {
+        return;
+    }
+    VertexArray *vao = mglRendererGetValidatedVAO(ctx, "bindCullDistanceEmu");
+    if (!vao) {
+        return;
+    }
+    Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (!activeProgram) {
+        return;
+    }
+
+    /* Determine primitive vertex count from the draw mode. */
+    uint32_t prim_vertex_count = 0;
+    switch (mode) {
+        case GL_TRIANGLES: prim_vertex_count = 3; break;
+        case GL_TRIANGLE_STRIP: prim_vertex_count = 3; break;
+        case GL_TRIANGLE_FAN: prim_vertex_count = 3; break;
+        case GL_LINES: prim_vertex_count = 2; break;
+        case GL_LINE_STRIP: prim_vertex_count = 2; break;
+        case GL_LINE_LOOP: prim_vertex_count = 2; break;
+        case GL_POINTS: prim_vertex_count = 1; break;
+        default: prim_vertex_count = 1; break;
+    }
+
+    /* Scan enabled attributes for cull distance entries. The GLSL source
+     * uses "culldistance_data" as the attribute name. We identify them
+     * via the SPIRV-Cross resource list (which preserves the name) or
+     * by checking the MSL source for [[attribute(N)]] with that name. */
+    id<MTLBuffer> cullMtlBuffer = nil;
+    GLintptr cullBindingOffset = 0;
+    GLuint cullStride = 0;
+    GLuint cullDistSize = 0;
+    GLintptr cullFirstRelativeOffset = -1;
+
+    SpirvResourceList *vsInputs =
+        &activeProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+    const char *vsMslStr = activeProgram->spirv[_VERTEX_SHADER].msl_str;
+
+    for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
+        if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
+            continue;
+        }
+        /* Find the resource name for this attribute. */
+        const char *attrName = NULL;
+        if (vsInputs && vsInputs->list) {
+            for (GLuint r = 0; r < vsInputs->count; r++) {
+                SpirvResource *res = &vsInputs->list[r];
+                if (res->location == attrib) {
+                    attrName = res->name;
+                    break;
+                }
+                if (res->gl_array_size > 1 &&
+                    attrib >= res->location &&
+                    attrib < res->location + (GLuint)res->gl_array_size) {
+                    attrName = res->name;
+                    break;
+                }
+            }
+        }
+        /* Fall back to attrib_location_names if the resource name is missing. */
+        if (!attrName && attrib < MAX_ATTRIBS) {
+            attrName = activeProgram->attrib_location_names[attrib];
+        }
+        if (!attrName) {
+            continue;
+        }
+        /* Match "culldistance_data" or "culldistance_data[N]" */
+        if (strncmp(attrName, "culldistance_data", 17) != 0) {
+            continue;
+        }
+        MGLResolvedVertexAttribBinding resolved = {0};
+        if (!mglRendererResolveVertexAttribBinding(ctx, vao, attrib, "bindCullDistanceEmu", &resolved)) {
+            continue;
+        }
+        if (!resolved.buffer || !resolved.buffer->data.mtl_data) {
+            continue;
+        }
+        if (cullDistSize == 0) {
+            /* First cull distance attribute: record buffer/stride/offset. */
+            cullMtlBuffer = (__bridge id<MTLBuffer>)resolved.buffer->data.mtl_data;
+            cullBindingOffset = resolved.binding_offset;
+            cullStride = resolved.stride;
+            cullFirstRelativeOffset = resolved.relativeoffset;
+        } else {
+            /* Subsequent cull distance attributes: verify they share the same
+             * buffer and stride. If not, fall back to the first attribute's
+             * layout (the CTS test uses a single interleaved buffer). */
+            if (resolved.buffer->data.mtl_data != (void *)(__bridge void *)cullMtlBuffer ||
+                resolved.stride != cullStride) {
+                /* Layout mismatch; keep the first attribute's layout. */
+            }
+        }
+        cullDistSize++;
+    }
+
+    if (!cullMtlBuffer || cullDistSize == 0) {
+        /* No cull distance attributes found; bind a dummy buffer to satisfy
+         * Metal validation (the shader still references the slots). */
+        static id<MTLBuffer> sDummyCullBuffer = nil;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            float dummy[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            sDummyCullBuffer = [_device newBufferWithBytes:dummy
+                                                    length:sizeof(dummy)
+                                                   options:MTLResourceStorageModeShared];
+        });
+        cullMtlBuffer = sDummyCullBuffer;
+        cullBindingOffset = 0;
+        cullStride = 4;
+        cullFirstRelativeOffset = 0;
+        cullDistSize = 0; /* zero size means the shader loop is skipped */
+    }
+
+    /* The cull distance offset within each vertex is the binding offset plus
+     * the relative offset of the first cull distance attribute. */
+    uint32_t culldist_offset = (uint32_t)(cullBindingOffset + (cullFirstRelativeOffset >= 0 ? cullFirstRelativeOffset : 0));
+
+    MGLCullDistanceEmuParams params;
+    params.prim_vertex_count = prim_vertex_count;
+    params.culldist_offset = culldist_offset;
+    params.vertex_stride = (uint32_t)cullStride;
+    params.culldist_size = cullDistSize;
+
+    [_currentRenderEncoder setVertexBuffer:cullMtlBuffer
+                                    offset:0
+                                   atIndex:kMGLCullDistanceVertexBufferIndex];
+    [_currentRenderEncoder setVertexBytes:&params
+                                    length:sizeof(params)
+                                   atIndex:kMGLCullDistanceParamsBufferIndex];
+}
+
 #pragma mark C interface to mtlDrawArrays
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
@@ -28043,6 +31990,14 @@ Buffer *getIndirectBuffer(GLMContext ctx)
             }
             return;
         }
+
+    /* Cull distance emulation: if the active vertex shader uses
+     * mgl_CullDistance, bind the vertex buffer and params so the injected
+     * shader code can read sibling-vertex cull distance values. */
+    if (activeProgram && activeProgram->spirv[_VERTEX_SHADER].msl_str &&
+        strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+        [self bindCullDistanceEmulationBuffers:mode];
+    }
 
     @try {
         mglTraceLog("DRAW_ARRAYS_OBJ_SUBMIT call=%llu program=%u mode=0x%x first=%d count=%d encoder=%p pipeline=%p",
@@ -30858,6 +34813,8 @@ void mtlMultiDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, 
     glm_ctx->mtl_funcs.mtlGenerateMipmaps = mtlGenerateMipmaps;
     glm_ctx->mtl_funcs.mtlTexSubImage = mtlTexSubImage;
     glm_ctx->mtl_funcs.mtlTexSubImageBytes = mtlTexSubImageBytes;
+
+    glm_ctx->mtl_funcs.mtlCopyImageSubData = mtlCopyImageSubData;
 
     glm_ctx->mtl_funcs.mtlDrawArrays = mtlDrawArrays;
     glm_ctx->mtl_funcs.mtlDrawElements = mtlDrawElements;

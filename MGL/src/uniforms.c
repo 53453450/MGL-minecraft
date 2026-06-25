@@ -2349,8 +2349,14 @@ static GLboolean mglUploadPlainStructUniformLeaf(GLMContext ctx,
     const SpirvUBOMember *member = NULL;
     SpirvResource *res = mglFindPlainStructUniformLeafResource(program, location, &member);
     if (!res || !member) {
+        fprintf(stderr, "MGL DBG UNIFORM_LEAF: program=%u location=%d NOT leaf (res=%p member=%p)\n",
+                program ? (unsigned)program->name : 0u, (int)location, (void*)res, (void*)member);
         return GL_FALSE;
     }
+    fprintf(stderr, "MGL DBG UNIFORM_LEAF: program=%u location=%d IS leaf res_name=%s member_name=%s\n",
+            program ? (unsigned)program->name : 0u, (int)location,
+            res->name ? res->name : "(null)",
+            member->name ? member->name : "(null)");
 
     GLint element = 0;
     GLint member_slot = 0;
@@ -2464,6 +2470,11 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         return;
     }
 
+    if (size == sizeof(GLint) && ptr) {
+        fprintf(stderr, "MGL DBG UNIFORM: program=%u location=%d value=%d\n",
+                (unsigned)program->name, (int)location, (int)*((const GLint *)ptr));
+    }
+
     if (mglUploadPlainStructUniformLeaf(ctx, program, location, ptr, size)) {
         return;
     }
@@ -2497,6 +2508,13 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     uniformSlot->buffer = buf ? buf->name : 0u;
     uniformSlot->offset = 0;
     uniformSlot->size = size;
+
+    if (size == sizeof(GLint) && ptr && buf && buf->data.buffer_data) {
+        fprintf(stderr, "MGL DBG UNIFORM_BUF: program=%u location=%d bufName=%u bufData=%p value=%d\n",
+                (unsigned)program->name, (int)location, (unsigned)(buf ? buf->name : 0u),
+                (void*)(uintptr_t)(buf ? buf->data.buffer_data : 0),
+                (int)*((const GLint *)ptr));
+    }
 
     /*
      * Minecraft's shader layer can reuse the same logical plain uniform values

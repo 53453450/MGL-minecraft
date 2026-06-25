@@ -1439,6 +1439,35 @@ static GLint mglActiveUniformBlockCount(Program *program)
     return total;
 }
 
+/* Count the number of distinct active atomic-counter buffer binding points
+ * referenced by any stage of the program.  Each distinct gl_binding of an
+ * ATOMIC_COUNTER resource identifies one atomic-counter buffer. */
+static GLint mglActiveAtomicCounterBufferCount(Program *program)
+{
+    GLint total = 0;
+
+    if (!program) {
+        return 0;
+    }
+
+    /* Track distinct gl_binding values across all stages.  Atomic-counter
+     * buffer bindings are in [0, MAX_BINDABLE_BUFFERS). */
+    GLboolean seen[MAX_BINDABLE_BUFFERS];
+    memset(seen, 0, sizeof(seen));
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+        for (GLuint i = 0; i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (res->gl_binding < MAX_BINDABLE_BUFFERS && !seen[res->gl_binding]) {
+                seen[res->gl_binding] = GL_TRUE;
+                total++;
+            }
+        }
+    }
+    return total;
+}
+
 static GLint mglActiveUniformBlockMaxNameLength(Program *program)
 {
     GLint max_len = 0;
@@ -3155,16 +3184,68 @@ static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
     }
 }
 
-static const char *mglFindMSLKernelParameterClose(const char *msl)
+/* Find the closing ')' of the MSL entry-function parameter list for any
+ * shader stage (kernel/vertex/fragment), not just compute kernels.  Returns
+ * a pointer to the ')' in the source, or NULL if no entry function is found. */
+static const char *mglFindMSLEntryParameterClose(const char *msl)
 {
-    const char *kernel = msl ? strstr(msl, "kernel void ") : NULL;
-    const char *open = kernel ? strchr(kernel, '(') : NULL;
-    int depth = 0;
-
-    if (!open) {
+    if (!msl) {
         return NULL;
     }
 
+    /* SPIRV-Cross emits entry functions as:
+     *   kernel void <name>(...)
+     *   vertex <out_type> <name>(...)
+     *   fragment <out_type> <name>(...)
+     * Find the first '(' after the entry keyword and balance parentheses. */
+    static const struct { const char *kw; size_t len; } kEntryKinds[] = {
+        { "kernel ", 7 },
+        { "vertex ", 7 },
+        { "fragment ", 9 },
+    };
+
+    const char *entry = NULL;
+    for (size_t i = 0; i < sizeof(kEntryKinds)/sizeof(kEntryKinds[0]); i++) {
+        const char *p = msl;
+        while ((p = strstr(p, kEntryKinds[i].kw)) != NULL) {
+            /* Make sure this is an entry-function declaration: the keyword
+             * must be at the start of a line (not inside an identifier). */
+            if (p == msl || p[-1] == '\n' || p[-1] == '\t' || p[-1] == ' ') {
+                entry = p;
+                break;
+            }
+            p += kEntryKinds[i].len;
+        }
+        if (entry) {
+            break;
+        }
+    }
+    if (!entry) {
+        /* Fall back to the legacy compute-only search (kernel void <name>). */
+        const char *kernel = strstr(msl, "kernel void ");
+        const char *open = kernel ? strchr(kernel, '(') : NULL;
+        if (!open) {
+            return NULL;
+        }
+        int depth = 0;
+        for (const char *p = open; *p; p++) {
+            if (*p == '(') {
+                depth++;
+            } else if (*p == ')') {
+                depth--;
+                if (depth == 0) {
+                    return p;
+                }
+            }
+        }
+        return NULL;
+    }
+
+    const char *open = strchr(entry, '(');
+    if (!open) {
+        return NULL;
+    }
+    int depth = 0;
     for (const char *p = open; *p; p++) {
         if (*p == '(') {
             depth++;
@@ -3175,7 +3256,6 @@ static const char *mglFindMSLKernelParameterClose(const char *msl)
             }
         }
     }
-
     return NULL;
 }
 
@@ -3229,16 +3309,21 @@ static void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char
         }
 
         char injected_parameter[256];
+        /* If the entry function's parameter list is empty (the '(' is
+         * immediately followed by ')'), inject the first argument without a
+         * leading comma to avoid `func(, device ...)` syntax errors. */
+        const char *close = mglFindMSLEntryParameterClose(*msl_ptr);
+        GLboolean empty_param_list = (close && close > *msl_ptr && close[-1] == '(');
         int written = snprintf(injected_parameter,
                                sizeof(injected_parameter),
-                               ", device atomic_uint& %s [[buffer(%u)]]",
+                               "%sdevice atomic_uint& %s [[buffer(%u)]]",
+                               empty_param_list ? "" : ", ",
                                res->name,
                                (unsigned)next_slot);
         if (written <= 0 || (size_t)written >= sizeof(injected_parameter)) {
             continue;
         }
 
-        const char *close = mglFindMSLKernelParameterClose(*msl_ptr);
         if (!close || !mglInsertStringAt(msl_ptr, close, injected_parameter)) {
             fprintf(stderr,
                     "MGL WARNING: failed to inject Metal atomic counter argument %s\n",
@@ -5376,10 +5461,131 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         spvc_context_destroy(context);
         return NULL;
     }
+    /* Debug: dump MSL containing multisample samplers. */
+    if (strstr(result, "texture2d_ms") || strstr(result, "sampler2DMS")) {
+        fprintf(stderr, "MGL DBG MSL (ms, program=%u stage=%d):\n%.5000s\n", ptr->name, stage, result);
+    }
+    /* Debug: dump MSL containing texture_layer uniform. */
+    if (strstr(result, "texture_layer")) {
+        fprintf(stderr, "MGL DBG MSL (texture_layer, program=%u stage=%d):\n%.5000s\n", ptr->name, stage, result);
+    }
     DEBUG_PRINT("\n%s\n", result);
 
     str_ret = strdup(result);
     if (str_ret) {
+        /* Remove C99 `restrict` qualifier that SPIRV-Cross emits on reference
+         * and pointer parameters (e.g. "device T& restrict var" or
+         * "device T* restrict ptr").  Metal's compiler rejects `restrict`
+         * in these positions (it expects `__restrict` on pointers and does
+         * not support it on references at all).  Removing it is safe because
+         * it is only an optimization hint with no semantic effect. */
+        {
+            char *read = str_ret;
+            char *write = str_ret;
+            while (*read) {
+                /* Look for " restrict " preceded by '&' or '*'. */
+                if ((read[0] == '&' || read[0] == '*') &&
+                    read[1] == ' ' &&
+                    strncmp(read + 2, "restrict ", 9) == 0) {
+                    /* Skip " restrict " (9 chars after "& "), keeping the & and space. */
+                    *write++ = *read++;  /* copy & or * */
+                    *write++ = *read++;  /* copy space */
+                    read += 9;            /* skip "restrict " */
+                } else {
+                    *write++ = *read++;
+                }
+            }
+            *write = '\0';
+        }
+
+        /* Strip gl_SampleMask output from fragment shaders.
+         *
+         * Metal honours the [[sample_mask]] fragment output even when
+         * rasterSampleCount == 1, causing fragments to be discarded when
+         * the shader writes a zero mask.  OpenGL requires that writes to
+         * gl_SampleMask be ignored when SAMPLE_BUFFERS == 0 (single-sample).
+         * Since MGL only supports single-sample framebuffers, we remove the
+         * [[sample_mask]] output member from the fragment output struct and
+         * delete assignments to it so Metal never sees a mask output. */
+        if (stage == _FRAGMENT_SHADER && strstr(str_ret, "[[sample_mask]]")) {
+            /* Remove lines inside output structs that declare a [[sample_mask]]
+             * member, e.g. "    uint gl_SampleMask [[sample_mask]];" */
+            char *read = str_ret;
+            char *write = str_ret;
+            while (*read) {
+                /* Find the start of the current line. */
+                char *line_start = read;
+                char *nl = strchr(read, '\n');
+                char *line_end = nl ? nl + 1 : read + strlen(read);
+                size_t line_len = line_end - line_start;
+
+                /* Check if this line is inside a struct (indented) and contains
+                 * [[sample_mask]] as a struct member declaration. We match
+                 * patterns like "uint <name> [[sample_mask]];" */
+                bool is_sample_mask_member = false;
+                /* Copy the current line into a NUL-terminated buffer first so
+                 * that strstr() does not bleed past the line boundary into
+                 * following lines (which would wrongly match sibling struct
+                 * members like "int4 o_color [[color(0)]];"). */
+                char tmp[256];
+                size_t copy_len = line_len < sizeof(tmp) ? line_len : sizeof(tmp) - 1;
+                memcpy(tmp, line_start, copy_len);
+                tmp[copy_len] = '\0';
+                if (copy_len > 20 && strstr(tmp, "[[sample_mask]]") &&
+                    strstr(tmp, ";")) {
+                    /* Check it's a struct member (not a function parameter) by
+                     * looking for a type keyword at the start. */
+                    char *p = tmp;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (strncmp(p, "uint", 4) == 0 || strncmp(p, "int", 3) == 0) {
+                        is_sample_mask_member = true;
+                    }
+                }
+
+                if (!is_sample_mask_member) {
+                    memmove(write, line_start, line_len);
+                    write += line_len;
+                }
+                read = line_end;
+            }
+            *write = '\0';
+
+            /* Now remove assignments to the output sample mask variable.
+             * SPIRV-Cross generates "out.gl_SampleMask = ...;" lines. */
+            read = str_ret;
+            write = str_ret;
+            while (*read) {
+                char *line_start = read;
+                char *nl = strchr(read, '\n');
+                char *line_end = nl ? nl + 1 : read + strlen(read);
+                size_t line_len = line_end - line_start;
+
+                /* Check if this line assigns to the sample mask output. */
+                char tmp[512];
+                size_t copy_len = line_len < sizeof(tmp) ? line_len : sizeof(tmp) - 1;
+                memcpy(tmp, line_start, copy_len);
+                tmp[copy_len] = '\0';
+
+                bool is_sample_mask_assign = false;
+                /* Match "out.gl_SampleMask =" or "out.gl_SampleMask[" but NOT
+                 * "gl_SampleMaskIn" (the input). */
+                char *sm = strstr(tmp, ".gl_SampleMask");
+                if (sm && sm[14] != 'I') {  /* not gl_SampleMaskIn */
+                    /* Check there's an assignment on this line */
+                    if (strchr(sm, '=')) {
+                        is_sample_mask_assign = true;
+                    }
+                }
+
+                if (!is_sample_mask_assign) {
+                    memmove(write, line_start, line_len);
+                    write += line_len;
+                }
+                read = line_end;
+            }
+            *write = '\0';
+        }
+
         /* Some generated MSL uses `sampler` as an identifier, which collides
          * with Metal's `sampler` type in function signatures. Normalize these
          * generated helper names to keep compilation valid. */
@@ -6735,6 +6941,8 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 
     SpirvResourceList *vertex_inputs =
         &ptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+
+    /* Fast path: exact name match. */
     for (GLuint i = 0; vertex_inputs->list && i < vertex_inputs->count; i++)
     {
         const char *str = vertex_inputs->list[i].name;
@@ -6744,7 +6952,30 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
             return (GLint)vertex_inputs->list[i].location;
         }
     }
-	
+
+    /* Array element query: "foo[N]" should resolve to location(foo) + N.
+     * Per the GL spec, glGetAttribLocation accepts "foo[0]" (equivalent to
+     * "foo") and "foo[N]" for the Nth element of an array attribute. */
+    const char *bracket = strrchr(name, '[');
+    if (bracket && bracket[1] != ']')
+    {
+        size_t base_len = (size_t)(bracket - name);
+        char *endp = NULL;
+        long idx = strtol(bracket + 1, &endp, 10);
+        if (endp && *endp == ']' && idx >= 0)
+        {
+            for (GLuint i = 0; vertex_inputs->list && i < vertex_inputs->count; i++)
+            {
+                const char *str = vertex_inputs->list[i].name;
+                if (str && strlen(str) == base_len &&
+                    !strncmp(str, name, base_len))
+                {
+                    return (GLint)vertex_inputs->list[i].location + (GLint)idx;
+                }
+            }
+        }
+    }
+
 	return -1;
 }
 
@@ -6797,11 +7028,14 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             /*
              * Per the spec, querying GL_COMPUTE_WORK_GROUP_SIZE on a program
              * with no linked compute stage must return {0,0,0}; it does NOT
-             * generate an error. (GL_INVALID_OPERATION is only raised when the
-             * program itself is not linked, which is handled by the function
-             * preamble.)
+             * generate an error.  GL_INVALID_OPERATION is raised when the
+             * program itself is not linked.
              */
-            if (pptr->linked_glsl_program && pptr->shader_slots[_COMPUTE_SHADER]) {
+            if (!pptr->linked_glsl_program) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (pptr->shader_slots[_COMPUTE_SHADER]) {
                 params[0] = pptr->local_workgroup_size.x;
                 params[1] = pptr->local_workgroup_size.y;
                 params[2] = pptr->local_workgroup_size.z;
@@ -6810,6 +7044,23 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
                 params[1] = 0;
                 params[2] = 0;
             }
+            break;
+        case GL_ACTIVE_ATOMIC_COUNTER_BUFFERS:
+            *params = mglActiveAtomicCounterBufferCount(pptr);
+            break;
+        case GL_GEOMETRY_INPUT_TYPE:        /* 0x8917 */
+        case GL_GEOMETRY_OUTPUT_TYPE:       /* 0x8918 */
+        case GL_GEOMETRY_VERTICES_OUT:      /* 0x8916 */
+        case GL_GEOMETRY_SHADER_INVOCATIONS:/* 0x887F */
+            /* Geometry-shader reflection queries.  MGL does not execute GS on
+             * Metal, but the program still carries the GS layout metadata
+             * captured at compile/link time.  Return 0 when no GS is
+             * attached so the queries are at least well-defined. */
+            if (!pptr->linked_glsl_program) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            *params = 0;
             break;
         default:
             fprintf(stderr, "mglGetProgramiv: unhandled pname 0x%x\n", pname);

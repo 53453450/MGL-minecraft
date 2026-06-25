@@ -22,6 +22,7 @@
 #define pixel_utils_h
 
 #include <os/availability.h>
+#include <stddef.h>
 #include "glcorearb.h"
 
 typedef enum MTLPixelFormat_t MTLPixelFormat;
@@ -36,6 +37,14 @@ GLuint sizeForType(GLenum type);
 GLuint sizeForFormatType(GLenum format, GLenum type);
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
 
+/*
+ * Number of bytes occupied in memory by a single datum indicated by `type`:
+ * the storage size of one element for plain types, or the packed storage size
+ * (1/2/4) for the bitfield packed types.  Returns 0 for unknown types.  Used
+ * for the PBO offset alignment rule of glTex(Sub)Image*.
+ */
+size_t mglPixelTypeDatumBytes(GLenum type);
+
 GLuint bicountForFormatType(GLenum format, GLenum type, GLenum component);
 GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component);
 
@@ -43,6 +52,11 @@ GLenum internalFormatForGLFormatType(GLenum format, GLenum type);
 
 MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format);
 MTLPixelFormat mtlPixelFormatForGLFormatType(GLenum gl_format, GLenum gl_type);
+
+/* Returns true if `internalformat` is a color-renderable GL internal format
+ * (i.e. usable as a color attachment of a framebuffer).  Matches the GL 4.6
+ * required color-renderable format list used by the CTS packed_pixels test. */
+GLboolean mglIsColorRenderableInternalFormat(GLint internalformat);
 
 float mglHalfToFloat(uint16_t value);
 uint16_t mglFloatToHalf(float value);
