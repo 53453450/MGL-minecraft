@@ -15,4 +15,3 @@ external/glslang/
 /Info.plist
 *.dylib
 /.claude
-/mgl-repro-output/

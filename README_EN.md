@@ -203,43 +203,6 @@ MGL_TRACE_LOG_PROGRAMS=91,92,93
 
 These variables can be added to the launcher environment as needed to capture draw, resource binding, GUI, or selected program diagnostics.
 
-### Minecraft GL Repro Cases
-
-The repository includes three minimal repro cases for Minecraft 1.21.11 rendering paths. They are useful for checking whether MGL covers the relevant OpenGL calls correctly:
-
-- `cloud-tbo-vertexid`: cloud rendering path, covering `isamplerBuffer`, `GL_R8I` texture buffers, `gl_VertexID`, and large indexed draws.
-- `rt-pingpong-blur`: post-processing path, covering FBO ping-pong, RGBA8 render target sampling, and blur passes.
-- `focused-tail-rendergraph`: real-trace-tail render graph path, covering DSA FBO attach/detach, mapped buffer flush, indexed/baseVertex GUI draws, runtime render target creation, six blur passes, and the final blit.
-
-Build:
-
-```bash
-cd MGL-minecraft
-make repro
-```
-
-Run all cases:
-
-```bash
-./build/repro/minecraft_gl_repro all
-```
-
-Run individual cases:
-
-```bash
-./build/repro/minecraft_gl_repro cloud-tbo-vertexid
-./build/repro/minecraft_gl_repro rt-pingpong-blur
-./build/repro/minecraft_gl_repro focused-tail-rendergraph
-```
-
-Output images are written to `mgl-repro-output/` under the current working directory by default. You can override the output directory with `MGL_REPRO_OUTPUT_DIR`:
-
-```bash
-MGL_REPRO_OUTPUT_DIR=./mgl-repro-output ./build/repro/minecraft_gl_repro all
-```
-
-Note: the case name is the program argument. Do not pass the executable path again as an argument.
-
 ## Acknowledgements
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS
