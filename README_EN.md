@@ -94,9 +94,8 @@ Point them to the built libraries so they can take over rendering.
 
 ## Current Status
 
-- Known bug:  1.21.11, 1.21.10's world brightness problem(there may be other unknown bugs in other versions, but I haven't tested it)
-- Forge modloader's startup rendering animation is not loaded, neoforge modloader will crash, and fabric modloader will not have an impact (tested in 1.21.7) 
-- sodium is supported when loading with fabric modloader (in all the versions mentioned above)
+- The standardized GL46CTS test is being carried out now, so the operation of the game is uncontrollable. Now{"completed": 12080, "crash": 0, "fail": 1224,"not_supported": 2199, "pass": 8655, "timeout": 1, "total": 12080, "unknown": 0},For details, please refer to[here](summary.tsv)
+
 
 ## Project Structure
 

@@ -77,9 +77,7 @@ make
 
 ## 现状
 
-- 已知bug:1.21.11，1.21.10的世界亮度问题，1.21.11的UI选框消失（可能在其他版本有其他未知bug，但我并未测试）
-- Forge modloader 的启动渲染动画不被加载，neoforge modloader 会崩溃，fabric modloader 不会有影响（在1.21.7测试）
-- sodium 在与fabric modloader 一起加载时被支持（在以上所有被提及的版本）
+- 现在在进行规范的GL46CTS测试，所以游戏的运行是不可控的，现在{"completed": 12080, "crash": 0, "fail": 1224,"not_supported": 2199, "pass": 8655, "timeout": 1, "total": 12080, "unknown": 0}详情参阅[这里](summary.tsv)
 
 ## 项目结构
 
@@ -162,7 +160,7 @@ Objective-C 实现的 Metal 渲染器，处理：
 - 状态映射 (OpenGL → Metal)
 - 绘制命令执行
 
-## 调试与最小复现
+## 调试
 
 ### MGL_TRACE_LOG
 
