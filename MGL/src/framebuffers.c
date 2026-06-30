@@ -56,9 +56,6 @@ extern void mglBlitDepthShadow(GLMContext ctx,
 extern void mglBlitRGB10A2Shadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
-extern bool mglTryCTSLayeredRenderingBlitFallback(GLMContext ctx,
-                                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
-                                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);
 
 static GLubyte mglClampClearComponentToByte(GLfloat value)
 {
@@ -1582,6 +1579,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
             case GL_TEXTURE_2D_ARRAY:
             case GL_TEXTURE_2D_MULTISAMPLE:
             case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+            case GL_TEXTURE_CUBE_MAP_ARRAY:
                 break;
 
             default:
@@ -2284,6 +2282,33 @@ void getFramebufferAttachmentParameteriv(GLMContext ctx, GLuint framebuffer, GLe
             return;
         }
 
+        /* Per the GL 4.6 spec, querying GL_DEPTH_STENCIL_ATTACHMENT requires
+         * the same image to be attached to both the depth and stencil
+         * attachment points. If different images are attached (including
+         * the case where only one is attached), generate INVALID_OPERATION. */
+        if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
+        {
+            FBOAttachment *depth_att = &fbo->depth;
+            FBOAttachment *stencil_att = &fbo->stencil;
+            GLboolean depth_attached = (depth_att->texture != 0u);
+            GLboolean stencil_attached = (stencil_att->texture != 0u);
+
+            if (depth_attached != stencil_attached)
+            {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (depth_attached &&
+                (depth_att->texture != stencil_att->texture ||
+                 depth_att->textarget != stencil_att->textarget ||
+                 depth_att->level != stencil_att->level ||
+                 depth_att->layer != stencil_att->layer))
+            {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+        }
+
         attachment_target = fbo_attachment_ptr->textarget;
         if (fbo_attachment_ptr->texture != 0u) {
             if (attachment_target == GL_RENDERBUFFER) {
@@ -2437,10 +2462,6 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
     }
     if (mask & GL_COLOR_BUFFER_BIT) {
         mglBlitRGB10A2Shadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
-        if (mglTryCTSLayeredRenderingBlitFallback(ctx, srcX0, srcY0, srcX1, srcY1,
-                                                  dstX0, dstY0, dstX1, dstY1)) {
-            mask &= ~GL_COLOR_BUFFER_BIT;
-        }
     }
     GLbitfield backendMask = mask;
     if (backendMask != 0u) {
@@ -2523,6 +2544,38 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
     }
 }
 
+/* Compute the actual sample count of a framebuffer by inspecting its
+ * attachments.  Returns 0 for single-sample, or the number of samples
+ * (1, 2, 4, ...) for multisample.  For framebuffers with no attachments,
+ * falls back to default_samples. */
+static GLuint mglFramebufferSamples(Framebuffer *fbo)
+{
+    if (!fbo)
+        return 0u;
+
+    GLuint max_samples = 0u;
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u)
+            continue;
+        FBOAttachment *a = &fbo->color_attachments[i];
+        if (a->texture == 0u || !a->buf.tex)
+            continue;
+        if (a->buf.tex->samples > max_samples)
+            max_samples = a->buf.tex->samples;
+    }
+    if (fbo->depth.texture != 0u && fbo->depth.buf.tex) {
+        if (fbo->depth.buf.tex->samples > max_samples)
+            max_samples = fbo->depth.buf.tex->samples;
+    }
+    if (fbo->stencil.texture != 0u && fbo->stencil.buf.tex) {
+        if (fbo->stencil.buf.tex->samples > max_samples)
+            max_samples = fbo->stencil.buf.tex->samples;
+    }
+    if (max_samples == 0u)
+        max_samples = (GLuint)(fbo->default_samples > 0 ? fbo->default_samples : 0);
+    return max_samples;
+}
+
 void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *params)
 {
     Framebuffer *fbo = NULL;
@@ -2568,10 +2621,13 @@ void mglGetFramebufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, G
             *params = GL_FALSE;
             break;
         case GL_SAMPLE_BUFFERS:
-            *params = 0;
+        {
+            GLuint samples = mglFramebufferSamples(fbo);
+            *params = samples > 0u ? 1 : 0;
             break;
+        }
         case GL_SAMPLES:
-            *params = 0;
+            *params = (GLint)mglFramebufferSamples(fbo);
             break;
         case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
             *params = GL_BGRA;
@@ -3108,10 +3164,13 @@ void mglGetNamedFramebufferParameteriv(GLMContext ctx, GLuint framebuffer, GLenu
             *param = GL_FALSE;
             break;
         case GL_SAMPLE_BUFFERS:
-            *param = 0;
+        {
+            GLuint samples = mglFramebufferSamples(fbo);
+            *param = samples > 0u ? 1 : 0;
             break;
+        }
         case GL_SAMPLES:
-            *param = 0;
+            *param = (GLint)mglFramebufferSamples(fbo);
             break;
         case GL_IMPLEMENTATION_COLOR_READ_FORMAT:
             *param = GL_BGRA;

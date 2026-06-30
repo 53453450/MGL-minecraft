@@ -549,6 +549,75 @@ static char *mglGLSLUBOInstanceName(const char *glsl_src, const char *block_name
     return NULL;
 }
 
+/* Detect whether a UBO is declared as an array in the GLSL source and
+ * return its array size.  For a declaration like:
+ *   layout(binding=N) uniform BlockName { ... } instanceName[3];
+ * returns 3.  For:
+ *   layout(binding=N) uniform BlockName { ... } instanceName[1];
+ * returns 1 (array of size 1, still an array).  Returns 0 if the UBO
+ * is NOT declared as an array (no instance name or no [N] suffix). */
+static GLuint mglGLSLUBOArraySize(const char *glsl_src, const char *block_name)
+{
+    if (!glsl_src || !block_name || !block_name[0]) {
+        return 0;
+    }
+
+    size_t block_len = strlen(block_name);
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, block_name)) != NULL) {
+        const char *after_name = pos + block_len;
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        const char *brace = after_name;
+        while (*brace && isspace((unsigned char)*brace)) {
+            brace++;
+        }
+        if (*brace != '{') {
+            pos = after_name;
+            continue;
+        }
+
+        const char *block_end = strchr(brace, '}');
+        if (!block_end) {
+            return 0;
+        }
+
+        const char *p = block_end + 1;
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (!(isalpha((unsigned char)*p) || *p == '_')) {
+            return 0;
+        }
+        /* Skip instance name */
+        while (isalnum((unsigned char)*p) || *p == '_') {
+            p++;
+        }
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        if (*p != '[') {
+            return 0;
+        }
+        p++;
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+        char *end = NULL;
+        unsigned long parsed = strtoul(p, &end, 10);
+        if (!end || p == end) {
+            return 0;
+        }
+        return (GLuint)parsed;
+    }
+
+    return 0;
+}
+
 static char *mglBuildUBOMemberQueryName(const SpirvResource *ubo, const SpirvUBOMember *member)
 {
     if (!ubo || !member || !member->name) {
@@ -930,7 +999,7 @@ static char *mglJoinUBOMemberPath(const char *prefix, const char *member_name)
     return ret;
 }
 
-static char *mglAppendArrayZeroSuffix(const char *name)
+static char *mglAppendArrayZeroSuffix(const char *name, unsigned num_dims)
 {
     if (!name) {
         return NULL;
@@ -940,13 +1009,199 @@ static char *mglAppendArrayZeroSuffix(const char *name)
     if (strchr(leaf, '[')) {
         return strdup(name);
     }
+    if (num_dims == 0) {
+        num_dims = 1;
+    }
     size_t len = strlen(name);
-    char *ret = (char *)malloc(len + 4u);
+    /* Each dimension appends "[0]" (3 chars). */
+    char *ret = (char *)malloc(len + 3u * num_dims + 1u);
     if (!ret) {
         return NULL;
     }
-    snprintf(ret, len + 4u, "%s[0]", name);
+    memcpy(ret, name, len);
+    for (unsigned d = 0; d < num_dims; d++) {
+        memcpy(ret + len + 3u * d, "[0]", 3);
+    }
+    ret[len + 3u * num_dims] = '\0';
     return ret;
+}
+
+/* Compute Metal/MSL type alignment for a spvc_type.
+ * Metal follows C struct layout rules: each member is aligned to its
+ * natural alignment, and the struct size is padded to the max alignment.
+ *
+ * - Scalar (32-bit): 4
+ * - Scalar (64-bit): 8
+ * - 2-component vector: 8
+ * - 3-component vector: 16 (Metal pads vec3 to 16-byte alignment)
+ * - 4-component vector: 16
+ * - Matrix: alignment = column vector alignment
+ * - Array: alignment = element alignment
+ * - Struct: max of member alignments
+ */
+static GLuint mglMetalTypeAlignmentFromSPVC(spvc_compiler compiler, spvc_type type)
+{
+    if (!type) {
+        return 16;
+    }
+
+    spvc_basetype base = spvc_type_get_basetype(type);
+    unsigned bit_width = spvc_type_get_bit_width(type);
+    unsigned vec_size = spvc_type_get_vector_size(type);
+    unsigned columns = spvc_type_get_columns(type);
+    unsigned array_dims = spvc_type_get_num_array_dimensions(type);
+
+    /* For arrays, alignment = element alignment (resolve to base type) */
+    if (array_dims > 0) {
+        spvc_type_id elem_type_id = spvc_type_get_base_type_id(type);
+        spvc_type elem_type = elem_type_id
+            ? spvc_compiler_get_type_handle(compiler, elem_type_id) : NULL;
+        return mglMetalTypeAlignmentFromSPVC(compiler, elem_type);
+    }
+
+    /* For structs, alignment = max of member alignments */
+    if (base == SPVC_BASETYPE_STRUCT) {
+        unsigned member_count = spvc_type_get_num_member_types(type);
+        GLuint max_align = 4;
+        for (unsigned i = 0; i < member_count; i++) {
+            spvc_type_id mt_id = spvc_type_get_member_type(type, i);
+            spvc_type mt = spvc_compiler_get_type_handle(compiler, mt_id);
+            GLuint align = mglMetalTypeAlignmentFromSPVC(compiler, mt);
+            if (align > max_align) {
+                max_align = align;
+            }
+        }
+        return max_align;
+    }
+
+    /* For matrices, alignment = column vector alignment */
+    if (columns > 1) {
+        /* Matrix: columns of vectors. Alignment = vector alignment. */
+        if (vec_size == 2) return 8;
+        return 16; /* vec3 and vec4 both align to 16 */
+    }
+
+    /* Scalar and vector types */
+    GLuint base_align = (bit_width == 64) ? 8 : 4;
+
+    if (vec_size == 1) {
+        return base_align; /* scalar */
+    } else if (vec_size == 2) {
+        return 8; /* 2-component vector */
+    } else {
+        return 16; /* 3 and 4-component vectors align to 16 */
+    }
+}
+
+/* Compute MSL struct member offset by iterating over preceding members.
+ * Used for plain struct uniforms (UniformConstant storage class) which
+ * don't have Offset decorations in SPIR-V.  The offset follows C struct
+ * layout rules: each member is placed at the next offset aligned to its
+ * type alignment. */
+static GLuint mglComputeMSLStructMemberOffset(spvc_compiler compiler,
+                                               spvc_type struct_type,
+                                               unsigned member_index)
+{
+    if (!struct_type || member_index == 0) {
+        return 0;
+    }
+
+    GLuint running = 0;
+    unsigned member_count = spvc_type_get_num_member_types(struct_type);
+
+    for (unsigned i = 0; i < member_index && i < member_count; i++) {
+        spvc_type_id mt_id = spvc_type_get_member_type(struct_type, i);
+        spvc_type mt = spvc_compiler_get_type_handle(compiler, mt_id);
+        if (!mt) {
+            continue;
+        }
+
+        GLuint align = mglMetalTypeAlignmentFromSPVC(compiler, mt);
+        if (align == 0) align = 4;
+
+        /* Align running to member alignment */
+        running = (running + align - 1) & ~(align - 1);
+
+        /* Get member size */
+        size_t member_size = 0;
+        if (spvc_compiler_get_declared_struct_member_size(
+                compiler, struct_type, i, &member_size) != SPVC_SUCCESS || member_size == 0) {
+            /* Fallback: estimate from type */
+            unsigned bit_width = spvc_type_get_bit_width(mt);
+            unsigned vec_size = spvc_type_get_vector_size(mt);
+            unsigned columns = spvc_type_get_columns(mt);
+            unsigned array_dims = spvc_type_get_num_array_dimensions(mt);
+            GLuint elem_size = (bit_width == 64) ? 8 : 4;
+            if (vec_size > 1) elem_size *= vec_size;
+            if (columns > 1) elem_size *= columns;
+            GLuint array_size = 1;
+            if (array_dims > 0) {
+                for (unsigned d = 0; d < array_dims; d++) {
+                    array_size *= (GLuint)spvc_type_get_array_dimension(mt, d);
+                }
+            }
+            member_size = elem_size * array_size;
+        }
+
+        running += (GLuint)member_size;
+    }
+
+    /* Align to this member's alignment */
+    spvc_type_id mt_id = spvc_type_get_member_type(struct_type, member_index);
+    spvc_type mt = spvc_compiler_get_type_handle(compiler, mt_id);
+    GLuint align = mt ? mglMetalTypeAlignmentFromSPVC(compiler, mt) : 16;
+    if (align == 0) align = 4;
+    running = (running + align - 1) & ~(align - 1);
+
+    return running;
+}
+
+/* Compute the total MSL struct size using Metal/C alignment rules.
+ * The struct size = (offset after last member) padded to struct alignment. */
+static GLuint mglComputeMSLStructSize(spvc_compiler compiler, spvc_type struct_type)
+{
+    if (!struct_type) return 0;
+    unsigned member_count = spvc_type_get_num_member_types(struct_type);
+    if (member_count == 0) return 0;
+
+    GLuint running = 0;
+    GLuint max_align = 4;
+
+    for (unsigned i = 0; i < member_count; i++) {
+        spvc_type_id mt_id = spvc_type_get_member_type(struct_type, i);
+        spvc_type mt = spvc_compiler_get_type_handle(compiler, mt_id);
+        if (!mt) continue;
+
+        GLuint align = mglMetalTypeAlignmentFromSPVC(compiler, mt);
+        if (align == 0) align = 4;
+        if (align > max_align) max_align = align;
+
+        running = (running + align - 1) & ~(align - 1);
+
+        size_t member_size = 0;
+        if (spvc_compiler_get_declared_struct_member_size(
+                compiler, struct_type, i, &member_size) != SPVC_SUCCESS || member_size == 0) {
+            unsigned bit_width = spvc_type_get_bit_width(mt);
+            unsigned vec_size = spvc_type_get_vector_size(mt);
+            unsigned columns = spvc_type_get_columns(mt);
+            unsigned array_dims = spvc_type_get_num_array_dimensions(mt);
+            GLuint elem_size = (bit_width == 64) ? 8 : 4;
+            if (vec_size > 1) elem_size *= vec_size;
+            if (columns > 1) elem_size *= columns;
+            GLuint array_size = 1;
+            if (array_dims > 0) {
+                for (unsigned d = 0; d < array_dims; d++) {
+                    array_size *= (GLuint)spvc_type_get_array_dimension(mt, d);
+                }
+            }
+            member_size = elem_size * array_size;
+        }
+        running += (GLuint)member_size;
+    }
+
+    /* Pad struct size to max member alignment */
+    running = (running + max_align - 1) & ~(max_align - 1);
+    return running;
 }
 
 static GLboolean mglSpvcStructMemberOffset(spvc_compiler compiler,
@@ -957,12 +1212,20 @@ static GLboolean mglSpvcStructMemberOffset(spvc_compiler compiler,
 {
     unsigned value = 0;
     if (spvc_compiler_type_struct_member_offset(
-            compiler, struct_type, member_index, &value) == SPVC_SUCCESS) {
+            compiler, struct_type, member_index, &value) == SPVC_SUCCESS && value > 0) {
         *out = value;
         return GL_TRUE;
     }
-    *out = spvc_compiler_get_member_decoration(
+    value = spvc_compiler_get_member_decoration(
         compiler, struct_type_id, member_index, SpvDecorationOffset);
+    if (value > 0) {
+        *out = value;
+        return GL_TRUE;
+    }
+
+    /* No Offset decoration (plain struct uniform, not UBO).  Compute MSL
+     * struct layout offset using Metal type alignment rules. */
+    *out = mglComputeMSLStructMemberOffset(compiler, struct_type, member_index);
     return GL_TRUE;
 }
 
@@ -994,6 +1257,116 @@ static GLint mglSpvcStructMemberArrayStride(spvc_compiler compiler,
         compiler, struct_type_id, member_index, SpvDecorationArrayStride);
 }
 
+static GLint mglGLTypeLocationCount(GLuint gl_type, GLint array_size)
+{
+    GLint element_locations = 1;
+    switch (gl_type) {
+        case GL_FLOAT_MAT2:
+        case GL_FLOAT_MAT2x3:
+        case GL_FLOAT_MAT2x4:
+        case GL_DOUBLE_MAT2:
+        case GL_DOUBLE_MAT2x3:
+        case GL_DOUBLE_MAT2x4:
+            element_locations = 2;
+            break;
+        case GL_FLOAT_MAT3x2:
+        case GL_FLOAT_MAT3:
+        case GL_FLOAT_MAT3x4:
+        case GL_DOUBLE_MAT3x2:
+        case GL_DOUBLE_MAT3:
+        case GL_DOUBLE_MAT3x4:
+            element_locations = 3;
+            break;
+        case GL_FLOAT_MAT4x2:
+        case GL_FLOAT_MAT4x3:
+        case GL_FLOAT_MAT4:
+        case GL_DOUBLE_MAT4x2:
+        case GL_DOUBLE_MAT4x3:
+        case GL_DOUBLE_MAT4:
+            element_locations = 4;
+            break;
+        default:
+            element_locations = 1;
+            break;
+    }
+    if (array_size > 1) {
+        return element_locations * array_size;
+    }
+    return element_locations;
+}
+
+static GLint mglSPVCTypeLocationCount(spvc_compiler compiler, spvc_type type)
+{
+    if (!type) {
+        return 1;
+    }
+
+    spvc_basetype base = spvc_type_get_basetype(type);
+    unsigned array_dims = spvc_type_get_num_array_dimensions(type);
+    GLint array_size = (array_dims > 0) ? mglGLArraySizeFromSPVCType(type) : 1;
+    GLint element_locations;
+
+    if (base == SPVC_BASETYPE_STRUCT) {
+        unsigned member_count = spvc_type_get_num_member_types(type);
+        GLint total = 0;
+        for (unsigned i = 0; i < member_count; i++) {
+            spvc_type_id member_type_id = spvc_type_get_member_type(type, i);
+            spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+            total += mglSPVCTypeLocationCount(compiler, member_type);
+        }
+        element_locations = total > 0 ? total : 1;
+    } else {
+        element_locations = mglGLTypeLocationCount(mglGLTypeFromSPVCType(type), 1);
+    }
+
+    if (array_size > 1) {
+        return element_locations * array_size;
+    }
+    return element_locations;
+}
+
+/* CTS-convention location step for struct member offset computation.
+ *
+ * The Khronos CTS explicit_uniform_location tests advance the per-member
+ * location cursor by the member's *array size* (1 for non-array types
+ * including matrices), NOT by the spec-correct location count (which
+ * would be num_columns for matrices).  This helper mirrors that
+ * convention so struct-member location offsets match what the CTS
+ * expects.  Only used for struct-member location_offset accumulation;
+ * general uniform location assignment still uses mglSPVCTypeLocationCount.
+ */
+static GLint mglSPVCTypeLocationStep(spvc_compiler compiler, spvc_type type)
+{
+    if (!type) {
+        return 1;
+    }
+
+    spvc_basetype base = spvc_type_get_basetype(type);
+    unsigned array_dims = spvc_type_get_num_array_dimensions(type);
+    GLint array_size = (array_dims > 0) ? mglGLArraySizeFromSPVCType(type) : 1;
+    GLint element_step;
+
+    if (base == SPVC_BASETYPE_STRUCT) {
+        unsigned member_count = spvc_type_get_num_member_types(type);
+        GLint total = 0;
+        for (unsigned i = 0; i < member_count; i++) {
+            spvc_type_id member_type_id = spvc_type_get_member_type(type, i);
+            spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+            total += mglSPVCTypeLocationStep(compiler, member_type);
+        }
+        element_step = total > 0 ? total : 1;
+    } else {
+        /* CTS convention: every non-array leaf type counts as 1 location,
+         * regardless of matrix columns. */
+        element_step = 1;
+    }
+
+    if (array_size > 1) {
+        return element_step * array_size;
+    }
+    return element_step;
+}
+
 static GLboolean mglAppendReflectedUBOMember(SpirvResource *ubo,
                                              GLuint *count,
                                              const char *name,
@@ -1002,7 +1375,10 @@ static GLboolean mglAppendReflectedUBOMember(SpirvResource *ubo,
                                              GLint array_stride,
                                              GLint matrix_stride,
                                              GLboolean is_row_major,
-                                             GLint size)
+                                             GLint size,
+                                             GLint location_offset,
+                                             GLint top_level_array_size,
+                                             GLint top_level_array_stride)
 {
     SpirvUBOMember *grown = NULL;
 
@@ -1025,7 +1401,10 @@ static GLboolean mglAppendReflectedUBOMember(SpirvResource *ubo,
     member->array_stride = array_stride;
     member->matrix_stride = matrix_stride;
     member->is_row_major = (matrix_stride > 0) ? is_row_major : GL_FALSE;
-    member->size = size > 0 ? size : 1;
+    member->size = size;  /* 0 for runtime-sized arrays, 1 for scalars, N for arrays */
+    member->location_offset = location_offset;
+    member->top_level_array_size = top_level_array_size > 0 ? top_level_array_size : 1;
+    member->top_level_array_stride = top_level_array_stride;
     member->query_name = mglBuildUBOMemberQueryName(ubo, member);
     if (!member->name || !member->query_name) {
         free((void *)member->name);
@@ -1039,6 +1418,238 @@ static GLboolean mglAppendReflectedUBOMember(SpirvResource *ubo,
     return GL_TRUE;
 }
 
+/* ---- Plain struct uniform active-member detection via SPIR-V analysis ----
+ *
+ * spvc_compiler_get_active_buffer_ranges only works for buffer-backed
+ * resources (UBO/SSBO).  Plain struct uniforms (storage class UniformConstant)
+ * have no Offset decorations, so that API returns 0 ranges.
+ *
+ * Instead, we directly scan the SPIR-V binary for OpAccessChain /
+ * OpInBoundsAccessChain instructions whose base pointer (recursively resolved)
+ * is the struct uniform variable.  Each access chain yields a constant index
+ * path (e.g. [2,1,1,3,0] for l[2].b[1].d[0]).  During reflection we only
+ * emit members whose path prefix-matches an active path.
+ */
+
+#define MGL_ACTIVE_MAX_PATHS   512
+#define MGL_ACTIVE_MAX_DEPTH   32
+
+typedef struct {
+    GLuint  indices[MGL_ACTIVE_MAX_DEPTH];
+    GLuint  len;
+} MGLActivePath;
+
+typedef struct {
+    MGLActivePath  paths[MGL_ACTIVE_MAX_PATHS];
+    GLuint         count;
+} MGLActivePathSet;
+
+/* SPIR-V opcodes */
+#define MGL_SPV_OP_CONSTANT              43
+#define MGL_SPV_OP_ACCESS_CHAIN          65
+#define MGL_SPV_OP_IN_BOUNDS_ACCESS_CHAIN 66
+
+/* Resolve an OpAccessChain result back to its root variable ID, collecting
+ * the full constant index path.  Returns the root variable ID, or 0 if the
+ * chain could not be fully resolved (e.g. non-constant index). */
+static GLuint mglSpvResolveAccessChainRoot(GLuint result_id,
+                                           GLuint bound,
+                                           const GLuint *const_values,
+                                           const GLboolean *is_const,
+                                           const GLuint *chain_base,
+                                           const GLuint *chain_num_idx,
+                                           const GLuint *chain_idx_ids,
+                                           const GLboolean *chain_valid,
+                                           GLuint idx_stride,
+                                           GLuint path_out[MGL_ACTIVE_MAX_DEPTH],
+                                           GLuint *path_len_out)
+{
+    GLuint path[MGL_ACTIVE_MAX_DEPTH];
+    GLuint path_len = 0;
+    GLuint current = result_id;
+
+    while (current > 0 && current < bound && chain_valid[current] && path_len < MGL_ACTIVE_MAX_DEPTH) {
+        GLuint num = chain_num_idx[current];
+        const GLuint *ids = &chain_idx_ids[current * idx_stride];
+        /* prepend indices in reverse */
+        for (GLint i = (GLint)num - 1; i >= 0 && path_len < MGL_ACTIVE_MAX_DEPTH; i--) {
+            GLuint idx_id = ids[i];
+            if (idx_id > 0 && idx_id < bound && is_const[idx_id]) {
+                path[path_len++] = const_values[idx_id];
+            } else {
+                /* non-constant index — can't resolve, give up */
+                *path_len_out = 0;
+                return 0;
+            }
+        }
+        current = chain_base[current];
+    }
+
+    /* reverse */
+    for (GLuint i = 0; i < path_len; i++) {
+        path_out[i] = path[path_len - 1 - i];
+    }
+    *path_len_out = path_len;
+    return current;
+}
+
+/* Collect all active member-access paths rooted at var_id. */
+static void mglCollectActivePaths(const unsigned int *spirv, size_t word_count,
+                                  GLuint var_id,
+                                  MGLActivePathSet *out)
+{
+    out->count = 0;
+    if (!spirv || word_count < 5 || !out) return;
+
+    GLuint bound = spirv[3];
+    if (bound == 0 || bound > 0x00FFFFFFu) return; /* sanity */
+
+    /* We use simple malloc'd arrays indexed by SPIR-V ID. */
+    GLuint    *const_values = (GLuint *)calloc(bound, sizeof(GLuint));
+    GLboolean *is_const     = (GLboolean *)calloc(bound, sizeof(GLboolean));
+    GLuint    *chain_base   = (GLuint *)calloc(bound, sizeof(GLuint));
+    GLuint    *chain_num_idx = (GLuint *)calloc(bound, sizeof(GLuint));
+    GLboolean *chain_valid  = (GLboolean *)calloc(bound, sizeof(GLboolean));
+
+    /* index IDs: each access chain can have up to 16 indices in practice.
+     * Store as a flat array: chain_idx_ids[id * 16 + i] */
+    const GLuint IDX_STRIDE = 16;
+    GLuint *chain_idx_ids = (GLuint *)calloc((size_t)bound * IDX_STRIDE, sizeof(GLuint));
+
+    if (!const_values || !is_const || !chain_base || !chain_num_idx ||
+        !chain_valid || !chain_idx_ids) {
+        free(const_values); free(is_const); free(chain_base);
+        free(chain_num_idx); free(chain_valid); free(chain_idx_ids);
+        return;
+    }
+
+    /* Parse SPIR-V instructions */
+    size_t offset = 5; /* skip 5-word header */
+    while (offset < word_count) {
+        GLuint word = spirv[offset];
+        GLuint opcode = word & 0xFFFFu;
+        GLuint inst_len = word >> 16;
+        if (inst_len == 0 || offset + inst_len > word_count) break;
+
+        if (opcode == MGL_SPV_OP_CONSTANT && inst_len >= 4) {
+            GLuint result_id = spirv[offset + 2];
+            if (result_id > 0 && result_id < bound) {
+                /* For 32-bit scalar int constants, value is at offset+3.
+                 * For 64-bit, it's at offset+3 and offset+4.  We only care
+                 * about 32-bit indices, so taking offset+3 is fine. */
+                const_values[result_id] = spirv[offset + 3];
+                is_const[result_id] = GL_TRUE;
+            }
+        } else if ((opcode == MGL_SPV_OP_ACCESS_CHAIN ||
+                    opcode == MGL_SPV_OP_IN_BOUNDS_ACCESS_CHAIN) && inst_len >= 4) {
+            GLuint result_id = spirv[offset + 2];
+            GLuint base_id   = spirv[offset + 3];
+            if (result_id > 0 && result_id < bound) {
+                chain_base[result_id] = base_id;
+                chain_num_idx[result_id] = inst_len - 4; /* minus word0,type,result,base */
+                chain_valid[result_id] = GL_TRUE;
+                GLuint n = chain_num_idx[result_id];
+                if (n > IDX_STRIDE) n = IDX_STRIDE;
+                for (GLuint i = 0; i < n; i++) {
+                    chain_idx_ids[result_id * IDX_STRIDE + i] = spirv[offset + 4 + i];
+                }
+            }
+        }
+
+        offset += inst_len;
+    }
+
+    /* Resolve each access chain to its root and collect paths for var_id */
+    for (GLuint id = 1; id < bound && out->count < MGL_ACTIVE_MAX_PATHS; id++) {
+        if (!chain_valid[id]) continue;
+
+        GLuint path[MGL_ACTIVE_MAX_DEPTH];
+        GLuint path_len = 0;
+        GLuint root = mglSpvResolveAccessChainRoot(id, bound, const_values, is_const,
+                                                    chain_base, chain_num_idx,
+                                                    chain_idx_ids, chain_valid,
+                                                    IDX_STRIDE,
+                                                    path, &path_len);
+        if (root == var_id && path_len > 0) {
+            MGLActivePath *p = &out->paths[out->count++];
+            p->len = path_len > MGL_ACTIVE_MAX_DEPTH ? MGL_ACTIVE_MAX_DEPTH : path_len;
+            for (GLuint i = 0; i < p->len; i++) {
+                p->indices[i] = path[i];
+            }
+        }
+    }
+
+    free(const_values); free(is_const); free(chain_base);
+    free(chain_num_idx); free(chain_valid); free(chain_idx_ids);
+}
+
+/* Check if any active path starts with the given prefix (prefix match).
+ * Used to decide whether to recurse into a struct/array member. */
+static GLboolean mglActivePathHasPrefix(const MGLActivePathSet *set,
+                                        const GLuint *prefix, GLuint prefix_len)
+{
+    if (!set || set->count == 0 || prefix_len == 0) return GL_FALSE;
+    for (GLuint i = 0; i < set->count; i++) {
+        const MGLActivePath *p = &set->paths[i];
+        if (p->len < prefix_len) continue;
+        GLboolean match = GL_TRUE;
+        for (GLuint j = 0; j < prefix_len; j++) {
+            if (p->indices[j] != prefix[j]) { match = GL_FALSE; break; }
+        }
+        if (match) return GL_TRUE;
+    }
+    return GL_FALSE;
+}
+
+/* Check if any active path exactly matches the given path.
+ * Used to decide whether to emit a leaf member. */
+static GLboolean mglActivePathExactMatch(const MGLActivePathSet *set,
+                                         const GLuint *path, GLuint path_len)
+{
+    if (!set || set->count == 0 || path_len == 0) return GL_FALSE;
+    for (GLuint i = 0; i < set->count; i++) {
+        const MGLActivePath *p = &set->paths[i];
+        if (p->len != path_len) continue;
+        GLboolean match = GL_TRUE;
+        for (GLuint j = 0; j < path_len; j++) {
+            if (p->indices[j] != path[j]) { match = GL_FALSE; break; }
+        }
+        if (match) return GL_TRUE;
+    }
+    return GL_FALSE;
+}
+
+/* Check if a byte offset falls within any active buffer range.
+ * When active_ranges is NULL, everything is considered active (used for UBOs
+ * where we reflect all declared members). For plain struct uniforms, the
+ * ranges come from spvc_compiler_get_active_buffer_ranges and only members
+ * whose byte extent overlaps an active range are reflected. */
+static GLboolean mglByteOffsetIsActive(GLuint offset,
+                                       GLint array_stride,
+                                       GLint array_size,
+                                       const spvc_buffer_range *active_ranges,
+                                       size_t num_active_ranges)
+{
+    if (!active_ranges || num_active_ranges == 0) {
+        return GL_TRUE; /* no filter → include everything */
+    }
+
+    /* For arrays, check if any element's starting offset falls within an
+     * active range.  For non-arrays (array_stride <= 0 or array_size <= 1),
+     * just check the single offset. */
+    GLint n = (array_stride > 0 && array_size > 1) ? array_size : 1;
+    for (GLint elem = 0; elem < n; elem++) {
+        GLuint elem_offset = offset + (GLuint)(elem * array_stride);
+        for (size_t r = 0; r < num_active_ranges; r++) {
+            if (elem_offset >= (GLuint)active_ranges[r].offset &&
+                elem_offset < (GLuint)(active_ranges[r].offset + active_ranges[r].range)) {
+                return GL_TRUE;
+            }
+        }
+    }
+    return GL_FALSE;
+}
+
 static GLboolean mglReflectUBOMemberLeaves(Program *program,
                                            int stage,
                                            spvc_compiler compiler,
@@ -1048,7 +1659,15 @@ static GLboolean mglReflectUBOMemberLeaves(Program *program,
                                            const char *prefix,
                                            GLuint base_offset,
                                            GLboolean inherited_row_major,
-                                           GLuint *count);
+                                           GLuint *count,
+                                           GLint location_offset,
+                                           const spvc_buffer_range *active_ranges,
+                                           size_t num_active_ranges,
+                                           const MGLActivePathSet *active_paths,
+                                           GLuint *current_path,
+                                           GLuint current_path_len,
+                                           GLint top_level_array_size,
+                                           GLint top_level_array_stride);
 
 static GLboolean mglReflectUBOStructMember(Program *program,
                                            int stage,
@@ -1060,7 +1679,15 @@ static GLboolean mglReflectUBOStructMember(Program *program,
                                            const char *prefix,
                                            GLuint base_offset,
                                            GLboolean inherited_row_major,
-                                           GLuint *count)
+                                           GLuint *count,
+                                           GLint location_offset,
+                                           const spvc_buffer_range *active_ranges,
+                                           size_t num_active_ranges,
+                                           const MGLActivePathSet *active_paths,
+                                           GLuint *current_path,
+                                           GLuint current_path_len,
+                                           GLint top_level_array_size,
+                                           GLint top_level_array_stride)
 {
     const char *member_name_raw =
         spvc_compiler_get_member_name(compiler, struct_type_id, member_index);
@@ -1134,13 +1761,54 @@ static GLboolean mglReflectUBOStructMember(Program *program,
     }
 
     GLuint absolute_offset = base_offset + member_offset;
+
+    /* For direct block members (prefix is NULL or empty), compute the
+     * top-level array size and stride from the member type.  These are
+     * propagated to all leaf members for GL_TOP_LEVEL_ARRAY_SIZE /
+     * GL_TOP_LEVEL_ARRAY_STRIDE queries on GL_BUFFER_VARIABLE.
+     * SPIRV-Cross stores array dimensions from innermost to outermost,
+     * so the outermost (top-level) dimension is at index dims-1. */
+    if (!prefix || !prefix[0]) {
+        if (member_type && spvc_type_get_num_array_dimensions(member_type) > 0) {
+            unsigned dims = spvc_type_get_num_array_dimensions(member_type);
+            SpvId raw_dim = spvc_type_get_array_dimension(member_type, dims - 1);
+            top_level_array_size = raw_dim > 0 ? (GLint)raw_dim : 1;
+            top_level_array_stride = array_stride;
+        } else {
+            top_level_array_size = 1;
+            top_level_array_stride = 0;
+        }
+    }
+
     if (member_type &&
         spvc_type_get_basetype(member_type) == SPVC_BASETYPE_STRUCT) {
         unsigned array_dims = spvc_type_get_num_array_dimensions(member_type);
         if (array_dims > 0) {
+            /* For array-of-struct, resolve the element (base) type so that
+             * member names and decorations are looked up on the struct type,
+             * not on the array type.  SPIRV-Cross stores member names and
+             * Offset/MatrixStride/ArrayStride decorations on the element
+             * type, not on the array type. */
+            spvc_type_id elem_type_id = spvc_type_get_base_type_id(member_type);
+            spvc_type elem_type = elem_type_id
+                ? spvc_compiler_get_type_handle(compiler, elem_type_id) : NULL;
+
             GLint stride = array_stride > 0 ? array_stride : 0;
             GLint elements = mglGLArraySizeFromSPVCType(member_type);
+            GLint total_member_loc = mglSPVCTypeLocationStep(compiler, member_type);
+            GLint elem_loc_count = (elements > 0)
+                ? total_member_loc / elements : total_member_loc;
             for (GLint elem = 0; elem < elements; elem++) {
+                /* For plain struct uniforms, check if this array element is
+                 * part of an active access path before recursing. */
+                if (active_paths && current_path && current_path_len < MGL_ACTIVE_MAX_DEPTH) {
+                    current_path[current_path_len] = (GLuint)elem;
+                    if (!mglActivePathHasPrefix(active_paths,
+                                                current_path,
+                                                current_path_len + 1)) {
+                        continue; /* skip this array element */
+                    }
+                }
                 size_t path_len = strlen(path);
                 char suffix[32];
                 snprintf(suffix, sizeof(suffix), "[%d]", elem);
@@ -1154,12 +1822,20 @@ static GLboolean mglReflectUBOStructMember(Program *program,
                                                stage,
                                                compiler,
                                                ubo,
-                                               member_type,
-                                               member_type_id,
+                                               elem_type ? elem_type : member_type,
+                                               elem_type_id ? elem_type_id : member_type_id,
                                                elem_path,
                                                absolute_offset + (GLuint)(elem * stride),
                                                row_major,
-                                               count)) {
+                                               count,
+                                               location_offset + elem * elem_loc_count,
+                                               active_ranges,
+                                               num_active_ranges,
+                                               active_paths,
+                                               current_path,
+                                               current_path_len + 1,
+                                               top_level_array_size,
+                                               top_level_array_stride)) {
                     free(elem_path);
                     free(path);
                     return GL_FALSE;
@@ -1168,6 +1844,16 @@ static GLboolean mglReflectUBOStructMember(Program *program,
             }
             free(path);
             return GL_TRUE;
+        }
+
+        /* Non-array struct member: check active path prefix before recursing */
+        if (active_paths && current_path && current_path_len < MGL_ACTIVE_MAX_DEPTH) {
+            if (!mglActivePathHasPrefix(active_paths,
+                                        current_path,
+                                        current_path_len)) {
+                free(path);
+                return GL_TRUE; /* not active — skip, but continue recursion */
+            }
         }
 
         GLboolean ok = mglReflectUBOMemberLeaves(program,
@@ -1179,14 +1865,55 @@ static GLboolean mglReflectUBOStructMember(Program *program,
                                                  path,
                                                  absolute_offset,
                                                  row_major,
-                                                 count);
+                                                 count,
+                                                 location_offset,
+                                                 active_ranges,
+                                                 num_active_ranges,
+                                                 active_paths,
+                                                 current_path,
+                                                 current_path_len,
+                                                 top_level_array_size,
+                                                 top_level_array_stride);
         free(path);
         return ok;
     }
 
-    GLint size = mglGLArraySizeFromSPVCType(member_type);
+    /* SPIRV-Cross stores array dimensions from innermost to outermost.
+     * GL_ARRAY_SIZE is the innermost dimension (array_dimension(0)).
+     * For runtime-sized arrays (OpTypeRuntimeArray, dimension == 0), size is 0. */
+    unsigned member_array_dims = member_type ? spvc_type_get_num_array_dimensions(member_type) : 0;
+    GLint size;
+    if (member_array_dims > 0) {
+        SpvId raw_dim = spvc_type_get_array_dimension(member_type, 0);
+        size = raw_dim > 0 ? (GLint)raw_dim : 0;
+    } else {
+        size = 1;
+    }
+
+    /* For plain struct uniforms, only reflect leaf members whose path is a
+     * prefix of some active SPIR-V OpAccessChain path. */
+    if (active_paths && current_path && current_path_len > 0) {
+        if (!mglActivePathHasPrefix(active_paths,
+                                    current_path,
+                                    current_path_len)) {
+            free(path);
+            return GL_TRUE; /* not active — skip, but continue recursion */
+        }
+    }
+
+    /* UBO byte-offset filtering (kept for UBO path; no-op for plain structs
+     * where active_ranges is NULL). */
+    if (!mglByteOffsetIsActive(absolute_offset,
+                               array_stride,
+                               size,
+                               active_ranges,
+                               num_active_ranges)) {
+        free(path);
+        return GL_TRUE; /* not active — skip, but continue recursion */
+    }
+
     char *query_path = (member_type && spvc_type_get_num_array_dimensions(member_type) > 0)
-        ? mglAppendArrayZeroSuffix(path)
+        ? mglAppendArrayZeroSuffix(path, spvc_type_get_num_array_dimensions(member_type))
         : strdup(path);
     free(path);
     if (!query_path) {
@@ -1204,7 +1931,10 @@ static GLboolean mglReflectUBOStructMember(Program *program,
                                                array_stride,
                                                matrix_stride,
                                                row_major,
-                                               size);
+                                               size,
+                                               location_offset,
+                                               top_level_array_size,
+                                               top_level_array_stride);
     if (ok && getenv("MGL_DEBUG_UBO_REFLECT")) {
         fprintf(stderr,
                 "MGL UBO MEMBER program=%u stage=%d ubo=%s member=%u finalName=%s queryName=%s offset=%u\n",
@@ -1229,14 +1959,32 @@ static GLboolean mglReflectUBOMemberLeaves(Program *program,
                                            const char *prefix,
                                            GLuint base_offset,
                                            GLboolean inherited_row_major,
-                                           GLuint *count)
+                                           GLuint *count,
+                                           GLint location_offset,
+                                           const spvc_buffer_range *active_ranges,
+                                           size_t num_active_ranges,
+                                           const MGLActivePathSet *active_paths,
+                                           GLuint *current_path,
+                                           GLuint current_path_len,
+                                           GLint top_level_array_size,
+                                           GLint top_level_array_stride)
 {
     if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) {
         return GL_FALSE;
     }
 
     unsigned member_count = spvc_type_get_num_member_types(struct_type);
+    GLint running = 0;
     for (unsigned mem_idx = 0; mem_idx < member_count; mem_idx++) {
+        spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mem_idx);
+        spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+        GLint member_loc_count = mglSPVCTypeLocationStep(compiler, member_type);
+
+        /* Build current path for this member: [existing path..., mem_idx] */
+        if (active_paths && current_path && current_path_len < MGL_ACTIVE_MAX_DEPTH) {
+            current_path[current_path_len] = mem_idx;
+        }
+
         if (!mglReflectUBOStructMember(program,
                                        stage,
                                        compiler,
@@ -1247,9 +1995,18 @@ static GLboolean mglReflectUBOMemberLeaves(Program *program,
                                        prefix,
                                        base_offset,
                                        inherited_row_major,
-                                       count)) {
+                                       count,
+                                       location_offset + running,
+                                       active_ranges,
+                                       num_active_ranges,
+                                       active_paths,
+                                       current_path,
+                                       current_path_len + 1,
+                                       top_level_array_size,
+                                       top_level_array_stride)) {
             return GL_FALSE;
         }
+        running += member_loc_count;
     }
     return GL_TRUE;
 }
@@ -1270,126 +2027,6 @@ static GLboolean mglGLSLContainsToken(const char *src, const char *token)
         pos += token_len;
     }
     return GL_FALSE;
-}
-
-static GLboolean mglAddPlainStructUniformMember(SpirvResource *res,
-                                                GLuint *count,
-                                                const char *query_name,
-                                                GLuint gl_type,
-                                                GLint size,
-                                                GLint location_offset)
-{
-    if (!res || !count || !query_name) {
-        return GL_FALSE;
-    }
-
-    SpirvUBOMember *grown = (SpirvUBOMember *)realloc(
-        res->ubo_members, ((size_t)(*count) + 1u) * sizeof(SpirvUBOMember));
-    if (!grown) {
-        return GL_FALSE;
-    }
-    res->ubo_members = grown;
-
-    SpirvUBOMember *member = &res->ubo_members[*count];
-    memset(member, 0, sizeof(*member));
-    member->name = strdup(query_name);
-    member->query_name = strdup(query_name);
-    if (!member->name || !member->query_name) {
-        free((void *)member->name);
-        free(member->query_name);
-        memset(member, 0, sizeof(*member));
-        return GL_FALSE;
-    }
-    member->gl_type = gl_type;
-    member->size = size > 0 ? size : 1;
-    member->offset = 0;
-    member->array_stride = -1;
-    member->matrix_stride = -1;
-    member->is_row_major = GL_FALSE;
-    (*count)++;
-    member->location_offset = location_offset;
-    res->ubo_member_count = *count;
-    return GL_TRUE;
-}
-
-static void mglReflectCTSExplicitStructUniformLeaves(const char *src,
-                                                     SpirvResource *res,
-                                                     GLuint *count)
-{
-    if (!src || !res || !res->name || !count) {
-        return;
-    }
-    if (!mglGLSLContainsToken(src, "m0") ||
-        !mglGLSLContainsToken(src, "m1") ||
-        !mglGLSLContainsToken(src, "m2")) {
-        return;
-    }
-
-    if (strcmp(res->name, "u0") == 0) {
-        GLint elements = res->gl_array_size > 0 ? res->gl_array_size : 1;
-        if (elements > 8) {
-            elements = 8;
-        }
-        for (GLint elem = 0; elem < elements; elem++) {
-            char query[64];
-            GLint base = elem * 4;
-            snprintf(query, sizeof(query), "u0[%d].m0", elem);
-            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT_VEC4, 1, base + 0);
-            snprintf(query, sizeof(query), "u0[%d].m1[0]", elem);
-            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT, 1, base + 1);
-            snprintf(query, sizeof(query), "u0[%d].m1[1]", elem);
-            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT, 1, base + 2);
-            snprintf(query, sizeof(query), "u0[%d].m2", elem);
-            mglAddPlainStructUniformMember(res, count, query, GL_FLOAT_MAT2, 1, base + 3);
-        }
-    } else if (strcmp(res->name, "u1") == 0) {
-        mglAddPlainStructUniformMember(res, count, "u1.m0", GL_FLOAT_VEC4, 1, 0);
-        mglAddPlainStructUniformMember(res, count, "u1.m1[0]", GL_FLOAT, 1, 1);
-        mglAddPlainStructUniformMember(res, count, "u1.m1[1]", GL_FLOAT, 1, 2);
-        mglAddPlainStructUniformMember(res, count, "u1.m2", GL_FLOAT_MAT2, 1, 3);
-    }
-}
-
-static void mglReflectPlainStructUniformLeaves(Program *program, int stage)
-{
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        !program->shader_slots[stage] || !program->shader_slots[stage]->src) {
-        return;
-    }
-
-    const char *src = program->shader_slots[stage]->src;
-    SpirvResourceList *resources =
-        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
-
-    for (GLuint i = 0; resources->list && i < resources->count; i++) {
-        SpirvResource *res = &resources->list[i];
-        if (!res->name || res->ubo_members) {
-            continue;
-        }
-
-        GLuint count = 0;
-        if (strcmp(res->name, "j") == 0) {
-            if (mglGLSLContainsToken(src, "j.b")) {
-                mglAddPlainStructUniformMember(res, &count, "j.b", GL_FLOAT_VEC4, 1, 0);
-            }
-        } else if (strcmp(res->name, "k") == 0) {
-            if (mglGLSLContainsToken(src, "k.b[0].c")) {
-                mglAddPlainStructUniformMember(res, &count, "k.b[0].c", GL_FLOAT_MAT3, 1, 0);
-            }
-        } else if (strcmp(res->name, "l") == 0) {
-            if (mglGLSLContainsToken(src, "l[0].c")) {
-                mglAddPlainStructUniformMember(res, &count, "l[0].c", GL_UNSIGNED_INT_VEC2, 1, 0);
-            }
-            if (mglGLSLContainsToken(src, "l[2].b[1].d[0]")) {
-                mglAddPlainStructUniformMember(res, &count, "l[2].b[1].d[0]", GL_FLOAT, 2, 0);
-            }
-            if (mglGLSLContainsToken(src, "l[2].a.c")) {
-                mglAddPlainStructUniformMember(res, &count, "l[2].a.c", GL_FLOAT_MAT3, 1, 0);
-            }
-        } else if (strcmp(res->name, "u0") == 0 || strcmp(res->name, "u1") == 0) {
-            mglReflectCTSExplicitStructUniformLeaves(src, res, &count);
-        }
-    }
 }
 
 static GLboolean mglUniformBlockNameSeen(Program *program, int max_stage, GLuint max_index, const char *name, GLuint gl_binding)
@@ -1635,6 +2272,13 @@ static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
      * that through glGetUniformLocation makes later glUniform1i calls overwrite
      * the wrong sampler. Keep GL sampler locations in our own namespace, then
      * unify resources with the same sampler name after both stages are linked.
+     *
+     * Glslang always emits SpvDecorationLocation on uniform variables, even
+     * when the GLSL source does not declare an explicit layout(location=N).
+     * The reflected location is therefore the SPIR-V/Metal descriptor index,
+     * not a reliable OpenGL uniform location, and using it verbatim causes
+     * collisions with plain uniforms (e.g. "uniform int layer") that share
+     * the same reflected location. Always use the synthetic namespace.
      */
     (void)reflected_location;
     return mglSyntheticSamplerUniformLocation(stage, res_type, index);
@@ -1663,43 +2307,6 @@ static bool mglUniformConstantBaseTypeIsSamplerLike(spvc_basetype basetype)
     return basetype == SPVC_BASETYPE_IMAGE ||
            basetype == SPVC_BASETYPE_SAMPLED_IMAGE ||
            basetype == SPVC_BASETYPE_SAMPLER;
-}
-
-static GLint mglKnownPlainUniformLocationForName(const char *name)
-{
-    if (!name || !*name) {
-        return -1;
-    }
-
-    if (!strcmp(name, "ModelViewMat")) return 0;
-    if (!strcmp(name, "ProjMat")) return 1;
-    if (!strcmp(name, "TextureMat")) return 2;
-    if (!strcmp(name, "ColorModulator")) return 3;
-    if (!strcmp(name, "FogStart")) return 4;
-    if (!strcmp(name, "FogEnd")) return 5;
-    if (!strcmp(name, "FogColor")) return 6;
-    if (!strcmp(name, "FogShape")) return 7;
-    if (!strcmp(name, "GameTime")) return 8;
-    if (!strcmp(name, "ScreenSize")) return 9;
-    if (!strcmp(name, "LineWidth")) return 10;
-    if (!strcmp(name, "IViewRotMat")) return 11;
-    if (!strcmp(name, "ChunkOffset")) return 12;
-    if (!strcmp(name, "u_ProjectionMatrix")) return 0;
-    if (!strcmp(name, "u_ModelViewMatrix")) return 1;
-    if (!strcmp(name, "u_RegionOffset")) return 2;
-    if (!strcmp(name, "u_TexCoordShrink")) return 3;
-    if (!strcmp(name, "u_FogColor")) return 4;
-    if (!strcmp(name, "u_EnvironmentFog")) return 5;
-    if (!strcmp(name, "u_RenderFog")) return 6;
-
-    /* 1.21.11 new plain uniforms (may appear outside UBO blocks in some shader variants) */
-    if (!strcmp(name, "CameraBlockPos")) return 13;
-    if (!strcmp(name, "CameraOffset"))   return 14;
-    if (!strcmp(name, "UseRgss"))        return 15;
-    if (!strcmp(name, "ChunkVisibility")) return 16;
-    if (!strcmp(name, "texture_layer")) return 15;
-
-    return -1;
 }
 
 static bool mglProgramResourceLooksSamplerLike(const SpirvResource *res, int res_type)
@@ -1862,11 +2469,7 @@ static void mglAssignPlainUniformLocations(Program *program)
                 continue;
             }
 
-            GLint known = mglKnownPlainUniformLocationForName(res->name);
-            if (known >= 0 && known < MAX_BINDABLE_BUFFERS) {
-                res->uniform_location = known;
-                used[known] = true;
-            } else if (res->location != 0xffffffffu &&
+            if (res->location != 0xffffffffu &&
                        res->location < 1024u) {
                 res->uniform_location = (GLint)res->location;
                 if (res->uniform_location < MAX_BINDABLE_BUFFERS) {
@@ -2638,6 +3241,34 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         mglFreeProgramAttribName(ptr, (GLuint)i, "program delete");
     }
 
+    for (GLuint i = 0; i < ptr->frag_data_location_count && i < MAX_ATTRIBS; i++) {
+        if (ptr->frag_data_location_names[i]) {
+            free(ptr->frag_data_location_names[i]);
+            ptr->frag_data_location_names[i] = NULL;
+        }
+    }
+    ptr->frag_data_location_count = 0;
+
+    for (int s = 0; s < _MAX_SHADER_TYPES; s++) {
+        for (GLuint i = 0; i < ptr->builtin_program_input_count[s] && i < 16; i++) {
+            if (ptr->builtin_program_inputs[s][i].name) {
+                free(ptr->builtin_program_inputs[s][i].name);
+                ptr->builtin_program_inputs[s][i].name = NULL;
+            }
+        }
+        ptr->builtin_program_input_count[s] = 0;
+    }
+
+    for (int s = 0; s < _MAX_SHADER_TYPES; s++) {
+        for (GLuint i = 0; i < ptr->builtin_program_output_count[s] && i < 16; i++) {
+            if (ptr->builtin_program_outputs[s][i].name) {
+                free(ptr->builtin_program_outputs[s][i].name);
+                ptr->builtin_program_outputs[s][i].name = NULL;
+            }
+        }
+        ptr->builtin_program_output_count[s] = 0;
+    }
+
     free(ptr);
 }
 
@@ -3184,6 +3815,425 @@ static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
     }
 }
 
+/* Inject [[point_size]] output into vertex-producing shaders that don't
+ * already declare it.
+ *
+ * Metal requires a [[point_size]] output for point primitives
+ * (MTLPrimitiveTypePoint) to rasterize with a defined, nonzero size.
+ * GLSL shaders that don't write gl_PointSize produce SPIR-V without the
+ * PointSize builtin, so SPIRV-Cross omits [[point_size]] from the output
+ * struct.  This function post-processes the MSL to add:
+ *   1. A `float mgl_injected_point_size [[point_size]];` field to the
+ *      vertex output struct (right after the [[position]] field).
+ *   2. An `out.mgl_injected_point_size = 1.0;` assignment before every
+ *      `return out;` in the entry function.
+ *
+ * The default of 1.0 matches OpenGL's default point size. */
+static void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr) {
+        return;
+    }
+
+    /* Only vertex-producing stages need point_size. */
+    if (stage != _VERTEX_SHADER &&
+        stage != _TESS_EVALUATION_SHADER &&
+        stage != _GEOMETRY_SHADER) {
+        return;
+    }
+
+    /* Skip if [[point_size]] is already present. */
+    if (strstr(*msl_ptr, "[[point_size]]")) {
+        return;
+    }
+
+    /* Find the [[position]] qualifier in the output struct. */
+    const char *pos_qualifier = strstr(*msl_ptr, "[[position]]");
+    if (!pos_qualifier) {
+        return;
+    }
+
+    /* Find the end of the line containing [[position]] (the terminating ';'). */
+    const char *stmt_end = strchr(pos_qualifier, ';');
+    if (!stmt_end) {
+        return;
+    }
+
+    /* Insert the point_size field right after the position field. */
+    static const char point_size_field[] = "\n    float mgl_injected_point_size [[point_size]];";
+    if (!mglInsertStringAt(msl_ptr, stmt_end + 1, point_size_field)) {
+        return;
+    }
+
+    /* Inject `out.mgl_injected_point_size = 1.0;` before every `return out;`.
+     * SPIRV-Cross consistently names the output variable `out` and uses
+     * `return out;` as the return statement. */
+    const char return_pattern[] = "return out;";
+    size_t return_len = strlen(return_pattern);
+    const char *cursor = *msl_ptr;
+    while ((cursor = strstr(cursor, return_pattern)) != NULL) {
+        /* Insert before the return statement. */
+        static const char point_size_assign[] = "out.mgl_injected_point_size = 1.0; ";
+        if (!mglInsertStringAt(msl_ptr, cursor, point_size_assign)) {
+            break;
+        }
+        /* Move past the inserted text + the return pattern for the next search. */
+        cursor += strlen(point_size_assign) + return_len;
+    }
+}
+
+/* SPIRV-Cross lowers GLSL image2DRect to Metal texture2d, but emits
+ * imageSize(g_image_rect) as `int2(tex.get_width())` — a single-argument
+ * int2 constructor that broadcasts width to both components, yielding
+ * (width, width) instead of (width, height).  This breaks the
+ * KHR-GL46.shader_image_size tests for image2DRect.
+ *
+ * Fix by rewriting `int2(IDENT.get_width())` into
+ * `int2(IDENT.get_width(), IDENT.get_height())` wherever IDENT is a
+ * texture variable.  The 2-argument form `int2(a, b)` is left untouched
+ * because the `get_width()` is followed by a comma, not a ')'. */
+static void mglFixMSLImage2DRectImageSize(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr) {
+        return;
+    }
+
+    const char needle[] = ".get_width())";
+    const size_t needle_len = sizeof(needle) - 1u;
+
+    char *cursor = *msl_ptr;
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        /* Cursor points at ".get_width())".  Walk backwards to find the
+         * identifier that owns this method call. */
+        char *ident_end = cursor;  /* points at '.' */
+        char *p = ident_end;
+        while (p > *msl_ptr && (isalnum((unsigned char)p[-1]) || p[-1] == '_')) {
+            p--;
+        }
+        char *ident_start = p;
+        size_t ident_len = (size_t)(ident_end - ident_start);
+        if (ident_len == 0u) {
+            cursor += needle_len;
+            continue;
+        }
+
+        /* Skip whitespace between ident_end and '.', which is ident_end itself. */
+        /* Now walk backwards from ident_start, skipping whitespace, to find '('. */
+        char *q = ident_start;
+        while (q > *msl_ptr && isspace((unsigned char)q[-1])) {
+            q--;
+        }
+        /* q now points just after '('.  Check for "int2(" (or other type prefixes). */
+        const char *prefixes[] = { "int2(", "uint2(", "float2(" };
+        size_t prefix_lens[] = { 5u, 6u, 7u };
+        int matched = -1;
+        for (int i = 0; i < 3; i++) {
+            size_t plen = prefix_lens[i];
+            if ((size_t)(q - *msl_ptr) >= plen &&
+                strncmp(q - plen, prefixes[i], plen) == 0) {
+                matched = i;
+                break;
+            }
+        }
+        if (matched < 0) {
+            cursor += needle_len;
+            continue;
+        }
+
+        /* Build the replacement: PREFIX(IDENT.get_width(), IDENT.get_height()) */
+        char *close_paren = cursor + needle_len - 1u;  /* points at ')' */
+        size_t prefix_len = prefix_lens[matched];
+        char *open_paren = q - prefix_len;  /* points at '(' */
+
+        /* Construct new text.  The range [before, close_paren] includes the
+         * ')' that closes int2(...), so the replacement must re-close it. */
+        char *before = open_paren + prefix_len;  /* start of IDENT */
+        size_t new_inner_len = ident_len + strlen(".get_width(), ") + ident_len + strlen(".get_height())");
+        char *new_inner = (char *)malloc(new_inner_len + 1u);
+        if (!new_inner) {
+            cursor += needle_len;
+            continue;
+        }
+        memcpy(new_inner, ident_start, ident_len);
+        memcpy(new_inner + ident_len, ".get_width(), ", strlen(".get_width(), "));
+        memcpy(new_inner + ident_len + strlen(".get_width(), "), ident_start, ident_len);
+        memcpy(new_inner + ident_len + strlen(".get_width(), ") + ident_len, ".get_height())", strlen(".get_height())"));
+        new_inner[new_inner_len] = '\0';
+
+        /* Replace the range [before, close_paren] with new_inner. */
+        size_t before_offset = (size_t)(before - *msl_ptr);
+        size_t close_offset = (size_t)(close_paren - *msl_ptr);
+        size_t old_len = close_offset - before_offset + 1u;  /* inclusive of ')' */
+        size_t total_len = strlen(*msl_ptr);
+        size_t new_total = total_len - old_len + new_inner_len;
+        char *new_msl = (char *)malloc(new_total + 1u);
+        if (!new_msl) {
+            free(new_inner);
+            cursor += needle_len;
+            continue;
+        }
+        memcpy(new_msl, *msl_ptr, before_offset);
+        memcpy(new_msl + before_offset, new_inner, new_inner_len);
+        strcpy(new_msl + before_offset + new_inner_len, close_paren + 1u);
+        free(new_inner);
+        free(*msl_ptr);
+        *msl_ptr = new_msl;
+
+        /* Advance cursor past the replacement in the new buffer. */
+        cursor = *msl_ptr + before_offset + new_inner_len;
+    }
+}
+
+/* Convert a TES (Tessellation Evaluation Shader) MSL from a Metal
+ * post-tessellation vertex function to a compute kernel.
+ *
+ * SPIRV-Cross lowers GL_TESS_EVALUATION_SHADER to:
+ *   [[ patch(quad, 0) ]] vertex void name(... uint gl_PrimitiveID [[patch_id]] ...)
+ *
+ * On macOS SDKs where MTLRenderPipelineDescriptor no longer has
+ * postTessellationVertexFunction / isTessellationEnabled (Metal 4 era),
+ * we cannot use drawPatches: with a post-tessellation vertex function.
+ * Instead, we rewrite the MSL to a compute kernel and dispatch it
+ * with dispatchThreadgroups:, exactly like TCS.
+ *
+ * Rewrites:
+ *   "[[ patch(quad, 0) ]] vertex void"  →  "kernel void"
+ *   "[[patch_id]]"                       →  "[[threadgroup_position_in_grid]]"
+ *   "[[position_in_patch]]"              →  "[[thread_position_in_threadgroup]]"
+ */
+static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr) {
+        return;
+    }
+
+    /* Step 1: Replace "[[ patch(...) ]] vertex <ret_type> <name>" with
+     * "kernel void <name>".  The return type may be a struct (not void),
+     * so search for "vertex " after "]]" and skip the return type to find
+     * the function name. */
+    {
+        const char *src = *msl_ptr;
+        while (src != NULL) {
+            /* Find "vertex " in the MSL. */
+            const char *vkw = strstr(src, "vertex ");
+            if (vkw == NULL) {
+                break;
+            }
+            /* Walk backwards from vkw to find "]]" (skip whitespace). */
+            const char *p = vkw;
+            while (p > src && isspace((unsigned char)p[-1])) {
+                p--;
+            }
+            if (p < src + 2 || strncmp(p - 2, "]]", 2) != 0) {
+                src = vkw + 1; /* not a tessellation vertex; advance */
+                continue;
+            }
+            /* Walk back to find "[[ patch(" */
+            const char *patch_kw = NULL;
+            {
+                const char *search = *msl_ptr;
+                while (search < vkw) {
+                    const char *found = strstr(search, "[[");
+                    if (found == NULL || found >= vkw) {
+                        break;
+                    }
+                    const char *after = found + 2;
+                    while (after < vkw && isspace((unsigned char)*after)) {
+                        after++;
+                    }
+                    if (strncmp(after, "patch(", 6) == 0) {
+                        patch_kw = found;
+                    }
+                    search = found + 2;
+                }
+            }
+            if (patch_kw == NULL) {
+                src = vkw + 1;
+                continue;
+            }
+            /* Skip "vertex " and the return type to find the function name.
+             * The function name is the last identifier before '('. */
+            const char *after_vertex = vkw + strlen("vertex ");
+            const char *paren = strchr(after_vertex, '(');
+            if (paren == NULL) {
+                src = vkw + 1;
+                continue;
+            }
+            const char *fname_start = paren;
+            while (fname_start > after_vertex && !isspace((unsigned char)fname_start[-1])) {
+                fname_start--;
+            }
+            /* Replace from patch_kw to fname_start with "kernel void " */
+            size_t old_len = (size_t)(fname_start - patch_kw);
+            const char *replacement = "kernel void ";
+            size_t new_len = strlen(replacement);
+            char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
+            size_t before = (size_t)(patch_kw - *msl_ptr);
+            memcpy(new_msl, *msl_ptr, before);
+            memcpy(new_msl + before, replacement, new_len);
+            strcpy(new_msl + before + new_len, fname_start);
+            free(*msl_ptr);
+            *msl_ptr = new_msl;
+            src = *msl_ptr + before + new_len;
+        }
+    }
+
+    /* Step 1b: After converting to "kernel void", the function body may
+     * still contain "return <var>;" from the original vertex shader.  Metal
+     * compute kernels are void and cannot return a value, so replace
+     * "return <identifier>;" with "return;" in the converted kernel. */
+    {
+        char *pos = *msl_ptr;
+        while ((pos = strstr(pos, "return ")) != NULL) {
+            /* Check if this is "return <identifier>;" (not "return;" or
+             * "return (<expr>;" etc).  Skip identifier characters. */
+            char *after_kw = pos + strlen("return ");
+            char *p = after_kw;
+            while (*p == '_' || isalnum((unsigned char)*p)) {
+                p++;
+            }
+            /* Skip optional whitespace before ';'. */
+            char *semi = p;
+            while (*semi == ' ' || *semi == '\t') {
+                semi++;
+            }
+            if (*semi == ';' && p > after_kw) {
+                /* This is "return <identifier>;". Replace with "return;". */
+                size_t before = (size_t)(pos - *msl_ptr);
+                size_t old_len = (size_t)(semi + 1 - pos);
+                const char *replacement = "return;";
+                size_t new_len = strlen(replacement);
+                char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
+                memcpy(new_msl, *msl_ptr, before);
+                memcpy(new_msl + before, replacement, new_len);
+                strcpy(new_msl + before + new_len, semi + 1);
+                free(*msl_ptr);
+                *msl_ptr = new_msl;
+                pos = *msl_ptr + before + new_len;
+            } else {
+                pos = after_kw;
+            }
+        }
+    }
+
+    /* Step 2: Replace [[patch_id]] → [[threadgroup_position_in_grid]]. */
+    {
+        const char *old_attr = "[[patch_id]]";
+        const char *new_attr = "[[threadgroup_position_in_grid]]";
+        size_t old_len = strlen(old_attr);
+        size_t new_len = strlen(new_attr);
+        char *pos = *msl_ptr;
+        while ((pos = strstr(pos, old_attr)) != NULL) {
+            size_t before = (size_t)(pos - *msl_ptr);
+            char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
+            memcpy(new_msl, *msl_ptr, before);
+            memcpy(new_msl + before, new_attr, new_len);
+            strcpy(new_msl + before + new_len, pos + old_len);
+            free(*msl_ptr);
+            *msl_ptr = new_msl;
+            pos = *msl_ptr + before + new_len;
+        }
+    }
+
+    /* Step 3: Replace "float3 <var> [[position_in_patch]]" (with optional
+     * spaces) with "uint3 _mgl_tess_tc [[thread_position_in_threadgroup]]"
+     * and inject "float3 <var> = (float3)_mgl_tess_tc;" at the function body
+     * start.  Metal's [[thread_position_in_threadgroup]] requires uint3, but
+     * gl_TessCoord is float3 in GLSL/SPIRV-Cross output. */
+    {
+        const char *patterns[] = {
+            "[[position_in_patch]]",
+            "[[ position_in_patch ]]",
+            NULL
+        };
+        for (int pi = 0; patterns[pi] != NULL; pi++) {
+            const char *old_attr = patterns[pi];
+            const char *new_attr = "[[thread_position_in_threadgroup]]";
+            size_t old_len = strlen(old_attr);
+            size_t new_len = strlen(new_attr);
+            char *pos = *msl_ptr;
+            while ((pos = strstr(pos, old_attr)) != NULL) {
+                /* Walk backwards from pos to find the variable name. */
+                const char *before_attr = pos;
+                while (before_attr > *msl_ptr && isspace((unsigned char)before_attr[-1])) {
+                    before_attr--;
+                }
+                const char *varname_end = before_attr;
+                const char *varname_start = varname_end;
+                while (varname_start > *msl_ptr &&
+                       (isalnum((unsigned char)varname_start[-1]) || varname_start[-1] == '_')) {
+                    varname_start--;
+                }
+                /* Skip whitespace before varname to find the type. */
+                const char *before_var = varname_start;
+                while (before_var > *msl_ptr && isspace((unsigned char)before_var[-1])) {
+                    before_var--;
+                }
+                const char *type_end = before_var;
+                const char *type_start = type_end;
+                while (type_start > *msl_ptr &&
+                       (isalnum((unsigned char)type_start[-1]) || type_start[-1] == '_')) {
+                    type_start--;
+                }
+                size_t type_len = (size_t)(type_end - type_start);
+                size_t varname_len = (size_t)(varname_end - varname_start);
+
+                if (type_len == 6 && strncmp(type_start, "float3", 6) == 0 && varname_len > 0) {
+                    /* Save varname before freeing *msl_ptr. */
+                    char varname[256];
+                    size_t copy_len = varname_len < 255 ? varname_len : 255;
+                    memcpy(varname, varname_start, copy_len);
+                    varname[copy_len] = '\0';
+
+                    /* Replace "float3 <var> [[position_in_patch]]" with
+                     * "uint3 _mgl_tess_tc [[thread_position_in_threadgroup]]" */
+                    const char *rep = "uint3 _mgl_tess_tc ";
+                    size_t rep_len = strlen(rep);
+                    size_t total_old = (size_t)(pos + old_len - type_start);
+                    size_t total_new = rep_len + new_len;
+                    char *new_msl = (char *)malloc(strlen(*msl_ptr) - total_old + total_new + 1);
+                    size_t before = (size_t)(type_start - *msl_ptr);
+                    memcpy(new_msl, *msl_ptr, before);
+                    memcpy(new_msl + before, rep, rep_len);
+                    memcpy(new_msl + before + rep_len, new_attr, new_len);
+                    strcpy(new_msl + before + rep_len + new_len, pos + old_len);
+                    free(*msl_ptr);
+                    *msl_ptr = new_msl;
+
+                    /* Inject type conversion at function body start '{'. */
+                    char *brace = strchr(*msl_ptr + before + total_new, '{');
+                    if (brace != NULL) {
+                        char inject[512];
+                        snprintf(inject, sizeof(inject),
+                                 "\n    float3 %s = (float3)_mgl_tess_tc;", varname);
+                        size_t inject_len = strlen(inject);
+                        size_t brace_pos = (size_t)(brace + 1 - *msl_ptr);
+                        char *new_msl2 = (char *)malloc(strlen(*msl_ptr) + inject_len + 1);
+                        memcpy(new_msl2, *msl_ptr, brace_pos);
+                        memcpy(new_msl2 + brace_pos, inject, inject_len);
+                        strcpy(new_msl2 + brace_pos + inject_len, brace + 1);
+                        free(*msl_ptr);
+                        *msl_ptr = new_msl2;
+                        pos = *msl_ptr + before + total_new + inject_len;
+                    } else {
+                        pos = *msl_ptr + before + total_new;
+                    }
+                } else {
+                    /* Non-float3 type, just replace the attribute. */
+                    size_t before = (size_t)(pos - *msl_ptr);
+                    char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
+                    memcpy(new_msl, *msl_ptr, before);
+                    memcpy(new_msl + before, new_attr, new_len);
+                    strcpy(new_msl + before + new_len, pos + old_len);
+                    free(*msl_ptr);
+                    *msl_ptr = new_msl;
+                    pos = *msl_ptr + before + new_len;
+                }
+            }
+        }
+    }
+}
+
 /* Find the closing ')' of the MSL entry-function parameter list for any
  * shader stage (kernel/vertex/fragment), not just compute kernels.  Returns
  * a pointer to the ')' in the source, or NULL if no entry function is found. */
@@ -3314,10 +4364,16 @@ static void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char
          * leading comma to avoid `func(, device ...)` syntax errors. */
         const char *close = mglFindMSLEntryParameterClose(*msl_ptr);
         GLboolean empty_param_list = (close && close > *msl_ptr && close[-1] == '(');
+        /* Use pointer (*) for array atomic counters so SPIRV-Cross's
+         * generated `&counters[index]` subscript compiles.  Single
+         * (non-array) counters use a reference (&) so `&counters` yields
+         * `device atomic_uint*` as SPIRV-Cross expects. */
+        GLboolean is_array = (res->gl_array_size > 1);
         int written = snprintf(injected_parameter,
                                sizeof(injected_parameter),
-                               "%sdevice atomic_uint& %s [[buffer(%u)]]",
+                               "%sdevice atomic_uint%s %s [[buffer(%u)]]",
                                empty_param_list ? "" : ", ",
+                               is_array ? "*" : "&",
                                res->name,
                                (unsigned)next_slot);
         if (written <= 0 || (size_t)written >= sizeof(injected_parameter)) {
@@ -3360,293 +4416,6 @@ static size_t count_substr(const char *str, const char *needle)
     }
 
     return count;
-}
-
-static GLboolean mglApplyProgram91FragmentExperiment(Program *program, int stage, char **msl)
-{
-    if (!program || stage != _FRAGMENT_SHADER || program->name != 91u || !msl || !*msl) {
-        return GL_FALSE;
-    }
-
-    const char *mode = getenv("MGL_EXPERIMENT_PROGRAM91");
-    if (!mode || !mode[0]) {
-        return GL_FALSE;
-    }
-
-    const char *body = NULL;
-    if (!strcmp(mode, "constant")) {
-        body =
-            "{\n"
-            "    fragment_108_out out = {};\n"
-            "    out.fragColor = float4(1.0, 0.0, 0.0, 1.0);\n"
-            "    return out;\n"
-            "}\n";
-    } else if (!strcmp(mode, "sample")) {
-        body =
-            "{\n"
-            "    fragment_108_out out = {};\n"
-            "    out.fragColor = InSampler.sample(InSamplerSmplr, in.texCoord);\n"
-            "    return out;\n"
-            "}\n";
-    } else {
-        fprintf(stderr,
-                "MGL EXPERIMENT program91 unknown mode '%s' (expected constant or sample)\n",
-                mode);
-        return GL_FALSE;
-    }
-
-    char *signature = strstr(*msl, "fragment fragment_108_out fragment_108(");
-    if (!signature) {
-        fprintf(stderr,
-                "MGL EXPERIMENT program91 mode=%s could not find fragment_108 signature\n",
-                mode);
-        return GL_FALSE;
-    }
-
-    char *open = strchr(signature, '{');
-    if (!open) {
-        fprintf(stderr,
-                "MGL EXPERIMENT program91 mode=%s could not find function body start\n",
-                mode);
-        return GL_FALSE;
-    }
-
-    int depth = 0;
-    char *close = NULL;
-    for (char *p = open; *p; p++) {
-        if (*p == '{') {
-            depth++;
-        } else if (*p == '}') {
-            depth--;
-            if (depth == 0) {
-                close = p;
-                break;
-            }
-        }
-    }
-    if (!close) {
-        fprintf(stderr,
-                "MGL EXPERIMENT program91 mode=%s could not find function body end\n",
-                mode);
-        return GL_FALSE;
-    }
-
-    size_t prefix_len = (size_t)(open - *msl);
-    size_t body_len = strlen(body);
-    size_t suffix_len = strlen(close + 1);
-    char *replacement = (char *)malloc(prefix_len + body_len + suffix_len + 1u);
-    if (!replacement) {
-        return GL_FALSE;
-    }
-
-    memcpy(replacement, *msl, prefix_len);
-    memcpy(replacement + prefix_len, body, body_len);
-    memcpy(replacement + prefix_len + body_len, close + 1, suffix_len + 1u);
-
-    free(*msl);
-    *msl = replacement;
-    fprintf(stderr, "MGL EXPERIMENT program91 fragment mode=%s applied\n", mode);
-    return GL_TRUE;
-}
-
-static GLboolean mglReplaceFragmentBodyWithConstantColor(Program *program,
-                                                         int stage,
-                                                         char **msl,
-                                                         GLuint programName,
-                                                         const char *envName,
-                                                         const char *colorFieldName,
-                                                         const char *colorLiteral)
-{
-    if (!program || stage != _FRAGMENT_SHADER || program->name != programName ||
-        !msl || !*msl || !envName || !colorFieldName || !colorLiteral) {
-        return GL_FALSE;
-    }
-
-    const char *mode = getenv(envName);
-    if (!mode || strcmp(mode, "constant")) {
-        return GL_FALSE;
-    }
-
-    char *signature = strstr(*msl, "fragment ");
-    if (!signature) {
-        fprintf(stderr, "MGL EXPERIMENT program%u could not find fragment signature\n", programName);
-        return GL_FALSE;
-    }
-
-    const char *returnTypeStart = signature + strlen("fragment ");
-    const char *returnTypeEnd = strchr(returnTypeStart, ' ');
-    if (!returnTypeEnd || returnTypeEnd <= returnTypeStart) {
-        fprintf(stderr, "MGL EXPERIMENT program%u could not parse fragment return type\n", programName);
-        return GL_FALSE;
-    }
-    size_t returnTypeLen = (size_t)(returnTypeEnd - returnTypeStart);
-    if (returnTypeLen >= 128u) {
-        return GL_FALSE;
-    }
-    char outStructName[128];
-    memcpy(outStructName, returnTypeStart, returnTypeLen);
-    outStructName[returnTypeLen] = '\0';
-
-    char *open = strchr(signature, '{');
-    if (!open) {
-        fprintf(stderr, "MGL EXPERIMENT program%u could not find function body start\n", programName);
-        return GL_FALSE;
-    }
-
-    int depth = 0;
-    char *close = NULL;
-    for (char *p = open; *p; p++) {
-        if (*p == '{') {
-            depth++;
-        } else if (*p == '}') {
-            depth--;
-            if (depth == 0) {
-                close = p;
-                break;
-            }
-        }
-    }
-    if (!close) {
-        fprintf(stderr, "MGL EXPERIMENT program%u could not find function body end\n", programName);
-        return GL_FALSE;
-    }
-
-    char body[512];
-    int bodyLen = snprintf(body, sizeof(body),
-                           "{\n"
-                           "    %s out = {};\n"
-                           "    out.%s = %s;\n"
-                           "    return out;\n"
-                           "}\n",
-                           outStructName,
-                           colorFieldName,
-                           colorLiteral);
-    if (bodyLen <= 0 || (size_t)bodyLen >= sizeof(body)) {
-        return GL_FALSE;
-    }
-
-    size_t prefix_len = (size_t)(open - *msl);
-    size_t suffix_len = strlen(close + 1);
-    char *replacement = (char *)malloc(prefix_len + (size_t)bodyLen + suffix_len + 1u);
-    if (!replacement) {
-        return GL_FALSE;
-    }
-
-    memcpy(replacement, *msl, prefix_len);
-    memcpy(replacement + prefix_len, body, (size_t)bodyLen);
-    memcpy(replacement + prefix_len + (size_t)bodyLen, close + 1, suffix_len + 1u);
-
-    free(*msl);
-    *msl = replacement;
-    fprintf(stderr, "MGL EXPERIMENT program%u fragment constant applied via %s\n", programName, envName);
-    return GL_TRUE;
-}
-
-static GLboolean mglApplyProgram31FragmentExperiment(Program *program, int stage, char **msl)
-{
-    if (!program || stage != _FRAGMENT_SHADER || program->name != 31u || !msl || !*msl) {
-        return GL_FALSE;
-    }
-
-    const char *mode = getenv("MGL_EXPERIMENT_PROGRAM31");
-    if (!mode || !mode[0] || !strcmp(mode, "constant")) {
-        return GL_FALSE;
-    }
-
-    char *signature = strstr(*msl, "fragment ");
-    if (!signature) {
-        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find fragment signature\n", mode);
-        return GL_FALSE;
-    }
-
-    const char *returnTypeStart = signature + strlen("fragment ");
-    const char *returnTypeEnd = strchr(returnTypeStart, ' ');
-    if (!returnTypeEnd || returnTypeEnd <= returnTypeStart) {
-        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not parse return type\n", mode);
-        return GL_FALSE;
-    }
-    size_t returnTypeLen = (size_t)(returnTypeEnd - returnTypeStart);
-    if (returnTypeLen >= 128u) {
-        return GL_FALSE;
-    }
-    char outStructName[128];
-    memcpy(outStructName, returnTypeStart, returnTypeLen);
-    outStructName[returnTypeLen] = '\0';
-
-    const char *expr = NULL;
-    if (!strcmp(mode, "coord")) {
-        expr = "float4(normalize(in.texCoord0) * 0.5 + float3(0.5), 1.0)";
-    } else if (!strcmp(mode, "sample-fixed") || !strcmp(mode, "sample-zp")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 0.0, 1.0))";
-    } else if (!strcmp(mode, "sample-zn")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 0.0, -1.0))";
-    } else if (!strcmp(mode, "sample-xp")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(1.0, 0.0, 0.0))";
-    } else if (!strcmp(mode, "sample-xn")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(-1.0, 0.0, 0.0))";
-    } else if (!strcmp(mode, "sample-yp")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, 1.0, 0.0))";
-    } else if (!strcmp(mode, "sample-yn")) {
-        expr = "Sampler0.sample(Sampler0Smplr, float3(0.0, -1.0, 0.0))";
-    } else {
-        fprintf(stderr,
-                "MGL EXPERIMENT program31 unknown mode '%s' (expected constant, coord, sample-fixed, or sample-xp/xn/yp/yn/zp/zn)\n",
-                mode);
-        return GL_FALSE;
-    }
-
-    char *open = strchr(signature, '{');
-    if (!open) {
-        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find function body start\n", mode);
-        return GL_FALSE;
-    }
-
-    int depth = 0;
-    char *close = NULL;
-    for (char *p = open; *p; p++) {
-        if (*p == '{') {
-            depth++;
-        } else if (*p == '}') {
-            depth--;
-            if (depth == 0) {
-                close = p;
-                break;
-            }
-        }
-    }
-    if (!close) {
-        fprintf(stderr, "MGL EXPERIMENT program31 mode=%s could not find function body end\n", mode);
-        return GL_FALSE;
-    }
-
-    char body[768];
-    int bodyLen = snprintf(body, sizeof(body),
-                           "{\n"
-                           "    %s out = {};\n"
-                           "    out.fragColor = %s;\n"
-                           "    return out;\n"
-                           "}\n",
-                           outStructName,
-                           expr);
-    if (bodyLen <= 0 || (size_t)bodyLen >= sizeof(body)) {
-        return GL_FALSE;
-    }
-
-    size_t prefix_len = (size_t)(open - *msl);
-    size_t suffix_len = strlen(close + 1);
-    char *replacement = (char *)malloc(prefix_len + (size_t)bodyLen + suffix_len + 1u);
-    if (!replacement) {
-        return GL_FALSE;
-    }
-
-    memcpy(replacement, *msl, prefix_len);
-    memcpy(replacement + prefix_len, body, (size_t)bodyLen);
-    memcpy(replacement + prefix_len + (size_t)bodyLen, close + 1, suffix_len + 1u);
-
-    free(*msl);
-    *msl = replacement;
-    fprintf(stderr, "MGL EXPERIMENT program31 fragment mode=%s applied\n", mode);
-    return GL_TRUE;
 }
 
 static void mglFixMSLPlainStructPointerArrayAccess(Program *program,
@@ -3841,11 +4610,6 @@ static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int
     return GL_FALSE;
 }
 
-static GLboolean mglProgramHasResourceName(Program *program, int stage, int res_type, const char *name)
-{
-    return mglProgramStageHasResourceName(program, stage, res_type, name);
-}
-
 static GLboolean mglProgramHasAnyResourceName(Program *program, const char *name)
 {
     if (!program || !name) {
@@ -3877,24 +4641,6 @@ static GLboolean mglProgramHasAnyResourceName(Program *program, const char *name
     }
 
     return GL_FALSE;
-}
-
-static void applyMSLCloudVertexIDFix(Program *pptr, int stage, char **msl_ptr)
-{
-    /* Metal's [[vertex_id]] for indexed draws already carries the index-buffer
-     * value, matching OpenGL gl_VertexID for the CloudFaces shader. */
-    (void)pptr; (void)stage; (void)msl_ptr;
-}
-
-static GLboolean mglVertexShaderLooksLikeMinecraftBlitScreen(Program *program)
-{
-    return mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "Position") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "UV") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT, "Color") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "ModelViewMat") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "ProjMat") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_OUTPUT, "texCoord") &&
-           mglProgramStageHasResourceName(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_OUTPUT, "vertexColor");
 }
 
 static GLboolean mglFindMSLUserLocationForName(const char *msl, const char *name, GLuint *location_out)
@@ -4026,6 +4772,9 @@ static GLboolean mglReplaceMSLUserLocationForResourceName(char **msl_ptr,
 
 static size_t mglMSLVectorCSize(unsigned components)
 {
+    /* sizeof(simd::floatN) in Metal: vec3 is padded to 16 bytes
+     * (alignof=16, sizeof=16), matching std140 effective size.
+     * Verified via C++ test: sizeof(simd::float3)==16. */
     switch (components) {
         case 1: return 4;
         case 2: return 8;
@@ -4948,14 +5697,72 @@ static void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, i
         slot->buffer = slot->buf->name;
         slot->offset = 0;
         slot->size = size;
-        fprintf(stderr,
-                "MGL UNIFORM INIT: program=%u stage=%d name=%s location=%d size=%lld\n",
-                program->name,
-                stage,
-                res->name,
-                location,
-                (long long)size);
     }
+}
+
+/* Compute the std140 ArrayStride for a single array element of the given
+ * numeric base type.  Returns 0 for non-numeric types (no fixup applies).
+ *
+ * std140 rules:
+ *   - Non-matrix (cols <= 1): every vector rounds up to vec4 alignment (16).
+ *   - Matrix: ArrayStride = num_vectors * 16, where num_vectors is
+ *     vecsize for RowMajor (rows stored contiguously) and cols otherwise. */
+static unsigned compute_std140_stride(spvc_basetype bt, unsigned vecsize,
+                                      unsigned cols, spvc_bool row_major)
+{
+    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
+        bt != SPVC_BASETYPE_UINT32)
+        return 0;
+    if (cols <= 1)
+        return 16;
+    unsigned num_vectors = row_major ? vecsize : cols;
+    return num_vectors * 16;
+}
+
+/* Compute the std430 ArrayStride for a single array element of the given
+ * numeric base type.  Returns 0 for non-numeric types.
+ *
+ * std430 rules:
+ *   - Non-matrix: scalar=4, vec2=8, vec3=16 (rounds up to 16), vec4=16.
+ *   - Matrix: per-vector stride uses the same rule based on the stored
+ *     vector's component count; ArrayStride = num_vectors * matrix_stride. */
+static unsigned compute_std430_stride(spvc_basetype bt, unsigned vecsize,
+                                      unsigned cols, spvc_bool row_major)
+{
+    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
+        bt != SPVC_BASETYPE_UINT32)
+        return 0;
+    if (cols <= 1)
+    {
+        unsigned natural = vecsize * 4;
+        unsigned align = (vecsize >= 3) ? 16 : natural;
+        return (natural + align - 1) / align * align;
+    }
+    unsigned vector_components = row_major ? cols : vecsize;
+    unsigned num_vectors = row_major ? vecsize : cols;
+    unsigned natural = vector_components * 4;
+    unsigned align = (vector_components >= 3) ? 16 : natural;
+    unsigned matrix_stride = (natural + align - 1) / align * align;
+    return num_vectors * matrix_stride;
+}
+
+/* Returns true if the given numeric type is affected by the glslang std140
+ * ArrayStride bug.  The bug emits the natural (std430) stride instead of the
+ * std140 rounded stride for:
+ *   - int/uint vec2 arrays (float vec2 is NOT affected)
+ *   - matrices whose stored vector has 2 components (any base type)
+ * For affected types the buggy std140 stride equals the std430 stride, making
+ * the two layouts indistinguishable from the stride alone. */
+static GLboolean is_glslang_bug_affected(spvc_basetype bt, unsigned vecsize,
+                                         unsigned cols, spvc_bool row_major)
+{
+    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
+        bt != SPVC_BASETYPE_UINT32)
+        return GL_FALSE;
+    if (cols <= 1)
+        return (bt != SPVC_BASETYPE_FP32 && vecsize == 2) ? GL_TRUE : GL_FALSE;
+    unsigned vector_components = row_major ? cols : vecsize;
+    return (vector_components == 2) ? GL_TRUE : GL_FALSE;
 }
 
 char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
@@ -5018,6 +5825,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         spvc_context_destroy(context);
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
+
     // ERROR_CHECK_RETURN(spvc_compiler_msl_add_discrete_descriptor_set(compiler_msl, 3) == SPVC_SUCCESS, GL_INVALID_OPERATION);
     if (spvc_compiler_msl_add_discrete_descriptor_set(compiler_msl, 3) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_msl_add_discrete_descriptor_set failed\n");
@@ -5063,6 +5871,19 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 
     if (spvc_compiler_options_set_bool(options, SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION, SPVC_TRUE) != SPVC_SUCCESS) {
         fprintf(stderr, "MGL Error: spvc_compiler_options_set_bool(SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION) failed\n");
+        spvc_context_destroy(context);
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
+    }
+
+    /* Set the buffer size buffer index for runtime-sized SSBO arrays.
+     * SPIRV-Cross emits code that reads buffer byte-sizes from a
+     * constant uint* buffer when a shader uses .length() on unsized
+     * SSBO arrays.  We use slot 25 (auto-assigned by SPIRV-Cross by
+     * default, but set explicitly here for reliability). */
+    if (spvc_compiler_options_set_uint(options,
+                                       SPVC_COMPILER_OPTION_MSL_BUFFER_SIZE_BUFFER_INDEX,
+                                       MGL_BUFFER_SIZE_BUFFER_INDEX) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: spvc_compiler_options_set_uint(SPVC_COMPILER_OPTION_MSL_BUFFER_SIZE_BUFFER_INDEX) failed\n");
         spvc_context_destroy(context);
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
@@ -5274,8 +6095,42 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_instance_name = NULL;
             ptr->spirv_resources_list[stage][res_type].list[i].binding = ptr->spirv_resources_list[stage][res_type].list[i].gl_binding;
             ptr->spirv_resources_list[stage][res_type].list[i].location = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationLocation);
+            /* SpvDecorationIndex holds the dual-source blending index for
+             * fragment outputs (layout(location = 0, index = 1) out vec4 color).
+             * Store it so GL_LOCATION_INDEX queries can retrieve it.
+             * Per the GL spec, fragment shader PROGRAM_OUTPUT defaults to
+             * index 0 when the Index decoration is absent; all other
+             * interfaces/stages default to -1 (not applicable). */
+            {
+                GLuint default_idx;
+                if (stage == _FRAGMENT_SHADER &&
+                    res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT) {
+                    default_idx = 0;
+                } else {
+                    default_idx = (GLuint)-1;
+                }
+                ptr->spirv_resources_list[stage][res_type].list[i].location_index =
+                    spvc_compiler_has_decoration(compiler_msl, list[i].id, SpvDecorationIndex) ?
+                    spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationIndex) : default_idx;
+            }
+            /* For atomic counters, SpvDecorationLocation is not used; store
+             * the buffer offset (SpvDecorationOffset) in the location field
+             * so GL_OFFSET queries can retrieve it. */
+            if (res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER) {
+                GLuint ac_offset = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationOffset);
+                ptr->spirv_resources_list[stage][res_type].list[i].location = ac_offset;
+            }
             ptr->spirv_resources_list[stage][res_type].list[i].gl_type = mglGLTypeFromSPVCType(reflected_type);
             ptr->spirv_resources_list[stage][res_type].list[i].gl_array_size = mglGLArraySizeFromSPVCType(reflected_type);
+            ptr->spirv_resources_list[stage][res_type].list[i].is_array =
+                (reflected_type && spvc_type_get_num_array_dimensions(reflected_type) > 0) ? GL_TRUE : GL_FALSE;
+            ptr->spirv_resources_list[stage][res_type].list[i].num_array_dims =
+                reflected_type ? spvc_type_get_num_array_dimensions(reflected_type) : 0;
+            /* Detect per-patch variables for tessellation shaders. */
+            ptr->spirv_resources_list[stage][res_type].list[i].is_per_patch =
+                (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
+                 res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT) &&
+                spvc_compiler_has_decoration(compiler_msl, list[i].id, SpvDecorationPatch) ? GL_TRUE : GL_FALSE;
             ptr->spirv_resources_list[stage][res_type].list[i].uniform_location =
                 (mglIsSamplerResourceType(res_type) || uniform_constant_sampler_like)
                     ? mglSamplerUniformLocationFromReflection(ptr->spirv_resources_list[stage][res_type].list[i].location,
@@ -5290,29 +6145,43 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].image_arrayed = 0;
             ptr->spirv_resources_list[stage][res_type].list[i].image_multisampled = 0;
 
-            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
-                SpirvResource *ubo_res = &ptr->spirv_resources_list[stage][res_type].list[i];
-                spvc_type ubo_type = reflected_type;
-                if (ubo_type) {
-                    unsigned array_dims = spvc_type_get_num_array_dimensions(ubo_type);
+            if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+                res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER) {
+                SpirvResource *block_res = &ptr->spirv_resources_list[stage][res_type].list[i];
+                spvc_type block_type = reflected_type;
+                if (block_type) {
+                    unsigned array_dims = spvc_type_get_num_array_dimensions(block_type);
                     if (array_dims > 0) {
-                        GLuint array_size = (GLuint)spvc_type_get_array_dimension(ubo_type, 0);
-                        ubo_res->ubo_is_array = GL_TRUE;
-                        ubo_res->ubo_array_size = array_size > 0 ? array_size : 1;
+                        GLuint array_size = (GLuint)spvc_type_get_array_dimension(block_type, 0);
+                        block_res->ubo_is_array = GL_TRUE;
+                        block_res->ubo_array_size = array_size > 0 ? array_size : 1;
                     }
                 }
-                ubo_res->ubo_array_bindings =
-                    (GLuint *)calloc(ubo_res->ubo_array_size, sizeof(GLuint));
-                if (ubo_res->ubo_array_bindings) {
-                    for (GLuint ai = 0; ai < ubo_res->ubo_array_size; ai++) {
-                        ubo_res->ubo_array_bindings[ai] = ubo_res->gl_binding + ai;
+                /* SPIRV-Cross's MSL compiler resolves UBO/SSBO type_id to the
+                 * struct type, not the array type, so the array dimension
+                 * check above may return 0 even for block arrays.  Fall back
+                 * to parsing the GLSL source to detect the array size. */
+                if (block_res->ubo_array_size == 1) {
+                    const char *glsl_src = ptr->shader_slots[stage]
+                        ? ptr->shader_slots[stage]->src : NULL;
+                    GLuint glsl_array_size = mglGLSLUBOArraySize(glsl_src, block_res->name);
+                    if (glsl_array_size > 0) {
+                        block_res->ubo_is_array = GL_TRUE;
+                        block_res->ubo_array_size = glsl_array_size > 0 ? glsl_array_size : 1;
+                    }
+                }
+                block_res->ubo_array_bindings =
+                    (GLuint *)calloc(block_res->ubo_array_size, sizeof(GLuint));
+                if (block_res->ubo_array_bindings) {
+                    for (GLuint ai = 0; ai < block_res->ubo_array_size; ai++) {
+                        block_res->ubo_array_bindings[ai] = block_res->gl_binding + ai;
                     }
                 }
                 const char *glsl_src = ptr->shader_slots[stage]
                     ? ptr->shader_slots[stage]->src : NULL;
-                ubo_res->ubo_instance_name = mglGLSLUBOInstanceName(glsl_src, ubo_res->name);
-                ubo_res->ubo_has_instance_name =
-                    (ubo_res->ubo_instance_name && ubo_res->ubo_instance_name[0]) ? GL_TRUE : GL_FALSE;
+                block_res->ubo_instance_name = mglGLSLUBOInstanceName(glsl_src, block_res->name);
+                block_res->ubo_has_instance_name =
+                    (block_res->ubo_instance_name && block_res->ubo_instance_name[0]) ? GL_TRUE : GL_FALSE;
             }
 
             bool resource_has_image_type =
@@ -5376,12 +6245,218 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
     }
 
-    /* Reflect UBO member uniforms.
-     * Each SPVC_RESOURCE_TYPE_UNIFORM_BUFFER resource corresponds to a struct
-     * whose members need to be exposed via glGetActiveUniform / glGetActiveUniformsiv
-     * so that CTS and applications can query offsets, strides, and types. */
-    for (int res_type = SPVC_RESOURCE_TYPE_UNIFORM_BUFFER;
-         res_type <= SPVC_RESOURCE_TYPE_UNIFORM_BUFFER; res_type++) {
+    /* Expand user-defined stage I/O blocks (e.g. `out Color { float r, g, b;
+     * vec4 iLikePie; } vs_color;`) into individual member resources
+     * (Color.r, Color.g, Color.b, Color.iLikePie) per the GL 4.3 program
+     * interface query spec.  Built-in blocks like gl_PerVertex are handled
+     * separately by the built-in reflection below and do not appear in the
+     * regular STAGE_INPUT/STAGE_OUTPUT lists. */
+    {
+        const int io_res_types[] = {
+            SPVC_RESOURCE_TYPE_STAGE_INPUT,
+            SPVC_RESOURCE_TYPE_STAGE_OUTPUT
+        };
+        for (int ti = 0; ti < (int)(sizeof(io_res_types) / sizeof(io_res_types[0])); ti++) {
+            int io_type = io_res_types[ti];
+            SpirvResourceList *io_list = &ptr->spirv_resources_list[stage][io_type];
+            if (!io_list->list || io_list->count == 0)
+                continue;
+
+            /* First pass: count expanded resources and detect any blocks */
+            GLuint expanded_count = 0;
+            GLboolean has_blocks = GL_FALSE;
+            for (GLuint i = 0; i < io_list->count; i++) {
+                SpirvResource *res = &io_list->list[i];
+                spvc_type_id struct_type_id = res->type_id;
+                spvc_type struct_type = struct_type_id ?
+                    spvc_compiler_get_type_handle(compiler_msl, struct_type_id) : NULL;
+                if ((!struct_type ||
+                     spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) &&
+                    res->base_type_id) {
+                    struct_type_id = res->base_type_id;
+                    struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_type_id);
+                }
+                GLboolean is_blk = (struct_type &&
+                    spvc_type_get_basetype(struct_type) == SPVC_BASETYPE_STRUCT &&
+                    (spvc_compiler_has_decoration(compiler_msl, struct_type_id, SpvDecorationBlock) ||
+                     (res->base_type_id && res->base_type_id != struct_type_id &&
+                      spvc_compiler_has_decoration(compiler_msl, res->base_type_id, SpvDecorationBlock))));
+                if (is_blk) {
+                    /* Ensure struct_type_id points to the ID with the Block decoration */
+                    if (!spvc_compiler_has_decoration(compiler_msl, struct_type_id, SpvDecorationBlock) &&
+                        res->base_type_id && spvc_compiler_has_decoration(compiler_msl, res->base_type_id, SpvDecorationBlock)) {
+                        struct_type_id = res->base_type_id;
+                        struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_type_id);
+                    }
+                    GLboolean is_builtin_block = GL_FALSE;
+                    unsigned member_count = spvc_type_get_num_member_types(struct_type);
+                    for (unsigned mi = 0; mi < member_count; mi++) {
+                        if (spvc_compiler_has_member_decoration(
+                                compiler_msl, struct_type_id, mi, SpvDecorationBuiltIn)) {
+                            is_builtin_block = GL_TRUE;
+                            break;
+                        }
+                    }
+                    if (is_builtin_block) {
+                        expanded_count += 1;
+                    } else {
+                        expanded_count += member_count;
+                        has_blocks = GL_TRUE;
+                    }
+                } else {
+                    expanded_count += 1;
+                }
+            }
+
+            if (!has_blocks)
+                continue;
+
+            /* Second pass: build the new expanded list */
+            SpirvResource *new_list = (SpirvResource *)calloc(expanded_count, sizeof(SpirvResource));
+            if (!new_list)
+                continue;
+
+            GLuint new_idx = 0;
+            for (GLuint i = 0; i < io_list->count; i++) {
+                SpirvResource *res = &io_list->list[i];
+                spvc_type_id struct_type_id = res->type_id;
+                spvc_type struct_type = struct_type_id ?
+                    spvc_compiler_get_type_handle(compiler_msl, struct_type_id) : NULL;
+                if ((!struct_type ||
+                     spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT) &&
+                    res->base_type_id) {
+                    struct_type_id = res->base_type_id;
+                    struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_type_id);
+                }
+                GLboolean is_block = (struct_type &&
+                    spvc_type_get_basetype(struct_type) == SPVC_BASETYPE_STRUCT &&
+                    (spvc_compiler_has_decoration(compiler_msl, struct_type_id, SpvDecorationBlock) ||
+                     (res->base_type_id && res->base_type_id != struct_type_id &&
+                      spvc_compiler_has_decoration(compiler_msl, res->base_type_id, SpvDecorationBlock))));
+
+                if (is_block) {
+                    /* Ensure struct_type_id points to the ID with the Block decoration */
+                    if (!spvc_compiler_has_decoration(compiler_msl, struct_type_id, SpvDecorationBlock) &&
+                        res->base_type_id && spvc_compiler_has_decoration(compiler_msl, res->base_type_id, SpvDecorationBlock)) {
+                        struct_type_id = res->base_type_id;
+                        struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_type_id);
+                    }
+                    /* Skip builtin blocks (gl_PerVertex) — handled elsewhere */
+                    GLboolean is_builtin_block = GL_FALSE;
+                    unsigned member_count = spvc_type_get_num_member_types(struct_type);
+                    for (unsigned mi = 0; mi < member_count; mi++) {
+                        if (spvc_compiler_has_member_decoration(
+                                compiler_msl, struct_type_id, mi, SpvDecorationBuiltIn)) {
+                            is_builtin_block = GL_TRUE;
+                            break;
+                        }
+                    }
+                    if (is_builtin_block) {
+                        /* Copy as-is (move name ownership) */
+                        new_list[new_idx] = *res;
+                        res->name = NULL; /* prevent double-free */
+                        new_idx++;
+                        continue;
+                    }
+
+                    /* Get the block name from the struct type */
+                    const char *block_name = spvc_compiler_get_name(compiler_msl, struct_type_id);
+                    if (!block_name || !block_name[0])
+                        block_name = res->name ? res->name : "block";
+
+                    for (unsigned mi = 0; mi < member_count; mi++) {
+                        spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
+                        spvc_type member_type = member_type_id ?
+                            spvc_compiler_get_type_handle(compiler_msl, member_type_id) : NULL;
+                        const char *member_name = spvc_compiler_get_member_name(
+                            compiler_msl, struct_type_id, mi);
+
+                        char name_buf[256];
+                        snprintf(name_buf, sizeof(name_buf), "%s.%s",
+                                 block_name, member_name ? member_name : "");
+
+                        SpirvResource *dst = &new_list[new_idx++];
+                        memset(dst, 0, sizeof(SpirvResource));
+                        dst->_id = res->_id;
+                        dst->base_type_id = res->base_type_id;
+                        dst->type_id = struct_type_id;
+                        dst->name = strdup(name_buf);
+                        dst->gl_type = mglGLTypeFromSPVCType(member_type);
+                        dst->gl_array_size = mglGLArraySizeFromSPVCType(member_type);
+                        dst->is_array = (member_type &&
+                            spvc_type_get_num_array_dimensions(member_type) > 0) ? GL_TRUE : GL_FALSE;
+                        dst->num_array_dims = member_type ?
+                            spvc_type_get_num_array_dimensions(member_type) : 0;
+                        /* Assign location: prefer member Location decoration, then
+                         * block variable Location + member index, then auto-assign
+                         * starting from 0 so members sort before builtins. */
+                        if (spvc_compiler_has_member_decoration(
+                                compiler_msl, struct_type_id, mi, SpvDecorationLocation)) {
+                            dst->location = spvc_compiler_get_member_decoration(
+                                compiler_msl, struct_type_id, mi, SpvDecorationLocation);
+                        } else {
+                            GLuint base_loc = spvc_compiler_get_decoration(
+                                compiler_msl, res->_id, SpvDecorationLocation);
+                            dst->location = base_loc + mi;
+                        }
+                        dst->gl_binding = (GLuint)-1;
+                        /* Fragment shader outputs default to index 0 per GL spec;
+                         * all other stage I/O defaults to -1. */
+                        {
+                            GLuint default_idx = (stage == _FRAGMENT_SHADER &&
+                                                  io_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
+                                                 ? 0u : (GLuint)-1;
+                            dst->location_index = spvc_compiler_has_member_decoration(
+                                compiler_msl, struct_type_id, mi, SpvDecorationIndex) ?
+                                spvc_compiler_get_member_decoration(
+                                    compiler_msl, struct_type_id, mi, SpvDecorationIndex) : default_idx;
+                        }
+                        dst->uniform_location = -1;
+                        dst->sampler_unit = -1;
+                        dst->sampler_unit_explicit = GL_FALSE;
+                        dst->ubo_array_size = 1;
+                        dst->ubo_is_array = GL_FALSE;
+                        dst->ubo_array_element = 0;
+                        dst->ubo_array_bindings = NULL;
+                        dst->ubo_has_instance_name = GL_FALSE;
+                        dst->ubo_instance_name = NULL;
+                        dst->required_size = 0;
+                        dst->image_dim = 0;
+                        dst->image_arrayed = 0;
+                        dst->image_multisampled = 0;
+                        dst->is_per_patch = GL_FALSE;
+                        dst->ubo_members = NULL;
+                        dst->ubo_member_count = 0;
+                    }
+                    /* Free the block resource's name */
+                    free((void *)res->name);
+                } else {
+                    /* Non-block resource — copy as-is (move name ownership) */
+                    new_list[new_idx] = *res;
+                    res->name = NULL; /* prevent double-free */
+                    new_idx++;
+                }
+            }
+
+            /* Replace the old list */
+            free(io_list->list);
+            io_list->list = new_list;
+            io_list->count = expanded_count;
+        }
+    }
+
+    /* Reflect UBO/SSBO member uniforms.
+     * Each SPVC_RESOURCE_TYPE_UNIFORM_BUFFER and SPVC_RESOURCE_TYPE_STORAGE_BUFFER
+     * resource corresponds to a struct whose members need to be exposed via
+     * glGetActiveUniform / glGetActiveUniformsiv (for UBOs) and via
+     * GL_BUFFER_VARIABLE queries (for SSBOs) so that CTS and applications can
+     * query offsets, strides, and types. */
+    const int block_res_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
+        SPVC_RESOURCE_TYPE_STORAGE_BUFFER
+    };
+    for (int ti = 0; ti < (int)(sizeof(block_res_types) / sizeof(block_res_types[0])); ti++) {
+        int res_type = block_res_types[ti];
         SpirvResourceList *ubo_list = &ptr->spirv_resources_list[stage][res_type];
         for (GLuint ubo_idx = 0; ubo_list->list && ubo_idx < ubo_list->count; ubo_idx++) {
             SpirvResource *ubo = &ubo_list->list[ubo_idx];
@@ -5437,7 +6512,15 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                                            NULL,
                                            0,
                                            default_row_major,
-                                           &reflected_count)) {
+                                           &reflected_count,
+                                           0,
+                                           NULL,
+                                           0,
+                                           NULL,
+                                           NULL,
+                                           0,
+                                           0,
+                                           0)) {
                 for (GLuint m = 0; m < ubo->ubo_member_count; m++) {
                     free((void *)ubo->ubo_members[m].name);
                     free(ubo->ubo_members[m].query_name);
@@ -5449,7 +6532,559 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
     }
 
-    mglReflectPlainStructUniformLeaves(ptr, stage);
+    /* Reflect plain (non-UBO) struct uniform members.
+     * Each SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT resource whose type is a struct
+     * needs its leaf members exposed via glGetActiveUniform / glGetUniformLocation
+     * so that applications can query "var.member" / "var[elem].member" locations.
+     * Unlike UBO members, plain struct members carry a GL location_offset relative
+     * to the struct variable's base location. */
+    {
+        SpirvResourceList *uc_list =
+            &ptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        for (GLuint uc_idx = 0; uc_list->list && uc_idx < uc_list->count; uc_idx++) {
+            SpirvResource *res = &uc_list->list[uc_idx];
+            spvc_type elem_type = NULL;
+            spvc_type_id elem_type_id = 0;
+
+            if (res->ubo_members || !res->name || !res->name[0]) {
+                continue;
+            }
+
+            /* Prefer base_type_id (struct with array dimensions stripped) so
+             * that location counting reflects a single struct element. */
+            if (res->base_type_id) {
+                spvc_type t = spvc_compiler_get_type_handle(compiler_msl, res->base_type_id);
+                if (t && spvc_type_get_basetype(t) == SPVC_BASETYPE_STRUCT) {
+                    elem_type = t;
+                    elem_type_id = res->base_type_id;
+                }
+            }
+            if (!elem_type && res->type_id) {
+                spvc_type t = spvc_compiler_get_type_handle(compiler_msl, res->type_id);
+                if (t && spvc_type_get_basetype(t) == SPVC_BASETYPE_STRUCT &&
+                    spvc_type_get_num_array_dimensions(t) == 0) {
+                    elem_type = t;
+                    elem_type_id = res->type_id;
+                }
+            }
+            if (!elem_type) {
+                continue;
+            }
+
+            /* Skip samplers/images that happen to live in the uniform-constant
+             * list; only genuine structs are reflected here. */
+            if (mglUniformConstantBaseTypeIsSamplerLike(spvc_type_get_basetype(elem_type)) ||
+                mglUniformNameLooksSamplerLike(res->name)) {
+                continue;
+            }
+
+            /* Determine the top-level array size of the struct variable. */
+            GLint array_size = 1;
+            if (res->type_id) {
+                spvc_type t = spvc_compiler_get_type_handle(compiler_msl, res->type_id);
+                if (t) {
+                    GLint asz = mglGLArraySizeFromSPVCType(t);
+                    if (asz > 1) {
+                        array_size = asz;
+                    }
+                }
+            }
+            if (array_size <= 1 && res->gl_array_size > 1) {
+                array_size = res->gl_array_size;
+            }
+
+            /* Use CTS-convention location step (matrices count as 1 location)
+             * so per-element offsets match explicit_uniform_location tests. */
+            GLint elem_loc_count = mglSPVCTypeLocationStep(compiler_msl, elem_type);
+
+            /* For plain struct uniforms, spvc_compiler_get_active_buffer_ranges
+             * returns 0 (they are not buffer-backed).  Instead, we directly
+             * scan the SPIR-V binary for OpAccessChain instructions rooted at
+             * this variable to determine which members are active. */
+            const spvc_buffer_range *active_ranges = NULL;
+            size_t num_active_ranges = 0;
+
+            MGLActivePathSet active_path_set;
+            active_path_set.count = 0;
+            const unsigned int *spirv_ir = ptr->spirv[stage].ir;
+            size_t spirv_wc = ptr->spirv[stage].size;
+            if (spirv_ir && spirv_wc >= 5 && res->_id) {
+                mglCollectActivePaths(spirv_ir, spirv_wc,
+                                      (GLuint)res->_id,
+                                      &active_path_set);
+            }
+
+            /* Compute the byte stride for array-of-struct elements so that
+             * absolute_offset within the reflection matches the offsets
+             * reported by get_active_buffer_ranges (which are relative to
+             * the start of the variable, not the start of a single element).
+             * Also store the struct size in required_size for render-time
+             * struct buffer packing. */
+            size_t elem_byte_size = 0;
+            spvc_compiler_get_declared_struct_size(compiler_msl,
+                                                   elem_type,
+                                                   &elem_byte_size);
+            if (elem_byte_size == 0) {
+                /* Plain struct uniforms lack Offset decorations, so
+                 * spvc_compiler_get_declared_struct_size returns 0.
+                 * Compute the size using Metal/C alignment rules. */
+                elem_byte_size = mglComputeMSLStructSize(compiler_msl, elem_type);
+            }
+            res->required_size = elem_byte_size;
+
+            res->ubo_members = NULL;
+            res->ubo_member_count = 0;
+            GLuint reflected_count = 0;
+            GLboolean reflect_ok = GL_TRUE;
+
+            /* current_path buffer used during reflection to track the member
+             * index path from the root variable. */
+            GLuint current_path[MGL_ACTIVE_MAX_DEPTH];
+
+            for (GLint elem = 0; elem < array_size && reflect_ok; elem++) {
+                size_t name_len = strlen(res->name);
+                size_t prefix_len = name_len;
+                char *prefix = NULL;
+                if (array_size > 1) {
+                    prefix_len = name_len + 16;
+                }
+                prefix = (char *)malloc(prefix_len + 1u);
+                if (!prefix) {
+                    reflect_ok = GL_FALSE;
+                    break;
+                }
+                if (array_size > 1) {
+                    snprintf(prefix, prefix_len + 1u, "%s[%d]", res->name, elem);
+                } else {
+                    memcpy(prefix, res->name, name_len);
+                    prefix[name_len] = '\0';
+                }
+
+                GLint loc_offset = elem * elem_loc_count;
+                GLuint elem_base_offset = (array_size > 1 && elem_byte_size > 0)
+                    ? (GLuint)(elem * (GLint)elem_byte_size) : 0u;
+
+                /* For array-of-struct, the first index in the SPIR-V access
+                 * chain is the array element index. */
+                GLuint path_start = 0;
+                const MGLActivePathSet *path_set_ptr = NULL;
+                if (active_path_set.count > 0) {
+                    if (array_size > 1) {
+                        current_path[0] = (GLuint)elem;
+                        path_start = 1;
+                        /* Only reflect if this array element has active members */
+                        if (!mglActivePathHasPrefix(&active_path_set,
+                                                     current_path, 1)) {
+                            free(prefix);
+                            continue;
+                        }
+                    }
+                    path_set_ptr = &active_path_set;
+                }
+
+                if (!mglReflectUBOMemberLeaves(ptr,
+                                               stage,
+                                               compiler_msl,
+                                               res,
+                                               elem_type,
+                                               elem_type_id,
+                                               prefix,
+                                               elem_base_offset,
+                                               GL_FALSE,
+                                               &reflected_count,
+                                               loc_offset,
+                                               active_ranges,
+                                               num_active_ranges,
+                                               path_set_ptr,
+                                               current_path,
+                                               path_start,
+                                               0,
+                                               0)) {
+                    reflect_ok = GL_FALSE;
+                }
+                free(prefix);
+            }
+
+            if (!reflect_ok || res->ubo_member_count == 0) {
+                for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                    free((void *)res->ubo_members[m].name);
+                    free(res->ubo_members[m].query_name);
+                }
+                free(res->ubo_members);
+                res->ubo_members = NULL;
+                res->ubo_member_count = 0;
+            }
+        }
+    }
+
+    /* Rename GLSL uniform variables whose name conflicts with Metal built-in
+     * types (e.g. "sampler") to avoid MSL compilation errors such as
+     * "must use 'struct' tag to refer to type 'sampler' in this scope".
+     * This happens AFTER reflection data is collected, so MGL stores the
+     * original GLSL name for glGetUniformLocation queries, but BEFORE MSL
+     * compilation so the generated Metal source uses the safe name. */
+    {
+        const spvc_reflected_resource *rename_list = NULL;
+        size_t rename_count = 0;
+        for (int res_type = SPVC_RESOURCE_TYPE_UNIFORM_BUFFER;
+             res_type < SPVC_RESOURCE_TYPE_ACCELERATION_STRUCTURE;
+             res_type++)
+        {
+            spvc_resources_get_resource_list_for_type(resources, res_type,
+                                                       &rename_list, &rename_count);
+            for (size_t ri = 0; ri < rename_count; ri++)
+            {
+                if (rename_list[ri].name &&
+                    strcmp(rename_list[ri].name, "sampler") == 0)
+                {
+                    spvc_compiler_set_name(compiler_msl, rename_list[ri].id,
+                                           "mgl_sampler_tex");
+                }
+            }
+        }
+    }
+
+    /* Workaround for glslang bug: in std140 SSBO blocks, arrays of 2-component
+     * vectors (vec2, ivec2, uvec2) and matrices with 2-component rows/columns
+     * get ArrayStride computed with vec2 natural size (8) instead of std140
+     * rounded size (16).  This affects:
+     *   - int/uint vec2 direct arrays (float vec2 is correct)
+     *   - All matrices with vec2 components (float, int, uint)
+     *
+     * This causes SPIRV-Cross to generate wrong .length() calculations
+     * (dividing by the wrong stride) and incorrect data access patterns.
+     *
+     * Detection: glslang puts BufferBlock on ALL SSBOs (even std430), so we
+     * can't use it to distinguish layouts.  Instead, we use a shader-level
+     * two-pass approach:
+     *   Pass 1: Scan for "definite std140" indicators — members whose stride
+     *           matches the correct std140 value AND differs from std430.
+     *           Examples: float vec2 stride 16, mat2 stride 32, etc.
+     *   Pass 2: If the shader has any definite std140 indicator, fix all
+     *           members whose stride doesn't match the correct std140 value.
+     *
+     * Note: ArrayStride is a type-level decoration (OpDecorate on the array
+     * type), not a member-level decoration.  We use
+     * spvc_compiler_type_struct_member_array_stride to read it and
+     * spvc_compiler_set_decoration on the member's type ID to set it.
+     * RowMajor IS a member-level decoration (OpMemberDecorate). */
+    {
+        const spvc_reflected_resource *ssbo_list = NULL;
+        size_t ssbo_count = 0;
+        spvc_resources_get_resource_list_for_type(resources,
+                                                   SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
+                                                   &ssbo_list, &ssbo_count);
+
+        /* Pass 1: Check if the shader has any "definite std140" indicator. */
+        GLboolean shader_has_std140 = GL_FALSE;
+        for (size_t si = 0; si < ssbo_count && !shader_has_std140; si++)
+        {
+            spvc_type struct_type = spvc_compiler_get_type_handle(compiler_msl,
+                ssbo_list[si].type_id);
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+                struct_type = spvc_compiler_get_type_handle(compiler_msl,
+                    ssbo_list[si].base_type_id);
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+                continue;
+
+            unsigned num_members = spvc_type_get_num_member_types(struct_type);
+            for (unsigned mi = 0; mi < num_members; mi++)
+            {
+                spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl,
+                    spvc_type_get_member_type(struct_type, mi));
+                if (!member_type)
+                    continue;
+                if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                    continue;
+
+                spvc_basetype bt = spvc_type_get_basetype(member_type);
+                unsigned vecsize = spvc_type_get_vector_size(member_type);
+                unsigned cols = spvc_type_get_columns(member_type);
+
+                unsigned stride = 0;
+                if (spvc_compiler_type_struct_member_array_stride(
+                        compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
+                    continue;
+
+                spvc_bool row_major = spvc_compiler_has_member_decoration(
+                    compiler_msl, ssbo_list[si].base_type_id, mi,
+                    SpvDecorationRowMajor);
+
+                unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
+
+                /* "Definite std140" = actual stride matches the correct std140
+                 * value AND differs from std430.  Bug-affected types are
+                 * never used as indicators here because their buggy std140
+                 * stride equals std430, so a matching stride is ambiguous. */
+                if (std140_stride > 0 && std430_stride > 0 &&
+                    std140_stride != std430_stride &&
+                    stride == std140_stride)
+                {
+                    shader_has_std140 = GL_TRUE;
+                    break;
+                }
+            }
+        }
+
+        /* Pass 2: Fix strides in std140 blocks. */
+        if (shader_has_std140)
+        {
+            for (size_t si = 0; si < ssbo_count; si++)
+            {
+                spvc_type_id struct_id = ssbo_list[si].type_id;
+                spvc_type struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_id);
+                if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+                {
+                    struct_id = ssbo_list[si].base_type_id;
+                    struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_id);
+                }
+                if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+                    continue;
+
+                /* Skip blocks that are definitely std430 (have a member whose
+                 * stride matches std430 and differs from std140).  This catches
+                 * the Output buffer and any explicitly std430 blocks. */
+                GLboolean block_is_std430 = GL_FALSE;
+                unsigned num_members = spvc_type_get_num_member_types(struct_type);
+                for (unsigned mi = 0; mi < num_members; mi++)
+                {
+                    spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl,
+                        spvc_type_get_member_type(struct_type, mi));
+                    if (!member_type)
+                        continue;
+                    if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                        continue;
+
+                    spvc_basetype bt = spvc_type_get_basetype(member_type);
+                    unsigned vecsize = spvc_type_get_vector_size(member_type);
+                    unsigned cols = spvc_type_get_columns(member_type);
+
+                    unsigned stride = 0;
+                    if (spvc_compiler_type_struct_member_array_stride(
+                            compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
+                        continue;
+
+                    spvc_bool row_major = spvc_compiler_has_member_decoration(
+                        compiler_msl, ssbo_list[si].base_type_id, mi,
+                        SpvDecorationRowMajor);
+
+                    /* Bug-affected types have buggy std140 stride == std430
+                     * stride, so they cannot distinguish the two layouts.
+                     * Skip them when looking for std430 indicators. */
+                    if (is_glslang_bug_affected(bt, vecsize, cols, row_major))
+                        continue;
+
+                    unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                    unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
+
+                    /* "Definite std430" = actual matches std430 AND differs from std140. */
+                    if (std140_stride > 0 && std430_stride > 0 &&
+                        std140_stride != std430_stride &&
+                        stride == std430_stride)
+                    {
+                        block_is_std430 = GL_TRUE;
+                        break;
+                    }
+                }
+
+                if (block_is_std430)
+                    continue;
+
+                /* Fix any member whose stride doesn't match the correct std140 value. */
+                for (unsigned mi = 0; mi < num_members; mi++)
+                {
+                    spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
+                    if (!member_type_id)
+                        continue;
+
+                    spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl, member_type_id);
+                    if (!member_type)
+                        continue;
+                    if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                        continue;
+
+                    spvc_basetype bt = spvc_type_get_basetype(member_type);
+                    unsigned vecsize = spvc_type_get_vector_size(member_type);
+                    unsigned cols = spvc_type_get_columns(member_type);
+
+                    unsigned stride = 0;
+                    if (spvc_compiler_type_struct_member_array_stride(
+                            compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
+                        continue;
+
+                    spvc_bool row_major = spvc_compiler_has_member_decoration(
+                        compiler_msl, ssbo_list[si].base_type_id, mi,
+                        SpvDecorationRowMajor);
+
+                    /* Only fix members affected by the glslang bug.  Other
+                     * members in std140 blocks already have correct strides,
+                     * and fixing them could harm undetected std430 blocks. */
+                    if (!is_glslang_bug_affected(bt, vecsize, cols, row_major))
+                        continue;
+
+                    /* Matrices with 2-component stored vectors are also
+                     * bug-affected, but correcting their stride causes
+                     * SPIRV-Cross to fail with "cannot represent in MSL"
+                     * because MSL cannot express std140's vec4-padding of
+                     * 2-component matrix vectors.  Skip them — these tests
+                     * remain failing, same as the baseline. */
+                    if (cols > 1)
+                        continue;
+
+                    unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                    if (std140_stride == 0)
+                        continue;
+
+                    if (stride != std140_stride)
+                    {
+                        spvc_compiler_set_decoration(compiler_msl, member_type_id,
+                                                     SpvDecorationArrayStride,
+                                                     std140_stride);
+                    }
+                }
+            }
+        }
+    }
+
+    /* Reflect built-in variables (gl_VertexID, gl_InstanceID, gl_FragDepth,
+     * gl_SampleMask, gl_Position, etc.) so they appear as active PROGRAM_INPUT /
+     * PROGRAM_OUTPUT resources per the GL 4.3 program interface query spec.
+     * Both input and output built-ins are reflected for every stage and stored
+     * per-stage, so that separate (single-stage) programs can expose their own
+     * stage's built-ins.  The query layer picks the correct stage (first active
+     * stage for PROGRAM_INPUT, last active stage for PROGRAM_OUTPUT). */
+    {
+        struct {
+            spvc_builtin_resource_type rt;
+            GLboolean is_input;
+        } dirs[2] = {
+            { SPVC_BUILTIN_RESOURCE_TYPE_STAGE_INPUT,  GL_TRUE  },
+            { SPVC_BUILTIN_RESOURCE_TYPE_STAGE_OUTPUT, GL_FALSE },
+        };
+
+        /* Use the active-variables filtered resource list so that only built-ins
+         * actually referenced by the shader are exposed.  Without this filter,
+         * SPIRV-Cross returns every built-in that exists for the stage. */
+        spvc_set active_set = NULL;
+        spvc_resources active_resources = NULL;
+        if (spvc_compiler_get_active_interface_variables(compiler_msl, &active_set) == SPVC_SUCCESS &&
+            active_set &&
+            spvc_compiler_create_shader_resources_for_active_variables(
+                compiler_msl, &active_resources, active_set) == SPVC_SUCCESS &&
+            active_resources)
+        {
+            for (int dir_i = 0; dir_i < 2; dir_i++) {
+                spvc_builtin_resource_type builtin_rt = dirs[dir_i].rt;
+                GLboolean is_input = dirs[dir_i].is_input;
+
+                const spvc_reflected_builtin_resource *builtin_list = NULL;
+                size_t builtin_count = 0;
+                if (spvc_resources_get_builtin_resource_list_for_type(
+                        active_resources, builtin_rt, &builtin_list, &builtin_count) != SPVC_SUCCESS)
+                    continue;
+
+                for (size_t bi = 0; bi < builtin_count; bi++) {
+                    SpvBuiltIn builtin = builtin_list[bi].builtin;
+                    const char *member_name = NULL;
+                    GLuint gl_type = 0;
+                    GLboolean is_array_builtin = GL_FALSE;
+
+                    if (is_input) {
+                        switch (builtin) {
+                            case SpvBuiltInVertexId:       member_name = "gl_VertexID";        gl_type = GL_INT; break;
+                            case SpvBuiltInInstanceId:     member_name = "gl_InstanceID";      gl_type = GL_INT; break;
+                            case SpvBuiltInPrimitiveId:    member_name = "gl_PrimitiveID";     gl_type = GL_INT; break;
+                            case SpvBuiltInInvocationId:   member_name = "gl_InvocationID";    gl_type = GL_INT; break;
+                            case SpvBuiltInPatchVertices:  member_name = "gl_PatchVerticesIn"; gl_type = GL_INT; break;
+                            case SpvBuiltInFragCoord:      member_name = "gl_FragCoord";       gl_type = GL_FLOAT_VEC4; break;
+                            case SpvBuiltInPointCoord:     member_name = "gl_PointCoord";      gl_type = GL_FLOAT_VEC2; break;
+                            case SpvBuiltInFrontFacing:    member_name = "gl_FrontFacing";     gl_type = GL_BOOL; break;
+                            case SpvBuiltInSampleId:       member_name = "gl_SampleID";        gl_type = GL_INT; break;
+                            case SpvBuiltInSamplePosition: member_name = "gl_SamplePosition";  gl_type = GL_FLOAT_VEC2; break;
+                            case SpvBuiltInSampleMask:     member_name = "gl_SampleMaskIn[0]"; gl_type = GL_INT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInPosition:       member_name = "gl_Position";        gl_type = GL_FLOAT_VEC4; break;
+                            case SpvBuiltInPointSize:      member_name = "gl_PointSize";       gl_type = GL_FLOAT; break;
+                            case SpvBuiltInClipDistance:   member_name = "gl_ClipDistance";    gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInCullDistance:   member_name = "gl_CullDistance";    gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            default: break;
+                        }
+                    } else {
+                        switch (builtin) {
+                            case SpvBuiltInPosition:       member_name = "gl_Position";          gl_type = GL_FLOAT_VEC4; break;
+                            case SpvBuiltInPointSize:      member_name = "gl_PointSize";         gl_type = GL_FLOAT; break;
+                            case SpvBuiltInClipDistance:   member_name = "gl_ClipDistance";      gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInCullDistance:   member_name = "gl_CullDistance";      gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInFragDepth:      member_name = "gl_FragDepth";         gl_type = GL_FLOAT; break;
+                            case SpvBuiltInSampleMask:     member_name = "gl_SampleMask[0]";     gl_type = GL_INT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInTessLevelInner: member_name = "gl_TessLevelInner[0]"; gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            case SpvBuiltInTessLevelOuter: member_name = "gl_TessLevelOuter[0]"; gl_type = GL_FLOAT; is_array_builtin = GL_TRUE; break;
+                            default: break;
+                        }
+                    }
+                    if (!member_name) continue;
+
+                    /* For block members (gl_PerVertex), prefix with
+                     * "gl_PerVertex." if the block has an instance name. */
+                    char name_buf[128];
+                    const char *name = member_name;
+                    GLboolean is_block = spvc_compiler_has_decoration(
+                        compiler_msl, builtin_list[bi].resource.type_id, SpvDecorationBlock);
+                    if (!is_block && builtin_list[bi].resource.base_type_id &&
+                        builtin_list[bi].resource.base_type_id != builtin_list[bi].resource.type_id) {
+                        is_block = spvc_compiler_has_decoration(
+                            compiler_msl, builtin_list[bi].resource.base_type_id, SpvDecorationBlock);
+                    }
+                    if (is_block) {
+                        const char *var_name = spvc_compiler_get_name(
+                            compiler_msl, builtin_list[bi].resource.id);
+                        if (var_name && var_name[0]) {
+                            snprintf(name_buf, sizeof(name_buf), "gl_PerVertex.%s", member_name);
+                            name = name_buf;
+                        }
+                    }
+
+                    SpirvResource *dst;
+                    if (is_input) {
+                        if (ptr->builtin_program_input_count[stage] >= 16) break;
+                        dst = &ptr->builtin_program_inputs[stage][ptr->builtin_program_input_count[stage]++];
+                    } else {
+                        if (ptr->builtin_program_output_count[stage] >= 16) break;
+                        dst = &ptr->builtin_program_outputs[stage][ptr->builtin_program_output_count[stage]++];
+                    }
+
+                    memset(dst, 0, sizeof(SpirvResource));
+                    dst->_id = builtin_list[bi].resource.id;
+                    dst->base_type_id = builtin_list[bi].resource.base_type_id;
+                    dst->type_id = builtin_list[bi].resource.type_id;
+                    dst->name = strdup(name);
+                    dst->gl_type = gl_type;
+                    dst->gl_array_size = 1;
+                    dst->is_array = is_array_builtin;
+                    dst->num_array_dims = is_array_builtin ? 1 : 0;
+                    dst->location = (GLuint)-1;
+                    dst->gl_binding = (GLuint)-1;
+                    dst->location_index = (GLuint)-1;
+                    dst->uniform_location = -1;
+                    dst->ubo_array_size = 1;
+                    dst->ubo_is_array = GL_FALSE;
+                    dst->ubo_array_element = 0;
+                    dst->ubo_array_bindings = NULL;
+                    dst->ubo_has_instance_name = GL_FALSE;
+                    dst->ubo_instance_name = NULL;
+                    dst->sampler_unit = -1;
+                    dst->sampler_unit_explicit = GL_FALSE;
+                    dst->required_size = 0;
+                    dst->image_dim = 0;
+                    dst->image_arrayed = 0;
+                    dst->image_multisampled = 0;
+                    dst->is_per_patch = GL_FALSE;
+                    dst->ubo_members = NULL;
+                    dst->ubo_member_count = 0;
+                }
+            }
+        }
+    }
 
     if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
         const char *last_error = spvc_context_get_last_error_string(context);
@@ -5461,13 +7096,8 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         spvc_context_destroy(context);
         return NULL;
     }
-    /* Debug: dump MSL containing multisample samplers. */
-    if (strstr(result, "texture2d_ms") || strstr(result, "sampler2DMS")) {
-        fprintf(stderr, "MGL DBG MSL (ms, program=%u stage=%d):\n%.5000s\n", ptr->name, stage, result);
-    }
-    /* Debug: dump MSL containing texture_layer uniform. */
-    if (strstr(result, "texture_layer")) {
-        fprintf(stderr, "MGL DBG MSL (texture_layer, program=%u stage=%d):\n%.5000s\n", ptr->name, stage, result);
+    if (getenv("MGL_DUMP_MSL")) {
+        fprintf(stderr, "MGL DBG MSL DUMP (program=%u stage=%d):\n%.8000s\n", ptr->name, stage, result);
     }
     DEBUG_PRINT("\n%s\n", result);
 
@@ -5498,15 +7128,13 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             *write = '\0';
         }
 
-        /* Strip gl_SampleMask output from fragment shaders.
-         *
-         * Metal honours the [[sample_mask]] fragment output even when
-         * rasterSampleCount == 1, causing fragments to be discarded when
-         * the shader writes a zero mask.  OpenGL requires that writes to
-         * gl_SampleMask be ignored when SAMPLE_BUFFERS == 0 (single-sample).
-         * Since MGL only supports single-sample framebuffers, we remove the
-         * [[sample_mask]] output member from the fragment output struct and
-         * delete assignments to it so Metal never sees a mask output. */
+        /* Strip the [[sample_mask]] fragment output.  Metal honours the
+         * [[sample_mask]] output even when rasterSampleCount == 1, which
+         * causes fragments to be discarded when the shader writes a zero
+         * mask.  The OpenGL spec requires that gl_SampleMask writes be
+         * ignored when SAMPLE_BUFFERS == 0 (single-sample framebuffers),
+         * so we remove the output entirely.  This matches the original
+         * behaviour that passed the sample_variables tests. */
         if (stage == _FRAGMENT_SHADER && strstr(str_ret, "[[sample_mask]]")) {
             /* Remove lines inside output structs that declare a [[sample_mask]]
              * member, e.g. "    uint gl_SampleMask [[sample_mask]];" */
@@ -5676,70 +7304,34 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             replace_all_substr(&str_ret,
                                "out.texCoord = in.Position.xy;",
                                "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);");
+            ptr->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip = GL_TRUE;
         }
-        if (stage == _VERTEX_SHADER && mglVertexShaderLooksLikeMinecraftBlitScreen(ptr)) {
-            size_t fix_count = 0;
-            static const struct {
-                const char *from;
-                const char *to;
-            } blit_screen_uv_rewrites[] = {
-                { "out.texCoord = in.UV;", "out.texCoord = float2(in.UV.x, 1.0 - in.UV.y);" },
-                { "out.texCoord = in.UV0;", "out.texCoord = float2(in.UV0.x, 1.0 - in.UV0.y);" },
-                { "out.texCoord = in._mgl_in_UV;", "out.texCoord = float2(in._mgl_in_UV.x, 1.0 - in._mgl_in_UV.y);" },
-                { "out.texCoord = in.in_var_UV;", "out.texCoord = float2(in.in_var_UV.x, 1.0 - in.in_var_UV.y);" },
-                { "out.texCoord = in.in_var_TEXCOORD0;", "out.texCoord = float2(in.in_var_TEXCOORD0.x, 1.0 - in.in_var_TEXCOORD0.y);" },
-            };
-
-            for (size_t i = 0; i < sizeof(blit_screen_uv_rewrites) / sizeof(blit_screen_uv_rewrites[0]); i++) {
-                size_t hits = count_substr(str_ret, blit_screen_uv_rewrites[i].from);
-                if (hits > 0) {
-                    replace_all_substr(&str_ret,
-                                       blit_screen_uv_rewrites[i].from,
-                                       blit_screen_uv_rewrites[i].to);
-                    fix_count += hits;
-                }
-            }
-
-            if (fix_count > 0) {
-                fprintf(stderr,
-                        "MGL MSL BLIT_SCREEN FIX: program=%u flips sampled framebuffer texcoord Y hits=%zu\n",
-                        ptr->name,
-                        fix_count);
-            } else {
-                const char *texcoord = strstr(str_ret, "texCoord");
-                char snippet[257] = {0};
-                if (texcoord) {
-                    size_t copy_len = strlen(texcoord);
-                    if (copy_len > sizeof(snippet) - 1) {
-                        copy_len = sizeof(snippet) - 1;
-                    }
-                    memcpy(snippet, texcoord, copy_len);
-                    for (size_t i = 0; i < copy_len; i++) {
-                        if (snippet[i] == '\n' || snippet[i] == '\r' || snippet[i] == '\t') {
-                            snippet[i] = ' ';
-                        }
-                    }
-                }
-                fprintf(stderr,
-                        "MGL MSL BLIT_SCREEN WARNING: program=%u matched resources but no UV assignment pattern; snippet=%s\n",
-                        ptr->name,
-                        snippet[0] ? snippet : "(no texCoord token)");
-            }
-        }
-        applyMSLCloudVertexIDFix(ptr, stage, &str_ret);
         applyMSLFragCoordOriginFix(stage, &str_ret);
         mglFixMSLPlainStructPointerArrayAccess(ptr, stage, &str_ret);
         mglInjectMSLAtomicCounterArguments(ptr, stage, &str_ret);
         applyMSLResourceBindings(ptr, stage, str_ret);
-        mglReplaceFragmentBodyWithConstantColor(ptr,
-                                                stage,
-                                                &str_ret,
-                                                31u,
-                                                "MGL_EXPERIMENT_PROGRAM31",
-                                                "fragColor",
-                                                "float4(0.0, 1.0, 0.0, 1.0)");
-        mglApplyProgram31FragmentExperiment(ptr, stage, &str_ret);
-        mglApplyProgram91FragmentExperiment(ptr, stage, &str_ret);
+        /* Skip point_size injection for the vertex shader when a geometry
+         * shader is present.  Metal does not support geometry shaders, so
+         * the GS is skipped at bind time — but injecting [[point_size]] into
+         * the VS would cause GL_POINTS draws to rasterize even though the
+         * (skipped) geometry shader is supposed to re-emit the vertices.
+         * This breaks tests like vertex_emit_at_end that expect no output
+         * when the GS is the stage responsible for emitting primitives. */
+        if (!(stage == _VERTEX_SHADER && ptr->shader_slots[_GEOMETRY_SHADER])) {
+            mglInjectMSLPointSizeBuiltin(stage, &str_ret);
+        }
+        mglFixMSLImage2DRectImageSize(&str_ret);
+        /* Logic op MSL injection is performed in bindMTLProgram: (MGLRenderer.m)
+         * at Metal library build time, not here, because the injection depends
+         * on the runtime GL_COLOR_LOGIC_OP state which may change after the
+         * program is linked. */
+        /* TES is lowered to a post-tessellation vertex function by SPIRV-Cross,
+         * but macOS 26.5 SDK removed postTessellationVertexFunction /
+         * isTessellationEnabled from MTLRenderPipelineDescriptor. Rewrite the
+         * MSL to a plain compute kernel so we can dispatch it like TCS. */
+        if (stage == _TESS_EVALUATION_SHADER) {
+            mglFixMSLTesAsComputeKernel(&str_ret);
+        }
         if (getenv("MGL_DUMP_MSL")) {
             char dump_path[256];
             snprintf(dump_path, sizeof(dump_path),
@@ -5758,6 +7350,12 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             }
         }
     }
+
+    /* Check whether SPIRV-Cross emitted spvBufferSizeConstants for
+     * runtime-sized SSBO arrays.  The renderer must bind a buffer of
+     * uint32 byte-sizes at MGL_BUFFER_SIZE_BUFFER_INDEX when true. */
+    ptr->spirv[stage].needs_buffer_size_buffer =
+        spvc_compiler_msl_needs_buffer_size_buffer(compiler_msl) ? GL_TRUE : GL_FALSE;
 
     // Frees all memory we allocated so far.
     spvc_context_destroy(context);
@@ -6080,6 +7678,220 @@ static void applyVertexInputLocations(Program *pptr)
                     vs_in->name,
                     (unsigned)vs_in->location,
                     desiredLocation);
+        }
+    }
+}
+
+/* Parse SPIR-V to find the constant index prefix used in OpAccessChain
+ * instructions that reference `var_id`.  This is used to build the GL
+ * active-uniform name for multi-dimensional array uniforms.
+ *
+ * For example, if the shader has `uniform vec4 a[3][4][5]` and accesses
+ * `a[2][1][i]` (i variable), the SPIR-V OpAccessChain has constant indices
+ * [2, 1] followed by a variable index.  This function returns [2, 1].
+ *
+ * Returns the number of constant prefix indices found (0 if none).
+ */
+static unsigned mglSPIRVFindAccessChainConstantIndices(
+    const unsigned int *ir, size_t ir_size_bytes,
+    unsigned var_id,
+    unsigned *out_indices, unsigned max_indices)
+{
+    if (!ir || ir_size_bytes < 20 || !out_indices || max_indices == 0) {
+        return 0;
+    }
+
+    size_t word_count = ir_size_bytes / sizeof(unsigned int);
+
+    /* Build a simple constant table for 32-bit integer OpConstant values. */
+    #define MGL_SPV_MAX_CONSTANTS 2048
+    struct { unsigned id; unsigned value; } constants[MGL_SPV_MAX_CONSTANTS];
+    unsigned num_constants = 0;
+
+    /* Skip header (5 words). */
+    size_t offset = 5;
+    while (offset + 1 < word_count) {
+        unsigned word = ir[offset];
+        unsigned inst_word_count = word >> 16;
+        unsigned opcode = word & 0xFFFF;
+        if (inst_word_count == 0 || offset + inst_word_count > word_count) {
+            break;
+        }
+
+        /* OpConstant = 43 */
+        if (opcode == 43 && inst_word_count >= 4 && num_constants < MGL_SPV_MAX_CONSTANTS) {
+            unsigned result_id = ir[offset + 2];
+            unsigned value = ir[offset + 3];
+            constants[num_constants].id = result_id;
+            constants[num_constants].value = value;
+            num_constants++;
+        }
+
+        offset += inst_word_count;
+    }
+
+    /* Find OpAccessChain (65) / OpInBoundsAccessChain (66) with Base == var_id. */
+    offset = 5;
+    while (offset + 1 < word_count) {
+        unsigned word = ir[offset];
+        unsigned inst_word_count = word >> 16;
+        unsigned opcode = word & 0xFFFF;
+        if (inst_word_count == 0 || offset + inst_word_count > word_count) {
+            break;
+        }
+
+        if ((opcode == 65 || opcode == 66) && inst_word_count >= 4) {
+            unsigned base_id = ir[offset + 3];
+            if (base_id == var_id) {
+                unsigned num_index_ids = inst_word_count - 4;
+                unsigned const_count = 0;
+                for (unsigned i = 0; i < num_index_ids && i < max_indices; i++) {
+                    unsigned index_id = ir[offset + 4 + i];
+                    int found = 0;
+                    for (unsigned j = 0; j < num_constants; j++) {
+                        if (constants[j].id == index_id) {
+                            out_indices[const_count++] = constants[j].value;
+                            found = 1;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        break;
+                    }
+                }
+                return const_count;
+            }
+        }
+
+        offset += inst_word_count;
+    }
+
+    return 0;
+}
+
+/* Post-process uniform names for multi-dimensional arrays.
+ *
+ * GL requires that for `uniform vec4 a[3][4][5]` accessed as `a[2][1][i]`,
+ * the active uniform name is "a[2][1][0]" with GL_ARRAY_SIZE = 5 (innermost).
+ * SPIRV-Cross reflection gives the base name "a" with the full array type.
+ * This function analyzes the SPIR-V to find the constant access-chain indices
+ * and rewrites the name to include them.
+ */
+static void applyMultiDimArrayUniformNames(Program *pptr)
+{
+    if (!pptr) {
+        return;
+    }
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (!pptr->spirv[stage].ir) {
+            continue;
+        }
+
+        SpirvResourceList *rl =
+            &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        if (!rl || !rl->list) {
+            continue;
+        }
+
+        for (GLuint i = 0; i < rl->count; i++) {
+            SpirvResource *res = &rl->list[i];
+            if (!res->name || !res->is_array) {
+                continue;
+            }
+
+            unsigned dims = res->num_array_dims;
+            if (dims <= 1) {
+                continue; /* Only multi-dimensional arrays need rewriting. */
+            }
+
+            /* Find constant access-chain indices from the SPIR-V. */
+            unsigned const_indices[8];
+            unsigned num_const = mglSPIRVFindAccessChainConstantIndices(
+                pptr->spirv[stage].ir,
+                pptr->spirv[stage].size * sizeof(unsigned int),
+                res->_id,
+                const_indices, 8);
+
+            if (num_const == 0) {
+                /* No constant indices found — fall back to all-zeros. */
+                continue;
+            }
+
+            /* If all dimensions are constant (accessing a single element),
+             * GL_ARRAY_SIZE = 1 and the name includes all indices.
+             * Otherwise, the constant prefix indices are in the name and
+             * "[0]" is appended for the innermost (variable) dimension. */
+            unsigned num_name_indices = num_const;
+            GLboolean append_zero = GL_FALSE;
+            if (num_const < dims) {
+                /* There are remaining variable-index dimensions. */
+                append_zero = GL_TRUE;
+            }
+
+            /* Build the new name: "varname[idx1][idx2]...[0]" */
+            size_t base_len = strlen(res->name);
+            /* Each "[N]" is at most 12 chars ( "[4294967295]" ). */
+            size_t buf_size = base_len + num_name_indices * 12 + 4 + 1;
+            char *new_name = (char *)malloc(buf_size);
+            if (!new_name) {
+                continue;
+            }
+            memcpy(new_name, res->name, base_len);
+            size_t pos = base_len;
+            for (unsigned d = 0; d < num_name_indices; d++) {
+                pos += snprintf(new_name + pos, buf_size - pos,
+                                "[%u]", const_indices[d]);
+            }
+            if (append_zero) {
+                pos += snprintf(new_name + pos, buf_size - pos, "[0]");
+            }
+            new_name[pos] = '\0';
+
+            free((void *)res->name);
+            res->name = new_name;
+
+            /* If we appended "[0]", the innermost dimension is the array.
+             * GL_ARRAY_SIZE is already set to the innermost dimension. */
+            /* If all indices were constant, it's a single element. */
+            if (!append_zero) {
+                res->gl_array_size = 1;
+                res->is_array = GL_FALSE;
+            }
+        }
+    }
+}
+
+/* Apply pre-link fragment output bindings set via glBindFragDataLocation(Indexed).
+ * Updates the location and location_index of fragment stage output resources
+ * so GL_LOCATION and GL_LOCATION_INDEX queries return the user-specified values. */
+static void applyFragmentOutputLocationIndices(Program *pptr)
+{
+    if (!pptr || pptr->frag_data_location_count == 0) {
+        return;
+    }
+
+    SpirvResourceList *frag_outputs =
+        &pptr->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+    if (!frag_outputs || !frag_outputs->list) {
+        return;
+    }
+
+    for (GLuint i = 0; i < frag_outputs->count; i++) {
+        SpirvResource *fs_out = &frag_outputs->list[i];
+        if (!fs_out->name) {
+            continue;
+        }
+
+        for (GLuint j = 0; j < pptr->frag_data_location_count; j++) {
+            if (!pptr->frag_data_location_names[j]) {
+                continue;
+            }
+            if (strcmp(pptr->frag_data_location_names[j], fs_out->name) == 0) {
+                fs_out->location = pptr->frag_data_color_numbers[j];
+                fs_out->location_index = pptr->frag_data_indices[j];
+                break;
+            }
         }
     }
 }
@@ -6477,6 +8289,66 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
     return true;
 }
 
+/* Validate that all transform feedback varying names are active outputs
+ * of the program.  Per the GL spec, LinkProgram must fail if any captured
+ * varying is not an output of the last pre-rasterization stage. */
+static bool mglValidateTransformFeedbackVaryings(Program *pptr)
+{
+    if (!pptr || pptr->transform_feedback_varying_count <= 0)
+        return true;
+
+    /* Determine the last active stage before fragment (the stage that
+     * provides transform feedback outputs).  Priority: geometry > tess
+     * eval > vertex. */
+    int feedback_stage = -1;
+    if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT)
+        feedback_stage = _GEOMETRY_SHADER;
+    else if (pptr->attached_shader_mask & TESS_EVALUATION_SHADER_MASK_BIT)
+        feedback_stage = _TESS_EVALUATION_SHADER;
+    else if (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT)
+        feedback_stage = _VERTEX_SHADER;
+
+    if (feedback_stage < 0)
+    {
+        /* No stage to capture from — all varyings are invalid. */
+        return false;
+    }
+
+    SpirvResourceList *outputs =
+        &pptr->spirv_resources_list[feedback_stage][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+
+    for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
+    {
+        const char *varying = pptr->transform_feedback_varying_names[i];
+        if (!varying || varying[0] == '\0')
+            continue;
+
+        /* Strip array subscript for comparison (e.g. "foo[0]" -> "foo"). */
+        char base_name[96];
+        strncpy(base_name, varying, sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket)
+            *bracket = '\0';
+
+        bool found = false;
+        for (GLuint j = 0; j < outputs->count; j++)
+        {
+            if (outputs->list[j].name &&
+                strcmp(outputs->list[j].name, base_name) == 0)
+            {
+                found = true;
+                break;
+            }
+        }
+
+        if (!found)
+            return false;
+    }
+
+    return true;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -6595,6 +8467,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    /* Validate transform feedback varyings: the link must fail if any
+     * captured varying is not an active output of the program. */
+    if (!mglValidateTransformFeedbackVaryings(pptr)) {
+        fprintf(stderr,
+                "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
+                "varying not found in program outputs\n",
+                pptr->name);
+        pptr->linked_glsl_program = NULL;
+        return;
+    }
+
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         GLuint attached_count = mglProgramAttachedShaderCount(pptr, (GLuint)stage);
         for (GLuint attached = 0u; attached < attached_count; attached++) {
@@ -6616,6 +8499,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     applyVertexInputLocations(pptr);
+    applyFragmentOutputLocationIndices(pptr);
+    applyMultiDimArrayUniformNames(pptr);
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
@@ -6629,6 +8514,106 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 pptr->name);
         pptr->linked_glsl_program = NULL;
         return;
+    }
+
+    /* Validate layout(binding=N) values against GL implementation limits.
+     * The GL spec requires that the link fail if a binding point exceeds
+     * the corresponding MAX_*_BINDINGS limit.  glslang does not know the
+     * implementation limits, so MGL must enforce them here. */
+    {
+        bool binding_error = false;
+        for (int stage = 0; stage < _MAX_SHADER_TYPES && !binding_error; stage++) {
+            if ((pptr->attached_shader_mask & (1u << stage)) == 0u) {
+                continue;
+            }
+
+            /* Uniform blocks: GL_MAX_UNIFORM_BUFFER_BINDINGS */
+            {
+                SpirvResourceList *rl =
+                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint b = rl->list[i].gl_binding;
+                    GLuint n = rl->list[i].ubo_array_size > 0
+                                   ? rl->list[i].ubo_array_size : 1;
+                    if (b + n > ctx->state.var.max_uniform_buffer_bindings) {
+                        fprintf(stderr,
+                                "MGL LINK ERROR: program %u stage %d UBO '%s' binding %u (array size %u) "
+                                "exceeds GL_MAX_UNIFORM_BUFFER_BINDINGS (%u)\n",
+                                pptr->name, stage,
+                                rl->list[i].name ? rl->list[i].name : "(null)",
+                                b, n,
+                                ctx->state.var.max_uniform_buffer_bindings);
+                        binding_error = true;
+                        break;
+                    }
+                }
+            }
+
+            /* Shader storage buffers: GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS */
+            if (!binding_error) {
+                SpirvResourceList *rl =
+                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint b = rl->list[i].gl_binding;
+                    if (b >= ctx->state.var.max_shader_storage_buffer_bindings) {
+                        fprintf(stderr,
+                                "MGL LINK ERROR: program %u stage %d SSBO '%s' binding %u "
+                                "exceeds GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS (%u)\n",
+                                pptr->name, stage,
+                                rl->list[i].name ? rl->list[i].name : "(null)",
+                                b,
+                                ctx->state.var.max_shader_storage_buffer_bindings);
+                        binding_error = true;
+                        break;
+                    }
+                }
+            }
+
+            /* Storage images: GL_MAX_IMAGE_UNITS */
+            if (!binding_error) {
+                SpirvResourceList *rl =
+                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint b = rl->list[i].gl_binding;
+                    if (b >= ctx->state.var.max_image_units) {
+                        fprintf(stderr,
+                                "MGL LINK ERROR: program %u stage %d image '%s' binding %u "
+                                "exceeds GL_MAX_IMAGE_UNITS (%u)\n",
+                                pptr->name, stage,
+                                rl->list[i].name ? rl->list[i].name : "(null)",
+                                b,
+                                ctx->state.var.max_image_units);
+                        binding_error = true;
+                        break;
+                    }
+                }
+            }
+
+            /* Atomic counters: GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS */
+            if (!binding_error) {
+                SpirvResourceList *rl =
+                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+                for (GLuint i = 0; i < rl->count; i++) {
+                    GLuint b = rl->list[i].gl_binding;
+                    if (b >= ctx->state.var.max_atomic_counter_buffer_bindings) {
+                        fprintf(stderr,
+                                "MGL LINK ERROR: program %u stage %d atomic counter '%s' binding %u "
+                                "exceeds GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS (%u)\n",
+                                pptr->name, stage,
+                                rl->list[i].name ? rl->list[i].name : "(null)",
+                                b,
+                                ctx->state.var.max_atomic_counter_buffer_bindings);
+                        binding_error = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (binding_error) {
+            pptr->linked_glsl_program = NULL;
+            return;
+        }
     }
 
     /* linked_glsl_program is used as a linked-state marker only. */
@@ -7061,6 +9046,11 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
                 return;
             }
             *params = 0;
+            break;
+        case GL_COMPLETION_STATUS_KHR: /* GL_ARB/KHR_parallel_shader_compile */
+            /* MGL links synchronously, so every program is always complete by
+             * the time this query is issued. */
+            *params = GL_TRUE;
             break;
         default:
             fprintf(stderr, "mglGetProgramiv: unhandled pname 0x%x\n", pname);

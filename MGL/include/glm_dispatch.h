@@ -1067,6 +1067,7 @@ struct GLMDispatchTable {
         void  (*multi_draw_arrays_indirect_count)(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
         void  (*multi_draw_elements_indirect_count)(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
         void  (*polygon_offset_clamp)(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp);
+        void  (*max_shader_compiler_threads)(GLMContext ctx, GLuint count);
 };
 
 struct GLM_ES_DispatchTable {
@@ -1286,6 +1287,7 @@ struct GLM_ES_DispatchTable {
         void  (*tex_buffer)(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer);
         void  (*tex_buffer_range)(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
         void  (*tex_storage3_d_multisample)(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations);
+        void  (*max_shader_compiler_threads_es)(GLMContext ctx, GLuint count);
 };
 
 

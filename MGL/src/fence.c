@@ -270,6 +270,33 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
     if (ctx->mtl_funcs.mtlFlush) {
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
+
+    /* Storage image (imageStore) writes go directly to the GPU Metal texture.
+     * Without marking the texture/level as metal_data_authoritative, subsequent
+     * glGetTexImage calls read stale CPU cached data (lvl->data) instead of
+     * the GPU-written pixels.  Per the GL 4.6 spec, GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
+     * and GL_TEXTURE_UPDATE_BARRIER_BIT both guarantee that later texture reads
+     * observe prior shader image writes, so flip the authoritative flag on
+     * every currently-bound image unit's texture here.  The flag is cleared
+     * again by any subsequent CPU-side texture upload (glTexSubImage/glTexImage). */
+    GLbitfield image_relevant_bits =
+        GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT;
+    if (barriers == GL_ALL_BARRIER_BITS || (barriers & image_relevant_bits))
+    {
+        GLuint max_units = ctx->state.var.max_image_units;
+        for (GLuint i = 0; i < max_units && i < TEXTURE_UNITS; i++) {
+            ImageUnit *iu = &ctx->state.image_units[i];
+            Texture *tex = iu->tex;
+            if (!tex || !tex->faces[0].levels) {
+                continue;
+            }
+            if (iu->level >= (GLint)tex->num_levels) {
+                continue;
+            }
+            tex->metal_data_authoritative = GL_TRUE;
+            tex->faces[0].levels[iu->level].metal_data_authoritative = GL_TRUE;
+        }
+    }
 }
 
 void mglMemoryBarrierByRegion(GLMContext ctx, GLbitfield barriers)

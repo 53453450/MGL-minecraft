@@ -1562,63 +1562,6 @@ static bool mglComputeReadPixelsPackLayout(GLMContext ctx,
     return true;
 }
 
-static uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
-{
-    if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {
-        return 0u;
-    }
-
-    float scaled = (float)value / 255.0f;
-    int exponent = 15;
-    while (scaled < 1.0f && exponent > 0) {
-        scaled *= 2.0f;
-        exponent--;
-    }
-    while (scaled >= 2.0f && exponent < 31) {
-        scaled *= 0.5f;
-        exponent++;
-    }
-
-    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
-    uint32_t mantissa = 0u;
-    if (exponent == 0) {
-        float subnormal = (float)value / 255.0f;
-        for (uint32_t i = 0; i < mantissa_bits + 14u; i++) {
-            subnormal *= 2.0f;
-        }
-        mantissa = (uint32_t)(subnormal + 0.5f);
-        if (mantissa > mantissa_mask) {
-            mantissa = mantissa_mask;
-        }
-    } else {
-        float frac = (scaled - 1.0f) * (float)(1u << mantissa_bits);
-        mantissa = (uint32_t)(frac + 0.5f);
-        if (mantissa > mantissa_mask) {
-            mantissa = 0u;
-            if (exponent < 31) {
-                exponent++;
-            } else {
-                mantissa = mantissa_mask;
-            }
-        }
-    }
-
-    return ((uint32_t)exponent << mantissa_bits) | (mantissa & mantissa_mask);
-}
-
-static uint32_t mglPackRGB9E5FromUNorm8(uint32_t r, uint32_t g, uint32_t b)
-{
-    const uint32_t exponent = 15u;
-    uint32_t mr = (r * 512u + 127u) / 255u;
-    uint32_t mg = (g * 512u + 127u) / 255u;
-    uint32_t mb = (b * 512u + 127u) / 255u;
-    if (mr > 511u) mr = 511u;
-    if (mg > 511u) mg = 511u;
-    if (mb > 511u) mb = 511u;
-    return (mr & 0x1ffu) | ((mg & 0x1ffu) << 9u) |
-           ((mb & 0x1ffu) << 18u) | (exponent << 27u);
-}
-
 static bool mglPackRGBA8PixelToFormatType(const uint8_t rgba[4],
                                           uint8_t *dst_pixel,
                                           GLenum format,
@@ -1770,7 +1713,7 @@ static bool mglPackRGBA8PixelToFormatType(const uint8_t rgba[4],
         return true;
     }
     if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-        uint32_t packed = mglPackRGB9E5FromUNorm8(r, g, b);
+        uint32_t packed = mglPackRGBToSharedExp((double)r / 255.0, (double)g / 255.0, (double)b / 255.0);
         memcpy(dst_pixel, &packed, sizeof(packed));
         return true;
     }
@@ -2471,10 +2414,6 @@ static bool mglPackR32FFloatReadPixels(const uint8_t *src,
 
 void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels)
 {
-    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-        fprintf(stderr, "MGL DEBUG ReadPixels ENTER: x=%d y=%d w=%d h=%d fmt=0x%x type=0x%x\n",
-                x, y, width, height, format, type);
-    }
     GLuint pixel_size;
     Buffer *pack_buffer = NULL;
     GLintptr pack_write_offset = 0;
@@ -2539,8 +2478,14 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                     break;
 
                 default:
+                    /* GL_DEPTH_STENCIL is only packable into UNSIGNED_INT_24_8
+                     * or FLOAT_32_UNSIGNED_INT_24_8_REV; any other type is an
+                     * enum error. Return immediately so the generic type/format
+                     * switch below cannot overwrite this with a spurious
+                     * GL_INVALID_OPERATION. (CTS packed_depth_stencil
+                     * validate_errors expects GL_INVALID_ENUM here.) */
                     ERROR_RETURN(GL_INVALID_ENUM);
-                    break;
+                    return;
             }
             break;
 
@@ -2665,14 +2610,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                                         (size_t)pixel_size,
                                         &pack_layout))
     {
-        if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-            fprintf(stderr, "MGL DEBUG ReadPixels: mglComputeReadPixelsPackLayout FAILED\n");
-        }
         return;
-    }
-
-    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-        fprintf(stderr, "MGL DEBUG ReadPixels: past pack_layout, fmt=0x%x type=0x%x\n", format, type);
     }
 
     if (STATE(buffers[_PIXEL_PACK_BUFFER]))
@@ -2777,10 +2715,6 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         pixels = (void *)((uint8_t *)pixels + pack_layout.skip_offset_bytes);
     }
 
-    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-        fprintf(stderr, "MGL DEBUG ReadPixels: pre-depth, fmt=0x%x type=0x%x\n", format, type);
-    }
-
     if (format == GL_DEPTH_COMPONENT)
     {
         Texture *depthTexture = ctx->state.readbuffer
@@ -2792,8 +2726,20 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
          * etc. per the OpenGL spec. */
         GLfloat *floatDepth = NULL;
 
-        if (depthTexture && depthTexture->depth_shadow) {
-            /* Read from the CPU-side depth shadow directly. */
+        /* Use the CPU-side depth_shadow only for non-render-target depth
+         * textures (e.g. depth textures bound as samplers). The shadow is
+         * kept in sync with every clear (mglUpdateDepthShadowForClear) and
+         * blit (mglBlitDepthShadow), but it is NOT updated on draws, so for
+         * render-target depth attachments (FBO depth attachments) it would
+         * return stale clear values instead of the drawn depth values.
+         *
+         * Render-target depth reads go through the GPU mtlReadDepthPixels
+         * path, which applies the pending lazy clear via
+         * mglApplyPendingFBODepthClearForReadback before blitting the
+         * texture back to the CPU, so both clear-then-read and
+         * clear-then-draw-then-read patterns are handled correctly. */
+        if (depthTexture && depthTexture->depth_shadow &&
+            !depthTexture->is_render_target) {
             floatDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
             if (!floatDepth) {
                 ERROR_RETURN(GL_OUT_OF_MEMORY);
@@ -2822,7 +2768,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             ctx->mtl_funcs.mtlReadDepthPixels(ctx,
                                               floatDepth,
                                               (GLuint)(width * sizeof(GLfloat)),
-                                              (GLuint)(width * sizeof(GLfloat)),
+                                              (GLuint)((size_t)width * height * sizeof(GLfloat)),
                                               x, y, width, height);
         }
 
@@ -3009,9 +2955,19 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
 
     if (format == GL_DEPTH_STENCIL)
     {
-        /* Read depth+stencil from the shadow buffers and pack into the
-         * requested type (GL_UNSIGNED_INT_24_8 or
-         * GL_FLOAT_32_UNSIGNED_INT_24_8_REV). */
+        /* Read depth+stencil and pack into the requested type
+         * (GL_UNSIGNED_INT_24_8 or GL_FLOAT_32_UNSIGNED_INT_24_8_REV).
+         *
+         * Depth source selection mirrors the GL_DEPTH_COMPONENT path:
+         * - Non-render-target depth textures use the CPU depth_shadow (kept in
+         *   sync on clears/blits).
+         * - Render-target depth attachments go through the GPU
+         *   mtlReadDepthPixels path (which applies pending lazy clears and
+         *   captures draw updates), since depth_shadow is NOT updated on draws
+         *   for render targets.
+         *
+         * Stencil is always read from stencil_shadow (updated on clears/blits).
+         */
         Texture *depthTex = ctx->state.readbuffer
             ? mglStencilAttachmentTexture(&ctx->state.readbuffer->depth)
             : NULL;
@@ -3019,7 +2975,28 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             ? mglStencilAttachmentTexture(&ctx->state.readbuffer->stencil)
             : NULL;
 
-        if (!depthTex || !depthTex->depth_shadow) {
+        GLfloat *gpuDepth = NULL;
+        GLboolean useGpuDepth = GL_FALSE;
+
+        if (depthTex && depthTex->depth_shadow &&
+            !depthTex->is_render_target) {
+            /* CPU shadow path — depth_shadow is authoritative for
+             * non-render-target depth textures. */
+        } else if (depthTex && depthTex->is_render_target &&
+                   ctx->mtl_funcs.mtlReadDepthPixels) {
+            gpuDepth = (GLfloat *)calloc((size_t)width * height, sizeof(GLfloat));
+            if (!gpuDepth) {
+                ERROR_RETURN(GL_OUT_OF_MEMORY);
+                return;
+            }
+            mglFlushCommandBuffer(ctx);
+            ctx->mtl_funcs.mtlReadDepthPixels(ctx,
+                                              gpuDepth,
+                                              (GLuint)(width * sizeof(GLfloat)),
+                                              (GLuint)((size_t)width * height * sizeof(GLfloat)),
+                                              x, y, width, height);
+            useGpuDepth = GL_TRUE;
+        } else {
             static uint64_t s_unsupported_ds_readpixels_count = 0u;
             uint64_t hit = ++s_unsupported_ds_readpixels_count;
             if (hit <= 32u || (hit % 256u) == 0u) {
@@ -3039,9 +3016,12 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                 GLfloat depthVal = 0.0f;
                 uint8_t stencilVal = 0u;
 
-                if (readX >= 0 && readY >= 0 &&
-                    readX < (GLint)depthTex->depth_shadow_width &&
-                    readY < (GLint)depthTex->depth_shadow_height) {
+                if (useGpuDepth) {
+                    depthVal = gpuDepth[(size_t)row * width + column];
+                } else if (depthTex->depth_shadow &&
+                           readX >= 0 && readY >= 0 &&
+                           readX < (GLint)depthTex->depth_shadow_width &&
+                           readY < (GLint)depthTex->depth_shadow_height) {
                     depthVal = depthTex->depth_shadow[
                         (size_t)readY * depthTex->depth_shadow_width + readX];
                 }
@@ -3073,6 +3053,9 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             }
         }
 
+        if (gpuDepth)
+            free(gpuDepth);
+
         /* Apply GL_PACK_SWAP_BYTES if needed. */
         if (STATE(pack.swap_bytes) == GL_TRUE) {
             size_t elem_size = mglPixelTypeDatumBytes(type);
@@ -3084,11 +3067,6 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
-    }
-
-    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-        fprintf(stderr, "MGL DEBUG ReadPixels: post-ds, fmt=0x%x read_buffer=0x%x\n",
-                format, STATE(read_buffer));
     }
 
     if (STATE(read_buffer) == GL_NONE)
@@ -3106,13 +3084,6 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         readColorAttachment =
             &ctx->state.readbuffer->color_attachments[ctx->state.read_buffer - GL_COLOR_ATTACHMENT0];
         readColorTexture = mglStencilAttachmentTexture(readColorAttachment);
-    }
-    if (getenv("MGL_DEBUG_PACKED_PIXELS")) {
-        fprintf(stderr, "MGL DEBUG ReadPixels: fmt=0x%x type=0x%x readColorTexture=%p readColorAttachment=%p textarget=0x%x buf.tex=%p buf.rbo=%p\n",
-                format, type, (void*)readColorTexture, (void*)readColorAttachment,
-                readColorAttachment ? readColorAttachment->textarget : 0,
-                readColorAttachment ? (void*)readColorAttachment->buf.tex : NULL,
-                readColorAttachment ? (void*)readColorAttachment->buf.rbo : NULL);
     }
     if (readColorTexture &&
         readColorTexture->rgb10a2_shadow &&
@@ -3153,143 +3124,6 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (pack_buffer)
             mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
         return;
-    }
-
-    if (readColorTexture &&
-        readColorTexture->internalformat == GL_R32F &&
-        type == GL_FLOAT &&
-        mglFloatReadComponentCount(format) != 0u)
-    {
-        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
-        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
-            ? readColorAttachment->layer
-            : 0u;
-        TextureLevel *cpuLevel = (level < readColorTexture->num_levels &&
-                                  readColorTexture->faces[0].levels)
-            ? &readColorTexture->faces[0].levels[level]
-            : NULL;
-        if (cpuLevel &&
-            cpuLevel->last_init_source == kTexCTSPointQuadFallback &&
-            cpuLevel->data &&
-            cpuLevel->pitch >= (size_t)cpuLevel->width * sizeof(GLfloat) &&
-            x >= 0 && y >= 0 &&
-            width <= (GLsizei)cpuLevel->width - x &&
-            height <= (GLsizei)cpuLevel->height - y)
-        {
-            const uint8_t *src = (const uint8_t *)cpuLevel->data +
-                ((size_t)y * cpuLevel->pitch) +
-                ((size_t)x * sizeof(GLfloat));
-            if (!mglPackR32FFloatReadPixels(src,
-                                            cpuLevel->pitch,
-                                            (uint8_t *)pixels,
-                                            pack_layout.dst_pitch,
-                                            width,
-                                            height,
-                                            format)) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
-            if (STATE(pack.swap_bytes) == GL_TRUE) {
-                size_t elem_size = mglPixelTypeDatumBytes(type);
-                if (elem_size > 1u) {
-                    mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
-                }
-            }
-            if (pack_buffer)
-                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
-            return;
-        }
-
-        if (!ctx->mtl_funcs.mtlGetTexImage ||
-            pack_layout.dst_pitch > UINT_MAX ||
-            pack_layout.write_span_bytes > UINT_MAX)
-        {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-
-        mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlGetTexImage(ctx,
-                                      readColorTexture,
-                                      pixels,
-                                      (GLuint)pack_layout.dst_pitch,
-                                      (GLuint)pack_layout.write_span_bytes,
-                                      x,
-                                      y,
-                                      width,
-                                      height,
-                                      format,
-                                      type,
-                                      level,
-                                      slice);
-        if (STATE(pack.swap_bytes) == GL_TRUE) {
-            size_t elem_size = mglPixelTypeDatumBytes(type);
-            if (elem_size > 1u) {
-                mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
-            }
-        }
-        if (pack_buffer)
-            mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
-        return;
-    }
-
-    if (readColorTexture &&
-        readColorTexture->internalformat == GL_RGBA8 &&
-        type == GL_UNSIGNED_BYTE)
-    {
-        GLuint level = readColorAttachment ? readColorAttachment->level : 0u;
-        GLuint slice = (readColorAttachment && !readColorAttachment->layered)
-            ? readColorAttachment->layer
-            : 0u;
-        GLuint face = 0u;
-        if (readColorAttachment &&
-            readColorTexture->target == GL_TEXTURE_CUBE_MAP &&
-            readColorAttachment->textarget >= GL_TEXTURE_CUBE_MAP_POSITIVE_X &&
-            readColorAttachment->textarget <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
-            face = readColorAttachment->textarget - GL_TEXTURE_CUBE_MAP_POSITIVE_X;
-            slice = 0u;
-        }
-
-        TextureLevel *cpuLevel = (level < readColorTexture->num_levels &&
-                                  face < _CUBE_MAP_MAX_FACE &&
-                                  readColorTexture->faces[face].levels)
-            ? &readColorTexture->faces[face].levels[level]
-            : NULL;
-        if (cpuLevel &&
-            cpuLevel->last_init_source == kTexCTSPointQuadFallback &&
-            cpuLevel->data &&
-            cpuLevel->pitch >= (size_t)cpuLevel->width * 4u &&
-            x >= 0 && y >= 0 &&
-            width <= (GLsizei)cpuLevel->width - x &&
-            height <= (GLsizei)cpuLevel->height - y &&
-            slice < (cpuLevel->depth ? cpuLevel->depth : 1u))
-        {
-            size_t image_bytes = cpuLevel->pitch * (size_t)cpuLevel->height;
-            const uint8_t *src = (const uint8_t *)cpuLevel->data +
-                image_bytes * (size_t)slice +
-                ((size_t)y * cpuLevel->pitch) +
-                ((size_t)x * 4u);
-            if (!mglPackRGBA8ReadPixels(src,
-                                        cpuLevel->pitch,
-                                        (uint8_t *)pixels,
-                                        pack_layout.dst_pitch,
-                                        width,
-                                        height,
-                                        format,
-                                        type)) {
-                ERROR_RETURN(GL_INVALID_OPERATION);
-                return;
-            }
-            if (STATE(pack.swap_bytes) == GL_TRUE) {
-                size_t elem_size = mglPixelTypeDatumBytes(type);
-                if (elem_size > 1u) {
-                    mglSwapReadPixelsOutput((uint8_t *)pixels, pack_layout.write_span_bytes, elem_size);
-                }
-            }
-            if (pack_buffer)
-                mglMarkPackBufferReadPixelsWrite(ctx, pack_buffer, pack_write_offset, pack_write_size, pixels);
-            return;
-        }
     }
 
     /* Integer texture formats need to be read back via mtlGetTexImage (which

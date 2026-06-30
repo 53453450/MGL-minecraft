@@ -7543,3 +7543,19 @@ void glPolygonOffsetClamp(GLfloat factor, GLfloat units, GLfloat clamp)
 
     ctx->dispatch.polygon_offset_clamp(ctx, factor, units, clamp);
 }
+
+/* GL_ARB_parallel_shader_compile / GL_KHR_parallel_shader_compile share the
+ * same enum (0x91B0) and semantics; both resolve to the no-op hint. */
+void glMaxShaderCompilerThreadsKHR(GLuint count)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.max_shader_compiler_threads(ctx, count);
+}
+
+void glMaxShaderCompilerThreadsARB(GLuint count)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.max_shader_compiler_threads(ctx, count);
+}

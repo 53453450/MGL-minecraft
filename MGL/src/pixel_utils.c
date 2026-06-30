@@ -1366,7 +1366,7 @@ GLuint bitcountForInternalFormat(GLenum internalformat, GLenum component)
         case GL_RGBA12:
             switch(component)
             {
-                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 12;
+                case GL_RED: case GL_GREEN: case GL_BLUE: case GL_ALPHA: return 16;
             }
             break;
 
@@ -2741,10 +2741,17 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGB8UI:
         case GL_RGB16I:
         case GL_RGB16UI:
-        case GL_RGB9_E5:
         case GL_RGB10:
         case GL_RGB12:
             return GL_FALSE;
+
+        /* GL_RGB9_E5 maps to MTLPixelFormatRGB9E5Float, which Metal supports
+         * as a color render target on Apple GPUs (verified via
+         * newTextureWithDescriptor + render pass clear). Treat it as
+         * color-renderable so the framebuffer completeness check passes and
+         * CTS internalformat.renderbuffer.rgb9_e5 can run. */
+        case GL_RGB9_E5:
+            return GL_TRUE;
 
         /* RGB32F/I/UI are mapped to RGBA32 Metal formats which are
          * color-renderable.  Treating them as color-renderable avoids
@@ -3013,12 +3020,234 @@ uint16_t mglFloatToHalf(float value)
     uint32_t sign = (f >> 16u) & 0x8000u;
     int32_t exp = ((int32_t)(f >> 23u) & 0xff) - 112;
     uint32_t mant = f & 0x7fffffu;
-    if (exp <= 0) {
-        mant = (mant | 0x800000u) >> (1 - exp);
-        return (uint16_t)(sign | (mant >> 13u));
-    }
-    if (exp >= 31) {
+
+    /* Handle NaN and Inf: IEEE-754 float exp field == 0xFF (exp == 143). */
+    if (exp >= 143) {
+        if (mant != 0u) {
+            /* NaN — preserve sign and set half-float NaN (exp=31, mant!=0). */
+            return (uint16_t)(sign | 0x7e00u);
+        }
+        /* Infinity. */
         return (uint16_t)(sign | 0x7c00u);
     }
+
+    if (exp <= 0) {
+        /* Denormalized or zero in half-float.
+         * Guard against undefined shift (1 - exp can exceed 32 for very
+         * small values).  Values smaller than 2^-24 round to zero. */
+        int shift = 1 - exp;
+        if (shift >= 25) {
+            return (uint16_t)sign;  /* ±0 */
+        }
+        /* Round-to-nearest-even before truncation. */
+        uint32_t m = (mant | 0x800000u) >> shift;
+        /* Add rounding bias (bit 12 = 1 << (13-1)) and round-to-even. */
+        m += 0x00001000u + ((m >> 13u) & 1u);
+        return (uint16_t)(sign | (m >> 13u));
+    }
+    if (exp >= 31) {
+        /* Overflow to Infinity. */
+        return (uint16_t)(sign | 0x7c00u);
+    }
+    /* Normalized: round-to-nearest-even. */
+    mant += 0x00001000u + ((mant >> 13u) & 1u);
+    if (mant >= 0x800000u) {
+        mant = 0;
+        exp++;
+        if (exp >= 31) {
+            return (uint16_t)(sign | 0x7c00u);
+        }
+    }
     return (uint16_t)(sign | ((uint32_t)exp << 10u) | (mant >> 13u));
+}
+
+/* Pack a float into 11-bit unsigned float (UE11) format.
+ * 6-bit mantissa, 5-bit exponent (bias 15).
+ * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN. */
+uint32_t mglFloatToFloat11(float v)
+{
+    if (isnan(v)) return 0x7e0u;  /* NaN: exp=31, mant!=0 */
+    if (v <= 0.0f) return 0u;
+    if (v >= 65024.0f) return 0x7c0u; /* Infinity: exp=31, mant=0 */
+    /* Convert to IEEE-754 half float first, then extract mantissa/exponent */
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        /* Denormalized in float11 */
+        int shift = -14 - ieee_exp;
+        if (shift >= 11) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 6 + shift);
+        return m & 0x3fu;
+    }
+    if (ieee_exp >= 16) return 0x7c0u; /* Infinity */
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 6);
+    return (exp << 6) | mant;
+}
+
+/* Pack a float into 10-bit unsigned float (UE10) format.
+ * 5-bit mantissa, 5-bit exponent.
+ * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN. */
+uint32_t mglFloatToFloat10(float v)
+{
+    if (isnan(v)) return 0x3f0u;  /* NaN: exp=31, mant!=0 */
+    if (v <= 0.0f) return 0u;
+    if (v >= 64512.0f) return 0x3e0u; /* Infinity: exp=31, mant=0 */
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    int ieee_exp = (int)((bits >> 23) & 0xff) - 127;
+    uint32_t ieee_mant = bits & 0x7fffff;
+    if (ieee_exp <= -15) {
+        int shift = -14 - ieee_exp;
+        if (shift >= 10) return 0u;
+        uint32_t m = (ieee_mant | 0x800000) >> (23 - 5 + shift);
+        return m & 0x1fu;
+    }
+    if (ieee_exp >= 16) return 0x3e0u; /* Infinity */
+    uint32_t exp = (uint32_t)(ieee_exp + 15);
+    uint32_t mant = ieee_mant >> (23 - 5);
+    return (exp << 5) | mant;
+}
+
+/* Pack 3 RGB floats into GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) format.
+ * All 3 mantissas share one 5-bit exponent. Implements the shared exponent
+ * algorithm from the GL spec (and matches CTS glcPackedPixelsTests
+ * unpack_UNSIGNED_INT_5_9_9_9_REV). */
+uint32_t mglPackRGBToSharedExp(double red, double green, double blue)
+{
+    const int N     = 9;   /* mantissa bits */
+    const int B     = 15;  /* exponent bias */
+    const int E_max = 31;  /* max exponent */
+
+    /* sharedExpMax = (2^N - 1) / 2^N * 2^(E_max - B) */
+    double shared_exp_max = ((double)((1 << N) - 1) / (double)(1 << N)) *
+                            ldexp(1.0, E_max - B);
+
+    double red_c   = fmax(0.0, fmin(shared_exp_max, red));
+    double green_c = fmax(0.0, fmin(shared_exp_max, green));
+    double blue_c  = fmax(0.0, fmin(shared_exp_max, blue));
+
+    double max_c = fmax(fmax(red_c, green_c), blue_c);
+
+    double exp_p;
+    if (max_c <= 0.0) {
+        exp_p = 0.0;
+    } else {
+        /* CTS formula: exp_p = max(-B-1, floor(log2(max_c))) + 1 + B */
+        exp_p = fmax((double)(-B - 1), floor(log2(max_c))) + 1.0 + (double)B;
+    }
+
+    /* Check if max_s overflows; if so, increment exp_s.
+     * CTS: max_s = floor(max_c / 2^(exp_p - B - N) + 0.5)
+     * if max_s >= 2^N, exp_s = exp_p + 1, else exp_s = exp_p */
+    double scale_p = ldexp(1.0, (int)exp_p - B - N);
+    double max_s = floor(max_c / scale_p + 0.5);
+
+    int exp_s;
+    if (max_s >= (double)(1 << N)) {
+        exp_s = (int)exp_p + 1;
+    } else {
+        exp_s = (int)exp_p;
+    }
+    if (exp_s < 0) exp_s = 0;
+    if (exp_s > E_max) exp_s = E_max;
+
+    /* scale = 2^(exp_s - B - N) per CTS */
+    double scale = ldexp(1.0, exp_s - B - N);
+
+    uint32_t red_s   = (uint32_t)floor(red_c   / scale + 0.5);
+    uint32_t green_s = (uint32_t)floor(green_c / scale + 0.5);
+    uint32_t blue_s  = (uint32_t)floor(blue_c  / scale + 0.5);
+
+    if (red_s > 511u) red_s = 511u;
+    if (green_s > 511u) green_s = 511u;
+    if (blue_s > 511u) blue_s = 511u;
+
+    return red_s | (green_s << 9) | (blue_s << 18) | ((uint32_t)exp_s << 27);
+}
+
+/* Unpack a GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) packed value to 3 doubles.
+ * Layout: R[0:8], G[9:17], B[18:26], shared_exp[27:31].
+ * CTS: value = mantissa * 2^(exponent - B - N)  where N=9, B=15. */
+void mglUnpackSharedExp(uint32_t packed, double *r, double *g, double *b)
+{
+    const int N = 9;
+    const int B = 15;
+    uint32_t mant_r = packed & 511u;
+    uint32_t mant_g = (packed >> 9u) & 511u;
+    uint32_t mant_b = (packed >> 18u) & 511u;
+    uint32_t exp = (packed >> 27u) & 31u;
+
+    double scale = ldexp(1.0, (int)exp - B - N);
+    *r = (double)mant_r * scale;
+    *g = (double)mant_g * scale;
+    *b = (double)mant_b * scale;
+}
+
+uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits)
+{
+    if (value == 0u || mantissa_bits == 0u || mantissa_bits > 23u) {
+        return 0u;
+    }
+
+    float scaled = (float)value / 255.0f;
+    int exponent = 15;
+    while (scaled < 1.0f && exponent > 0) {
+        scaled *= 2.0f;
+        exponent--;
+    }
+    while (scaled >= 2.0f && exponent < 31) {
+        scaled *= 0.5f;
+        exponent++;
+    }
+
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = 0u;
+    if (exponent == 0) {
+        float subnormal = (float)value / 255.0f;
+        for (uint32_t i = 0; i < mantissa_bits + 14u; i++) {
+            subnormal *= 2.0f;
+        }
+        mantissa = (uint32_t)(subnormal + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = mantissa_mask;
+        }
+    } else {
+        float frac = (scaled - 1.0f) * (float)(1u << mantissa_bits);
+        mantissa = (uint32_t)(frac + 0.5f);
+        if (mantissa > mantissa_mask) {
+            mantissa = 0u;
+            if (exponent < 31) {
+                exponent++;
+            } else {
+                mantissa = mantissa_mask;
+            }
+        }
+    }
+
+    return ((uint32_t)exponent << mantissa_bits) | (mantissa & mantissa_mask);
+}
+
+float mglUnpackUnsignedFloatComponent(uint32_t value, uint32_t mantissa_bits)
+{
+    if (mantissa_bits == 0u || mantissa_bits > 23u) return 0.0f;
+
+    uint32_t mantissa_mask = (1u << mantissa_bits) - 1u;
+    uint32_t mantissa = value & mantissa_mask;
+    uint32_t exponent = (value >> mantissa_bits) & 0x1fu;
+
+    if (exponent == 31u) {
+        /* Inf or NaN. */
+        return (mantissa == 0u) ? INFINITY : NAN;
+    }
+
+    /* value = (1 + mantissa / 2^mantissa_bits) * 2^(exponent - 15)
+     * For exponent == 0 (subnormal): value = mantissa / 2^mantissa_bits * 2^(1-15) */
+    if (exponent == 0u) {
+        return ldexpf((float)mantissa, 1 - 15 - (int)mantissa_bits);
+    }
+    float normalized = 1.0f + (float)mantissa / (float)(1u << mantissa_bits);
+    return ldexpf(normalized, (int)exponent - 15);
 }

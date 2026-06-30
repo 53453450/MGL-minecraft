@@ -817,6 +817,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
     if (err)
     {
         ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
     }
 
     if (ptr->data.mtl_data) {
@@ -2218,6 +2219,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     }
 
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
+    mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
 
     if (ctx->mtl_funcs.mtlMapUnmapBuffer)
     {
@@ -2712,12 +2714,14 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
 
     const uint8_t *base = (const uint8_t *)(uintptr_t)ptr->data.buffer_data;
     const uint8_t *range_ptr = base + (size_t)offset;
-    uint64_t pre_hash = mglTraceHashBytes(range_ptr, (size_t)length);
-    char pre_head[64];
-    mglTraceFormatBytes(range_ptr, (size_t)length, pre_head, sizeof(pre_head));
-    size_t probe_len = ((size_t)length < 256u) ? (size_t)length : 256u;
-    bool pre_all_zero = mglTraceSampleAllZero(range_ptr, probe_len);
+    uint64_t pre_hash = 0;
+    char pre_head[64] = {0};
+    bool pre_all_zero = false;
     if (trace_map) {
+        pre_hash = mglTraceHashBytes(range_ptr, (size_t)length);
+        mglTraceFormatBytes(range_ptr, (size_t)length, pre_head, sizeof(pre_head));
+        size_t probe_len = ((size_t)length < 256u) ? (size_t)length : 256u;
+        pre_all_zero = mglTraceSampleAllZero(range_ptr, probe_len);
         fprintf(stderr,
                 "MGL TRACE MapBufferRange.begin target=0x%x buffer=%u off=%lld len=%lld accessFlags=0x%x data=%p rangePtr=%p preHash=0x%016" PRIx64 " preHead=%s probe256AllZero=%d\n",
                 target,
@@ -2944,6 +2948,11 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
     ptr->mapped_offset = offset;
     ptr->mapped_length = length;
 
+    static uint64_t s_map_named_buffer_range_trace_count = 0u;
+    uint64_t trace_call = ++s_map_named_buffer_range_trace_count;
+    bool trace_map = MGL_VERBOSE_BUFFER_MAP_LOGS ||
+                     mglShouldTraceBufferMutation(trace_call, ptr->target, length);
+
     if (access & GL_MAP_PERSISTENT_BIT)
     {
         if (ptr->storage_flags & GL_MAP_PERSISTENT_BIT)
@@ -2952,10 +2961,12 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
             ptr->mapped = GL_TRUE;
             ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
             mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset);
-            fprintf(stderr,
-                    "MGL TRACE MapNamedBufferRange.return persistent buffer=%u mappedPtr=%p\n",
-                    ptr->name,
-                    mapped_ptr);
+            if (trace_map) {
+                fprintf(stderr,
+                        "MGL TRACE MapNamedBufferRange.return persistent buffer=%u mappedPtr=%p\n",
+                        ptr->name,
+                        mapped_ptr);
+            }
             ptr->mapped_ptr = mapped_ptr;
             return mapped_ptr;
         }
@@ -2972,19 +2983,23 @@ void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLs
     if (!ctx->mtl_funcs.mtlMapUnmapBuffer)
     {
         mapped_ptr = (void *)((uint8_t *)(uintptr_t)ptr->data.buffer_data + (size_t)offset);
-        fprintf(stderr,
-                "MGL TRACE MapNamedBufferRange.return fallback buffer=%u mappedPtr=%p\n",
-                ptr->name,
-                mapped_ptr);
+        if (trace_map) {
+            fprintf(stderr,
+                    "MGL TRACE MapNamedBufferRange.return fallback buffer=%u mappedPtr=%p\n",
+                    ptr->name,
+                    mapped_ptr);
+        }
         ptr->mapped_ptr = mapped_ptr;
         return mapped_ptr;
     }
 
     mapped_ptr = ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, offset, length, access, true);
-    fprintf(stderr,
-            "MGL TRACE MapNamedBufferRange.return mtl buffer=%u mappedPtr=%p\n",
-            ptr->name,
-            mapped_ptr);
+    if (trace_map) {
+        fprintf(stderr,
+                "MGL TRACE MapNamedBufferRange.return mtl buffer=%u mappedPtr=%p\n",
+                ptr->name,
+                mapped_ptr);
+    }
     ptr->mapped_ptr = mapped_ptr;
     return mapped_ptr;
 }
@@ -3024,15 +3039,7 @@ void mglFlushMappedBufferRange(GLMContext ctx, GLenum target, GLintptr offset, G
         return;
     }
 
-    if (offset < ptr->mapped_offset)
-    {
-        fprintf(stderr, "MGL Error: mglFlushMappedBufferRange: offset (%ld) < mapped_offset (%ld)\n", offset, ptr->mapped_offset);
-        ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-
-    GLsizeiptr rel_offset = offset - ptr->mapped_offset;
-    if (!mgl_range_ok_glsize(rel_offset, length, ptr->mapped_length))
+    if (!mgl_range_ok_glsize(offset, length, ptr->mapped_length))
     {
         fprintf(stderr,
                 "MGL Error: mglFlushMappedBufferRange: range overflow (offset=%ld length=%ld mapped_offset=%ld mapped_length=%ld)\n",
@@ -3052,10 +3059,11 @@ void mglFlushMappedBufferRange(GLMContext ctx, GLenum target, GLintptr offset, G
             ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
-        ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, offset, length);
-        mglBufferMarkWrite(ptr, kInitMapWrite, offset, length,
-                           (const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset,
-                           mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + offset, (size_t)length));
+        GLintptr absolute_offset = ptr->mapped_offset + offset;
+        ctx->mtl_funcs.mtlFlushBufferRange(ctx, ptr, absolute_offset, length);
+        mglBufferMarkWrite(ptr, kInitMapWrite, absolute_offset, length,
+                           (const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset,
+                           mglTraceHashBytes((const uint8_t *)(uintptr_t)ptr->data.buffer_data + absolute_offset, (size_t)length));
     }
     else
     {
@@ -3406,11 +3414,13 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
     if (offset < 0)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     if (size < 0)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     index = bufferIndexFromTarget(ctx, target);
@@ -3419,26 +3429,31 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
     if (ptr == NULL)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if (!mgl_range_ok_glsize(offset, size, ptr->size))
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
-    if (ptr->mapped && !(ptr->access & GL_MAP_PERSISTENT_BIT))
+    if (ptr->mapped && !(ptr->access_flags & GL_MAP_PERSISTENT_BIT))
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if (data == NULL)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     if (ptr->data.buffer_data == 0)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if (ctx->mtl_funcs.mtlFlush) {

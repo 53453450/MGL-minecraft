@@ -239,6 +239,7 @@ typedef struct BufferBaseTarget_t {
 
 #define MAX_BINDABLE_BUFFERS    84
 #define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
+#define MGL_BUFFER_SIZE_BUFFER_INDEX 25u  /* Metal buffer slot for spvBufferSizeConstants */
 typedef struct BufferBase_t {
     BufferBaseTarget    buffers[MAX_BINDABLE_BUFFERS];
 } BufferBase;
@@ -277,8 +278,7 @@ typedef enum MGLTexLevelInitSource_t {
     kTexSubImageCPU,
     kTexSubImagePBO,
     kTexRenderTargetWrite,
-    kTexMetalFill,
-    kTexCTSPointQuadFallback
+    kTexMetalFill
 } MGLTexLevelInitSource;
 
 typedef struct TextureLevel_t {
@@ -474,6 +474,12 @@ typedef struct Spirv_t {
     char *entry_point;
     void *mtl_function;
     void *mtl_library;
+    GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
+                                               * texCoord Y-flip for sampled
+                                               * framebuffer in this shader */
+    GLboolean needs_buffer_size_buffer; /* true if SPIRV-Cross MSL uses
+                                         * spvBufferSizeConstants for
+                                         * runtime-sized SSBO arrays */
 } Spirv;
 
 typedef struct SpirvUBOMember_t {
@@ -484,8 +490,10 @@ typedef struct SpirvUBOMember_t {
     GLint       array_stride;  /* GL_UNIFORM_ARRAY_STRIDE, -1 if not an array   */
     GLint       matrix_stride; /* GL_UNIFORM_MATRIX_STRIDE, -1 if not a matrix  */
     GLboolean   is_row_major;  /* GL_UNIFORM_IS_ROW_MAJOR                       */
-    GLint       size;        /* GL_UNIFORM_SIZE (array element count, 1 for scalar) */
+    GLint       size;        /* GL_UNIFORM_SIZE (array element count, 1 for scalar, 0 for runtime array) */
     GLint       location_offset; /* Plain struct leaf location relative to parent */
+    GLint       top_level_array_size;  /* GL_TOP_LEVEL_ARRAY_SIZE for buffer variables */
+    GLint       top_level_array_stride; /* GL_TOP_LEVEL_ARRAY_STRIDE for buffer variables */
 } SpirvUBOMember;
 
 typedef struct SpirvResource_t {
@@ -505,8 +513,11 @@ typedef struct SpirvResource_t {
     /* Metal argument slot parsed from generated MSL after resource repair. */
     GLuint  binding;
     GLuint  location;
+    GLuint  location_index; /* dual-source blending index (SpvDecorationIndex) */
     GLuint  gl_type;
     GLint   gl_array_size;
+    GLboolean is_array; /* true if the underlying SPIR-V type is an array */
+    GLuint  num_array_dims; /* number of SPIR-V array dimensions (0 if not array) */
     GLint   uniform_location;
     GLint   sampler_unit;
     GLboolean sampler_unit_explicit;
@@ -514,6 +525,8 @@ typedef struct SpirvResource_t {
     GLuint  image_dim;
     GLuint  image_arrayed;
     GLuint  image_multisampled;
+    /* True for tessellation patch variables (SpvDecorationPatch). */
+    GLboolean is_per_patch;
     /* UBO member uniforms (only valid for SPVC_RESOURCE_TYPE_UNIFORM_BUFFER). */
     SpirvUBOMember       *ubo_members;
     GLuint                ubo_member_count;
@@ -578,9 +591,25 @@ typedef struct Program_t {
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
+    /* Pre-link fragment output bindings set via glBindFragDataLocation(Indexed).
+     * Applied to fragment stage outputs after reflection. */
+    char *frag_data_location_names[MAX_ATTRIBS];
+    GLuint frag_data_color_numbers[MAX_ATTRIBS];
+    GLuint frag_data_indices[MAX_ATTRIBS];
+    GLuint frag_data_location_count;
     GLsizei transform_feedback_varying_count;
     GLenum transform_feedback_buffer_mode;
     char transform_feedback_varying_names[MAX_ATTRIBS][96];
+    /* Built-in variables exposed as active PROGRAM_INPUT / PROGRAM_OUTPUT
+     * resources (gl_VertexID, gl_InstanceID, gl_FragDepth, gl_SampleMask, etc.).
+     * Stored per-stage so that separate (single-stage) programs can expose
+     * their own stage's built-ins.  Kept separate from the main
+     * STAGE_INPUT/STAGE_OUTPUT lists so the rendering code (vertex descriptor
+     * setup, varyings linking) is unaffected. */
+    SpirvResource builtin_program_inputs[_MAX_SHADER_TYPES][16];
+    GLuint builtin_program_input_count[_MAX_SHADER_TYPES];
+    SpirvResource builtin_program_outputs[_MAX_SHADER_TYPES][16];
+    GLuint builtin_program_output_count[_MAX_SHADER_TYPES];
     void *mtl_data;
 } Program;
 
@@ -907,6 +936,14 @@ struct GLMMetalFuncs {
 
     void (*mtlDispatchCompute)(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z);
     void (*mtlDispatchComputeIndirect)(GLMContext ctx, GLintptr indirect);
+
+    /* Occlusion query support via Metal visibility result buffer.
+     * mtlBeginSampleQuery marks that the next render pass should enable
+     * visibility result mode. mtlEndSampleQuery flushes the current pass,
+     * reads back the result, and returns the sample-pass count (0 if no
+     * samples passed). */
+    void (*mtlBeginSampleQuery)(GLMContext ctx);
+    GLuint64 (*mtlEndSampleQuery)(GLMContext ctx);
 } ;
 
 typedef struct GLMContextRec_t {
@@ -949,8 +986,6 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable);
 void mgl_lazy_init(void);
 GLboolean mglShouldSkipConditionalRender(GLMContext ctx);
 void mglRecordActiveSampleQueryDraw(GLMContext ctx);
-GLboolean mglCTSQueryDepthUniform(GLMContext ctx, GLfloat *value);
-GLboolean mglCTSDepthTestPasses(GLenum func, GLfloat incoming, GLfloat stored);
 
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);

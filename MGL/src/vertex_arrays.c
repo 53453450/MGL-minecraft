@@ -294,6 +294,32 @@ void mglGetVertexAttribdv(GLMContext ctx, GLuint index, GLenum pname, GLdouble *
     vao = mglGetSafeCurrentVAO(ctx, __FUNCTION__);
     ERROR_CHECK_RETURN(vao, GL_INVALID_OPERATION);
     (void)vao;
+
+    /* For binding-related queries with index >= MAX_ATTRIBS, treat the index
+     * as a direct binding point and return the binding's state.  This allows
+     * glGetVertexAttribiv(i, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, ...) to
+     * work for all binding points up to MAX_VERTEX_ATTRIB_BINDINGS. */
+    if (index >= MAX_ATTRIBS)
+    {
+        switch(pname)
+        {
+            case GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING:
+                buf = vao->bindings[index].buffer;
+                *params = buf ? (GLdouble)buf->name : 0.0;
+                break;
+            case GL_VERTEX_ATTRIB_ARRAY_DIVISOR:
+                *params = vao->bindings[index].divisor;
+                break;
+            case GL_VERTEX_ATTRIB_BINDING:
+                *params = index;
+                break;
+            default:
+                ERROR_RETURN(GL_INVALID_VALUE);
+                break;
+        }
+        return;
+    }
+
     buf = vao->attrib[index].buffer;
     if (pname == GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING &&
         vao->attrib[index].buffer_bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS &&
@@ -385,7 +411,20 @@ void mglGetVertexAttribiv(GLMContext ctx, GLuint index, GLenum pname, GLint *par
         ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     }
 
-    ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+    /* Binding-related queries (GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,
+     * GL_VERTEX_ATTRIB_ARRAY_DIVISOR, GL_VERTEX_ATTRIB_BINDING) accept index
+     * up to MAX_VERTEX_ATTRIB_BINDINGS, since binding points are independent
+     * of vertex attributes.  Other queries require index < MAX_ATTRIBS. */
+    if (pname == GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING ||
+        pname == GL_VERTEX_ATTRIB_ARRAY_DIVISOR ||
+        pname == GL_VERTEX_ATTRIB_BINDING)
+    {
+        ERROR_CHECK_RETURN(index < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
+    }
+    else
+    {
+        ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+    }
 
     if (params == NULL)
         return;
@@ -412,7 +451,16 @@ void mglGetVertexAttribfv(GLMContext ctx, GLuint index, GLenum pname, GLfloat *p
         ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     }
 
-    ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+    if (pname == GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING ||
+        pname == GL_VERTEX_ATTRIB_ARRAY_DIVISOR ||
+        pname == GL_VERTEX_ATTRIB_BINDING)
+    {
+        ERROR_CHECK_RETURN(index < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
+    }
+    else
+    {
+        ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
+    }
 
     if (params == NULL)
         return;
@@ -574,13 +622,8 @@ void mglVertexAttribIPointer(GLMContext ctx, GLuint index, GLint size, GLenum ty
         case GL_UNSIGNED_SHORT:
         case GL_INT:
         case GL_UNSIGNED_INT:
-        case GL_HALF_FLOAT:
-        case GL_FLOAT:
-        case GL_DOUBLE:
-        case GL_FIXED:
         case GL_INT_2_10_10_10_REV:
         case GL_UNSIGNED_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_10F_11F_11F_REV:
             break;
 
         default:
@@ -789,7 +832,6 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
     }
     ptr->element_array.buffer = buf_ptr;
 
-    buf_ptr->data.dirty_bits |= DIRTY_BUFFER;
     ptr->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == ptr)
     {
@@ -802,7 +844,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
 void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLuint bindingindex)
 {
     ERROR_CHECK_RETURN(attribindex < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(bindingindex < MAX_ATTRIBS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
 
     VertexAttrib *attrib = &vao->attrib[attribindex];
     if (attrib->buffer_bindingindex == bindingindex)
@@ -1082,7 +1124,7 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
 
 void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GLuint divisor)
 {
-    ERROR_CHECK_RETURN(bindingindex < MAX_ATTRIBS, GL_INVALID_VALUE);
+    ERROR_CHECK_RETURN(bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
 
     GLboolean changed = (vao->bindings[bindingindex].divisor != divisor);
     if (!changed)

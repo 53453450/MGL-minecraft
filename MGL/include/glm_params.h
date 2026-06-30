@@ -90,10 +90,10 @@ typedef struct GLMCaps_t {
 
 typedef struct GLMParams_t {
     GLfloat point_size;
-    GLuint point_size_range;
+    GLuint point_size_range[2];
     GLuint point_size_granularity;
     GLfloat line_width;
-    GLuint line_width_range;
+    GLuint line_width_range[2];
     GLuint line_width_granularity;
     GLuint polygon_mode;
     GLuint cull_face_mode;
@@ -222,12 +222,12 @@ typedef struct GLMParams_t {
     GLuint max_3d_texture_size;
     GLuint max_elements_vertices;
     GLuint max_elements_indices;
-    GLuint smooth_point_size_range;
+    GLuint smooth_point_size_range[2];
     GLuint smooth_point_size_granularity;
-    GLuint smooth_line_width_range;
+    GLuint smooth_line_width_range[2];
     GLuint smooth_line_width_granularity;
-    GLuint aliased_line_width_range;
-    GLuint aliased_point_size_range;
+    GLuint aliased_line_width_range[2];
+    GLuint aliased_point_size_range[2];
     GLuint active_texture;
     GLfloat sample_coverage_value;
     GLuint sample_coverage_invert;
@@ -322,6 +322,7 @@ typedef struct GLMParams_t {
     GLuint max_tess_control_uniform_blocks;
     GLuint max_tess_evaluation_uniform_blocks;
     GLuint shader_compiler;
+    GLuint max_shader_compiler_threads; /* GL_MAX_SHADER_COMPILER_THREADS_KHR (0x91B0); spec allows the hint to be a no-op, query echoes last set value */
     GLuint shader_binary_formats;
     GLuint num_shader_binary_formats;
     GLuint max_vertex_uniform_vectors;
@@ -386,6 +387,7 @@ typedef struct GLMParams_t {
     GLuint max_combined_clip_and_cull_distances;
     GLuint max_tess_gen_level;
     GLuint max_patch_vertices;
+    GLuint patch_vertices;
     GLuint max_tess_patch_components;
     GLuint max_tess_control_input_components;
     GLuint max_tess_control_output_components;

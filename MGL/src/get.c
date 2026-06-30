@@ -49,6 +49,20 @@ static const char *kMglExtensions[] = {
     "GL_ARB_separate_shader_objects",
     "GL_EXT_texture_filter_anisotropic",
     "GL_KHR_robustness",
+    /* The following advertise functionality MGL already implements (or, for
+     * parallel_shader_compile, treats as a no-op hint the spec permits).
+     * Each was a pure CTS extension-string gate that produced not_supported
+     * results; the underlying code paths were already present. */
+    "GL_ARB_clip_control",                 /* glClipControl + viewport/Y-flip + depth-range wiring in MGLRenderer.m */
+    "GL_ARB_gpu_shader5",                  /* glslang lowers implicit conversions / floatBitsToInt; core since 150 */
+    "GL_ARB_depth_texture",                /* DEPTH_COMPONENT* -> MTLPixelFormatDepth* already mapped */
+    "GL_ARB_texture_float",                /* R/RG/RGBA 16F/32F -> Metal float formats already mapped */
+    "GL_EXT_texture_shared_exponent",      /* RGB9_E5 -> MTLPixelFormatRGB9E5Float already mapped */
+    "GL_ARB_texture_rgb10_a2ui",           /* RGB10_A2UI -> MTLPixelFormatRGB10A2Uint already mapped */
+    "GL_EXT_texture_integer",              /* RGB/RGBA integer formats already mapped */
+    "GL_EXT_texture_shadow_lod",           /* glslang + SPIRV-Cross lower Dref+LOD shadow sampling */
+    "GL_ARB_parallel_shader_compile",      /* no-op hint; mglMaxShaderCompilerThreadsKHR stores value */
+    "GL_KHR_parallel_shader_compile",      /* alias */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -144,14 +158,8 @@ static GLuint mglSafeMaxViewports(GLMContext ctx)
 static GLuint mglSafeMaxVertexAttribBindings(GLMContext ctx)
 {
     GLuint value = ctx ? ctx->state.var.max_vertex_attrib_bindings : 0u;
-    if (value < MAX_ATTRIBS || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        value = MAX_ATTRIBS;
-        if (ctx) {
-            ctx->state.var.max_vertex_attrib_bindings = value;
-        }
-    }
-    if (value > MAX_ATTRIBS) {
-        value = MAX_ATTRIBS;
+    if (value == 0u || value == 0x01010101u || value > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        value = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
         if (ctx) {
             ctx->state.var.max_vertex_attrib_bindings = value;
         }
@@ -194,6 +202,39 @@ static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
         ctx->state.var.read_framebuffer_binding = name;
     }
     return name;
+}
+
+/* Compute the actual sample count of the currently bound draw framebuffer by
+ * inspecting its attachments.  Returns 0 for single-sample, or the number of
+ * samples (1, 2, 4, ...) for multisample.  For framebuffers with no
+ * attachments, falls back to default_samples. */
+static GLuint mglCurrentDrawFramebufferSamples(GLMContext ctx)
+{
+    Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
+    if (!fbo)
+        return 0u;
+
+    GLuint max_samples = 0u;
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u)
+            continue;
+        FBOAttachment *a = &fbo->color_attachments[i];
+        if (a->texture == 0u || !a->buf.tex)
+            continue;
+        if (a->buf.tex->samples > max_samples)
+            max_samples = a->buf.tex->samples;
+    }
+    if (fbo->depth.texture != 0u && fbo->depth.buf.tex) {
+        if (fbo->depth.buf.tex->samples > max_samples)
+            max_samples = fbo->depth.buf.tex->samples;
+    }
+    if (fbo->stencil.texture != 0u && fbo->stencil.buf.tex) {
+        if (fbo->stencil.buf.tex->samples > max_samples)
+            max_samples = fbo->stencil.buf.tex->samples;
+    }
+    if (max_samples == 0u)
+        max_samples = (GLuint)(fbo->default_samples > 0 ? fbo->default_samples : 0);
+    return max_samples;
 }
 
 // these cast a void ptr to a type and value
@@ -297,10 +338,10 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
     switch(pname)
     {
         case 0x0B11: RET_TYPE_VAR(type, point_size); break; // GL_POINT_SIZE
-        case 0x0B12: RET_TYPE_VAR(type, point_size_range); break; // GL_POINT_SIZE_RANGE
+        case 0x0B12: RET_TYPE_VAR_COUNT(type, point_size_range, 2); break; // GL_POINT_SIZE_RANGE / GL_SMOOTH_POINT_SIZE_RANGE
         case 0x0B13: RET_TYPE_VAR(type, point_size_granularity); break; // GL_POINT_SIZE_GRANULARITY
         case 0x0B21: RET_TYPE_VAR(type, line_width); break; // GL_LINE_WIDTH
-        case 0x0B22: RET_TYPE_VAR(type, line_width_range); break; // GL_LINE_WIDTH_RANGE
+        case 0x0B22: RET_TYPE_VAR_COUNT(type, line_width_range, 2); break; // GL_LINE_WIDTH_RANGE / GL_SMOOTH_LINE_WIDTH_RANGE
         case 0x0B23: RET_TYPE_VAR(type, line_width_granularity); break; // GL_LINE_WIDTH_GRANULARITY
         case 0x0B40: mglReturnPolygonMode(ctx, type, data); break; // GL_POLYGON_MODE
         case 0x0B45: RET_TYPE_VAR(type, cull_face_mode); break; // GL_CULL_FACE_MODE
@@ -467,8 +508,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8073: RET_TYPE_VAR(type, max_3d_texture_size); break; // GL_MAX_3D_TEXTURE_SIZE
         case 0x80E8: RET_TYPE_VAR(type, max_elements_vertices); break; // GL_MAX_ELEMENTS_VERTICES
         case 0x80E9: RET_TYPE_VAR(type, max_elements_indices); break; // GL_MAX_ELEMENTS_INDICES
-        case 0x846E: RET_TYPE_VAR(type, aliased_line_width_range); break; // GL_ALIASED_LINE_WIDTH_RANGE
-        case 0x846D: RET_TYPE_VAR(type, aliased_point_size_range); break; // GL_ALIASED_POINT_SIZE_RANGE
+        case 0x846E: RET_TYPE_VAR_COUNT(type, aliased_line_width_range, 2); break; // GL_ALIASED_LINE_WIDTH_RANGE
+        case 0x846D: RET_TYPE_VAR_COUNT(type, aliased_point_size_range, 2); break; // GL_ALIASED_POINT_SIZE_RANGE
         case 0x84E0: { // GL_ACTIVE_TEXTURE
             GLenum activeTexture = GL_TEXTURE0 + (ctx ? ctx->state.active_texture : 0u);
             switch(type) {
@@ -641,6 +682,26 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8D57: RET_TYPE_VAR(type, max_samples); break; // GL_MAX_SAMPLES
         case 0x8E59: RET_TYPE_VAR(type, max_sample_mask_words); break; // GL_MAX_SAMPLE_MASK_WORDS
         case 0x8E52: RET_TYPE_VAR(type, sample_mask_value); break; // GL_SAMPLE_MASK_VALUE
+        case 0x80A8: { // GL_SAMPLE_BUFFERS
+            GLuint samples = mglCurrentDrawFramebufferSamples(ctx);
+            switch(type) {
+                case kBool: RET_BOOL(samples > 0u ? 1 : 0);
+                case kInt: RET_INT(samples > 0u ? 1 : 0);
+                case kFloat: RET_FLOAT(samples > 0u ? 1 : 0);
+                case kDouble: RET_DOUBLE(samples > 0u ? 1 : 0);
+            }
+            break;
+        }
+        case 0x80A9: { // GL_SAMPLES
+            GLuint samples = mglCurrentDrawFramebufferSamples(ctx);
+            switch(type) {
+                case kBool: RET_BOOL(samples);
+                case kInt: RET_INT(samples);
+                case kFloat: RET_FLOAT(samples);
+                case kDouble: RET_DOUBLE(samples);
+            }
+            break;
+        }
         case 0x8F38: RET_TYPE_VAR(type, max_image_units); break; // GL_MAX_IMAGE_UNITS
         case 0x90CF: RET_TYPE_VAR(type, max_combined_image_uniforms); break; // GL_MAX_COMBINED_IMAGE_UNIFORMS
         case 0x91BD: RET_TYPE_VAR(type, max_compute_image_uniforms); break; // GL_MAX_COMPUTE_IMAGE_UNIFORMS
@@ -674,6 +735,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8E89: RET_TYPE_VAR(type, max_tess_control_uniform_blocks); break; // GL_MAX_TESS_CONTROL_UNIFORM_BLOCKS
         case 0x8E8A: RET_TYPE_VAR(type, max_tess_evaluation_uniform_blocks); break; // GL_MAX_TESS_EVALUATION_UNIFORM_BLOCKS
         case 0x8DFA: RET_TYPE_VAR(type, shader_compiler); break; // GL_SHADER_COMPILER
+        case 0x91B0: RET_TYPE_VAR(type, max_shader_compiler_threads); break; // GL_MAX_SHADER_COMPILER_THREADS_KHR (parallel_shader_compile)
         case 0x8DF8: RET_TYPE_VAR(type, shader_binary_formats); break; // GL_SHADER_BINARY_FORMATS
         case 0x8DF9: RET_TYPE_VAR(type, num_shader_binary_formats); break; // GL_NUM_SHADER_BINARY_FORMATS
         case 0x8DFB: RET_TYPE_VAR(type, max_vertex_uniform_vectors); break; // GL_MAX_VERTEX_UNIFORM_VECTORS
@@ -794,6 +856,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x82F9: RET_TYPE_VAR(type, max_cull_distances); break; // GL_MAX_CULL_DISTANCES
         case 0x82FA: RET_TYPE_VAR(type, max_combined_clip_and_cull_distances); break; // GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES
         case 0x8E7D: RET_TYPE_VAR(type, max_patch_vertices); break; // GL_MAX_PATCH_VERTICES
+        case 0x8E72: RET_TYPE_VAR(type, patch_vertices); break; // GL_PATCH_VERTICES
         case 0x8E7E: RET_TYPE_VAR(type, max_tess_gen_level); break; // GL_MAX_TESS_GEN_LEVEL
         case 0x8E7F: RET_TYPE_VAR(type, max_tess_control_uniform_components); break; // GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS
         case 0x8E80: RET_TYPE_VAR(type, max_tess_evaluation_uniform_components); break; // GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS

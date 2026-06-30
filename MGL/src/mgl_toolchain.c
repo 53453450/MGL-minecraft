@@ -395,27 +395,6 @@ int mgl_toolchain_glsl_to_msl(
         return 1;
     }
 
-    /* Debug: dump MSL to stderr if it contains multisample array samplers. */
-    if (strstr(msl, "texture2d_ms_array") || strstr(msl, "sampler2DMSArray")) {
-        fprintf(stderr, "MGL DBG MSL (ms_array):\n%.4000s\n", msl);
-    }
-    /* Debug: dump all MSL containing texelFetch to stderr. */
-    if (strstr(msl, "texelFetch") && strstr(msl, "texture(")) {
-        fprintf(stderr, "MGL DBG MSL (texelFetch):\n%.3000s\n", msl);
-    }
-    /* Debug: dump all MSL containing sampler2DMS to stderr. */
-    if (strstr(msl, "sampler2DMS") || strstr(msl, "texture2d_ms") || strstr(msl, "usampler2DMS")) {
-        fprintf(stderr, "MGL DBG MSL (2dms):\n%.4000s\n", msl);
-    }
-    /* Debug: dump all MSL to /tmp/mgl_msl_*.txt */
-    {
-        static int s_mslDumpIdx = 0;
-        char path[256];
-        snprintf(path, sizeof(path), "/tmp/mgl_msl_%d.txt", s_mslDumpIdx++);
-        FILE *f = fopen(path, "w");
-        if (f) { fputs(msl, f); fclose(f); }
-    }
-
     if (out_msl_len) {
         *out_msl_len = strlen(*out_msl);
     }

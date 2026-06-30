@@ -67,60 +67,6 @@ static void mglUpdateGlobalScissorEnableFromIndexZero(GLMContext ctx)
     ctx->state.caps.scissor_test = ctx->state.caps.scissor_testi[0] ? GL_TRUE : GL_FALSE;
 }
 
-static void mglLogMinecraftOffscreenViewport(GLMContext ctx,
-                                             GLint x,
-                                             GLint y,
-                                             GLsizei width,
-                                             GLsizei height)
-{
-    if (!ctx || width <= 0 || height <= 0)
-        return;
-
-    if (!((width == 392 && height == 560) ||
-          (width == 1024 && height == 1024) ||
-          (width <= 560 && height <= 1024 && ctx->state.framebuffer != NULL)))
-        return;
-
-    static uint64_t s_offscreenViewportLogCount = 0;
-    uint64_t hit = ++s_offscreenViewportLogCount;
-    if (hit > 96ull && (hit % 512ull) != 0ull)
-        return;
-
-    Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, "Viewport.offscreen");
-    FBOAttachment *color0 = fbo ? &fbo->color_attachments[0] : NULL;
-    Texture *colorTex = NULL;
-    if (color0) {
-        colorTex = (color0->textarget == GL_RENDERBUFFER && color0->buf.rbo)
-            ? color0->buf.rbo->tex
-            : color0->buf.tex;
-    }
-
-    Texture *depthTex = NULL;
-    if (fbo) {
-        depthTex = (fbo->depth.textarget == GL_RENDERBUFFER && fbo->depth.buf.rbo)
-            ? fbo->depth.buf.rbo->tex
-            : fbo->depth.buf.tex;
-    }
-
-    fprintf(stderr,
-            "MGL VIEWPORT CALL offscreen hit=%llu fbo=%u drawBuf=0x%x viewport=(%d,%d,%d,%d) "
-            "color0=%u(%ux%u target=0x%x) depth=%u(%ux%u target=0x%x) dirty=0x%x pendingDraws=%u\n",
-            (unsigned long long)hit,
-            fbo ? fbo->name : 0u,
-            ctx->state.draw_buffer,
-            x, y, width, height,
-            colorTex ? colorTex->name : 0u,
-            colorTex ? colorTex->width : 0u,
-            colorTex ? colorTex->height : 0u,
-            colorTex ? colorTex->target : 0u,
-            depthTex ? depthTex->name : 0u,
-            depthTex ? depthTex->width : 0u,
-            depthTex ? depthTex->height : 0u,
-            depthTex ? depthTex->target : 0u,
-            ctx->state.dirty_bits,
-            ctx->draw_command_buffer.total_commands);
-}
-
 static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where)
 {
     Framebuffer *fbo;
@@ -442,6 +388,7 @@ void mglLogicOp(GLMContext ctx, GLenum opcode)
         case GL_NOR:
         case GL_XOR:
         case GL_EQUIV:
+        case GL_INVERT:
         case GL_AND_REVERSE:
         case GL_AND_INVERTED:
         case GL_OR_REVERSE:
@@ -751,8 +698,6 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     ctx->state.viewport_array[0][1] = (GLfloat)y;
     ctx->state.viewport_array[0][2] = (GLfloat)width;
     ctx->state.viewport_array[0][3] = (GLfloat)height;
-
-    mglLogMinecraftOffscreenViewport(ctx, x, y, width, height);
 
     ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
 }

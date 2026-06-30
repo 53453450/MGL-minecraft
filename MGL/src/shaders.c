@@ -553,6 +553,55 @@ static bool mgl_patch_shader_storage_block_bindings(char *src, size_t src_capaci
             continue;
         }
 
+        /* Also skip if "buffer" is preceded by GLSL memory qualifiers
+         * (readonly, writeonly, coherent, volatile, restrict) that follow
+         * a ")" from a layout(...) qualifier.  Without this, pass 2 would
+         * incorrectly inject a second layout(...) for declarations like
+         * "layout(binding=0) readonly buffer Block { ... }". */
+        {
+            static const char *mem_quals[] = {
+                "readonly", "writeonly", "coherent", "volatile", "restrict"
+            };
+            const size_t mem_qual_lens[] = { 8, 9, 9, 8, 8 };
+            const int num_mem_quals = (int)(sizeof(mem_quals) / sizeof(mem_quals[0]));
+
+            char *scan = buffer_kw;
+            bool found_layout_close = false;
+            while (scan > src) {
+                /* Skip whitespace */
+                while (scan > src && isspace((unsigned char)scan[-1])) {
+                    scan--;
+                }
+                if (scan == src) break;
+
+                if (scan[-1] == ')') {
+                    found_layout_close = true;
+                    break;
+                }
+
+                /* Check for a memory qualifier keyword ending at scan */
+                bool matched = false;
+                for (int qi = 0; qi < num_mem_quals; qi++) {
+                    size_t qlen = mem_qual_lens[qi];
+                    if ((size_t)(scan - src) >= qlen &&
+                        memcmp(scan - qlen, mem_quals[qi], qlen) == 0) {
+                        /* Ensure it's not part of a larger identifier */
+                        char before_q = (scan - qlen > src) ? (char)scan[-qlen - 1] : '\0';
+                        if (!mgl_is_identifier_char(before_q)) {
+                            scan -= qlen;
+                            matched = true;
+                            break;
+                        }
+                    }
+                }
+                if (!matched) break;
+            }
+            if (found_layout_close) {
+                cursor = buffer_kw + 6;
+                continue;
+            }
+        }
+
         char *name_start = buffer_kw + 6;
         while (*name_start && isspace((unsigned char)*name_start)) {
             name_start++;
@@ -1018,29 +1067,17 @@ static const glslang_resource_t *mgl_glslang_resource(GLMContext ctx)
 
     if (!initialized) {
         resource = *glslang_default_resource();
-        /* Align glslang compile-time resource limits with the values MGL
-         * reports via glGetIntegerv so shader builtins (gl_Max*) agree. */
+        /* max_atomic_counter_bindings has no glGet-able equivalent; use a
+         * fixed high value. All other limits are synced per-call below. */
         resource.max_atomic_counter_bindings = MAX_BINDABLE_BUFFERS;
-        resource.max_compute_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_geometry_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-        resource.max_compute_atomic_counters = 1024;
-        resource.max_vertex_atomic_counters = 1024;
-        resource.max_tess_control_atomic_counters = 1024;
-        resource.max_tess_evaluation_atomic_counters = 1024;
-        resource.max_geometry_atomic_counters = 1024;
-        resource.max_fragment_atomic_counters = 1024;
-        resource.max_combined_atomic_counters = 1024;
         initialized = true;
     }
 
     /* Apply per-context limits on every call so gl_Max* builtins track the
-     * values reported by glGetIntegerv (e.g. gl_MaxCullDistances). */
+     * values reported by glGetIntegerv. This ensures CTS limits tests pass
+     * because shader builtins and GL limits agree. */
     if (ctx) {
+        /* Clip / cull distances */
         resource.max_clip_distances = ctx->state.var.max_clip_distances;
         if (ctx->state.var.max_cull_distances) {
             resource.max_cull_distances = ctx->state.var.max_cull_distances;
@@ -1049,6 +1086,52 @@ static const glslang_resource_t *mgl_glslang_resource(GLMContext ctx)
             resource.max_combined_clip_and_cull_distances =
                 ctx->state.var.max_combined_clip_and_cull_distances;
         }
+
+        /* Image uniform limits */
+        resource.max_image_samples = ctx->state.var.max_image_samples;
+        resource.max_samples = ctx->state.var.max_samples;
+        resource.max_vertex_image_uniforms = ctx->state.var.max_vertex_image_uniforms;
+        resource.max_tess_control_image_uniforms = ctx->state.var.max_tess_control_image_uniforms;
+        resource.max_tess_evaluation_image_uniforms = ctx->state.var.max_tess_evaluation_image_uniforms;
+        resource.max_geometry_image_uniforms = ctx->state.var.max_geometry_image_uniforms;
+        resource.max_fragment_image_uniforms = ctx->state.var.max_fragment_image_uniforms;
+        resource.max_combined_image_uniforms = ctx->state.var.max_combined_image_uniforms;
+
+        /* Draw buffers, vertex attribs, texture units, uniforms, varyings */
+        resource.max_draw_buffers = ctx->state.var.max_draw_buffers;
+        resource.max_vertex_attribs = ctx->state.max_vertex_attribs;
+        resource.max_texture_image_units = ctx->state.var.max_texture_image_units;
+        resource.max_vertex_texture_image_units = ctx->state.var.max_vertex_texture_image_units;
+        resource.max_combined_texture_image_units = ctx->state.var.max_combined_texture_image_units;
+        resource.max_fragment_uniform_components = ctx->state.var.max_fragment_uniform_components;
+        resource.max_vertex_uniform_components = ctx->state.var.max_vertex_uniform_components;
+        resource.max_varying_floats = ctx->state.var.max_varying_floats;
+        resource.max_varying_components = ctx->state.var.max_varying_components;
+        resource.max_vertex_uniform_vectors = ctx->state.var.max_vertex_uniform_vectors;
+        resource.max_varying_vectors = ctx->state.var.max_varying_vectors;
+        resource.max_fragment_uniform_vectors = ctx->state.var.max_fragment_uniform_vectors;
+        resource.max_geometry_uniform_components = ctx->state.var.max_geometry_uniform_components;
+
+        /* Atomic counters and buffers */
+        resource.max_compute_atomic_counter_buffers = ctx->state.var.max_compute_atomic_counter_buffers;
+        resource.max_vertex_atomic_counter_buffers = ctx->state.var.max_vertex_atomic_counter_buffers;
+        resource.max_tess_control_atomic_counter_buffers = ctx->state.var.max_tess_control_atomic_counter_buffers;
+        resource.max_tess_evaluation_atomic_counter_buffers = ctx->state.var.max_tess_evaluation_atomic_counter_buffers;
+        resource.max_geometry_atomic_counter_buffers = ctx->state.var.max_geometry_atomic_counter_buffers;
+        resource.max_fragment_atomic_counter_buffers = ctx->state.var.max_fragment_atomic_counter_buffers;
+        resource.max_combined_atomic_counter_buffers = ctx->state.var.max_combined_atomic_counter_buffers;
+        resource.max_compute_atomic_counters = ctx->state.var.max_compute_atomic_counters;
+        resource.max_vertex_atomic_counters = ctx->state.var.max_vertex_atomic_counters;
+        resource.max_tess_control_atomic_counters = ctx->state.var.max_tess_control_atomic_counters;
+        resource.max_tess_evaluation_atomic_counters = ctx->state.var.max_tess_evaluation_atomic_counters;
+        resource.max_geometry_atomic_counters = ctx->state.var.max_geometry_atomic_counters;
+        resource.max_fragment_atomic_counters = ctx->state.var.max_fragment_atomic_counters;
+        resource.max_combined_atomic_counters = ctx->state.var.max_combined_atomic_counters;
+
+        /* Compute work group size */
+        resource.max_compute_work_group_size_x = ctx->state.var.max_compute_work_group_size[0];
+        resource.max_compute_work_group_size_y = ctx->state.var.max_compute_work_group_size[1];
+        resource.max_compute_work_group_size_z = ctx->state.var.max_compute_work_group_size[2];
     }
 
     return &resource;
@@ -1779,6 +1862,12 @@ void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)
 
         case GL_SHADER_SOURCE_LENGTH:
             *params = (GLint)ptr->src_len;
+            break;
+
+        case GL_COMPLETION_STATUS_KHR: /* GL_ARB/KHR_parallel_shader_compile */
+            /* MGL compiles shaders synchronously, so every shader is always
+             * complete by the time this query is issued. */
+            *params = GL_TRUE;
             break;
 
         default:

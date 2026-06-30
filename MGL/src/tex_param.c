@@ -573,6 +573,17 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
                 case GL_LINEAR_MIPMAP_NEAREST:
                 case GL_NEAREST_MIPMAP_LINEAR:
                 case GL_LINEAR_MIPMAP_LINEAR:
+                    {
+                        static uint64_t s_minFilterLogs = 0;
+                        uint64_t hit = ++s_minFilterLogs;
+                        if (hit <= 64ull || (hit % 256ull) == 0ull) {
+                            fprintf(stderr,
+                                "MGL TEXPARAM_DIAG minFilter old=0x%x new=0x%x hit=%llu\n",
+                                (unsigned)tex_params->min_filter,
+                                (unsigned)*param,
+                                (unsigned long long)hit);
+                        }
+                    }
                     tex_params->min_filter = *param;
                     break;
 
@@ -865,90 +876,6 @@ static bool getTexParmi(GLMContext ctx, TextureParameter *tex_params, const GLen
 
     return true;
 }
-
-#if 0
-static bool getTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *ret)
-{
-    switch(pname)
-    {
-        case GL_TEXTURE_BORDER_COLOR:
-            for(int i=0; i<4; i++)
-                ret[i] = tex_params->border_color[i];
-            break;
-
-        case GL_TEXTURE_SWIZZLE_RGBA:
-            *ret++ = tex_params->swizzle_r;
-            *ret++ = tex_params->swizzle_g;
-            *ret++ = tex_params->swizzle_b;
-            *ret++ = tex_params->swizzle_a;
-            break;
-
-        default:
-            return false;
-            break;
-    }
-
-    return true;
-}
-
-static bool getTexParamsIiv(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *ret)
-{
-    switch(pname)
-    {
-        case GL_TEXTURE_BORDER_COLOR:
-            for(int i=0; i<4; i++)
-                ret[i] = tex_params->border_color_i[i];
-            break;
-
-        default:
-            return false;
-            break;
-    }
-
-    return true;
-}
-
-static bool getTexParamsIuiv(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLuint *ret)
-{
-    switch(pname)
-    {
-        case GL_TEXTURE_BORDER_COLOR:
-            for(int i=0; i<4; i++)
-                ret[i] = tex_params->border_color_ui[i];
-            break;
-
-        default:
-            return false;
-            break;
-    }
-
-    return true;
-}
-
-static bool getTexParamsf(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLfloat *ret)
-{
-    switch(pname)
-    {
-        case GL_TEXTURE_BORDER_COLOR:
-            for(int i=0; i<4; i++)
-                ret[i] = tex_params->border_color[i];
-            break;
-
-        case GL_TEXTURE_SWIZZLE_RGBA:
-            *ret++ = tex_params->swizzle_r;
-            *ret++ = tex_params->swizzle_g;
-            *ret++ = tex_params->swizzle_b;
-            *ret++ = tex_params->swizzle_a;
-            break;
-
-        default:
-            return false;
-            break;
-    }
-
-    return true;
-}
-#endif
 
 static bool getTexParmf(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLfloat *ret)
 {
@@ -1394,15 +1321,22 @@ void mglGetTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, GLfloat *
     if (!tex)
         return;
 
+    /* Texture-level parameters that live on Texture, not TextureParameter. */
+    if (pname == GL_TEXTURE_IMMUTABLE_FORMAT) {
+        *params = (GLfloat)(tex->immutable_storage ? GL_TRUE : GL_FALSE);
+        return;
+    }
+    if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
+        *params = (GLfloat)tex->num_levels;
+        return;
+    }
+
     GLint iparam;
     iparam = 0;
 
     if(getParam(ctx, &tex->params, pname, &iparam, params))
     {
-        if (iparam)
-        {
-            *params = (float)iparam;
-        }
+        *params = (float)iparam;
         return;
     }
 
@@ -1421,15 +1355,22 @@ void mglGetTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, GLint *pa
     if (!tex)
         return;
 
+    /* Texture-level parameters that live on Texture, not TextureParameter. */
+    if (pname == GL_TEXTURE_IMMUTABLE_FORMAT) {
+        *params = tex->immutable_storage ? GL_TRUE : GL_FALSE;
+        return;
+    }
+    if (pname == GL_TEXTURE_IMMUTABLE_LEVELS) {
+        *params = (GLint)tex->num_levels;
+        return;
+    }
+
     GLfloat fparam;
     fparam = 0.0;
 
     if(getParam(ctx, &tex->params, pname, params, &fparam))
     {
-        if (fparam)
-        {
-            *params = (float)fparam;
-        }
+        *params = (GLint)fparam;
         return;
     }
 

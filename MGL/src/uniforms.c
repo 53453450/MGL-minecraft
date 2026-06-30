@@ -147,6 +147,39 @@ static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
     return GL_FALSE;
 }
 
+/* Parse a strict GLSL array subscript between '[' and ']'.
+ * Returns the parsed index on success, or -1 if the subscript is not
+ * a valid GLSL array element index (no whitespace, no expressions,
+ * no leading zeros except for "0" itself).  This matches the GL spec
+ * requirement that glGetUniformLocation/glGetProgramResourceLocation
+ * only match valid array element names. */
+static long mglParseStrictArraySubscript(const char *str, size_t len)
+{
+    if (!str || len == 0) {
+        return -1;
+    }
+
+    /* All characters must be digits — no whitespace, no '+', no expressions. */
+    for (size_t i = 0; i < len; i++) {
+        if (str[i] < '0' || str[i] > '9') {
+            return -1;
+        }
+    }
+
+    /* Reject leading zeros except for the single digit "0". */
+    if (len > 1 && str[0] == '0') {
+        return -1;
+    }
+
+    char *end = NULL;
+    long parsed = strtol(str, &end, 10);
+    if (end != str + len) {
+        return -1;
+    }
+
+    return parsed;
+}
+
 static GLboolean mglSafeCStringEquals(const char *lhs, const char *rhs)
 {
     if (!lhs || !rhs) {
@@ -385,9 +418,6 @@ static GLint mglKnownPlainUniformLocation(const char *name)
     if (mglSafeCStringEquals(name, "ChunkVisibility")) {
         return 16;
     }
-    if (mglSafeCStringEquals(name, "texture_layer")) {
-        return 15;
-    }
 
     return -1;
 }
@@ -428,7 +458,8 @@ static const int mglActiveUniformResourceTypes[] = {
     SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
     SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
     SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-    SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+    SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
 };
 
 static GLboolean mglActiveUniformResourceHasName(const SpirvResource *res)
@@ -464,6 +495,33 @@ static GLboolean mglActiveUniformNamesMatch(const char *resource_name, const cha
         resource_name[query_len + 2u] == ']' &&
         memcmp(resource_name, query_name, query_len) == 0) {
         return GL_TRUE;
+    }
+
+    /* Multi-dimensional array: query "a[2][1]" matches resource "a[2][1][0]".
+     * The resource name may have one or more trailing "[0]" suffixes that
+     * the query omits.  Check if the resource name is the query name plus
+     * trailing "[0]" repetitions. */
+    if (resource_len > query_len &&
+        memcmp(resource_name, query_name, query_len) == 0 &&
+        resource_name[query_len] == '[')
+    {
+        const char *suffix = resource_name + query_len;
+        GLboolean all_zero_brackets = GL_TRUE;
+        while (*suffix)
+        {
+            if (suffix[0] == '[' && suffix[1] == '0' && suffix[2] == ']')
+            {
+                suffix += 3;
+            }
+            else
+            {
+                all_zero_brackets = GL_FALSE;
+                break;
+            }
+        }
+        if (all_zero_brackets && suffix == resource_name + resource_len) {
+            return GL_TRUE;
+        }
     }
 
     return GL_FALSE;
@@ -581,6 +639,10 @@ SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *st
                     mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
                     continue;
                 }
+                /* Plain (non-UBO) struct uniforms expose their leaf members
+                 * as individual active uniforms. Enumerate them here so that
+                 * glGetActiveUniform / glGetUniformLocation can address each
+                 * member (e.g. "u0[0].m0"). */
                 if (res->ubo_members && res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
                     for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
                         if (!res->ubo_members[mem_i].query_name) {
@@ -861,15 +923,17 @@ void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, 
         src_len = (GLsizei)strlen(src);
     }
 
-    if (length) {
-        *length = src_len;
-    }
     if (name && bufSize > 0) {
         GLsizei copy_len = src_len < (bufSize - 1) ? src_len : (bufSize - 1);
         if (copy_len > 0) {
             memcpy(name, src, (size_t)copy_len);
         }
         name[copy_len] = '\0';
+        if (length) {
+            *length = copy_len;
+        }
+    } else if (length) {
+        *length = src_len;
     }
 }
 
@@ -975,70 +1039,6 @@ static GLboolean mglUniformLocationMatchesResource(const SpirvResource *res, int
     }
 
     return (GLint)res->gl_binding == location ? GL_TRUE : GL_FALSE;
-}
-
-static GLboolean mglPlainStructUniformLeafMatchesLocation(const SpirvResource *res,
-                                                          GLint location,
-                                                          const SpirvUBOMember **member_out)
-{
-    if (member_out) {
-        *member_out = NULL;
-    }
-    if (!res || !res->ubo_members || res->ubo_member_count == 0u || location < 0) {
-        return GL_FALSE;
-    }
-
-    GLint base_location = mglPlainUniformResourceLocation(res);
-    if (base_location < 0) {
-        return GL_FALSE;
-    }
-
-    for (GLuint i = 0; i < res->ubo_member_count; i++) {
-        const SpirvUBOMember *member = &res->ubo_members[i];
-        if (base_location + member->location_offset == location) {
-            if (member_out) {
-                *member_out = member;
-            }
-            return GL_TRUE;
-        }
-    }
-
-    return GL_FALSE;
-}
-
-static SpirvResource *mglFindPlainStructUniformLeafResource(Program *program,
-                                                            GLint location,
-                                                            const SpirvUBOMember **member_out)
-{
-    if (member_out) {
-        *member_out = NULL;
-    }
-    if (!program || location < 0) {
-        return NULL;
-    }
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, __FUNCTION__);
-        if (!resources) {
-            continue;
-        }
-        for (GLuint i = 0; i < resources->count; i++) {
-            SpirvResource *res = &resources->list[i];
-            if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
-                continue;
-            }
-            const SpirvUBOMember *member = NULL;
-            if (mglPlainStructUniformLeafMatchesLocation(res, location, &member)) {
-                if (member_out) {
-                    *member_out = member;
-                }
-                return res;
-            }
-        }
-    }
-
-    return NULL;
 }
 
 static SpirvResource *mglFindSamplerUniformResource(Program *program,
@@ -1585,9 +1585,34 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     if (base_location >= 0) {
                         for (GLuint m = 0; m < list[i].ubo_member_count; m++) {
                             const SpirvUBOMember *member = &list[i].ubo_members[m];
-                            const char *query_name = member->query_name ? member->query_name : member->name;
-                            if (mglSafeCStringEquals(query_name, name)) {
+                            const char *mqn = member->query_name ? member->query_name : member->name;
+                            if (mglSafeCStringEquals(mqn, name)) {
                                 return base_location + member->location_offset;
+                            }
+                            /* Handle array-element queries like "u0[0].m1[1]"
+                             * when the reflected member is "u0[0].m1[0]".
+                             * Match the base name (everything before the last
+                             * "[N]" suffix) and add the parsed index to the
+                             * member's location_offset. */
+                            if (mqn && member->size > 1) {
+                                size_t mqn_len = strlen(mqn);
+                                size_t q_len = strlen(name);
+                                if (mqn_len >= 3u &&
+                                    mqn[mqn_len - 3u] == '[' &&
+                                    mqn[mqn_len - 2u] == '0' &&
+                                    mqn[mqn_len - 1u] == ']' &&
+                                    q_len >= mqn_len &&
+                                    strncmp(mqn, name, mqn_len - 3u) == 0 &&
+                                    name[mqn_len - 3u] == '[' &&
+                                    name[q_len - 1u] == ']') {
+                                    size_t sub_len = q_len - mqn_len + 3u - 2u; /* content between [ and ] */
+                                    long parsed = mglParseStrictArraySubscript(name + mqn_len - 2u, sub_len);
+                                    if (parsed >= 0 && parsed < member->size) {
+                                        return base_location +
+                                               member->location_offset +
+                                               (GLint)parsed;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1602,13 +1627,17 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     strncmp(str, name, resource_name_len) == 0 &&
                     name[resource_name_len] == '[' &&
                     name[query_name_len - 1u] == ']') {
-                    char *end = NULL;
-                    long parsed = strtol(name + resource_name_len + 1u, &end, 10);
-                    if (end == name + query_name_len - 1u &&
-                        parsed >= 0 && parsed < list[i].gl_array_size) {
+                    size_t sub_len = query_name_len - resource_name_len - 2u; /* content between [ and ] */
+                    long parsed = mglParseStrictArraySubscript(name + resource_name_len + 1u, sub_len);
+                    if (parsed >= 0 && parsed < list[i].gl_array_size) {
                         array_element = (GLint)parsed;
                         name_matches = GL_TRUE;
                     }
+                }
+                /* Multi-dimensional array: query "a[2][1]" matches
+                 * resource "a[2][1][0]" (query omits trailing [0]). */
+                if (!name_matches && mglActiveUniformNamesMatch(str, name)) {
+                    name_matches = GL_TRUE;
                 }
 
                 if (name_matches)
@@ -1781,21 +1810,23 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
                 }
                 break;
             case GL_UNIFORM_OFFSET:
-                if (res->ubo_member) {
+                /* Only UBO members carry a meaningful byte offset; plain
+                 * struct uniform members are not in a named block. */
+                if (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
                     params[i] = (GLint)res->ubo_member->offset;
                 } else {
                     params[i] = -1;
                 }
                 break;
             case GL_UNIFORM_ARRAY_STRIDE:
-                if (res->ubo_member) {
+                if (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
                     params[i] = res->ubo_member->array_stride;
                 } else {
                     params[i] = -1;
                 }
                 break;
             case GL_UNIFORM_MATRIX_STRIDE:
-                if (res->ubo_member) {
+                if (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
                     params[i] = res->ubo_member->matrix_stride;
                 } else {
                     params[i] = -1;
@@ -1805,7 +1836,7 @@ void mglGetActiveUniformsiv(GLMContext ctx, GLuint program, GLsizei uniformCount
                 params[i] = -1;
                 break;
             case GL_UNIFORM_IS_ROW_MAJOR:
-                if (res->ubo_member) {
+                if (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
                     params[i] = res->ubo_member->is_row_major;
                 } else {
                     params[i] = GL_FALSE;
@@ -2160,15 +2191,6 @@ bool checkUniformParams(GLMContext ctx, GLint location)
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
         return false;
     }
-        
-    if (location >= MAX_BINDABLE_BUFFERS) {
-        const SpirvUBOMember *member = NULL;
-        if (!mglFindPlainStructUniformLeafResource(ptr, location, &member)) {
-            mglUniformSetError(ctx, GL_INVALID_OPERATION);
-            return false;
-        }
-        (void)member;
-    }
 
     return true;
 }
@@ -2276,171 +2298,6 @@ static void mglUploadPlainUniformMat3fv(GLMContext ctx,
                                         GLboolean transpose,
                                         const GLfloat *value);
 
-static GLboolean mglPlainStructUniformMemberLayout(const SpirvResource *res,
-                                                   const SpirvUBOMember *member,
-                                                   GLint *element_out,
-                                                   GLint *slot_out,
-                                                   size_t *offset_out,
-                                                   size_t *size_out)
-{
-    if (element_out) {
-        *element_out = 0;
-    }
-    if (slot_out) {
-        *slot_out = 0;
-    }
-    if (offset_out) {
-        *offset_out = 0u;
-    }
-    if (size_out) {
-        *size_out = 0u;
-    }
-    if (!res || !member || !res->name ||
-        (strcmp(res->name, "u0") != 0 && strcmp(res->name, "u1") != 0)) {
-        return GL_FALSE;
-    }
-
-    GLint element = member->location_offset / 4;
-    GLint slot = member->location_offset % 4;
-    size_t offset = 0u;
-    size_t size = 0u;
-    switch (slot) {
-        case 0:
-            offset = 0u;
-            size = 4u * sizeof(GLfloat);
-            break;
-        case 1:
-            offset = 16u;
-            size = sizeof(GLfloat);
-            break;
-        case 2:
-            offset = 20u;
-            size = sizeof(GLfloat);
-            break;
-        case 3:
-            offset = 24u;
-            size = 4u * sizeof(GLfloat);
-            break;
-        default:
-            return GL_FALSE;
-    }
-
-    if (element_out) {
-        *element_out = element;
-    }
-    if (slot_out) {
-        *slot_out = slot;
-    }
-    if (offset_out) {
-        *offset_out = offset;
-    }
-    if (size_out) {
-        *size_out = size;
-    }
-    return GL_TRUE;
-}
-
-static GLboolean mglUploadPlainStructUniformLeaf(GLMContext ctx,
-                                                 Program *program,
-                                                 GLint location,
-                                                 const void *ptr,
-                                                 GLsizeiptr size)
-{
-    const SpirvUBOMember *member = NULL;
-    SpirvResource *res = mglFindPlainStructUniformLeafResource(program, location, &member);
-    if (!res || !member) {
-        fprintf(stderr, "MGL DBG UNIFORM_LEAF: program=%u location=%d NOT leaf (res=%p member=%p)\n",
-                program ? (unsigned)program->name : 0u, (int)location, (void*)res, (void*)member);
-        return GL_FALSE;
-    }
-    fprintf(stderr, "MGL DBG UNIFORM_LEAF: program=%u location=%d IS leaf res_name=%s member_name=%s\n",
-            program ? (unsigned)program->name : 0u, (int)location,
-            res->name ? res->name : "(null)",
-            member->name ? member->name : "(null)");
-
-    GLint element = 0;
-    GLint member_slot = 0;
-    size_t member_offset = 0u;
-    size_t member_size = 0u;
-    if (!mglPlainStructUniformMemberLayout(res,
-                                           member,
-                                           &element,
-                                           &member_slot,
-                                           &member_offset,
-                                           &member_size)) {
-        return GL_FALSE;
-    }
-    (void)member_slot;
-
-    if (size < 0) {
-        mglUniformSetError(ctx, GL_INVALID_VALUE);
-        return GL_TRUE;
-    }
-    if ((size_t)size < member_size) {
-        mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return GL_TRUE;
-    }
-    if (member_size > 0u && !mglPointerRangeReadable(ptr, member_size)) {
-        fprintf(stderr,
-                "MGL WARNING: dropping plain struct uniform update location=%d bytes=%zu unreadable value=%p\n",
-                location,
-                member_size,
-                ptr);
-        mglUniformSetError(ctx, GL_INVALID_VALUE);
-        return GL_TRUE;
-    }
-
-    GLint base_location = mglPlainUniformResourceLocation(res);
-    GLint storage_location = base_location + element;
-    if (storage_location < 0 || storage_location >= MAX_BINDABLE_BUFFERS) {
-        fprintf(stderr,
-                "MGL WARNING: plain struct uniform storage location out of range program=%u name=%s loc=%d storage=%d\n",
-                program ? program->name : 0u,
-                res->name ? res->name : "(null)",
-                location,
-                storage_location);
-        mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return GL_TRUE;
-    }
-
-    enum { MGL_CTS_STRUCT_UNIFORM_SIZE = 48 };
-    uint8_t bytes[MGL_CTS_STRUCT_UNIFORM_SIZE] = {0};
-    BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[storage_location];
-    Buffer *buf = uniformSlot->buf;
-    if (buf && buf->data.buffer_data && buf->size >= MGL_CTS_STRUCT_UNIFORM_SIZE &&
-        mglPointerRangeReadable((const void *)(uintptr_t)buf->data.buffer_data,
-                                MGL_CTS_STRUCT_UNIFORM_SIZE)) {
-        memcpy(bytes,
-               (const void *)(uintptr_t)buf->data.buffer_data,
-               MGL_CTS_STRUCT_UNIFORM_SIZE);
-    }
-    memcpy(bytes + member_offset, ptr, member_size);
-
-    mglFlushPendingDraws(ctx);
-    if (mglUniformBufferDataWouldChange(buf,
-                                        MGL_CTS_STRUCT_UNIFORM_SIZE,
-                                        bytes)) {
-        mglFlushPendingDrawsForBuffer(ctx, buf);
-    }
-    if (!buf) {
-        GLuint internalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
-                              (((GLuint)program->name & 0x0fffu) << 12) |
-                              (GLuint)storage_location;
-        uniformSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, internalName);
-        buf = uniformSlot->buf;
-        if (buf) {
-            insertHashElement(&ctx->state.buffer_table, internalName, buf);
-        }
-    }
-
-    initBufferData(ctx, buf, MGL_CTS_STRUCT_UNIFORM_SIZE, bytes, true);
-    uniformSlot->buffer = buf ? buf->name : 0u;
-    uniformSlot->offset = 0;
-    uniformSlot->size = MGL_CTS_STRUCT_UNIFORM_SIZE;
-    ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE;
-    return GL_TRUE;
-}
-
 void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
 {
     ctx = mglUniformResolveContext(ctx, __FUNCTION__);
@@ -2467,15 +2324,6 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     Program *program = mglUniformGetCurrentProgram(ctx, __FUNCTION__);
     if (!program) {
         mglUniformSetError(ctx, GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (size == sizeof(GLint) && ptr) {
-        fprintf(stderr, "MGL DBG UNIFORM: program=%u location=%d value=%d\n",
-                (unsigned)program->name, (int)location, (int)*((const GLint *)ptr));
-    }
-
-    if (mglUploadPlainStructUniformLeaf(ctx, program, location, ptr, size)) {
         return;
     }
 
@@ -2508,13 +2356,6 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
     uniformSlot->buffer = buf ? buf->name : 0u;
     uniformSlot->offset = 0;
     uniformSlot->size = size;
-
-    if (size == sizeof(GLint) && ptr && buf && buf->data.buffer_data) {
-        fprintf(stderr, "MGL DBG UNIFORM_BUF: program=%u location=%d bufName=%u bufData=%p value=%d\n",
-                (unsigned)program->name, (int)location, (unsigned)(buf ? buf->name : 0u),
-                (void*)(uintptr_t)(buf ? buf->data.buffer_data : 0),
-                (int)*((const GLint *)ptr));
-    }
 
     /*
      * Minecraft's shader layer can reuse the same logical plain uniform values

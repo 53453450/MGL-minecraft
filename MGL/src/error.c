@@ -32,15 +32,6 @@ GLenum  mglGetError(GLMContext ctx)
 
     err = ctx->state.error;
 
-    if (err != GL_NO_ERROR) {
-        static unsigned long long s_get_error_log_count = 0;
-        s_get_error_log_count++;
-        if (s_get_error_log_count <= 64ull || (s_get_error_log_count % 1024ull) == 0ull) {
-            fprintf(stderr, "MGL DEBUG: mglGetError returning 0x%x (%d) hit=%llu\n",
-                    err, err, s_get_error_log_count);
-        }
-    }
-
     ctx->state.error = GL_NO_ERROR;
 
     return err;

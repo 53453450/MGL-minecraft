@@ -286,68 +286,6 @@ static GLboolean mgl_query_mode_is_valid(GLenum mode)
 	}
 }
 
-GLboolean mglCTSQueryDepthUniform(GLMContext ctx, GLfloat *value)
-{
-	Program *program = ctx ? ctx->state.program : NULL;
-	if (!program || !value)
-		return GL_FALSE;
-
-	BufferBaseTarget *known_slot = &program->plain_uniform_buffers[0];
-	Buffer *known_buf = known_slot->buf;
-	if (known_buf && known_buf->data.buffer_data &&
-	    known_buf->size >= (GLsizeiptr)sizeof(GLfloat))
-	{
-		memcpy(value, (const void *)(uintptr_t)known_buf->data.buffer_data, sizeof(*value));
-		return GL_TRUE;
-	}
-
-	for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++)
-	{
-		SpirvResourceList *resources =
-			&program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
-		if (!resources->list || resources->count > 4096u)
-			continue;
-		for (GLuint i = 0; i < resources->count; i++)
-		{
-			SpirvResource *res = &resources->list[i];
-			if (!res->name || strcmp(res->name, "g_depth") != 0)
-				continue;
-
-			GLint location = res->uniform_location >= 0
-				? res->uniform_location
-				: (GLint)res->location;
-			if (location < 0 || location >= MAX_BINDABLE_BUFFERS)
-				continue;
-
-			BufferBaseTarget *slot = &program->plain_uniform_buffers[location];
-			Buffer *buf = slot->buf;
-			if (!buf || !buf->data.buffer_data || buf->size < (GLsizeiptr)sizeof(GLfloat))
-				continue;
-
-			memcpy(value, (const void *)(uintptr_t)buf->data.buffer_data, sizeof(*value));
-			return GL_TRUE;
-		}
-	}
-
-	return GL_FALSE;
-}
-
-GLboolean mglCTSDepthTestPasses(GLenum func, GLfloat incoming, GLfloat stored)
-{
-	switch (func)
-	{
-		case GL_NEVER: return GL_FALSE;
-		case GL_LESS: return incoming < stored;
-		case GL_EQUAL: return incoming == stored;
-		case GL_LEQUAL: return incoming <= stored;
-		case GL_GREATER: return incoming > stored;
-		case GL_NOTEQUAL: return incoming != stored;
-		case GL_GEQUAL: return incoming >= stored;
-		case GL_ALWAYS: return GL_TRUE;
-		default: return GL_TRUE;
-	}
-}
-
 void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 {
 	if (!ctx)
@@ -360,29 +298,9 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx)
 		if (!q || !q->active || !mgl_query_target_is_sample(q->target))
 			continue;
 
+		/* Just mark that a draw occurred; the actual sample-pass result is
+		 * read back from the Metal visibility result buffer in mglEndQuery. */
 		q->saw_draw = GL_TRUE;
-		q->sample_result_known = GL_TRUE;
-		q->result = 1;
-
-		if (ctx->state.caps.depth_test)
-		{
-			GLfloat incoming_depth = 0.0f;
-			if (mglCTSQueryDepthUniform(ctx, &incoming_depth))
-			{
-				GLfloat stored_depth = ctx->state.query_depth_known
-					? ctx->state.query_depth_value
-					: (GLfloat)ctx->state.var.depth_clear_value;
-				GLboolean pass = mglCTSDepthTestPasses(ctx->state.var.depth_func,
-				                                           incoming_depth,
-				                                           stored_depth);
-				q->result = pass ? 1u : 0u;
-				if (pass && ctx->state.var.depth_writemask)
-				{
-					ctx->state.query_depth_value = incoming_depth;
-					ctx->state.query_depth_known = GL_TRUE;
-				}
-			}
-		}
 	}
 }
 
@@ -508,17 +426,50 @@ static void mgl_finish_query_result(QueryObject *q)
 	}
 }
 
+/* Check if a program interface token is valid per the GL spec.
+ * Subroutine and transform-feedback interfaces are valid but not
+ * backed by SPIRV-Cross resource types, so they need separate handling. */
+static GLboolean mgl_program_interface_is_valid(GLenum programInterface)
+{
+	switch (programInterface)
+	{
+		case GL_PROGRAM_INPUT:
+		case GL_PROGRAM_OUTPUT:
+		case GL_UNIFORM:
+		case GL_UNIFORM_BLOCK:
+		case GL_BUFFER_VARIABLE:
+		case GL_SHADER_STORAGE_BLOCK:
+		case GL_ATOMIC_COUNTER_BUFFER:
+		case GL_TRANSFORM_FEEDBACK_VARYING:
+		case GL_VERTEX_SUBROUTINE:
+		case GL_TESS_CONTROL_SUBROUTINE:
+		case GL_TESS_EVALUATION_SUBROUTINE:
+		case GL_GEOMETRY_SUBROUTINE:
+		case GL_FRAGMENT_SUBROUTINE:
+		case GL_COMPUTE_SUBROUTINE:
+		case GL_VERTEX_SUBROUTINE_UNIFORM:
+		case GL_TESS_CONTROL_SUBROUTINE_UNIFORM:
+		case GL_TESS_EVALUATION_SUBROUTINE_UNIFORM:
+		case GL_GEOMETRY_SUBROUTINE_UNIFORM:
+		case GL_FRAGMENT_SUBROUTINE_UNIFORM:
+		case GL_COMPUTE_SUBROUTINE_UNIFORM:
+			return GL_TRUE;
+		default:
+			return GL_FALSE;
+	}
+}
+
 static int mgl_program_interface_to_spvc(GLenum programInterface)
 {
 	switch (programInterface)
 	{
-		case GL_PROGRAM_INPUT: return _STAGE_INPUT_RES;
-		case GL_PROGRAM_OUTPUT: return _STAGE_OUTPUT_RES;
-		case GL_UNIFORM: return _UNIFORM_CONSTANT_RES;
-		case GL_UNIFORM_BLOCK: return _UNIFORM_BUFFER_RES;
-		case GL_SHADER_STORAGE_BLOCK: return _STORAGE_BUFFER_RES;
-		case GL_BUFFER_VARIABLE: return _STORAGE_BUFFER_RES;
-		case GL_ATOMIC_COUNTER_BUFFER: return _ATOMIC_COUNTER_RES;
+		case GL_PROGRAM_INPUT: return SPVC_RESOURCE_TYPE_STAGE_INPUT;
+		case GL_PROGRAM_OUTPUT: return SPVC_RESOURCE_TYPE_STAGE_OUTPUT;
+		case GL_UNIFORM: return SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT;
+		case GL_UNIFORM_BLOCK: return SPVC_RESOURCE_TYPE_UNIFORM_BUFFER;
+		case GL_SHADER_STORAGE_BLOCK: return SPVC_RESOURCE_TYPE_STORAGE_BUFFER;
+		case GL_BUFFER_VARIABLE: return SPVC_RESOURCE_TYPE_STORAGE_BUFFER;
+		case GL_ATOMIC_COUNTER_BUFFER: return SPVC_RESOURCE_TYPE_ATOMIC_COUNTER;
 		default: return -1;
 	}
 }
@@ -536,6 +487,7 @@ static int mgl_program_interface_to_spvc_list(GLenum programInterface, int *type
 		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_SEPARATE_IMAGE;
 		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS;
 		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_STORAGE_IMAGE;
+		if (n < max_types) types[n++] = SPVC_RESOURCE_TYPE_ATOMIC_COUNTER;
 		return n;
 	}
 
@@ -607,23 +559,18 @@ static GLboolean mgl_program_uniform_block_name_matches(const SpirvResource *blo
 		return GL_FALSE;
 
 	GLuint array_size = mgl_program_uniform_block_array_size(block);
-	if (array_size == 1)
-	{
-		if (strcmp(block->name, name) == 0)
-		{
-			if (out_element)
-				*out_element = 0;
-			return GL_TRUE;
-		}
-		return GL_FALSE;
-	}
 
+	/* Exact name match always succeeds (element 0). */
 	if (strcmp(block->name, name) == 0)
 	{
 		if (out_element)
 			*out_element = 0;
 		return GL_TRUE;
 	}
+
+	/* If the UBO is declared as an array, accept "name[N]" syntax. */
+	if (!block->ubo_is_array)
+		return GL_FALSE;
 
 	size_t base_len = strlen(block->name);
 	if (strncmp(block->name, name, base_len) != 0 || name[base_len] != '[')
@@ -647,7 +594,9 @@ static GLboolean mgl_program_resource_name_with_array_matches(const SpirvResourc
 		return GL_FALSE;
 
 	GLuint array_size = res->gl_array_size > 0 ? (GLuint)res->gl_array_size : 1u;
-	if (array_size == 1)
+
+	/* For non-array resources, only exact name matches. */
+	if (!res->is_array)
 	{
 		if (strcmp(res->name, name) == 0)
 		{
@@ -658,6 +607,7 @@ static GLboolean mgl_program_resource_name_with_array_matches(const SpirvResourc
 		return GL_FALSE;
 	}
 
+	/* For array resources, match either the base name or "name[N]". */
 	if (strcmp(res->name, name) == 0)
 	{
 		if (out_element)
@@ -712,7 +662,7 @@ static GLsizei mgl_program_resource_name_with_array(const SpirvResource *res,
 			name[0] = '\0';
 		return 0;
 	}
-	if (res->gl_array_size > 1 && !strchr(res->name, '['))
+	if (res->is_array && !strchr(res->name, '['))
 		return snprintf(name && bufSize > 0 ? name : NULL,
 		                name && bufSize > 0 ? (size_t)bufSize : 0u,
 		                "%s[0]", res->name);
@@ -721,13 +671,13 @@ static GLsizei mgl_program_resource_name_with_array(const SpirvResource *res,
 	                "%s", res->name);
 }
 
-static GLboolean mgl_program_uniform_block_seen_before(Program *pptr, int target_stage, GLuint target_index)
+static GLboolean mgl_program_block_seen_before(Program *pptr, int res_type, int target_stage, GLuint target_index)
 {
 	if (!pptr || target_stage < 0 || target_stage >= _MAX_SHADER_TYPES)
 		return GL_FALSE;
 
 	SpirvResourceList *target_resources =
-		&pptr->spirv_resources_list[target_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+		&pptr->spirv_resources_list[target_stage][res_type];
 	if (!target_resources->list || target_index >= target_resources->count)
 		return GL_FALSE;
 
@@ -735,7 +685,7 @@ static GLboolean mgl_program_uniform_block_seen_before(Program *pptr, int target
 	for (int stage = 0; stage <= target_stage && stage < _MAX_SHADER_TYPES; stage++)
 	{
 		SpirvResourceList *resources =
-			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+			&pptr->spirv_resources_list[stage][res_type];
 		GLuint limit = (stage == target_stage) ? target_index : resources->count;
 		for (GLuint i = 0; resources->list && i < limit; i++)
 		{
@@ -747,13 +697,13 @@ static GLboolean mgl_program_uniform_block_seen_before(Program *pptr, int target
 	return GL_FALSE;
 }
 
-static GLboolean mgl_program_uniform_block_referenced_by_stage(Program *pptr, const SpirvResource *block, int query_stage)
+static GLboolean mgl_program_block_referenced_by_stage(Program *pptr, int res_type, const SpirvResource *block, int query_stage)
 {
 	if (!pptr || !block || query_stage < 0 || query_stage >= _MAX_SHADER_TYPES)
 		return GL_FALSE;
 
 	SpirvResourceList *resources =
-		&pptr->spirv_resources_list[query_stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+		&pptr->spirv_resources_list[query_stage][res_type];
 	for (GLuint i = 0; resources->list && i < resources->count; i++)
 	{
 		if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]))
@@ -763,7 +713,7 @@ static GLboolean mgl_program_uniform_block_referenced_by_stage(Program *pptr, co
 	return GL_FALSE;
 }
 
-static size_t mgl_program_uniform_block_required_size(Program *pptr, const SpirvResource *block)
+static size_t mgl_program_block_required_size(Program *pptr, int res_type, const SpirvResource *block)
 {
 	size_t required_size = 0;
 
@@ -773,7 +723,7 @@ static size_t mgl_program_uniform_block_required_size(Program *pptr, const Spirv
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
 		SpirvResourceList *resources =
-			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+			&pptr->spirv_resources_list[stage][res_type];
 		for (GLuint i = 0; resources->list && i < resources->count; i++)
 		{
 			if (mgl_program_uniform_block_identity_matches(block, &resources->list[i]) &&
@@ -785,24 +735,39 @@ static size_t mgl_program_uniform_block_required_size(Program *pptr, const Spirv
 	return mgl_round_up_16(required_size);
 }
 
+/* Forward declarations — the helpers below are defined after
+ * mgl_program_resource_count_for_type but used by it. */
+static int mgl_program_input_stage(Program *pptr);
+static int mgl_program_output_stage(Program *pptr);
+static GLboolean mgl_program_resource_should_include_stage(Program *pptr, int res_type, int stage);
+static SpirvResource *mgl_program_builtin_list(Program *pptr, int res_type,
+                                               GLuint *out_count, int *out_stage);
+
 static GLsizei mgl_program_resource_count_for_type(Program *pptr, int res_type)
 {
 	GLsizei total = 0;
+	bool is_block_type = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+	                      res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER);
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-		if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
-			continue;
-		if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
 		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
-		if (res_type != SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+		if (!is_block_type) {
 			total += (GLsizei)count;
 			continue;
 		}
 		for (GLuint i = 0; i < count; i++) {
-			if (!mgl_program_uniform_block_seen_before(pptr, stage, i))
+			if (!mgl_program_block_seen_before(pptr, res_type, stage, i))
 				total += (GLsizei)mgl_program_uniform_block_array_size(
 					&pptr->spirv_resources_list[stage][res_type].list[i]);
 		}
+	}
+	/* Add built-in resources for PROGRAM_INPUT / PROGRAM_OUTPUT. */
+	if (!is_block_type) {
+		GLuint bcount = 0;
+		int bstage = -1;
+		if (mgl_program_builtin_list(pptr, res_type, &bcount, &bstage))
+			total += (GLsizei)bcount;
 	}
 	return total;
 }
@@ -813,12 +778,36 @@ static GLboolean mgl_program_resource_type_is_location_ordered(int res_type)
 	       res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT;
 }
 
-static GLboolean mgl_program_resource_should_include_stage(int res_type, int stage)
+/* Determine the first active stage for PROGRAM_INPUT queries.  For linked
+ * multi-stage programs this is the vertex shader (lowest stage index); for
+ * separate (single-stage) programs it is that program's only stage. */
+static int mgl_program_input_stage(Program *pptr)
 {
-	if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
-		return GL_FALSE;
-	if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
-		return GL_FALSE;
+	GLbitfield mask = pptr->attached_shader_mask;
+	if (mask == 0) return _VERTEX_SHADER;
+	for (int s = 0; s < _MAX_SHADER_TYPES; s++)
+		if (mask & (1u << s)) return s;
+	return _VERTEX_SHADER;
+}
+
+/* Determine the last active stage for PROGRAM_OUTPUT queries.  For linked
+ * multi-stage programs this is the fragment shader (highest stage index); for
+ * separate (single-stage) programs it is that program's only stage. */
+static int mgl_program_output_stage(Program *pptr)
+{
+	GLbitfield mask = pptr->attached_shader_mask;
+	if (mask == 0) return _FRAGMENT_SHADER;
+	for (int s = _MAX_SHADER_TYPES - 1; s >= 0; s--)
+		if (mask & (1u << s)) return s;
+	return _FRAGMENT_SHADER;
+}
+
+static GLboolean mgl_program_resource_should_include_stage(Program *pptr, int res_type, int stage)
+{
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT)
+		return stage == mgl_program_input_stage(pptr) ? GL_TRUE : GL_FALSE;
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
+		return stage == mgl_program_output_stage(pptr) ? GL_TRUE : GL_FALSE;
 	return GL_TRUE;
 }
 
@@ -843,6 +832,29 @@ static GLboolean mgl_program_resource_sort_before(const SpirvResource *a,
 	return a_index < b_index ? GL_TRUE : GL_FALSE;
 }
 
+/* Returns the built-in list and stage for PROGRAM_INPUT / PROGRAM_OUTPUT. */
+static SpirvResource *mgl_program_builtin_list(Program *pptr, int res_type,
+                                               GLuint *out_count, int *out_stage)
+{
+	if (!pptr || !out_count || !out_stage)
+		return NULL;
+	*out_count = 0;
+	*out_stage = -1;
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT) {
+		int s = mgl_program_input_stage(pptr);
+		*out_count = pptr->builtin_program_input_count[s];
+		*out_stage = s;
+		return pptr->builtin_program_inputs[s];
+	}
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT) {
+		int s = mgl_program_output_stage(pptr);
+		*out_count = pptr->builtin_program_output_count[s];
+		*out_stage = s;
+		return pptr->builtin_program_outputs[s];
+	}
+	return NULL;
+}
+
 static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
                                                          int res_type,
                                                          int stage,
@@ -852,7 +864,7 @@ static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
 	GLuint rank = 0;
 	for (int rank_stage = 0; rank_stage < _MAX_SHADER_TYPES; rank_stage++)
 	{
-		if (!mgl_program_resource_should_include_stage(res_type, rank_stage))
+		if (!mgl_program_resource_should_include_stage(pptr, res_type, rank_stage))
 			continue;
 		SpirvResourceList *rank_resources = &pptr->spirv_resources_list[rank_stage][res_type];
 		for (GLuint r = 0; rank_resources->list && r < rank_resources->count; r++)
@@ -864,6 +876,18 @@ static GLuint mgl_program_location_ordered_resource_rank(Program *pptr,
 				rank++;
 		}
 	}
+	/* Also count built-in resources that sort before the given resource. */
+	GLuint builtin_count = 0;
+	int builtin_stage = -1;
+	SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+	for (GLuint r = 0; builtins && r < builtin_count; r++)
+	{
+		SpirvResource *candidate = &builtins[r];
+		if (!candidate->name)
+			continue;
+		if (mgl_program_resource_sort_before(candidate, builtin_stage, r, res, stage, index))
+			rank++;
+	}
 	return rank;
 }
 
@@ -874,7 +898,7 @@ static SpirvResource *mgl_program_location_ordered_resource_at_index_for_type(Pr
 {
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		if (!mgl_program_resource_should_include_stage(res_type, stage))
+		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
 
 		SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
@@ -890,6 +914,23 @@ static SpirvResource *mgl_program_location_ordered_resource_at_index_for_type(Pr
 				res->ubo_array_element = 0;
 				return res;
 			}
+		}
+	}
+	/* Also check built-in resources. */
+	GLuint builtin_count = 0;
+	int builtin_stage = -1;
+	SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+	for (GLuint i = 0; builtins && i < builtin_count; i++)
+	{
+		SpirvResource *res = &builtins[i];
+		if (!res->name)
+			continue;
+		if (mgl_program_location_ordered_resource_rank(pptr, res_type, builtin_stage, i, res) == index)
+		{
+			if (out_stage)
+				*out_stage = builtin_stage;
+			res->ubo_array_element = 0;
+			return res;
 		}
 	}
 	return NULL;
@@ -908,18 +949,21 @@ static SpirvResource *mgl_program_resource_at_index_for_type(Program *pptr, int 
 	if (mgl_program_resource_type_is_location_ordered(res_type))
 		return mgl_program_location_ordered_resource_at_index_for_type(pptr, res_type, index, out_stage);
 
+	bool is_block_type = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+	                      res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER);
+
 	GLuint ordinal = 0;
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		if (!mgl_program_resource_should_include_stage(res_type, stage))
+		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
 		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
 		for (GLuint i = 0; i < count; i++)
 		{
-			if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-			    mgl_program_uniform_block_seen_before(pptr, stage, i))
+			if (is_block_type &&
+			    mgl_program_block_seen_before(pptr, res_type, stage, i))
 				continue;
-			GLuint element_count = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+			GLuint element_count = is_block_type
 				? mgl_program_uniform_block_array_size(&pptr->spirv_resources_list[stage][res_type].list[i])
 				: 1u;
 			for (GLuint element = 0; element < element_count; element++)
@@ -959,19 +1003,21 @@ static SpirvResource *mgl_program_resource_at_index(Program *pptr, const int *ty
 
 static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, int res_type, const GLchar *name, GLuint *out_index, int *out_stage)
 {
+	bool is_block_type = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+	                      res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER);
 	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 	{
-		if (!mgl_program_resource_should_include_stage(res_type, stage))
+		if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 			continue;
 		GLuint count = pptr->spirv_resources_list[stage][res_type].count;
 		for (GLuint i = 0; i < count; i++)
 		{
 			SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
-			if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-			    mgl_program_uniform_block_seen_before(pptr, stage, i))
+			if (is_block_type &&
+			    mgl_program_block_seen_before(pptr, res_type, stage, i))
 				continue;
 			GLuint element = 0;
-			GLboolean name_matches = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+			GLboolean name_matches = is_block_type
 				? mgl_program_uniform_block_name_matches(res, name, &element)
 				: (((res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
 				      res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT) &&
@@ -994,16 +1040,16 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 						GLuint ordinal = 0;
 						for (int rank_stage = 0; rank_stage <= stage && rank_stage < _MAX_SHADER_TYPES; rank_stage++)
 						{
-							if (!mgl_program_resource_should_include_stage(res_type, rank_stage))
+							if (!mgl_program_resource_should_include_stage(pptr, res_type, rank_stage))
 								continue;
 							SpirvResourceList *rank_resources = &pptr->spirv_resources_list[rank_stage][res_type];
 							GLuint limit = (rank_stage == stage) ? i : rank_resources->count;
 							for (GLuint r = 0; rank_resources->list && r < limit; r++)
 							{
-								if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-								    mgl_program_uniform_block_seen_before(pptr, rank_stage, r))
+								if (is_block_type &&
+								    mgl_program_block_seen_before(pptr, res_type, rank_stage, r))
 									continue;
-								ordinal += (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+								ordinal += is_block_type
 									? mgl_program_uniform_block_array_size(&rank_resources->list[r])
 									: 1u;
 							}
@@ -1013,6 +1059,37 @@ static SpirvResource *mgl_program_resource_find_by_name_for_type(Program *pptr, 
 				}
 				if (out_stage)
 					*out_stage = stage;
+				res->ubo_array_element = element;
+				return res;
+			}
+		}
+	}
+	/* Also search built-in resources for PROGRAM_INPUT / PROGRAM_OUTPUT. */
+	if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
+	    res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
+	{
+		GLuint builtin_count = 0;
+		int builtin_stage = -1;
+		SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+		for (GLuint i = 0; builtins && i < builtin_count; i++)
+		{
+			SpirvResource *res = &builtins[i];
+			GLuint element = 0;
+			GLboolean name_matches =
+				mgl_program_resource_name_with_array_matches(res, name, &element) ||
+				(res->name && !strcmp(res->name, name));
+			if (name_matches)
+			{
+				if (out_index)
+				{
+					*out_index = mgl_program_location_ordered_resource_rank(pptr,
+					                                                         res_type,
+					                                                         builtin_stage,
+					                                                         i,
+					                                                         res);
+				}
+				if (out_stage)
+					*out_stage = builtin_stage;
 				res->ubo_array_element = element;
 				return res;
 			}
@@ -1230,6 +1307,11 @@ static GLint mgl_program_uniform_resource_location(GLMContext ctx, GLuint progra
 	return -1;
 }
 
+/* Forward declaration — defined later in this file. */
+static GLuint mgl_program_atomic_counter_buffer_bindings(Program *pptr,
+                                                          GLuint *out_bindings,
+                                                          GLuint max_bindings);
+
 static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
                                                     GLuint program,
                                                     Program *pptr,
@@ -1268,9 +1350,12 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 					: mglProgramActiveUniformSize(res, res_type);
 				break;
 			case GL_OFFSET:
-				params[i] = (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? (GLint)res->ubo_member->offset
-					: -1;
+				if (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					params[i] = (GLint)res->ubo_member->offset;
+				else if (res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER)
+					params[i] = (res->location != 0xffffffffu) ? (GLint)res->location : 0;
+				else
+					params[i] = -1;
 				break;
 			case GL_BLOCK_INDEX:
 				params[i] = (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
@@ -1278,20 +1363,42 @@ static GLboolean mgl_get_program_uniform_resourceiv(GLMContext ctx,
 					: -1;
 				break;
 			case GL_ATOMIC_COUNTER_BUFFER_INDEX:
-				params[i] = -1;
+				if (res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER)
+				{
+					GLuint bindings[MAX_BINDABLE_BUFFERS];
+					GLuint buf_count = mgl_program_atomic_counter_buffer_bindings(
+						pptr, bindings, MAX_BINDABLE_BUFFERS);
+					GLint seq_idx = -1;
+					for (GLuint bi = 0; bi < buf_count; bi++)
+					{
+						if (bindings[bi] == res->gl_binding)
+						{
+							seq_idx = (GLint)bi;
+							break;
+						}
+					}
+					params[i] = seq_idx;
+				}
+				else
+				{
+					params[i] = -1;
+				}
 				break;
 			case GL_ARRAY_STRIDE:
-				params[i] = res->ubo_member ? res->ubo_member->array_stride : -1;
+				params[i] = (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? res->ubo_member->array_stride : -1;
 				break;
 			case GL_MATRIX_STRIDE:
-				params[i] = res->ubo_member ? res->ubo_member->matrix_stride : -1;
+				params[i] = (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? res->ubo_member->matrix_stride : -1;
 				break;
 			case GL_BUFFER_DATA_SIZE:
 			case GL_NUM_ACTIVE_VARIABLES:
 				params[i] = 0;
 				break;
 			case GL_IS_ROW_MAJOR:
-				params[i] = res->ubo_member ? res->ubo_member->is_row_major : GL_FALSE;
+				params[i] = (res->ubo_member && res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+					? res->ubo_member->is_row_major : GL_FALSE;
 				break;
 			case GL_BUFFER_BINDING:
 				params[i] = -1;
@@ -1422,6 +1529,14 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	q->primitive_result_known = GL_FALSE;
 	q->result = 0;
 	s_active_query_by_target[slot] = id;
+
+	/* For sample queries, activate the Metal visibility result buffer so
+	 * the GPU accurately reports whether any fragments passed per-fragment
+	 * tests (depth, stencil, scissor, etc.). */
+	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlBeginSampleQuery)
+	{
+		ctx->mtl_funcs.mtlBeginSampleQuery(ctx);
+	}
 }
 
 void mglBeginQueryIndexed(GLMContext ctx, GLenum target, GLuint index, GLuint id)
@@ -1461,19 +1576,66 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 
 void mglBindFragDataLocation(GLMContext ctx, GLuint program, GLuint color, const GLchar *name)
 {
-	// Bind fragment output location - no-op, use automatic assignment
-	(void)program;
-	(void)color;
-	(void)name;
+	/* glBindFragDataLocation is equivalent to glBindFragDataLocationIndexed
+	 * with index = 0. */
+	mglBindFragDataLocationIndexed(ctx, program, color, 0, name);
 }
 
 void mglBindFragDataLocationIndexed(GLMContext ctx, GLuint program, GLuint colorNumber, GLuint index, const GLchar *name)
 {
-	// Bind indexed fragment output location - no-op
-	(void)program;
-	(void)colorNumber;
-	(void)index;
-	(void)name;
+	if (!name)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (index > 1)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+
+	Program *ptr = findProgram(ctx, program);
+	if (!ptr)
+	{
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		return;
+	}
+
+	/* Replace an existing entry with the same name, or append a new one. */
+	GLuint slot = ptr->frag_data_location_count;
+	for (GLuint i = 0; i < ptr->frag_data_location_count; i++)
+	{
+		if (ptr->frag_data_location_names[i] &&
+		    strcmp(ptr->frag_data_location_names[i], name) == 0)
+		{
+			slot = i;
+			break;
+		}
+	}
+
+	if (slot >= MAX_ATTRIBS)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+
+	char *name_copy = strdup(name);
+	if (!name_copy)
+	{
+		STATE(error) = GL_OUT_OF_MEMORY;
+		return;
+	}
+
+	if (slot < ptr->frag_data_location_count && ptr->frag_data_location_names[slot])
+		free(ptr->frag_data_location_names[slot]);
+
+	ptr->frag_data_location_names[slot] = name_copy;
+	ptr->frag_data_color_numbers[slot] = colorNumber;
+	ptr->frag_data_indices[slot] = index;
+	if (slot == ptr->frag_data_location_count)
+		ptr->frag_data_location_count++;
+
+	ptr->dirty_bits |= DIRTY_PROGRAM;
 }
 
 void mglBindTransformFeedback(GLMContext ctx, GLenum target, GLuint id)
@@ -2491,6 +2653,18 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 		return;
 	}
 
+	/* For sample queries, read back the Metal visibility result buffer to
+	 * get the real GPU count of samples that passed per-fragment tests.
+	 * This replaces the previous heuristic that unconditionally set the
+	 * result to 1 for any draw, which incorrectly reported non-zero for
+	 * draws where all fragments failed the depth/stencil test. */
+	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlEndSampleQuery)
+	{
+		GLuint64 gpuResult = ctx->mtl_funcs.mtlEndSampleQuery(ctx);
+		q->result = gpuResult;
+		q->sample_result_known = GL_TRUE;
+	}
+
 	mgl_finish_query_result(q);
 	s_active_query_by_target[slot] = 0;
 }
@@ -2560,6 +2734,206 @@ void mglGenTransformFeedbacks(GLMContext ctx, GLsizei n, GLuint *ids)
 		}
 		ptr->created = GL_FALSE;
     }
+}
+
+/* ---- Buffer variable (SSBO member) enumeration ----
+ * GL_BUFFER_VARIABLE interface exposes individual leaf members of SSBO
+ * blocks, qualified with the block name (e.g. "Block.member[0]"). */
+
+static GLsizei mgl_program_buffer_variable_count(Program *pptr)
+{
+	if (!pptr)
+		return 0;
+	GLsizei total = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+		for (GLuint i = 0; list->list && i < list->count; i++)
+		{
+			if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, stage, i))
+				continue;
+			SpirvResource *block = &list->list[i];
+			if (block->ubo_members)
+				total += (GLsizei)block->ubo_member_count;
+		}
+	}
+	return total;
+}
+
+/* Returns the owning SSBO block and member index for the Nth buffer variable. */
+static SpirvResource *mgl_program_buffer_variable_at(Program *pptr, GLuint index,
+                                                      GLuint *out_member_idx)
+{
+	if (!pptr)
+		return NULL;
+	GLuint ordinal = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+		for (GLuint i = 0; list->list && i < list->count; i++)
+		{
+			if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, stage, i))
+				continue;
+			SpirvResource *block = &list->list[i];
+			if (!block->ubo_members)
+				continue;
+			for (GLuint m = 0; m < block->ubo_member_count; m++)
+			{
+				if (ordinal == index)
+				{
+					if (out_member_idx)
+						*out_member_idx = m;
+					return block;
+				}
+				ordinal++;
+			}
+		}
+	}
+	return NULL;
+}
+
+/* Find a buffer variable by its qualified name (e.g. "Block.member[0]").
+ * Per the GL spec, an array member may also be queried without the "[0]"
+ * suffix (e.g. "Block.member" matches "Block.member[0]").
+ * Returns the flat index, or -1 if not found. */
+static GLint mgl_program_buffer_variable_find_by_name(Program *pptr, const char *name)
+{
+	if (!pptr || !name)
+		return -1;
+	GLuint ordinal = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+		for (GLuint i = 0; list->list && i < list->count; i++)
+		{
+			if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, stage, i))
+				continue;
+			SpirvResource *block = &list->list[i];
+			if (!block->ubo_members)
+				continue;
+			for (GLuint m = 0; m < block->ubo_member_count; m++)
+			{
+				const char *qname = block->ubo_members[m].query_name;
+				if (qname)
+				{
+					if (strcmp(qname, name) == 0)
+						return (GLint)ordinal;
+					/* Allow matching "Block.member" or "Block.member[0][0]"
+					 * to "Block.member[0][0][0]" — the query name may omit
+					 * trailing [0] suffixes per GL spec. */
+					size_t qlen = strlen(qname);
+					size_t nlen = strlen(name);
+					if (qlen > nlen &&
+					    qname[nlen] == '[' &&
+					    strncmp(qname, name, nlen) == 0)
+					{
+						/* Verify the suffix consists only of "[0]" repetitions */
+						const char *suffix = qname + nlen;
+						GLboolean all_zero_brackets = GL_TRUE;
+						while (*suffix)
+						{
+							if (strncmp(suffix, "[0]", 3) != 0)
+							{
+								all_zero_brackets = GL_FALSE;
+								break;
+							}
+							suffix += 3;
+						}
+						if (all_zero_brackets)
+							return (GLint)ordinal;
+					}
+				}
+				ordinal++;
+			}
+		}
+	}
+	return -1;
+}
+
+/* For a given SSBO block, return the buffer variable indices (into the
+ * GL_BUFFER_VARIABLE interface) of its members. */
+static GLsizei mgl_program_ssbo_buffer_variable_indices(Program *pptr,
+                                                         const SpirvResource *target_block,
+                                                         GLint *params,
+                                                         GLsizei max_count)
+{
+	if (!pptr || !target_block || !target_block->ubo_members || !params || max_count <= 0)
+		return 0;
+	GLsizei written = 0;
+	GLuint ordinal = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES && written < max_count; stage++)
+	{
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+		for (GLuint i = 0; list->list && i < list->count && written < max_count; i++)
+		{
+			if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, stage, i))
+				continue;
+			SpirvResource *block = &list->list[i];
+			if (!block->ubo_members)
+				continue;
+			for (GLuint m = 0; m < block->ubo_member_count && written < max_count; m++)
+			{
+				if (block == target_block)
+					params[written++] = (GLint)ordinal;
+				ordinal++;
+			}
+		}
+	}
+	return written;
+}
+
+/* Collect distinct atomic-counter buffer binding points used by the program.
+ * Returns the count of distinct bindings and fills `out_bindings` (sorted
+ * ascending) up to `max_bindings` entries.  Each distinct gl_binding of an
+ * ATOMIC_COUNTER resource identifies one atomic-counter buffer. */
+static GLuint mgl_program_atomic_counter_buffer_bindings(Program *pptr,
+                                                          GLuint *out_bindings,
+                                                          GLuint max_bindings)
+{
+	if (!pptr || !out_bindings || max_bindings == 0)
+		return 0;
+
+	GLboolean seen[MAX_BINDABLE_BUFFERS];
+	memset(seen, 0, sizeof(seen));
+
+	GLuint count = 0;
+	for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+	{
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+		for (GLuint i = 0; i < list->count; i++)
+		{
+			GLuint b = list->list[i].gl_binding;
+			if (b < MAX_BINDABLE_BUFFERS && !seen[b])
+			{
+				seen[b] = GL_TRUE;
+				if (count < max_bindings)
+					out_bindings[count] = b;
+				count++;
+			}
+		}
+	}
+
+	/* Sort the collected bindings ascending so the sequential index
+	 * is stable and matches the enumeration order expected by the GL
+	 * spec for GL_ATOMIC_COUNTER_BUFFER resources. */
+	for (GLuint i = 1; i < count && i < max_bindings; i++)
+	{
+		GLuint key = out_bindings[i];
+		GLuint j = i;
+		while (j > 0 && out_bindings[j - 1] > key)
+		{
+			out_bindings[j] = out_bindings[j - 1];
+			j--;
+		}
+		out_bindings[j] = key;
+	}
+
+	return count;
 }
 
 void mglGetActiveAtomicCounterBufferiv(GLMContext ctx, GLuint program, GLuint bufferIndex, GLenum pname, GLint *params)
@@ -2910,6 +3284,109 @@ void mglGetProgramBinary(GLMContext ctx, GLuint program, GLsizei bufSize, GLsize
 	if (binaryFormat) *binaryFormat = 0;
 }
 
+/* Transform feedback built-in varying names recognized by
+ * glTransformFeedbackVaryings (ARB_transform_feedback3).  These appear as
+ * active GL_TRANSFORM_FEEDBACK_VARYING resources when enumerated by index,
+ * but glGetProgramResourceIndex returns GL_INVALID_INDEX for them. */
+static GLboolean mgl_tf_is_builtin_name(const char *name)
+{
+	if (!name)
+		return GL_FALSE;
+	if (strcmp(name, "gl_NextBuffer") == 0)
+		return GL_TRUE;
+	if (strcmp(name, "gl_SkipComponents1") == 0 ||
+	    strcmp(name, "gl_SkipComponents2") == 0 ||
+	    strcmp(name, "gl_SkipComponents3") == 0 ||
+	    strcmp(name, "gl_SkipComponents4") == 0)
+		return GL_TRUE;
+	return GL_FALSE;
+}
+
+/* gl_NextBuffer -> 0, gl_SkipComponentsN -> N. */
+static GLuint mgl_tf_builtin_array_size(const char *name)
+{
+	if (!name)
+		return 0;
+	if (strcmp(name, "gl_NextBuffer") == 0)
+		return 0;
+	if (strncmp(name, "gl_SkipComponents", 17) == 0)
+		return (GLuint)(name[17] - '0');
+	return 0;
+}
+
+/* Find the STAGE_OUTPUT resource in a vertex-processing stage that matches
+ * the transform feedback varying name.  The name may be a plain identifier
+ * ("a"), a whole array ("e"), or an array element ("b[0]").  Returns the
+ * matching resource or NULL.  When the name includes "[N]", *out_is_element
+ * is set to GL_TRUE so the caller can report array_size=1. */
+static SpirvResource *mgl_tf_find_varying_output(Program *pptr,
+                                                  const char *name,
+                                                  GLboolean *out_is_element)
+{
+	if (!pptr || !name)
+		return NULL;
+
+	if (out_is_element)
+		*out_is_element = GL_FALSE;
+
+	/* Determine whether the name is an array element reference ("foo[N]"). */
+	const char *bracket = strchr(name, '[');
+	GLboolean is_element = (bracket != NULL) ? GL_TRUE : GL_FALSE;
+	if (out_is_element)
+		*out_is_element = is_element;
+
+	/* Base name length (up to '[' or end). */
+	size_t base_len = bracket ? (size_t)(bracket - name) : strlen(name);
+
+	/* Search vertex-processing stage outputs in pipeline order.  Transform
+	 * feedback captures from the last active vertex-processing stage, so
+	 * search geometry -> tess-eval -> tess-control -> vertex and return the
+	 * first match.  In practice these tests only use vertex. */
+	static const int stages[] = {
+		_GEOMETRY_SHADER,
+		_TESS_EVALUATION_SHADER,
+		_TESS_CONTROL_SHADER,
+		_VERTEX_SHADER
+	};
+	for (size_t si = 0; si < sizeof(stages) / sizeof(stages[0]); si++)
+	{
+		int stage = stages[si];
+		if (!(pptr->attached_shader_mask & SHADER_MASK_BIT(stage)))
+			continue;
+		SpirvResourceList *list =
+			&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+		for (GLuint i = 0; list->list && i < list->count; i++)
+		{
+			SpirvResource *res = &list->list[i];
+			if (!res->name)
+				continue;
+			if (is_element)
+			{
+				/* Match base name; validate index is within bounds. */
+				if (strncmp(res->name, name, base_len) != 0 ||
+				    res->name[base_len] != '\0')
+					continue;
+				if (!res->is_array)
+					continue;
+				char *end = NULL;
+				unsigned long parsed = strtoul(name + base_len + 1, &end, 10);
+				if (!end || *end != ']' || end[1] != '\0')
+					continue;
+				GLuint array_size = res->gl_array_size > 0 ? (GLuint)res->gl_array_size : 1u;
+				if (parsed >= array_size)
+					continue;
+				return res;
+			}
+			else
+			{
+				if (strcmp(res->name, name) == 0)
+					return res;
+			}
+		}
+	}
+	return NULL;
+}
+
 void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInterface, GLenum pname, GLint *params)
 {
 	Program *pptr;
@@ -2922,23 +3399,99 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		return;
+	}
+
+	/* Subroutine and transform-feedback interfaces are valid per the GL
+	 * spec but not backed by SPIRV-Cross resource types.  Return 0 for
+	 * all valid pnames without generating an error. */
+	if (!mgl_program_interface_is_valid(programInterface))
+	{
+		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
 
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* GL_TRANSFORM_FEEDBACK_VARYING is backed by the varyings array
+		 * set via glTransformFeedbackVaryings, not SPIRV-Cross. */
+		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
+		{
+			if (pname == GL_ACTIVE_RESOURCES)
+			{
+				*params = (GLint)pptr->transform_feedback_varying_count;
+				return;
+			}
+			if (pname == GL_MAX_NAME_LENGTH)
+			{
+				GLint max_len = 0;
+				for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
+				{
+					const char *vname = pptr->transform_feedback_varying_names[i];
+					if (vname)
+					{
+						GLint len = (GLint)strlen(vname) + 1;
+						if (len > max_len)
+							max_len = len;
+					}
+				}
+				*params = max_len;
+				return;
+			}
+			STATE(error) = GL_INVALID_ENUM;
+			return;
+		}
+		/* Valid interface (subroutine) with no SPIRV-Cross backing —
+		 * return 0 for all valid pnames. */
+		if (pname == GL_ACTIVE_RESOURCES ||
+		    pname == GL_MAX_NAME_LENGTH ||
+		    pname == GL_MAX_NUM_ACTIVE_VARIABLES ||
+		    pname == GL_MAX_NUM_COMPATIBLE_SUBROUTINES)
+		{
+			*params = 0;
+			return;
+		}
 		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+
+	/* GL_MAX_NAME_LENGTH is not valid for GL_ATOMIC_COUNTER_BUFFER or
+	 * GL_TRANSFORM_FEEDBACK_BUFFER. */
+	if (pname == GL_MAX_NAME_LENGTH &&
+	    (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
+	     programInterface == GL_TRANSFORM_FEEDBACK_BUFFER))
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return;
+	}
+	/* GL_MAX_NUM_ACTIVE_VARIABLES is only valid for block-like interfaces. */
+	if (pname == GL_MAX_NUM_ACTIVE_VARIABLES &&
+	    programInterface != GL_UNIFORM_BLOCK &&
+	    programInterface != GL_SHADER_STORAGE_BLOCK &&
+	    programInterface != GL_ATOMIC_COUNTER_BUFFER &&
+	    programInterface != GL_TRANSFORM_FEEDBACK_BUFFER)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
 		return;
 	}
 
 	switch (pname)
 	{
 		case GL_ACTIVE_RESOURCES:
-			*params = (programInterface == GL_UNIFORM)
-				? mglProgramActiveUniformCount(pptr)
-				: mgl_program_resource_count(pptr, res_types, res_type_count);
+			if (programInterface == GL_UNIFORM)
+				*params = mglProgramActiveUniformCount(pptr);
+			else if (programInterface == GL_ATOMIC_COUNTER_BUFFER)
+			{
+				GLuint bindings[MAX_BINDABLE_BUFFERS];
+				*params = (GLint)mgl_program_atomic_counter_buffer_bindings(
+					pptr, bindings, MAX_BINDABLE_BUFFERS);
+			}
+			else if (programInterface == GL_BUFFER_VARIABLE)
+				*params = mgl_program_buffer_variable_count(pptr);
+			else
+				*params = mgl_program_resource_count(pptr, res_types, res_type_count);
 			break;
 		case GL_MAX_NAME_LENGTH:
 		{
@@ -2947,26 +3500,55 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 				*params = mglProgramActiveUniformMaxNameLength(pptr);
 				break;
 			}
+			if (programInterface == GL_BUFFER_VARIABLE)
+			{
+				GLint max_len = 0;
+				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+				{
+					SpirvResourceList *list =
+						&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+					for (GLuint i = 0; list->list && i < list->count; i++)
+					{
+						if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, stage, i))
+							continue;
+						SpirvResource *block = &list->list[i];
+						if (!block->ubo_members)
+							continue;
+						for (GLuint m = 0; m < block->ubo_member_count; m++)
+						{
+							const char *qname = block->ubo_members[m].query_name;
+							if (qname)
+							{
+								GLint len = (GLint)strlen(qname) + 1;
+								if (len > max_len)
+									max_len = len;
+							}
+						}
+					}
+				}
+				*params = max_len;
+				break;
+			}
 
 			GLint max_len = 0;
 			for (int t = 0; t < res_type_count; t++)
 			{
 				int res_type = res_types[t];
+				bool is_block_type = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				                      res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER);
 				for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
 				{
-					if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT && stage != _VERTEX_SHADER)
-						continue;
-					if (res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT && stage != _FRAGMENT_SHADER)
+					if (!mgl_program_resource_should_include_stage(pptr, res_type, stage))
 						continue;
 					GLuint count = pptr->spirv_resources_list[stage][res_type].count;
 					for (GLuint i = 0; i < count; i++)
 					{
-						if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-						    mgl_program_uniform_block_seen_before(pptr, stage, i))
+						if (is_block_type &&
+						    mgl_program_block_seen_before(pptr, res_type, stage, i))
 							continue;
 						SpirvResource *res = &pptr->spirv_resources_list[stage][res_type].list[i];
 						GLint len = (GLint)(res->name ? strlen(res->name) + 1 : 1);
-						if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+						if (is_block_type &&
 						    mgl_program_uniform_block_array_size(res) > 1)
 						{
 							char tmp_name[256];
@@ -2984,16 +3566,61 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 							                                           tmp_name) + 1;
 						}
 						if (len > max_len)
-							max_len = len;
-					}
+						max_len = len;
 				}
 			}
+			/* Also consider built-in resource names. */
+			for (int t = 0; t < res_type_count; t++)
+			{
+				int res_type = res_types[t];
+				if (res_type != SPVC_RESOURCE_TYPE_STAGE_INPUT &&
+				    res_type != SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
+					continue;
+				GLuint builtin_count = 0;
+				int builtin_stage = -1;
+				SpirvResource *builtins = mgl_program_builtin_list(pptr, res_type, &builtin_count, &builtin_stage);
+				for (GLuint i = 0; builtins && i < builtin_count; i++)
+				{
+					SpirvResource *res = &builtins[i];
+					char tmp_name[256];
+					GLint len = mgl_program_resource_name_with_array(res,
+					                                           (GLsizei)sizeof(tmp_name),
+					                                           tmp_name) + 1;
+					if (len > max_len)
+						max_len = len;
+				}
+			}
+		}
 			*params = max_len;
 			break;
 		}
 		case GL_MAX_NUM_ACTIVE_VARIABLES:
 		{
 			GLint max_vars = 0;
+			if (programInterface == GL_ATOMIC_COUNTER_BUFFER)
+			{
+				GLuint bindings[MAX_BINDABLE_BUFFERS];
+				GLuint buf_count = mgl_program_atomic_counter_buffer_bindings(
+					pptr, bindings, MAX_BINDABLE_BUFFERS);
+				GLint total = mglProgramActiveUniformCount(pptr);
+				for (GLuint bi = 0; bi < buf_count; bi++)
+				{
+					GLuint active = 0;
+					for (GLint ui = 0; ui < total; ui++)
+					{
+						int ui_stage = 0, ui_type = 0;
+						SpirvResource *ures = mglProgramActiveUniformAt(
+							pptr, (GLuint)ui, &ui_stage, &ui_type);
+						if (ures && ui_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+						    ures->gl_binding == bindings[bi])
+							active++;
+					}
+					if ((GLint)active > max_vars)
+						max_vars = (GLint)active;
+				}
+				*params = max_vars;
+				break;
+			}
 			for (int t = 0; t < res_type_count; t++)
 			{
 				int res_type = res_types[t];
@@ -3006,8 +3633,7 @@ void mglGetProgramInterfaceiv(GLMContext ctx, GLuint program, GLenum programInte
 					for (GLuint i = 0; resources->list && i < resources->count; i++)
 					{
 						SpirvResource *res = &resources->list[i];
-						if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-						    mgl_program_uniform_block_seen_before(pptr, stage, i))
+						if (mgl_program_block_seen_before(pptr, res_type, stage, i))
 							continue;
 						if ((GLint)res->ubo_member_count > max_vars)
 							max_vars = (GLint)res->ubo_member_count;
@@ -3105,12 +3731,41 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
 		return GL_INVALID_INDEX;
 	}
+
+	/* Per the GL spec, GetProgramResourceIndex does not accept
+	 * GL_ATOMIC_COUNTER_BUFFER or GL_TRANSFORM_FEEDBACK_BUFFER. */
+	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
+	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return GL_INVALID_INDEX;
+	}
+
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* GL_TRANSFORM_FEEDBACK_VARYING: look up by name in the varyings
+		 * array.  Built-in names (gl_NextBuffer, gl_SkipComponents*)
+		 * always return GL_INVALID_INDEX per the GL spec. */
+		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
+		{
+			if (mgl_tf_is_builtin_name(name))
+				return GL_INVALID_INDEX;
+			for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
+			{
+				const char *vname = pptr->transform_feedback_varying_names[i];
+				if (vname && strcmp(vname, name) == 0)
+					return (GLuint)i;
+			}
+			return GL_INVALID_INDEX;
+		}
+		/* Valid interface (subroutine) with no SPIRV-Cross backing —
+		 * return GL_INVALID_INDEX without error. */
+		if (mgl_program_interface_is_valid(programInterface))
+			return GL_INVALID_INDEX;
 		STATE(error) = GL_INVALID_ENUM;
 		return GL_INVALID_INDEX;
 	}
@@ -3121,16 +3776,16 @@ GLuint  mglGetProgramResourceIndex(GLMContext ctx, GLuint program, GLenum progra
 		return (active_index >= 0) ? (GLuint)active_index : GL_INVALID_INDEX;
 	}
 
+	if (programInterface == GL_BUFFER_VARIABLE)
+	{
+		GLint bv_index = mgl_program_buffer_variable_find_by_name(pptr, name);
+		return (bv_index >= 0) ? (GLuint)bv_index : GL_INVALID_INDEX;
+	}
+
 	if (mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, &index, &found_stage, &found_type))
 	{
-		if (strstr(name, "CloudFaces"))
-			fprintf(stderr, "MGL REFLECT ResourceIndex program=%u iface=0x%x name=%s -> index=%u type=%d stage=%d\n",
-			        program, programInterface, name, index, found_type, found_stage);
 		return index;
 	}
-	if (strstr(name, "CloudFaces"))
-		fprintf(stderr, "MGL REFLECT ResourceIndex MISS program=%u iface=0x%x name=%s\n",
-		        program, programInterface, name);
 	return GL_INVALID_INDEX;
 }
 
@@ -3149,9 +3804,29 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
 		return -1;
 	}
+
+	/* Per the GL spec, GetProgramResourceLocation requires the program
+	 * to have been linked. */
+	if (!pptr->linked_glsl_program)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return -1;
+	}
+
+	/* Per the GL spec, GetProgramResourceLocation does not accept
+	 * GL_ATOMIC_COUNTER_BUFFER, GL_TRANSFORM_FEEDBACK_VARYING, or
+	 * GL_TRANSFORM_FEEDBACK_BUFFER. */
+	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
+	    programInterface == GL_TRANSFORM_FEEDBACK_VARYING ||
+	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return -1;
+	}
+
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
@@ -3170,21 +3845,53 @@ GLint  mglGetProgramResourceLocation(GLMContext ctx, GLuint program, GLenum prog
 		GLint location = (res->location != 0xffffffffu) ? (GLint)res->location : (GLint)res->gl_binding;
 		if (programInterface == GL_PROGRAM_INPUT || programInterface == GL_PROGRAM_OUTPUT)
 			location += (GLint)(res->ubo_array_element * mgl_program_resource_location_span(res));
-		if (strstr(name, "CloudFaces"))
-			fprintf(stderr, "MGL REFLECT ResourceLocation program=%u iface=0x%x name=%s -> loc=%d glBinding=%u metalBinding=%u type=%d stage=%d dim=%u\n",
-			        program, programInterface, name, location, res->gl_binding, res->binding, found_type, found_stage, res->image_dim);
 		return location;
 	}
-	if (strstr(name, "CloudFaces"))
-		fprintf(stderr, "MGL REFLECT ResourceLocation MISS program=%u iface=0x%x name=%s\n",
-		        program, programInterface, name);
 	return -1;
 }
 
 GLint  mglGetProgramResourceLocationIndex(GLMContext ctx, GLuint program, GLenum programInterface, const GLchar *name)
 {
-	GLint location = mglGetProgramResourceLocation(ctx, program, programInterface, name);
-	return (location >= 0) ? 0 : -1;
+	Program *pptr;
+	SpirvResource *res;
+	int res_types[6];
+	int res_type_count;
+
+	if (!name)
+		return -1;
+
+	pptr = findProgram(ctx, program);
+	if (!pptr)
+	{
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		return -1;
+	}
+
+	if (!pptr->linked_glsl_program)
+	{
+		STATE(error) = GL_INVALID_OPERATION;
+		return -1;
+	}
+
+	/* Per the GL spec, GetProgramResourceLocationIndex is only valid for
+	 * GL_PROGRAM_OUTPUT. */
+	if (programInterface != GL_PROGRAM_OUTPUT)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return -1;
+	}
+
+	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
+	if (res_type_count <= 0)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return -1;
+	}
+
+	res = mgl_program_resource_find_by_name(pptr, res_types, res_type_count, name, NULL, NULL, NULL);
+	if (res)
+		return (GLint)res->location_index;
+	return -1;
 }
 
 void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInterface, GLuint index, GLsizei bufSize, GLsizei *length, GLchar *name)
@@ -3210,12 +3917,46 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
 		return;
 	}
+
+	/* Per the GL spec, GetProgramResourceName does not accept
+	 * GL_ATOMIC_COUNTER_BUFFER or GL_TRANSFORM_FEEDBACK_BUFFER. */
+	if (programInterface == GL_ATOMIC_COUNTER_BUFFER ||
+	    programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
+	{
+		STATE(error) = GL_INVALID_ENUM;
+		return;
+	}
+
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* GL_TRANSFORM_FEEDBACK_VARYING: return the name stored at index. */
+		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
+		{
+			if (index >= (GLuint)pptr->transform_feedback_varying_count)
+			{
+				STATE(error) = GL_INVALID_VALUE;
+				return;
+			}
+			src = pptr->transform_feedback_varying_names[index];
+			src_len = (src) ? (GLsizei)strlen(src) : 0;
+			if (name && bufSize > 0)
+			{
+				copy_len = (src_len < (bufSize - 1)) ? src_len : (bufSize - 1);
+				memcpy(name, src, copy_len);
+				name[copy_len] = '\0';
+				if (length)
+					*length = copy_len;
+			}
+			else if (length)
+			{
+				*length = src_len;
+			}
+			return;
+		}
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
@@ -3233,6 +3974,35 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		return;
 	}
 
+	if (programInterface == GL_BUFFER_VARIABLE)
+	{
+		GLuint member_idx = 0;
+		SpirvResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
+		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
+		{
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+		src = block->ubo_members[member_idx].query_name;
+		if (!src)
+		{
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+		src_len = (GLsizei)strlen(src);
+		copy_len = (src_len < bufSize) ? src_len : bufSize;
+		/* Per GL spec, length does NOT include the null terminator. */
+		if (length)
+			*length = copy_len;
+		if (name && bufSize > 0)
+		{
+			if (copy_len > 0)
+				memcpy(name, src, (size_t)copy_len);
+			name[copy_len] = '\0';
+		}
+		return;
+	}
+
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, NULL, NULL);
 	if (!res)
 	{
@@ -3241,7 +4011,8 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 	}
 
 	char block_name_buf[256];
-	if (programInterface == GL_UNIFORM_BLOCK)
+	if (programInterface == GL_UNIFORM_BLOCK ||
+	    programInterface == GL_SHADER_STORAGE_BLOCK)
 	{
 		src_len = mgl_program_uniform_block_element_name(res,
 		                                                res->ubo_array_element,
@@ -3261,13 +4032,81 @@ void mglGetProgramResourceName(GLMContext ctx, GLuint program, GLenum programInt
 		src = res->name ? res->name : "";
 		src_len = (GLsizei)strlen(src);
 	}
-	if (length)
-		*length = src_len;
 	if (name && bufSize > 0)
 	{
 		copy_len = (src_len < (bufSize - 1)) ? src_len : (bufSize - 1);
 		memcpy(name, src, copy_len);
 		name[copy_len] = '\0';
+		if (length)
+			*length = copy_len;
+	}
+	else if (length)
+	{
+		*length = src_len;
+	}
+}
+
+/* Validate a property enum for glGetProgramResourceiv.
+ * Returns GL_NO_ERROR if the prop is valid for the given interface,
+ * GL_INVALID_ENUM if the prop is not a recognized property name at all,
+ * or GL_INVALID_OPERATION if the prop is a recognized name but not
+ * valid for the given programInterface. */
+static GLenum mglValidateProgramResourceProp(GLenum prop, GLenum programInterface)
+{
+	switch (prop)
+	{
+		/* Valid for all interfaces */
+		case GL_NAME_LENGTH:
+		case GL_TYPE:
+		case GL_ARRAY_SIZE:
+		case GL_REFERENCED_BY_VERTEX_SHADER:
+		case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+		case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+		case GL_REFERENCED_BY_GEOMETRY_SHADER:
+		case GL_REFERENCED_BY_FRAGMENT_SHADER:
+		case GL_REFERENCED_BY_COMPUTE_SHADER:
+			return GL_NO_ERROR;
+		/* Valid only for GL_UNIFORM and GL_BUFFER_VARIABLE */
+		case GL_OFFSET:
+		case GL_BLOCK_INDEX:
+		case GL_ARRAY_STRIDE:
+		case GL_MATRIX_STRIDE:
+		case GL_IS_ROW_MAJOR:
+			return (programInterface == GL_UNIFORM ||
+			        programInterface == GL_BUFFER_VARIABLE)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		/* Valid only for GL_UNIFORM */
+		case GL_ATOMIC_COUNTER_BUFFER_INDEX:
+			return (programInterface == GL_UNIFORM)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		case GL_LOCATION:
+			return (programInterface == GL_UNIFORM ||
+			        programInterface == GL_PROGRAM_INPUT ||
+			        programInterface == GL_PROGRAM_OUTPUT)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		case GL_LOCATION_INDEX:
+			return (programInterface == GL_PROGRAM_OUTPUT)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		/* Valid for block-like interfaces */
+		case GL_BUFFER_BINDING:
+		case GL_BUFFER_DATA_SIZE:
+		case GL_NUM_ACTIVE_VARIABLES:
+		case GL_ACTIVE_VARIABLES:
+			return (programInterface == GL_UNIFORM_BLOCK ||
+			        programInterface == GL_SHADER_STORAGE_BLOCK ||
+			        programInterface == GL_ATOMIC_COUNTER_BUFFER ||
+			        programInterface == GL_TRANSFORM_FEEDBACK_BUFFER)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		case GL_TOP_LEVEL_ARRAY_SIZE:
+		case GL_TOP_LEVEL_ARRAY_STRIDE:
+			return (programInterface == GL_BUFFER_VARIABLE)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		case GL_IS_PER_PATCH:
+			return (programInterface == GL_PROGRAM_INPUT ||
+			        programInterface == GL_PROGRAM_OUTPUT)
+				? GL_NO_ERROR : GL_INVALID_OPERATION;
+		default:
+			return GL_INVALID_ENUM;
 	}
 }
 
@@ -3279,31 +4118,118 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 	int res_type = -1;
 	int res_types[6];
 	int res_type_count;
-	GLsizei n;
 
 	if (length)
 		*length = 0;
-	if (propCount < 0 || count < 0)
+	if (propCount <= 0 || count < 0)
 	{
 		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
-	if (!props || !params)
+	if (propCount > 0 && !props)
 	{
-		if (propCount > 0)
-			STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (count > 0 && !params)
+	{
+		STATE(error) = GL_INVALID_VALUE;
+		return;
+	}
+	if (count == 0 || !params)
+	{
 		return;
 	}
 
 	pptr = findProgram(ctx, program);
 	if (!pptr)
 	{
-		STATE(error) = GL_INVALID_VALUE;
+		STATE(error) = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
 		return;
 	}
 	res_type_count = mgl_program_interface_to_spvc_list(programInterface, res_types, 6);
 	if (res_type_count <= 0)
 	{
+		/* GL_TRANSFORM_FEEDBACK_VARYING: report properties from the
+		 * stored varyings array.  Built-in names (gl_NextBuffer,
+		 * gl_SkipComponents*) report GL_TYPE=GL_NONE and array_size
+		 * per the spec; user varyings report the underlying type. */
+		if (programInterface == GL_TRANSFORM_FEEDBACK_VARYING)
+		{
+			if (index >= (GLuint)pptr->transform_feedback_varying_count)
+			{
+				STATE(error) = GL_INVALID_VALUE;
+				return;
+			}
+			const char *vname = pptr->transform_feedback_varying_names[index];
+
+			/* Validate props for this interface. */
+			for (GLsizei i = 0; i < propCount; i++)
+			{
+				GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
+				if (err != GL_NO_ERROR)
+				{
+					STATE(error) = err;
+					return;
+				}
+			}
+
+			GLboolean is_builtin = mgl_tf_is_builtin_name(vname);
+			SpirvResource *varying = is_builtin ? NULL :
+				mgl_tf_find_varying_output(pptr, vname, NULL);
+
+			GLsizei out_idx = 0;
+			for (GLsizei i = 0; i < propCount; i++)
+			{
+				if (out_idx >= count)
+					break;
+				switch (props[i])
+				{
+					case GL_NAME_LENGTH:
+						params[out_idx++] = (GLint)strlen(vname) + 1;
+						break;
+					case GL_TYPE:
+						params[out_idx++] = is_builtin ? GL_NONE :
+							(varying ? (GLint)varying->gl_type : GL_NONE);
+						break;
+					case GL_ARRAY_SIZE:
+						if (is_builtin)
+							params[out_idx++] = (GLint)mgl_tf_builtin_array_size(vname);
+						else if (varying && varying->is_array &&
+							 strchr(vname, '[') == NULL)
+							params[out_idx++] = (GLint)(varying->gl_array_size > 0 ?
+								varying->gl_array_size : 1);
+						else
+							params[out_idx++] = 1;
+						break;
+					case GL_REFERENCED_BY_VERTEX_SHADER:
+						params[out_idx++] = (pptr->attached_shader_mask & VERTEX_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						break;
+					case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+						params[out_idx++] = (pptr->attached_shader_mask & TESS_CONTROL_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						break;
+					case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+						params[out_idx++] = (pptr->attached_shader_mask & TESS_EVALUATION_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						break;
+					case GL_REFERENCED_BY_GEOMETRY_SHADER:
+						params[out_idx++] = (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) ? GL_TRUE : GL_FALSE;
+						break;
+					case GL_REFERENCED_BY_FRAGMENT_SHADER:
+						params[out_idx++] = GL_FALSE;
+						break;
+					case GL_REFERENCED_BY_COMPUTE_SHADER:
+						params[out_idx++] = GL_FALSE;
+						break;
+					default:
+						/* Already validated above. */
+						params[out_idx++] = 0;
+						break;
+				}
+			}
+			if (length)
+				*length = out_idx;
+			return;
+		}
 		STATE(error) = GL_INVALID_ENUM;
 		return;
 	}
@@ -3322,6 +4248,265 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		return;
 	}
 
+	if (programInterface == GL_ATOMIC_COUNTER_BUFFER)
+	{
+		/* Validate each prop against the interface */
+		for (GLsizei i = 0; i < propCount; i++)
+		{
+			GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
+			if (err != GL_NO_ERROR)
+			{
+				STATE(error) = err;
+				return;
+			}
+		}
+
+		GLuint bindings[MAX_BINDABLE_BUFFERS];
+		GLuint buf_count = mgl_program_atomic_counter_buffer_bindings(pptr, bindings, MAX_BINDABLE_BUFFERS);
+		if (index >= buf_count)
+		{
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+		GLuint target_binding = bindings[index];
+
+		/* Use a running output index because GL_ACTIVE_VARIABLES writes a
+		 * variable number of values. Each scalar property advances out_idx
+		 * by 1; GL_ACTIVE_VARIABLES advances by the number of active vars. */
+		GLsizei out_idx = 0;
+		for (GLsizei i = 0; i < propCount; i++)
+		{
+			if (out_idx >= count)
+				break;
+			switch (props[i])
+			{
+				case GL_NAME_LENGTH: params[out_idx++] = 1; break;
+				case GL_TYPE: params[out_idx++] = GL_NONE; break;
+				case GL_ARRAY_SIZE: params[out_idx++] = 1; break;
+				case GL_BUFFER_BINDING: params[out_idx++] = (GLint)target_binding; break;
+				case GL_BUFFER_DATA_SIZE:
+				{
+					GLuint data_size = 0;
+					for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+					{
+						SpirvResourceList *list =
+							&pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+						for (GLuint j = 0; j < list->count; j++)
+						{
+							if (list->list[j].gl_binding == target_binding)
+							{
+								GLuint offset = list->list[j].location != 0xffffffffu
+									? list->list[j].location : 0u;
+								if (offset + sizeof(GLuint) > data_size)
+									data_size = offset + sizeof(GLuint);
+							}
+						}
+					}
+					params[out_idx++] = (GLint)data_size;
+					break;
+				}
+				case GL_NUM_ACTIVE_VARIABLES:
+				{
+					GLuint active = 0;
+					GLint total = mglProgramActiveUniformCount(pptr);
+					for (GLint ui = 0; ui < total; ui++)
+					{
+						int ui_stage = 0;
+						int ui_type = 0;
+						SpirvResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
+						if (ures && ui_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+						    ures->gl_binding == target_binding)
+							active++;
+					}
+					params[out_idx++] = (GLint)active;
+					break;
+				}
+				case GL_REFERENCED_BY_VERTEX_SHADER:
+				case GL_REFERENCED_BY_FRAGMENT_SHADER:
+				case GL_REFERENCED_BY_COMPUTE_SHADER:
+				case GL_REFERENCED_BY_GEOMETRY_SHADER:
+				case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+				case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+				{
+					int query_stage;
+					switch (props[i])
+					{
+						case GL_REFERENCED_BY_VERTEX_SHADER: query_stage = _VERTEX_SHADER; break;
+						case GL_REFERENCED_BY_FRAGMENT_SHADER: query_stage = _FRAGMENT_SHADER; break;
+						case GL_REFERENCED_BY_COMPUTE_SHADER: query_stage = _COMPUTE_SHADER; break;
+						case GL_REFERENCED_BY_GEOMETRY_SHADER: query_stage = _GEOMETRY_SHADER; break;
+						case GL_REFERENCED_BY_TESS_CONTROL_SHADER: query_stage = _TESS_CONTROL_SHADER; break;
+						case GL_REFERENCED_BY_TESS_EVALUATION_SHADER: query_stage = _TESS_EVALUATION_SHADER; break;
+						default: query_stage = -1; break;
+					}
+					GLboolean referenced = GL_FALSE;
+					if (query_stage >= 0)
+					{
+						SpirvResourceList *list =
+							&pptr->spirv_resources_list[query_stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+						for (GLuint j = 0; j < list->count; j++)
+						{
+							if (list->list[j].gl_binding == target_binding)
+							{
+								referenced = GL_TRUE;
+								break;
+							}
+						}
+					}
+					params[out_idx++] = referenced ? GL_TRUE : GL_FALSE;
+					break;
+				}
+				case GL_ACTIVE_VARIABLES:
+				{
+					GLint total = mglProgramActiveUniformCount(pptr);
+					for (GLint ui = 0; ui < total && out_idx < count; ui++)
+					{
+						int ui_stage = 0;
+						int ui_type = 0;
+						SpirvResource *ures = mglProgramActiveUniformAt(pptr, (GLuint)ui, &ui_stage, &ui_type);
+						if (ures && ui_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+						    ures->gl_binding == target_binding)
+							params[out_idx++] = ui;
+					}
+					break;
+				}
+				default:
+					STATE(error) = GL_INVALID_ENUM;
+					return;
+			}
+		}
+		if (length)
+			*length = out_idx;
+		return;
+	}
+
+	if (programInterface == GL_BUFFER_VARIABLE)
+	{
+		/* Validate each prop against the interface */
+		for (GLsizei i = 0; i < propCount; i++)
+		{
+			GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
+			if (err != GL_NO_ERROR)
+			{
+				STATE(error) = err;
+				return;
+			}
+		}
+
+		GLuint member_idx = 0;
+		SpirvResource *block = mgl_program_buffer_variable_at(pptr, index, &member_idx);
+		if (!block || !block->ubo_members || member_idx >= block->ubo_member_count)
+		{
+			STATE(error) = GL_INVALID_VALUE;
+			return;
+		}
+		const SpirvUBOMember *bv = &block->ubo_members[member_idx];
+
+		/* Compute the owning SSBO block's index in the
+		 * GL_SHADER_STORAGE_BLOCK interface. */
+		GLint block_index = -1;
+		{
+			GLuint ordinal = 0;
+			for (int s = 0; s < _MAX_SHADER_TYPES && block_index < 0; s++)
+			{
+				SpirvResourceList *list =
+					&pptr->spirv_resources_list[s][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+				for (GLuint i = 0; list->list && i < list->count && block_index < 0; i++)
+				{
+					if (mgl_program_block_seen_before(pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, s, i))
+						continue;
+					SpirvResource *blk = &list->list[i];
+					GLuint array_size = mgl_program_uniform_block_array_size(blk);
+					GLuint element_count = array_size > 1 ? array_size : 1;
+					for (GLuint elem = 0; elem < element_count; elem++)
+					{
+						if (blk == block)
+						{
+							block_index = (GLint)ordinal;
+							break;
+						}
+						ordinal++;
+					}
+				}
+			}
+		}
+
+		GLsizei out_idx = 0;
+		for (GLsizei i = 0; i < propCount; i++)
+		{
+			if (out_idx >= count)
+				break;
+			switch (props[i])
+			{
+				case GL_NAME_LENGTH:
+					params[out_idx++] = bv->query_name
+						? (GLint)strlen(bv->query_name) + 1 : 1;
+					break;
+				case GL_TYPE:
+					params[out_idx++] = (GLint)bv->gl_type;
+					break;
+				case GL_ARRAY_SIZE:
+					params[out_idx++] = (GLint)bv->size;
+					break;
+				case GL_BLOCK_INDEX:
+					params[out_idx++] = block_index;
+					break;
+				case GL_OFFSET:
+					params[out_idx++] = (GLint)bv->offset;
+					break;
+				case GL_ARRAY_STRIDE:
+					params[out_idx++] = bv->array_stride;
+					break;
+				case GL_MATRIX_STRIDE:
+					params[out_idx++] = bv->matrix_stride;
+					break;
+				case GL_IS_ROW_MAJOR:
+					params[out_idx++] = bv->is_row_major ? GL_TRUE : GL_FALSE;
+					break;
+				case GL_TOP_LEVEL_ARRAY_SIZE:
+				params[out_idx++] = bv->top_level_array_size > 0
+					? bv->top_level_array_size : 1;
+				break;
+			case GL_TOP_LEVEL_ARRAY_STRIDE:
+				params[out_idx++] = bv->top_level_array_stride;
+				break;
+				case GL_REFERENCED_BY_VERTEX_SHADER:
+				case GL_REFERENCED_BY_FRAGMENT_SHADER:
+				case GL_REFERENCED_BY_COMPUTE_SHADER:
+				case GL_REFERENCED_BY_GEOMETRY_SHADER:
+				case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
+				case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
+				{
+					int query_stage;
+					switch (props[i])
+					{
+						case GL_REFERENCED_BY_VERTEX_SHADER: query_stage = _VERTEX_SHADER; break;
+						case GL_REFERENCED_BY_FRAGMENT_SHADER: query_stage = _FRAGMENT_SHADER; break;
+						case GL_REFERENCED_BY_COMPUTE_SHADER: query_stage = _COMPUTE_SHADER; break;
+						case GL_REFERENCED_BY_GEOMETRY_SHADER: query_stage = _GEOMETRY_SHADER; break;
+						case GL_REFERENCED_BY_TESS_CONTROL_SHADER: query_stage = _TESS_CONTROL_SHADER; break;
+						case GL_REFERENCED_BY_TESS_EVALUATION_SHADER: query_stage = _TESS_EVALUATION_SHADER; break;
+						default: query_stage = -1; break;
+					}
+					GLboolean referenced = GL_FALSE;
+					if (query_stage >= 0)
+					{
+						referenced = mgl_program_block_referenced_by_stage(
+							pptr, SPVC_RESOURCE_TYPE_STORAGE_BUFFER, block, query_stage);
+					}
+					params[out_idx++] = referenced ? GL_TRUE : GL_FALSE;
+					break;
+				}
+				default:
+					STATE(error) = GL_INVALID_ENUM;
+					return;
+			}
+		}
+		if (length)
+			*length = out_idx;
+		return;
+	}
+
 	res = mgl_program_resource_at_index(pptr, res_types, res_type_count, index, &stage, &res_type);
 	if (!res)
 	{
@@ -3329,117 +4514,165 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		return;
 	}
 
-	n = (propCount < count) ? propCount : count;
-	for (GLsizei i = 0; i < n; i++)
+	/* Validate each prop against the interface */
+	for (GLsizei i = 0; i < propCount; i++)
 	{
+		GLenum err = mglValidateProgramResourceProp(props[i], programInterface);
+		if (err != GL_NO_ERROR)
+		{
+			STATE(error) = err;
+			return;
+		}
+	}
+
+	/* Use a running output index because GL_ACTIVE_VARIABLES writes a
+	 * variable number of values. Each scalar property advances out_idx
+	 * by 1; GL_ACTIVE_VARIABLES advances by the number of active vars. */
+	GLsizei out_idx = 0;
+	for (GLsizei i = 0; i < propCount; i++)
+	{
+		if (out_idx >= count)
+			break;
 		switch (props[i])
 		{
 			case GL_NAME_LENGTH:
-				if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-				{
-					char tmp_name[256];
-					params[i] = mgl_program_uniform_block_element_name(res,
-					                                                   res->ubo_array_element,
-					                                                   (GLsizei)sizeof(tmp_name),
-					                                                   tmp_name) + 1;
-				}
-				else if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
-				         res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
-				{
-					char tmp_name[256];
-					params[i] = mgl_program_resource_name_with_array(res,
-					                                                (GLsizei)sizeof(tmp_name),
-					                                                tmp_name) + 1;
-				}
-				else
-					params[i] = (GLint)(res->name ? strlen(res->name) + 1 : 1);
-				break;
-			case GL_TYPE: params[i] = mgl_program_resource_gl_type(res, res_type); break;
+			if (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+			    res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+			{
+				char tmp_name[256];
+				params[out_idx++] = mgl_program_uniform_block_element_name(res,
+				                                                   res->ubo_array_element,
+				                                                   (GLsizei)sizeof(tmp_name),
+				                                                   tmp_name) + 1;
+			}
+			else if (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
+			         res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
+			{
+				char tmp_name[256];
+				params[out_idx++] = mgl_program_resource_name_with_array(res,
+				                                                (GLsizei)sizeof(tmp_name),
+				                                                tmp_name) + 1;
+			}
+			else
+				params[out_idx++] = (GLint)(res->name ? strlen(res->name) + 1 : 1);
+			break;
+			case GL_TYPE: params[out_idx++] = mgl_program_resource_gl_type(res, res_type); break;
 			case GL_ARRAY_SIZE:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_STAGE_INPUT ||
 				             res_type == SPVC_RESOURCE_TYPE_STAGE_OUTPUT)
 					? (res->gl_array_size > 0 ? res->gl_array_size : 1)
 					: 1;
 				break;
-			case GL_OFFSET: params[i] = -1; break;
-			case GL_BLOCK_INDEX: params[i] = -1; break;
-			case GL_ARRAY_STRIDE: params[i] = 0; break;
-			case GL_MATRIX_STRIDE: params[i] = 0; break;
-			case GL_IS_ROW_MAJOR: params[i] = 0; break;
-			case GL_ATOMIC_COUNTER_BUFFER_INDEX: params[i] = -1; break;
+			case GL_OFFSET: params[out_idx++] = -1; break;
+			case GL_BLOCK_INDEX: params[out_idx++] = -1; break;
+			case GL_ARRAY_STRIDE: params[out_idx++] = 0; break;
+			case GL_MATRIX_STRIDE: params[out_idx++] = 0; break;
+			case GL_IS_ROW_MAJOR: params[out_idx++] = 0; break;
+			case GL_ATOMIC_COUNTER_BUFFER_INDEX: params[out_idx++] = -1; break;
 			case GL_BUFFER_BINDING:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
 					? (GLint)mgl_program_uniform_block_element_binding(res, res->ubo_array_element)
 					: (GLint)res->gl_binding;
 				break;
 			case GL_BUFFER_DATA_SIZE:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? (GLint)mgl_program_uniform_block_required_size(pptr, res)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? (GLint)mgl_program_block_required_size(pptr, res_type, res)
 					: (GLint)mgl_round_up_16(res->required_size);
 				break;
-			case GL_NUM_ACTIVE_VARIABLES: params[i] = 0; break;
+			case GL_NUM_ACTIVE_VARIABLES:
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? (GLint)res->ubo_member_count : 0;
+				break;
 			case GL_REFERENCED_BY_VERTEX_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _VERTEX_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _VERTEX_SHADER)
 						: GL_FALSE)
 					: ((stage == _VERTEX_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_FRAGMENT_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _FRAGMENT_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _FRAGMENT_SHADER)
 						: GL_FALSE)
 					: ((stage == _FRAGMENT_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_GEOMETRY_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _GEOMETRY_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _GEOMETRY_SHADER)
 						: GL_FALSE)
 					: ((stage == _GEOMETRY_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_TESS_CONTROL_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _TESS_CONTROL_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_CONTROL_SHADER)
 						: GL_FALSE)
 					: ((stage == _TESS_CONTROL_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_TESS_EVALUATION_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _TESS_EVALUATION_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _TESS_EVALUATION_SHADER)
 						: GL_FALSE)
 					: ((stage == _TESS_EVALUATION_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_REFERENCED_BY_COMPUTE_SHADER:
-				params[i] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
-					? ((res->ubo_array_element == 0)
-						? mgl_program_uniform_block_referenced_by_stage(pptr, res, _COMPUTE_SHADER)
+				params[out_idx++] = (res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ||
+				             res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+					? ((res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+					    res->ubo_array_element == 0)
+						? mgl_program_block_referenced_by_stage(pptr, res_type, res, _COMPUTE_SHADER)
 						: GL_FALSE)
 					: ((stage == _COMPUTE_SHADER) ? GL_TRUE : GL_FALSE);
 				break;
 			case GL_LOCATION:
-				params[i] = (GLint)res->location +
+				params[out_idx++] = (GLint)res->location +
 				            (GLint)(res->ubo_array_element * mgl_program_resource_location_span(res));
 				break;
-			case GL_LOCATION_INDEX: params[i] = 0; break;
-			case GL_IS_PER_PATCH: params[i] = GL_FALSE; break;
+			case GL_LOCATION_INDEX: params[out_idx++] = (GLint)res->location_index; break;
+			case GL_IS_PER_PATCH: params[out_idx++] = res->is_per_patch ? GL_TRUE : GL_FALSE; break;
 			case GL_ACTIVE_VARIABLES:
 			{
-				if (res_type != SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+				if (res_type != SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+				    res_type != SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
 				{
 					STATE(error) = GL_INVALID_ENUM;
 					return;
 				}
-				GLsizei written = mgl_program_uniform_block_active_variables(pptr,
-				                                                            res,
-				                                                            params,
-				                                                            count);
-				if (length)
-					*length = written;
-				return;
+				GLsizei written;
+				if (res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER)
+				{
+					/* SSBO members are not in the active uniform list;
+					 * enumerate buffer variable indices instead. */
+					written = mgl_program_ssbo_buffer_variable_indices(pptr,
+					                                                   res,
+					                                                   params + out_idx,
+					                                                   count - out_idx);
+				}
+				else
+				{
+					written = mgl_program_uniform_block_active_variables(pptr,
+					                                                    res,
+					                                                    params + out_idx,
+					                                                    count - out_idx);
+				}
+				out_idx += written;
+				break;
 			}
 			default:
 				STATE(error) = GL_INVALID_ENUM;
@@ -3447,7 +4680,7 @@ void mglGetProgramResourceiv(GLMContext ctx, GLuint program, GLenum programInter
 		}
 	}
 	if (length)
-		*length = n;
+		*length = out_idx;
 }
 
 void mglGetProgramStageiv(GLMContext ctx, GLuint program, GLenum shadertype, GLenum pname, GLint *values)
@@ -4056,6 +5289,7 @@ void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value)
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;
 			}
+			ctx->state.var.patch_vertices = (GLuint)value;
 			return;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);
@@ -4078,6 +5312,14 @@ void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloa
 {
 	(void)clamp;
 	mglPolygonOffset(ctx, factor, units);
+}
+
+void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count)
+{
+	/* GL_ARB/KHR_parallel_shader_compile: the spec permits this to be a no-op
+	 * hint; we only store the value so GL_MAX_SHADER_COMPILER_THREADS_KHR
+	 * queries echo the last set value (initial value 0). */
+	STATE(var.max_shader_compiler_threads) = count;
 }
 
 void mglPopDebugGroup(GLMContext ctx)
@@ -4379,8 +5621,65 @@ void mglShaderBinary(GLMContext ctx, GLsizei count, const GLuint *shaders, GLenu
 
 void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storageBlockIndex, GLuint storageBlockBinding)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	Program *pptr;
+
+	if (!ctx) {
+		return;
+	}
+
+	if (storageBlockBinding >= MAX_BINDABLE_BUFFERS) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	pptr = findProgram(ctx, program);
+	if (!pptr) {
+		GLenum err = mglIsShader(ctx, program) ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
+		mglDispatchError(ctx, __FUNCTION__, err);
+		return;
+	}
+	if (pptr->linked_glsl_program == NULL) {
+		ERROR_RETURN(GL_INVALID_OPERATION);
+		return;
+	}
+
+	/* Find the SSBO resource at the given index. */
+	int stage = 0;
+	int res_type = SPVC_RESOURCE_TYPE_STORAGE_BUFFER;
+	int types[] = { res_type };
+	SpirvResource *res = mgl_program_resource_at_index(pptr, types, 1, storageBlockIndex, &stage, &res_type);
+	if (!res) {
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+
+	/* Update gl_binding for all matching SSBOs across all stages.
+	 * Like glUniformBlockBinding, this only changes the GL-side binding
+	 * point used to find glBindBufferRange state, not the Metal slot. */
+	const char *block_name = (res->name && res->name[0]) ? res->name : NULL;
+	GLuint block_element = res->ubo_array_element;
+
+	for (int s = 0; s < _MAX_SHADER_TYPES; s++) {
+		SpirvResourceList *resources = &pptr->spirv_resources_list[s][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+		for (GLuint i = 0; i < resources->count; i++) {
+			SpirvResource *r = &resources->list[i];
+			GLboolean match = GL_FALSE;
+			if (block_name && r->name && strcmp(block_name, r->name) == 0)
+				match = GL_TRUE;
+			if (!block_name && s == stage && r == res)
+				match = GL_TRUE;
+			if (!match)
+				continue;
+			if (r->ubo_array_bindings && block_element < r->ubo_array_size) {
+				r->ubo_array_bindings[block_element] = storageBlockBinding;
+			}
+			if (block_element == 0) {
+				r->gl_binding = storageBlockBinding;
+			}
+		}
+	}
+
+	ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM;
 }
 
 void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)

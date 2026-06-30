@@ -31,12 +31,11 @@ extern void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
 
 static GLuint mglVertexAttribBindingLimit(GLMContext ctx)
 {
-    GLuint limit = ctx ? ctx->state.var.max_vertex_attrib_bindings : MAX_ATTRIBS;
-    if (limit < MAX_ATTRIBS ||
+    GLuint limit = ctx ? ctx->state.var.max_vertex_attrib_bindings : MGL_MAX_VERTEX_ATTRIB_BINDINGS;
+    if (limit == 0u ||
         limit == 0x01010101u ||
-        limit > MAX_ATTRIBS ||
         limit > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        limit = MAX_ATTRIBS;
+        limit = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
     }
     return limit;
 }
@@ -106,13 +105,26 @@ void mglBindVertexBuffers(GLMContext ctx, GLuint first, GLsizei count, const GLu
     ERROR_CHECK_RETURN(ctx->state.vao, GL_INVALID_OPERATION);
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     GLuint limit = mglVertexAttribBindingLimit(ctx);
-    ERROR_CHECK_RETURN(first <= limit && (GLuint)count <= limit - first, GL_INVALID_OPERATION);
+    /* Per ARB_multi_bind spec:
+     * - GL_INVALID_VALUE if first >= MAX_VERTEX_ATTRIB_BINDINGS
+     * - GL_INVALID_OPERATION if first + count > MAX_VERTEX_ATTRIB_BINDINGS */
+    if (first >= limit) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if ((GLuint)count > limit - first) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (buffers)
     {
         ERROR_CHECK_RETURN(offsets, GL_INVALID_VALUE);
         ERROR_CHECK_RETURN(strides, GL_INVALID_VALUE);
     }
 
+    /* Per ARB_multi_bind spec, each (bindingindex, buffer, offset, stride)
+     * tuple is processed independently.  Invalid entries generate an error
+     * but do not prevent valid entries from being bound. */
     for(int i=0; i<count; i++)
     {
         GLuint bindingindex;
@@ -126,11 +138,19 @@ void mglBindVertexBuffers(GLMContext ctx, GLuint first, GLsizei count, const GLu
         {
             offset = offsets[i];
             stride = strides[i];
-        }
 
-        if (buffer && !findBuffer(ctx, buffer)) {
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            continue;
+            if (offset < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                continue;
+            }
+            if (stride < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                continue;
+            }
+            if (buffer && !findBuffer(ctx, buffer)) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                continue;
+            }
         }
 
         bindVertexBuffer(ctx, 0, bindingindex, buffer, offset, stride);
@@ -185,11 +205,44 @@ void mglVertexArrayVertexBuffers(GLMContext ctx, GLuint vaobj, GLuint first, GLs
     }
     ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
     GLuint limit = mglVertexAttribBindingLimit(ctx);
-    ERROR_CHECK_RETURN(first <= limit && (GLuint)count <= limit - first, GL_INVALID_VALUE);
+    /* Per ARB_multi_bind spec:
+     * - GL_INVALID_VALUE if first >= MAX_VERTEX_ATTRIB_BINDINGS
+     * - GL_INVALID_OPERATION if first + count > MAX_VERTEX_ATTRIB_BINDINGS */
+    if (first >= limit) {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if ((GLuint)count > limit - first) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
     if (buffers)
     {
         ERROR_CHECK_RETURN(offsets, GL_INVALID_VALUE);
         ERROR_CHECK_RETURN(strides, GL_INVALID_VALUE);
+    }
+
+    /* Pre-validate all entries before binding any (atomic per spec):
+     * - GL_INVALID_OPERATION if any buffer is not zero or existing
+     * - GL_INVALID_VALUE if any offset or stride is negative */
+    if (buffers)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            GLuint buf = buffers[i];
+            if (buf && !findBuffer(ctx, buf)) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (offsets[i] < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+            if (strides[i] < 0) {
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
+        }
     }
 
     for(int i=0; i<count; i++)

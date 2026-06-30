@@ -111,10 +111,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     }
 
     glGetFloatv(GL_POINT_SIZE,&glm_ctx->state.var.point_size);
-    glGetIntegerv(GL_POINT_SIZE_RANGE,&glm_ctx->state.var.point_size_range);
+    glGetIntegerv(GL_POINT_SIZE_RANGE,glm_ctx->state.var.point_size_range);
     glGetIntegerv(GL_POINT_SIZE_GRANULARITY,&glm_ctx->state.var.point_size_granularity);
     glGetFloatv(GL_LINE_WIDTH,&glm_ctx->state.var.line_width);
-    glGetIntegerv(GL_LINE_WIDTH_RANGE,&glm_ctx->state.var.line_width_range);
+    glGetIntegerv(GL_LINE_WIDTH_RANGE,glm_ctx->state.var.line_width_range);
     glGetIntegerv(GL_LINE_WIDTH_GRANULARITY,&glm_ctx->state.var.line_width_granularity);
     glGetIntegerv(GL_POLYGON_MODE,&glm_ctx->state.var.polygon_mode);
     glGetIntegerv(GL_CULL_FACE_MODE,&glm_ctx->state.var.cull_face_mode);
@@ -169,11 +169,11 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE,&glm_ctx->state.var.max_3d_texture_size);
     glGetIntegerv(GL_MAX_ELEMENTS_VERTICES,&glm_ctx->state.var.max_elements_vertices);
     glGetIntegerv(GL_MAX_ELEMENTS_INDICES,&glm_ctx->state.var.max_elements_indices);
-    glGetIntegerv(GL_SMOOTH_POINT_SIZE_RANGE,&glm_ctx->state.var.smooth_point_size_range);
+    glGetIntegerv(GL_SMOOTH_POINT_SIZE_RANGE,glm_ctx->state.var.smooth_point_size_range);
     glGetIntegerv(GL_SMOOTH_POINT_SIZE_GRANULARITY,&glm_ctx->state.var.smooth_point_size_granularity);
-    glGetIntegerv(GL_SMOOTH_LINE_WIDTH_RANGE,&glm_ctx->state.var.smooth_line_width_range);
+    glGetIntegerv(GL_SMOOTH_LINE_WIDTH_RANGE,glm_ctx->state.var.smooth_line_width_range);
     glGetIntegerv(GL_SMOOTH_LINE_WIDTH_GRANULARITY,&glm_ctx->state.var.smooth_line_width_granularity);
-    glGetIntegerv(GL_ALIASED_LINE_WIDTH_RANGE,&glm_ctx->state.var.aliased_line_width_range);
+    glGetIntegerv(GL_ALIASED_LINE_WIDTH_RANGE,glm_ctx->state.var.aliased_line_width_range);
     glGetFloatv(GL_SAMPLE_COVERAGE_VALUE,&glm_ctx->state.var.sample_coverage_value);
     glGetIntegerv(GL_SAMPLE_COVERAGE_INVERT,&glm_ctx->state.var.sample_coverage_invert);
     glGetIntegerv(GL_TEXTURE_BINDING_CUBE_MAP,&glm_ctx->state.var.texture_binding_cube_map);
@@ -423,6 +423,22 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_compute_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_compute_shader_storage_blocks = 8;
     }
+    /* Tessellation and geometry shader storage blocks: Apple's deprecated
+     * OpenGL backend reports 0 (no tessellation support).  MGL implements
+     * TCS/TES as Metal compute kernels which fully support SSBO binding,
+     * so expose a non-zero limit to unlock tessellation SSBO usage. */
+    if (glm_ctx->state.var.max_tess_control_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_tess_control_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_tess_control_shader_storage_blocks = 8;
+    }
+    if (glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
+    }
+    if (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
+        glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+        glm_ctx->state.var.max_geometry_shader_storage_blocks = 8;
+    }
     if (glm_ctx->state.var.max_combined_shader_storage_blocks < 8 ||
         glm_ctx->state.var.max_combined_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_combined_shader_storage_blocks = MAX_BINDABLE_BUFFERS;
@@ -446,15 +462,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_VERTEX_BINDING_OFFSET,&glm_ctx->state.var.vertex_binding_offset);
     glGetIntegerv(GL_VERTEX_BINDING_STRIDE,&glm_ctx->state.var.vertex_binding_stride);
     glGetIntegerv(GL_MAX_VERTEX_ATTRIB_RELATIVE_OFFSET,&glm_ctx->state.var.max_vertex_attrib_relative_offset);
-    glGetIntegerv(GL_MAX_VERTEX_ATTRIB_BINDINGS,&glm_ctx->state.var.max_vertex_attrib_bindings);
-    if (glm_ctx->state.var.max_vertex_attrib_bindings < MAX_ATTRIBS ||
-        glm_ctx->state.var.max_vertex_attrib_bindings == 0x01010101u ||
-        glm_ctx->state.var.max_vertex_attrib_bindings > MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
-        glm_ctx->state.var.max_vertex_attrib_bindings = MAX_ATTRIBS;
-    }
-    if (glm_ctx->state.var.max_vertex_attrib_bindings > MAX_ATTRIBS) {
-        glm_ctx->state.var.max_vertex_attrib_bindings = MAX_ATTRIBS;
-    }
+    /* GL_MAX_VERTEX_ATTRIB_BINDINGS is independent from GL_MAX_VERTEX_ATTRIBS.
+     * The spec minimum is 16; MGL's VertexArray.bindings[] array supports
+     * MGL_MAX_VERTEX_ATTRIB_BINDINGS (64), so advertise the full capacity. */
+    glm_ctx->state.var.max_vertex_attrib_bindings = MGL_MAX_VERTEX_ATTRIB_BINDINGS;
     if (glm_ctx->state.var.max_vertex_attrib_relative_offset < 2047u ||
         glm_ctx->state.var.max_vertex_attrib_relative_offset == 0x01010101u) {
         glm_ctx->state.var.max_vertex_attrib_relative_offset = 2047u;
@@ -480,6 +491,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     }
     glm_ctx->state.var.max_tess_gen_level = 64;
     glm_ctx->state.var.max_patch_vertices = 32;
+    glm_ctx->state.var.patch_vertices = 3;
     glm_ctx->state.var.max_tess_patch_components = 120;
     glm_ctx->state.var.max_tess_control_input_components = 128;
     glm_ctx->state.var.max_tess_control_output_components = 128;
@@ -506,13 +518,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_atomic_counter_buffer_size = 16384;
     glm_ctx->state.var.max_image_units = 8;
-    glm_ctx->state.var.max_image_samples = 0;
-    glm_ctx->state.var.max_vertex_image_uniforms = 0;
-    glm_ctx->state.var.max_tess_control_image_uniforms = 0;
-    glm_ctx->state.var.max_tess_evaluation_image_uniforms = 0;
-    glm_ctx->state.var.max_geometry_image_uniforms = 0;
+    glm_ctx->state.var.max_image_samples = 8;
+    glm_ctx->state.var.max_vertex_image_uniforms = 8;
+    glm_ctx->state.var.max_tess_control_image_uniforms = 8;
+    glm_ctx->state.var.max_tess_evaluation_image_uniforms = 8;
+    glm_ctx->state.var.max_geometry_image_uniforms = 8;
     glm_ctx->state.var.max_fragment_image_uniforms = 8;
-    glm_ctx->state.var.max_combined_image_uniforms = 8;
+    glm_ctx->state.var.max_combined_image_uniforms = 40;
     glm_ctx->state.var.max_compute_image_uniforms = 8;
     glm_ctx->state.var.max_transform_feedback_interleaved_components = 64;
     glm_ctx->state.var.max_transform_feedback_separate_attribs = 4;
@@ -564,7 +576,10 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_framebuffer_samples = 4;
     }
 
-    /* Ensure texture sample limits meet minimums */
+    /* Ensure texture sample limits meet minimums.  Apple Silicon Metal
+     * devices only support sampleCount up to 4 (verified on M4 via
+     * supportsTextureSampleCount:); advertising 8 causes Metal validation
+     * assertion failures when the app actually allocates 8x MSAA textures. */
     if (glm_ctx->state.var.max_color_texture_samples < 4) {
         glm_ctx->state.var.max_color_texture_samples = 4;
     }

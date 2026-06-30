@@ -657,7 +657,6 @@ void mglDeleteVertexArrays(GLMContext ctx, GLsizei n, const GLuint *arrays);
 void mglGenVertexArrays(GLMContext ctx, GLsizei n, GLuint *arrays);
 GLboolean mglIsVertexArray(GLMContext ctx, GLuint array);
 void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount);
-bool mglTryCPUTransformFeedbackCapture(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseInstance);
 void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount);
 void mglTexBuffer(GLMContext ctx, GLenum target, GLenum internalformat, GLuint buffer);
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index);
@@ -1075,6 +1074,7 @@ void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoin
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
 void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride);
 void mglPolygonOffsetClamp(GLMContext ctx, GLfloat factor, GLfloat units, GLfloat clamp);
+void mglMaxShaderCompilerThreadsKHR(GLMContext ctx, GLuint count);
 
 #ifdef MGL_GL_ES
 void  mglBlendBarrier(GLMContext ctx);

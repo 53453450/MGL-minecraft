@@ -25,7 +25,12 @@
 #include <stddef.h>
 #include "glcorearb.h"
 
+/* When Metal.framework is already imported (e.g. in MGLRenderer.m), it
+ * provides its own MTLPixelFormat definition.  Define MGL_NO_MTL_PIXEL_FORMAT
+ * before including this header to skip the local MTLPixelFormat enum. */
+#ifndef MGL_NO_MTL_PIXEL_FORMAT
 typedef enum MTLPixelFormat_t MTLPixelFormat;
+#endif
 
 GLuint numComponentsForFormat(GLenum format);
 
@@ -61,6 +66,33 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat);
 float mglHalfToFloat(uint16_t value);
 uint16_t mglFloatToHalf(float value);
 
+/* Pack a float into 11-bit unsigned float (UE11) format (6-bit mantissa,
+ * 5-bit exponent, bias 15). Used by R11F_G11F_B10F packing. */
+uint32_t mglFloatToFloat11(float v);
+
+/* Pack a float into 10-bit unsigned float (UE10) format (5-bit mantissa,
+ * 5-bit exponent, bias 15). Used by R11F_G11F_B10F packing. */
+uint32_t mglFloatToFloat10(float v);
+
+/* Pack 3 RGB doubles into GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) format.
+ * All 3 mantissas share one 5-bit exponent. Implements the shared exponent
+ * algorithm from the GL spec. */
+uint32_t mglPackRGBToSharedExp(double red, double green, double blue);
+
+/* Unpack a GL_UNSIGNED_INT_5_9_9_9_REV (GL_RGB9_E5) packed value to 3 doubles.
+ * Layout: R[0:8], G[9:17], B[18:26], shared_exp[27:31]. */
+void mglUnpackSharedExp(uint32_t packed, double *r, double *g, double *b);
+
+/* Pack a UNorm8 value (0-255) into an unsigned float component with the given
+ * mantissa bit count (6 for R11F/G11F, 5 for B10F).  Used by R11F_G11F_B10F
+ * packing when the source is BGRA8/RGBA8. */
+uint32_t mglPackUnsignedFloatFromUNorm8(uint32_t value, uint32_t mantissa_bits);
+
+/* Unpack an unsigned float component (N-bit mantissa + 5-bit exponent, bias 15)
+ * into a float.  This is the inverse of mglFloatToFloat11/mglFloatToFloat10
+ * and handles Inf/NaN (exponent == 31) correctly. */
+float mglUnpackUnsignedFloatComponent(uint32_t value, uint32_t mantissa_bits);
+
 
 #ifndef API_AVAILABLE
 #define API_AVAILABLE(...) __API_AVAILABLE_GET_MACRO(__VA_ARGS__,__API_AVAILABLE7, __API_AVAILABLE6, __API_AVAILABLE5, __API_AVAILABLE4, __API_AVAILABLE3, __API_AVAILABLE2, __API_AVAILABLE1, 0)(__VA_ARGS__)
@@ -71,6 +103,7 @@ uint16_t mglFloatToHalf(float value);
 #endif
 
 
+#ifndef MGL_NO_MTL_PIXEL_FORMAT
 typedef enum MTLPixelFormat_t {
     MTLPixelFormatInvalid = 0,
 
@@ -282,4 +315,6 @@ typedef enum MTLPixelFormat_t {
     MTLPixelFormatX24_Stencil8  API_AVAILABLE(macos(10.12), macCatalyst(13.0)) API_UNAVAILABLE(ios) = 262,
 
 } MTLPixelFormat;
+#endif /* MGL_NO_MTL_PIXEL_FORMAT */
+
 #endif /* pixel_utils_h */
