@@ -580,6 +580,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     mglInitCommandBuffer(&ctx->draw_command_buffer);
     ctx->draw_defer_enabled = (getenv("MGL_DISABLE_DRAW_DEFER") == NULL);
+    /* MGL_SYNC_STRICT: 开启时所有同步边界走最保守路径 (full flush + commit + waitUntilCompleted)，用于排查回归与正确性基线对照 */
+    ctx->sync_strict = (getenv("MGL_SYNC_STRICT") != NULL);
 
     return ctx;
 }

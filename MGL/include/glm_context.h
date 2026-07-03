@@ -700,6 +700,10 @@ typedef struct Framebuffer_t {
 typedef struct __GLsync {
     GLsizei name;
     void *mtl_event;
+    /* Retained Metal command buffer capturing all GL commands issued before the
+     * fence insertion point. mtlWaitForSync blocks on its completion. Stored as
+     * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
+    void *mtl_command_buffer;
 #ifdef __cplusplus
 } Sync;
 #else
@@ -889,6 +893,12 @@ struct GLMMetalFuncs {
 
     void (*mtlGetSync)(GLMContext glm_ctx, Sync *sync);
     void (*mtlWaitForSync)(GLMContext glm_ctx, Sync *sync);
+    /* Non-blocking status query: returns GL_SIGNALED (CB completed or no CB) or
+     * GL_UNSIGNALED. Used by mglGetSynciv / mglClientWaitSync polling. */
+    GLenum (*mtlGetSyncStatus)(GLMContext glm_ctx, Sync *sync);
+    /* Non-blocking release of the fence's retained Metal resources (CB + event)
+     * without waiting for GPU completion. Used by mglDeleteSync. */
+    void (*mtlReleaseSync)(GLMContext glm_ctx, Sync *sync);
 
     void (*mtlFlush)(GLMContext glm_ctx, bool finish);
     void (*mtlSwapBuffers)(GLMContext glm_ctx);
@@ -985,6 +995,7 @@ typedef struct GLMContextRec_t {
 
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;
+    bool            sync_strict;
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;

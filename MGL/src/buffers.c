@@ -807,6 +807,12 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
 
     mglFlushPendingDrawsForBuffer(ctx, ptr);
 
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     buffer_size = page_size_align(size);
 
     // Allocate directly from VM
@@ -985,6 +991,12 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
     }
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     size_t pixel_size = sizeForInternalFormat(internalformat, format, type);
     if (!pixel_size) {
@@ -1600,6 +1612,12 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
 
     if (!uniform_data_unchanged) {
         mglFlushPendingDrawsForBuffer(ctx, ptr);
+
+        /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+        if (ctx->sync_strict) {
+            mglFlushCommandBuffer(ctx);
+            ctx->mtl_funcs.mtlFlush(ctx, true);
+        }
     }
 
     if (ptr->data.buffer_data)
@@ -1934,6 +1952,12 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
     {
         bool trace = mglShouldTraceBufferMutation(call, target, size);
@@ -2094,6 +2118,12 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     src_hash_for_meta = (size > 0 && data) ? mglTraceHashBytes(data, (size_t)size) : 0ull;
 
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
@@ -2220,6 +2250,12 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
     mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     if (ctx->mtl_funcs.mtlMapUnmapBuffer)
     {
@@ -2774,7 +2810,10 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
      * dispatches) are complete before the CPU reads the buffer contents.
      * Compute dispatches are encoded directly into the Metal command buffer
      * and are not tracked by mglFlushPendingDrawsForBuffer, so we must commit
-     * and wait here to guarantee visibility of GPU writes. */
+     * and wait here to guarantee visibility of GPU writes.
+     *
+     * MGL_SYNC_STRICT: 此处已执行 mglFlushCommandBuffer + mtlFlush(ctx, true)
+     * (commit + waitUntilCompleted)，属于保守路径，无需额外 strict 分支。 */
     if (access_flags & GL_MAP_READ_BIT) {
         mglFlushCommandBuffer(ctx);
         if (ctx->mtl_funcs.mtlFlush) {
@@ -3456,6 +3495,8 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         return;
     }
 
+    /* MGL_SYNC_STRICT: 此处已通过 mtlFlush(ctx, true) 完成 commit + waitUntilCompleted，
+     * 属于保守路径，无需额外 strict 分支（避免重复 double-wait）。 */
     if (ctx->mtl_funcs.mtlFlush) {
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }

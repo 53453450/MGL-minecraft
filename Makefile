@@ -362,11 +362,27 @@ install-pkgdeps: download-pkgdeps compile-pkgdeps
 download-pkgdeps:
 
 	brew install glm glslang spirv-tools glfw
-	
+
 compile-pkgdeps:
 
 	@echo "use /external/.sh"
-	
-.PHONY: default test dbg lib clean insall-pkgdeps test-make
+
+# Benchmark target — builds the comprehensive MGL translation-overhead benchmark.
+# Depends on libmgl.dylib and libglfw.dylib being built first (run `make lib`).
+bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+		-I./external/glfw/include \
+		-IMGL/include -IMGL/include/GL \
+		-DMGL_GL_CORE \
+		-isysroot $(SDK_ROOT) \
+		benchmark/mgl_benchmark.c \
+		-L$(build_dir) -lmgl -lglfw \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $(build_dir)/mgl_benchmark
+	@echo "✅ Benchmark built: $(build_dir)/mgl_benchmark"
+
+.PHONY: default test dbg lib clean insall-pkgdeps test-make bench
 
 -include $(deps)

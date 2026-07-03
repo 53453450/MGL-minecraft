@@ -416,6 +416,15 @@ static void mglTrackPendingFramebufferTextureWrites(GLMContext ctx)
     mglTrackPendingFramebufferDepthStencilWrites(ctx, fbo);
 }
 
+/*
+ * mglFlushPendingDrawsBeforeFramebufferTextureWrites — 帧缓冲附件写后读危害刷新
+ *
+ * 触发条件：待处理 draw 读取了当前绑定 FBO 的颜色/深度/模板附件所对应 texture 时 flush。
+ * 保证语义：防止写后读（WAR）危害——前序 draw 采样了某附件 texture，而新 draw 又将写入该附件；
+ *           确保采样读到的是前序 draw 完成后的内容，而非新 draw 覆盖后的内容。
+ * 溢出退化：当 texture_read_overflow 置位时退化为无条件全刷新。
+ * 附加行为：命中时输出 trace 日志（前 64 次及之后每 512 次一次）。
+ */
 static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
 {
     if (!ctx || !ctx->draw_defer_enabled) return;
@@ -495,6 +504,14 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
     }
 }
 
+/*
+ * mglPendingDrawsReadBufferRange — 缓冲区范围读危害查询
+ *
+ * 触发条件：当待处理 draw 读取的缓冲区范围与 [offset, offset+size) 存在重叠时返回 true。
+ * 保证语义：为 CPU 端写入缓冲区前的按范围危害检测提供基础，避免破坏已编码 draw 的读取。
+ * 溢出退化：当 buffer_read_range_overflow 置位时退化为对任意 buffer/range 均返回 true，
+ *           使随后的 flush 调用退化为无条件全刷新。
+ */
 bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size)
 {
     if (!ctx || !buffer || !ctx->draw_defer_enabled) return false;
@@ -517,6 +534,13 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
     return false;
 }
 
+/*
+ * mglPendingDrawsWriteTexture — 纹理写危害查询
+ *
+ * 触发条件：当待处理 draw 写入了给定 texture 时返回 true。
+ * 保证语义：检测 RAW/写后读危害，确保后续对该纹理的采样不会读到陈旧的写入。
+ * 溢出退化：当 texture_write_overflow 置位时退化为对任意 texture 均返回 true。
+ */
 bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
 {
     if (!ctx || !texture || !ctx->draw_defer_enabled) return false;
@@ -534,6 +558,13 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
     return false;
 }
 
+/*
+ * mglPendingDrawsReadTexture — 纹理读危害查询
+ *
+ * 触发条件：当待处理 draw 读取（采样）了给定 texture 时返回 true。
+ * 保证语义：检测 WAR/读后写危害，确保随后对该纹理的写入不会破坏已编码 draw 的采样。
+ * 溢出退化：当 texture_read_overflow 置位时退化为对任意 texture 均返回 true。
+ */
 bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
 {
     if (!ctx || !texture || !ctx->draw_defer_enabled) return false;
@@ -551,6 +582,13 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
     return false;
 }
 
+/*
+ * mglFlushPendingDrawsForBuffer — 整缓冲区危害刷新
+ *
+ * 触发条件：待处理 draw 读取了指定的整个 buffer（等价于 [0, INT64_MAX) 范围查询命中）时 flush。
+ * 保证语义：确保随后对该 buffer 的 CPU 端写入/重定义不会破坏已编码 draw 的读取。
+ * 溢出退化：当 buffer_read_range_overflow 置位时退化为无条件全刷新。
+ */
 void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 {
     if (mglPendingDrawsReadBufferRange(ctx, buffer, 0, -1)) {
@@ -558,6 +596,13 @@ void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
     }
 }
 
+/*
+ * mglFlushPendingDrawsForBufferRange — 按范围危害检测刷新
+ *
+ * 触发条件：待处理 draw 读取的缓冲区范围与 [offset, offset+size) 重叠时 flush。
+ * 保证语义：确保随后对该缓冲区范围的 CPU 写入不会破坏已编码 draw 的读取。
+ * 溢出退化：当 buffer_read_range_overflow 置位时，退化为无条件全刷新。
+ */
 void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size)
 {
     if (mglPendingDrawsReadBufferRange(ctx, buffer, offset, size)) {
@@ -565,6 +610,14 @@ void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t of
     }
 }
 
+/*
+ * mglPendingDrawsReferenceVertexArray — VAO 引用危害查询
+ *
+ * 触发条件：待处理 draw 引用了给定 VAO（按 source_vao / state_snapshot.vao / vao_name 匹配）时返回 true。
+ * 保证语义：为 VAO 状态变更前的危害检测提供基础，确保后续 VAO 修改不会影响已编码 draw。
+ * 溢出退化：stream-merged 的 batch 持有私有 VAO 快照与已拷贝的瞬时顶点/索引数据，
+ *           后续 VAO 修改不会影响其已编码 draw，故直接跳过此类 batch。
+ */
 static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao)
 {
     if (!ctx || !vao || !ctx->draw_defer_enabled) return false;
@@ -599,6 +652,13 @@ static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao
     return false;
 }
 
+/*
+ * mglFlushPendingDrawsForVertexArray — VAO 危害刷新
+ *
+ * 触发条件：待处理 draw 引用了指定 VAO 时 flush。
+ * 保证语义：确保随后对该 VAO 的状态/顶点属性修改不会改变已编码 draw 的行为。
+ * 溢出退化：stream-merged batch 持有私有 VAO 快照，不受影响；其余 batch 命中即 flush。
+ */
 void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao)
 {
     if (mglPendingDrawsReferenceVertexArray(ctx, (VertexArray *)vao)) {
@@ -606,6 +666,13 @@ void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao)
     }
 }
 
+/*
+ * mglFlushPendingDrawsForTexture — 纹理读/写危害刷新
+ *
+ * 触发条件：待处理 draw 写入或读取了指定 texture 时 flush。
+ * 保证语义：确保随后对该 texture 的任何操作（写破坏采样，或读看到陈旧写入）不会破坏同步。
+ * 溢出退化：当 texture_write_overflow 或 texture_read_overflow 任一置位时退化为无条件全刷新。
+ */
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
 {
     if (mglPendingDrawsWriteTexture(ctx, texture) ||
@@ -614,6 +681,15 @@ void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
     }
 }
 
+/*
+ * mglFlushPendingDrawsBeforeTextureWrite — CPU 端纹理写入前的读/写危害刷新
+ *
+ * 触发条件：待处理 draw 读取或写入了指定 texture 时 flush；用于 CPU 端纹理上传/更新前。
+ * 保证语义：确保随后对 texture 的 CPU 端写入不会破坏已编码 draw 的采样（WAR），
+ *           也避免与已编码 draw 的写入发生冲突（WAW）。
+ * 溢出退化：当 texture_read_overflow 或 texture_write_overflow 任一置位时退化为无条件全刷新。
+ * 附加行为：命中时输出 trace 日志（前 64 次及之后每 512 次一次）。
+ */
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
 {
     if (mglPendingDrawsReadTexture(ctx, texture) ||
@@ -633,6 +709,13 @@ void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
     }
 }
 
+/*
+ * mglFlushPendingDrawsForActiveTextures — 活跃纹理单元写后读危害刷新
+ *
+ * 触发条件：待处理 draw 写入了当前任何活跃纹理单元所绑定的 texture 时 flush；每次 draw 前调用。
+ * 保证语义：防止写后读（WAR）危害——前序 draw 写入了某 texture，而当前 draw 又将其作为采样器读取。
+ * 溢出退化：当 texture_write_overflow 置位时退化为无条件全刷新。
+ */
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
 {
     if (!ctx || !ctx->draw_defer_enabled) return;
@@ -2023,6 +2106,14 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     mglTrackPendingFramebufferTextureWrites(ctx);
 }
 
+/*
+ * mglFlushCommandBuffer — 最低级 flush，将延迟 draw 缓冲区提交给 Metal
+ *
+ * 触发条件：当 batch_count > 0 时，通过 ctx->mtl_funcs.mtlFlushDrawBuffer(ctx) 将已编码的
+ *           延迟 draw 提交到 Metal 后端执行。
+ * 保证语义：所有危害检测 flush 函数的最终汇聚点；调用后所有 per-CB read/write 跟踪数组被清空。
+ * 溢出退化：无（本函数不做危害检测，仅负责提交）。
+ */
 void mglFlushCommandBuffer(GLMContext ctx)
 {
     if (!ctx) return;
@@ -2035,6 +2126,14 @@ void mglFlushCommandBuffer(GLMContext ctx)
     }
 }
 
+/*
+ * mglFlushPendingDraws — 无条件全刷新（无危害检测）
+ *
+ * 触发条件：当 draw_defer_enabled 时无条件调用 mglFlushCommandBuffer；不做任何危害检测。
+ * 保证语义：用于任何可能广泛使待处理 draw 失效的状态变更（如广泛的 GL 状态重置），
+ *           保守地保证所有已编码 draw 提交完毕后再进行后续操作。
+ * 溢出退化：本函数本身就是全刷新，等价于溢出退化后的最终行为。
+ */
 void mglFlushPendingDraws(GLMContext ctx)
 {
     if (!ctx || !ctx->draw_defer_enabled) return;

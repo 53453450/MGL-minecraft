@@ -3793,13 +3793,22 @@ static inline bool mglTextureCanUseGLSampledRenderTargetCopy(Texture *tex)
 {
     /* Metal tile memory can be stale when a render target is immediately
      * sampled (read-after-write hazard).  Apply the sampled-copy protection
-     * to ALL 2D render targets regardless of size or mipmap state — the
-     * previous size-based gating (32-4096, 2048x2048, 16x16) was a
-     * Minecraft-specific heuristic that broke when texture dimensions
-     * changed between game versions. */
-    return tex &&
-           tex->target == GL_TEXTURE_2D &&
-           tex->is_render_target;
+     * to 2D render targets.  Small square RTs (<=32x32) are excluded
+     * because they are typically procedural lightmap / lookup tables
+     * (e.g. MC 1.21.8 lightmap, 16x16) that are sampled with non-screen
+     * texture coordinates (lightmap UV2 space) — the Y-flip copy corrupts
+     * such textures.  Larger RTs are sampled with screen-space coords
+     * where the Y-flip copy is required to match GL's bottom-left origin. */
+    if (!tex ||
+        tex->target != GL_TEXTURE_2D ||
+        !tex->is_render_target) {
+        return false;
+    }
+    if (tex->faces[0].levels[0].width <= 32u &&
+        tex->faces[0].levels[0].height <= 32u) {
+        return false;
+    }
+    return true;
 }
 
 /* Returns true if `tex` is currently a color or depth attachment of the
@@ -13303,58 +13312,176 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                     NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
                     if (lvlPitch == 0 || lvlWidth == 0) continue;
 
-                    if (texture1DBackedBy2D)
-                        region = MTLRegionMake2D(0,0,lvlWidth,1);
-                    else if (lvlDepth > 1)
-                        region = MTLRegionMake3D(0,0,0,lvlWidth,lvlHeight,lvlDepth);
-                    else if (lvlHeight > 1)
-                        region = MTLRegionMake2D(0,0,lvlWidth,lvlHeight);
-                    else
-                        region = MTLRegionMake1D(0,lvlWidth);
+                    if (is_array)
+                    {
+                        /* Array texture re-upload: loop over array layers and upload
+                         * each slice independently.  Mirrors the DIRTY_TEXTURE_DATA
+                         * array path (12861-13087).  The old code only uploaded
+                         * slice 0 and passed the entire array's data_size as
+                         * bytesPerImage with depth=num_layers, causing a crash in
+                         * uploadTextureSliceViaBlit's newBufferWithBytes. */
+                        GLuint num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
+                            ? tex->faces[face].levels[level].height
+                            : tex->faces[face].levels[level].depth;
+                        if (num_layers == 0) continue;
 
+                        BOOL arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
+                        NSUInteger uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)lvlHeight, 1UL);
+                        NSUInteger baseBytesPerRow = lvlPitch;
+                        NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceHeight;
+                        NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
+
+                        if (logicalBytesPerImage == 0 ||
+                            backingBytes < logicalBytesPerImage * MAX((NSUInteger)num_layers, 1UL)) {
+                            NSLog(@"MGL WARNING: Re-upload array backing too small tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
+                                  tex->name, face, level,
+                                  (unsigned long)backingBytes,
+                                  (unsigned long)logicalBytesPerImage,
+                                  num_layers);
+                            continue;
+                        }
+
+                        for (GLuint layer = 0; layer < num_layers; layer++)
+                        {
+                            size_t offset = logicalBytesPerImage * layer;
+                            const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
+                            void *expandedUploadData = NULL;
+                            NSUInteger effectiveBytesPerRow = baseBytesPerRow;
+                            NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
+
+                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                  (const uint8_t *)layerSrcData,
+                                                                                  lvlWidth,
+                                                                                  uploadSliceHeight,
+                                                                                  baseBytesPerRow,
+                                                                                  &expandedBPR,
+                                                                                  &expandedBPI);
+                                if (expandedUploadData) {
+                                    layerSrcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBPR;
+                                    effectiveBytesPerImage = expandedBPI;
+                                }
+                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                     pixelFormat,
+                                                                                     (const uint8_t *)layerSrcData,
+                                                                                     lvlWidth,
+                                                                                     uploadSliceHeight,
+                                                                                     baseBytesPerRow,
+                                                                                     &expandedBPR,
+                                                                                     &expandedBPI);
+                                if (expandedUploadData) {
+                                    layerSrcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBPR;
+                                    effectiveBytesPerImage = expandedBPI;
+                                }
+                            }
+
+                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                            NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
+                            if (alignedBytesPerRow % alignment != 0) {
+                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                            }
+
+                            uintptr_t addr = (uintptr_t)layerSrcData;
+                            if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
+                                NSUInteger alignedSize = alignedBytesPerRow * uploadSliceHeight;
+                                if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
+                                    void *alignedData = aligned_alloc(alignment, alignedSize);
+                                    if (alignedData) {
+                                        memset(alignedData, 0, alignedSize);
+                                        for (NSUInteger row = 0; row < uploadSliceHeight; row++) {
+                                            NSUInteger copySize = MIN(effectiveBytesPerRow, alignedBytesPerRow);
+                                            memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
+                                                   (const uint8_t *)layerSrcData + row * effectiveBytesPerRow, copySize);
+                                        }
+                                        [self uploadTextureSliceViaBlit:texture
+                                                               texName:tex->name
+                                                             texTarget:tex->target
+                                                                 bytes:alignedData
+                                                           bytesPerRow:alignedBytesPerRow
+                                                         bytesPerImage:alignedBytesPerRow * uploadSliceHeight
+                                                                 width:lvlWidth
+                                                                height:lvlHeight
+                                                                 depth:1
+                                                                 level:level
+                                                                 slice:layer];
+                                        free(alignedData);
+                                    }
+                                }
+                            } else {
+                                [self uploadTextureSliceViaBlit:texture
+                                                       texName:tex->name
+                                                     texTarget:tex->target
+                                                         bytes:layerSrcData
+                                                   bytesPerRow:effectiveBytesPerRow
+                                                 bytesPerImage:effectiveBytesPerImage
+                                                         width:lvlWidth
+                                                        height:lvlHeight
+                                                         depth:1
+                                                         level:level
+                                                         slice:layer];
+                            }
+                            free(expandedUploadData);
+                        }
+                    }
+                    else
+                    {
+                    /* Non-array re-upload (2D, 3D, 1D, cube).
+                     * For 3D textures, bytesPerImage must be a single 2D slice
+                     * (bytesPerRow * height), NOT the full volume data_size.
+                     * uploadTextureSliceViaBlit computes bufferSize =
+                     * safeBytesPerImage * copyDepth, so passing the full volume
+                     * as bytesPerImage AND depth would double-count and cause
+                     * newBufferWithBytes to read past the source buffer. */
                     NSUInteger bytesPerRow = lvlPitch;
-                    NSUInteger bytesPerImage = tex->faces[face].levels[level].data_size;
-                    if (bytesPerImage == 0) bytesPerImage = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+                    NSUInteger fullDataSize = tex->faces[face].levels[level].data_size;
+                    if (fullDataSize == 0) fullDataSize = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+
+                    BOOL is3DReupload = (tex->target == GL_TEXTURE_3D && lvlDepth > 1);
+                    NSUInteger singleSliceBPI = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+                    NSUInteger bytesPerImage = is3DReupload ? singleSliceBPI : fullDataSize;
+                    NSUInteger uploadDepth = is3DReupload ? lvlDepth : (lvlDepth > 1 ? lvlDepth : 1);
 
                     const void *srcData = (const void *)tex->faces[face].levels[level].data;
                     void *expandedUploadData = NULL;
-                    /* Expand CPU data to Metal texel layout BEFORE alignment/upload.
-                     * The two expansions are mutually exclusive: RGB8-family maps to
-                     * RGBA8, or RGB16 / RGB32 family maps to RGBA16 / RGBA32 family.
-                     * Without this, N-byte CPU rows are uploaded to 4/8/16-byte Metal
-                     * textures (pixel shift / vertical stripes).  Mirrors the 2D DIRTY
-                     * branch (13021-13056) and uploadFullCPUTextureDataIntoTexture
-                     * (22089-22122). */
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                        NSUInteger expandedBytesPerRow = 0;
-                        NSUInteger expandedBytesPerImage = 0;
-                        expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                          (const uint8_t *)srcData,
-                                                                          lvlWidth,
-                                                                          MAX((NSUInteger)lvlHeight, 1UL),
-                                                                          bytesPerRow,
-                                                                          &expandedBytesPerRow,
-                                                                          &expandedBytesPerImage);
-                        if (expandedUploadData) {
-                            srcData = expandedUploadData;
-                            bytesPerRow = expandedBytesPerRow;
-                            bytesPerImage = expandedBytesPerImage;
-                        }
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                        NSUInteger expandedBytesPerRow = 0;
-                        NSUInteger expandedBytesPerImage = 0;
-                        expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                             pixelFormat,
-                                                                             (const uint8_t *)srcData,
-                                                                             lvlWidth,
-                                                                             MAX((NSUInteger)lvlHeight, 1UL),
-                                                                             bytesPerRow,
-                                                                             &expandedBytesPerRow,
-                                                                             &expandedBytesPerImage);
-                        if (expandedUploadData) {
-                            srcData = expandedUploadData;
-                            bytesPerRow = expandedBytesPerRow;
-                            bytesPerImage = expandedBytesPerImage;
+                    /* Channel expansion for 2D/non-3D only.  3D expansion would
+                     * require per-slice handling (see DIRTY_TEXTURE_DATA 3D path). */
+                    if (!is3DReupload) {
+                        if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                              (const uint8_t *)srcData,
+                                                                              lvlWidth,
+                                                                              MAX((NSUInteger)lvlHeight, 1UL),
+                                                                              bytesPerRow,
+                                                                              &expandedBytesPerRow,
+                                                                              &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                            }
+                        } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                 pixelFormat,
+                                                                                 (const uint8_t *)srcData,
+                                                                                 lvlWidth,
+                                                                                 MAX((NSUInteger)lvlHeight, 1UL),
+                                                                                 bytesPerRow,
+                                                                                 &expandedBytesPerRow,
+                                                                                 &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                            }
                         }
                     }
                     NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
@@ -13366,27 +13493,30 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                     uintptr_t addr = (uintptr_t)srcData;
                     if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
                         NSUInteger rowCount = MAX((NSUInteger)lvlHeight, 1UL);
-                        NSUInteger alignedSize = alignedBytesPerRow * rowCount;
+                        NSUInteger alignedSliceBPI = alignedBytesPerRow * rowCount;
+                        NSUInteger alignedSize = alignedSliceBPI * uploadDepth;
                         if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
                             void *alignedData = aligned_alloc(alignment, alignedSize);
                             if (alignedData) {
                                 memset(alignedData, 0, alignedSize);
-                                for (NSUInteger row = 0; row < rowCount; row++) {
-                                    NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
-                                    memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
-                                           (const uint8_t *)srcData + row * bytesPerRow, copySize);
+                                for (NSUInteger z = 0; z < uploadDepth; z++) {
+                                    for (NSUInteger row = 0; row < rowCount; row++) {
+                                        NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
+                                        memcpy((uint8_t *)alignedData + z * alignedSliceBPI + row * alignedBytesPerRow,
+                                               (const uint8_t *)srcData + z * singleSliceBPI + row * bytesPerRow, copySize);
+                                    }
                                 }
                                 [self uploadTextureSliceViaBlit:texture
                                                        texName:tex->name
                                                      texTarget:tex->target
                                                          bytes:alignedData
                                                    bytesPerRow:alignedBytesPerRow
-                                                 bytesPerImage:alignedBytesPerRow * rowCount
+                                                 bytesPerImage:alignedSliceBPI
                                                          width:lvlWidth
                                                         height:lvlHeight
-                                                         depth:1
+                                                         depth:uploadDepth
                                                          level:level
-                                                         slice:(is_array ? 0 : face)];
+                                                         slice:face];
                                 free(alignedData);
                             }
                         }
@@ -13399,11 +13529,12 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                          bytesPerImage:bytesPerImage
                                                  width:lvlWidth
                                                 height:lvlHeight
-                                                 depth:lvlDepth > 1 ? lvlDepth : 1
+                                                 depth:uploadDepth
                                                  level:level
-                                                 slice:(is_array ? 0 : face)];
+                                                 slice:face];
                     }
                     free(expandedUploadData);
+                    } /* end else (non-array) */
                 }
             }
         } else if (tex->is_render_target || mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
@@ -22065,6 +22196,18 @@ create_new_command_buffer:
     return true;
 }
 
+/*
+ * copyTextureUploadWithDedicatedCommandBuffer:... — 纹理上传 blit 路径
+ *
+ * 纹理上传是 GL 命令，须与同一上下文的 draw 保持调用顺序；不得用独立 CB leapfrog
+ * 未提交的 render CB（否则上传可能先于已编码 draw 完成，破坏 GL 隐式排序）。
+ *
+ * 默认模式（!kMGLUseDedicatedTextureUploadCommandBuffer）：endRenderEncoding 关闭开启的
+ *   render encoder，随后在当前 CB 上编码 blit（copyFromBuffer:toTexture:），保证上传与
+ *   同 CB 内 draw 的 GPU 端排序。
+ * Dedicated 模式（kMGLUseDedicatedTextureUploadCommandBuffer）：用独立 CB 编码 blit，
+ *   可选 addCompletedHandler + semaphore 同步等待；该模式仅在确需异步上传时启用。
+ */
 - (bool)copyTextureUploadWithDedicatedCommandBuffer:(id<MTLBuffer>)sourceBuffer
                                         sourceOffset:(NSUInteger)sourceOffset
                                    sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
@@ -22207,6 +22350,17 @@ create_new_command_buffer:
     return uploadCB.error == nil;
 }
 
+/*
+ * uploadTextureSliceViaBlit:... — 单 slice 纹理上传分发
+ *
+ * 按 Metal 纹理类型选择上传路径：
+ *   - 1D / 1DArray：低频，走 replaceRegion（见下方 1D 分支注释）。
+ *   - 3D：走 replaceRegion 规避 AGX driver 的 copyFromBuffer slice OOB 断言（见下方 3D 分支注释）。
+ *   - 2D / Array / Cube：不得用 replaceRegion（被 in-flight CB 采样时不安全），必须走 blit
+ *     路径（下方分配 uploadBuffer 并调用 copyTextureUploadWithDedicatedCommandBuffer），
+ *     由 GPU 端 CB 排序保证上传与采样的可见性顺序。
+ * 1D/3D 的 replaceRegion 失败会回落到 blit 路径。
+ */
 - (bool)uploadTextureSliceViaBlit:(id<MTLTexture>)texture
                           texName:(GLuint)texName
                          texTarget:(GLenum)texTarget
@@ -22277,6 +22431,11 @@ create_new_command_buffer:
               bytes);
     }
 
+    /* 1D 纹理上传走 replaceRegion 分支：
+     * - 1D 纹理属低频更新路径，replaceRegion 在此场景安全；
+     * - 调用方进入此函数前已通过 mglFlushPendingDrawsBeforeTextureWrite 刷新 CPU 侧
+     *   延迟 draw，避免上传与未提交 render 命令缓冲区产生顺序竞争；
+     * - 仅 shared storage 可用；Private storage（如 MSAA）须落回 blit 路径。 */
     if ((textureType == MTLTextureType1D || textureType == MTLTextureType1DArray) &&
         texture.storageMode != MTLStorageModePrivate) {
         @try {
@@ -22318,11 +22477,12 @@ create_new_command_buffer:
         }
     }
 
-    /* For 3D textures with shared storage, prefer replaceRegion over blit.
-     * The blit path (copyFromBuffer:toTexture:) triggers "slice OOB" assertions
-     * on AGX drivers for 3D textures, even with destinationSlice=0.
-     * Note: replaceRegion:mipmapLevel:withBytes:bytesPerRow: does not accept
-     * bytesPerImage, so data must be tightly packed (bytesPerImage == bytesPerRow * height). */
+    /* 3D 纹理上传走 replaceRegion 分支：
+     * - 3D 用 replaceRegion 规避 AGX driver 的 copyFromBuffer:toTexture: slice OOB
+     *   断言（即便 destinationSlice=0 仍触发）；
+     * - replaceRegion:mipmapLevel:withBytes:bytesPerRow: 不接受 bytesPerImage，
+     *   需紧密打包（safeBytesPerImage == bytesPerRow * height，即 expectedBytesPerImage）；
+     * - 仅 shared storage 可用；不满足紧密打包条件则落回 blit 路径。 */
     if (is3DTexture && texture.storageMode != MTLStorageModePrivate &&
         safeBytesPerImage == expectedBytesPerImage) {
         @try {
@@ -22339,6 +22499,14 @@ create_new_command_buffer:
         }
     }
 
+    /* 2D / 2DArray / Cube 纹理上传走 blit 路径（dedicated CB + completion handler）：
+     * - 不得用 replaceRegion：当该纹理正被 in-flight 命令缓冲区采样时，replaceRegion 的
+     *   CPU 直写不受 GPU 端排序约束，会与采样中的 draw 产生数据竞争（曾导致 Minecraft
+     *   GUI 物品渲染错乱）；
+     * - 必须走 blit 路径以保证 GPU 端排序：copyTextureUploadWithDedicatedCommandBuffer
+     *   会 endRenderEncoding 关闭当前 render encoder，并在 dedicated CB 上编码
+     *   copyFromBuffer:toTexture:，由 Metal 命令队列保证与既有 render CB 的提交顺序；
+     * - 1D/3D 分支不命中此前提（低频或 driver bug 规避），已先行返回。 */
     NSUInteger bufferSize = safeBytesPerImage * copyDepth;
     if (bufferSize == 0 || bufferSize > (512 * 1024 * 1024)) {
         NSLog(@"MGL WARNING: Rejecting texture upload with invalid buffer size: %lu", (unsigned long)bufferSize);
@@ -23535,6 +23703,15 @@ create_new_command_buffer:
     return NO;
 }
 
+/*
+ * synchronizeRenderPassForTextureReadback:reason: — 最重同步边界（CPU 读回前的 GPU 写入可见性保证）
+ *
+ * 触发条件：当待读回纹理恰好是当前 render pass 的渲染目标（color/depth/stencil attachment）时调用。
+ * 保证语义：endRenderEncoding 关闭开启的 render encoder → commitCommandBufferWithAGXRecovery:
+ *           提交当前 CB → waitUntilCompleted 阻塞至 GPU 完成 → newCommandBuffer 创建新 CB。
+ *           确保 CPU 读回前，所有已编码到该纹理的 GPU 渲染写入已完成并对 CPU 可见。
+ * 退化：若纹理非当前 render target，直接返回 YES（无需同步）；若 CB 已 finalized 则仅 rotate。
+ */
 - (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
                                          reason:(const char *)reason
 {
@@ -25650,28 +25827,92 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
 }
 
 #pragma mark C interface to mtlGetSync
+/*
+ * mtlGetSync:sync: — fence 插入点命令捕获（CB-wait 机制）
+ *
+ * 触发条件：glFenceSync 创建 fence sync 对象时调用。
+ * 实现契约：
+ *   1. processGLState:false 刷新待处理 draw 到当前 command buffer；
+ *   2. endRenderEncoding 关闭开启的 render encoder；
+ *   3. retain 当前 command buffer 存入 sync->mtl_command_buffer（该 CB 恰好包含
+ *      fence 插入点之前的所有 GL 命令），随后通过 commitCommandBufferWithAGXRecovery:
+ *      将该 CB 提交至 GPU；
+ *   4. newCommandBuffer 创建新 CB，供后续 GL 命令编码（不得写入已提交的 fence CB）。
+ * 保证语义：fence 反映插入点之前命令的 GPU 完成状态。mtlWaitForSync 通过对该
+ *           CB 调用 waitUntilCompleted 真正阻塞至 GPU 完成，不再 no-op。
+ * 退化：若当前无可提交 CB（如 fence 前无 draw，或 CB 已 finalized/errored），
+ *       mtl_command_buffer 为 NULL，fence 立即处于 signaled 状态。
+ * kMGLDisableSharedEventSync 仅门控 legacy shared-event 路径（event 创建 + SyncList）；
+ * CB-wait 始终生效，是真正的等待机制。
+ */
 -(void) mtlGetSync:(GLMContext) glm_ctx sync: (Sync *)sync
 {
-    if (kMGLDisableSharedEventSync) {
-        if (sync) {
-            sync->mtl_event = NULL;
-        }
-        _currentEvent = NULL;
-        _currentSyncName = 0;
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: mtlGetSync no-op (shared event sync disabled)");
-        }
-        return;
-    }
-
     // SAFETY: Check Metal objects before processing
     if (!_device || !_commandQueue) {
         NSLog(@"MGL ERROR: Metal device or queue is NULL in mtlGetSync");
+        if (sync) {
+            sync->mtl_event = NULL;
+            sync->mtl_command_buffer = NULL;
+        }
         return;
     }
 
+    if (!sync) {
+        NSLog(@"MGL ERROR: mtlGetSync - sync object is NULL");
+        return;
+    }
+
+    // Flush pending draws into the current command buffer so the CB captures
+    // all GL commands issued before the fence insertion point.
     if (![self processGLState: false]) {
         NSLog(@"MGL WARNING: processGLState failed in mtlGetSync");
+    }
+
+    // End any open render encoder so the command buffer can be committed.
+    [self endRenderEncoding];
+
+    // CB-wait mechanism: retain the current command buffer (which now contains
+    // exactly the commands issued before the fence), commit it to the GPU, and
+    // create a fresh command buffer for subsequent GL commands. The retained CB
+    // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
+    // completion via waitUntilCompleted. This runs regardless of
+    // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
+    if (_currentCommandBuffer &&
+        _currentCommandBuffer.status == MTLCommandBufferStatusNotEnqueued &&
+        !_currentCommandBuffer.error) {
+        sync->mtl_command_buffer = (void *)CFBridgingRetain(_currentCommandBuffer);
+        id<MTLCommandBuffer> cbToCommit = _currentCommandBuffer;
+        _currentCommandBuffer = nil;
+
+        @try {
+            [self commitCommandBufferWithAGXRecovery:cbToCommit];
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Failed to commit fence command buffer: %@", exception);
+            [self recordGPUError];
+        }
+    } else {
+        // No in-flight command buffer (e.g. no draws issued before the fence)
+        // or the buffer is already finalized/errored: the fence is immediately
+        // signaled.
+        sync->mtl_command_buffer = NULL;
+    }
+
+    // Always provide a fresh command buffer for subsequent GL commands so they
+    // are not encoded into the already-committed fence command buffer.
+    [self newCommandBuffer];
+
+    // Legacy shared-event path. Gated by kMGLDisableSharedEventSync; when
+    // disabled, mtl_event stays NULL and the CB-wait above is the sole wait
+    // mechanism. The event/SyncList code below only runs when shared-event
+    // sync is explicitly enabled.
+    if (kMGLDisableSharedEventSync) {
+        sync->mtl_event = NULL;
+        _currentEvent = NULL;
+        _currentSyncName = 0;
+        if (kMGLVerboseFrameLoopLogs) {
+            NSLog(@"MGL INFO: mtlGetSync captured CB=%p (shared event sync disabled)",
+                  sync->mtl_command_buffer);
+        }
         return;
     }
 
@@ -25746,40 +25987,58 @@ void mtlGetSync (GLMContext glm_ctx, Sync *sync)
 }
 
 #pragma mark C interface to mtlWaitForSync
+/*
+ * mtlWaitForSync:sync: — fence 阻塞等待（CB-wait 机制）
+ *
+ * 触发条件：glClientWaitSync / glWaitSync / glDeleteSync 路径调用。
+ * 实现契约：对 mtlGetSync 捕获并 retain 的 command buffer 调用 waitUntilCompleted，
+ *           真正阻塞当前线程直至 GPU 完成该 CB（即完成 fence 插入点之前的所有命令）。
+ *           完成后 CFBridgingRelease 释放 CB 引用并清空 sync->mtl_command_buffer。
+ *           不再是 no-op（旧实现仅释放 mtl_event 即立即返回，违反 GL 语义）。
+ * 退化：若 mtl_command_buffer 为 NULL（fence 已完成或创建时无 CB），直接返回。
+ *      同时清理 legacy mtl_event 引用（若存在）。
+ * kMGLDisableSharedEventSync 不门控此路径——CB-wait 始终生效。
+ */
 -(void) mtlWaitForSync:(GLMContext) glm_ctx sync: (Sync *)sync
 {
-    if (kMGLDisableSharedEventSync) {
-        if (sync) {
-            sync->mtl_event = NULL;
-        }
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: mtlWaitForSync no-op (shared event sync disabled)");
-        }
-        return;
-    }
-
     // CRITICAL SAFETY: Validate sync object before processing
     if (!sync) {
         NSLog(@"MGL ERROR: mtlWaitForSync - sync object is NULL");
         return;
     }
 
-    // SAFETY: Validate mtl_event before releasing - prevent objc_release crash
-    if (!sync->mtl_event) {
-        NSLog(@"MGL WARNING: mtlWaitForSync - sync->mtl_event is NULL");
-        return;
+    // CB-wait path: block until the command buffer captured at fence insertion
+    // completes on the GPU. This is the real wait mechanism and runs regardless
+    // of kMGLDisableSharedEventSync.
+    if (sync->mtl_command_buffer) {
+        id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+        @try {
+            if (cb.status != MTLCommandBufferStatusCompleted) {
+                [cb waitUntilCompleted];
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception waiting on fence command buffer: %@", exception);
+        }
+        CFBridgingRelease(sync->mtl_command_buffer);
+        sync->mtl_command_buffer = NULL;
     }
 
-    @try {
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: Releasing Metal sync event");
+    // Legacy shared-event cleanup (harmless if mtl_event is NULL, which is the
+    // case when kMGLDisableSharedEventSync is enabled).
+    if (sync->mtl_event) {
+        @try {
+            if (kMGLVerboseFrameLoopLogs) {
+                NSLog(@"MGL INFO: Releasing Metal sync event");
+            }
+            CFBridgingRelease(sync->mtl_event);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
         }
-        CFBridgingRelease(sync->mtl_event);
         sync->mtl_event = NULL;
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
-        // Don't crash - set to NULL to prevent double release
-        sync->mtl_event = NULL;
+    }
+
+    if (kMGLDisableSharedEventSync && kMGLVerboseFrameLoopLogs) {
+        NSLog(@"MGL INFO: mtlWaitForSync completed via CB-wait (shared event sync disabled)");
     }
 }
 
@@ -25787,6 +26046,79 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
 {
     // Call the Objective-C method using Objective-C syntax
     [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlWaitForSync: glm_ctx sync: sync];
+}
+
+#pragma mark C interface to mtlGetSyncStatus
+/*
+ * mtlGetSyncStatus:sync: — fence 非阻塞状态查询
+ *
+ * 触发条件：mglGetSynciv(GL_SYNC_STATUS) / mglClientWaitSync 轮询调用。
+ * 保证语义：返回 GL_SIGNALED 当且仅当关联 CB 已完成（status == Completed）或
+ *           无关联 CB（mtl_command_buffer == NULL）；否则返回 GL_UNSIGNALED。
+ *           不阻塞。
+ */
+-(GLenum) mtlGetSyncStatus:(GLMContext) glm_ctx sync: (Sync *)sync
+{
+    if (!sync || !sync->mtl_command_buffer) {
+        return GL_SIGNALED;
+    }
+
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+    @try {
+        if (cb.status == MTLCommandBufferStatusCompleted) {
+            return GL_SIGNALED;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: Exception querying fence command buffer status: %@", exception);
+    }
+
+    return GL_UNSIGNALED;
+}
+
+GLenum mtlGetSyncStatus (GLMContext glm_ctx, Sync *sync)
+{
+    // Call the Objective-C method using Objective-C syntax
+    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetSyncStatus: glm_ctx sync: sync];
+}
+
+#pragma mark C interface to mtlReleaseSync
+/*
+ * mtlReleaseSync:sync: — fence 资源非阻塞释放
+ *
+ * 触发条件：mglDeleteSync 调用。
+ * 保证语义：释放 fence 关联的 retained command buffer 与 legacy event 引用，
+ *           不等待 GPU 完成（Metal 内部会 retain in-flight CB，故释放我们的引用
+ *           安全且不会中断 GPU 执行）。避免泄漏，不阻塞。
+ */
+-(void) mtlReleaseSync:(GLMContext) glm_ctx sync: (Sync *)sync
+{
+    if (!sync) {
+        return;
+    }
+
+    if (sync->mtl_command_buffer) {
+        @try {
+            CFBridgingRelease(sync->mtl_command_buffer);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing fence command buffer: %@", exception);
+        }
+        sync->mtl_command_buffer = NULL;
+    }
+
+    if (sync->mtl_event) {
+        @try {
+            CFBridgingRelease(sync->mtl_event);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
+        }
+        sync->mtl_event = NULL;
+    }
+}
+
+void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
+{
+    // Call the Objective-C method using Objective-C syntax
+    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReleaseSync: glm_ctx sync: sync];
 }
 
 #pragma mark Draw command buffer flush
@@ -28790,6 +29122,17 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     }
 }
 
+/*
+ * mglReadColorTextureAsBGRA8:... — readPixels 颜色读回 staging buffer 路径
+ *
+ * 触发条件：glReadPixels 颜色读回（BGRA8 兼容格式）经此 staging buffer 路径。
+ * 保证语义：ensureWritableCommandBuffer 取得可写 CB → newBufferWithLength 创建 staging
+ *           buffer → blitCommandEncoder copyFromTexture 将 GPU 纹理数据拷贝至 staging →
+ *           addCompletedHandler + dispatch_semaphore_wait(250ms 超时) 阻塞至 CB 完成 →
+ *           从 stagingBuffer.contents 拷贝至用户 buffer → newCommandBuffer 创建新 CB。
+ *           确保 CPU 读回前该纹理的所有 GPU 写入已通过 CB 完成而对 CPU 可见。
+ * 退化：250ms 超时返回零数据并报 GL_INVALID_OPERATION；command buffer error 同样报错。
+ */
 - (BOOL)mglReadColorTextureAsBGRA8:(id<MTLTexture>)sourceTexture
                        sourceLevel:(NSUInteger)sourceLevel
                        sourceSlice:(NSUInteger)sourceSlice
@@ -29556,6 +29899,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return YES;
 }
 
+/*
+ * mglApplyPendingFBODepthClearForReadback:attachment:textureObj:mtlTexture: — 延迟深度 clear 物化
+ *
+ * 触发条件：readback 深度前，若 FBO depth attachment 存在未物化的 deferred lazy clear
+ *           （attachment->clear_bitmask & GL_DEPTH_BUFFER_BIT）。
+ * 保证语义：构造一个 loadAction=Clear 的 render pass（depthAttachment.loadAction=Clear），
+ *           立即 endEncoding 物化该 clear，使后续 readback 能读到 cleared 值而非未定义数据；
+ *           清除 clear_bitmask 中对应位以避免重复 clear。必须在读回 blit 之前完成，否则
+ *           CPU 读回前该 GPU 写入（clear）不可见。
+ */
 - (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo
                                      attachment:(FBOAttachment *)attachment
                                      textureObj:(Texture *)textureObj
@@ -29608,6 +29961,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 }
 
+/*
+ * mtlReadDepthPixels: — 深度读回路径
+ *
+ * 触发条件：glReadPixels 深度分量读回。
+ * 保证语义：endRenderEncoding 关闭开启的 render encoder → ensureWritableCommandBuffer 取得
+ *           可写 CB → mglApplyPendingFBODepthClearForReadback 物化延迟的 lazy 深度 clear
+ *           （loadAction=Clear）使读回看到 cleared 值 → 委托至 staging buffer 读回路径
+ *           （copyFromTexture + completed-handler semaphore）。
+ *           确保 CPU 读回前所有 GPU 深度写入与 deferred clear 已完成并对 CPU 可见。
+ */
 - (void)mtlReadDepthPixels:(GLMContext)glm_ctx
                 pixelBytes:(void *)pixelBytes
                bytesPerRow:(NSUInteger)bytesPerRow
@@ -30278,6 +30641,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 }
 
 #pragma mark C interface to mtlGetTexImage
+/*
+ * mtlGetTexImage: — 纹理图像读回路径
+ *
+ * 触发条件：glGetTexImage 读回整层纹理数据。
+ * 保证语义：对目标纹理调用 synchronizeRenderPassForTextureReadback（若为 render target，
+ *           则 endRenderEncoding + commit + waitUntilCompleted + newCommandBuffer）；
+ *           随后 endRenderEncoding + commit + waitUntilCompleted 提交并等待 dedicated blit CB
+ *           （编码 copyFromTexture 到 staging buffer），确保 CPU 读回前该纹理的所有 GPU 写入
+ *           （渲染 / 上传 blit）已完成并对 CPU 可见。
+ */
 -(void) mtlGetTexImage:(GLMContext) glm_ctx tex: (Texture *)tex pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region format:(GLenum)format type:(GLenum)type mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice
 {
     id<MTLTexture> texture = nil;
@@ -37151,6 +37524,8 @@ void mtlMultiDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, 
 
     glm_ctx->mtl_funcs.mtlGetSync = mtlGetSync;
     glm_ctx->mtl_funcs.mtlWaitForSync = mtlWaitForSync;
+    glm_ctx->mtl_funcs.mtlGetSyncStatus = mtlGetSyncStatus;
+    glm_ctx->mtl_funcs.mtlReleaseSync = mtlReleaseSync;
     glm_ctx->mtl_funcs.mtlFlush = mtlFlush;
     glm_ctx->mtl_funcs.mtlSwapBuffers = mtlSwapBuffers;
     glm_ctx->mtl_funcs.mtlFlushDrawBuffer = mtlFlushDrawBuffer;
