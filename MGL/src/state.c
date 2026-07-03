@@ -740,6 +740,7 @@ GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
         case GL_SCISSOR_TEST: RET_CAP(scissor_test);
         case GL_STENCIL_TEST: RET_CAP(stencil_test);
         case GL_TEXTURE_CUBE_MAP_SEAMLESS: RET_CAP(texture_cube_map_seamless);
+        case GL_RASTERIZER_DISCARD: RET_CAP(rasterizer_discard);
 
         default:
             ERROR_RETURN_VALUE(GL_INVALID_ENUM, GL_FALSE);

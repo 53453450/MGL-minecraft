@@ -22,6 +22,8 @@
 #include <stdio.h>
 #include "glm_context.h"
 
+extern void mglTraceLogExternal(const char *fmt, ...);
+
 bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *param);
 bool setTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *params);
 bool setTexParamsIiv(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *params);
@@ -69,8 +71,15 @@ Sampler *newSampler(GLMContext ctx, GLuint sampler)
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;
-    ptr->params.min_filter = GL_NEAREST_MIPMAP_LINEAR;
-    ptr->params.mag_filter = GL_LINEAR;
+    /* GL 4.6 spec §8.14: the initial MIN_FILTER/MAG_FILTER are both NEAREST.
+     * A prior change defaulted these to NEAREST_MIPMAP_LINEAR/LINEAR, which
+     * made samplers that never explicitly set MIN_FILTER enable mip filtering
+     * — sampling a non-mipmapped texture (e.g. Minecraft's 256x256 block
+     * atlas, which has mipmapLevelCount==1) with mipFilter=Linear reads
+     * uninitialized/zero mip levels and produces horizontal/vertical stripes.
+     * Restore the spec-correct NEAREST defaults. */
+    ptr->params.min_filter = GL_NEAREST;
+    ptr->params.mag_filter = GL_NEAREST;
     ptr->params.max_anisotropy = 1.0;
     ptr->params.min_lod = -1000;
     ptr->params.max_lod = 1000;
@@ -187,7 +196,23 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
     {
         ptr = NULL;
     }
-    
+
+    mglTraceLogExternal("BIND_SAMPLER unit=%u sampler=%u resolved=%p minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x wrapR=0x%x minLod=%.3f maxLod=%.3f maxLevel=%d aniso=%.1f compareMode=0x%x compareFunc=0x%x",
+                        (unsigned)unit,
+                        (unsigned)sampler,
+                        (void *)ptr,
+                        ptr ? (unsigned)ptr->params.min_filter : 0u,
+                        ptr ? (unsigned)ptr->params.mag_filter : 0u,
+                        ptr ? (unsigned)ptr->params.wrap_s : 0u,
+                        ptr ? (unsigned)ptr->params.wrap_t : 0u,
+                        ptr ? (unsigned)ptr->params.wrap_r : 0u,
+                        ptr ? (double)ptr->params.min_lod : 0.0,
+                        ptr ? (double)ptr->params.max_lod : 0.0,
+                        ptr ? (int)ptr->params.max_level : 0,
+                        ptr ? (double)ptr->params.max_anisotropy : 1.0,
+                        ptr ? (unsigned)ptr->params.compare_mode : 0u,
+                        ptr ? (unsigned)ptr->params.compare_func : 0u);
+
     ctx->state.texture_samplers[unit] = ptr;
     ctx->state.dirty_bits  |= DIRTY_SAMPLER;
 }
@@ -298,6 +323,11 @@ void mglSamplerParameterf(GLMContext ctx, GLuint sampler, GLenum pname, GLfloat 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     mglFlushPendingDraws(ctx);
 
+    mglTraceLogExternal("SAMPLER_PARAM_F sampler=%u pname=0x%x fparam=%.6f",
+                        (unsigned)sampler,
+                        (unsigned)pname,
+                        (double)param);
+
     if (setParam(ctx, &ptr->params, pname, 0, param))
     {
         mglMarkSamplerParameterDirty(ptr);
@@ -341,6 +371,11 @@ void mglSamplerParameteri(GLMContext ctx, GLuint sampler, GLenum pname, GLint pa
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     mglFlushPendingDraws(ctx);
+
+    mglTraceLogExternal("SAMPLER_PARAM sampler=%u pname=0x%x iparam=%d",
+                        (unsigned)sampler,
+                        (unsigned)pname,
+                        (int)param);
 
     if (setParam(ctx, &ptr->params, pname, param, 0.0f))
     {

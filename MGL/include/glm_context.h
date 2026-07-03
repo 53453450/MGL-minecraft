@@ -354,6 +354,7 @@ typedef struct Texture_t {
     GLuint  mtl_gl_sampled_width;
     GLuint  mtl_gl_sampled_height;
     GLuint  mtl_gl_sampled_format;
+    GLuint  mtl_gl_sampled_levels;
     GLuint  mtl_gl_sampled_write_version;
     GLuint  mtl_render_target_write_version;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
@@ -480,6 +481,11 @@ typedef struct Spirv_t {
     GLboolean needs_buffer_size_buffer; /* true if SPIRV-Cross MSL uses
                                          * spvBufferSizeConstants for
                                          * runtime-sized SSBO arrays */
+    char *msl_str_capture; /* MSL variant compiled with SPIRV-Cross output-capture
+                            * options for GPU transform feedback. NULL unless
+                            * MGL_XFB_GPU_CAPTURE is set and the stage is the
+                            * program's feedback stage. The renderer dispatch
+                            * that consumes this variant is not yet wired. */
 } Spirv;
 
 typedef struct SpirvUBOMember_t {
@@ -581,6 +587,12 @@ typedef struct Program_t {
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
+    GLuint tess_control_output_vertices;  /* from TCS layout(vertices=N) out; */
+    /* TES execution mode reflection: layout(...) in; */
+    GLenum tess_gen_mode;        /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES */
+    GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */
+    GLenum tess_gen_vertex_order;/* GL_CW / GL_CCW */
+    GLboolean tess_gen_point_mode;/* GL_TRUE / GL_FALSE */
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];

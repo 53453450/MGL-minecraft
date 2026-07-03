@@ -2260,10 +2260,154 @@ static GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint 
     return MGL_SYNTHETIC_SAMPLER_LOCATION_BASE + (stage * 0x1000) + (res_type * 0x100) + (GLint)index;
 }
 
+/*
+ * Scan the original GLSL source for a sampler/image uniform declaration
+ * matching `resource_name` and, if it carries an explicit
+ * `layout(location = N)` qualifier, return N.  Returns -1 when the
+ * declaration has no explicit location (the common case where glslang
+ * auto-emits SpvDecorationLocation as a descriptor index).
+ *
+ * The GLSL forms recognised:
+ *   layout(location = 2)  uniform highp sampler2D sampler;
+ *   layout(location=1)    uniform sampler2D u0[3];
+ *   layout(location = 13, binding = 0) uniform sampler2D u1;
+ *
+ * `resource_name` may include an array element suffix (e.g. "u0[0]");
+ * only the base identifier is used for matching.
+ */
+static GLint mglFindExplicitUniformLocation(const char *glsl_src, const char *resource_name)
+{
+    if (!glsl_src || !resource_name || !resource_name[0]) {
+        return -1;
+    }
+
+    /* Strip a trailing [..] suffix so "u0[0]" matches declaration "u0". */
+    char base_name[256];
+    size_t name_len = strlen(resource_name);
+    const char *bracket = strchr(resource_name, '[');
+    if (bracket) {
+        name_len = (size_t)(bracket - resource_name);
+    }
+    if (name_len == 0 || name_len >= sizeof(base_name)) {
+        return -1;
+    }
+    memcpy(base_name, resource_name, name_len);
+    base_name[name_len] = '\0';
+
+    const char *pos = glsl_src;
+    while ((pos = strstr(pos, base_name)) != NULL) {
+        const char *after_name = pos + name_len;
+        /* Ensure the match is a whole identifier (not a substring of a
+         * longer identifier). */
+        if ((pos > glsl_src && (isalnum((unsigned char)pos[-1]) || pos[-1] == '_')) ||
+            (isalnum((unsigned char)*after_name) || *after_name == '_')) {
+            pos = after_name;
+            continue;
+        }
+
+        /* Walk backwards from the identifier to find the start of its
+         * declaration, skipping whitespace and the type tokens that
+         * typically appear between `uniform` and the name, e.g.
+         *   uniform highp sampler2D sampler
+         * We look for the nearest preceding `layout(` and `uniform`. */
+        const char *scan = pos;
+        const char *layout_start = NULL;
+        bool found_uniform = false;
+        while (scan > glsl_src) {
+            scan--;
+            if (*scan == ';') {
+                /* Hit a previous declaration's terminator; give up. */
+                break;
+            }
+            if (!found_uniform && scan + 7 <= pos) {
+                if (strncmp(scan, "uniform", 7) == 0) {
+                    const char *after = scan + 7;
+                    if (scan == glsl_src || !isalnum((unsigned char)scan[-1]) && scan[-1] != '_') {
+                        if (*after == 0 || isspace((unsigned char)*after)) {
+                            found_uniform = true;
+                        }
+                    }
+                }
+            }
+            if (*scan == 'l' && scan + 6 <= pos && strncmp(scan, "layout", 6) == 0) {
+                const char *after = scan + 6;
+                if (scan == glsl_src || !isalnum((unsigned char)scan[-1]) && scan[-1] != '_') {
+                    if (*after == 0 || isspace((unsigned char)*after) || *after == '(') {
+                        layout_start = scan;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!layout_start) {
+            /* No layout qualifier preceding this declaration. */
+            return -1;
+        }
+
+        /* Parse the layout(...) parenthesised group. */
+        const char *lp = layout_start + 6;
+        while (*lp && isspace((unsigned char)*lp)) {
+            lp++;
+        }
+        if (*lp != '(') {
+            return -1;
+        }
+        lp++;
+        /* Scan comma-separated entries inside layout(...). */
+        const char *paren_end = lp;
+        int depth = 1;
+        while (*paren_end && depth > 0) {
+            if (*paren_end == '(') depth++;
+            else if (*paren_end == ')') depth--;
+            if (depth > 0) paren_end++;
+        }
+        if (*paren_end != ')') {
+            return -1;
+        }
+
+        const char *entry = lp;
+        for (;;) {
+            const char *comma = entry;
+            int d = 0;
+            while (comma < paren_end && !(*comma == ',' && d == 0)) {
+                if (*comma == '(') d++;
+                else if (*comma == ')') d--;
+                comma++;
+            }
+            /* entry..comma is one layout entry. */
+            const char *p = entry;
+            while (p < comma && isspace((unsigned char)*p)) p++;
+            if (p + 8 <= comma && strncmp(p, "location", 8) == 0) {
+                const char *after = p + 8;
+                while (after < comma && isspace((unsigned char)*after)) after++;
+                if (after < comma && *after == '=') {
+                    after++;
+                    while (after < comma && isspace((unsigned char)*after)) after++;
+                    char *end = NULL;
+                    unsigned long val = strtoul(after, &end, 10);
+                    if (end != after) {
+                        return (GLint)val;
+                    }
+                }
+            }
+            if (comma == paren_end) break;
+            entry = comma + 1;
+        }
+
+        /* layout() present but no location entry -> not explicit. */
+        return -1;
+    }
+
+    return -1;
+}
+
 static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
                                                      int stage,
                                                      int res_type,
-                                                     GLuint index)
+                                                     GLuint index,
+                                                     const char *glsl_src,
+                                                     const char *resource_name)
 {
     /*
      * SPIRV-Cross/Metal reflection reports descriptor argument locations here,
@@ -2278,9 +2422,16 @@ static GLint mglSamplerUniformLocationFromReflection(GLuint reflected_location,
      * The reflected location is therefore the SPIR-V/Metal descriptor index,
      * not a reliable OpenGL uniform location, and using it verbatim causes
      * collisions with plain uniforms (e.g. "uniform int layer") that share
-     * the same reflected location. Always use the synthetic namespace.
+     * the same reflected location. Use the synthetic namespace unless the
+     * GLSL source explicitly declares layout(location=N) on this resource.
      */
     (void)reflected_location;
+    if (glsl_src && resource_name) {
+        GLint explicit_loc = mglFindExplicitUniformLocation(glsl_src, resource_name);
+        if (explicit_loc >= 0) {
+            return explicit_loc;
+        }
+    }
     return mglSyntheticSamplerUniformLocation(stage, res_type, index);
 }
 
@@ -3178,6 +3329,10 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             free(ptr->spirv[i].msl_str);
             ptr->spirv[i].msl_str = NULL;
         }
+        if (ptr->spirv[i].msl_str_capture) {
+            free(ptr->spirv[i].msl_str_capture);
+            ptr->spirv[i].msl_str_capture = NULL;
+        }
         if (ptr->spirv[i].entry_point) {
             free(ptr->spirv[i].entry_point);
             ptr->spirv[i].entry_point = NULL;
@@ -4001,7 +4156,400 @@ static void mglFixMSLImage2DRectImageSize(char **msl_ptr)
  *   "[[patch_id]]"                       →  "[[threadgroup_position_in_grid]]"
  *   "[[position_in_patch]]"              →  "[[thread_position_in_threadgroup]]"
  */
-static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
+
+/* Fix TCS MSL [[stage_in]] for compute kernel context.
+ * SPIRV-Cross generates TCS compute kernels with a [[stage_in]] parameter
+ * for vertex input, but Metal compute pipelines don't support stage_in
+ * descriptors.  Replace:
+ *   <type> <name> [[stage_in]]
+ * with:
+ *   device <type> *_mgl_tcs_in_buffer [[buffer(25)]]
+ * and inject at body start:
+ *   <type> <name> = _mgl_tcs_in_buffer[gl_PrimitiveID * spvIndirectParams[0] + gl_InvocationID];
+ * Also strips [[attribute(N)]] from struct members (invalid in device buffers).
+ * Buffer 25 is used because TCS already uses 26 (tessFactor), 27 (patchOut),
+ * 28 (spvOut), 29 (indirectParams), and 30 is reserved for TES gl_in. */
+static void mglFixMSLTcsStageIn(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr) {
+        return;
+    }
+
+    const char *stage_in_attr = "[[stage_in]]";
+    char *pos = strstr(*msl_ptr, stage_in_attr);
+    if (pos == NULL) {
+        return;  /* No stage_in — nothing to fix. */
+    }
+
+    /* Walk backwards from [[stage_in]] to find parameter name and type. */
+    const char *p = pos;
+    while (p > *msl_ptr && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    const char *name_end = p;
+    const char *name_start = name_end;
+    while (name_start > *msl_ptr &&
+           (isalnum((unsigned char)name_start[-1]) || name_start[-1] == '_')) {
+        name_start--;
+    }
+    size_t name_len = (size_t)(name_end - name_start);
+
+    const char *before_name = name_start;
+    while (before_name > *msl_ptr && isspace((unsigned char)before_name[-1])) {
+        before_name--;
+    }
+    const char *type_end = before_name;
+    const char *type_start = type_end;
+    while (type_start > *msl_ptr &&
+           (isalnum((unsigned char)type_start[-1]) || type_start[-1] == '_')) {
+        type_start--;
+    }
+    size_t type_len = (size_t)(type_end - type_start);
+
+    if (type_len == 0 || name_len == 0 || type_len >= 256 || name_len >= 256) {
+        return;
+    }
+
+    char param_type[256];
+    char param_name[256];
+    memcpy(param_type, type_start, type_len);
+    param_type[type_len] = '\0';
+    memcpy(param_name, name_start, name_len);
+    param_name[name_len] = '\0';
+
+    /* Replace "<type> <name> [[stage_in]]" with
+     * "device <type> *_mgl_tcs_in_buffer [[buffer(25)]]" */
+    const char *replacement_start = type_start;
+    size_t old_param_len = (size_t)(pos + strlen(stage_in_attr) - replacement_start);
+
+    char new_param[512];
+    snprintf(new_param, sizeof(new_param),
+             "device %s *_mgl_tcs_in_buffer [[buffer(25)]]", param_type);
+    size_t new_param_len = strlen(new_param);
+
+    size_t before_len = (size_t)(replacement_start - *msl_ptr);
+    char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_param_len + new_param_len + 1);
+    memcpy(new_msl, *msl_ptr, before_len);
+    memcpy(new_msl + before_len, new_param, new_param_len);
+    strcpy(new_msl + before_len + new_param_len, replacement_start + old_param_len);
+    free(*msl_ptr);
+    *msl_ptr = new_msl;
+
+    /* Inject local variable at function body start:
+     * <type> <name> = _mgl_tcs_in_buffer[gl_PrimitiveID * spvIndirectParams[0] + gl_InvocationID]; */
+    char *brace = strchr(*msl_ptr + before_len + new_param_len, '{');
+    if (brace != NULL) {
+        char inject[512];
+        snprintf(inject, sizeof(inject),
+                 "\n    %s %s = _mgl_tcs_in_buffer[gl_PrimitiveID * spvIndirectParams[0] + gl_InvocationID];",
+                 param_type, param_name);
+        size_t inject_len = strlen(inject);
+        size_t brace_pos = (size_t)(brace + 1 - *msl_ptr);
+        char *new_msl2 = (char *)malloc(strlen(*msl_ptr) + inject_len + 1);
+        memcpy(new_msl2, *msl_ptr, brace_pos);
+        memcpy(new_msl2 + brace_pos, inject, inject_len);
+        strcpy(new_msl2 + brace_pos + inject_len, brace + 1);
+        free(*msl_ptr);
+        *msl_ptr = new_msl2;
+    }
+
+    /* Strip [[attribute(N)]] from struct members (invalid in device buffer context). */
+    {
+        const char *attr_prefix = "[[attribute(";
+        char *apos = *msl_ptr;
+        while ((apos = strstr(apos, attr_prefix)) != NULL) {
+            char *close = strstr(apos, "]]");
+            if (close == NULL) {
+                break;
+            }
+            char *strip_start = apos;
+            while (strip_start > *msl_ptr && isspace((unsigned char)strip_start[-1])) {
+                strip_start--;
+            }
+            size_t strip_len = (size_t)(close + 2 - strip_start);
+            size_t before = (size_t)(strip_start - *msl_ptr);
+            char *strip_msl = (char *)malloc(strlen(*msl_ptr) - strip_len + 1);
+            memcpy(strip_msl, *msl_ptr, before);
+            strcpy(strip_msl + before, close + 2);
+            free(*msl_ptr);
+            *msl_ptr = strip_msl;
+            apos = *msl_ptr + before;
+        }
+    }
+}
+
+/* Forward declaration: used by mglFixMSLTesAsComputeKernel (Step 4c) and
+ * defined below. */
+static const char *mglFindMSLEntryParameterClose(const char *msl);
+
+/* Ensure _mgl_patch_id3 is available in the TES compute kernel.
+ *
+ * Three cases:
+ * 1. _mgl_patch_id3 already declared → nothing to do.
+ * 2. [[threadgroup_position_in_grid]] already used by another parameter
+ *    (from SPIRV-Cross, e.g. for barrier support) → find that param's
+ *    name and inject "uint3 _mgl_patch_id3 = <name>;" alias at body start.
+ * 3. Neither exists → inject "uint3 _mgl_patch_id3 [[threadgroup_position_in_grid]]"
+ *    as a new kernel parameter.
+ */
+static void mglEnsurePatchId3Param(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr) {
+        return;
+    }
+
+    /* Case 1: already present */
+    if (strstr(*msl_ptr, "_mgl_patch_id3") != NULL) {
+        return;
+    }
+
+    const char *tg_pos_attr = "[[threadgroup_position_in_grid]]";
+    const char *attr_pos = strstr(*msl_ptr, tg_pos_attr);
+
+    if (attr_pos) {
+        /* Case 2: [[threadgroup_position_in_grid]] already used by another
+         * parameter (from SPIRV-Cross, e.g. for gl_PrimitiveID). We need to
+         * either reuse it (if it's already uint3) or convert the scalar
+         * uint param to uint3 so it matches the other vector params
+         * (Metal requires all [[...]]-qualified input declarations to be
+         * all scalar or all vector with the same number of elements). */
+        const char *end = attr_pos;
+        while (end > *msl_ptr && isspace((unsigned char)end[-1])) {
+            end--;
+        }
+        const char *name_end = end;
+        const char *name_start = name_end;
+        while (name_start > *msl_ptr &&
+               (isalnum((unsigned char)name_start[-1]) || name_start[-1] == '_')) {
+            name_start--;
+        }
+
+        if (name_start >= name_end) {
+            return; /* couldn't find name */
+        }
+
+        size_t name_len = (size_t)(name_end - name_start);
+
+        /* Walk further back past whitespace to find the type token. */
+        const char *type_end = name_start;
+        while (type_end > *msl_ptr && isspace((unsigned char)type_end[-1])) {
+            type_end--;
+        }
+        const char *type_start = type_end;
+        while (type_start > *msl_ptr &&
+               (isalnum((unsigned char)type_start[-1]) || type_start[-1] == '_')) {
+            type_start--;
+        }
+        size_t type_len = (size_t)(type_end - type_start);
+        /* If the param is already uint3, we can assign directly. Otherwise
+         * (scalar uint), we need to convert the scalar param to uint3 and
+         * update all scalar usages to use .x. */
+        int is_uint3 = (type_len == 5 &&
+                        strncmp(type_start, "uint3", 5) == 0);
+        int is_int3 = (type_len == 4 &&
+                       strncmp(type_start, "int3", 4) == 0);
+
+        /* Find the kernel body opening brace after the parameter list. */
+        const char *close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
+        if (!close_paren) {
+            return;
+        }
+        const char *brace = strchr(close_paren, '{');
+        if (!brace) {
+            return;
+        }
+
+        if (is_uint3 || is_int3) {
+            /* Param is already a vector; just alias it. */
+            char alias[300];
+            snprintf(alias, sizeof(alias),
+                     "\n    uint3 _mgl_patch_id3 = %.*s;",
+                     (int)name_len, name_start);
+            size_t alias_len = strlen(alias);
+            size_t before = (size_t)(brace + 1 - *msl_ptr);
+            char *nm = (char *)malloc(strlen(*msl_ptr) + alias_len + 1);
+            memcpy(nm, *msl_ptr, before);
+            memcpy(nm + before, alias, alias_len);
+            strcpy(nm + before + alias_len, brace + 1);
+            free(*msl_ptr);
+            *msl_ptr = nm;
+            return;
+        }
+
+        /* Scalar case: replace the scalar type token in the parameter
+         * declaration with "uint3", then inject an alias, then update
+         * all scalar usages of <name> to <name>.x. */
+        {
+            /* 1. Replace "uint <name>" with "uint3 <name>" in the param
+             *    declaration (first occurrence in the type position).
+             *    We target the exact spot we identified. */
+            size_t type_before = (size_t)(type_start - *msl_ptr);
+            size_t type_after = (size_t)(type_end - *msl_ptr);
+            const char *new_type = "uint3";
+            size_t new_type_len = strlen(new_type);
+            /* Compute body length starting from type_after. */
+            size_t tail_len = strlen(*msl_ptr) - type_after;
+            char *nm = (char *)malloc(type_before + new_type_len + tail_len + 1);
+            memcpy(nm, *msl_ptr, type_before);
+            memcpy(nm + type_before, new_type, new_type_len);
+            memcpy(nm + type_before + new_type_len,
+                   type_end, tail_len);
+            nm[type_before + new_type_len + tail_len] = '\0';
+            free(*msl_ptr);
+            *msl_ptr = nm;
+            /* Re-locate brace after the type replacement. */
+            close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
+            if (!close_paren) {
+                return;
+            }
+            brace = strchr(close_paren, '{');
+            if (!brace) {
+                return;
+            }
+
+            /* 2. Inject "uint3 _mgl_patch_id3 = <name>;" alias right
+             *    after '{'.  Using direct assignment now works because
+             *    <name> is now uint3.
+             *
+             *    NOTE: name_start pointed into the OLD buffer which was
+             *    freed above.  Recompute the name by finding the
+             *    [[threadgroup_position_in_grid]] attribute again and
+             *    walking back to the param name. */
+            const char *attr_pos2 = strstr(*msl_ptr, tg_pos_attr);
+            if (!attr_pos2) {
+                return;
+            }
+            const char *end2 = attr_pos2;
+            while (end2 > *msl_ptr && isspace((unsigned char)end2[-1])) {
+                end2--;
+            }
+            const char *name_start2 = end2;
+            while (name_start2 > *msl_ptr &&
+                   (isalnum((unsigned char)name_start2[-1]) || name_start2[-1] == '_')) {
+                name_start2--;
+            }
+            if (name_start2 >= end2) {
+                return;
+            }
+            size_t name_len2 = (size_t)(end2 - name_start2);
+            /* Copy the name into a local buffer now, because subsequent
+             * buffer reallocations will invalidate name_start2. */
+            char param_name[128];
+            if (name_len2 >= sizeof(param_name)) {
+                return;
+            }
+            memcpy(param_name, name_start2, name_len2);
+            param_name[name_len2] = '\0';
+
+            char alias[300];
+            snprintf(alias, sizeof(alias),
+                     "\n    uint3 _mgl_patch_id3 = %s;",
+                     param_name);
+            size_t alias_len = strlen(alias);
+            size_t before = (size_t)(brace + 1 - *msl_ptr);
+            char *am = (char *)malloc(strlen(*msl_ptr) + alias_len + 1);
+            memcpy(am, *msl_ptr, before);
+            memcpy(am + before, alias, alias_len);
+            strcpy(am + before + alias_len, brace + 1);
+            free(*msl_ptr);
+            *msl_ptr = am;
+
+            /* 3. Update scalar usages of <name> in the body to <name>.x.
+             *    We must NOT touch the alias line we just injected
+             *    ("uint3 _mgl_patch_id3 = <name>;") nor the parameter
+             *    declaration.  So we only rewrite occurrences that appear
+             *    after the alias line.  Build a needle "<name>" and walk
+             *    forward from the end of the alias, replacing each whole-
+             *    word match with "<name>.x" (avoid touching already-
+             *    suffixed <name>.x).
+             *
+             *    NOTE: all pointers (alias_pos, search_from, sc) must be
+             *    recomputed from the current *msl_ptr because the alias
+             *    injection above freed and reallocated the buffer. */
+            const char *alias_needle = "_mgl_patch_id3 = ";
+            const char *alias_pos = strstr(*msl_ptr, alias_needle);
+            if (!alias_pos) {
+                return;
+            }
+            const char *search_from = alias_pos + strlen(alias_needle);
+            /* skip past the name and the ";" */
+            const char *sc = search_from + name_len2;
+            while (*sc && *sc != ';') sc++;
+            if (*sc == ';') sc++;
+
+            /* Now replace whole-word "<name>" occurrences starting from sc
+             * with "<name>.x".  Use a buffer-based replace loop. */
+            char needle[128];
+            snprintf(needle, sizeof(needle), "%s", param_name);
+            size_t needle_len = strlen(needle);
+            /* Use a replacement that adds ".x" but only if the next char
+             * is not already '.' or an identifier char or '('. */
+            char *p = (char *)sc;
+            int safety_iter = 0;
+            while ((p = strstr(p, needle)) != NULL && safety_iter < 10000) {
+                safety_iter++;
+                /* Check preceding char: must be a word boundary. */
+                char prev = (p > *msl_ptr) ? p[-1] : '\0';
+                if (p > *msl_ptr &&
+                    (isalnum((unsigned char)prev) || prev == '_')) {
+                    p += needle_len;
+                    continue;
+                }
+                char next = p[needle_len];
+                /* Skip if already has ".x" or is part of a larger ident. */
+                if (next == '.' ||
+                    isalnum((unsigned char)next) || next == '_') {
+                    p += needle_len;
+                    continue;
+                }
+                /* Insert ".x" after the match. */
+                size_t before = (size_t)(p - *msl_ptr);
+                const char *suffix = ".x";
+                size_t suffix_len = strlen(suffix);
+                char *nm2 = (char *)malloc(strlen(*msl_ptr) + suffix_len + 1);
+                memcpy(nm2, *msl_ptr, before + needle_len);
+                memcpy(nm2 + before + needle_len, suffix, suffix_len);
+                strcpy(nm2 + before + needle_len + suffix_len,
+                       p + needle_len);
+                free(*msl_ptr);
+                *msl_ptr = nm2;
+                p = *msl_ptr + before + needle_len + suffix_len;
+            }
+            return;
+        }
+    }
+
+    /* Case 3: inject new parameter */
+    const char *cp = mglFindMSLEntryParameterClose(*msl_ptr);
+    if (!cp) {
+        return;
+    }
+
+    const char *inj = "uint3 _mgl_patch_id3 [[threadgroup_position_in_grid]]";
+    size_t inj_len = strlen(inj);
+    const char *pfx = ", ";
+    size_t pfx_len = strlen(pfx);
+    const char *kw = strstr(*msl_ptr, "kernel void ");
+    const char *op = kw ? strchr(kw, '(') : NULL;
+    const char *pp = op ? op + 1 : cp;
+    while (pp < cp && isspace((unsigned char)*pp)) {
+        pp++;
+    }
+    if (pp >= cp) {
+        pfx = "";
+        pfx_len = 0;
+    }
+    size_t b = (size_t)(cp - *msl_ptr);
+    char *nm = (char *)malloc(strlen(*msl_ptr) + pfx_len + inj_len + 1);
+    memcpy(nm, *msl_ptr, b);
+    memcpy(nm + b, pfx, pfx_len);
+    memcpy(nm + b + pfx_len, inj, inj_len);
+    strcpy(nm + b + pfx_len + inj_len, cp);
+    free(*msl_ptr);
+    *msl_ptr = nm;
+}
+
+static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
 {
     if (!msl_ptr || !*msl_ptr) {
         return;
@@ -4178,14 +4726,21 @@ static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
                 size_t type_len = (size_t)(type_end - type_start);
                 size_t varname_len = (size_t)(varname_end - varname_start);
 
-                if (type_len == 6 && strncmp(type_start, "float3", 6) == 0 && varname_len > 0) {
-                    /* Save varname before freeing *msl_ptr. */
+                if (varname_len > 0 &&
+                    ((type_len == 6 && strncmp(type_start, "float3", 6) == 0) ||
+                     (type_len == 6 && strncmp(type_start, "float2", 6) == 0) ||
+                     (type_len == 5 && strncmp(type_start, "float", 5) == 0))) {
+                    /* Save type and varname before freeing *msl_ptr. */
+                    char vartype[256];
                     char varname[256];
-                    size_t copy_len = varname_len < 255 ? varname_len : 255;
-                    memcpy(varname, varname_start, copy_len);
-                    varname[copy_len] = '\0';
+                    size_t copy_t = type_len < 255 ? type_len : 255;
+                    size_t copy_v = varname_len < 255 ? varname_len : 255;
+                    memcpy(vartype, type_start, copy_t);
+                    vartype[copy_t] = '\0';
+                    memcpy(varname, varname_start, copy_v);
+                    varname[copy_v] = '\0';
 
-                    /* Replace "float3 <var> [[position_in_patch]]" with
+                    /* Replace "<type> <var> [[position_in_patch]]" with
                      * "uint3 _mgl_tess_tc [[thread_position_in_threadgroup]]" */
                     const char *rep = "uint3 _mgl_tess_tc ";
                     size_t rep_len = strlen(rep);
@@ -4200,12 +4755,23 @@ static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
                     free(*msl_ptr);
                     *msl_ptr = new_msl;
 
-                    /* Inject type conversion at function body start '{'. */
+                    /* Inject type conversion at function body start '{'.
+                     * gl_TessCoord is float3 in GLSL, but isolines use float2
+                     * and some shaders may declare a float2 tesscoord variable.
+                     * Convert uint3 to the original type appropriately. */
                     char *brace = strchr(*msl_ptr + before + total_new, '{');
                     if (brace != NULL) {
                         char inject[512];
-                        snprintf(inject, sizeof(inject),
-                                 "\n    float3 %s = (float3)_mgl_tess_tc;", varname);
+                        if (strcmp(vartype, "float3") == 0) {
+                            snprintf(inject, sizeof(inject),
+                                     "\n    float3 %s = (float3)_mgl_tess_tc;", varname);
+                        } else if (strcmp(vartype, "float2") == 0) {
+                            snprintf(inject, sizeof(inject),
+                                     "\n    float2 %s = (float2)_mgl_tess_tc.xy;", varname);
+                        } else {
+                            snprintf(inject, sizeof(inject),
+                                     "\n    float %s = (float)_mgl_tess_tc.x;", varname);
+                        }
                         size_t inject_len = strlen(inject);
                         size_t brace_pos = (size_t)(brace + 1 - *msl_ptr);
                         char *new_msl2 = (char *)malloc(strlen(*msl_ptr) + inject_len + 1);
@@ -4219,7 +4785,7 @@ static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
                         pos = *msl_ptr + before + total_new;
                     }
                 } else {
-                    /* Non-float3 type, just replace the attribute. */
+                    /* Non-float type, just replace the attribute. */
                     size_t before = (size_t)(pos - *msl_ptr);
                     char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
                     memcpy(new_msl, *msl_ptr, before);
@@ -4228,6 +4794,589 @@ static void mglFixMSLTesAsComputeKernel(char **msl_ptr)
                     free(*msl_ptr);
                     *msl_ptr = new_msl;
                     pos = *msl_ptr + before + new_len;
+                }
+            }
+        }
+    }
+
+    /* Step 4: Replace the [[stage_in]] parameter with a device buffer.
+     * SPIRV-Cross generates a post-tessellation vertex function with:
+     *   kernel void <name>(<patchInType> <paramName> [[stage_in]], ...)
+     * where <patchInType> contains a `patch_control_point<inner_type> gl_in;`
+     * member.  Both `[[stage_in]]` and `patch_control_point<>` are illegal in
+     * compute kernels, so we replace the parameter with:
+     *   device <inner_type> *gl_in [[buffer(30)]]
+     * and rewrite body references `<paramName>.gl_in` → `gl_in`. */
+    {
+        const char *stage_in_attr = "[[stage_in]]";
+        char *pos = strstr(*msl_ptr, stage_in_attr);
+        if (pos != NULL) {
+            /* Walk backwards from [[stage_in]] to find the parameter name
+             * and type.  Expected format: "<type> <name> [[stage_in]]" */
+            const char *attr_start = pos;
+            const char *p = attr_start;
+
+            /* Skip whitespace before [[stage_in]] */
+            while (p > *msl_ptr && isspace((unsigned char)p[-1])) {
+                p--;
+            }
+            /* p now points to the end of the parameter name */
+            const char *name_end = p;
+            const char *name_start = name_end;
+            while (name_start > *msl_ptr &&
+                   (isalnum((unsigned char)name_start[-1]) || name_start[-1] == '_')) {
+                name_start--;
+            }
+            size_t name_len = (size_t)(name_end - name_start);
+
+            /* Skip whitespace before name to find type */
+            const char *before_name = name_start;
+            while (before_name > *msl_ptr && isspace((unsigned char)before_name[-1])) {
+                before_name--;
+            }
+            const char *type_end = before_name;
+            const char *type_start = type_end;
+            while (type_start > *msl_ptr &&
+                   (isalnum((unsigned char)type_start[-1]) || type_start[-1] == '_')) {
+                type_start--;
+            }
+            size_t type_len = (size_t)(type_end - type_start);
+
+            if (type_len > 0 && name_len > 0 && type_len < 256 && name_len < 256) {
+                char param_type[256];
+                char param_name[256];
+                memcpy(param_type, type_start, type_len);
+                param_type[type_len] = '\0';
+                memcpy(param_name, name_start, name_len);
+                param_name[name_len] = '\0';
+
+                /* Find the struct definition to extract the inner type from
+                 * patch_control_point<inner_type>.  Search for:
+                 *   struct <param_type> { ... patch_control_point<inner> gl_in; ... } */
+                char struct_pattern[512];
+                snprintf(struct_pattern, sizeof(struct_pattern),
+                         "struct %s", param_type);
+                char *struct_pos = strstr(*msl_ptr, struct_pattern);
+                if (struct_pos != NULL) {
+                    /* Find "patch_control_point<" after the struct definition */
+                    char *pcp_pos = strstr(struct_pos, "patch_control_point<");
+                    if (pcp_pos != NULL) {
+                        /* Extract the inner type name between < and > */
+                        char *inner_start = pcp_pos + strlen("patch_control_point<");
+                        char *inner_end = strchr(inner_start, '>');
+                        if (inner_end != NULL) {
+                            size_t inner_len = (size_t)(inner_end - inner_start);
+                            if (inner_len > 0 && inner_len < 256) {
+                                char inner_type[256];
+                                /* Trim whitespace from inner type */
+                                const char *is = inner_start;
+                                const char *ie = inner_end;
+                                while (is < ie && isspace((unsigned char)*is)) is++;
+                                while (ie > is && isspace((unsigned char)ie[-1])) ie--;
+                                inner_len = (size_t)(ie - is);
+                                memcpy(inner_type, is, inner_len);
+                                inner_type[inner_len] = '\0';
+
+                                /* Replace the parameter:
+                                 *   "<type> <name> [[stage_in]]"
+                                 * with:
+                                 *   "device <inner_type> *gl_in [[buffer(30)]], device <type> *<name> [[buffer(27)]]"
+                                 * We keep <name> (e.g. patchIn) as a device buffer so per-patch
+                                 * data (tc_patch_data etc.) is still accessible.  The per-vertex
+                                 * data (gl_in) is split out to its own buffer(30). */
+                                const char *replacement_start = type_start;
+                                size_t old_param_len = (size_t)(pos + strlen(stage_in_attr) - replacement_start);
+
+                                char new_param[768];
+                                snprintf(new_param, sizeof(new_param),
+                                         "device %s *gl_in [[buffer(30)]], device %s *%s [[buffer(27)]]",
+                                         inner_type, param_type, param_name);
+                                size_t new_param_len = strlen(new_param);
+
+                                size_t before_len = (size_t)(replacement_start - *msl_ptr);
+                                char *new_msl = (char *)malloc(strlen(*msl_ptr) - old_param_len + new_param_len + 1);
+                                memcpy(new_msl, *msl_ptr, before_len);
+                                memcpy(new_msl + before_len, new_param, new_param_len);
+                                strcpy(new_msl + before_len + new_param_len,
+                                       replacement_start + old_param_len);
+                                free(*msl_ptr);
+                                *msl_ptr = new_msl;
+
+                                /* Now replace "<param_name>.gl_in" → "gl_in"
+                                 * in the function body. */
+                                char body_pattern[512];
+                                snprintf(body_pattern, sizeof(body_pattern),
+                                         "%s.gl_in", param_name);
+                                size_t body_old_len = strlen(body_pattern);
+                                const char *body_new = "gl_in";
+                                size_t body_new_len = strlen(body_new);
+
+                                char *bpos = *msl_ptr;
+                                while ((bpos = strstr(bpos, body_pattern)) != NULL) {
+                                    size_t bbefore = (size_t)(bpos - *msl_ptr);
+                                    char *bnew = (char *)malloc(strlen(*msl_ptr) - body_old_len + body_new_len + 1);
+                                    memcpy(bnew, *msl_ptr, bbefore);
+                                    memcpy(bnew + bbefore, body_new, body_new_len);
+                                    strcpy(bnew + bbefore + body_new_len,
+                                           bpos + body_old_len);
+                                    free(*msl_ptr);
+                                    *msl_ptr = bnew;
+                                    bpos = *msl_ptr + bbefore + body_new_len;
+                                }
+
+                                /* Step 4a: Replace remaining "<param_name>.<field>"
+                                 * references (per-patch data like tc_patch_data)
+                                 * with "<param_name>[_mgl_patch_id].<field>".
+                                 * Also add a "uint3 _mgl_patch_id3 [[threadgroup_position_in_grid]]"
+                                 * parameter to the kernel if not already present. */
+                                {
+                                    char patchin_dot[512];
+                                    snprintf(patchin_dot, sizeof(patchin_dot),
+                                             "%s.", param_name);
+                                    if (strstr(*msl_ptr, patchin_dot) != NULL) {
+                                        /* Ensure _mgl_patch_id3 param exists. */
+                                        mglEnsurePatchId3Param(msl_ptr);
+
+                                        /* Replace "<param_name>." with "<param_name>[_mgl_patch_id]." */
+                                        const char *old_dot = patchin_dot;
+                                        size_t old_dot_len = strlen(old_dot);
+                                        char new_dot[600];
+                                        snprintf(new_dot, sizeof(new_dot),
+                                                 "%s[_mgl_patch_id3.x].", param_name);
+                                        size_t new_dot_len = strlen(new_dot);
+
+                                        char *dpos = *msl_ptr;
+                                        while ((dpos = strstr(dpos, old_dot)) != NULL) {
+                                            size_t dbefore = (size_t)(dpos - *msl_ptr);
+                                            char *dnew = (char *)malloc(strlen(*msl_ptr) - old_dot_len + new_dot_len + 1);
+                                            memcpy(dnew, *msl_ptr, dbefore);
+                                            memcpy(dnew + dbefore, new_dot, new_dot_len);
+                                            strcpy(dnew + dbefore + new_dot_len,
+                                                   dpos + old_dot_len);
+                                            free(*msl_ptr);
+                                            *msl_ptr = dnew;
+                                            dpos = *msl_ptr + dbefore + new_dot_len;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Step 4b: Remove "patch_control_point<...> <name>;" members from
+     * struct definitions.  After Step 4, the per-vertex data is accessed
+     * via a separate device buffer (gl_in [[buffer(30)]]), so the
+     * patch_control_point member in the patchIn struct is no longer needed.
+     * Metal compute kernels cannot use patch_control_point<> (it's only
+     * valid in post-tessellation vertex functions), so leaving it causes
+     * a compile error. */
+    {
+        const char *pcp_kw = "patch_control_point<";
+        size_t pcp_kw_len = strlen(pcp_kw);
+        char *pos = *msl_ptr;
+        while ((pos = strstr(pos, pcp_kw)) != NULL) {
+            /* Find the end of the statement: the ';' after the member name. */
+            char *semi = strchr(pos, ';');
+            if (semi == NULL) {
+                break;
+            }
+            /* Extend to include the trailing ';' and any preceding whitespace
+             * on the line (to avoid leaving blank lines). */
+            char *line_start = pos;
+            while (line_start > *msl_ptr && line_start[-1] != '\n') {
+                line_start--;
+            }
+            size_t remove_len = (size_t)(semi + 1 - line_start);
+            size_t before = (size_t)(line_start - *msl_ptr);
+            char *nm = (char *)malloc(strlen(*msl_ptr) - remove_len + 1);
+            memcpy(nm, *msl_ptr, before);
+            strcpy(nm + before, semi + 1);
+            free(*msl_ptr);
+            *msl_ptr = nm;
+            pos = *msl_ptr + before;
+        }
+    }
+
+    /* Step 4c: Replace "gl_in.size()" (from GLSL gl_in.length() / gl_PatchVerticesIn)
+     * with a patch vertex count passed as buffer(28).  After Step 4, gl_in is
+     * a raw device pointer, so .size() doesn't work.  We replace the call with
+     * "_mgl_patch_vertices_in" and add a "uint _mgl_patch_vertices_in [[buffer(28)]]"
+     * parameter to the kernel. */
+    {
+        const char *size_call = "gl_in.size()";
+        if (strstr(*msl_ptr, size_call) != NULL) {
+            /* Replace "gl_in.size()" with "_mgl_patch_vertices_in". */
+            size_t old_len = strlen(size_call);
+            const char *new_expr = "_mgl_patch_info.x";
+            size_t new_len = strlen(new_expr);
+            char *spos = *msl_ptr;
+            while ((spos = strstr(spos, size_call)) != NULL) {
+                size_t before = (size_t)(spos - *msl_ptr);
+                char *nm = (char *)malloc(strlen(*msl_ptr) - old_len + new_len + 1);
+                memcpy(nm, *msl_ptr, before);
+                memcpy(nm + before, new_expr, new_len);
+                strcpy(nm + before + new_len, spos + old_len);
+                free(*msl_ptr);
+                *msl_ptr = nm;
+                spos = *msl_ptr + before + new_len;
+            }
+
+            /* Add the _mgl_patch_vertices_in parameter if not already present. */
+            if (strstr(*msl_ptr, "_mgl_patch_info [[buffer(28)]]") == NULL) {
+                const char *close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
+                if (close_paren != NULL) {
+                    /* Find the opening '(' to check if params are empty. */
+                    const char *kernel_kw = strstr(*msl_ptr, "kernel void ");
+                    const char *open_paren = kernel_kw ? strchr(kernel_kw, '(') : NULL;
+                    const char *inject = "constant uint2& _mgl_patch_info [[buffer(28)]]";
+                    size_t inject_len = strlen(inject);
+                    const char *prefix = ", ";
+                    size_t prefix_len = strlen(prefix);
+                    /* Check if parameter list is empty. */
+                    const char *p = open_paren + 1;
+                    while (p < close_paren && isspace((unsigned char)*p)) p++;
+                    if (p >= close_paren) { prefix = ""; prefix_len = 0; }
+
+                    size_t before = (size_t)(close_paren - *msl_ptr);
+                    char *nm = (char *)malloc(strlen(*msl_ptr) + prefix_len + inject_len + 1);
+                    memcpy(nm, *msl_ptr, before);
+                    memcpy(nm + before, prefix, prefix_len);
+                    memcpy(nm + before + prefix_len, inject, inject_len);
+                    strcpy(nm + before + prefix_len + inject_len, close_paren);
+                    free(*msl_ptr);
+                    *msl_ptr = nm;
+                }
+            }
+        }
+    }
+
+    /* Step 5: Strip [[attribute(N)]] annotations from struct members.
+     * These are only valid for vertex stage-in data, which is no longer
+     * used after Step 4 converted [[stage_in]] to a device buffer.  Metal
+     * may reject [[attribute]] in device buffer struct context. */
+    {
+        const char *attr_prefix = "[[attribute(";
+        size_t attr_prefix_len = strlen(attr_prefix);
+        char *pos = *msl_ptr;
+        while ((pos = strstr(pos, attr_prefix)) != NULL) {
+            /* Find the closing "]]" */
+            char *close = strstr(pos, "]]");
+            if (close == NULL) {
+                break;
+            }
+            size_t attr_len = (size_t)(close + 2 - pos);
+
+            /* Check if this is on a struct member (preceded by a type/name,
+             * not a parameter).  We strip all [[attribute(N)]] since the
+             * TES kernel has no stage-in. */
+            /* Also strip preceding whitespace for cleaner output. */
+            char *strip_start = pos;
+            while (strip_start > *msl_ptr && isspace((unsigned char)strip_start[-1])) {
+                strip_start--;
+            }
+            size_t strip_len = (size_t)(close + 2 - strip_start);
+
+            size_t before = (size_t)(strip_start - *msl_ptr);
+            char *new_msl = (char *)malloc(strlen(*msl_ptr) - strip_len + 1);
+            memcpy(new_msl, *msl_ptr, before);
+            strcpy(new_msl + before, close + 2);
+            free(*msl_ptr);
+            *msl_ptr = new_msl;
+            pos = *msl_ptr + before;
+        }
+    }
+
+    /* Step 5b: Patch gl_in[N] indexing to be per-patch.
+     *
+     * After Step 4, gl_in is a device pointer to the entire TCS output
+     * buffer.  TES accesses gl_in[N] where N is the vertex index within
+     * the patch (0..patchVertices-1).  But the buffer contains all patches,
+     * so we need gl_in[patchID * outputVertices + N].
+     *
+     * We replace "gl_in[" with "gl_in[_mgl_patch_id3.x * _mgl_patch_info.y + "
+     * where _mgl_patch_info.y is the TCS output vertex count (packed into
+     * buffer(28) alongside _mgl_patch_info.x = patch_vertices_in).
+     *
+     * We also ensure _mgl_patch_id3 is declared (it may be missing if
+     * Step 4a didn't run because the shader has no per-patch inputs).
+     *
+     * Skip the "gl_in.size()" which was already handled by Step 4c. */
+    {
+        /* Ensure _mgl_patch_id3 param exists (may have been added by Step 4a
+         * or Step 6).  If not, add it now. */
+        mglEnsurePatchId3Param(msl_ptr);
+
+        /* Ensure _mgl_patch_info param exists (added by Step 4c only when
+         * gl_in.size() is present).  Step 5b uses _mgl_patch_info.y for
+         * per-patch gl_in indexing, so we must add it if not already there. */
+        if (strstr(*msl_ptr, "_mgl_patch_info [[buffer(28)]]") == NULL) {
+            const char *cp = mglFindMSLEntryParameterClose(*msl_ptr);
+            if (cp != NULL) {
+                const char *inj = "constant uint2& _mgl_patch_info [[buffer(28)]]";
+                size_t inj_len = strlen(inj);
+                const char *pfx = ", ";
+                size_t pfx_len = strlen(pfx);
+                const char *kw = strstr(*msl_ptr, "kernel void ");
+                const char *op = kw ? strchr(kw, '(') : NULL;
+                const char *pp = op ? op + 1 : cp;
+                while (pp < cp && isspace((unsigned char)*pp)) pp++;
+                if (pp >= cp) { pfx = ""; pfx_len = 0; }
+                size_t b = (size_t)(cp - *msl_ptr);
+                char *nm = (char *)malloc(strlen(*msl_ptr) + pfx_len + inj_len + 1);
+                memcpy(nm, *msl_ptr, b);
+                memcpy(nm + b, pfx, pfx_len);
+                memcpy(nm + b + pfx_len, inj, inj_len);
+                strcpy(nm + b + pfx_len + inj_len, cp);
+                free(*msl_ptr);
+                *msl_ptr = nm;
+            }
+        }
+
+        /* Replace "gl_in[" with "gl_in[_mgl_patch_id3.x * _mgl_patch_info.y + "
+         * but skip "gl_in.size()" (already replaced by Step 4c to
+         * _mgl_patch_info.x, so "gl_in[" won't match those).
+         * Also skip the parameter declaration "device <type> *gl_in [[buffer(30)]]"
+         * which doesn't contain "gl_in[". */
+        const char *old_idx = "gl_in[";
+        size_t old_idx_len = strlen(old_idx);
+        const char *new_idx = "gl_in[_mgl_patch_id3.x * _mgl_patch_info.y + ";
+        size_t new_idx_len = strlen(new_idx);
+        char *ipos = *msl_ptr;
+        while ((ipos = strstr(ipos, old_idx)) != NULL) {
+            size_t before = (size_t)(ipos - *msl_ptr);
+            char *nm = (char *)malloc(strlen(*msl_ptr) - old_idx_len + new_idx_len + 1);
+            memcpy(nm, *msl_ptr, before);
+            memcpy(nm + before, new_idx, new_idx_len);
+            strcpy(nm + before + new_idx_len, ipos + old_idx_len);
+            free(*msl_ptr);
+            *msl_ptr = nm;
+            ipos = *msl_ptr + before + new_idx_len;
+        }
+    }
+
+    /* Step 6: XFB (Transform Feedback) capture.
+     *
+     * When the program has transform feedback varyings configured
+     * (transform_feedback_varying_count > 0) with GL_INTERLEAVED_ATTRIBS,
+     * the TES compute kernel must write the captured output fields into an
+     * XFB buffer so glMapBufferRange on GL_TRANSFORM_FEEDBACK_BUFFER returns
+     * the expected data.  This is needed because the TES kernel bypasses the
+     * render pipeline (which would normally capture XFB output).
+     *
+     * We inject:
+     *   1. A "device char* _mgl_xfb_out [[buffer(29)]]" parameter.
+     *   2. Before the final "return;" of the kernel, write each XFB-captured
+     *      field of the "out" struct to the XFB buffer at the correct offset.
+     *
+     * The XFB buffer is bound in dispatchTessEvaluationShader (MGLRenderer.m)
+     * to buffer(29).  The per-patch offset is _mgl_patch_id * xfb_stride.
+     */
+    if (program &&
+        program->transform_feedback_varying_count > 0 &&
+        program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+
+        GLboolean has_xfb = GL_FALSE;
+        for (GLsizei i = 0; i < program->transform_feedback_varying_count; i++) {
+            const char *vname = program->transform_feedback_varying_names[i];
+            if (vname && vname[0] != '\0') {
+                SpirvResourceList *outputs =
+                    &program->spirv_resources_list[_TESS_EVALUATION_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+                for (GLuint j = 0; outputs->list && j < outputs->count; j++) {
+                    if (outputs->list[j].name &&
+                        strcmp(outputs->list[j].name, vname) == 0) {
+                        has_xfb = GL_TRUE;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (has_xfb) {
+            /* Inject the XFB output buffer parameter [[buffer(29)]]. */
+            if (strstr(*msl_ptr, "_mgl_xfb_out [[buffer(29)]]") == NULL) {
+                const char *close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
+                if (close_paren != NULL) {
+                    const char *inject = "device char* _mgl_xfb_out [[buffer(29)]]";
+                    size_t inject_len = strlen(inject);
+                    const char *prefix = ", ";
+                    size_t prefix_len = strlen(prefix);
+                    const char *kernel_kw = strstr(*msl_ptr, "kernel void ");
+                    const char *open_paren = kernel_kw ? strchr(kernel_kw, '(') : NULL;
+                    const char *p = open_paren ? open_paren + 1 : close_paren;
+                    while (p < close_paren && isspace((unsigned char)*p)) p++;
+                    if (p >= close_paren) { prefix = ""; prefix_len = 0; }
+
+                    size_t before = (size_t)(close_paren - *msl_ptr);
+                    char *nm = (char *)malloc(strlen(*msl_ptr) + prefix_len + inject_len + 1);
+                    memcpy(nm, *msl_ptr, before);
+                    memcpy(nm + before, prefix, prefix_len);
+                    memcpy(nm + before + prefix_len, inject, inject_len);
+                    strcpy(nm + before + prefix_len + inject_len, close_paren);
+                    free(*msl_ptr);
+                    *msl_ptr = nm;
+                }
+            }
+
+            /* Build the XFB write statements. */
+            char write_block[4096];
+            write_block[0] = '\0';
+            size_t wb_len = 0;
+            GLuint xfb_offset = 0;
+            GLboolean build_ok = GL_TRUE;
+
+            for (GLsizei i = 0; i < program->transform_feedback_varying_count && build_ok; i++) {
+                const char *vname = program->transform_feedback_varying_names[i];
+                if (!vname || vname[0] == '\0') {
+                    continue;
+                }
+                if (strchr(vname, '.') != NULL) {
+                    build_ok = GL_FALSE;
+                    break;
+                }
+
+                /* Find the field type in the _out struct:
+                 * "    <type> <vname> [[<attr>]]" */
+                char field_pattern[256];
+                snprintf(field_pattern, sizeof(field_pattern), " %s [[", vname);
+                char *fpos = strstr(*msl_ptr, field_pattern);
+                if (!fpos) {
+                    build_ok = GL_FALSE;
+                    break;
+                }
+                char *type_end = fpos;
+                while (type_end > *msl_ptr && isspace((unsigned char)type_end[-1])) {
+                    type_end--;
+                }
+                char *type_start = type_end;
+                while (type_start > *msl_ptr &&
+                       (isalnum((unsigned char)type_start[-1]) || type_start[-1] == '_')) {
+                    type_start--;
+                }
+                size_t type_len = (size_t)(type_end - type_start);
+                if (type_len == 0 || type_len >= 64) {
+                    build_ok = GL_FALSE;
+                    break;
+                }
+                char field_type[64];
+                memcpy(field_type, type_start, type_len);
+                field_type[type_len] = '\0';
+
+                GLuint field_bytes = 0;
+                if (strcmp(field_type, "float") == 0) field_bytes = 4;
+                else if (strcmp(field_type, "int") == 0) field_bytes = 4;
+                else if (strcmp(field_type, "uint") == 0) field_bytes = 4;
+                else if (strcmp(field_type, "float2") == 0) field_bytes = 8;
+                else if (strcmp(field_type, "float3") == 0) field_bytes = 12;
+                else if (strcmp(field_type, "float4") == 0) field_bytes = 16;
+                else if (strcmp(field_type, "int2") == 0) field_bytes = 8;
+                else if (strcmp(field_type, "int3") == 0) field_bytes = 12;
+                else if (strcmp(field_type, "int4") == 0) field_bytes = 16;
+                else if (strcmp(field_type, "uint2") == 0) field_bytes = 8;
+                else if (strcmp(field_type, "uint3") == 0) field_bytes = 12;
+                else if (strcmp(field_type, "uint4") == 0) field_bytes = 16;
+                else {
+                    build_ok = GL_FALSE;
+                    break;
+                }
+
+                char stmt[512];
+                snprintf(stmt, sizeof(stmt),
+                         "\n    *((device %s*)(_mgl_xfb_out + %u)) = out.%s;",
+                         field_type, xfb_offset, vname);
+                size_t stmt_len = strlen(stmt);
+                if (wb_len + stmt_len >= sizeof(write_block) - 1) {
+                    build_ok = GL_FALSE;
+                    break;
+                }
+                memcpy(write_block + wb_len, stmt, stmt_len);
+                wb_len += stmt_len;
+                write_block[wb_len] = '\0';
+
+                xfb_offset += field_bytes;
+            }
+
+            if (build_ok && wb_len > 0) {
+                /* Ensure _mgl_patch_id3 param exists (may have been added by
+                 * Step 4a or 5b).  If not, add it now. */
+                mglEnsurePatchId3Param(msl_ptr);
+
+                /* Ensure _mgl_tess_tc (thread_position_in_threadgroup) exists.
+                 * Step 3 adds it when gl_TessCoord is used, but for XFB-only
+                 * shaders it may be missing.  Reuse it as the per-patch vertex
+                 * index.  Also add _mgl_tptg (threads_per_threadgroup) for the
+                 * vertex count per patch. */
+                if (strstr(*msl_ptr, "_mgl_tess_tc") == NULL) {
+                    const char *cp2 = mglFindMSLEntryParameterClose(*msl_ptr);
+                    if (cp2 != NULL) {
+                        const char *inj2 = "uint3 _mgl_tess_tc [[thread_position_in_threadgroup]]";
+                        size_t inj2_len = strlen(inj2);
+                        const char *pfx2 = ", ";
+                        size_t pfx2_len = strlen(pfx2);
+                        const char *kw2 = strstr(*msl_ptr, "kernel void ");
+                        const char *op2 = kw2 ? strchr(kw2, '(') : NULL;
+                        const char *pp2 = op2 ? op2 + 1 : cp2;
+                        while (pp2 < cp2 && isspace((unsigned char)*pp2)) pp2++;
+                        if (pp2 >= cp2) { pfx2 = ""; pfx2_len = 0; }
+                        size_t b2 = (size_t)(cp2 - *msl_ptr);
+                        char *nm2 = (char *)malloc(strlen(*msl_ptr) + pfx2_len + inj2_len + 1);
+                        memcpy(nm2, *msl_ptr, b2);
+                        memcpy(nm2 + b2, pfx2, pfx2_len);
+                        memcpy(nm2 + b2 + pfx2_len, inj2, inj2_len);
+                        strcpy(nm2 + b2 + pfx2_len + inj2_len, cp2);
+                        free(*msl_ptr);
+                        *msl_ptr = nm2;
+                    }
+                }
+                /* Ensure _mgl_tptg (threads_per_threadgroup) exists. */
+                if (strstr(*msl_ptr, "_mgl_tptg") == NULL) {
+                    const char *cp2 = mglFindMSLEntryParameterClose(*msl_ptr);
+                    if (cp2 != NULL) {
+                        const char *inj2 = "uint3 _mgl_tptg [[threads_per_threadgroup]]";
+                        size_t inj2_len = strlen(inj2);
+                        const char *pfx2 = ", ";
+                        size_t pfx2_len = strlen(pfx2);
+                        const char *kw2 = strstr(*msl_ptr, "kernel void ");
+                        const char *op2 = kw2 ? strchr(kw2, '(') : NULL;
+                        const char *pp2 = op2 ? op2 + 1 : cp2;
+                        while (pp2 < cp2 && isspace((unsigned char)*pp2)) pp2++;
+                        if (pp2 >= cp2) { pfx2 = ""; pfx2_len = 0; }
+                        size_t b2 = (size_t)(cp2 - *msl_ptr);
+                        char *nm2 = (char *)malloc(strlen(*msl_ptr) + pfx2_len + inj2_len + 1);
+                        memcpy(nm2, *msl_ptr, b2);
+                        memcpy(nm2 + b2, pfx2, pfx2_len);
+                        memcpy(nm2 + b2 + pfx2_len, inj2, inj2_len);
+                        strcpy(nm2 + b2 + pfx2_len + inj2_len, cp2);
+                        free(*msl_ptr);
+                        *msl_ptr = nm2;
+                    }
+                }
+
+                /* Find the final "return;" and inject the stride offset +
+                 * write block before it. */
+                char *last_return = NULL;
+                char *search = *msl_ptr;
+                while ((search = strstr(search, "return;")) != NULL) {
+                    last_return = search;
+                    search += 7;
+                }
+                if (last_return) {
+                    char stride_decl[512];
+                    snprintf(stride_decl, sizeof(stride_decl),
+                             "\n    _mgl_xfb_out += (_mgl_patch_id3.x * _mgl_tptg.x + _mgl_tess_tc.x) * %u;",
+                             xfb_offset);
+                    size_t stride_len = strlen(stride_decl);
+                    size_t insert_pos = (size_t)(last_return - *msl_ptr);
+                    char *nm = (char *)malloc(strlen(*msl_ptr) + stride_len + wb_len + 1);
+                    memcpy(nm, *msl_ptr, insert_pos);
+                    memcpy(nm + insert_pos, stride_decl, stride_len);
+                    memcpy(nm + insert_pos + stride_len, write_block, wb_len);
+                    strcpy(nm + insert_pos + stride_len + wb_len, last_return);
+                    free(*msl_ptr);
+                    *msl_ptr = nm;
                 }
             }
         }
@@ -5797,6 +6946,36 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
     }
 
+    /* SPIRV-Cross throws "Metal does not support isoline tessellation" for
+     * TES with SpvExecutionModeIsolines.  Patch the SPIR-V to replace
+     * Isolines with Triangles so SPIRV-Cross can generate MSL.  The original
+     * mode is recorded in tess_gen_mode during reflection (see below).
+     *
+     * OpExecutionMode layout: word0 = (word_count << 16) | opcode(16),
+     * word1 = entry_point, word2 = mode.
+     * Per spirv.h: SpvExecutionModeIsolines=25, SpvExecutionModeTriangles=22. */
+    GLboolean spirv_was_isolines = GL_FALSE;
+    if (stage == _TESS_EVALUATION_SHADER) {
+        const unsigned int OpExecutionMode = 16;
+        const unsigned int SpvExecutionModeIsolines = 25;
+        const unsigned int SpvExecutionModeTriangles = 22;
+        for (size_t i = 5; i + 2 < word_count; ) {  /* skip header (5 words) */
+            unsigned int word0 = spirv[i];
+            unsigned int opcode = word0 & 0xFFFFu;
+            unsigned int instr_words = word0 >> 16;
+            if (instr_words == 0) break;  /* malformed */
+            if (opcode == OpExecutionMode && instr_words >= 3) {
+                unsigned int mode = spirv[i + 2];
+                if (mode == SpvExecutionModeIsolines) {
+                    /* Cast away const to patch the SPIR-V in place. */
+                    ((unsigned int *)spirv)[i + 2] = SpvExecutionModeTriangles;
+                    spirv_was_isolines = GL_TRUE;
+                }
+            }
+            i += instr_words;
+        }
+    }
+
     // Create context.
     if (spvc_context_create(&context) != SPVC_SUCCESS || !context) {
         fprintf(stderr, "MGL ERROR: spvc_context_create failed\n");
@@ -5975,6 +7154,57 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         ptr->local_workgroup_size.y = spvc_compiler_get_execution_mode_argument_by_index(compiler_msl, SpvExecutionModeLocalSize, 1);
         ptr->local_workgroup_size.z = spvc_compiler_get_execution_mode_argument_by_index(compiler_msl, SpvExecutionModeLocalSize, 2);
     }
+
+    /* TCS: extract layout(vertices=N) out; via SpvExecutionModeOutputVertices */
+    if (stage == _TESS_CONTROL_SHADER)
+    {
+        ptr->tess_control_output_vertices =
+            (GLuint)spvc_compiler_get_execution_mode_argument_by_index(
+                compiler_msl, SpvExecutionModeOutputVertices, 0);
+    }
+
+    /* TES: extract layout(primitive_mode, vertex_spacing, ordering, point_mode) in;
+     * via SpvExecutionMode* enums.  GLSL TES layout declarations compile to
+     * SPIR-V OpExecutionMode instructions on the TES entry point. */
+    if (stage == _TESS_EVALUATION_SHADER)
+    {
+        const SpvExecutionMode *modes = NULL;
+        size_t num_modes = 0;
+        if (spvc_compiler_get_execution_modes(compiler_msl, &modes, &num_modes) == SPVC_SUCCESS)
+        {
+            for (size_t i = 0; i < num_modes; i++)
+            {
+                SpvExecutionMode m = modes[i];
+                switch (m)
+                {
+                    case SpvExecutionModeTriangles:
+                        ptr->tess_gen_mode = GL_TRIANGLES; break;
+                    case SpvExecutionModeQuads:
+                        ptr->tess_gen_mode = GL_QUADS; break;
+                    case SpvExecutionModeIsolines:
+                        ptr->tess_gen_mode = GL_ISOLINES; break;
+                    case SpvExecutionModeSpacingEqual:
+                        ptr->tess_gen_spacing = GL_EQUAL; break;
+                    case SpvExecutionModeSpacingFractionalEven:
+                        ptr->tess_gen_spacing = GL_FRACTIONAL_EVEN; break;
+                    case SpvExecutionModeSpacingFractionalOdd:
+                        ptr->tess_gen_spacing = GL_FRACTIONAL_ODD; break;
+                    case SpvExecutionModeVertexOrderCw:
+                        ptr->tess_gen_vertex_order = GL_CW; break;
+                    case SpvExecutionModeVertexOrderCcw:
+                        ptr->tess_gen_vertex_order = GL_CCW; break;
+                    case SpvExecutionModePointMode:
+                        ptr->tess_gen_point_mode = GL_TRUE; break;
+                    default: break;
+                }
+            }
+        }
+        /* If we patched Isolines→Triangles in the SPIR-V, restore the
+         * original mode so dispatch logic uses isolines primitive counting. */
+        if (spirv_was_isolines) {
+            ptr->tess_gen_mode = GL_ISOLINES;
+        }
+    }
     
     // Do some basic reflection.
     if (spvc_compiler_create_shader_resources(compiler_msl, &resources) != SPVC_SUCCESS || !resources) {
@@ -6136,7 +7366,9 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     ? mglSamplerUniformLocationFromReflection(ptr->spirv_resources_list[stage][res_type].list[i].location,
                                                               stage,
                                                               res_type,
-                                                              (GLuint)i)
+                                                              (GLuint)i,
+                                                              ptr->shader_slots[stage] ? ptr->shader_slots[stage]->src : NULL,
+                                                              list[i].name)
                     : -1;
             ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit = -1;
             ptr->spirv_resources_list[stage][res_type].list[i].sampler_unit_explicit = GL_FALSE;
@@ -7135,7 +8367,9 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
          * ignored when SAMPLE_BUFFERS == 0 (single-sample framebuffers),
          * so we remove the output entirely.  This matches the original
          * behaviour that passed the sample_variables tests. */
-        if (stage == _FRAGMENT_SHADER && strstr(str_ret, "[[sample_mask]]")) {
+        if (false && stage == _FRAGMENT_SHADER && strstr(str_ret, "[[sample_mask]]")) {
+            /* DISABLED: Strip was breaking all sample_variables tests (samples_1/2/4).
+             * TODO: Re-evaluate whether conditional stripping is needed. */
             /* Remove lines inside output structs that declare a [[sample_mask]]
              * member, e.g. "    uint gl_SampleMask [[sample_mask]];" */
             char *read = str_ret;
@@ -7330,7 +8564,13 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
          * isTessellationEnabled from MTLRenderPipelineDescriptor. Rewrite the
          * MSL to a plain compute kernel so we can dispatch it like TCS. */
         if (stage == _TESS_EVALUATION_SHADER) {
-            mglFixMSLTesAsComputeKernel(&str_ret);
+            mglFixMSLTesAsComputeKernel(ptr, &str_ret);
+        }
+        /* TCS is generated by SPIRV-Cross as a compute kernel, but it has a
+         * [[stage_in]] parameter for vertex input which Metal compute pipelines
+         * don't support.  Replace it with a device buffer [[buffer(31)]]. */
+        if (stage == _TESS_CONTROL_SHADER) {
+            mglFixMSLTcsStageIn(&str_ret);
         }
         if (getenv("MGL_DUMP_MSL")) {
             char dump_path[256];
@@ -7363,6 +8603,140 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     return str_ret;
 }
 
+/* Compile an MSL "capture" variant for GPU transform feedback.
+ *
+ * Re-runs the SPIRV-Cross MSL backend with output-capture options so the
+ * generated vertex function writes its stage-output struct into a device
+ * buffer (the XFB buffer), mirroring what the TES-as-compute-kernel path
+ * does by hand in mglFixMSLTesAsComputeKernel Step 6.
+ *
+ * The variant is stored separately in spirv[stage].msl_str_capture; the
+ * normal render-pipeline MSL (spirv[stage].msl_str) is unchanged. This is
+ * groundwork only: compiling and storing the variant confirms the capture
+ * options build cleanly. The renderer dispatch that would actually run this
+ * variant against the XFB buffer is NOT yet wired (see the TODO(gpu-xfb)
+ * marker in mglDrawArrays).
+ *
+ * Gated on the MGL_XFB_GPU_CAPTURE env var so the default build pays no
+ * cost. Only the vertex shader (the feedback stage for VS-only programs) is
+ * compiled; the existing TES path handles tessellation XFB independently.
+ * Returns a malloc'd MSL string (caller frees) or NULL on failure / when the
+ * gate is off.
+ */
+char *mglCompileMSLCaptureVariant(GLMContext ctx, Program *ptr, int stage)
+{
+    const SpvId *spirv;
+    size_t word_count;
+    spvc_context context = NULL;
+    spvc_parsed_ir ir = NULL;
+    spvc_compiler compiler_msl = NULL;
+    spvc_compiler_options options = NULL;
+    const char *result = NULL;
+    char *str_ret = NULL;
+
+    if (!ptr || stage < 0 || stage >= _MAX_SHADER_TYPES || !ptr->shader_slots[stage]) {
+        return NULL;
+    }
+    if (stage != _VERTEX_SHADER) {
+        /* Only VS XFB is targeted by this groundwork; TES has its own path. */
+        return NULL;
+    }
+    if (ptr->transform_feedback_varying_count <= 0) {
+        return NULL;
+    }
+    if (getenv("MGL_XFB_GPU_CAPTURE") == NULL) {
+        return NULL;
+    }
+
+    spirv = ptr->spirv[stage].ir;
+    word_count = ptr->spirv[stage].size;
+    if (!spirv || word_count == 0) {
+        return NULL;
+    }
+
+    if (spvc_context_create(&context) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: spvc_context_create failed\n");
+        return NULL;
+    }
+    if (spvc_context_parse_spirv(context, spirv, word_count, &ir) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: spvc_context_parse_spirv failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+    if (spvc_context_create_compiler(context, SPVC_BACKEND_MSL, ir,
+                                     SPVC_CAPTURE_MODE_TAKE_OWNERSHIP,
+                                     &compiler_msl) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: spvc_context_create_compiler failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
+    if (spvc_compiler_create_compiler_options(compiler_msl, &options) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: options create failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
+    /* Mirror the base MSL options set in parseSPIRVShaderToMetal so the
+     * capture variant is otherwise consistent with the render variant. */
+    (void)spvc_compiler_options_set_bool(options,
+                                         SPVC_COMPILER_OPTION_MSL_TEXTURE_1D_AS_2D,
+                                         SPVC_TRUE);
+    (void)spvc_compiler_options_set_uint(options,
+                                         SPVC_COMPILER_OPTION_MSL_VERSION,
+                                         SPVC_MAKE_MSL_VERSION(3,1,0));
+    (void)spvc_compiler_options_set_bool(options,
+                                         SPVC_COMPILER_OPTION_FIXUP_DEPTH_CONVENTION,
+                                         SPVC_TRUE);
+    (void)spvc_compiler_options_set_uint(options,
+                                         SPVC_COMPILER_OPTION_MSL_BUFFER_SIZE_BUFFER_INDEX,
+                                         MGL_BUFFER_SIZE_BUFFER_INDEX);
+
+    /* SPIRV-Cross capture-to-buffer options. These make the vertex function
+     * write its output struct to a device buffer at the index below, and
+     * disable rasterization (no fragment stage needed for XFB-only draws). */
+    if (spvc_compiler_options_set_bool(options,
+                                       SPVC_COMPILER_OPTION_MSL_CAPTURE_OUTPUT_TO_BUFFER,
+                                       SPVC_TRUE) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: set CAPTURE_OUTPUT_TO_BUFFER failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+    if (spvc_compiler_options_set_bool(options,
+                                       SPVC_COMPILER_OPTION_MSL_DISABLE_RASTERIZATION,
+                                       SPVC_TRUE) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: set DISABLE_RASTERIZATION failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+    /* Reuse the TES XFB slot convention (buffer 29) so the same bind site in
+     * MGLRenderer.m can serve both paths once the dispatch is wired. */
+    if (spvc_compiler_options_set_uint(options,
+                                       SPVC_COMPILER_OPTION_MSL_SHADER_OUTPUT_BUFFER_INDEX,
+                                       29) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: set SHADER_OUTPUT_BUFFER_INDEX failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
+    if (spvc_compiler_install_compiler_options(compiler_msl, options) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: install options failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
+    if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS) {
+        fprintf(stderr, "MGL Error: mglCompileMSLCaptureVariant: compile failed\n");
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
+    str_ret = result ? strdup(result) : NULL;
+
+    spvc_context_destroy(context);
+    return str_ret;
+}
+
 static void clearStageCompileState(Program *pptr, int stage)
 {
     if (pptr->spirv[stage].ir) {
@@ -7372,6 +8746,10 @@ static void clearStageCompileState(Program *pptr, int stage)
     if (pptr->spirv[stage].msl_str) {
         free(pptr->spirv[stage].msl_str);
         pptr->spirv[stage].msl_str = NULL;
+    }
+    if (pptr->spirv[stage].msl_str_capture) {
+        free(pptr->spirv[stage].msl_str_capture);
+        pptr->spirv[stage].msl_str_capture = NULL;
     }
     if (pptr->spirv[stage].entry_point) {
         free(pptr->spirv[stage].entry_point);
@@ -8284,6 +9662,19 @@ static bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang
                     dump_path);
         }
     }
+
+    /* Compile the GPU transform-feedback capture variant for the vertex
+     * stage when the program has XFB varyings. Groundwork only — the
+     * renderer dispatch is not yet wired. Off by default (env-gated). */
+    if (stage == _VERTEX_SHADER && pptr->transform_feedback_varying_count > 0) {
+        char *capture_msl = mglCompileMSLCaptureVariant(ctx, pptr, stage);
+        if (capture_msl) {
+            pptr->spirv[stage].msl_str_capture = capture_msl;
+        }
+        /* Failure is non-fatal: link still succeeds; the CPU passthrough
+         * path and the existing TES path remain available. */
+    }
+
     mglApplyPlainUniformInitializers(ctx, pptr, stage);
 
     return true;
@@ -9046,6 +10437,37 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
                 return;
             }
             *params = 0;
+            break;
+        case GL_TESS_CONTROL_OUTPUT_VERTICES:  /* 0x8E75 */
+            if (!pptr->linked_glsl_program) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            *params = pptr->shader_slots[_TESS_CONTROL_SHADER]
+                ? (GLint)pptr->tess_control_output_vertices : 0;
+            break;
+        case GL_TESS_GEN_MODE:             /* 0x8E76 */
+        case GL_TESS_GEN_SPACING:          /* 0x8E77 */
+        case GL_TESS_GEN_VERTEX_ORDER:     /* 0x8E78 */
+        case GL_TESS_GEN_POINT_MODE:       /* 0x8E79 */
+            /* TES execution-mode reflection.  Returns the layout(...) values
+             * captured from SPIR-V OpExecutionMode at link time.  0 when no
+             * TES is attached. */
+            if (!pptr->linked_glsl_program) {
+                ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
+            }
+            if (!pptr->shader_slots[_TESS_EVALUATION_SHADER]) {
+                *params = 0;
+            } else if (pname == GL_TESS_GEN_MODE) {
+                *params = (GLint)pptr->tess_gen_mode;
+            } else if (pname == GL_TESS_GEN_SPACING) {
+                *params = (GLint)pptr->tess_gen_spacing;
+            } else if (pname == GL_TESS_GEN_VERTEX_ORDER) {
+                *params = (GLint)pptr->tess_gen_vertex_order;
+            } else {
+                *params = (GLint)pptr->tess_gen_point_mode;
+            }
             break;
         case GL_COMPLETION_STATUS_KHR: /* GL_ARB/KHR_parallel_shader_compile */
             /* MGL links synchronously, so every program is always complete by

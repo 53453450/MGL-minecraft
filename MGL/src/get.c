@@ -857,6 +857,10 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x82FA: RET_TYPE_VAR(type, max_combined_clip_and_cull_distances); break; // GL_MAX_COMBINED_CLIP_AND_CULL_DISTANCES
         case 0x8E7D: RET_TYPE_VAR(type, max_patch_vertices); break; // GL_MAX_PATCH_VERTICES
         case 0x8E72: RET_TYPE_VAR(type, patch_vertices); break; // GL_PATCH_VERTICES
+        case 0x8E73: // GL_PATCH_DEFAULT_INNER_LEVEL (2 floats)
+            RET_TYPE_VAR_COUNT(type, patch_default_inner_level, 2); break;
+        case 0x8E74: // GL_PATCH_DEFAULT_OUTER_LEVEL (4 floats)
+            RET_TYPE_VAR_COUNT(type, patch_default_outer_level, 4); break;
         case 0x8E7E: RET_TYPE_VAR(type, max_tess_gen_level); break; // GL_MAX_TESS_GEN_LEVEL
         case 0x8E7F: RET_TYPE_VAR(type, max_tess_control_uniform_components); break; // GL_MAX_TESS_CONTROL_UNIFORM_COMPONENTS
         case 0x8E80: RET_TYPE_VAR(type, max_tess_evaluation_uniform_components); break; // GL_MAX_TESS_EVALUATION_UNIFORM_COMPONENTS

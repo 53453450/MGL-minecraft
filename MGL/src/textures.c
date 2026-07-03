@@ -4117,8 +4117,14 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;
-    ptr->params.min_filter = GL_NEAREST_MIPMAP_LINEAR;
-    ptr->params.mag_filter = GL_LINEAR;
+    /* GL 4.6 spec §8.14: initial MIN_FILTER and MAG_FILTER are both NEAREST.
+     * A prior change defaulted to NEAREST_MIPMAP_LINEAR/LINEAR, which enables
+     * mip filtering on textures that never explicitly set MIN_FILTER —
+     * sampling a non-mipmapped texture (mipmapLevelCount==1, e.g. MC's block
+     * atlas) then reads uninitialized mip levels and produces stripes.
+     * Restore the spec-correct NEAREST defaults (matches 59f4f7d). */
+    ptr->params.min_filter = GL_NEAREST;
+    ptr->params.mag_filter = GL_NEAREST;
     ptr->params.max_anisotropy = 1.0;
     ptr->params.min_lod = -1000;
     ptr->params.max_lod = 1000;
@@ -4917,13 +4923,18 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
         }
         if (!layered &&
-            mglTextureTargetUsesImageLayerParameter(ptr->target) &&
-            layer >= (GLint)ptr->faces[0].levels[level].depth) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range depth=%u\n",
-                    layer,
-                    ptr->faces[0].levels[level].depth);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
+            mglTextureTargetUsesImageLayerParameter(ptr->target)) {
+            /* GL_TEXTURE_1D_ARRAY stores its slice count in height (from
+             * glTexStorage2D), not depth.  All other array targets use depth. */
+            GLuint slice_count = (ptr->target == GL_TEXTURE_1D_ARRAY)
+                ? ptr->faces[0].levels[level].height
+                : ptr->faces[0].levels[level].depth;
+            if (layer >= (GLint)slice_count) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range (slices=%u)\n",
+                        layer, slice_count);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
         }
     }
 
