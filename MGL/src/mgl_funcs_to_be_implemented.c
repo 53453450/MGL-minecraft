@@ -163,6 +163,7 @@ typedef struct QueryObject_t {
 	GLboolean saw_draw;
 	GLboolean sample_result_known;
 	GLboolean primitive_result_known;
+	GLboolean timer_result_known;  /* GL_TIME_ELAPSED: set when mtlEndTimerQuery wrote a real GPU result */
 	GLuint64 result;
 } QueryObject;
 
@@ -418,7 +419,13 @@ static void mgl_finish_query_result(QueryObject *q)
 			q->result = q->saw_draw ? 1u : 0u;
 			break;
 		case GL_TIME_ELAPSED:
-			q->result = s_fake_timestamp_counter++;
+			/* Real GPU elapsed time is set by mtlEndTimerQuery in
+			 * mglEndQuery (with timer_result_known = GL_TRUE).
+			 * Only fall back to the fake counter when the Metal
+			 * backend was never called — a real zero result (e.g.
+			 * an extremely fast GPU pass) must be preserved. */
+			if (!q->timer_result_known)
+				q->result = s_fake_timestamp_counter++;
 			break;
 		default:
 			q->result = 0;
@@ -1527,6 +1534,7 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	q->saw_draw = GL_FALSE;
 	q->sample_result_known = GL_FALSE;
 	q->primitive_result_known = GL_FALSE;
+	q->timer_result_known = GL_FALSE;
 	q->result = 0;
 	s_active_query_by_target[slot] = id;
 
@@ -1536,6 +1544,13 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlBeginSampleQuery)
 	{
 		ctx->mtl_funcs.mtlBeginSampleQuery(ctx);
+	}
+
+	/* For GL_TIME_ELAPSED, flush pending GPU work and sample the GPU
+	 * timestamp so mglEndQuery can compute accurate GPU elapsed time. */
+	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlBeginTimerQuery)
+	{
+		ctx->mtl_funcs.mtlBeginTimerQuery(ctx);
 	}
 }
 
@@ -2663,6 +2678,14 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 		GLuint64 gpuResult = ctx->mtl_funcs.mtlEndSampleQuery(ctx);
 		q->result = gpuResult;
 		q->sample_result_known = GL_TRUE;
+	}
+
+	/* For GL_TIME_ELAPSED, flush pending GPU work and compute the GPU
+	 * elapsed time via Metal's sampleTimestamps API. */
+	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlEndTimerQuery)
+	{
+		q->result = ctx->mtl_funcs.mtlEndTimerQuery(ctx);
+		q->timer_result_known = GL_TRUE;
 	}
 
 	mgl_finish_query_result(q);
@@ -5177,9 +5200,14 @@ GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
 
 void mglMinSampleShading(GLMContext ctx, GLfloat value)
 {
-	// Set minimum sample shading - no-op
-	(void)ctx;
-	(void)value;
+	/* GL 4.6 §14.3.1: clamps to [0,1]. Metal does not natively support
+	 * GL-style per-sample fragment shading, so the value is stored for
+	 * state query correctness but has no rendering effect. */
+	if (!ctx)
+		return;
+	if (value < 0.0f) value = 0.0f;
+	if (value > 1.0f) value = 1.0f;
+	STATE_VAR(min_sample_shading) = value;
 }
 
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
@@ -5516,7 +5544,13 @@ void mglQueryCounter(GLMContext ctx, GLuint id, GLenum target)
 	}
 	q->target = GL_TIMESTAMP;
 	q->available = GL_TRUE;
-	q->result = s_fake_timestamp_counter++;
+	/* Use the real GPU timestamp from Metal's sampleTimestamps API
+	 * when available; fall back to the fake counter for API-level
+	 * compatibility on backends without timer query support. */
+	if (ctx->mtl_funcs.mtlGetGPUTimestamp)
+		q->result = ctx->mtl_funcs.mtlGetGPUTimestamp(ctx);
+	else
+		q->result = s_fake_timestamp_counter++;
 }
 
 void mglReadnPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data)

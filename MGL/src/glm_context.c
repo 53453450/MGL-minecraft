@@ -416,29 +416,38 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.polygon_offset_factor) = 0.0f;
     STATE(var.polygon_offset_units) = 0.0f;
 
-    STATE(var.scissor_box[0]) = 0;
-    STATE(var.scissor_box[1]) = 0;
-    // Default to a safe, non-zero scissor that matches initial viewport.
-    STATE(var.scissor_box[2]) = 1024;
-    STATE(var.scissor_box[3]) = 768;
-
-    // Initialize viewport to default size - critical for rendering
-    STATE(viewport[0]) = 0;
-    STATE(viewport[1]) = 0;
-    STATE(viewport[2]) = 1024;  // Default width - should be updated when window is bound
-    STATE(viewport[3]) = 768;   // Default height - should be updated when window is bound
-    for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
+    // Viewport and scissor should match the drawable dimensions.
+    // getMacOSDefaults() already queried GL_VIEWPORT/GL_SCISSOR_BOX from the
+    // system GL; validate and use those values instead of hardcoding 1024x768.
     {
-        STATE(viewport_array[i][0]) = 0.0f;
-        STATE(viewport_array[i][1]) = 0.0f;
-        STATE(viewport_array[i][2]) = 1024.0f;
-        STATE(viewport_array[i][3]) = 768.0f;
-        STATE(scissor_box_array[i][0]) = 0;
-        STATE(scissor_box_array[i][1]) = 0;
-        STATE(scissor_box_array[i][2]) = 1024;
-        STATE(scissor_box_array[i][3]) = 768;
-        STATE(depth_range_array[i][0]) = 0.0;
-        STATE(depth_range_array[i][1]) = 1.0;
+        GLint vpW = STATE(viewport[2]);
+        GLint vpH = STATE(viewport[3]);
+        if (vpW <= 0 || vpH <= 0 || vpW > 32768 || vpH > 32768)
+        {
+            vpW = 1024;
+            vpH = 768;
+            STATE(viewport[0]) = 0;
+            STATE(viewport[1]) = 0;
+            STATE(viewport[2]) = vpW;
+            STATE(viewport[3]) = vpH;
+        }
+        STATE(var.scissor_box[0]) = 0;
+        STATE(var.scissor_box[1]) = 0;
+        STATE(var.scissor_box[2]) = vpW;
+        STATE(var.scissor_box[3]) = vpH;
+        for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
+        {
+            STATE(viewport_array[i][0]) = 0.0f;
+            STATE(viewport_array[i][1]) = 0.0f;
+            STATE(viewport_array[i][2]) = (GLfloat)vpW;
+            STATE(viewport_array[i][3]) = (GLfloat)vpH;
+            STATE(scissor_box_array[i][0]) = 0;
+            STATE(scissor_box_array[i][1]) = 0;
+            STATE(scissor_box_array[i][2]) = vpW;
+            STATE(scissor_box_array[i][3]) = vpH;
+            STATE(depth_range_array[i][0]) = 0.0;
+            STATE(depth_range_array[i][1]) = 1.0;
+        }
     }
 
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
@@ -452,15 +461,16 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     }
 
     STATE(var.depth_func) = GL_LESS;
+    STATE(var.depth_writemask) = GL_TRUE;
     STATE(var.depth_clear_value) = 1.0;
     STATE(var.clip_origin) = GL_LOWER_LEFT;
     STATE(var.clip_depth_mode) = GL_NEGATIVE_ONE_TO_ONE;
 
-    // Initialize default clear color to opaque black as per OpenGL spec
+    // GL_COLOR_CLEAR_VALUE defaults to (0, 0, 0, 0) per GL 4.6 spec
     STATE(color_clear_value[0]) = 0.0f;
     STATE(color_clear_value[1]) = 0.0f;
     STATE(color_clear_value[2]) = 0.0f;
-    STATE(color_clear_value[3]) = 1.0f;
+    STATE(color_clear_value[3]) = 0.0f;
 
     // Initialize default FBO clear state
     STATE(default_fbo_clear_bitmask) = 0;

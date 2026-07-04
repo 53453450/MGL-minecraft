@@ -383,6 +383,24 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-o $(build_dir)/mgl_benchmark
 	@echo "✅ Benchmark built: $(build_dir)/mgl_benchmark"
 
-.PHONY: default test dbg lib clean insall-pkgdeps test-make bench
+# System Apple OpenGL benchmark target — compiles the same benchmark source
+# with -D__MGL_BENCHMARK_SYSTEM_GL__ and links against the system OpenGL
+# framework via brew's GLFW (no MGL dependency).  Requires `brew install glfw`.
+bench-system: benchmark/mgl_benchmark.c
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+		-I$(shell brew --prefix glfw)/include \
+		-IMGL/include -IMGL/include/GL \
+		-D__MGL_BENCHMARK_SYSTEM_GL__ \
+		-isysroot $(SDK_ROOT) \
+		benchmark/mgl_benchmark.c \
+		-L$(shell brew --prefix glfw)/lib -lglfw \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework OpenGL \
+		-Wl,-rpath,$(shell brew --prefix glfw)/lib \
+		-o $(build_dir)/mgl_benchmark_system
+	@echo "✅ System OpenGL benchmark built: $(build_dir)/mgl_benchmark_system"
+
+.PHONY: default test dbg lib clean insall-pkgdeps test-make bench bench-system
 
 -include $(deps)

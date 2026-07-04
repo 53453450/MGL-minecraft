@@ -90,10 +90,10 @@ typedef struct GLMCaps_t {
 
 typedef struct GLMParams_t {
     GLfloat point_size;
-    GLuint point_size_range[2];
+    GLfloat point_size_range[2];
     GLuint point_size_granularity;
     GLfloat line_width;
-    GLuint line_width_range[2];
+    GLfloat line_width_range[2];
     GLuint line_width_granularity;
     GLuint polygon_mode;
     GLuint cull_face_mode;
@@ -111,16 +111,14 @@ typedef struct GLMParams_t {
     GLuint stencil_ref;
     GLuint stencil_writemask;
     GLuint viewport;
-    GLuint blend_dst;
-    GLuint blend_src;
     GLuint logic_op_mode;
+    GLfloat min_sample_shading;
     GLuint draw_buffer;
     GLuint read_buffer;
     GLint scissor_box[4];
-    GLuint color_clear_value;
     GLboolean color_writemask[MAX_COLOR_ATTACHMENTS][4];
     GLuint max_texture_size;
-    GLuint max_viewport_dims;
+    GLuint max_viewport_dims[2];
     GLuint subpixel_bits;
     GLuint current_color;
     GLuint current_index;
@@ -222,13 +220,12 @@ typedef struct GLMParams_t {
     GLuint max_3d_texture_size;
     GLuint max_elements_vertices;
     GLuint max_elements_indices;
-    GLuint smooth_point_size_range[2];
+    GLfloat smooth_point_size_range[2];
     GLuint smooth_point_size_granularity;
-    GLuint smooth_line_width_range[2];
+    GLfloat smooth_line_width_range[2];
     GLuint smooth_line_width_granularity;
-    GLuint aliased_line_width_range[2];
-    GLuint aliased_point_size_range[2];
-    GLuint active_texture;
+    GLfloat aliased_line_width_range[2];
+    GLfloat aliased_point_size_range[2];
     GLfloat sample_coverage_value;
     GLuint sample_coverage_invert;
     GLuint texture_binding_cube_map;
@@ -251,7 +248,7 @@ typedef struct GLMParams_t {
     GLuint stencil_back_pass_depth_fail;
     GLuint stencil_back_pass_depth_pass;
 
-    GLuint max_texture_lod_bias;
+    GLfloat max_texture_lod_bias;
     GLuint max_draw_buffers;
     GLuint max_vertex_attribs;
     GLuint max_texture_image_units;
@@ -272,8 +269,8 @@ typedef struct GLMParams_t {
     GLuint num_extensions;
     GLuint context_flags;
     GLuint max_array_texture_layers;
-    GLuint min_program_texel_offset;
-    GLuint max_program_texel_offset;
+    GLint min_program_texel_offset;
+    GLint max_program_texel_offset;
     GLuint max_varying_components;
     GLuint texture_binding_1d_array;
     GLuint texture_binding_2d_array;

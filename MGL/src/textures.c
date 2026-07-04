@@ -7229,6 +7229,12 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
 
+    /* Per GL 4.6 spec §8.5, calling glTexImage* on a texture with immutable
+     * storage (created via glTexStorage*) generates GL_INVALID_OPERATION.
+     * The previous behavior silently redirected to glTexSubImage* for
+     * compatibility, which violates the spec and masks application bugs. */
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
+
     tex->access = GL_READ_ONLY;
 
     if (pixels == NULL && !STATE(buffers[_PIXEL_UNPACK_BUFFER]))

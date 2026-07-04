@@ -28,11 +28,32 @@
 
 GLenum  mglGetError(GLMContext ctx)
 {
-    GLenum err;
+    /* Per GL spec, glGetError on a NULL context is undefined, but we must not
+     * crash.  CTS and well-behaved apps always pass a valid context. */
+    if (!ctx)
+        return GL_NO_ERROR;
 
-    err = ctx->state.error;
+    /* Drain the error queue.  When no errors are queued, return GL_NO_ERROR.
+     * When errors are queued, pop the oldest one and return it. */
+    if (ctx->state.error_count == 0)
+    {
+        /* Backwards compatibility: some call sites set ctx->state.error
+         * directly instead of going through mglDispatchError.  Surface that
+         * single error so it is not silently lost. */
+        GLenum legacy = ctx->state.error;
+        ctx->state.error = GL_NO_ERROR;
+        return legacy;
+    }
 
-    ctx->state.error = GL_NO_ERROR;
+    GLenum err = ctx->state.error_queue[ctx->state.error_head];
+    ctx->state.error_head = (ctx->state.error_head + 1u) % MGL_ERROR_QUEUE_SIZE;
+    ctx->state.error_count--;
+
+    /* Mirror the new head (or GL_NO_ERROR when empty) for legacy code that
+     * reads ctx->state.error directly. */
+    ctx->state.error = (ctx->state.error_count > 0)
+        ? ctx->state.error_queue[ctx->state.error_head]
+        : GL_NO_ERROR;
 
     return err;
 }
@@ -110,10 +131,24 @@ void error_func(GLMContext ctx, const char *func, GLenum error)
 
     fprintf(stderr, "MGL GL Error in %s: 0x%x (%d)\n", func, error, error);
 
-    if (ctx->state.error)
-        return;
-
-    ctx->state.error = error;
+    /* Push the error into the queue.  Per GL 4.6 spec §2.5, the queue must
+     * hold at least 16 errors; when full, the new error is dropped (the
+     * oldest 16 are retained).  This replaces the previous depth-1 behavior
+     * that silently discarded every error after the first. */
+    if (ctx->state.error_count < MGL_ERROR_QUEUE_SIZE)
+    {
+        GLuint tail = (ctx->state.error_head + ctx->state.error_count) % MGL_ERROR_QUEUE_SIZE;
+        ctx->state.error_queue[tail] = error;
+        ctx->state.error_count++;
+        /* Mirror the head for legacy code that reads ctx->state.error. */
+        ctx->state.error = ctx->state.error_queue[ctx->state.error_head];
+    }
+    else
+    {
+        /* Queue full — the new error is dropped per spec.  Keep the legacy
+         * field pointing at the current head. */
+        ctx->state.error = ctx->state.error_queue[ctx->state.error_head];
+    }
 
     /* Temporarily disabled to allow QEMU to continue despite errors */
     // if (ctx->assert_on_error)

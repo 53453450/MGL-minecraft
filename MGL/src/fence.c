@@ -54,23 +54,18 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
 {
     Sync *ptr;
 
-    switch(condition)
+    /* GL 4.6 §5.3: condition must be GL_SYNC_GPU_COMMANDS_COMPLETE */
+    if (condition != GL_SYNC_GPU_COMMANDS_COMPLETE)
     {
-        case GL_SYNC_GPU_COMMANDS_COMPLETE:
-            break;
-
-        default:
-            // CRITICAL FIX: Handle unknown fence conditions gracefully instead of crashing
-            fprintf(stderr, "MGL ERROR: Unknown fence sync condition 0x%x, defaulting to GPU_COMMANDS_COMPLETE\n", condition);
-            condition = GL_SYNC_GPU_COMMANDS_COMPLETE;
-            break;
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return NULL;
     }
 
-    // must be zero
-    if (flags != 0) {
-        // CRITICAL FIX: Handle invalid flags gracefully instead of crashing
-        fprintf(stderr, "MGL ERROR: Fence sync flags must be zero, got 0x%x, continuing with zero\n", flags);
-        flags = 0;
+    /* GL 4.6 §5.3: flags must be zero */
+    if (flags != 0)
+    {
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return NULL;
     }
 
     ptr = newSync(ctx);

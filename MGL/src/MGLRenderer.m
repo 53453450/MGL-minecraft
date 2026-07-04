@@ -2042,6 +2042,10 @@ static BOOL mglIsValidGLBlendFactor(GLenum factor)
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
             return YES;
         default:
             return NO;
@@ -4901,6 +4905,10 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
      * if any samples pass per-fragment tests. */
     id<MTLBuffer> _visibilityResultBuffer;
     BOOL _sampleQueryActive;
+
+    /* GPU timer query state — stores the GPU timestamp sampled at
+     * mtlBeginTimerQuery so mtlEndTimerQuery can compute the delta. */
+    uint64_t _timerQueryBeginGPU;
     id<MTLTexture> _transientDepthTexture;
     NSUInteger _transientDepthTextureWidth;
     NSUInteger _transientDepthTextureHeight;
@@ -12770,11 +12778,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
     /* Apply GL_TEXTURE_MIN_LOD / GL_TEXTURE_MAX_LOD as Metal lod clamps.
      * GL defaults: min_lod=-1000, max_lod=1000 (effectively unclamped).
-     * Minecraft 1.21.11+ uses independent GL sampler objects (GlSampler) with
-     * maxLod=0.0 to disable mipmap sampling even when minFilter is a mipmapped
-     * mode (GL_*_MIPMAP_*).  Without these clamps Metal would sample all mip
-     * levels, producing blurry/incorrect textures. */
-    samplerDescriptor.lodMinClamp = (tex_param->min_lod <= -1000.0f) ? 0.0f : tex_param->min_lod;
+     * Metal's lodMinClamp cannot be negative (minimum 0.0), so clamp to 0.0
+     * unconditionally rather than only when the GL default sentinel is seen. */
+    samplerDescriptor.lodMinClamp = (tex_param->min_lod < 0.0f) ? 0.0f : tex_param->min_lod;
     samplerDescriptor.lodMaxClamp = (tex_param->max_lod >= 1000.0f) ? 1e9f : tex_param->max_lod;
 
     id<MTLSamplerState> sampler = [_device newSamplerStateWithDescriptor:samplerDescriptor];
@@ -16400,6 +16406,70 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
     NSUInteger dstTexW = mglMetalTextureLevelDimension(drawtexid.width, drawSubresource.level);
     NSUInteger dstTexH = mglMetalTextureLevelDimension(drawtexid.height, drawSubresource.level);
 
+    /* Multisample resolve: Metal's copyFromTexture and shader sampling cannot
+     * directly read from a multisample texture. When the source is multisample
+     * and the destination is single-sample, resolve the source to a temporary
+     * single-sample texture first, then continue the blit with the resolved
+     * texture as the source. This implements the GL spec's multisample→single-
+     * sample blit path (glBlitFramebuffer from an MSAA FBO to a non-MSAA FBO). */
+    BOOL didMsaaResolve = NO;
+    if (readtexid.sampleCount > 1u && drawtexid.sampleCount <= 1u) {
+        MTLTextureDescriptor *resolveDesc = [[MTLTextureDescriptor alloc] init];
+        resolveDesc.textureType = MTLTextureType2D;
+        resolveDesc.pixelFormat = readtexid.pixelFormat;
+        resolveDesc.width = srcTexW;
+        resolveDesc.height = srcTexH;
+        resolveDesc.mipmapLevelCount = 1;
+        resolveDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        id<MTLTexture> resolveTex = [_device newTextureWithDescriptor:resolveDesc];
+        if (!resolveTex) {
+            NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create MSAA resolve texture srcSamples=%lu",
+                  (unsigned long)readtexid.sampleCount);
+            return;
+        }
+
+        MTLRenderPassDescriptor *resolvePass = [MTLRenderPassDescriptor renderPassDescriptor];
+        resolvePass.colorAttachments[0].texture = readtexid;
+        resolvePass.colorAttachments[0].slice = readSubresource.slice;
+        resolvePass.colorAttachments[0].level = readSubresource.level;
+        resolvePass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        resolvePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
+        resolvePass.colorAttachments[0].resolveTexture = resolveTex;
+        resolvePass.colorAttachments[0].resolveSlice = 0;
+        resolvePass.colorAttachments[0].resolveLevel = 0;
+
+        id<MTLRenderCommandEncoder> resolveEncoder =
+            [_currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
+        [resolveEncoder endEncoding];
+
+        /* Synchronize the resolved texture so the subsequent blit/shader can
+         * read it on a tile-based Apple GPU without stale tile memory. */
+        id<MTLBlitCommandEncoder> syncBlit = [_currentCommandBuffer blitCommandEncoder];
+        if (syncBlit) {
+            [syncBlit synchronizeTexture:resolveTex slice:0 level:0];
+            [syncBlit endEncoding];
+        }
+
+        static uint64_t s_msaaResolveLogCount = 0;
+        uint64_t msaaHit = ++s_msaaResolveLogCount;
+        if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
+            NSLog(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
+                  (unsigned long long)msaaHit,
+                  (unsigned long)readtexid.sampleCount,
+                  (unsigned long)srcTexW, (unsigned long)srcTexH,
+                  readTextureObject ? (unsigned)readTextureObject->name : 0u);
+        }
+
+        /* Replace the source with the resolved single-sample texture. The
+         * resolved texture has the same dimensions, so srcTexW/srcTexH remain
+         * valid. Reset the subresource to {0,0,0} (fresh 2D texture). */
+        readtexid = resolveTex;
+        readSubresource.level = 0u;
+        readSubresource.slice = 0u;
+        readSubresource.depthPlane = 0u;
+        didMsaaResolve = YES;
+    }
+
     MGLBlitAxis axisX = { (double)srcX0, (double)srcX1, (double)dstX0, (double)dstX1 };
     MGLBlitAxis axisY = { (double)srcY0, (double)srcY1, (double)dstY0, (double)dstY1 };
     if (!mglClipBlitAxis(&axisX, (double)srcTexW, (double)dstTexW) ||
@@ -16678,10 +16748,13 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
     }
     // When the source is also a render target, refresh its sampled copy
     // so future fragment-shader samples use the synchronized copy instead
-    // of falling back to the direct texture (useCopy=0).
+    // of falling back to the direct texture (useCopy=0). Skip this when we
+    // performed an MSAA resolve — the resolved texture is a temporary and
+    // must not become the sampled copy of the (multisample) source object.
     if (readTextureObject &&
         readTextureObject->is_render_target &&
-        readtexid) {
+        readtexid &&
+        !didMsaaResolve) {
         [self updateGLSampledRenderTargetCopyForTexture:readTextureObject
                                                  source:readtexid
                                                  reason:"blit_framebuffer_copy_src"];
@@ -18637,7 +18710,6 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
         if (useStencilState)
         {
-            if (ctx->state.var.stencil_func != GL_NEVER)
             {
                 if (!mglIsValidGLCompareFunction(ctx->state.var.stencil_func)) {
                     mglLogRenderStateRepair("stencil_func", ctx->state.var.stencil_func, GL_ALWAYS);
@@ -18660,7 +18732,6 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 dsDesc.frontFaceStencil = frontSDesc;
             }
 
-            if (ctx->state.var.stencil_back_func != GL_NEVER)
             {
                 if (!mglIsValidGLCompareFunction(ctx->state.var.stencil_back_func)) {
                     mglLogRenderStateRepair("stencil_back_func", ctx->state.var.stencil_back_func, GL_ALWAYS);
@@ -18711,9 +18782,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                                        blue:ctx->state.var.blend_color[2]
                                       alpha:ctx->state.var.blend_color[3]];
 
-    /* GL_SAMPLE_MASK: Metal's MTLRenderCommandEncoder does not expose a
-     * per-draw sample mask setter, so this state is currently a no-op.
-     * (The render pass descriptor's default coverage applies.) */
+    /* GL_SAMPLE_MASK: Metal does not expose a per-draw sample mask setter on
+     * MTLRenderCommandEncoder.  Sample coverage in Metal is controlled via
+     * alpha-to-coverage and shader-side [[sample_mask]], neither of which
+     * maps cleanly to GL_SAMPLE_MASK.  This remains a known limitation. */
 
     // Metal validates viewport/scissor strictly against the active render pass dimensions.
     // Always derive pass size from the current attachments first (not from window drawable fallback).
@@ -19643,6 +19715,17 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 fboColorClearMask |= (GLbitfield)(1u << attachmentIndex);
             } else {
                 _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
+            }
+        }
+
+        /* Consume any pending color clears on attachments that could not be
+         * resolved through a draw buffer — prevents infinite retry when an
+         * attachment's clear_bitmask is set but mglMetalResolveFboDrawAttachmentIndex
+         * fails for its draw buffer. */
+        for (GLuint ai = 0; ai < MAX_COLOR_ATTACHMENTS; ++ai) {
+            if ((fbo->color_attachments[ai].clear_bitmask & GL_COLOR_BUFFER_BIT) &&
+                ((fbo->color_attachment_bitfield >> ai) & 1u) == 0u) {
+                fbo->color_attachments[ai].clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             }
         }
 
@@ -21280,6 +21363,11 @@ create_new_command_buffer:
     mglNormalizePipelineDepthStencilFormats(pipelineStateDescriptor, "generate");
     mglEnableIndirectCommandBuffersForPipeline(pipelineStateDescriptor);
 
+    /* GL_COLOR_LOGIC_OP: Metal on Apple Silicon does NOT expose
+     * MTLLogicOperation or logicOpEnabled on MTLRenderPipelineColorAttachmentDescriptor
+     * (verified against MacOSX SDK headers). Logic op would require fragment-shader
+     * emulation (reading framebuffer, applying bitwise op), which is not implemented.
+     * State tracking (logic_op_mode) is preserved for query correctness. */
     NSUInteger activeColorAttachmentCount = 0;
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         if (pipelineStateDescriptor.colorAttachments[i].pixelFormat != MTLPixelFormatInvalid &&
@@ -21619,6 +21707,11 @@ create_new_command_buffer:
         case GL_CONSTANT_ALPHA: factor = MTLBlendFactorBlendAlpha; break;
         case GL_ONE_MINUS_CONSTANT_ALPHA: factor = MTLBlendFactorOneMinusBlendAlpha; break;
         case GL_SRC_ALPHA_SATURATE: factor = MTLBlendFactorSourceAlphaSaturated; break;
+        /* Dual-source blend factors (GL 4.0+, requires dualSourceBlendingEnabled) */
+        case GL_SRC1_COLOR: factor = MTLBlendFactorSource1Color; break;
+        case GL_ONE_MINUS_SRC1_COLOR: factor = MTLBlendFactorOneMinusSource1Color; break;
+        case GL_SRC1_ALPHA: factor = MTLBlendFactorSource1Alpha; break;
+        case GL_ONE_MINUS_SRC1_ALPHA: factor = MTLBlendFactorOneMinusSource1Alpha; break;
 
         default:
             // CRITICAL FIX: Handle assertion gracefully instead of crashing
@@ -23991,6 +24084,82 @@ void mtlDispatchCompute(GLMContext glm_ctx, GLuint num_groups_x, GLuint num_grou
     uint64_t *resultPtr = (uint64_t *)_visibilityResultBuffer.contents;
     GLuint64 result = *resultPtr;
     return result;
+}
+
+#pragma mark Metal GPU timer query (GL_TIME_ELAPSED / GL_TIMESTAMP)
+
+/* Called from glBeginQuery(GL_TIME_ELAPSED).  Flushes all pending GPU
+ * work so the GPU is idle, then samples the GPU timestamp.  The timestamp
+ * is stored in _timerQueryBeginGPU and used by mtlEndTimerQuery to compute
+ * the elapsed GPU time.
+ *
+ * The flush ensures the begin timestamp is taken before any commands
+ * submitted between begin/end reach the GPU.  This gives an accurate
+ * measurement of GPU execution time for the bracketed commands. */
+-(void)mtlBeginTimerQuery:(GLMContext)glm_ctx
+{
+    (void)glm_ctx;
+    /* Flush and wait for all pending GPU work to complete so the GPU
+     * is idle when we sample the begin timestamp. */
+    [self flushCommandBuffer:YES];
+    _timerQueryBeginGPU = [self sampleGPUTimestamp];
+}
+
+/* Called from glEndQuery(GL_TIME_ELAPSED).  Flushes all pending GPU work
+ * (including any draws submitted between begin and end), waits for the
+ * GPU to complete, then samples the end timestamp.  Returns the elapsed
+ * GPU nanoseconds (end - begin). */
+-(GLuint64)mtlEndTimerQuery:(GLMContext)glm_ctx
+{
+    (void)glm_ctx;
+    /* Flush and wait for all GPU work submitted between begin and end. */
+    [self flushCommandBuffer:YES];
+    uint64_t endGPU = [self sampleGPUTimestamp];
+    if (endGPU >= _timerQueryBeginGPU) {
+        return endGPU - _timerQueryBeginGPU;
+    }
+    /* Timestamp wrap (shouldn't happen with 64-bit counter, but guard
+     * against undefined behavior). */
+    return 0;
+}
+
+/* Returns the current GPU timestamp in nanoseconds.  Used by
+ * glQueryCounter(GL_TIMESTAMP).  Per the GL spec, the timestamp must be
+ * recorded after all previously issued commands have completed, so we
+ * flush the pending command buffer and wait for completion before
+ * sampling the GPU timestamp. */
+-(GLuint64)mtlGetGPUTimestamp:(GLMContext)glm_ctx
+{
+    (void)glm_ctx;
+    [self flushCommandBuffer:YES];
+    return [self sampleGPUTimestamp];
+}
+
+/* Internal helper: samples the GPU timestamp via Metal's
+ * sampleTimestamps:gpuTimestamp: API.  The GPU timestamp is in
+ * nanoseconds. */
+-(uint64_t)sampleGPUTimestamp
+{
+    if (!_device) return 0;
+    uint64_t cpuTime = 0;
+    uint64_t gpuTime = 0;
+    [_device sampleTimestamps:&cpuTime gpuTimestamp:&gpuTime];
+    return gpuTime;
+}
+
+void mtlBeginTimerQuery(GLMContext glm_ctx)
+{
+    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBeginTimerQuery: glm_ctx];
+}
+
+GLuint64 mtlEndTimerQuery(GLMContext glm_ctx)
+{
+    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlEndTimerQuery: glm_ctx];
+}
+
+GLuint64 mtlGetGPUTimestamp(GLMContext glm_ctx)
+{
+    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetGPUTimestamp: glm_ctx];
 }
 
 void mtlDispatchComputeIndirect(GLMContext glm_ctx, GLintptr indirect)
@@ -35887,6 +36056,10 @@ void mtlMultiDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, 
 
     glm_ctx->mtl_funcs.mtlBeginSampleQuery = mtlBeginSampleQuery;
     glm_ctx->mtl_funcs.mtlEndSampleQuery = mtlEndSampleQuery;
+
+    glm_ctx->mtl_funcs.mtlBeginTimerQuery = mtlBeginTimerQuery;
+    glm_ctx->mtl_funcs.mtlEndTimerQuery = mtlEndTimerQuery;
+    glm_ctx->mtl_funcs.mtlGetGPUTimestamp = mtlGetGPUTimestamp;
 }
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;

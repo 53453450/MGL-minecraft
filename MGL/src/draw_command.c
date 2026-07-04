@@ -973,7 +973,21 @@ static uint8_t mglModeToPrimitiveType(GLenum mode)
         case GL_LINE_STRIP:     return 2;  /* MTLPrimitiveTypeLineStrip */
         case GL_TRIANGLES:      return 3;  /* MTLPrimitiveTypeTriangle */
         case GL_TRIANGLE_STRIP: return 4;  /* MTLPrimitiveTypeTriangleStrip */
-        default:                return 0xFF;
+        /* Metal has no native support for these modes; they are emulated
+         * in the draw dispatch path (MGLRenderer.m). Return 0xFF so the
+         * batch system routes them through the per-draw emulation path
+         * instead of multi-draw-indirect. */
+        case GL_TRIANGLE_FAN:
+        case GL_LINE_LOOP:
+        case GL_PATCHES:
+        case GL_QUADS:
+        case GL_LINES_ADJACENCY:
+        case GL_LINE_STRIP_ADJACENCY:
+        case GL_TRIANGLES_ADJACENCY:
+        case GL_TRIANGLE_STRIP_ADJACENCY:
+            return 0xFF;
+        default:
+            return 0xFF;
     }
 }
 

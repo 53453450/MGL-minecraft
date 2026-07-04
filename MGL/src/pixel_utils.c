@@ -2745,13 +2745,12 @@ GLboolean mglIsColorRenderableInternalFormat(GLint internalformat)
         case GL_RGB12:
             return GL_FALSE;
 
-        /* GL_RGB9_E5 maps to MTLPixelFormatRGB9E5Float, which Metal supports
-         * as a color render target on Apple GPUs (verified via
-         * newTextureWithDescriptor + render pass clear). Treat it as
-         * color-renderable so the framebuffer completeness check passes and
-         * CTS internalformat.renderbuffer.rgb9_e5 can run. */
+        /* GL_RGB9_E5 is NOT color-renderable per GL 4.6 spec table 8.11,
+         * even though Metal supports it as a render target.  Reporting it
+         * as renderable caused FBO completeness to pass when the spec
+         * requires GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT. */
         case GL_RGB9_E5:
-            return GL_TRUE;
+            return GL_FALSE;
 
         /* RGB32F/I/UI are mapped to RGBA32 Metal formats which are
          * color-renderable.  Treating them as color-renderable avoids
@@ -3063,7 +3062,9 @@ uint16_t mglFloatToHalf(float value)
 
 /* Pack a float into 11-bit unsigned float (UE11) format.
  * 6-bit mantissa, 5-bit exponent (bias 15).
- * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN. */
+ * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN.
+ * Uses round-to-nearest-even when truncating the 23-bit IEEE mantissa to
+ * 6 bits, per the GL_UNSIGNED_INT_10F_11F_11F_REV packing spec. */
 uint32_t mglFloatToFloat11(float v)
 {
     if (isnan(v)) return 0x7e0u;  /* NaN: exp=31, mant!=0 */
@@ -3078,18 +3079,40 @@ uint32_t mglFloatToFloat11(float v)
         /* Denormalized in float11 */
         int shift = -14 - ieee_exp;
         if (shift >= 11) return 0u;
-        uint32_t m = (ieee_mant | 0x800000) >> (23 - 6 + shift);
+        /* Round-to-nearest-even for denormals. */
+        uint32_t src = (ieee_mant | 0x800000);
+        int rshift = 23 - 6 + shift;
+        uint32_t m = src >> rshift;
+        uint32_t rem = src & ((1u << rshift) - 1u);
+        uint32_t half = 1u << (rshift - 1);
+        if (rem > half || (rem == half && (m & 1u))) {
+            m += 1u;
+        }
         return m & 0x3fu;
     }
     if (ieee_exp >= 16) return 0x7c0u; /* Infinity */
     uint32_t exp = (uint32_t)(ieee_exp + 15);
+    /* Round-to-nearest-even: 23-bit mantissa → 6-bit. */
     uint32_t mant = ieee_mant >> (23 - 6);
+    uint32_t rem = ieee_mant & ((1u << (23 - 6)) - 1u);
+    uint32_t half = 1u << (23 - 6 - 1);
+    if (rem > half || (rem == half && (mant & 1u))) {
+        mant += 1u;
+        /* Carry into exponent if mantissa overflows. */
+        if (mant > 0x3fu) {
+            mant = 0u;
+            exp += 1u;
+            if (exp >= 31u) return 0x7c0u; /* overflow to Infinity */
+        }
+    }
     return (exp << 6) | mant;
 }
 
 /* Pack a float into 10-bit unsigned float (UE10) format.
  * 5-bit mantissa, 5-bit exponent.
- * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN. */
+ * Special values: exp=31,mant=0 → Infinity; exp=31,mant!=0 → NaN.
+ * Uses round-to-nearest-even when truncating the 23-bit IEEE mantissa to
+ * 5 bits. */
 uint32_t mglFloatToFloat10(float v)
 {
     if (isnan(v)) return 0x3f0u;  /* NaN: exp=31, mant!=0 */
@@ -3102,12 +3125,31 @@ uint32_t mglFloatToFloat10(float v)
     if (ieee_exp <= -15) {
         int shift = -14 - ieee_exp;
         if (shift >= 10) return 0u;
-        uint32_t m = (ieee_mant | 0x800000) >> (23 - 5 + shift);
+        /* Round-to-nearest-even for denormals. */
+        uint32_t src = (ieee_mant | 0x800000);
+        int rshift = 23 - 5 + shift;
+        uint32_t m = src >> rshift;
+        uint32_t rem = src & ((1u << rshift) - 1u);
+        uint32_t half = 1u << (rshift - 1);
+        if (rem > half || (rem == half && (m & 1u))) {
+            m += 1u;
+        }
         return m & 0x1fu;
     }
     if (ieee_exp >= 16) return 0x3e0u; /* Infinity */
     uint32_t exp = (uint32_t)(ieee_exp + 15);
+    /* Round-to-nearest-even: 23-bit mantissa → 5-bit. */
     uint32_t mant = ieee_mant >> (23 - 5);
+    uint32_t rem = ieee_mant & ((1u << (23 - 5)) - 1u);
+    uint32_t half = 1u << (23 - 5 - 1);
+    if (rem > half || (rem == half && (mant & 1u))) {
+        mant += 1u;
+        if (mant > 0x1fu) {
+            mant = 0u;
+            exp += 1u;
+            if (exp >= 31u) return 0x3e0u;
+        }
+    }
     return (exp << 5) | mant;
 }
 

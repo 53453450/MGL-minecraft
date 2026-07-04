@@ -29,6 +29,12 @@
 #include "pixel_utils.h"
 #include "utils.h"
 
+/* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS is defined in GLES but not in desktop
+ * GL headers; define it here for FBO completeness checks. */
+#ifndef GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS
+#define GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS 0x8CD9
+#endif
+
 #define RENDBUF_STATE(_val_)    ctx->state.renderbuffer->_val_
 
 #ifndef MGL_VERBOSE_FBO_LOGS
@@ -1014,6 +1020,26 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
     STATE(dirty_bits) |= DIRTY_FBO;
 }
 
+/* Returns true if the internal format is an integer (signed or unsigned)
+ * format.  Used for blit format-compatibility checks. */
+static GLboolean mglInternalFormatIsInteger(GLint internalformat)
+{
+    switch (internalformat) {
+        case GL_R8I: case GL_R16I: case GL_R32I:
+        case GL_RG8I: case GL_RG16I: case GL_RG32I:
+        case GL_RGB8I: case GL_RGB16I: case GL_RGB32I:
+        case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I:
+        case GL_R8UI: case GL_R16UI: case GL_R32UI:
+        case GL_RG8UI: case GL_RG16UI: case GL_RG32UI:
+        case GL_RGB8UI: case GL_RGB16UI: case GL_RGB32UI:
+        case GL_RGBA8UI: case GL_RGBA16UI: case GL_RGBA32UI:
+        case GL_RGB10_A2UI:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 static Texture *mglFramebufferAttachmentTextureObject(GLMContext ctx, FBOAttachment *att)
 {
     if (!ctx || !att || att->texture == 0u) {
@@ -1140,6 +1166,43 @@ static GLboolean mglFramebufferReadBufferReferencesMissingAttachment(GLMContext 
     return ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u;
 }
 
+/* Returns the (width, height) of the backing texture for an attachment, or
+ * (0,0) if the attachment has no backing storage.  Used for the
+ * GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS check. */
+static void mglFramebufferAttachmentDimensions(GLMContext ctx, FBOAttachment *att,
+                                               GLuint *out_w, GLuint *out_h)
+{
+    *out_w = 0u;
+    *out_h = 0u;
+    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
+    if (!tex) {
+        return;
+    }
+
+    GLuint face = 0u;
+    if (isCubeMapTarget(ctx, att->textarget)) {
+        face = textureIndexFromTarget(ctx, att->textarget);
+    }
+    if (face >= _CUBE_MAP_MAX_FACE ||
+        !tex->faces[face].levels ||
+        att->level >= tex->mipmap_levels ||
+        att->level >= tex->num_levels) {
+        return;
+    }
+
+    TextureLevel *level = &tex->faces[face].levels[att->level];
+    *out_w = level->width;
+    *out_h = level->height;
+}
+
+/* Returns the sample count of the backing texture for an attachment, or 0
+ * for single-sample.  Used for GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE. */
+static GLuint mglFramebufferAttachmentSamples(GLMContext ctx, FBOAttachment *att)
+{
+    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
+    return tex ? tex->samples : 0u;
+}
+
 static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fbo)
 {
     if (!fbo) {
@@ -1190,11 +1253,78 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
     }
 
-    /*
-     * Depth/stencil-only framebuffer users commonly leave the default color
-     * selections untouched. There is no color source or destination to
-     * validate in that case.
-     */
+    /* GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER: a draw buffer selects a color
+     * attachment that has no image attached. */
+    if (fbo == ctx->state.framebuffer &&
+        mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
+    }
+
+    /* GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER: the read buffer selects a color
+     * attachment that has no image attached. */
+    if (fbo == ctx->state.readbuffer &&
+        mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
+    }
+
+    /* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS: all attached images must have
+     * the same width and height. */
+    {
+        GLuint ref_w = 0u, ref_h = 0u;
+        GLboolean have_ref = GL_FALSE;
+        for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; ++i) {
+            if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) continue;
+            GLuint w = 0u, h = 0u;
+            mglFramebufferAttachmentDimensions(ctx, &fbo->color_attachments[i], &w, &h);
+            if (w == 0u || h == 0u) continue;
+            if (!have_ref) { ref_w = w; ref_h = h; have_ref = GL_TRUE; }
+            else if (w != ref_w || h != ref_h) {
+                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+            }
+        }
+        if (fbo->depth.texture != 0u) {
+            GLuint w = 0u, h = 0u;
+            mglFramebufferAttachmentDimensions(ctx, &fbo->depth, &w, &h);
+            if (w != 0u && h != 0u && have_ref && (w != ref_w || h != ref_h)) {
+                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+            }
+        }
+        if (fbo->stencil.texture != 0u) {
+            GLuint w = 0u, h = 0u;
+            mglFramebufferAttachmentDimensions(ctx, &fbo->stencil, &w, &h);
+            if (w != 0u && h != 0u && have_ref && (w != ref_w || h != ref_h)) {
+                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+            }
+        }
+    }
+
+    /* GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE: all attached images must have
+     * the same sample count. */
+    {
+        GLuint ref_samples = 0u;
+        GLboolean have_ref = GL_FALSE;
+        for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; ++i) {
+            if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) continue;
+            GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->color_attachments[i]);
+            if (!have_ref) { ref_samples = s; have_ref = GL_TRUE; }
+            else if (s != ref_samples) {
+                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+            }
+        }
+        if (fbo->depth.texture != 0u) {
+            GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->depth);
+            if (have_ref && s != ref_samples) {
+                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+            }
+        }
+        if (fbo->stencil.texture != 0u) {
+            GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->stencil);
+            if (have_ref && s != ref_samples) {
+                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+            }
+        }
+    }
+
     return GL_FRAMEBUFFER_COMPLETE;
 }
 
@@ -1738,9 +1868,27 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
         mglClearLastSampled2DTextureIfMatches(ctx, tex);
     }
 
+    /* GL_DEPTH_STENCIL_ATTACHMENT binds the same image to both the depth and
+     * stencil attachment points.  Set stencil's fields independently (field
+     * by field) rather than copying the entire struct, so that subsequent
+     * independent modifications to depth or stencil do not diverge from the
+     * actual attachment state.  (Per GL spec, the depth and stencil
+     * attachment points are independent after this call — each can be
+     * re-bound or detached without affecting the other.) */
     if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
     {
-        fbo->stencil = fbo->depth;
+        FBOAttachment *stencil_att = &fbo->stencil;
+        stencil_att->texture = texture;
+        stencil_att->textarget = effective_textarget;
+        stencil_att->level = level;
+        stencil_att->layer = layer;
+        stencil_att->layered = fbo_attachment_ptr->layered;
+        stencil_att->clear_bitmask = 0;
+        stencil_att->clear_color[0] = 0.f;
+        stencil_att->clear_color[1] = 0.f;
+        stencil_att->clear_color[2] = 0.f;
+        stencil_att->clear_color[3] = 0.f;
+        stencil_att->buf.tex = tex;
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
@@ -1899,9 +2047,24 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
         fbo_attachment_ptr->buf.rbo->is_draw_buffer = GL_FALSE;
     }
 
+    /* GL_DEPTH_STENCIL_ATTACHMENT binds the same renderbuffer to both the
+     * depth and stencil attachment points.  Set stencil's fields
+     * independently rather than copying the entire struct, so that
+     * subsequent independent modifications to depth or stencil do not
+     * diverge. */
     if (attachment == GL_DEPTH_STENCIL_ATTACHMENT)
     {
-        fbo->stencil = fbo->depth;
+        FBOAttachment *stencil_att = &fbo->stencil;
+        stencil_att->textarget = GL_RENDERBUFFER;
+        stencil_att->texture = renderbuffer;
+        stencil_att->level = 0;
+        stencil_att->layer = 0;
+        stencil_att->layered = GL_FALSE;
+        stencil_att->buf.rbo = rbo;
+        if (stencil_att->buf.rbo)
+        {
+            stencil_att->buf.rbo->is_draw_buffer = GL_FALSE;
+        }
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
@@ -2454,6 +2617,42 @@ void mglBlitFramebuffer(GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, G
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
+
+    /* Format compatibility check for GL_COLOR_BUFFER_BIT blits: the source
+     * and destination color attachments must be format-compatible (same
+     * internal format class).  Per GL 4.6 spec §18.3.1, blitting between
+     * incompatible formats generates GL_INVALID_OPERATION. */
+    if ((mask & GL_COLOR_BUFFER_BIT) != 0u) {
+        Framebuffer *srcFbo = ctx ? ctx->state.readbuffer : NULL;
+        Framebuffer *dstFbo = ctx ? ctx->state.framebuffer : NULL;
+        if (srcFbo && dstFbo &&
+            srcFbo->color_attachment_bitfield != 0u &&
+            dstFbo->color_attachment_bitfield != 0u) {
+            /* Find the first color attachment on each side. */
+            GLint srcFmt = 0, dstFmt = 0;
+            for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS && srcFmt == 0; ++i) {
+                if (((srcFbo->color_attachment_bitfield >> i) & 1u) != 0u) {
+                    srcFmt = mglFramebufferAttachmentInternalFormat(ctx, &srcFbo->color_attachments[i]);
+                }
+            }
+            for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS && dstFmt == 0; ++i) {
+                if (((dstFbo->color_attachment_bitfield >> i) & 1u) != 0u) {
+                    dstFmt = mglFramebufferAttachmentInternalFormat(ctx, &dstFbo->color_attachments[i]);
+                }
+            }
+            /* Reject only when one is an integer format and the other is
+             * not — that is the hard requirement per spec.  Same-base-type
+             * mismatches (e.g. RGBA8 → RGBA16) are allowed for blit. */
+            if (srcFmt != 0 && dstFmt != 0) {
+                GLboolean srcInt = mglInternalFormatIsInteger(srcFmt);
+                GLboolean dstInt = mglInternalFormatIsInteger(dstFmt);
+                if (srcInt != dstInt) {
+                    ERROR_RETURN(GL_INVALID_OPERATION);
+                    return;
+                }
+            }
+        }
+    }
     if (mask & GL_STENCIL_BUFFER_BIT) {
         mglBlitStencilShadow(ctx, srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1);
     }
@@ -2479,12 +2678,31 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    /*
-     * Keep a single-sample backing store until the Metal resolve path is wired
-     * through for renderbuffers. This preserves the GL API contract and lets
-     * framebuffer/blit users operate on the storage without a spurious error.
-     */
+    if(ctx->state.renderbuffer == NULL)
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+
+    /* Allocate the renderbuffer storage at the requested sample count.
+     * Previously this silently degraded to single-sample, which broke
+     * GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE checks and MSAA rendering.
+     * We clamp samples to the device-supported maximum (Apple M-series
+     * supports 1x/2x/4x; 8x is clamped to 4x via the capability layer). */
     mglRenderbufferStorage(ctx, target, internalformat, width, height);
+
+    /* Apply the requested sample count to the backing texture so that
+     * mglFramebufferSamples / mglFramebufferAttachmentSamples report the
+     * correct value.  The Metal render pass descriptor sets up the MSAA
+     * resolve when this renderbuffer is attached. */
+    if (ctx->state.renderbuffer && ctx->state.renderbuffer->tex)
+    {
+        GLuint clamped = (GLuint)samples;
+        /* Clamp to 4x max on Apple GPUs (M4 hardware limit).  Zero or
+         * one means single-sample. */
+        if (clamped > 4u) clamped = 4u;
+        ctx->state.renderbuffer->tex->samples = clamped;
+    }
 }
 
 void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
@@ -2544,6 +2762,18 @@ void mglFramebufferParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint
     }
 }
 
+/* Resolve the Texture backing an FBO attachment.  Returns NULL if the
+ * attachment is empty.  Handles both texture-backed and renderbuffer-backed
+ * attachments — the latter stores the backing Texture via buf.rbo->tex. */
+static Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
+{
+    if (!a || a->texture == 0u)
+        return NULL;
+    if (a->textarget == GL_RENDERBUFFER)
+        return a->buf.rbo ? a->buf.rbo->tex : NULL;
+    return a->buf.tex;
+}
+
 /* Compute the actual sample count of a framebuffer by inspecting its
  * attachments.  Returns 0 for single-sample, or the number of samples
  * (1, 2, 4, ...) for multisample.  For framebuffers with no attachments,
@@ -2557,19 +2787,19 @@ static GLuint mglFramebufferSamples(Framebuffer *fbo)
     for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
         if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u)
             continue;
-        FBOAttachment *a = &fbo->color_attachments[i];
-        if (a->texture == 0u || !a->buf.tex)
-            continue;
-        if (a->buf.tex->samples > max_samples)
-            max_samples = a->buf.tex->samples;
+        Texture *tex = mglAttachmentBackingTexture(&fbo->color_attachments[i]);
+        if (tex && tex->samples > max_samples)
+            max_samples = tex->samples;
     }
-    if (fbo->depth.texture != 0u && fbo->depth.buf.tex) {
-        if (fbo->depth.buf.tex->samples > max_samples)
-            max_samples = fbo->depth.buf.tex->samples;
+    {
+        Texture *depth_tex = mglAttachmentBackingTexture(&fbo->depth);
+        if (depth_tex && depth_tex->samples > max_samples)
+            max_samples = depth_tex->samples;
     }
-    if (fbo->stencil.texture != 0u && fbo->stencil.buf.tex) {
-        if (fbo->stencil.buf.tex->samples > max_samples)
-            max_samples = fbo->stencil.buf.tex->samples;
+    {
+        Texture *stencil_tex = mglAttachmentBackingTexture(&fbo->stencil);
+        if (stencil_tex && stencil_tex->samples > max_samples)
+            max_samples = stencil_tex->samples;
     }
     if (max_samples == 0u)
         max_samples = (GLuint)(fbo->default_samples > 0 ? fbo->default_samples : 0);

@@ -204,6 +204,18 @@ static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
     return name;
 }
 
+/* Resolve the Texture backing an FBO attachment.  Returns NULL if the
+ * attachment is empty.  Handles both texture-backed and renderbuffer-backed
+ * attachments — the latter stores the backing Texture via buf.rbo->tex. */
+static Texture *mglAttachmentBackingTexture(const FBOAttachment *a)
+{
+    if (!a || a->texture == 0u)
+        return NULL;
+    if (a->textarget == GL_RENDERBUFFER)
+        return a->buf.rbo ? a->buf.rbo->tex : NULL;
+    return a->buf.tex;
+}
+
 /* Compute the actual sample count of the currently bound draw framebuffer by
  * inspecting its attachments.  Returns 0 for single-sample, or the number of
  * samples (1, 2, 4, ...) for multisample.  For framebuffers with no
@@ -218,19 +230,19 @@ static GLuint mglCurrentDrawFramebufferSamples(GLMContext ctx)
     for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
         if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u)
             continue;
-        FBOAttachment *a = &fbo->color_attachments[i];
-        if (a->texture == 0u || !a->buf.tex)
-            continue;
-        if (a->buf.tex->samples > max_samples)
-            max_samples = a->buf.tex->samples;
+        Texture *tex = mglAttachmentBackingTexture(&fbo->color_attachments[i]);
+        if (tex && tex->samples > max_samples)
+            max_samples = tex->samples;
     }
-    if (fbo->depth.texture != 0u && fbo->depth.buf.tex) {
-        if (fbo->depth.buf.tex->samples > max_samples)
-            max_samples = fbo->depth.buf.tex->samples;
+    {
+        Texture *depth_tex = mglAttachmentBackingTexture(&fbo->depth);
+        if (depth_tex && depth_tex->samples > max_samples)
+            max_samples = depth_tex->samples;
     }
-    if (fbo->stencil.texture != 0u && fbo->stencil.buf.tex) {
-        if (fbo->stencil.buf.tex->samples > max_samples)
-            max_samples = fbo->stencil.buf.tex->samples;
+    {
+        Texture *stencil_tex = mglAttachmentBackingTexture(&fbo->stencil);
+        if (stencil_tex && stencil_tex->samples > max_samples)
+            max_samples = stencil_tex->samples;
     }
     if (max_samples == 0u)
         max_samples = (GLuint)(fbo->default_samples > 0 ? fbo->default_samples : 0);
@@ -375,6 +387,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             break;
 
         case 0x0BF0: RET_TYPE_VAR(type, logic_op_mode); break; // GL_LOGIC_OP_MODE
+        case 0x8C37: RET_TYPE_VAR(type, min_sample_shading); break; // GL_MIN_SAMPLE_SHADING_VALUE
         case 0x0C01: RET_TYPE(type, draw_buffer); break; // GL_DRAW_BUFFER
         case 0x0C02: RET_TYPE(type, read_buffer); break; // GL_READ_BUFFER
 
@@ -394,7 +407,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
             }
             break;
         }
-        case 0x0D3A: RET_TYPE_VAR(type, max_viewport_dims); break; // GL_MAX_VIEWPORT_DIMS
+        case 0x0D3A: RET_TYPE_VAR_COUNT(type, max_viewport_dims, 2); break; // GL_MAX_VIEWPORT_DIMS
         case 0x0D50: RET_TYPE_VAR(type, subpixel_bits); break; // GL_SUBPIXEL_BITS
         case 0x0B00: RET_TYPE_VAR(type, current_color); break; // GL_CURRENT_COLOR
         case 0x0B01: RET_TYPE_VAR(type, current_index); break; // GL_CURRENT_INDEX
@@ -941,7 +954,7 @@ const GLubyte *mglGetString(GLMContext ctx, GLenum name)
             return (const GLubyte *)"4.6.0";
 
         case GL_SHADING_LANGUAGE_VERSION:
-            return (const GLubyte *)"4.6";
+            return (const GLubyte *)"4.60";
 
         case GL_EXTENSIONS:
             /* Core profile returns NULL for glGetString(GL_EXTENSIONS).

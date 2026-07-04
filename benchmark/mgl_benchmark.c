@@ -1,23 +1,22 @@
 /*
  * mgl_benchmark.c
  *
- * Comprehensive benchmark program for the MGL (OpenGL -> Metal translation
- * layer) project.  Creates a hidden GLFW window, loads GL function pointers
- * through glfwGetProcAddress (so every call is routed through MGL), and runs
- * 10 benchmark categories that measure the translation overhead.
+ * Comprehensive benchmark program for measuring GL translation overhead.
  *
- * Build:
- *   cc -D-Wall -gfull -O2 -arch arm64 \
- *       -I./external/glfw/include \
- *       -IMGL/include -IMGL/include/GL \
- *       -DMGL_GL_CORE \
- *       -isysroot $(xcrun --sdk macosx --show-sdk-path) \
- *       benchmark/mgl_benchmark.c \
- *       -Lbuild -lmgl -lglfw \
- *       -framework Cocoa -framework CoreFoundation -framework CoreGraphics \
- *       -framework IOKit -framework Foundation -framework QuartzCore \
- *       -framework Metal -framework OpenGL \
- *       -o build/mgl_benchmark
+ * Build (MGL):
+ *   make bench
+ * Build (system Apple OpenGL):
+ *   make bench-system
+ *
+ * The same source compiles for both backends.  When linked against MGL,
+ * glfwGetProcAddress returns MGL's translation-layer entry points.
+ * When linked against the system OpenGL framework (no -lmgl), the calls
+ * go directly to Apple's native OpenGL driver.
+ *
+ * Timer Query support (GL_TIME_ELAPSED / GL_TIMESTAMP) is used for
+ * accurate GPU execution time measurement.  MGL implements this via
+ * Metal's sampleTimestamps:gpuTimestamp: API; the system OpenGL driver
+ * provides its own native implementation.
  */
 
 #include <stdio.h>
@@ -36,20 +35,24 @@
 #include <GLFW/glfw3.h>
 
 /* glcorearb.h provides the GLenum/GLuint typedefs, the GL_* enum constants,
- * and the PFNGL* function-pointer typedefs.  It also declares the GLAPI
- * prototypes, but we never call those directly — every GL entry point is
- * resolved at runtime through glfwGetProcAddress so the calls go through MGL,
- * not the system OpenGL framework. */
+ * and the PFNGL* function-pointer typedefs. */
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/glcorearb.h>
+
+/* ======================================================================== */
+/*  Backend identification                                                   */
+/* ======================================================================== */
+
+#if defined(__MGL_BENCHMARK_SYSTEM_GL__)
+#define BENCHMARK_BACKEND_NAME "System Apple OpenGL"
+#else
+#define BENCHMARK_BACKEND_NAME "MGL (Metal Translation Layer)"
+#endif
 
 /* ======================================================================== */
 /*  GL function-pointer declarations                                         */
 /* ======================================================================== */
 
-/* Each GL entry point is stored in a function pointer loaded at runtime via
- * glfwGetProcAddress so that every call is routed through MGL.  The PFNGL*
- * typedefs come from glcorearb.h. */
 static PFNGLGETERRORPROC             p_glGetError            = NULL;
 static PFNGLGETSTRINGPROC            p_glGetString           = NULL;
 static PFNGLCLEARCOLORPROC           p_glClearColor          = NULL;
@@ -110,10 +113,9 @@ static PFNGLBEGINQUERYPROC           p_glBeginQuery          = NULL;
 static PFNGLENDQUERYPROC             p_glEndQuery            = NULL;
 static PFNGLQUERYCOUNTERPROC         p_glQueryCounter        = NULL;
 static PFNGLGETQUERYOBJECTUI64VPROC  p_glGetQueryObjectui64v = NULL;
+static PFNGLGETQUERYOBJECTIVPROC     p_glGetQueryObjectiv    = NULL;
 
-/* API dispatch benchmark — additional no-op bind / query entry points.
- * (glUseProgram, glBindTexture, glActiveTexture, glEnableVertexAttribArray,
- *  glBindVertexArray, glBindBuffer are already declared above.) */
+/* API dispatch benchmark — additional no-op bind / query entry points. */
 static PFNGLSCISSORPROC              p_glScissor             = NULL;
 static PFNGLDEPTHMASKPROC            p_glDepthMask           = NULL;
 static PFNGLCOLORMASKPROC            p_glColorMask           = NULL;
@@ -135,12 +137,70 @@ static void init_timing(void)
     mach_timebase_info(&g_timebase);
 }
 
-/* Returns current monotonic time in nanoseconds. */
 static uint64_t now_ns(void)
 {
     uint64_t t = mach_absolute_time();
     return (uint64_t)((double)t * (double)g_timebase.numer /
                       (double)g_timebase.denom);
+}
+
+/* ======================================================================== */
+/*  Result buffering — all results stored and printed at the end             */
+/* ======================================================================== */
+
+#define MAX_RESULTS 256
+#define METIC_LEN   32
+#define VALUE_LEN   32
+
+typedef struct {
+    char test[METIC_LEN];
+    char metric[METIC_LEN];
+    char value[VALUE_LEN];
+} BenchmarkResult;
+
+static BenchmarkResult g_results[MAX_RESULTS];
+static int g_result_count = 0;
+
+static void record_result(const char *test, const char *metric,
+                          const char *fmt, ...)
+{
+    if (g_result_count >= MAX_RESULTS) {
+        fprintf(stderr, "  [warning] result buffer full, dropping result\n");
+        return;
+    }
+    BenchmarkResult *r = &g_results[g_result_count++];
+    strncpy(r->test, test, METIC_LEN - 1);
+    r->test[METIC_LEN - 1] = '\0';
+    strncpy(r->metric, metric, METIC_LEN - 1);
+    r->metric[METIC_LEN - 1] = '\0';
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(r->value, VALUE_LEN, fmt, ap);
+    va_end(ap);
+}
+
+/* Print all buffered results in a formatted table. */
+static void print_all_results(void)
+{
+    printf("\n");
+    printf("========================================");
+    printf("========================================\n");
+    printf("  Benchmark Results — %s\n", BENCHMARK_BACKEND_NAME);
+    printf("========================================");
+    printf("========================================\n");
+    printf("  %-28s %-24s %s\n", "Test", "Metric", "Value");
+    printf("  %-28s %-24s %s\n",
+           "----------------------------", "------------------------", "--------");
+
+    for (int i = 0; i < g_result_count; i++) {
+        printf("  %-28s %-24s %s\n",
+               g_results[i].test,
+               g_results[i].metric,
+               g_results[i].value);
+    }
+
+    printf("========================================");
+    printf("========================================\n");
 }
 
 /* ======================================================================== */
@@ -227,6 +287,7 @@ static int load_gl(void)
     LOAD_GL(p_glEndQuery,            PFNGLENDQUERYPROC,             "glEndQuery");
     LOAD_GL(p_glQueryCounter,        PFNGLQUERYCOUNTERPROC,         "glQueryCounter");
     LOAD_GL(p_glGetQueryObjectui64v, PFNGLGETQUERYOBJECTUI64VPROC,  "glGetQueryObjectui64v");
+    LOAD_GL(p_glGetQueryObjectiv,    PFNGLGETQUERYOBJECTIVPROC,     "glGetQueryObjectiv");
 
     LOAD_GL(p_glScissor,              PFNGLSCISSORPROC,              "glScissor");
     LOAD_GL(p_glDepthMask,            PFNGLDEPTHMASKPROC,            "glDepthMask");
@@ -309,33 +370,35 @@ static const char *kFS2_src =
     "}\n";
 
 /* ======================================================================== */
-/*  Output helpers                                                           */
+/*  Timer Query helper — measures GPU elapsed time for bracketed commands    */
 /* ======================================================================== */
 
-static void print_table_header(void)
+/* Measures GPU nanoseconds elapsed between begin and end of a
+ * GL_TIME_ELAPSED query.  Blocks until the result is available. */
+static uint64_t measure_gpu_time_elapsed(void (*draw_fn)(void *ctx),
+                                         void *ctx)
 {
-    printf("========================================\n");
-    printf("MGL Benchmark Results\n");
-    printf("========================================\n");
-    printf("%-22s   %-19s   %s\n", "Test", "Metric", "Result");
-    printf("%-22s   %-19s   %s\n",
-           "--------------------", "-------------------", "--------");
-}
+    GLuint q;
+    p_glGenQueries(1, &q);
 
-static void print_table_footer(void)
-{
-    printf("========================================\n");
-}
+    /* Warm up to ensure pipeline state is cached. */
+    draw_fn(ctx);
+    p_glFlush();
 
-static void print_row(const char *test, const char *metric,
-                      const char *fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    printf("%-22s   %-19s   ", test, metric);
-    vprintf(fmt, ap);
-    printf("\n");
-    va_end(ap);
+    p_glBeginQuery(GL_TIME_ELAPSED, q);
+    draw_fn(ctx);
+    p_glEndQuery(GL_TIME_ELAPSED);
+
+    /* Wait for result. */
+    GLint available = 0;
+    while (!available) {
+        p_glGetQueryObjectiv(q, GL_QUERY_RESULT_AVAILABLE, &available);
+    }
+
+    GLuint64 gpu_ns = 0;
+    p_glGetQueryObjectui64v(q, GL_QUERY_RESULT, &gpu_ns);
+    p_glDeleteQueries(1, &q);
+    return gpu_ns;
 }
 
 /* ======================================================================== */
@@ -346,7 +409,6 @@ static GLFWwindow *g_window = NULL;
 
 /* ======================================================================== */
 /*  Benchmark 1: Empty Draw                                                  */
-/*  glDrawArrays(GL_TRIANGLES, 0, 0) with an empty VAO.                     */
 /* ======================================================================== */
 
 static void benchmark_empty_draw(void)
@@ -355,7 +417,6 @@ static void benchmark_empty_draw(void)
     p_glGenVertexArrays(1, &vao);
     p_glBindVertexArray(vao);
 
-    /* Warm up. */
     for (int i = 0; i < 1000; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, 0);
     }
@@ -369,7 +430,7 @@ static void benchmark_empty_draw(void)
     uint64_t elapsed = now_ns() - start;
 
     double ns_per_draw = (double)elapsed / (double)N;
-    print_row("Empty Draw", "ns/Draw", "%.1f", ns_per_draw);
+    record_result("Empty Draw", "ns/Draw", "%.1f", ns_per_draw);
 
     p_glBindVertexArray(0);
     p_glDeleteVertexArrays(1, &vao);
@@ -377,7 +438,6 @@ static void benchmark_empty_draw(void)
 
 /* ======================================================================== */
 /*  Benchmark 2: Triangle Draw                                               */
-/*  Single triangle with position attribute, solid-color shader.            */
 /* ======================================================================== */
 
 static void benchmark_triangle_draw(void)
@@ -403,7 +463,6 @@ static void benchmark_triangle_draw(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
                             (void *)0);
 
-    /* Warm up. */
     for (int i = 0; i < 1000; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, 3);
     }
@@ -419,8 +478,8 @@ static void benchmark_triangle_draw(void)
     double draws_per_s = (double)N / ((double)elapsed / 1e9);
     double us_per_draw = (double)elapsed / 1000.0 / (double)N;
 
-    print_row("Triangle Draw", "Draw/s", "%.0f", draws_per_s);
-    print_row("Triangle Draw", "CPU us/draw", "%.2f", us_per_draw);
+    record_result("Triangle Draw", "Draw/s", "%.0f", draws_per_s);
+    record_result("Triangle Draw", "CPU us/draw", "%.2f", us_per_draw);
 
     p_glDeleteBuffers(1, &vbo);
     p_glDeleteVertexArrays(1, &vao);
@@ -429,7 +488,6 @@ static void benchmark_triangle_draw(void)
 
 /* ======================================================================== */
 /*  Benchmark 3: Batch Draw (deferred vs immediate)                          */
-/*  Compares calling glDrawArrays 10000x with and without glFlush.          */
 /* ======================================================================== */
 
 static void benchmark_batch_draw(void)
@@ -457,7 +515,7 @@ static void benchmark_batch_draw(void)
 
     const int N = 10000;
 
-    /* --- Batched (deferred): MGL batches internally, no flush. --- */
+    /* --- Batched (deferred) --- */
     for (int i = 0; i < 1000; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, 3);
     }
@@ -471,7 +529,7 @@ static void benchmark_batch_draw(void)
     uint64_t elapsed_batched = now_ns() - start;
     double batched_dps = (double)N / ((double)elapsed_batched / 1e9);
 
-    /* --- Immediate: flush after every draw to force submission. --- */
+    /* --- Immediate: flush after every draw --- */
     for (int i = 0; i < 1000; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, 3);
         p_glFlush();
@@ -485,8 +543,8 @@ static void benchmark_batch_draw(void)
     uint64_t elapsed_immediate = now_ns() - start;
     double immediate_dps = (double)N / ((double)elapsed_immediate / 1e9);
 
-    print_row("Batch Draw (deferred)", "Draw/s", "%.0f", batched_dps);
-    print_row("Batch Draw (immediate)", "Draw/s", "%.0f", immediate_dps);
+    record_result("Batch Draw (deferred)", "Draw/s", "%.0f", batched_dps);
+    record_result("Batch Draw (immediate)", "Draw/s", "%.0f", immediate_dps);
 
     p_glDeleteBuffers(1, &vbo);
     p_glDeleteVertexArrays(1, &vao);
@@ -495,13 +553,12 @@ static void benchmark_batch_draw(void)
 
 /* ======================================================================== */
 /*  Benchmark 4: Texture Upload                                              */
-/*  1024x1024 RGBA8 via glTexSubImage2D.                                    */
 /* ======================================================================== */
 
 static void benchmark_texture_upload(void)
 {
     const int W = 1024, H = 1024;
-    const size_t data_size = (size_t)W * H * 4; /* 4 MB */
+    const size_t data_size = (size_t)W * H * 4;
 
     GLuint tex;
     p_glGenTextures(1, &tex);
@@ -519,7 +576,6 @@ static void benchmark_texture_upload(void)
     }
     memset(pixels, 0xAB, data_size);
 
-    /* Warm up. */
     for (int i = 0; i < 5; i++) {
         p_glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA,
                           GL_UNSIGNED_BYTE, pixels);
@@ -540,8 +596,8 @@ static void benchmark_texture_upload(void)
     double mb_per_s = total_mb / secs;
     double us_per_call = (double)elapsed / 1000.0 / (double)N;
 
-    print_row("Texture Upload", "MB/s", "%.1f", mb_per_s);
-    print_row("Texture Upload", "us/call", "%.1f", us_per_call);
+    record_result("Texture Upload", "MB/s", "%.1f", mb_per_s);
+    record_result("Texture Upload", "us/call", "%.1f", us_per_call);
 
     free(pixels);
     p_glDeleteTextures(1, &tex);
@@ -549,12 +605,11 @@ static void benchmark_texture_upload(void)
 
 /* ======================================================================== */
 /*  Benchmark 5: Buffer Upload                                               */
-/*  1 MB GL_ARRAY_BUFFER via glBufferSubData.                               */
 /* ======================================================================== */
 
 static void benchmark_buffer_upload(void)
 {
-    const size_t data_size = 1024 * 1024; /* 1 MB */
+    const size_t data_size = 1024 * 1024;
 
     GLuint buf;
     p_glGenBuffers(1, &buf);
@@ -569,7 +624,6 @@ static void benchmark_buffer_upload(void)
     }
     memset(data, 0xCD, data_size);
 
-    /* Warm up. */
     for (int i = 0; i < 5; i++) {
         p_glBufferSubData(GL_ARRAY_BUFFER, 0, data_size, data);
     }
@@ -587,7 +641,7 @@ static void benchmark_buffer_upload(void)
     double total_mb = (double)N * (double)data_size / (1024.0 * 1024.0);
     double mb_per_s = total_mb / secs;
 
-    print_row("Buffer Upload", "MB/s", "%.1f", mb_per_s);
+    record_result("Buffer Upload", "MB/s", "%.1f", mb_per_s);
 
     free(data);
     p_glDeleteBuffers(1, &buf);
@@ -595,14 +649,12 @@ static void benchmark_buffer_upload(void)
 
 /* ======================================================================== */
 /*  Benchmark 6: State Changes                                               */
-/*  Toggle glEnable/glDisable and glBlendFunc.                              */
 /* ======================================================================== */
 
 static void benchmark_state_changes(void)
 {
     const int N = 10000;
 
-    /* --- Depth test toggle --- */
     for (int i = 0; i < 1000; i++) {
         p_glEnable(GL_DEPTH_TEST);
         p_glDisable(GL_DEPTH_TEST);
@@ -614,11 +666,9 @@ static void benchmark_state_changes(void)
         p_glDisable(GL_DEPTH_TEST);
     }
     uint64_t elapsed = now_ns() - start;
-    /* Two calls per iteration. */
     double ns_per_call = (double)elapsed / (double)(N * 2);
-    print_row("State: Depth Toggle", "ns/call", "%.1f", ns_per_call);
+    record_result("State: Depth Toggle", "ns/call", "%.1f", ns_per_call);
 
-    /* --- Blend func toggle --- */
     for (int i = 0; i < 1000; i++) {
         p_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         p_glBlendFunc(GL_ONE, GL_ZERO);
@@ -631,17 +681,15 @@ static void benchmark_state_changes(void)
     }
     elapsed = now_ns() - start;
     ns_per_call = (double)elapsed / (double)(N * 2);
-    print_row("State: BlendFunc Toggle", "ns/call", "%.1f", ns_per_call);
+    record_result("State: BlendFunc Toggle", "ns/call", "%.1f", ns_per_call);
 }
 
 /* ======================================================================== */
 /*  Benchmark 7: Pipeline Switch                                             */
-/*  Alternate two programs, two VAOs (different formats), two FBOs.         */
 /* ======================================================================== */
 
 static void benchmark_pipeline_switch(void)
 {
-    /* Two different programs. */
     GLuint progA = build_program(kVS_src, kFS_src);
     GLuint progB = build_program(kVS2_src, kFS2_src);
 
@@ -656,7 +704,6 @@ static void benchmark_pipeline_switch(void)
     float mvp[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
     p_glUniformMatrix4fv(locB_mvp, 1, GL_FALSE, mvp);
 
-    /* VAO A: position only (vec3 at location 0). */
     float vertsA[] = {
         -0.5f, -0.5f, 0.0f,
          0.5f, -0.5f, 0.0f,
@@ -672,7 +719,6 @@ static void benchmark_pipeline_switch(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
                             (void *)0);
 
-    /* VAO B: position (vec3) + texcoord (vec2). */
     float vertsB[] = {
         -0.5f, -0.5f, 0.0f, 0.0f, 0.0f,
          0.5f, -0.5f, 0.0f, 1.0f, 0.0f,
@@ -691,7 +737,6 @@ static void benchmark_pipeline_switch(void)
     p_glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
                             (void *)(3 * sizeof(float)));
 
-    /* Two FBOs with different-sized color textures. */
     GLuint texA, texB, fboA, fboB;
     p_glGenTextures(1, &texA);
     p_glBindTexture(GL_TEXTURE_2D, texA);
@@ -715,7 +760,6 @@ static void benchmark_pipeline_switch(void)
     p_glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                              GL_TEXTURE_2D, texB, 0);
 
-    /* Warm up. */
     for (int i = 0; i < 100; i++) {
         p_glUseProgram(progA);
         p_glBindVertexArray(vaoA);
@@ -727,7 +771,6 @@ static void benchmark_pipeline_switch(void)
     p_glFlush();
 
     const int N = 10000;
-    /* Each iteration performs two full switches: A and B. */
     uint64_t start = now_ns();
     for (int i = 0; i < N; i++) {
         p_glUseProgram(progA);
@@ -742,9 +785,8 @@ static void benchmark_pipeline_switch(void)
     uint64_t elapsed = now_ns() - start;
 
     double ns_per_switch = (double)elapsed / (double)(N * 2);
-    print_row("Pipeline Switch", "ns/call", "%.1f", ns_per_switch);
+    record_result("Pipeline Switch", "ns/call", "%.1f", ns_per_switch);
 
-    /* Restore default framebuffer. */
     p_glBindFramebuffer(GL_FRAMEBUFFER, 0);
     p_glBindVertexArray(0);
     p_glUseProgram(0);
@@ -763,7 +805,6 @@ static void benchmark_pipeline_switch(void)
 
 /* ======================================================================== */
 /*  Benchmark 8: Uniform Update                                              */
-/*  glUniform4f and glUniformMatrix4fv.                                     */
 /* ======================================================================== */
 
 static void benchmark_uniform_update(void)
@@ -778,7 +819,6 @@ static void benchmark_uniform_update(void)
 
     const int N = 10000;
 
-    /* --- vec4 uniform --- */
     for (int i = 0; i < 1000; i++) {
         p_glUniform4f(loc_vec4, 1.0f, 0.5f, 0.25f, 1.0f);
     }
@@ -789,9 +829,8 @@ static void benchmark_uniform_update(void)
     }
     uint64_t elapsed = now_ns() - start;
     double ns_per_call = (double)elapsed / (double)N;
-    print_row("Uniform: glUniform4f", "ns/call", "%.1f", ns_per_call);
+    record_result("Uniform: glUniform4f", "ns/call", "%.1f", ns_per_call);
 
-    /* --- mat4 uniform --- */
     for (int i = 0; i < 1000; i++) {
         p_glUniformMatrix4fv(loc_mat4, 1, GL_FALSE, matrix);
     }
@@ -802,20 +841,27 @@ static void benchmark_uniform_update(void)
     }
     elapsed = now_ns() - start;
     ns_per_call = (double)elapsed / (double)N;
-    print_row("Uniform: glUniformMatrix4fv", "ns/call", "%.1f", ns_per_call);
+    record_result("Uniform: glUniformMatrix4fv", "ns/call", "%.1f", ns_per_call);
 
     p_glDeleteProgram(prog);
 }
 
 /* ======================================================================== */
-/*  Benchmark 9: GPU Time                                                    */
-/*  Separates CPU submit time from GPU execution time.                      */
-/*  MGL's GL_TIMESTAMP/GL_TIME_ELAPSED queries are stub implementations    */
-/*  (return fake counters), so we use a glFinish()-based approach:          */
-/*    - CPU-only time: wall-clock around the draw loop (no finish)          */
-/*    - CPU+GPU time: wall-clock around draw loop + glFinish()              */
-/*    - GPU time = (CPU+GPU) - CPU                                          */
+/*  Benchmark 9: GPU Time (Timer Query)                                      */
+/*  Uses GL_TIME_ELAPSED query to measure actual GPU execution time.         */
 /* ======================================================================== */
+
+/* Context for the draw callback used by measure_gpu_time_elapsed. */
+typedef struct {
+    GLuint vao;
+    GLsizei vert_count;
+} DrawCtx;
+
+static void draw_triangles_ctx(void *userdata)
+{
+    DrawCtx *d = (DrawCtx *)userdata;
+    p_glDrawArrays(GL_TRIANGLES, 0, d->vert_count);
+}
 
 static void benchmark_gpu_time(void)
 {
@@ -824,7 +870,6 @@ static void benchmark_gpu_time(void)
     GLint loc = p_glGetUniformLocation(prog, "uColor");
     p_glUniform4f(loc, 0.2f, 0.4f, 0.8f, 1.0f);
 
-    /* 1000 triangles = 3000 vertices. */
     const int tri_count = 1000;
     const int vert_count = tri_count * 3;
     float *verts = (float *)malloc((size_t)vert_count * 3 * sizeof(float));
@@ -850,48 +895,64 @@ static void benchmark_gpu_time(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
                             (void *)0);
 
-    const int warmup = 10;
-    const int N = 100;
+    DrawCtx dctx = { vao, vert_count };
 
     /* Warm up. */
-    for (int i = 0; i < warmup; i++) {
+    for (int i = 0; i < 10; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, vert_count);
     }
     p_glFinish();
 
-    /* Phase 1: Measure CPU-only submit time (no GPU wait).
-     * The draw commands are queued into the Metal command buffer but we
-     * don't wait for GPU completion — this is pure CPU-side MGL overhead. */
+    /* --- CPU submit time (no GPU wait) --- */
+    const int N = 100;
     uint64_t cpu_start = now_ns();
     for (int i = 0; i < N; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, vert_count);
     }
     uint64_t cpu_end = now_ns();
+    double cpu_us_per_draw = (double)(cpu_end - cpu_start) / (double)N / 1000.0;
 
-    /* Phase 2: Measure CPU+GPU time (with glFinish to force GPU sync).
-     * glFinish() blocks until all queued GPU work completes, so the
-     * wall-clock time includes both CPU submission and GPU execution. */
-    p_glFinish(); /* drain any prior work first */
-    uint64_t total_start = now_ns();
+    /* --- GPU execution time via Timer Query ---
+     * Measure GPU time for a single draw using GL_TIME_ELAPSED.
+     * Average over multiple samples for stability. */
+    const int samples = 50;
+    uint64_t gpu_total_ns = 0;
+    for (int i = 0; i < samples; i++) {
+        gpu_total_ns += measure_gpu_time_elapsed(draw_triangles_ctx, &dctx);
+    }
+    double gpu_us_per_draw = (double)gpu_total_ns / (double)samples / 1000.0;
+
+    /* --- GPU time for N draws via Timer Query ---
+     * Measure total GPU time for N draws to get per-draw marginal cost. */
+    GLuint q_batch;
+    p_glGenQueries(1, &q_batch);
+
+    /* Warm up. */
+    p_glDrawArrays(GL_TRIANGLES, 0, vert_count);
+    p_glFinish();
+
+    p_glBeginQuery(GL_TIME_ELAPSED, q_batch);
     for (int i = 0; i < N; i++) {
         p_glDrawArrays(GL_TRIANGLES, 0, vert_count);
     }
-    p_glFinish();
-    uint64_t total_end = now_ns();
+    p_glEndQuery(GL_TIME_ELAPSED);
 
-    uint64_t cpu_ns = cpu_end - cpu_start;
-    uint64_t total_ns = total_end - total_start;
-    /* GPU time = total - cpu_submit. Clamp to 0 if negative (measurement
-     * noise when GPU work is negligible). */
-    uint64_t gpu_ns = (total_ns > cpu_ns) ? (total_ns - cpu_ns) : 0;
+    GLint available = 0;
+    while (!available) {
+        p_glGetQueryObjectiv(q_batch, GL_QUERY_RESULT_AVAILABLE, &available);
+    }
+    GLuint64 batch_gpu_ns = 0;
+    p_glGetQueryObjectui64v(q_batch, GL_QUERY_RESULT, &batch_gpu_ns);
+    p_glDeleteQueries(1, &q_batch);
 
-    double cpu_us_per_draw = (double)cpu_ns / (double)N / 1000.0;
-    double gpu_us_per_draw = (double)gpu_ns / (double)N / 1000.0;
-    double ratio = (cpu_ns > 0) ? (double)gpu_ns / (double)cpu_ns : 0.0;
+    double batch_gpu_us_per_draw = (double)batch_gpu_ns / (double)N / 1000.0;
+    double ratio = (cpu_us_per_draw > 0.0)
+        ? (gpu_us_per_draw / cpu_us_per_draw) : 0.0;
 
-    print_row("GPU Time", "CPU submit us/draw", "%.3f", cpu_us_per_draw);
-    print_row("GPU Time", "GPU exec us/draw", "%.3f", gpu_us_per_draw);
-    print_row("GPU Time", "GPU/CPU ratio", "%.3f", ratio);
+    record_result("GPU Time", "CPU submit us/draw", "%.3f", cpu_us_per_draw);
+    record_result("GPU Time", "GPU exec us/draw (1)", "%.3f", gpu_us_per_draw);
+    record_result("GPU Time", "GPU exec us/draw (N)", "%.3f", batch_gpu_us_per_draw);
+    record_result("GPU Time", "GPU/CPU ratio", "%.3f", ratio);
 
     p_glDeleteBuffers(1, &vbo);
     p_glDeleteVertexArrays(1, &vao);
@@ -900,18 +961,11 @@ static void benchmark_gpu_time(void)
 }
 
 /* ======================================================================== */
-/*  Benchmark 11: API Dispatch                                               */
-/*  Measures pure CPU-side dispatch overhead of common GL entry points       */
-/*  that do NOT trigger GPU work.  Each call binds/queries the SAME state    */
-/*  it already holds (no-op from MGL's perspective) so the cost measured     */
-/*  is purely the dispatch + state-compare path in the translation layer.    */
-/*  This isolates MGL overhead from GPU pipeline cost and is the most        */
-/*  sensitive benchmark for tracking dispatch-table / state-cache regressions. */
+/*  Benchmark 10: API Dispatch                                               */
 /* ======================================================================== */
 
 #define DISPATCH_N 200000
 
-/* Helper: run a no-op dispatch loop N times and report ns/call. */
 #define DISPATCH_LOOP(label, call_expr, n)                                    \
     do {                                                                      \
         for (int _i = 0; _i < 2000; _i++) { call_expr; }                     \
@@ -919,14 +973,11 @@ static void benchmark_gpu_time(void)
         for (int _i = 0; _i < (n); _i++) { call_expr; }                      \
         uint64_t _elapsed = now_ns() - _start;                               \
         double _ns = (double)_elapsed / (double)(n);                         \
-        print_row("Dispatch: " label, "ns/call", "%.1f", _ns);               \
+        record_result("Dispatch: " label, "ns/call", "%.1f", _ns);           \
     } while (0)
 
 static void benchmark_api_dispatch(void)
 {
-    /* Set up resources so the no-op binds are valid (bind once before the
-     * timing loop so the state is already current — the loop calls are
-     * genuine no-ops). */
     GLuint prog = build_program(kVS_src, kFS_src);
     p_glUseProgram(prog);
 
@@ -943,14 +994,12 @@ static void benchmark_api_dispatch(void)
     p_glBindTexture(GL_TEXTURE_2D, tex);
     p_glActiveTexture(GL_TEXTURE0);
 
-    /* --- Bind calls (no-op: same target already bound) --- */
     DISPATCH_LOOP("glUseProgram",       p_glUseProgram(prog),                 DISPATCH_N);
     DISPATCH_LOOP("glBindVertexArray",  p_glBindVertexArray(vao),             DISPATCH_N);
     DISPATCH_LOOP("glBindBuffer",       p_glBindBuffer(GL_ARRAY_BUFFER, vbo), DISPATCH_N);
     DISPATCH_LOOP("glBindTexture",      p_glBindTexture(GL_TEXTURE_2D, tex),  DISPATCH_N);
     DISPATCH_LOOP("glActiveTexture",    p_glActiveTexture(GL_TEXTURE0),       DISPATCH_N);
 
-    /* --- State setters (no-op: same value already set) --- */
     DISPATCH_LOOP("glViewport",         p_glViewport(0, 0, 640, 480),         DISPATCH_N);
     DISPATCH_LOOP("glScissor",          p_glScissor(0, 0, 640, 480),          DISPATCH_N);
     DISPATCH_LOOP("glDepthMask",        p_glDepthMask(GL_TRUE),               DISPATCH_N);
@@ -959,7 +1008,6 @@ static void benchmark_api_dispatch(void)
     DISPATCH_LOOP("glPolygonMode",      p_glPolygonMode(GL_FRONT_AND_BACK, GL_FILL), DISPATCH_N);
     DISPATCH_LOOP("glPixelStorei",      p_glPixelStorei(GL_UNPACK_ALIGNMENT, 4), DISPATCH_N);
 
-    /* --- Vertex attrib array toggle (enable+disable pair) --- */
     {
         const int n = DISPATCH_N;
         for (int i = 0; i < 2000; i++) {
@@ -973,17 +1021,15 @@ static void benchmark_api_dispatch(void)
         }
         uint64_t elapsed = now_ns() - start;
         double ns_per_call = (double)elapsed / (double)(n * 2);
-        print_row("Dispatch: AttribArray Toggle", "ns/call", "%.1f", ns_per_call);
+        record_result("Dispatch: AttribArray Toggle", "ns/call", "%.1f", ns_per_call);
     }
 
-    /* --- Query path ( glGetIntegerv — pure CPU state read ) --- */
     {
         GLint val = 0;
         DISPATCH_LOOP("glGetIntegerv",   p_glGetIntegerv(GL_VIEWPORT, &val),  DISPATCH_N);
         (void)val;
     }
 
-    /* --- GetError (common in debug builds — measure its cost) --- */
     DISPATCH_LOOP("glGetError",         p_glGetError(),                       DISPATCH_N);
 
     p_glDeleteTextures(1, &tex);
@@ -995,13 +1041,9 @@ static void benchmark_api_dispatch(void)
 #undef DISPATCH_N
 
 /* ======================================================================== */
-/*  Benchmark 12: Fine-grained GPU Time                                      */
-/*  Decomposes a frame into CPU-submit vs GPU-exec cost using staged          */
-/*  glFinish() barriers, then measures per-draw GPU marginal cost via         */
-/*  draw-count scaling (1 draw vs N draws, differencing out fixed overhead).  */
-/*  MGL's GL_TIMESTAMP query is a stub (returns fake counters), so we cannot  */
-/*  use GPU timestamp queries; instead we use the differential glFinish       */
-/*  technique which works with any GL implementation.                         */
+/*  Benchmark 11: Fine-grained GPU Time (Timer Query)                        */
+/*  Uses GL_TIME_ELAPSED to measure per-draw GPU marginal cost via           */
+/*  draw-count scaling.                                                      */
 /* ======================================================================== */
 
 static void benchmark_gpu_time_fine(void)
@@ -1011,7 +1053,6 @@ static void benchmark_gpu_time_fine(void)
     GLint loc = p_glGetUniformLocation(prog, "uColor");
     p_glUniform4f(loc, 0.2f, 0.4f, 0.8f, 1.0f);
 
-    /* Shared vertex data: a single triangle. */
     const float verts[9] = {
         -0.5f, -0.5f, 0.0f,
          0.5f, -0.5f, 0.0f,
@@ -1027,7 +1068,7 @@ static void benchmark_gpu_time_fine(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
 
     const int warmup = 20;
-    const int samples = 200;   /* averaged samples per measurement */
+    const int samples = 200;
     const int draw_counts[] = {1, 10, 100, 500};
     const int num_dc = (int)(sizeof(draw_counts) / sizeof(draw_counts[0]));
 
@@ -1037,8 +1078,7 @@ static void benchmark_gpu_time_fine(void)
     }
     p_glFinish();
 
-    /* Phase 1: CPU submit time per draw (no finish — pure dispatch overhead).
-     * Measured at draw_counts[0] (1 draw) so per-draw cost is direct. */
+    /* Phase 1: CPU submit time per draw (no GPU wait). */
     {
         uint64_t total = 0;
         for (int s = 0; s < samples; s++) {
@@ -1049,102 +1089,94 @@ static void benchmark_gpu_time_fine(void)
             total += now_ns() - start;
         }
         double cpu_ns = (double)total / (double)samples / (double)draw_counts[0];
-        print_row("GPU Fine: CPU submit/draw", "us", "%.3f", cpu_ns / 1000.0);
+        record_result("GPU Fine: CPU submit/draw", "us", "%.3f", cpu_ns / 1000.0);
     }
 
-    /* Phase 2: End-to-end time per draw (submit + glFinish) at each draw count.
-     * The per-draw GPU marginal cost is derived from the slope between
-     * successive draw counts:  gpu_marginal = (T(N) - T(1)) / (N - 1) - cpu_submit.
-     * This cancels out the fixed glFinish / command-buffer commit overhead. */
-    double e2e_per_draw[8];  /* max draw_counts entries */
+    /* Phase 2: GPU time per draw at each draw count via Timer Query.
+     * For each draw count, measure the total GPU time for N draws using
+     * GL_TIME_ELAPSED, then divide by N to get per-draw GPU cost. */
+    double e2e_per_draw[8];
     if (num_dc > 8) { /* should not happen */ }
     for (int d = 0; d < num_dc; d++) {
         int dc = draw_counts[d];
-        uint64_t total = 0;
+        uint64_t gpu_total_ns = 0;
         for (int s = 0; s < samples; s++) {
-            p_glFinish(); /* drain before each sample */
-            uint64_t start = now_ns();
+            GLuint q;
+            p_glGenQueries(1, &q);
+            p_glBeginQuery(GL_TIME_ELAPSED, q);
             for (int i = 0; i < dc; i++) {
                 p_glDrawArrays(GL_TRIANGLES, 0, 3);
             }
-            p_glFinish();
-            total += now_ns() - start;
+            p_glEndQuery(GL_TIME_ELAPSED);
+
+            GLint available = 0;
+            while (!available) {
+                p_glGetQueryObjectiv(q, GL_QUERY_RESULT_AVAILABLE, &available);
+            }
+            GLuint64 result = 0;
+            p_glGetQueryObjectui64v(q, GL_QUERY_RESULT, &result);
+            p_glDeleteQueries(1, &q);
+            gpu_total_ns += result;
         }
-        e2e_per_draw[d] = (double)total / (double)samples / (double)dc;
+        e2e_per_draw[d] = (double)gpu_total_ns / (double)samples / (double)dc;
         char metric_label[64];
         snprintf(metric_label, sizeof(metric_label), "us (N=%d)", dc);
-        print_row("GPU Fine: E2E/draw", metric_label, "%.3f", e2e_per_draw[d] / 1000.0);
+        record_result("GPU Fine: GPU/draw", metric_label, "%.3f", e2e_per_draw[d] / 1000.0);
     }
 
-    /* Phase 3: GPU marginal cost from slope (N=1 vs N=500). */
+    /* Phase 3: GPU marginal cost from slope (N=1 vs N=max). */
     if (num_dc >= 2) {
-        double t1 = e2e_per_draw[0];              /* per-draw at N=1 */
-        double tN = e2e_per_draw[num_dc - 1];     /* per-draw at N=max */
+        double t1 = e2e_per_draw[0];
+        double tN = e2e_per_draw[num_dc - 1];
         int N = draw_counts[num_dc - 1];
-        /* total_e2e(N) = fixed + N * (cpu + gpu_marginal)
-         * total_e2e(1) = fixed + 1 * (cpu + gpu_marginal)
-         * => total_e2e(N) - total_e2e(1) = (N-1) * (cpu + gpu_marginal)
-         * => cpu + gpu_marginal = (totalN - total1) / (N-1)
-         * Note total = per_draw * count, so:
-         *   totalN = tN * N, total1 = t1 * 1
-         *   cpu + gpu_marginal = (tN * N - t1) / (N - 1)
-         * But we measured cpu_submit separately (Phase 1 at N=1, no finish).
-         * To keep the derivation clean, report the combined marginal. */
         double marginal_us = (tN * (double)N - t1) / (double)(N - 1) / 1000.0;
-        print_row("GPU Fine: Marginal/draw", "us (slope)", "%.3f", marginal_us);
-
-        /* GPU-only marginal = combined marginal - cpu_submit (from Phase 1).
-         * Phase 1 cpu_ns is in ns; convert to us.  We re-derive cpu from the
-         * N=1 no-finish measurement stored implicitly: recompute here. */
-        {
-            uint64_t cpu_total = 0;
-            for (int s = 0; s < samples; s++) {
-                uint64_t start = now_ns();
-                for (int i = 0; i < N; i++) {
-                    p_glDrawArrays(GL_TRIANGLES, 0, 3);
-                }
-                cpu_total += now_ns() - start;
-            }
-            double cpu_per_draw_us = (double)cpu_total / (double)samples / (double)N / 1000.0;
-            double gpu_marginal_us = marginal_us - cpu_per_draw_us;
-            if (gpu_marginal_us < 0.0) gpu_marginal_us = 0.0;
-            char cpu_metric[64];
-            snprintf(cpu_metric, sizeof(cpu_metric), "us (N=%d)", N);
-            print_row("GPU Fine: CPU submit/draw", cpu_metric, "%.3f", cpu_per_draw_us);
-            print_row("GPU Fine: GPU exec/draw", "us (marginal)", "%.3f", gpu_marginal_us);
-        }
+        record_result("GPU Fine: Marginal/draw", "us (slope)", "%.3f", marginal_us);
     }
 
     /* Phase 4: Command buffer commit overhead (fixed cost per flush).
-     * Compare N draws + 1 finish  vs  N * (1 draw + 1 finish).
-     * The difference is (N-1) extra command-buffer commits. */
+     * Compare N draws + 1 query  vs  N * (1 draw + 1 query).
+     * The difference is (N-1) extra query+flush overhead. */
     {
         int N = 100;
         uint64_t batch_total = 0, indiv_total = 0;
 
         for (int s = 0; s < samples; s++) {
-            p_glFinish();
-            uint64_t start = now_ns();
+            GLuint q;
+            p_glGenQueries(1, &q);
+            p_glBeginQuery(GL_TIME_ELAPSED, q);
             for (int i = 0; i < N; i++) {
                 p_glDrawArrays(GL_TRIANGLES, 0, 3);
             }
-            p_glFinish();
-            batch_total += now_ns() - start;
+            p_glEndQuery(GL_TIME_ELAPSED);
+            GLint available = 0;
+            while (!available) {
+                p_glGetQueryObjectiv(q, GL_QUERY_RESULT_AVAILABLE, &available);
+            }
+            GLuint64 result = 0;
+            p_glGetQueryObjectui64v(q, GL_QUERY_RESULT, &result);
+            p_glDeleteQueries(1, &q);
+            batch_total += result;
         }
         for (int s = 0; s < samples; s++) {
-            p_glFinish();
-            uint64_t start = now_ns();
             for (int i = 0; i < N; i++) {
+                GLuint q;
+                p_glGenQueries(1, &q);
+                p_glBeginQuery(GL_TIME_ELAPSED, q);
                 p_glDrawArrays(GL_TRIANGLES, 0, 3);
-                p_glFinish();
+                p_glEndQuery(GL_TIME_ELAPSED);
+                GLint available = 0;
+                while (!available) {
+                    p_glGetQueryObjectiv(q, GL_QUERY_RESULT_AVAILABLE, &available);
+                }
+                GLuint64 result = 0;
+                p_glGetQueryObjectui64v(q, GL_QUERY_RESULT, &result);
+                p_glDeleteQueries(1, &q);
+                indiv_total += result;
             }
-            indiv_total += now_ns() - start;
         }
-        /* indiv - batch = (N-1) * commit_overhead
-         * (the Nth finish is present in both) */
         double commit_ns = (double)(indiv_total - batch_total) / (double)samples / (double)(N - 1);
         if (commit_ns < 0.0) commit_ns = 0.0;
-        print_row("GPU Fine: CB commit", "us", "%.3f", commit_ns / 1000.0);
+        record_result("GPU Fine: Per-query overhead", "us", "%.3f", commit_ns / 1000.0);
     }
 
     p_glDeleteBuffers(1, &vbo);
@@ -1153,16 +1185,11 @@ static void benchmark_gpu_time_fine(void)
 }
 
 /* ======================================================================== */
-/*  Benchmark 13: End-to-End                                                 */
-/*  Simulates a Minecraft-like frame for up to 60 s / 3600 frames.          */
+/*  Benchmark 12: End-to-End                                                 */
 /* ======================================================================== */
 
 static void benchmark_end_to_end(void)
 {
-    /* Three shader programs: terrain, entity, gui.  Terrain and entity
-     * reuse kVS2/kFS2 (have uMVP + uColor); gui uses kVS/kFS (uColor only).
-     * The point is to measure the cost of switching programs, not visual
-     * output, so reusing the same shader sources is fine. */
     GLuint prog_terrain = build_program(kVS2_src, kFS2_src);
     GLuint prog_entity  = build_program(kVS2_src, kFS2_src);
     GLuint prog_gui     = build_program(kVS_src,  kFS_src);
@@ -1173,37 +1200,28 @@ static void benchmark_end_to_end(void)
     GLint entity_color  = p_glGetUniformLocation(prog_entity,  "uColor");
     GLint gui_color     = p_glGetUniformLocation(prog_gui,     "uColor");
 
-    /* Cube geometry: 36 vertices (6 faces, 2 triangles each). */
     const float cube_verts[] = {
-        /* front */
         -0.5f, -0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f,
         -0.5f, -0.5f,  0.5f,  0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
-        /* back */
          0.5f, -0.5f, -0.5f, -0.5f, -0.5f, -0.5f, -0.5f,  0.5f, -0.5f,
          0.5f, -0.5f, -0.5f, -0.5f,  0.5f, -0.5f,  0.5f,  0.5f, -0.5f,
-        /* left */
         -0.5f, -0.5f, -0.5f, -0.5f, -0.5f,  0.5f, -0.5f,  0.5f,  0.5f,
         -0.5f, -0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f,  0.5f, -0.5f,
-        /* right */
          0.5f, -0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f,  0.5f, -0.5f,
          0.5f, -0.5f,  0.5f,  0.5f,  0.5f, -0.5f,  0.5f,  0.5f,  0.5f,
-        /* bottom */
         -0.5f, -0.5f, -0.5f,  0.5f, -0.5f, -0.5f,  0.5f, -0.5f,  0.5f,
         -0.5f, -0.5f, -0.5f,  0.5f, -0.5f,  0.5f, -0.5f, -0.5f,  0.5f,
-        /* top */
         -0.5f,  0.5f,  0.5f,  0.5f,  0.5f,  0.5f,  0.5f,  0.5f, -0.5f,
         -0.5f,  0.5f,  0.5f,  0.5f,  0.5f, -0.5f, -0.5f,  0.5f, -0.5f,
     };
     const int cube_vert_count = 36;
 
-    /* Quad geometry: 6 vertices (2 triangles). */
     const float quad_verts[] = {
         -0.5f, -0.5f, 0.0f,  0.5f, -0.5f, 0.0f,  0.5f,  0.5f, 0.0f,
         -0.5f, -0.5f, 0.0f,  0.5f,  0.5f, 0.0f, -0.5f,  0.5f, 0.0f,
     };
     const int quad_vert_count = 6;
 
-    /* Cube VAO. */
     GLuint vao, vbo;
     p_glGenVertexArrays(1, &vao);
     p_glBindVertexArray(vao);
@@ -1215,7 +1233,6 @@ static void benchmark_end_to_end(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
                             (void *)0);
 
-    /* Quad VAO. */
     GLuint vao_quad, vbo_quad;
     p_glGenVertexArrays(1, &vao_quad);
     p_glBindVertexArray(vao_quad);
@@ -1227,7 +1244,6 @@ static void benchmark_end_to_end(void)
     p_glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float),
                             (void *)0);
 
-    /* 8 textures of 64x64 RGBA8, cycled through during the frame. */
     const int tex_size = 64;
     const size_t tex_bytes = (size_t)tex_size * tex_size * 4;
     uint8_t *tex_data = (uint8_t *)malloc(tex_bytes);
@@ -1262,7 +1278,6 @@ static void benchmark_end_to_end(void)
     const int max_frames = 3600;
     const uint64_t max_duration_ns = 60ULL * 1000ULL * 1000ULL * 1000ULL;
 
-    /* Warm up: exercise all three shader pipelines + both VAOs. */
     for (int f = 0; f < 3; f++) {
         float wmvp[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         p_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -1316,13 +1331,10 @@ static void benchmark_end_to_end(void)
 
         p_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        /* --- Terrain pass: 100 draws, depth test on. --- */
         p_glEnable(GL_DEPTH_TEST);
         p_glUseProgram(prog_terrain);
         p_glBindVertexArray(vao);
         for (int i = 0; i < 100; i++) {
-            /* Different model matrix per chunk: Y-rotation that increases
-             * per draw, plus a translation offset.  Stored column-major. */
             float angle = (float)(i + frames) * 0.05f;
             float c = cosf(angle), s = sinf(angle);
             float mvp[16] = {
@@ -1335,16 +1347,13 @@ static void benchmark_end_to_end(void)
             p_glUniformMatrix4fv(terrain_mvp, 1, GL_FALSE, mvp);
             p_glUniform4f(terrain_color, 0.4f, 0.6f, 0.3f, 1.0f);
 
-            /* Bind a different texture every few draws. */
             p_glActiveTexture(GL_TEXTURE0);
             p_glBindTexture(GL_TEXTURE_2D, textures[i % num_tex]);
 
-            /* Toggle depth test enable/disable every ~10 draws. */
             if (i > 0 && (i % 10) == 0) {
                 p_glDisable(GL_DEPTH_TEST);
                 p_glEnable(GL_DEPTH_TEST);
             }
-            /* Change blend func every ~20 draws. */
             if (i > 0 && (i % 20) == 0) {
                 p_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 p_glBlendFunc(GL_ONE, GL_ZERO);
@@ -1353,7 +1362,6 @@ static void benchmark_end_to_end(void)
             p_glDrawArrays(GL_TRIANGLES, 0, cube_vert_count);
         }
 
-        /* --- Entity pass: 30 draws, depth test on. --- */
         p_glUseProgram(prog_entity);
         p_glBindVertexArray(vao);
         for (int i = 0; i < 30; i++) {
@@ -1375,7 +1383,6 @@ static void benchmark_end_to_end(void)
             p_glDrawArrays(GL_TRIANGLES, 0, cube_vert_count);
         }
 
-        /* --- GUI pass: 10 draws, depth test off, blend on. --- */
         p_glDisable(GL_DEPTH_TEST);
         p_glEnable(GL_BLEND);
         p_glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -1390,7 +1397,6 @@ static void benchmark_end_to_end(void)
         p_glDisable(GL_BLEND);
         p_glEnable(GL_DEPTH_TEST);
 
-        /* --- Animated texture upload every ~30 frames. --- */
         if ((frames % 30) == 0) {
             memset(tex_data, (uint8_t)(frames & 0xFF), tex_bytes);
             p_glActiveTexture(GL_TEXTURE0);
@@ -1402,7 +1408,7 @@ static void benchmark_end_to_end(void)
         glfwSwapBuffers(g_window);
 
         uint64_t frame_end = now_ns();
-        frame_times[frames] = (double)(frame_end - frame_start) / 1e6; /* ms */
+        frame_times[frames] = (double)(frame_end - frame_start) / 1e6;
         frames++;
 
         if ((frame_end - loop_start) >= max_duration_ns) {
@@ -1421,10 +1427,10 @@ static void benchmark_end_to_end(void)
     double avg_ms = total_ms / (double)frames;
     double fps = 1000.0 / avg_ms;
 
-    print_row("End-to-End", "FPS", "%.1f", fps);
-    print_row("End-to-End", "Avg Frame ms", "%.2f", avg_ms);
-    print_row("End-to-End", "Min Frame ms", "%.2f", min_ms);
-    print_row("End-to-End", "Max Frame ms", "%.2f", max_ms);
+    record_result("End-to-End", "FPS", "%.1f", fps);
+    record_result("End-to-End", "Avg Frame ms", "%.2f", avg_ms);
+    record_result("End-to-End", "Min Frame ms", "%.2f", min_ms);
+    record_result("End-to-End", "Max Frame ms", "%.2f", max_ms);
 
     free(frame_times);
     free(tex_data);
@@ -1446,18 +1452,20 @@ static void print_usage(const char *prog)
 {
     printf("Usage: %s [--help]\n", prog);
     printf("\n");
-    printf("Runs the MGL benchmark suite (12 categories) and prints a\n");
-    printf("results table.  The program creates a hidden 640x480 GLFW\n");
-    printf("window, loads GL entry points through glfwGetProcAddress\n");
-    printf("(routed through MGL), and measures translation overhead.\n");
+    printf("Runs the benchmark suite and prints a results table at the\n");
+    printf("end.  The program creates a hidden 640x480 GLFW window, loads\n");
+    printf("GL entry points through glfwGetProcAddress, and measures\n");
+    printf("translation overhead and GPU execution time.\n");
+    printf("\n");
+    printf("Backend: %s\n", BENCHMARK_BACKEND_NAME);
     printf("\n");
     printf("Categories:\n");
     printf("  1.  Empty Draw         7.  Pipeline Switch\n");
     printf("  2.  Triangle Draw      8.  Uniform Update\n");
-    printf("  3.  Batch Draw         9.  GPU Time (glFinish)\n");
+    printf("  3.  Batch Draw         9.  GPU Time (Timer Query)\n");
     printf("  4.  Texture Upload    10.  End-to-End (Minecraft-like)\n");
     printf("  5.  Buffer Upload     11.  API Dispatch (no-op overhead)\n");
-    printf("  6.  State Changes     12.  Fine-grained GPU Time\n");
+    printf("  6.  State Changes     12.  Fine-grained GPU Time (Timer Query)\n");
 }
 
 int main(int argc, char **argv)
@@ -1467,7 +1475,6 @@ int main(int argc, char **argv)
             print_usage(argv[0]);
             return 0;
         }
-        /* Unknown argument — warn but continue. */
         fprintf(stderr, "Unknown argument: %s\n\n", argv[1]);
         print_usage(argv[0]);
         return 1;
@@ -1501,19 +1508,20 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    /* Print some context info for sanity. */
+    /* Print context info. */
     const GLubyte *renderer = p_glGetString(GL_RENDERER);
     const GLubyte *version = p_glGetString(GL_VERSION);
     const GLubyte *vendor = p_glGetString(GL_VENDOR);
-    printf("Renderer: %s\n", renderer ? (const char *)renderer : "(null)");
-    printf("Version:  %s\n", version ? (const char *)version : "(null)");
-    printf("Vendor:   %s\n", vendor ? (const char *)vendor : "(null)");
+    printf("Backend:   %s\n", BENCHMARK_BACKEND_NAME);
+    printf("Renderer:  %s\n", renderer ? (const char *)renderer : "(null)");
+    printf("Version:   %s\n", version ? (const char *)version : "(null)");
+    printf("Vendor:    %s\n", vendor ? (const char *)vendor : "(null)");
     printf("\n");
 
     p_glViewport(0, 0, 640, 480);
     check_gl_error("initial setup");
 
-    print_table_header();
+    printf("Running benchmarks...\n");
 
     benchmark_empty_draw();
     benchmark_triangle_draw();
@@ -1528,7 +1536,8 @@ int main(int argc, char **argv)
     benchmark_gpu_time_fine();
     benchmark_end_to_end();
 
-    print_table_footer();
+    /* Print all results at the end. */
+    print_all_results();
 
     glfwDestroyWindow(g_window);
     glfwTerminate();

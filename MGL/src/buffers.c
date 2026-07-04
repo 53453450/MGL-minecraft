@@ -1423,7 +1423,12 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         base_slot->offset = 0;
         base_slot->size = ptr->size;
         base_slot->buf = ptr;
-        STATE(buffers[buffer_index]) = ptr;
+        /* Per GL 4.6 spec, glBindBufferBase only updates the indexed
+         * binding point — it must NOT modify the generic binding
+         * (STATE(buffers[buffer_index])).  The previous code polluted the
+         * generic binding state, which could cause later glBufferData /
+         * glBufferSubData calls targeting the generic binding to operate
+         * on the wrong buffer. */
 
         ptr->target = target;
     }
@@ -1434,10 +1439,9 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             mglFlushPendingDraws(ctx);
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
-        STATE(buffers[buffer_index]) = NULL;
+        /* Do not touch the generic binding here either. */
     }
 
-    mglSetGenericBufferBinding(ctx, target, buffer);
     ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
 }
 
@@ -1791,10 +1795,11 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
     // buffer was created via buffer storage call for immutable storage
     if (ptr->immutable_storage)
     {
-        // ERROR_RETURN(GL_INVALID_OPERATION);
-        // return;
-        // Workaround: Allow re-allocation even if immutable, to support guests that violate spec
-        // fprintf(stderr, "MGL WARNING: glBufferData called on immutable buffer %d\n", ptr->name);
+        /* Per GL 4.6 spec, glBufferData on a buffer with immutable storage
+         * (created via glBufferStorage) generates GL_INVALID_OPERATION.
+         * The previous workaround silently allowed re-allocation. */
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     initBufferData(ctx, ptr, size, data, false);
@@ -1901,7 +1906,9 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
     {
         fprintf(stderr, "MGL Error: mglBufferSubData: data is NULL (target=0x%x off=%ld size=%ld)\n",
                 target, (long)offset, (long)size);
-        ERROR_RETURN(GL_INVALID_VALUE);
+        /* Per GL 4.6 spec, a NULL data pointer with non-zero size generates
+         * GL_INVALID_OPERATION (not GL_INVALID_VALUE). */
+        ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
     src_hash_for_meta = mglTraceHashBytes(data, (size_t)size);
@@ -2186,9 +2193,15 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
     uint8_t *dst_data = NULL;
     bool used_map_callback = false;
 
+    /* Per GL 4.6 spec, size==0 is a valid no-op and must not generate an
+     * error.  Negative size still generates GL_INVALID_VALUE. */
     if (size < 0)
     {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (size == 0)
+    {
         return;
     }
 
@@ -2208,9 +2221,13 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     if (src_buf == dst_buf)
     {
+        /* Per GL 4.6 spec, when src and dst are the same buffer and the
+         * read/write ranges overlap, the error is GL_INVALID_OPERATION
+         * (not GL_INVALID_VALUE).  Identical offsets with size > 0 means
+         * the ranges fully overlap. */
         if (readOffset == writeOffset)
         {
-            ERROR_RETURN(GL_INVALID_VALUE);
+            ERROR_RETURN(GL_INVALID_OPERATION);
             return;
         }
 
@@ -2222,7 +2239,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         {
             if (r0 + usize > w0)
             {
-                ERROR_RETURN(GL_INVALID_VALUE);
+                ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
         }
@@ -2230,7 +2247,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         {
             if (w0 + usize > r0)
             {
-                ERROR_RETURN(GL_INVALID_VALUE);
+                ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
         }

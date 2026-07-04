@@ -794,7 +794,17 @@ typedef struct {
 
     // keep these out of the var struct for debugging and access
 
-    GLenum error;   // glGetError
+    /* Error queue — per GL 4.6 spec, the error queue must hold at least 16
+     * distinct errors.  When the queue is full, new errors are dropped (the
+     * spec guarantees at least 16 are retained).  error_head is the index of
+     * the next error to return from glGetError; error_count is the number of
+     * queued errors.  The legacy `error` field mirrors the head for backwards
+     * compatibility with code that reads/writes it directly. */
+    #define MGL_ERROR_QUEUE_SIZE 16
+    GLenum error;   // glGetError (mirrors error_queue[error_head] for legacy code)
+    GLenum error_queue[MGL_ERROR_QUEUE_SIZE];
+    GLuint error_head;
+    GLuint error_count;
 
     GLuint draw_buffer; // GL_DRAW_BUFFER / GL_DRAW_BUFFER0
     GLsizei draw_buffer_count;
@@ -974,6 +984,17 @@ struct GLMMetalFuncs {
      * samples passed). */
     void (*mtlBeginSampleQuery)(GLMContext ctx);
     GLuint64 (*mtlEndSampleQuery)(GLMContext ctx);
+
+    /* GPU timer query support (GL_TIME_ELAPSED / GL_TIMESTAMP).
+     * mtlBeginTimerQuery flushes pending GPU work and samples the GPU
+     * timestamp into an internal ivar.
+     * mtlEndTimerQuery flushes pending work, samples the GPU timestamp
+     * again, and returns the elapsed GPU nanoseconds (end - begin).
+     * mtlGetGPUTimestamp returns the current GPU timestamp in nanoseconds
+     * (used by glQueryCounter(GL_TIMESTAMP)). */
+    void (*mtlBeginTimerQuery)(GLMContext ctx);
+    GLuint64 (*mtlEndTimerQuery)(GLMContext ctx);
+    GLuint64 (*mtlGetGPUTimestamp)(GLMContext ctx);
 } ;
 
 typedef struct GLMContextRec_t {

@@ -1106,7 +1106,6 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_VALUE);
     ERROR_CHECK_RETURN(index < MAX_ATTRIBS, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(index < MGL_MAX_VERTEX_ATTRIB_BINDINGS, GL_INVALID_VALUE);
 
     if (ptr->attrib[index].divisor == divisor &&
         ptr->attrib[index].buffer_bindingindex == index &&
