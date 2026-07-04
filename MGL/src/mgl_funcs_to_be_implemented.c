@@ -5271,7 +5271,14 @@ void mglPatchParameterfv(GLMContext ctx, GLenum pname, const GLfloat *values)
 	switch (pname)
 	{
 		case GL_PATCH_DEFAULT_INNER_LEVEL:
+			ctx->state.var.patch_default_inner_level[0] = values[0];
+			ctx->state.var.patch_default_inner_level[1] = values[1];
+			return;
 		case GL_PATCH_DEFAULT_OUTER_LEVEL:
+			ctx->state.var.patch_default_outer_level[0] = values[0];
+			ctx->state.var.patch_default_outer_level[1] = values[1];
+			ctx->state.var.patch_default_outer_level[2] = values[2];
+			ctx->state.var.patch_default_outer_level[3] = values[3];
 			return;
 		default:
 			ERROR_RETURN(GL_INVALID_ENUM);

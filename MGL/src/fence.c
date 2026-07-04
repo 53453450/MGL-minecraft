@@ -19,6 +19,7 @@
  */
 
 #include <strings.h>
+#include <time.h>
 
 #include "glm_context.h"
 #include "draw_command.h"
@@ -99,14 +100,15 @@ void mglDeleteSync(GLMContext ctx, GLsync sync)
         return;
     }
 
-    if (sync->mtl_event)
-    {
+    /* Release the fence's retained Metal resources WITHOUT blocking. Per the
+     * GL spec, glDeleteSync does not require a GPU wait. Metal retains in-flight
+     * command buffers internally, so releasing our reference here is safe and
+     * avoids a leak without stalling on GPU completion. */
+    if (ctx->mtl_funcs.mtlReleaseSync) {
+        ctx->mtl_funcs.mtlReleaseSync(ctx, sync);
+    } else if (sync->mtl_command_buffer || sync->mtl_event) {
+        /* Fallback: blocking release if the non-blocking entry is unavailable. */
         ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
-
-        // should be null - but handle gracefully if not
-        if (sync->mtl_event != NULL) {
-            fprintf(stderr, "MGL WARNING: sync->mtl_event should be NULL after wait, but is %p\n", sync->mtl_event);
-        }
     }
 
     free(sync);
@@ -128,20 +130,59 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
         return GL_INVALID_VALUE;
     }
 
-    if (sync->mtl_event == NULL)
+    /* GL_ALREADY_SIGNALED: the fence had already completed at call time, so no
+     * wait is performed. mtlGetSyncStatus reports GL_SIGNALED when the retained
+     * command buffer has completed or when there is no CB to wait on. */
+    if (ctx->mtl_funcs.mtlGetSyncStatus &&
+        ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
     {
         return GL_ALREADY_SIGNALED;
     }
 
-    ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
-
-    // Do not crash the process if backend wait/recovery couldn't signal the event.
-    if (sync->mtl_event != NULL)
+    /* timeout == 0 is a non-blocking probe: return immediately without waiting. */
+    if (timeout == 0)
     {
-        fprintf(stderr, "MGL WARNING: mglClientWaitSync timed out or backend recovery incomplete; event still pending (%p)\n", sync->mtl_event);
         return GL_TIMEOUT_EXPIRED;
     }
 
+    /* Finite timeout: mtlWaitForSync blocks via waitUntilCompleted (which has no
+     * timeout), so to honor a bounded timeout we poll the non-blocking status
+     * with short sleeps up to the timeout, returning GL_TIMEOUT_EXPIRED if the
+     * fence does not complete in time. */
+    if (ctx->mtl_funcs.mtlGetSyncStatus)
+    {
+        const uint64_t poll_interval_ns = 500000; /* 0.5 ms */
+        uint64_t elapsed_ns = 0;
+
+        while (elapsed_ns < timeout)
+        {
+            if (ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
+            {
+                return GL_CONDITION_SATISFIED;
+            }
+
+            struct timespec ts;
+            ts.tv_sec = 0;
+            ts.tv_nsec = (long)poll_interval_ns;
+            nanosleep(&ts, NULL);
+
+            elapsed_ns += poll_interval_ns;
+        }
+
+        /* Final check after the timeout has elapsed. */
+        if (ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync) == GL_SIGNALED)
+        {
+            return GL_CONDITION_SATISFIED;
+        }
+
+        return GL_TIMEOUT_EXPIRED;
+    }
+
+    /* Fallback (no status query available): block until the fence completes.
+     *
+     * MGL_SYNC_STRICT: fence wait 已通过 mtlWaitForSync (waitUntilCompleted)
+     * 完成保守同步，无需额外 strict 分支。 */
+    ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
     return GL_CONDITION_SATISFIED;
 }
 
@@ -160,12 +201,13 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
         // Continue with GL_TIMEOUT_IGNORED behavior
     }
 
+    /* mtlWaitForSync now blocks via waitUntilCompleted on the retained command
+     * buffer, satisfying the GL spec requirement that glWaitSync block until the
+     * fence's insertion-point-prior commands have completed on the GPU.
+     *
+     * MGL_SYNC_STRICT: fence wait 已通过 mtlWaitForSync (waitUntilCompleted)
+     * 完成保守同步，无需额外 strict 分支。 */
     ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
-
-    // Handle gracefully if event is not null after wait
-    if (sync->mtl_event != NULL) {
-        fprintf(stderr, "MGL WARNING: sync->mtl_event should be NULL after server wait, but is %p\n", sync->mtl_event);
-    }
 }
 
 void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsizei *length, GLint *values)
@@ -199,10 +241,16 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
             break;
 
         case GL_SYNC_STATUS:
-            if (sync->mtl_event)
-                *values = GL_UNSIGNALED;
-            else
-                *values = GL_SIGNALED;
+            /* Non-blocking status query. Report GL_SIGNALED when the retained
+             * command buffer has completed (or there is no CB to wait on);
+             * otherwise GL_UNSIGNALED. Does not block. Falls back to the
+             * void*-null check if the backend status entry is unavailable. */
+            if (ctx->mtl_funcs.mtlGetSyncStatus) {
+                *values = ctx->mtl_funcs.mtlGetSyncStatus(ctx, sync);
+            } else {
+                *values = (sync->mtl_command_buffer == NULL && sync->mtl_event == NULL)
+                          ? GL_SIGNALED : GL_UNSIGNALED;
+            }
             break;
 
         case GL_SYNC_CONDITION:
@@ -265,11 +313,25 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
      * writes consumed by later GL reads or draws. This conservative barrier
      * gives SSBO/image/texture updates GL ordering semantics until finer-grain
      * encoder hazards are implemented.
+     *
+     * Compute encoder coverage: MGL does NOT keep a long-lived compute encoder
+     * across GL calls — every glDispatchCompute / tessellation dispatch creates
+     * a local MTLComputeCommandEncoder via [_currentCommandBuffer
+     * computeCommandEncoder] and calls endEncoding() before returning (see
+     * mtlDispatchCompute and the TCS/TES dispatch paths in MGLRenderer.m). Thus
+     * no open compute encoder exists when mglMemoryBarrier is reached, and the
+     * flush path below (mglFlushCommandBuffer -> mtlFlush -> flushCommandBuffer:
+     * -> endRenderEncoding + commit + waitUntilCompleted) is sufficient: it
+     * commits the current CB (which already contains all encoded compute
+     * dispatches) and waits for completion, making compute writes visible to
+     * subsequent GL draws/reads. No explicit endComputeEncoding is needed here.
      */
     mglFlushCommandBuffer(ctx);
     if (ctx->mtl_funcs.mtlFlush) {
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
+    /* MGL_SYNC_STRICT: 此处已执行 mglFlushCommandBuffer + mtlFlush(ctx, true)
+     * (commit + waitUntilCompleted)，属于保守路径，无需额外 strict 分支。 */
 
     /* Storage image (imageStore) writes go directly to the GPU Metal texture.
      * Without marking the texture/level as metal_data_authoritative, subsequent

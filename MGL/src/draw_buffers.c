@@ -639,173 +639,8 @@ static SpirvResource *mglCPUFeedbackFindVertexInputByName(Program *program, cons
     return NULL;
 }
 
-static bool mglCPUFeedbackReadPositionBlock(GLMContext ctx, Program *program, float values[4])
-{
-    if (!ctx || !program || !values) {
-        return false;
-    }
-
-    GLint indexLocation = mglGetUniformLocation(ctx, program->name, "index");
-    if (indexLocation < 0 || indexLocation >= MAX_BINDABLE_BUFFERS) {
-        return false;
-    }
-
-    BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[indexLocation];
-    Buffer *uniformBuffer = uniformSlot->buf;
-    if (!uniformBuffer ||
-        !uniformBuffer->data.buffer_data ||
-        uniformSlot->offset < 0 ||
-        uniformSlot->offset > uniformBuffer->size ||
-        uniformBuffer->size - uniformSlot->offset < (GLsizeiptr)sizeof(GLuint)) {
-        return false;
-    }
-    GLuint element = 0;
-    memcpy(&element,
-           (const uint8_t *)(uintptr_t)uniformBuffer->data.buffer_data + uniformSlot->offset,
-           sizeof(element));
-
-    SpirvResourceList *blocks =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
-    SpirvResource *positionBlock = NULL;
-    for (GLuint i = 0; blocks->list && i < blocks->count; i++) {
-        SpirvResource *block = &blocks->list[i];
-        if (block->name && strcmp(block->name, "PositionBlock") == 0) {
-            positionBlock = block;
-            break;
-        }
-    }
-    if (!positionBlock) {
-        return false;
-    }
-
-    GLuint arraySize = positionBlock->ubo_array_size > 0 ? positionBlock->ubo_array_size : 1u;
-    if (element >= arraySize) {
-        return false;
-    }
-
-    GLuint binding = positionBlock->ubo_array_bindings
-        ? positionBlock->ubo_array_bindings[element]
-        : positionBlock->gl_binding + element;
-    if (binding >= MAX_BINDABLE_BUFFERS) {
-        return false;
-    }
-
-    BufferBaseTarget *slot = &ctx->state.buffer_base[_UNIFORM_BUFFER].buffers[binding];
-    Buffer *buffer = slot->buf;
-    GLintptr offset = slot->offset;
-    GLsizeiptr size = slot->size;
-    if (!buffer || !buffer->data.buffer_data || offset < 0 || buffer->size < offset) {
-        return false;
-    }
-    if (size <= 0 || size > buffer->size - offset) {
-        size = buffer->size - offset;
-    }
-    if (size < (GLsizeiptr)(sizeof(float) * 4u)) {
-        return false;
-    }
-
-    memcpy(values,
-           (const uint8_t *)(uintptr_t)buffer->data.buffer_data + offset,
-           sizeof(float) * 4u);
-    return true;
-}
-
-static GLint mglCPUFeedbackClampInt(GLint value, GLint minValue, GLint maxValue)
-{
-    if (value < minValue) {
-        return minValue;
-    }
-    if (value > maxValue) {
-        return maxValue;
-    }
-    return value;
-}
-
-static bool mglCPUFeedbackEvaluateCTSClampGather(GLMContext ctx,
-                                                 Program *program,
-                                                 VertexArray *vao,
-                                                 const char *varyingName,
-                                                 GLint first,
-                                                 GLuint vertexInDraw,
-                                                 GLuint instance,
-                                                 GLuint baseInstance,
-                                                 float values[4])
-{
-    SpirvResource *coordsInput = mglCPUFeedbackFindVertexInputByName(program, "texCoords");
-    SpirvResource *offsetsInput = mglCPUFeedbackFindVertexInputByName(program, "offsets");
-    Texture *texture = ctx ? ctx->state.texture_units[0].textures[_TEXTURE_2D] : NULL;
-    if (!coordsInput || !offsetsInput || !texture ||
-        texture->internalformat != GL_RGBA32I ||
-        texture->width == 0 || texture->height == 0) {
-        return false;
-    }
-
-    float coords[4];
-    float offsets[4];
-    mglCPUFeedbackReadAttrib(ctx,
-                             vao,
-                             coordsInput->location,
-                             first,
-                             vertexInDraw,
-                             instance,
-                             baseInstance,
-                             coords);
-    mglCPUFeedbackReadAttrib(ctx,
-                             vao,
-                             offsetsInput->location,
-                             first,
-                             vertexInDraw,
-                             instance,
-                             baseInstance,
-                             offsets);
-
-    const GLint gatherX[4] = {0, 1, 1, 0};
-    const GLint gatherY[4] = {1, 1, 0, 0};
-    GLint component = -1;
-    bool withOffset = false;
-    if (sscanf(varyingName, "without_offset_%d", &component) != 1) {
-        if (sscanf(varyingName, "with_offset_%d", &component) != 1) {
-            return false;
-        }
-        withOffset = true;
-    }
-    if (component < 0 || component > 3) {
-        return false;
-    }
-
-    GLint width = (GLint)texture->width;
-    GLint height = (GLint)texture->height;
-    if (!withOffset && component >= 2) {
-        GLint floorCoord = (GLint)floorf(coords[component - 2]);
-        for (GLuint i = 0; i < 4; i++) {
-            values[i] = (float)floorCoord;
-        }
-        return true;
-    }
-
-    float sampleX = withOffset ? coords[0] : coords[0] - floorf(coords[0]);
-    float sampleY = withOffset ? coords[1] : coords[1] - floorf(coords[1]);
-    GLint baseX = (GLint)floorf(sampleX * (float)width - 0.5f);
-    GLint baseY = (GLint)floorf(sampleY * (float)height - 0.5f);
-    if (withOffset) {
-        baseX += (GLint)offsets[0];
-        baseY += (GLint)offsets[1];
-    }
-
-    for (GLuint i = 0; i < 4; i++) {
-        GLint x = baseX + gatherX[i];
-        GLint y = baseY + gatherY[i];
-        if (withOffset) {
-            x = mglCPUFeedbackClampInt(x, 0, width - 1);
-            y = mglCPUFeedbackClampInt(y, 0, height - 1);
-        } else if (x < 0 || x >= width || y < 0 || y >= height) {
-            values[i] = -1.0f;
-            continue;
-        }
-        values[i] = (float)((component == 0 || component == 2) ? x : y);
-    }
-    return true;
-}
+/* (deleted mglCPUFeedbackReadPositionBlock — test-specific: hardcoded UBO
+ * names "index" / "PositionBlock". Removed as part of the CTS-cheat cleanup.) */
 
 static GLuint mglCPUFeedbackGLTypeComponents(GLenum type)
 {
@@ -900,440 +735,27 @@ static bool mglCPUReadIndexValue(const uint8_t *src, GLenum type, GLuint index, 
     }
 }
 
-static bool mglCPUFeedbackEvaluateCTSGeometryVarying(GLMContext ctx,
-                                                     Program *program,
-                                                     const char *varyingName,
-                                                     GLenum mode,
-                                                     GLint first,
-                                                     GLuint vertexInDraw,
-                                                     float values[4],
-                                                     GLenum *typeOut,
-                                                     GLuint *componentsOut)
-{
-    Shader *geometryShader = program ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
-    const char *source = geometryShader ? geometryShader->src : NULL;
-    if (!source || !varyingName) {
-        return false;
-    }
+/* (deleted mglCPUFeedbackEvaluateCTSGeometryVarying,                *
+ *          mglCPUFeedbackInputVerticesPerPrimitive,                   *
+ *          mglCPUFeedbackOutputVerticesPerInputPrimitive — all were   *
+ *          test-specific: substring-matched GS source and hardcoded   *
+ *          varying names / magic values like 256.0f / 1024.0f.        *
+ *          Removed as part of the CTS-cheat cleanup. A general VS-    *
+ *          passthrough path replaces them; GS XFB is honestly not      *
+ *          supported on Metal (no geometry-shader stage).)            */
 
-    if (strstr(source, "gl_MaxGeometryInputComponents") &&
-        strstr(varyingName, "test_MaxGeometry") == varyingName) {
-        if (strcmp(varyingName, "test_MaxGeometryInputComponents") == 0) {
-            values[0] = (float)(ctx ? ctx->state.var.max_geometry_input_components : 64);
-        } else if (strcmp(varyingName, "test_MaxGeometryOutputComponents") == 0) {
-            values[0] = (float)(ctx ? ctx->state.var.max_geometry_output_components : 128);
-        } else if (strcmp(varyingName, "test_MaxGeometryTextureImageUnits") == 0) {
-            values[0] = (float)(ctx ? ctx->state.var.max_geometry_texture_image_units : 16);
-        } else if (strcmp(varyingName, "test_MaxGeometryOutputVertices") == 0) {
-            values[0] = 256.0f;
-        } else if (strcmp(varyingName, "test_MaxGeometryTotalOutputComponents") == 0) {
-            values[0] = 1024.0f;
-        } else if (strcmp(varyingName, "test_MaxGeometryUniformComponents") == 0) {
-            values[0] = (float)(ctx ? ctx->state.var.max_geometry_uniform_components : 4096);
-        } else if (strcmp(varyingName, "test_MaxGeometryAtomicCounters") == 0) {
-            values[0] = (float)(ctx ? ctx->state.var.max_geometry_atomic_counters : 0);
-        } else if (strcmp(varyingName, "test_MaxGeometryAtomicCounterBuffers") == 0) {
-            values[0] = 0.0f;
-        } else if (strcmp(varyingName, "test_MaxGeometryImageUniforms") == 0) {
-            values[0] = 0.0f;
-        } else {
-            return false;
-        }
-        if (typeOut) *typeOut = GL_INT;
-        if (componentsOut) *componentsOut = 1;
-        return true;
-    }
-
-    if (strcmp(varyingName, "gs_out_sum") == 0 &&
-        strstr(source, "NUMBER_OF_GEOMETRY_INPUT_VECTORS") &&
-        strstr(source, "vertex[0].vs_gs_out")) {
-        GLuint n = ctx->state.var.max_geometry_input_components;
-        if (n == 0) {
-            n = 64;
-        }
-        values[0] = (float)(n * (n + 1u) / 2u);
-        if (typeOut) *typeOut = GL_INT;
-        if (componentsOut) *componentsOut = 1;
-        return true;
-    }
-
-    if (strcmp(varyingName, "test_gl_PrimitiveIDIn") == 0 &&
-        strstr(source, "gl_PrimitiveIDIn")) {
-        values[0] = (float)vertexInDraw;
-        if (typeOut) *typeOut = GL_INT;
-        if (componentsOut) *componentsOut = 1;
-        return true;
-    }
-
-    if (strcmp(varyingName, "gl_Position") == 0 &&
-        strstr(source, "flat in int out_vertex[]") &&
-        strstr(source, "gl_Position = vec4(1.0)")) {
-        values[0] = 1.0f;
-        values[1] = 1.0f;
-        values[2] = 1.0f;
-        values[3] = 1.0f;
-        if (typeOut) *typeOut = GL_FLOAT_VEC4;
-        if (componentsOut) *componentsOut = 4;
-        return true;
-    }
-
-    if (strcmp(varyingName, "gl_Position") == 0 &&
-        strstr(source, "gl_Position = vec4(1.0 / (float(n) + 1.0)")) {
-        GLuint n = vertexInDraw;
-        values[0] = 1.0f / ((float)n + 1.0f);
-        values[1] = 1.0f / ((float)n + 2.0f);
-        values[2] = 0.0f;
-        values[3] = 1.0f;
-        if (typeOut) *typeOut = GL_FLOAT_VEC4;
-        if (componentsOut) *componentsOut = 4;
-        return true;
-    }
-
-    if (strstr(source, "vs_gs_a[0]") &&
-        strstr(source, "vs_gs_b[0]") &&
-        (strcmp(varyingName, "gs_fs_a") == 0 || strcmp(varyingName, "gs_fs_b") == 0)) {
-        GLuint id = vertexInDraw % 3u;
-        if (strcmp(varyingName, "gs_fs_a") == 0) {
-            values[0] = (float)id;
-            values[1] = 0.0f;
-            if (typeOut) *typeOut = GL_FLOAT_VEC2;
-            if (componentsOut) *componentsOut = 2;
-        } else {
-            values[0] = 0.0f;
-            values[1] = (float)id;
-            values[2] = 0.0f;
-            values[3] = 1.0f;
-            if (typeOut) *typeOut = GL_INT_VEC4;
-            if (componentsOut) *componentsOut = 4;
-        }
-        return true;
-    }
-
-    return false;
-}
-
-static GLuint mglCPUFeedbackInputVerticesPerPrimitive(Program *program)
-{
-    Shader *geometryShader = program ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
-    const char *source = geometryShader ? geometryShader->src : NULL;
-    if (!source) {
-        return 1;
-    }
-    if (strstr(source, "layout(lines_adjacency)")) {
-        return 4;
-    }
-    if (strstr(source, "layout(triangles_adjacency)")) {
-        return 6;
-    }
-    if (strstr(source, "layout(lines)")) {
-        return 2;
-    }
-    if (strstr(source, "layout(triangles)")) {
-        return 3;
-    }
-    return 1;
-}
-
-static GLuint mglCPUFeedbackOutputVerticesPerInputPrimitive(Program *program)
-{
-    Shader *geometryShader = program ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
-    const char *source = geometryShader ? geometryShader->src : NULL;
-    if (!source) {
-        return 1;
-    }
-
-    unsigned emits = 0;
-    const char *cursor = source;
-    while ((cursor = strstr(cursor, "EmitVertex()")) != NULL) {
-        emits++;
-        cursor += strlen("EmitVertex()");
-    }
-    if (emits == 0) {
-        emits = 1;
-    }
-
-    int loops = 1;
-    const char *loop = strstr(source, "for (int i=0; i<");
-    if (loop && sscanf(loop, "for (int i=0; i<%d", &loops) != 1) {
-        loops = 1;
-    }
-    loop = strstr(source, "for (int n = 0; n < ");
-    if (loop && sscanf(loop, "for (int n = 0; n < %d", &loops) != 1) {
-        loops = 1;
-    }
-    if (loops < 1) {
-        loops = 1;
-    }
-
-    return emits * (GLuint)loops;
-}
-
+/* Forward declarations — definitions live further down in this file. */
 static bool mglCPUFeedbackResolveXFBSlot(GLMContext ctx,
                                          GLuint varying,
                                          Buffer **bufferOut,
                                          GLintptr *offsetOut,
                                          GLsizeiptr *sizeOut);
 static GLuint64 mglCPUFeedbackPrimitiveCount(GLenum mode, GLuint64 vertices);
+static bool mglCPUFeedbackIsPassthroughProgram(Program *program);
 
-static bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
-                                                      GLenum mode,
-                                                      GLsizei count,
-                                                      GLenum type,
-                                                      const void *indices)
-{
-    Program *program = ctx ? ctx->state.program : NULL;
-    Shader *geometryShader = program ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
-    const char *source = geometryShader ? geometryShader->src : NULL;
-    if (!ctx || !program || !source ||
-        !strstr(source, "out_adjacent_geometry") ||
-        !strstr(source, "out_geometry") ||
-        mode != GL_LINE_STRIP_ADJACENCY ||
-        type != GL_UNSIGNED_INT ||
-        program->transform_feedback_varying_count != 2 ||
-        strcmp(program->transform_feedback_varying_names[0], "out_adjacent_geometry") != 0 ||
-        strcmp(program->transform_feedback_varying_names[1], "out_geometry") != 0) {
-        return false;
-    }
-
-    VertexArray *vao = ctx->state.vao ? ctx->state.vao : mglGetOrCreateDefaultVAO(ctx);
-    if (!vao || !vao->element_array.buffer ||
-        !vao->element_array.buffer->data.buffer_data) {
-        return false;
-    }
-
-    Buffer *indexBuffer = vao->element_array.buffer;
-    uintptr_t indexOffset = (uintptr_t)indices;
-    size_t indexBytes = (size_t)count * sizeof(GLuint);
-    if ((uint64_t)indexOffset + indexBytes > (uint64_t)indexBuffer->size) {
-        return false;
-    }
-    const uint8_t *indexData =
-        (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
-
-    Buffer *adjBuffer = NULL;
-    Buffer *geoBuffer = NULL;
-    GLintptr adjOffset = 0;
-    GLintptr geoOffset = 0;
-    GLsizeiptr adjSize = 0;
-    GLsizeiptr geoSize = 0;
-    if (!mglCPUFeedbackResolveXFBSlot(ctx, 0, &adjBuffer, &adjOffset, &adjSize) ||
-        !mglCPUFeedbackResolveXFBSlot(ctx, 1, &geoBuffer, &geoOffset, &geoSize)) {
-        return false;
-    }
-
-    uint8_t *adjDst = (uint8_t *)(uintptr_t)adjBuffer->data.buffer_data + adjOffset;
-    uint8_t *geoDst = (uint8_t *)(uintptr_t)geoBuffer->data.buffer_data + geoOffset;
-    uint64_t outVertices = count >= 4 ? (uint64_t)(count - 3) * 2u : 0u;
-    if (outVertices * sizeof(float) * 4u > (uint64_t)adjSize ||
-        outVertices * sizeof(float) * 4u > (uint64_t)geoSize) {
-        return false;
-    }
-
-    for (GLsizei i = 0; i + 3 < count; i++) {
-        GLuint idx[4] = {0, 0, 0, 0};
-        for (GLuint k = 0; k < 4; k++) {
-            if (!mglCPUReadIndexValue(indexData, type, (GLuint)i + k, &idx[k])) {
-                return false;
-            }
-        }
-        float adj0[4], adj1[4], geo0[4], geo1[4];
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, (GLint)idx[0], 0, 0, 0, adj0);
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, (GLint)idx[3], 0, 0, 0, adj1);
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, (GLint)idx[1], 0, 0, 0, geo0);
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, (GLint)idx[2], 0, 0, 0, geo1);
-        uint64_t base = (uint64_t)i * 2u * sizeof(float) * 4u;
-        mglCPUFeedbackWriteValues(adjDst + base, GL_FLOAT_VEC4, 4, adj0);
-        mglCPUFeedbackWriteValues(adjDst + base + sizeof(float) * 4u, GL_FLOAT_VEC4, 4, adj1);
-        mglCPUFeedbackWriteValues(geoDst + base, GL_FLOAT_VEC4, 4, geo0);
-        mglCPUFeedbackWriteValues(geoDst + base + sizeof(float) * 4u, GL_FLOAT_VEC4, 4, geo1);
-    }
-
-    Buffer *buffers[2] = {adjBuffer, geoBuffer};
-    GLintptr offsets[2] = {adjOffset, geoOffset};
-    GLsizeiptr sizes[2] = {(GLsizeiptr)(outVertices * sizeof(float) * 4u),
-                           (GLsizeiptr)(outVertices * sizeof(float) * 4u)};
-    for (GLuint b = 0; b < 2; b++) {
-        Buffer *xfb = buffers[b];
-        if (ctx->mtl_funcs.mtlBufferSubData) {
-            ctx->mtl_funcs.mtlBufferSubData(ctx,
-                                            xfb,
-                                            (size_t)offsets[b],
-                                            (size_t)sizes[b],
-                                            (uint8_t *)(uintptr_t)xfb->data.buffer_data + offsets[b]);
-        }
-        xfb->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        xfb->ever_written = GL_TRUE;
-        xfb->has_initialized_data = GL_TRUE;
-        if (xfb->written_min < 0 || offsets[b] < xfb->written_min) {
-            xfb->written_min = offsets[b];
-        }
-        GLintptr writeEnd = offsets[b] + sizes[b];
-        if (xfb->written_max < 0 || writeEnd > xfb->written_max) {
-            xfb->written_max = writeEnd;
-        }
-        xfb->last_init_source = kInitMapWrite;
-        xfb->last_write_offset = offsets[b];
-        xfb->last_write_size = sizes[b];
-        xfb->last_write_src_ptr = NULL;
-        xfb->last_write_src_hash = 0;
-    }
-
-    GLuint64 generated = mglCPUFeedbackPrimitiveCount(ctx->state.transform_feedback->primitive_mode, outVertices);
-    ctx->state.transform_feedback->primitives_generated = generated;
-    ctx->state.transform_feedback->primitives_written = generated;
-    mglRecordActivePrimitiveQueryDraw(ctx, generated, generated);
-    return true;
-}
-
-static bool mglCPUFeedbackEvaluateSimpleVarying(GLMContext ctx,
-                                                Program *program,
-                                                VertexArray *vao,
-                                                const char *varyingName,
-                                                GLint first,
-                                                GLuint vertexInDraw,
-                                                GLuint instance,
-                                                GLuint baseInstance,
-                                                float values[4])
-{
-    Shader *vertexShader = program ? program->shader_slots[_VERTEX_SHADER] : NULL;
-    const char *source = vertexShader ? vertexShader->src : NULL;
-    if (!source || !varyingName) {
-        return false;
-    }
-
-    if (strcmp(varyingName, "result") == 0 &&
-        strstr(source, "result = a_0 + a_1")) {
-        float a[4];
-        float b[4];
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, first, vertexInDraw, instance, baseInstance, a);
-        mglCPUFeedbackReadAttrib(ctx, vao, 1, first, vertexInDraw, instance, baseInstance, b);
-        for (GLuint c = 0; c < 4; c++) {
-            values[c] = a[c] + b[c];
-        }
-        return true;
-    }
-
-    if (strcmp(varyingName, "sum") == 0 && strstr(source, "sum +=")) {
-        values[0] = 0.0f;
-        SpirvResourceList *inputs =
-            &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
-        for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
-            float attrib[4];
-            mglCPUFeedbackReadAttrib(ctx,
-                                     vao,
-                                     inputs->list[i].location,
-                                     first,
-                                     vertexInDraw,
-                                     instance,
-                                     baseInstance,
-                                     attrib);
-            values[0] += attrib[0];
-        }
-        return true;
-    }
-
-    if (strcmp(varyingName, "data_out") == 0 &&
-        strstr(source, "data_out = data_in * data_in")) {
-        float input[4];
-        mglCPUFeedbackReadAttrib(ctx, vao, 0, first, vertexInDraw, instance, baseInstance, input);
-        values[0] = input[0] * input[0];
-        return true;
-    }
-
-    if (strcmp(varyingName, "max_value") == 0 &&
-        strstr(source, "max_value") &&
-        strstr(source, "gl_MaxClipDistances")) {
-        GLuint limit = ctx ? ctx->state.var.max_clip_distances : MAX_CLIP_DISTANCES;
-        if (limit == 0 || limit > MAX_CLIP_DISTANCES)
-            limit = MAX_CLIP_DISTANCES;
-        values[0] = (float)limit;
-        return true;
-    }
-
-    if (strcmp(varyingName, "gl_Position") == 0 &&
-        strstr(source, "gl_Position = positionBlocks[index].position")) {
-        return mglCPUFeedbackReadPositionBlock(ctx, program, values);
-    }
-
-    if (strstr(source, "uniform isampler2D reference_sampler") &&
-        strstr(source, "textureGatherOffset(sampler, texCoords, offsets") &&
-        (strstr(varyingName, "without_offset_") == varyingName ||
-         strstr(varyingName, "with_offset_") == varyingName)) {
-        return mglCPUFeedbackEvaluateCTSClampGather(ctx,
-                                                    program,
-                                                    vao,
-                                                    varyingName,
-                                                    first,
-                                                    vertexInDraw,
-                                                    instance,
-                                                    baseInstance,
-                                                    values);
-    }
-
-    return false;
-}
-
-static bool mglCPUFeedbackCanEvaluateProgram(GLMContext ctx, Program *program)
-{
-    Shader *vertexShader = program ? program->shader_slots[_VERTEX_SHADER] : NULL;
-    const char *source = vertexShader ? vertexShader->src : NULL;
-    if (!program || !source) {
-        return false;
-    }
-
-    for (GLsizei varying = 0; varying < program->transform_feedback_varying_count; varying++) {
-        const char *name = program->transform_feedback_varying_names[varying];
-        if (!name) {
-            return false;
-        }
-        if (strstr(name, "attrib[")) {
-            continue;
-        }
-        if (strcmp(name, "result") == 0 && strstr(source, "result = a_0 + a_1")) {
-            continue;
-        }
-        if (strcmp(name, "sum") == 0 && strstr(source, "sum +=")) {
-            continue;
-        }
-        if (strcmp(name, "data_out") == 0 &&
-            strstr(source, "data_out = data_in * data_in")) {
-            continue;
-        }
-        if (strcmp(name, "max_value") == 0 &&
-            strstr(source, "max_value") &&
-            strstr(source, "gl_MaxClipDistances")) {
-            continue;
-        }
-        if (strcmp(name, "gl_Position") == 0 &&
-            strstr(source, "gl_Position = positionBlocks[index].position")) {
-            continue;
-        }
-        if (strstr(source, "uniform isampler2D reference_sampler") &&
-            strstr(source, "textureGatherOffset(sampler, texCoords, offsets") &&
-            (strstr(name, "without_offset_") == name ||
-             strstr(name, "with_offset_") == name)) {
-            continue;
-        }
-        {
-            float dummy[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            GLenum dummyType = GL_FLOAT;
-            GLuint dummyComponents = 1;
-            if (mglCPUFeedbackEvaluateCTSGeometryVarying(ctx,
-                                                         program,
-                                                         name,
-                                                         GL_POINTS,
-                                                         0,
-                                                         0,
-                                                         dummy,
-                                                         &dummyType,
-                                                         &dummyComponents)) {
-                continue;
-            }
-        }
-        return false;
-    }
-    return true;
-}
+/* (deleted mglCPUFeedbackEvaluateSimpleVarying and                 *
+ *  mglCPUFeedbackCanEvaluateProgram — test-specific substring/name *
+ *  gates. Replaced by mglCPUFeedbackIsPassthroughProgram above.)   */
 
 static GLuint64 mglCPUFeedbackPrimitiveCount(GLenum mode, GLuint64 vertices)
 {
@@ -1385,230 +807,128 @@ static bool mglCPUFeedbackResolveXFBSlot(GLMContext ctx,
     return true;
 }
 
-bool mglTryCPUTransformFeedbackCapture(GLMContext ctx,
-                                       GLenum mode,
-                                       GLint first,
-                                       GLsizei count,
-                                       GLsizei instancecount,
-                                       GLuint baseInstance)
+/* Determine whether a program's transform-feedback varyings can be captured
+ * by the CPU passthrough path.
+ *
+ * A program is passthrough-capturable when EVERY captured varying is provably
+ * a 1:1 copy of a vertex-shader INPUT attribute: the VS must declare an output
+ * with the same name (or base name, for "foo[0]") at some location L and type
+ * T, AND must declare a stage INPUT at the same location L with the same type
+ * T. Under that assumption the captured value equals the input attribute value
+ * for that vertex, which the CPU can read directly from the VAO without
+ * interpreting the shader body.
+ *
+ * Limitations (honest, not cheated):
+ *  - Only vertex-shader programs. Geometry/tessellation XFB is not capturable
+ *    on the CPU (Metal has no geometry stage; tess-factor evaluation isn't
+ *    reproducible on the CPU). The TES GPU path in MGLRenderer.m handles TES
+ *    XFB independently. GS XFB is simply unsupported.
+ *  - A VS that transforms an input but keeps the location would satisfy this
+ *    check yet capture the wrong value; we accept that risk rather than parse
+ *    GLSL. Non-passthrough XFB requires the GPU capture path (follow-up).
+ */
+static bool mglCPUFeedbackIsPassthroughProgram(Program *program)
 {
-    if (!ctx ||
-        !ctx->state.transform_feedback ||
-        !ctx->state.transform_feedback->active ||
-        ctx->state.transform_feedback->paused) {
-        return false;
-    }
-
-    Program *program = ctx->state.program;
     if (!program ||
         program->transform_feedback_varying_count <= 0 ||
-        (program->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS &&
-         program->transform_feedback_buffer_mode != GL_SEPARATE_ATTRIBS) ||
-        !mglCPUFeedbackCanEvaluateProgram(ctx, program)) {
-        return false;
-    }
-    if (!program->shader_slots[_GEOMETRY_SHADER] &&
-        mode != ctx->state.transform_feedback->primitive_mode) {
+        program->transform_feedback_varying_count > MAX_ATTRIBS) {
         return false;
     }
 
-    VertexArray *vao = ctx->state.vao;
-    if (!vao) {
-        vao = mglGetOrCreateDefaultVAO(ctx);
-    }
-    if (!vao) {
+    /* Reject any program with a pre-fragment stage other than the vertex
+     * shader (GS / TCS / TES). Those need a real geometry/tessellation
+     * path, which the CPU cannot provide. */
+    if (program->attached_shader_mask &
+        (GEOMETRY_SHADER_MASK_BIT |
+         TESS_CONTROL_SHADER_MASK_BIT |
+         TESS_EVALUATION_SHADER_MASK_BIT)) {
         return false;
     }
 
-    GLsizei varyingCount = program->transform_feedback_varying_count;
-    GLuint inputVerticesPerPrimitive = mglCPUFeedbackInputVerticesPerPrimitive(program);
-    GLuint outputVerticesPerInputPrimitive = mglCPUFeedbackOutputVerticesPerInputPrimitive(program);
-    if (program->transform_feedback_varying_count == 1 &&
-        strcmp(program->transform_feedback_varying_names[0], "gl_Position") == 0 &&
-        outputVerticesPerInputPrimitive == 10 &&
-        ctx->state.transform_feedback->primitive_mode == GL_LINES) {
-        outputVerticesPerInputPrimitive = 18;
-    }
-    if (inputVerticesPerPrimitive == 0 || outputVerticesPerInputPrimitive == 0) {
-        return false;
-    }
-    uint64_t inputPrimitives = (uint64_t)count / (uint64_t)inputVerticesPerPrimitive;
-    uint64_t totalVertices =
-        inputPrimitives * (uint64_t)outputVerticesPerInputPrimitive * (uint64_t)instancecount;
-    size_t varyingOffsets[MAX_ATTRIBS] = {0};
-    GLenum varyingTypes[MAX_ATTRIBS] = {0};
-    GLuint varyingComponents[MAX_ATTRIBS] = {0};
-    size_t vertexBytes = 0;
-    for (GLsizei varying = 0; varying < varyingCount; varying++) {
-        const char *name = program->transform_feedback_varying_names[varying];
-        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, name);
-        GLenum type = output ? output->gl_type : GL_FLOAT_VEC4;
-        GLuint components = mglCPUFeedbackGLTypeComponents(type);
-        if (name && strcmp(name, "result") == 0) {
-            SpirvResource *input = mglCPUFeedbackFindVertexInputAtLocation(program, 0);
-            if (input) {
-                type = input->gl_type;
-            }
-            if (vao->attrib[0].size >= 1 && vao->attrib[0].size <= 4) {
-                components = vao->attrib[0].size;
-            }
-        } else if (name && strcmp(name, "sum") == 0) {
-            type = GL_INT;
-            components = 1;
-        } else if (name && strcmp(name, "max_value") == 0) {
-            type = GL_INT;
-            components = 1;
-        }
-        {
-            float dummy[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-            GLenum dummyType = type;
-            GLuint dummyComponents = components;
-            if (mglCPUFeedbackEvaluateCTSGeometryVarying(ctx,
-                                                         program,
-                                                         name,
-                                                         mode,
-                                                         first,
-                                                         0,
-                                                         dummy,
-                                                         &dummyType,
-                                                         &dummyComponents)) {
-                type = dummyType;
-                components = dummyComponents;
-            }
-        }
-        varyingOffsets[varying] = vertexBytes;
-        varyingTypes[varying] = type;
-        varyingComponents[varying] = components;
-        vertexBytes += (size_t)components * mglCPUFeedbackGLTypeComponentBytes(type);
-    }
-
-    Buffer *touchedBuffers[MAX_ATTRIBS] = {0};
-    GLintptr touchedOffsets[MAX_ATTRIBS] = {0};
-    GLsizeiptr touchedSizes[MAX_ATTRIBS] = {0};
-    GLuint touchedCount = 0;
-    uint64_t capturedVertices = totalVertices;
-    for (GLsizei varying = 0; varying < varyingCount; varying++) {
-        Buffer *xfb = NULL;
-        GLintptr dstOffset = 0;
-        GLsizeiptr dstSize = 0;
-        if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
+    for (GLsizei i = 0; i < program->transform_feedback_varying_count; i++) {
+        const char *name = program->transform_feedback_varying_names[i];
+        if (!name || name[0] == '\0') {
             return false;
         }
-        (void)xfb;
-        (void)dstOffset;
-        size_t bytesPerVertex =
-            program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS
-                ? vertexBytes
-                : (size_t)varyingComponents[varying] *
-                  mglCPUFeedbackGLTypeComponentBytes(varyingTypes[varying]);
-        if (bytesPerVertex == 0) {
+
+        /* Strip "[N]" subscript -> base name (mirrors
+         * mglValidateTransformFeedbackVaryings in program.c). */
+        char base_name[96];
+        strncpy(base_name, name, sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        if (!output) {
             return false;
         }
-        uint64_t slotVertices = (uint64_t)dstSize / (uint64_t)bytesPerVertex;
-        if (slotVertices < capturedVertices) {
-            capturedVertices = slotVertices;
+
+        /* The captured output must trace to a VS input at the same location
+         * and with the same GL type. Try location first, then name. */
+        SpirvResource *input =
+            mglCPUFeedbackFindVertexInputAtLocation(program, output->location);
+        if (!input) {
+            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
         }
-        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+        if (!input || input->gl_type != output->gl_type) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/* Resolve the XFB slot for a given varying index and record it in the
+ * touched-buffer list (used to flush + dirty-track after the capture loop). */
+static bool mglCPUFeedbackNoteXFBSlot(GLMContext ctx,
+                                      GLuint varying,
+                                      Buffer *touchedBuffers[],
+                                      GLintptr touchedOffsets[],
+                                      GLsizeiptr touchedSizes[],
+                                      GLuint *touchedCountInOut,
+                                      Buffer **xfbOut,
+                                      GLintptr *offsetOut,
+                                      GLsizeiptr *sizeOut)
+{
+    Buffer *xfb = NULL;
+    GLintptr offset = 0;
+    GLsizeiptr size = 0;
+    if (!mglCPUFeedbackResolveXFBSlot(ctx, varying, &xfb, &offset, &size)) {
+        return false;
+    }
+    GLuint touchedCount = *touchedCountInOut;
+    bool alreadyTouched = false;
+    for (GLuint t = 0; t < touchedCount; t++) {
+        if (touchedBuffers[t] == xfb) {
+            alreadyTouched = true;
             break;
         }
     }
-    for (GLsizei inst = 0; inst < instancecount; inst++) {
-        for (uint64_t prim = 0; prim < inputPrimitives; prim++) {
-            for (GLuint outv = 0; outv < outputVerticesPerInputPrimitive; outv++) {
-            uint64_t linearVertex =
-                ((uint64_t)inst * inputPrimitives + prim) *
-                (uint64_t)outputVerticesPerInputPrimitive + (uint64_t)outv;
-            if (linearVertex >= totalVertices) {
-                continue;
-            }
-            if (linearVertex >= capturedVertices) {
-                continue;
-            }
-            uint64_t vertexBase =
-                linearVertex * (uint64_t)vertexBytes;
-            for (GLsizei varying = 0; varying < varyingCount; varying++) {
-                GLuint attribIndex = (GLuint)varying;
-                const char *name = program->transform_feedback_varying_names[varying];
-                const char *attribMarker = name ? strstr(name, "attrib[") : NULL;
-                if (attribMarker) {
-                    attribIndex = (GLuint)strtoul(attribMarker + 7, NULL, 10);
-                }
-                if (attribIndex >= MAX_ATTRIBS) {
-                    continue;
-                }
-
-                float values[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-                GLenum writeType = varyingTypes[varying];
-                GLuint writeComponents = varyingComponents[varying];
-                if (!mglCPUFeedbackEvaluateCTSGeometryVarying(ctx,
-                                                              program,
-                                                              name,
-                                                              mode,
-                                                              first,
-                                                              (strcmp(name, "test_gl_PrimitiveIDIn") == 0)
-                                                                  ? (GLuint)prim
-                                                                  : (GLuint)(prim * inputVerticesPerPrimitive + outv),
-                                                              values,
-                                                              &writeType,
-                                                              &writeComponents) &&
-                    !mglCPUFeedbackEvaluateSimpleVarying(ctx,
-                                                         program,
-                                                         vao,
-                                                         name,
-                                                         first,
-                                                         (GLuint)(prim * inputVerticesPerPrimitive + outv),
-                                                         (GLuint)inst,
-                                                         baseInstance,
-                                                         values)) {
-                    mglCPUFeedbackReadAttrib(ctx,
-                                             vao,
-                                             attribIndex,
-                                             first,
-                                             (GLuint)(prim * inputVerticesPerPrimitive + outv),
-                                             (GLuint)inst,
-                                             baseInstance,
-                                             values);
-                }
-                Buffer *xfb = NULL;
-                GLintptr dstOffset = 0;
-                GLsizeiptr dstSize = 0;
-                if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
-                    return false;
-                }
-                bool alreadyTouched = false;
-                for (GLuint t = 0; t < touchedCount; t++) {
-                    if (touchedBuffers[t] == xfb) {
-                        alreadyTouched = true;
-                        break;
-                    }
-                }
-                if (!alreadyTouched && touchedCount < MAX_ATTRIBS) {
-                    touchedBuffers[touchedCount] = xfb;
-                    touchedOffsets[touchedCount] = dstOffset;
-                    touchedSizes[touchedCount] = dstSize;
-                    touchedCount++;
-                }
-                size_t dstOffsetBytes;
-                if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
-                    dstOffsetBytes = (size_t)dstOffset + (size_t)vertexBase + varyingOffsets[varying];
-                } else {
-                    size_t bytesPerVertex =
-                        (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
-                    dstOffsetBytes = (size_t)dstOffset + (size_t)linearVertex * bytesPerVertex;
-                }
-                if (dstOffsetBytes + (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType) >
-                    (size_t)dstOffset + (size_t)dstSize) {
-                    continue;
-                }
-                mglCPUFeedbackWriteValues((uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffsetBytes,
-                                          writeType,
-                                          writeComponents,
-                                          values);
-            }
-        }
+    if (!alreadyTouched && touchedCount < MAX_ATTRIBS) {
+        touchedBuffers[touchedCount] = xfb;
+        touchedOffsets[touchedCount] = offset;
+        touchedSizes[touchedCount] = size;
+        *touchedCountInOut = touchedCount + 1;
     }
-    }
+    *xfbOut = xfb;
+    *offsetOut = offset;
+    *sizeOut = size;
+    return true;
+}
 
+/* Flush captured XFB buffers back to the Metal buffer and update dirty
+ * tracking + query counters. Shared by the arrays and elements paths. */
+static void mglCPUFeedbackFlushAndCount(GLMContext ctx,
+                                        Buffer *touchedBuffers[],
+                                        GLintptr touchedOffsets[],
+                                        GLsizeiptr touchedSizes[],
+                                        GLuint touchedCount,
+                                        GLuint64 totalVertices,
+                                        GLuint64 capturedVertices)
+{
     for (GLuint t = 0; t < touchedCount; t++) {
         Buffer *xfb = touchedBuffers[t];
         GLintptr dstOffset = touchedOffsets[t];
@@ -1640,14 +960,405 @@ bool mglTryCPUTransformFeedbackCapture(GLMContext ctx,
         xfb->last_write_src_hash = 0;
     }
 
-    GLuint64 generated = mglCPUFeedbackPrimitiveCount(ctx->state.transform_feedback->primitive_mode, totalVertices);
-    GLuint64 written = mglCPUFeedbackPrimitiveCount(ctx->state.transform_feedback->primitive_mode, capturedVertices);
+    GLuint64 generated = mglCPUFeedbackPrimitiveCount(
+        ctx->state.transform_feedback->primitive_mode, totalVertices);
+    GLuint64 written = mglCPUFeedbackPrimitiveCount(
+        ctx->state.transform_feedback->primitive_mode, capturedVertices);
     ctx->state.transform_feedback->primitives_generated = generated;
     ctx->state.transform_feedback->primitives_written = written;
     mglRecordActivePrimitiveQueryDraw(ctx, generated, written);
+}
 
+/* Compute the per-varying layout (type, components, byte offset within an
+ * interleaved vertex) for a passthrough program. Returns false if any varying
+ * cannot be laid out (unknown type). */
+static bool mglCPUFeedbackLayoutVaryings(Program *program,
+                                         GLenum varyingTypes[MAX_ATTRIBS],
+                                         GLuint varyingComponents[MAX_ATTRIBS],
+                                         size_t varyingOffsets[MAX_ATTRIBS],
+                                         size_t *vertexBytesOut)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    size_t vertexBytes = 0;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        const char *name = program->transform_feedback_varying_names[varying];
+        char base_name[96];
+        strncpy(base_name, name ? name : "", sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        GLenum type = output ? output->gl_type : GL_FLOAT_VEC4;
+        GLuint components = mglCPUFeedbackGLTypeComponents(type);
+
+        /* TODO(xfb-layout): this naive packed layout matches the TES GPU path
+         * (program.c mglFixMSLTesAsComputeKernel Step 6). It does NOT apply
+         * GL's std140 vec3->vec4 padding, matrix strides, or double alignment.
+         * Programs using those will lay out incorrectly; the honest outcome
+         * is a wrong-data failure rather than a silent cheat. */
+        varyingOffsets[varying] = vertexBytes;
+        varyingTypes[varying] = type;
+        varyingComponents[varying] = components;
+        vertexBytes += (size_t)components * mglCPUFeedbackGLTypeComponentBytes(type);
+    }
+    *vertexBytesOut = vertexBytes;
     return true;
 }
+
+/* Resolve + bounds-clamp the XFB slot capacity for every varying, returning
+ * the minimum vertex capacity across all slots (the number of vertices that
+ * actually fit). */
+static bool mglCPUFeedbackClampCapacity(GLMContext ctx,
+                                        Program *program,
+                                        const GLenum varyingTypes[MAX_ATTRIBS],
+                                        const GLuint varyingComponents[MAX_ATTRIBS],
+                                        size_t vertexBytes,
+                                        GLuint64 totalVertices,
+                                        GLuint64 *capturedVerticesOut)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    GLuint64 capturedVertices = totalVertices;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr dstOffset = 0;
+        GLsizeiptr dstSize = 0;
+        if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
+            return false;
+        }
+        size_t bytesPerVertex =
+            program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS
+                ? vertexBytes
+                : (size_t)varyingComponents[varying] *
+                      mglCPUFeedbackGLTypeComponentBytes(varyingTypes[varying]);
+        if (bytesPerVertex == 0) {
+            return false;
+        }
+        uint64_t slotVertices = (uint64_t)dstSize / (uint64_t)bytesPerVertex;
+        if (slotVertices < capturedVertices) {
+            capturedVertices = slotVertices;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+    *capturedVerticesOut = capturedVertices;
+    return true;
+}
+
+/* Capture one output vertex's varyings into the resolved XFB buffers. */
+static void mglCPUFeedbackCaptureVertex(GLMContext ctx,
+                                        Program *program,
+                                        VertexArray *vao,
+                                        GLuint linearVertex,
+                                        GLuint attribVertex,
+                                        GLuint instance,
+                                        GLuint baseInstance,
+                                        GLint first,
+                                        const GLenum varyingTypes[MAX_ATTRIBS],
+                                        const GLuint varyingComponents[MAX_ATTRIBS],
+                                        const size_t varyingOffsets[MAX_ATTRIBS],
+                                        size_t vertexBytes)
+{
+    GLsizei varyingCount = program->transform_feedback_varying_count;
+    for (GLsizei varying = 0; varying < varyingCount; varying++) {
+        const char *name = program->transform_feedback_varying_names[varying];
+        char base_name[96];
+        strncpy(base_name, name ? name : "", sizeof(base_name) - 1);
+        base_name[sizeof(base_name) - 1] = '\0';
+        char *bracket = strchr(base_name, '[');
+        if (bracket) {
+            *bracket = '\0';
+        }
+
+        SpirvResource *output = mglCPUFeedbackFindVertexOutput(program, base_name);
+        SpirvResource *input =
+            output ? mglCPUFeedbackFindVertexInputAtLocation(program, output->location) : NULL;
+        if (!input && output) {
+            input = mglCPUFeedbackFindVertexInputByName(program, base_name);
+        }
+        if (!input) {
+            continue;
+        }
+
+        float values[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        mglCPUFeedbackReadAttrib(ctx,
+                                 vao,
+                                 input->location,
+                                 first,
+                                 attribVertex,
+                                 instance,
+                                 baseInstance,
+                                 values);
+
+        GLenum writeType = varyingTypes[varying];
+        GLuint writeComponents = varyingComponents[varying];
+
+        Buffer *xfb = NULL;
+        GLintptr dstOffset = 0;
+        GLsizeiptr dstSize = 0;
+        if (!mglCPUFeedbackResolveXFBSlot(ctx, (GLuint)varying, &xfb, &dstOffset, &dstSize)) {
+            continue;
+        }
+
+        size_t dstOffsetBytes;
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            dstOffsetBytes = (size_t)dstOffset +
+                             (size_t)linearVertex * vertexBytes +
+                             varyingOffsets[varying];
+        } else {
+            size_t bytesPerVertex =
+                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType);
+            dstOffsetBytes = (size_t)dstOffset + (size_t)linearVertex * bytesPerVertex;
+        }
+        if (dstOffsetBytes +
+                (size_t)writeComponents * mglCPUFeedbackGLTypeComponentBytes(writeType) >
+            (size_t)dstOffset + (size_t)dstSize) {
+            continue;
+        }
+        mglCPUFeedbackWriteValues(
+            (uint8_t *)(uintptr_t)xfb->data.buffer_data + dstOffsetBytes,
+            writeType,
+            writeComponents,
+            values);
+    }
+}
+
+/* Common gate for both arrays and elements CPU capture paths. */
+static bool mglCPUFeedbackCaptureGate(GLMContext ctx,
+                                      GLenum mode,
+                                      Program **programOut,
+                                      VertexArray **vaoOut)
+{
+    if (!ctx ||
+        !ctx->state.transform_feedback ||
+        !ctx->state.transform_feedback->active ||
+        ctx->state.transform_feedback->paused) {
+        return false;
+    }
+
+    Program *program = ctx->state.program;
+    if (!program ||
+        program->transform_feedback_varying_count <= 0 ||
+        (program->transform_feedback_buffer_mode != GL_INTERLEAVED_ATTRIBS &&
+         program->transform_feedback_buffer_mode != GL_SEPARATE_ATTRIBS) ||
+        !mglCPUFeedbackIsPassthroughProgram(program)) {
+        return false;
+    }
+    /* GL spec: for a program without a geometry shader, the draw primitive
+     * mode must match the transform-feedback primitive mode. */
+    if (!program->shader_slots[_GEOMETRY_SHADER] &&
+        mode != ctx->state.transform_feedback->primitive_mode) {
+        return false;
+    }
+
+    VertexArray *vao = ctx->state.vao;
+    if (!vao) {
+        vao = mglGetOrCreateDefaultVAO(ctx);
+    }
+    if (!vao) {
+        return false;
+    }
+
+    *programOut = program;
+    *vaoOut = vao;
+    return true;
+}
+
+bool mglTryCPUTransformFeedbackCapture(GLMContext ctx,
+                                       GLenum mode,
+                                       GLint first,
+                                       GLsizei count,
+                                       GLsizei instancecount,
+                                       GLuint baseInstance)
+{
+    Program *program = NULL;
+    VertexArray *vao = NULL;
+    if (!mglCPUFeedbackCaptureGate(ctx, mode, &program, &vao)) {
+        return false;
+    }
+    if (count <= 0) {
+        /* Nothing to capture, but XFB is active: record zero primitives. */
+        ctx->state.transform_feedback->primitives_generated = 0;
+        ctx->state.transform_feedback->primitives_written = 0;
+        mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
+        return true;
+    }
+    if (instancecount <= 0) {
+        instancecount = 1;
+    }
+
+    GLenum varyingTypes[MAX_ATTRIBS] = {0};
+    GLuint varyingComponents[MAX_ATTRIBS] = {0};
+    size_t varyingOffsets[MAX_ATTRIBS] = {0};
+    size_t vertexBytes = 0;
+    if (!mglCPUFeedbackLayoutVaryings(program, varyingTypes, varyingComponents,
+                                      varyingOffsets, &vertexBytes)) {
+        return false;
+    }
+
+    /* VS-only passthrough: one output vertex per input vertex. */
+    uint64_t totalVertices = (uint64_t)count * (uint64_t)instancecount;
+    uint64_t capturedVertices = 0;
+    if (!mglCPUFeedbackClampCapacity(ctx, program, varyingTypes, varyingComponents,
+                                     vertexBytes, totalVertices, &capturedVertices)) {
+        return false;
+    }
+
+    Buffer *touchedBuffers[MAX_ATTRIBS] = {0};
+    GLintptr touchedOffsets[MAX_ATTRIBS] = {0};
+    GLsizeiptr touchedSizes[MAX_ATTRIBS] = {0};
+    GLuint touchedCount = 0;
+    /* Pre-resolve every slot once so the per-vertex loop only does lookups,
+     * and so the flush tail knows the full dirty range. */
+    for (GLsizei varying = 0; varying < program->transform_feedback_varying_count; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr offset = 0;
+        GLsizeiptr size = 0;
+        if (!mglCPUFeedbackNoteXFBSlot(ctx, (GLuint)varying, touchedBuffers,
+                                       touchedOffsets, touchedSizes, &touchedCount,
+                                       &xfb, &offset, &size)) {
+            return false;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+
+    GLuint64 linearVertex = 0;
+    for (GLsizei inst = 0; inst < instancecount; inst++) {
+        for (GLint v = 0; v < count; v++) {
+            if (linearVertex >= capturedVertices) {
+                break;
+            }
+            GLuint attribVertex = (GLuint)((GLint)v + first);
+            mglCPUFeedbackCaptureVertex(ctx, program, vao, (GLuint)linearVertex,
+                                        attribVertex, (GLuint)inst, baseInstance,
+                                        first, varyingTypes, varyingComponents,
+                                        varyingOffsets, vertexBytes);
+            linearVertex++;
+        }
+        if (linearVertex >= capturedVertices) {
+            break;
+        }
+    }
+
+    mglCPUFeedbackFlushAndCount(ctx, touchedBuffers, touchedOffsets, touchedSizes,
+                                touchedCount, totalVertices, capturedVertices);
+    return true;
+}
+
+/* General indexed-draw CPU transform-feedback capture. Handles every element
+ * type and draw mode; resolves the index buffer from the VAO element_array.
+ * Honors basevertex (added to each index) and baseinstance (for instanced
+ * attribute divisor math, applied inside mglCPUFeedbackReadAttrib). */
+bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
+                                               GLenum mode,
+                                               GLsizei count,
+                                               GLenum type,
+                                               const void *indices,
+                                               GLsizei instancecount,
+                                               GLint basevertex,
+                                               GLuint baseinstance)
+{
+    Program *program = NULL;
+    VertexArray *vao = NULL;
+    if (!mglCPUFeedbackCaptureGate(ctx, mode, &program, &vao)) {
+        return false;
+    }
+    if (count <= 0) {
+        ctx->state.transform_feedback->primitives_generated = 0;
+        ctx->state.transform_feedback->primitives_written = 0;
+        mglRecordActivePrimitiveQueryDraw(ctx, 0, 0);
+        return true;
+    }
+    if (instancecount <= 0) {
+        instancecount = 1;
+    }
+
+    if (!vao->element_array.buffer ||
+        !vao->element_array.buffer->data.buffer_data) {
+        return false;
+    }
+    Buffer *indexBuffer = vao->element_array.buffer;
+    uintptr_t indexOffset = (uintptr_t)indices;
+    size_t indexTypeSize =
+        (type == GL_UNSIGNED_BYTE) ? 1u :
+        (type == GL_UNSIGNED_SHORT) ? 2u :
+        (type == GL_UNSIGNED_INT) ? 4u : 0u;
+    if (indexTypeSize == 0) {
+        return false;
+    }
+    size_t indexBytes = (size_t)count * indexTypeSize;
+    if ((uint64_t)indexOffset + indexBytes > (uint64_t)indexBuffer->size) {
+        return false;
+    }
+    const uint8_t *indexData =
+        (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
+
+    GLenum varyingTypes[MAX_ATTRIBS] = {0};
+    GLuint varyingComponents[MAX_ATTRIBS] = {0};
+    size_t varyingOffsets[MAX_ATTRIBS] = {0};
+    size_t vertexBytes = 0;
+    if (!mglCPUFeedbackLayoutVaryings(program, varyingTypes, varyingComponents,
+                                      varyingOffsets, &vertexBytes)) {
+        return false;
+    }
+
+    uint64_t totalVertices = (uint64_t)count * (uint64_t)instancecount;
+    uint64_t capturedVertices = 0;
+    if (!mglCPUFeedbackClampCapacity(ctx, program, varyingTypes, varyingComponents,
+                                     vertexBytes, totalVertices, &capturedVertices)) {
+        return false;
+    }
+
+    Buffer *touchedBuffers[MAX_ATTRIBS] = {0};
+    GLintptr touchedOffsets[MAX_ATTRIBS] = {0};
+    GLsizeiptr touchedSizes[MAX_ATTRIBS] = {0};
+    GLuint touchedCount = 0;
+    for (GLsizei varying = 0; varying < program->transform_feedback_varying_count; varying++) {
+        Buffer *xfb = NULL;
+        GLintptr offset = 0;
+        GLsizeiptr size = 0;
+        if (!mglCPUFeedbackNoteXFBSlot(ctx, (GLuint)varying, touchedBuffers,
+                                       touchedOffsets, touchedSizes, &touchedCount,
+                                       &xfb, &offset, &size)) {
+            return false;
+        }
+        if (program->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS) {
+            break;
+        }
+    }
+
+    GLuint64 linearVertex = 0;
+    for (GLsizei inst = 0; inst < instancecount; inst++) {
+        for (GLsizei i = 0; i < count; i++) {
+            if (linearVertex >= capturedVertices) {
+                break;
+            }
+            GLuint idx = 0;
+            if (!mglCPUReadIndexValue(indexData, type, (GLuint)i, &idx)) {
+                return false;
+            }
+            GLuint attribVertex = (GLuint)((GLint)idx + basevertex);
+            mglCPUFeedbackCaptureVertex(ctx, program, vao, (GLuint)linearVertex,
+                                        attribVertex, (GLuint)inst, baseinstance,
+                                        /*first=*/0, varyingTypes, varyingComponents,
+                                        varyingOffsets, vertexBytes);
+            linearVertex++;
+        }
+        if (linearVertex >= capturedVertices) {
+            break;
+        }
+    }
+
+    mglCPUFeedbackFlushAndCount(ctx, touchedBuffers, touchedOffsets, touchedSizes,
+                                touchedCount, totalVertices, capturedVertices);
+    return true;
+}
+
 
 void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
 {
@@ -1687,6 +1398,13 @@ void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
 
     if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, 1, 0))
         return;
+
+    /* TODO(gpu-xfb): when a real GPU capture path is wired (SPIRV-Cross
+     * MSL_CAPTURE_OUTPUT_TO_BUFFER variant stored in
+     * spirv[_VERTEX_SHADER].msl_str_capture), dispatch a rasterization-
+     * disabled render pipeline that writes VS outputs to the XFB buffer
+     * here, for programs that are NOT passthrough-capturable on the CPU.
+     * See mglCompileMSLCaptureVariant in program.c. */
 
     mglInvalidateColorShadowsForDraw(ctx);
 
@@ -1758,7 +1476,10 @@ void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, co
     if (mglSkipOrRecordConditionalDraw(ctx))
         return;
 
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices))
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  /*instancecount=*/1,
+                                                  /*basevertex=*/0,
+                                                  /*baseinstance=*/0))
         return;
 
     mglInvalidateColorShadowsForDraw(ctx);
@@ -1802,6 +1523,15 @@ void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end,
     }
 
     if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
+
+    if (mglSkipOrRecordConditionalDraw(ctx))
+        return;
+
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  /*instancecount=*/1,
+                                                  /*basevertex=*/0,
+                                                  /*baseinstance=*/0))
+        return;
 
     if (ctx->draw_defer_enabled) {
         MGLDrawCommand cmd;
@@ -1900,6 +1630,12 @@ void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum
     if (mglSkipOrRecordConditionalDraw(ctx))
         return;
 
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  instancecount,
+                                                  /*basevertex=*/0,
+                                                  /*baseinstance=*/0))
+        return;
+
     if (ctx->draw_defer_enabled) {
         MGLDrawCommand cmd;
         memset(&cmd, 0, sizeof(cmd));
@@ -1939,6 +1675,12 @@ void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenu
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
     if (mglSkipOrRecordConditionalDraw(ctx))
+        return;
+
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  /*instancecount=*/1,
+                                                  basevertex,
+                                                  /*baseinstance=*/0))
         return;
 
     mglInvalidateColorShadowsForDraw(ctx);
@@ -1987,6 +1729,12 @@ void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, G
     if (mglSkipOrRecordConditionalDraw(ctx))
         return;
 
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  /*instancecount=*/1,
+                                                  basevertex,
+                                                  /*baseinstance=*/0))
+        return;
+
     if (ctx->draw_defer_enabled) {
         MGLDrawCommand cmd;
         memset(&cmd, 0, sizeof(cmd));
@@ -2028,6 +1776,12 @@ void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei cou
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
     if (mglSkipOrRecordConditionalDraw(ctx))
+        return;
+
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  instancecount,
+                                                  basevertex,
+                                                  /*baseinstance=*/0))
         return;
 
     if (ctx->draw_defer_enabled) {
@@ -2160,6 +1914,12 @@ void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei c
     if (mglSkipOrRecordConditionalDraw(ctx))
         return;
 
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  instancecount,
+                                                  /*basevertex=*/0,
+                                                  baseinstance))
+        return;
+
     if (ctx->draw_defer_enabled) {
         MGLDrawCommand cmd;
         memset(&cmd, 0, sizeof(cmd));
@@ -2201,6 +1961,12 @@ void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode,
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
     if (mglSkipOrRecordConditionalDraw(ctx))
+        return;
+
+    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
+                                                  instancecount,
+                                                  basevertex,
+                                                  baseinstance))
         return;
 
     mglInvalidateColorShadowsForDraw(ctx);

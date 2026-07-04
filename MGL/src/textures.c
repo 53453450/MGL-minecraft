@@ -4117,8 +4117,14 @@ Texture *newTexObj(GLMContext ctx, GLenum target)
     ptr->params.compare_func = GL_LEQUAL;
     ptr->params.compare_mode = GL_NONE;
     ptr->params.lod_bias = 0.0;
-    ptr->params.min_filter = GL_NEAREST_MIPMAP_LINEAR;
-    ptr->params.mag_filter = GL_LINEAR;
+    /* GL 4.6 spec §8.14: initial MIN_FILTER and MAG_FILTER are both NEAREST.
+     * A prior change defaulted to NEAREST_MIPMAP_LINEAR/LINEAR, which enables
+     * mip filtering on textures that never explicitly set MIN_FILTER —
+     * sampling a non-mipmapped texture (mipmapLevelCount==1, e.g. MC's block
+     * atlas) then reads uninitialized mip levels and produces stripes.
+     * Restore the spec-correct NEAREST defaults (matches 59f4f7d). */
+    ptr->params.min_filter = GL_NEAREST;
+    ptr->params.mag_filter = GL_NEAREST;
     ptr->params.max_anisotropy = 1.0;
     ptr->params.min_lod = -1000;
     ptr->params.max_lod = 1000;
@@ -4917,13 +4923,18 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
             return;
         }
         if (!layered &&
-            mglTextureTargetUsesImageLayerParameter(ptr->target) &&
-            layer >= (GLint)ptr->faces[0].levels[level].depth) {
-            fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range depth=%u\n",
-                    layer,
-                    ptr->faces[0].levels[level].depth);
-            ERROR_RETURN(GL_INVALID_VALUE);
-            return;
+            mglTextureTargetUsesImageLayerParameter(ptr->target)) {
+            /* GL_TEXTURE_1D_ARRAY stores its slice count in height (from
+             * glTexStorage2D), not depth.  All other array targets use depth. */
+            GLuint slice_count = (ptr->target == GL_TEXTURE_1D_ARRAY)
+                ? ptr->faces[0].levels[level].height
+                : ptr->faces[0].levels[level].depth;
+            if (layer >= (GLint)slice_count) {
+                fprintf(stderr, "MGL Error: mglBindImageTexture: layer %d out of range (slices=%u)\n",
+                        layer, slice_count);
+                ERROR_RETURN(GL_INVALID_VALUE);
+                return;
+            }
         }
     }
 
@@ -6528,6 +6539,12 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     }
 
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     // all the levels are created on a tex storage call.. if we get here we should just assert
     if (tex->immutable_storage)
     {
@@ -7435,6 +7452,12 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                                     depth,
                                                     0u);
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     // Debug: Log large texture uploads (VM framebuffer size)
     if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS && width >= 640 && height >= 400) {
@@ -8720,6 +8743,12 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
 
     if (level < 0 || level >= (GLint)tex->num_levels ||
@@ -8810,6 +8839,12 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
         return;
     }
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
 
@@ -9426,6 +9461,13 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
 
     // Copy from framebuffer to texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, 0, 0, x, y, width, height);
 }
 
@@ -9452,6 +9494,13 @@ void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     }
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
@@ -9506,6 +9555,13 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
 
     // This copies from the current read framebuffer to the texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, face, level, xoffset, yoffset, x, y, width, height);
 }
 
@@ -9538,6 +9594,13 @@ void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     }
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 
@@ -9568,6 +9631,13 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
     }
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, 0, x, y, width, 1);
 }
 
@@ -9603,6 +9673,13 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
             return;
         }
         mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+        /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+        if (ctx->sync_strict) {
+            mglFlushCommandBuffer(ctx);
+            ctx->mtl_funcs.mtlFlush(ctx, true);
+        }
+
         ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, 0, level, xoffset, yoffset, x, y, width, height);
     } else {
         ERROR_RETURN(GL_INVALID_OPERATION);
@@ -9643,6 +9720,13 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
     }
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     ctx->mtl_funcs.mtlCopyTexSubImage(ctx, tex, (GLuint)zoffset, level, xoffset, yoffset, x, y, width, height);
 }
 

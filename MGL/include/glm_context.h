@@ -354,8 +354,17 @@ typedef struct Texture_t {
     GLuint  mtl_gl_sampled_width;
     GLuint  mtl_gl_sampled_height;
     GLuint  mtl_gl_sampled_format;
+    GLuint  mtl_gl_sampled_levels;
     GLuint  mtl_gl_sampled_write_version;
     GLuint  mtl_render_target_write_version;
+    /* Y-Flip Authority: packed (mtl_render_target_write_version << 1) | render_yflip_injected.
+     * Set synchronously with mtl_render_target_write_version in
+     * mglMarkTextureLevelRenderTargetWritten.  Low bit = 1 means the RT was
+     * written by a program whose VS had Y-flip injected (so the Metal texture
+     * already holds GL-bottom-origin data and must NOT be re-flipped by
+     * RT_SAMPLE_COPY).  Sampling consumers consult this via
+     * mglDecideYFlipForSampledRT to pick original vs Y-flipped copy. */
+    GLuint  mtl_render_yflip_authority;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
     Buffer  *texture_buffer;
     GLintptr texture_buffer_offset;
@@ -480,6 +489,11 @@ typedef struct Spirv_t {
     GLboolean needs_buffer_size_buffer; /* true if SPIRV-Cross MSL uses
                                          * spvBufferSizeConstants for
                                          * runtime-sized SSBO arrays */
+    char *msl_str_capture; /* MSL variant compiled with SPIRV-Cross output-capture
+                            * options for GPU transform feedback. NULL unless
+                            * MGL_XFB_GPU_CAPTURE is set and the stage is the
+                            * program's feedback stage. The renderer dispatch
+                            * that consumes this variant is not yet wired. */
 } Spirv;
 
 typedef struct SpirvUBOMember_t {
@@ -581,6 +595,12 @@ typedef struct Program_t {
     struct {
         unsigned x, y, z;
     } local_workgroup_size;
+    GLuint tess_control_output_vertices;  /* from TCS layout(vertices=N) out; */
+    /* TES execution mode reflection: layout(...) in; */
+    GLenum tess_gen_mode;        /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES */
+    GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */
+    GLenum tess_gen_vertex_order;/* GL_CW / GL_CCW */
+    GLboolean tess_gen_point_mode;/* GL_TRUE / GL_FALSE */
     GLint sampler_units[TEXTURE_UNITS];
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];
@@ -688,6 +708,10 @@ typedef struct Framebuffer_t {
 typedef struct __GLsync {
     GLsizei name;
     void *mtl_event;
+    /* Retained Metal command buffer capturing all GL commands issued before the
+     * fence insertion point. mtlWaitForSync blocks on its completion. Stored as
+     * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
+    void *mtl_command_buffer;
 #ifdef __cplusplus
 } Sync;
 #else
@@ -877,6 +901,12 @@ struct GLMMetalFuncs {
 
     void (*mtlGetSync)(GLMContext glm_ctx, Sync *sync);
     void (*mtlWaitForSync)(GLMContext glm_ctx, Sync *sync);
+    /* Non-blocking status query: returns GL_SIGNALED (CB completed or no CB) or
+     * GL_UNSIGNALED. Used by mglGetSynciv / mglClientWaitSync polling. */
+    GLenum (*mtlGetSyncStatus)(GLMContext glm_ctx, Sync *sync);
+    /* Non-blocking release of the fence's retained Metal resources (CB + event)
+     * without waiting for GPU completion. Used by mglDeleteSync. */
+    void (*mtlReleaseSync)(GLMContext glm_ctx, Sync *sync);
 
     void (*mtlFlush)(GLMContext glm_ctx, bool finish);
     void (*mtlSwapBuffers)(GLMContext glm_ctx);
@@ -973,6 +1003,7 @@ typedef struct GLMContextRec_t {
 
     MGLCommandBuffer draw_command_buffer;
     bool            draw_defer_enabled;
+    bool            sync_strict;
 
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;

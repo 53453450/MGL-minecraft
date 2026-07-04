@@ -49,6 +49,13 @@
 #import "glm_context.h"
 #import "mgl_safety.h"
 #import "mgl.h"
+#import "mgl_capability.h"
+#import "mgl_coordinate.h"
+#import "mgl_rt_sync.h"
+#import "mgl_texture_compat.h"
+#import "mgl_sampler_compat.h"
+#import "mgl_sync.h"
+#import "mgl_msl_compat.h"
 
 /* Metal.framework (imported below) provides its own MTLPixelFormat definition,
  * so skip the local enum in pixel_utils.h to avoid a redefinition conflict. */
@@ -73,6 +80,7 @@ GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
 GLuint numComponentsForFormat(GLenum format);
 
 extern void mglDrawBuffer(GLMContext ctx, GLenum buf);
+extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
 // for resource types SPVC_RESOURCE_TYPE_UNIFORM_BUFFER..
 #import "spirv_cross_c.h"
@@ -209,95 +217,6 @@ static GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBuff
         return 0u;
     }
     return drawBufferSlot;
-}
-
-typedef struct MGLMetalAttachmentSubresource_t {
-    NSUInteger level;
-    NSUInteger slice;
-    NSUInteger depthPlane;
-} MGLMetalAttachmentSubresource;
-
-static MGLMetalAttachmentSubresource mglMetalAttachmentSubresourceForAttachment(const FBOAttachment *attachment)
-{
-    MGLMetalAttachmentSubresource subresource = {0u, 0u, 0u};
-    if (!attachment) {
-        return subresource;
-    }
-
-    subresource.level = attachment->level;
-
-    switch (attachment->textarget) {
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_X:
-            subresource.slice = 0u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_X:
-            subresource.slice = 1u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Y:
-            subresource.slice = 2u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Y:
-            subresource.slice = 3u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_POSITIVE_Z:
-            subresource.slice = 4u;
-            break;
-        case GL_TEXTURE_CUBE_MAP_NEGATIVE_Z:
-            subresource.slice = 5u;
-            break;
-
-        case GL_TEXTURE_1D_ARRAY:
-        case GL_TEXTURE_2D_ARRAY:
-        case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-        case GL_TEXTURE_CUBE_MAP_ARRAY:
-            subresource.slice = attachment->layer;
-            break;
-
-        case GL_TEXTURE_3D:
-            subresource.depthPlane = attachment->layer;
-            break;
-
-        default:
-            break;
-    }
-
-    return subresource;
-}
-
-static BOOL mglMetalRenderPassColorAttachmentMatchesSubresource(MTLRenderPassColorAttachmentDescriptor *descriptor,
-                                                                MGLMetalAttachmentSubresource subresource)
-{
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
-}
-
-static BOOL mglMetalRenderPassDepthAttachmentMatchesSubresource(MTLRenderPassDepthAttachmentDescriptor *descriptor,
-                                                                MGLMetalAttachmentSubresource subresource)
-{
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
-}
-
-static BOOL mglMetalRenderPassStencilAttachmentMatchesSubresource(MTLRenderPassStencilAttachmentDescriptor *descriptor,
-                                                                  MGLMetalAttachmentSubresource subresource)
-{
-    if (!descriptor) {
-        return NO;
-    }
-
-    return descriptor.level == subresource.level &&
-           descriptor.slice == subresource.slice &&
-           descriptor.depthPlane == subresource.depthPlane;
 }
 
 static BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
@@ -1274,7 +1193,6 @@ static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
         }
 
         NSUInteger compBytes = (NSUInteger)sizeForType(type);
-        NSUInteger srcCompBytes = sourceIs32BitFloat ? 4u : 2u; /* 4 for float32, 2 for 16-bit */
 
         for (NSUInteger y = 0; y < height; y++) {
             const uint8_t *srcRow = src + (y * srcBytesPerRow);
@@ -1937,14 +1855,8 @@ typedef struct MGLBlitAxis_t {
     double dst1;
 } MGLBlitAxis;
 
-static NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level)
-{
-    NSUInteger value = MAX((NSUInteger)1u, base);
-    while (level-- > 0u && value > 1u) {
-        value >>= 1u;
-    }
-    return MAX((NSUInteger)1u, value);
-}
+/* mglMetalTextureLevelDimension now lives in mgl_texture_compat.m — see
+ * mgl_texture_compat.h. */
 
 static BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
 {
@@ -2686,34 +2598,6 @@ static GLuint mglMetalResourceSlotForElement(const SpirvResource *res, GLuint el
     return mglMetalResourceSlot(res) + element;
 }
 
-static bool mglBindingResourceNameLooksSamplerLike(const char *name)
-{
-    return name &&
-           (strstr(name, "Sampler") ||
-            !strcmp(name, "CloudFaces"));
-}
-
-static bool mglBindingResourceLooksSamplerLike(const SpirvResource *res, int resourceType)
-{
-    if (!res) {
-        return false;
-    }
-
-    switch (resourceType) {
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
-        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
-            return true;
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-            return res->image_dim != 0u ||
-                   res->uniform_location >= 0x4000 ||
-                   mglBindingResourceNameLooksSamplerLike(res->name);
-        default:
-            return false;
-    }
-}
-
 static bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
 {
     if (!res || !res->name) {
@@ -2777,7 +2661,6 @@ static inline void mglResetSwapDrawCounters(void)
 static BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr);
 static Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *where);
 static GLuint mglRendererSafeFramebufferName(GLMContext ctx);
-static const char *mglShaderStageName(int stage);
 
 static inline BOOL mglRendererContextLikelyValid(GLMContext ctx)
 {
@@ -3060,37 +2943,6 @@ static GLuint mglCurrentRenderProgramKey(GLMContext ctx)
     return hash ? hash : 0x80000000u;
 }
 
-static Program *mglPeekProgramByName(GLMContext ctx, GLuint programName)
-{
-    if (!mglRendererContextLikelyValid(ctx) || programName == 0) {
-        return NULL;
-    }
-
-    Program *program = ctx->state.program;
-    if (program &&
-        mglRendererObjectPointerLikelyValid(program) &&
-        mglPointerRangeIsReadable(program, sizeof(*program)) &&
-        mglProgramPointerUsableForName(ctx, program, programName) &&
-        program->name == programName) {
-        return program;
-    }
-
-    return (Program *)searchHashTable(&ctx->state.program_table, programName);
-}
-
-static const char *mglShaderStageName(int stage)
-{
-    switch (stage) {
-        case _VERTEX_SHADER: return "vertex";
-        case _TESS_CONTROL_SHADER: return "tess_control";
-        case _TESS_EVALUATION_SHADER: return "tess_eval";
-        case _GEOMETRY_SHADER: return "geometry";
-        case _FRAGMENT_SHADER: return "fragment";
-        case _COMPUTE_SHADER: return "compute";
-        default: return "unknown";
-    }
-}
-
 static const char *mglSpirvResourceTypeName(int type)
 {
     switch (type) {
@@ -3223,81 +3075,6 @@ static void mglWriteProgramMSLDump(Program *program, NSString *reason)
 
 static GLuint g_mglFocusedLoadingPrograms[32] = {0};
 static uint32_t g_mglFocusedLoadingProgramCount = 0;
-
-static bool mglProgramHasImageDim(Program *program, GLuint imageDim)
-{
-    if (!program) {
-        return false;
-    }
-
-    const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
-    };
-
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (size_t t = 0; t < sizeof(resourceTypes) / sizeof(resourceTypes[0]); t++) {
-            int type = resourceTypes[t];
-            if (type < 0 || type >= _MAX_SPIRV_RES) {
-                continue;
-            }
-            SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
-            for (GLuint i = 0; i < resources->count; i++) {
-                if (resources->list[i].image_dim == imageDim) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool mglProgramHasResourceName(Program *program, int stage, int type, const char *name)
-{
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        type < 0 || type >= _MAX_SPIRV_RES || !name) {
-        return false;
-    }
-
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
-    for (GLuint i = 0; resources->list && i < resources->count; i++) {
-        if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool mglProgramHasAnyResourceName(Program *program, const char *name)
-{
-    if (!program || !name) {
-        return false;
-    }
-
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (int type = 0; type < _MAX_SPIRV_RES; type++) {
-            if (mglProgramHasResourceName(program, stage, type, name)) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool mglProgramNeedsBindingTrace(Program *program)
-{
-    if (!program) {
-        return false;
-    }
-
-    return mglProgramHasAnyResourceName(program, "ChunkSection") ||
-           mglProgramHasAnyResourceName(program, "Sampler1") ||
-           mglProgramHasAnyResourceName(program, "Sampler2");
-}
 
 static bool mglTraceLogProgramListContains(GLuint programName)
 {
@@ -3454,19 +3231,12 @@ static bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program)
     return mglIsFocusedLoadingProgram(programKey);
 }
 
-static bool mglProgramHasExistingFramebufferSampleYFlip(Program *program)
-{
-    if (!program) {
-        return false;
-    }
-
-    /* Use the flag set during MSL post-processing rather than fragile string
-     * matching.  The flag is set in program.c when MGL injects the texCoord
-     * Y-flip for fullscreen sampled-framebuffer shaders.  This avoids false
-     * negatives when the shader uses a different Y-flip expression that
-     * wasn't in the hardcoded string list. */
-    return program->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
-}
+/* Y-Flip Subsystem decision logic (mglDecideYFlipForSampledRT,
+ * mglProgramHasExistingFramebufferSampleYFlip, and the MGLYFlipDecision enum)
+ * now lives in mgl_coordinate.m — see mgl_coordinate.h.  Keeping the decision
+ * matrix in a dedicated module lets the VS/FS sampler-binding paths below
+ * call a single unified query and makes the coordinate-compatibility
+ * subsystem testable in isolation. */
 
 static void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t detail)
 {
@@ -3632,6 +3402,13 @@ static inline void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 
     tex->mtl_render_target_write_version++;
 
+    /* Y-Flip Authority: default to "not injected".  The draw-call path
+     * (markCurrentFramebufferColorAttachmentWrittenAtIndex) overwrites the
+     * low bit when the rendering program had VS Y-flip injection.  Clear/blit
+     * paths leave it 0, which is correct — they don't involve program
+     * injection and the RT holds Metal-top-origin data. */
+    tex->mtl_render_yflip_authority = (tex->mtl_render_target_write_version << 1);
+
     if (tex->name == 8u && mglEnvFlagEnabled("MGL_TRACE_RT_WRITE_MARKS")) {
         id<MTLTexture> mtlTexture = tex->mtl_data ? (__bridge id<MTLTexture>)(tex->mtl_data) : nil;
         mglTraceLog("RT_WRITE_MARK tex=%u level=%u oldRtVer=%u newRtVer=%u caller=%s:%d mtl=%p fmt=%lu size=%lux%lu dirty=0x%x sampledVer=%u copy=%p",
@@ -3728,20 +3505,10 @@ static inline bool mglTextureHasUploadableCPUData(Texture *tex, int numFaces, GL
     return false;
 }
 
-static inline bool mglMetalPixelFormatIsDepthOrStencil(MTLPixelFormat format)
-{
-    return format == MTLPixelFormatDepth16Unorm ||
-           format == MTLPixelFormatDepth32Float ||
-           format == MTLPixelFormatDepth24Unorm_Stencil8 ||
-           format == MTLPixelFormatDepth32Float_Stencil8 ||
-           format == MTLPixelFormatStencil8;
-}
-
-static inline bool mglMetalPixelFormatIsPackedDepthStencil(MTLPixelFormat format)
-{
-    return format == MTLPixelFormatDepth24Unorm_Stencil8 ||
-           format == MTLPixelFormatDepth32Float_Stencil8;
-}
+/* Pixel format classification (mglMetalPixelFormatIsDepthOrStencil,
+ * mglMetalPixelFormatIsPackedDepthStencil) and GL internal-format
+ * classification (mglRendererGLInternalFormatLooksDepthOrStencil) now live
+ * as static inline helpers in mgl_texture_compat.h — included above. */
 
 static void mglNormalizePipelineDepthStencilFormats(MTLRenderPipelineDescriptor *desc, const char *label)
 {
@@ -3788,534 +3555,22 @@ static inline const char *mglTraceTextureLabel(Texture *tex)
     return (tex && tex->debug_label[0] != '\0') ? tex->debug_label : "";
 }
 
-static inline bool mglTextureCanUseGLSampledRenderTargetCopy(Texture *tex)
-{
-    /* Metal tile memory can be stale when a render target is immediately
-     * sampled (read-after-write hazard).  Apply the sampled-copy protection
-     * to ALL 2D render targets regardless of size or mipmap state — the
-     * previous size-based gating (32-4096, 2048x2048, 16x16) was a
-     * Minecraft-specific heuristic that broke when texture dimensions
-     * changed between game versions. */
-    return tex &&
-           tex->target == GL_TEXTURE_2D &&
-           tex->is_render_target;
-}
-
-static bool mglFramebufferLooksLikeGLSampledCopyRenderTarget(GLMContext glctx,
-                                                             Framebuffer *fbo,
-                                                             Texture **outColor,
-                                                             Texture **outDepth)
-{
-    if (outColor) {
-        *outColor = NULL;
-    }
-    if (outDepth) {
-        *outDepth = NULL;
-    }
-    if (!glctx || !fbo || ((fbo->color_attachment_bitfield & 1u) == 0u)) {
-        return false;
-    }
-
-    FBOAttachment *color0 = &fbo->color_attachments[0];
-    Texture *color = NULL;
-    if (color0->textarget == GL_RENDERBUFFER) {
-        color = color0->buf.rbo ? color0->buf.rbo->tex : NULL;
-    } else {
-        color = color0->buf.tex;
-        if (!color && color0->texture != 0u) {
-            color = findTexture(glctx, color0->texture);
-        }
-    }
-    if (!mglTextureCanUseGLSampledRenderTargetCopy(color)) {
-        return false;
-    }
-
-    Texture *depth = NULL;
-    if (fbo->depth.texture) {
-        if (fbo->depth.textarget == GL_RENDERBUFFER) {
-            depth = fbo->depth.buf.rbo ? fbo->depth.buf.rbo->tex : NULL;
-        } else {
-            depth = fbo->depth.buf.tex;
-            if (!depth && fbo->depth.texture != 0u) {
-                depth = findTexture(glctx, fbo->depth.texture);
-            }
-        }
-    }
-
-    if (outColor) {
-        *outColor = color;
-    }
-    if (outDepth) {
-        *outDepth = depth;
-    }
-    return true;
-}
-
-typedef NS_ENUM(NSUInteger, MGLTextureDataKind) {
-    MGLTextureDataKindUnknown = 0,
-    MGLTextureDataKindFloat = 1,
-    MGLTextureDataKindSint = 2,
-    MGLTextureDataKindUint = 3,
-    MGLTextureDataKindDepth = 4,
-};
-
-static MTLTextureType mglExpectedTextureTypeFromMSL(const char *msl, GLuint binding)
-{
-    if (!msl) {
-        return 0;
-    }
-
-    char needle[32];
-    snprintf(needle, sizeof(needle), "[[texture(%u)]]", (unsigned)binding);
-
-    const char *cursor = msl;
-    while ((cursor = strstr(cursor, needle)) != NULL) {
-        /* Find the start of this parameter declaration: scan backwards to the
-         * previous comma, newline, or start of string.  This avoids matching
-         * type keywords from sibling parameters that share the same line
-         * (e.g. "texture2d_ms<float> a [[texture(0)]], texture2d<float> b [[texture(1)]]"). */
-        const char *lineStart = cursor;
-        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r' && lineStart[-1] != ',') {
-            lineStart--;
-        }
-
-        size_t lineLen = (size_t)(cursor - lineStart);
-        if (lineLen > 1024u) {
-            lineLen = 1024u;
-        }
-
-        char line[1025];
-        memcpy(line, lineStart, lineLen);
-        line[lineLen] = '\0';
-
-        if (strstr(line, "texture_buffer")) {
-            return MTLTextureTypeTextureBuffer;
-        }
-        if (strstr(line, "texturecube_array") || strstr(line, "depthcube_array")) {
-            return MTLTextureTypeCubeArray;
-        }
-        if (strstr(line, "texturecube") || strstr(line, "depthcube")) {
-            return MTLTextureTypeCube;
-        }
-        if (strstr(line, "texture3d")) {
-            return MTLTextureType3D;
-        }
-        if (strstr(line, "texture2d_ms_array")) {
-            return MTLTextureType2DMultisampleArray;
-        }
-        if (strstr(line, "texture2d_ms")) {
-            return MTLTextureType2DMultisample;
-        }
-        if (strstr(line, "texture2d_array") || strstr(line, "depth2d_array")) {
-            return MTLTextureType2DArray;
-        }
-        if (strstr(line, "texture2d") || strstr(line, "depth2d")) {
-            return MTLTextureType2D;
-        }
-        if (strstr(line, "texture1d_array")) {
-            return MTLTextureType1DArray;
-        }
-        if (strstr(line, "texture1d")) {
-            return MTLTextureType1D;
-        }
-
-        cursor += strlen(needle);
-    }
-
-    return 0;
-}
-
-static MGLTextureDataKind mglExpectedTextureDataKindFromMSL(const char *msl, GLuint binding)
-{
-    if (!msl) {
-        return MGLTextureDataKindUnknown;
-    }
-
-    char needle[32];
-    snprintf(needle, sizeof(needle), "[[texture(%u)]]", (unsigned)binding);
-
-    const char *cursor = msl;
-    while ((cursor = strstr(cursor, needle)) != NULL) {
-        /* Same comma-scoped lookup as mglExpectedTextureTypeFromMSL to avoid
-         * matching data-kind keywords from sibling parameters on the same line. */
-        const char *lineStart = cursor;
-        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r' && lineStart[-1] != ',') {
-            lineStart--;
-        }
-
-        size_t lineLen = (size_t)(cursor - lineStart);
-        if (lineLen > 1024u) {
-            lineLen = 1024u;
-        }
-
-        char line[1025];
-        memcpy(line, lineStart, lineLen);
-        line[lineLen] = '\0';
-
-        if (strstr(line, "depth1d") ||
-            strstr(line, "depth2d") ||
-            strstr(line, "depthcube") ||
-            strstr(line, "unknown_depth_texture_type")) {
-            return MGLTextureDataKindDepth;
-        }
-        if (strstr(line, "<int") || strstr(line, "<short") || strstr(line, "<char")) {
-            return MGLTextureDataKindSint;
-        }
-        if (strstr(line, "<uint") || strstr(line, "<ushort") || strstr(line, "<uchar")) {
-            return MGLTextureDataKindUint;
-        }
-        if (strstr(line, "<float") || strstr(line, "<half")) {
-            return MGLTextureDataKindFloat;
-        }
-
-        cursor += strlen(needle);
-    }
-
-    return MGLTextureDataKindUnknown;
-}
-
-static bool mglProgramHasResourceNamed(Program *program, int stage, int type, const char *name)
-{
-    if (!program || !name || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        type < 0 || type >= _MAX_SPIRV_RES) {
-        return false;
-    }
-
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
-    for (GLuint i = 0; i < resources->count; i++) {
-        SpirvResource *res = &resources->list[i];
-        if (res->name && strcmp(res->name, name) == 0) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static bool mglMSLArgumentIdentifierChar(char c)
-{
-    return c == '_' ||
-           (c >= '0' && c <= '9') ||
-           (c >= 'A' && c <= 'Z') ||
-           (c >= 'a' && c <= 'z');
-}
-
-static bool mglStageMSLHasNamedArgument(Program *program,
-                                        int stage,
-                                        const char *name,
-                                        const char *attributeKind,
-                                        GLuint metalBinding)
-{
-    if (!program || !name || !attributeKind || stage < 0 || stage >= _MAX_SHADER_TYPES) {
-        return true;
-    }
-
-    const char *msl = program->spirv[stage].msl_str;
-    if (!msl || !*msl) {
-        return true;
-    }
-
-    char attribute[32];
-    snprintf(attribute, sizeof(attribute), "[[%s(%u)]]", attributeKind, (unsigned)metalBinding);
-
-    const char *cursor = msl;
-    size_t nameLen = strlen(name);
-    if (nameLen == 0) {
-        return true;
-    }
-
-    while ((cursor = strstr(cursor, name)) != NULL) {
-        char before = (cursor == msl) ? '\0' : cursor[-1];
-        char after = cursor[nameLen];
-        if (mglMSLArgumentIdentifierChar(before) ||
-            mglMSLArgumentIdentifierChar(after)) {
-            cursor += nameLen;
-            continue;
-        }
-
-        const char *lineStart = cursor;
-        while (lineStart > msl && lineStart[-1] != '\n' && lineStart[-1] != '\r') {
-            lineStart--;
-        }
-
-        const char *lineEnd = cursor;
-        while (*lineEnd && *lineEnd != '\n' && *lineEnd != '\r') {
-            lineEnd++;
-        }
-
-        size_t lineLen = (size_t)(lineEnd - lineStart);
-        if (lineLen > 2048u) {
-            lineLen = 2048u;
-        }
-
-        char line[2049];
-        memcpy(line, lineStart, lineLen);
-        line[lineLen] = '\0';
-
-        if (strstr(line, attribute)) {
-            return true;
-        }
-
-        cursor += nameLen;
-    }
-
-    return false;
-}
-
-static bool mglStageMSLHasNamedBufferArgument(Program *program,
-                                              int stage,
-                                              const char *name,
-                                              GLuint metalBinding)
-{
-    return mglStageMSLHasNamedArgument(program, stage, name, "buffer", metalBinding);
-}
-
-static bool mglStageMSLHasNamedTextureArgument(Program *program,
-                                               int stage,
-                                               const char *name,
-                                               GLuint metalBinding)
-{
-    return mglStageMSLHasNamedArgument(program, stage, name, "texture", metalBinding);
-}
-
-static bool mglStageMSLHasNamedSamplerArgument(Program *program,
-                                               int stage,
-                                               const char *name,
-                                               GLuint metalBinding)
-{
-    return mglStageMSLHasNamedArgument(program, stage, name, "sampler", metalBinding);
-}
-
-static bool mglStageMSLHasArgumentAtBinding(Program *program,
-                                            int stage,
-                                            const char *attributeKind,
-                                            GLuint metalBinding)
-{
-    if (!program || !attributeKind || stage < 0 || stage >= _MAX_SHADER_TYPES) {
-        return false;
-    }
-
-    const char *msl = program->spirv[stage].msl_str;
-    if (!msl || !*msl) {
-        return false;
-    }
-
-    char attribute[32];
-    snprintf(attribute, sizeof(attribute), "[[%s(%u)]]", attributeKind, (unsigned)metalBinding);
-    return strstr(msl, attribute) != NULL;
-}
-
-static bool mglShouldSkipStageBufferResource(Program *program,
-                                             int stage,
-                                             int resourceType,
-                                             const SpirvResource *resource)
-{
-    if (!program || !resource) {
-        return false;
-    }
-
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
-        mglBindingResourceLooksSamplerLike(resource, resourceType)) {
-        return true;
-    }
-
-    if (!resource->name) {
-        return false;
-    }
-
-    if (resourceType != SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
-        return false;
-    }
-
-    if (mglStageMSLHasNamedBufferArgument(program, stage, resource->name, resource->binding)) {
-        return false;
-    }
-
-    /*
-     * SPIRV-Cross can leave UBOs in reflection after MSL has optimized them out.
-     * Only skip when the Metal slot is definitely used by a different buffer
-     * argument; otherwise an extra set*Buffer call is harmless and skipping can
-     * starve older Minecraft GUI/entity programs of required state.
-     */
-    if (mglStageMSLHasArgumentAtBinding(program, stage, "buffer", resource->binding)) {
-        static uint64_t s_staleBufferResourceSkipLogs = 0;
-        uint64_t hit = ++s_staleBufferResourceSkipLogs;
-        if (kMGLDiagnosticStateLogs &&
-            (hit <= 64ull || (hit % 512ull) == 0ull)) {
-            NSLog(@"MGL RESOURCE SKIP stale buffer program=%u stage=%s name=%s glBinding=%u metalBinding=%u hit=%llu",
-                  (unsigned)program->name,
-                  mglShaderStageName(stage),
-                  resource->name,
-                  (unsigned)resource->gl_binding,
-                  (unsigned)resource->binding,
-                  (unsigned long long)hit);
-        }
-        return true;
-    }
-
-    return false;
-}
-
-static bool mglShouldSkipStageTextureResource(Program *program,
-                                              int stage,
-                                              int resourceType,
-                                              const SpirvResource *resource)
-{
-    if (!program || !resource || !resource->name) {
-        return false;
-    }
-
-    switch (resourceType) {
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
-            break;
-        default:
-            return false;
-    }
-
-    if (mglStageMSLHasNamedTextureArgument(program, stage, resource->name, resource->binding)) {
-        return false;
-    }
-
-    static uint64_t s_staleTextureResourceSkipLogs = 0;
-    uint64_t hit = ++s_staleTextureResourceSkipLogs;
-    if (hit <= 64ull || (hit % 512ull) == 0ull) {
-        NSLog(@"MGL RESOURCE SKIP stale texture program=%u stage=%s type=%d name=%s glBinding=%u metalBinding=%u hit=%llu",
-              (unsigned)program->name,
-              mglShaderStageName(stage),
-              resourceType,
-              resource->name,
-              (unsigned)resource->gl_binding,
-              (unsigned)resource->binding,
-              (unsigned long long)hit);
-    }
-    return true;
-}
-
-static bool mglShouldSkipStageSamplerResource(Program *program,
-                                              int stage,
-                                              int resourceType,
-                                              const SpirvResource *resource)
-{
-    if (!program || !resource || !resource->name) {
-        return false;
-    }
-
-    if (resourceType != SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS) {
-        return false;
-    }
-
-    if (mglStageMSLHasNamedSamplerArgument(program, stage, resource->name, resource->binding)) {
-        return false;
-    }
-
-    static uint64_t s_staleSamplerResourceSkipLogs = 0;
-    uint64_t hit = ++s_staleSamplerResourceSkipLogs;
-    if (hit <= 64ull || (hit % 512ull) == 0ull) {
-        NSLog(@"MGL RESOURCE SKIP stale sampler program=%u stage=%s type=%d name=%s glBinding=%u metalBinding=%u hit=%llu",
-              (unsigned)program->name,
-              mglShaderStageName(stage),
-              resourceType,
-              resource->name,
-              (unsigned)resource->gl_binding,
-              (unsigned)resource->binding,
-              (unsigned long long)hit);
-    }
-    return true;
-}
-
-static float mglTraceReadFloat(const uint8_t *bytes, size_t byteCount, size_t offset)
-{
-    if (!bytes || offset + sizeof(float) > byteCount) {
-        return 0.0f;
-    }
-
-    float value = 0.0f;
-    memcpy(&value, bytes + offset, sizeof(value));
-    return value;
-}
-
-static MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA32Sint:
-            return MGLTextureDataKindSint;
-
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatR16Uint:
-        case MTLPixelFormatRG16Uint:
-        case MTLPixelFormatRGBA16Uint:
-        case MTLPixelFormatR32Uint:
-        case MTLPixelFormatRG32Uint:
-        case MTLPixelFormatRGBA32Uint:
-        case MTLPixelFormatRGB10A2Uint:
-            return MGLTextureDataKindUint;
-
-        case MTLPixelFormatInvalid:
-            return MGLTextureDataKindUnknown;
-
-        case MTLPixelFormatDepth16Unorm:
-        case MTLPixelFormatDepth32Float:
-        case MTLPixelFormatDepth24Unorm_Stencil8:
-        case MTLPixelFormatDepth32Float_Stencil8:
-            return MGLTextureDataKindDepth;
-
-        default:
-            return MGLTextureDataKindFloat;
-    }
-}
-
-static inline BOOL mglTexturePixelFormatCompatibleWithExpectedDataKind(MTLPixelFormat pixelFormat,
-                                                                       MGLTextureDataKind expectedKind)
-{
-    if (expectedKind == MGLTextureDataKindUnknown) {
-        return YES;
-    }
-
-    return mglTextureDataKindForPixelFormat(pixelFormat) == expectedKind;
-}
-
-static inline const char *mglTextureDataKindName(MGLTextureDataKind kind)
-{
-    switch (kind) {
-        case MGLTextureDataKindFloat: return "float";
-        case MGLTextureDataKindSint: return "sint";
-        case MGLTextureDataKindUint: return "uint";
-        case MGLTextureDataKindDepth: return "depth";
-        default: return "unknown";
-    }
-}
-
-static inline BOOL mglRendererGLInternalFormatLooksDepthOrStencil(GLenum internalformat)
-{
-    switch (internalformat) {
-        case GL_DEPTH_COMPONENT:
-        case GL_DEPTH_COMPONENT16:
-        case GL_DEPTH_COMPONENT24:
-        case GL_DEPTH_COMPONENT32:
-        case GL_DEPTH_COMPONENT32F:
-        case GL_DEPTH_STENCIL:
-        case GL_DEPTH24_STENCIL8:
-        case GL_DEPTH32F_STENCIL8:
-        case GL_STENCIL_INDEX:
-        case GL_STENCIL_INDEX8:
-            return YES;
-        default:
-            return NO;
-    }
-}
+/* RT Sync gate helpers (mglTextureCanUseGLSampledRenderTargetCopy,
+ * mglTextureIsAttachmentOfFramebuffer, mglFramebufferLooksLikeGLSampledCopyRenderTarget)
+ * now live in mgl_rt_sync.m — see mgl_rt_sync.h.  The gate logic is pure
+ * spec-compliance: any GL_TEXTURE_2D render target qualifies for a
+ * Y-flipped sampled copy, regardless of size or game-specific heuristics. */
+
+/* MGLTextureDataKind enum and the data-kind helpers
+ * (mglTextureDataKindForPixelFormat,
+ *  mglTexturePixelFormatCompatibleWithExpectedDataKind,
+ *  mglTextureDataKindName,
+ *  mglRendererGLInternalFormatLooksDepthOrStencil) now live in
+ * mgl_texture_compat.h — included above. */
+
+/* mglTextureDataKindForPixelFormat, mglTexturePixelFormatCompatibleWithExpectedDataKind,
+ * mglTextureDataKindName, and mglRendererGLInternalFormatLooksDepthOrStencil
+ * now live in mgl_texture_compat.m — see mgl_texture_compat.h. */
 
 static BOOL mglRendererTextureLooksRecoverableSampled2D(GLMContext glctx,
                                                         Texture *tex,
@@ -4470,41 +3725,6 @@ static inline void mglLogLoopHeartbeat(const char *tag,
 
     *lastCallSeconds = nowSeconds;
     *lastCallCount = callCount;
-}
-
-static const char *mglCommandBufferStatusName(MTLCommandBufferStatus status)
-{
-    switch (status) {
-        case MTLCommandBufferStatusNotEnqueued: return "NotEnqueued";
-        case MTLCommandBufferStatusEnqueued: return "Enqueued";
-        case MTLCommandBufferStatusCommitted: return "Committed";
-        case MTLCommandBufferStatusScheduled: return "Scheduled";
-        case MTLCommandBufferStatusCompleted: return "Completed";
-        case MTLCommandBufferStatusError: return "Error";
-        default: return "Unknown";
-    }
-}
-
-static const char *mglLoadActionName(MTLLoadAction action)
-{
-    switch (action) {
-        case MTLLoadActionDontCare: return "DontCare";
-        case MTLLoadActionLoad: return "Load";
-        case MTLLoadActionClear: return "Clear";
-        default: return "Unknown";
-    }
-}
-
-static const char *mglStoreActionName(MTLStoreAction action)
-{
-    switch (action) {
-        case MTLStoreActionDontCare: return "DontCare";
-        case MTLStoreActionStore: return "Store";
-        case MTLStoreActionMultisampleResolve: return "MSResolve";
-        case MTLStoreActionStoreAndMultisampleResolve: return "Store+MSResolve";
-        case MTLStoreActionUnknown: return "Unknown";
-        default: return "Other";
-    }
 }
 
 static inline void mglAppendFlagName(char *dst, size_t dstSize, const char *name, bool *first)
@@ -4974,30 +4194,6 @@ static Texture *mglFindFramebufferColorTexturePairedWithDepth(GLMContext glctx,
     }
 
     return NULL;
-}
-
-static BOOL mglRenderPassUsesColorTexture(MTLRenderPassDescriptor *renderPassDescriptor,
-                                          id<MTLTexture> texture,
-                                          NSUInteger *attachmentIndexOut)
-{
-    if (attachmentIndexOut) {
-        *attachmentIndexOut = MAX_COLOR_ATTACHMENTS;
-    }
-    if (!renderPassDescriptor || !texture) {
-        return NO;
-    }
-
-    for (NSUInteger i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        id<MTLTexture> colorTexture = renderPassDescriptor.colorAttachments[i].texture;
-        if (colorTexture == texture) {
-            if (attachmentIndexOut) {
-                *attachmentIndexOut = i;
-            }
-            return YES;
-        }
-    }
-
-    return NO;
 }
 
 static BOOL mglCurrentDrawFramebufferUsesColorTexture(GLMContext glctx,
@@ -5634,6 +4830,11 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 
     id<MTLDevice> _device;
 
+    /* AGX Capability Layer: centralized device detection + driver bug markers.
+     * Initialized once in initMetalLayer.  Queries are cached, no Metal API
+     * calls after init.  See mgl_capability.h. */
+    MGLCapability _capability;
+
     // CRITICAL FIX: Thread synchronization to prevent race conditions
     NSLock *_metalStateLock;
 
@@ -5707,6 +4908,10 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     id<MTLTexture> _fallbackCubeSampledTexture;
     id<MTLBuffer> _fallbackTextureBufferStorage;
     id<MTLBuffer> _tessFactorBuffer;
+    id<MTLBuffer> _tcsOutputBuffer;     /* TCS per-vertex output (spvOut, buffer 28) */
+    id<MTLBuffer> _tcsPatchOutBuffer;   /* TCS per-patch output (spvPatchOut, buffer 27) */
+    NSUInteger _tcsOutputStride;        /* bytes per TCS output vertex */
+    GLuint _tcsOutVertices;             /* TCS output vertices per patch (layout(vertices=N) out) */
     id<MTLTexture> _fallbackSintTextureBuffer;
     NSMutableDictionary<NSNumber *, id<MTLTexture>> *_fallbackSampledTextureCache;
     NSMutableDictionary<NSString *, id<MTLBuffer>> *_doubleVertexAttribBufferCache;
@@ -7204,84 +6409,6 @@ static uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipe
     }
 
     return hash;
-}
-
-static NSString *mglVertexClipVariantMSLSource(Program *program,
-                                               Shader *shader,
-                                               BOOL keepDepthFixup,
-                                               BOOL flipY,
-                                               NSString *entrySuffix)
-{
-    if (!program || !shader || !program->spirv[_VERTEX_SHADER].msl_str ||
-        !shader->entry_point || !entrySuffix) {
-        return nil;
-    }
-
-    NSString *source = [NSString stringWithUTF8String:program->spirv[_VERTEX_SHADER].msl_str];
-    if (!source) {
-        return nil;
-    }
-
-    NSString *entry = [NSString stringWithUTF8String:shader->entry_point];
-    if (!entry) {
-        return nil;
-    }
-
-    NSMutableArray<NSString *> *lines = [[source componentsSeparatedByString:@"\n"] mutableCopy];
-    for (NSInteger i = (NSInteger)lines.count - 1; i >= 0; i--) {
-        if (!keepDepthFixup && [lines[(NSUInteger)i] containsString:@"Adjust clip-space for Metal"]) {
-            [lines removeObjectAtIndex:(NSUInteger)i];
-        }
-    }
-
-    NSString *patched = [lines componentsJoinedByString:@"\n"];
-    if (flipY) {
-        patched = [patched stringByReplacingOccurrencesOfString:@"return out;"
-                                                     withString:@"out.gl_Position.y = -out.gl_Position.y;       // Adjust clip origin for GL_UPPER_LEFT\n    return out;"];
-    }
-
-    NSString *variantEntry = [entry stringByAppendingString:entrySuffix];
-    NSRange entryRange = [patched rangeOfString:entry];
-    if (entryRange.location == NSNotFound) {
-        return nil;
-    }
-
-    return [patched stringByReplacingOccurrencesOfString:entry withString:variantEntry];
-}
-
-static NSString *mglVertexClipVariantEntryName(Shader *shader, NSString *entrySuffix)
-{
-    if (!shader || !shader->entry_point || !entrySuffix) {
-        return nil;
-    }
-
-    NSString *entry = [NSString stringWithUTF8String:shader->entry_point];
-    return entry ? [entry stringByAppendingString:entrySuffix] : nil;
-}
-
-static NSString *mglZeroToOneVertexMSLSource(Program *program, Shader *shader)
-{
-    return mglVertexClipVariantMSLSource(program, shader, NO, NO, @"_zero_to_one");
-}
-
-static NSString *mglZeroToOneVertexEntryName(Shader *shader)
-{
-    return mglVertexClipVariantEntryName(shader, @"_zero_to_one");
-}
-
-static NSString *mglUpperLeftVertexMSLSource(Program *program, Shader *shader, BOOL zeroToOneDepth)
-{
-    return mglVertexClipVariantMSLSource(program,
-                                         shader,
-                                         !zeroToOneDepth,
-                                         YES,
-                                         zeroToOneDepth ? @"_upper_left_zero_to_one" : @"_upper_left");
-}
-
-static NSString *mglUpperLeftVertexEntryName(Shader *shader, BOOL zeroToOneDepth)
-{
-    return mglVertexClipVariantEntryName(shader,
-                                         zeroToOneDepth ? @"_upper_left_zero_to_one" : @"_upper_left");
 }
 
 static MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert)
@@ -8838,7 +7965,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                           (void *)resource->ubo_members,
                           (unsigned)resource->ubo_member_count,
                           (unsigned long)resource->required_size,
-                          mglBindingResourceLooksSamplerLike(resource, spvc_type) ? 1 : 0,
+                          mglRendererResourceLooksSamplerLike(resource, spvc_type) ? 1 : 0,
                           resource->uniform_location);
                 }
 
@@ -8853,7 +7980,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
                     resource->ubo_members && resource->ubo_member_count > 0 &&
                     resource->required_size > 0 &&
-                    !mglBindingResourceLooksSamplerLike(resource, spvc_type)) {
+                    !mglRendererResourceLooksSamplerLike(resource, spvc_type)) {
 
                     GLuint loc_step = mglPlainStructLocStep(resource);
                     GLint base_loc = resource->uniform_location;
@@ -11148,33 +10275,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
 #pragma mark textures
 
-static NSUInteger mglStoredColorComponentsForTexture(Texture *tex)
-{
-    if (!tex) {
-        return 4;
-    }
-
-    GLuint components = numComponentsForFormat(tex->internalformat);
-    return components > 0 ? (NSUInteger)components : 4;
-}
-
-static MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
-{
-    NSUInteger components = mglStoredColorComponentsForTexture(tex);
-
-    switch (swizzle)
-    {
-        case GL_ZERO: return MTLTextureSwizzleZero;
-        case GL_ONE: return MTLTextureSwizzleOne;
-        case GL_RED: return components >= 1 ? MTLTextureSwizzleRed : MTLTextureSwizzleZero;
-        case GL_GREEN: return components >= 2 ? MTLTextureSwizzleGreen : MTLTextureSwizzleZero;
-        case GL_BLUE: return components >= 3 ? MTLTextureSwizzleBlue : MTLTextureSwizzleZero;
-        case GL_ALPHA: return components >= 4 ? MTLTextureSwizzleAlpha : MTLTextureSwizzleOne;
-        default:
-            NSLog(@"MGL ERROR: Unknown swizzle value 0x%x in swizzleTexDesc", swizzle);
-            return MTLTextureSwizzleZero;
-    }
-}
+/* mglStoredColorComponentsForTexture and mglMTLSwizzleForGLSwizzle now live
+ * in mgl_texture_compat.m — see mgl_texture_compat.h. */
 
 - (void)swizzleTexDesc:(MTLTextureDescriptor *)tex_desc forTex:(Texture*)tex
 {
@@ -11186,444 +10288,10 @@ static MTLTextureSwizzle mglMTLSwizzleForGLSwizzle(Texture *tex, GLenum swizzle)
     tex_desc.swizzle = MTLTextureSwizzleChannelsMake(channel_r, channel_g, channel_b, channel_a);
 }
 
-static BOOL mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
-{
-    if (!tex || !tex->params.swizzled) {
-        return NO;
-    }
+/* mglTextureUploadNeedsSingleChannelSwizzle, mglResolveR8SwizzledComponent,
+ * and mglCreateSingleChannelSwizzledUpload now live in mgl_texture_compat.m —
+ * see mgl_texture_compat.h. */
 
-    switch (tex->internalformat)
-    {
-        case GL_R8:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static uint8_t mglResolveR8SwizzledComponent(Texture *tex, GLenum swizzle, uint8_t red)
-{
-    (void)tex;
-
-    switch (swizzle)
-    {
-        case GL_RED: return red;
-        case GL_ALPHA:
-        case GL_ONE: return 0xff;
-        case GL_GREEN:
-        case GL_BLUE:
-        case GL_ZERO:
-        default:
-            return 0x00;
-    }
-}
-
-static uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
-                                                     const uint8_t *srcData,
-                                                     NSUInteger width,
-                                                     NSUInteger height,
-                                                     NSUInteger srcBytesPerRow,
-                                                     NSUInteger *outBytesPerRow,
-                                                     NSUInteger *outBytesPerImage)
-{
-    if (!tex || !srcData || width == 0 || height == 0 || !outBytesPerRow || !outBytesPerImage) {
-        return NULL;
-    }
-
-    NSUInteger dstBytesPerRow = width * 4u;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            uint8_t red = srcRow[x];
-            uint8_t *out = dstRow + (x * 4u);
-            out[0] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_r, red);
-            out[1] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_g, red);
-            out[2] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_b, red);
-            out[3] = mglResolveR8SwizzledComponent(tex, tex->params.swizzle_a, red);
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
-}
-
-static BOOL mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
-                                                        MTLPixelFormat pixelFormat)
-{
-    /* Metal has no RGB8 pixel format, so GL_RGB8-family internal formats are
-     * backed by RGBA8 variants.  The CPU data is 3 bytes/pixel (RGB) but Metal
-     * expects 4 bytes/pixel (RGBA), so expansion is required. */
-    BOOL isRGBA8Variant =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB ||
-         pixelFormat == MTLPixelFormatRGBA8Snorm ||
-         pixelFormat == MTLPixelFormatRGBA8Sint ||
-         pixelFormat == MTLPixelFormatRGBA8Uint);
-    if (!isRGBA8Variant) {
-        return NO;
-    }
-
-    switch (internalformat) {
-        /* Packed legacy formats (already handled) */
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGB10:
-        case GL_RGB12:
-        case GL_RGBA2:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-        case GL_R3_G3_B2:
-        /* 8-bit RGB formats – 3 bytes/pixel in CPU, 4 bytes/pixel in Metal */
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static uint32_t mglReadPackedUploadLE(const uint8_t *src, NSUInteger bytes)
-{
-    uint32_t value = 0u;
-    if (!src) {
-        return 0u;
-    }
-    if (bytes > sizeof(value)) {
-        bytes = sizeof(value);
-    }
-    for (NSUInteger i = 0; i < bytes; i++) {
-        value |= ((uint32_t)src[i]) << (i * 8u);
-    }
-    return value;
-}
-
-static uint8_t mglExpandUNormBitsTo8(uint32_t value, uint32_t bits)
-{
-    if (bits == 0u) {
-        return 0u;
-    }
-    if (bits >= 8u) {
-        return (uint8_t)(value >> (bits - 8u));
-    }
-    uint32_t maxv = (1u << bits) - 1u;
-    return (uint8_t)((value * 255u + (maxv / 2u)) / maxv);
-}
-
-
-/* Check if the internal format needs channel expansion for non-RGBA8 Metal formats.
- * This handles 3-channel RGB formats (RGB16F, RGB32F, etc.) that are stored as
- * 4-channel RGBA in Metal. */
-static BOOL mglTextureNeedsChannelExpansion(GLenum internalformat,
-                                             MTLPixelFormat pixelFormat)
-{
-    /* Only handle non-RGBA8 Metal pixel formats */
-    BOOL isRGBA16Variant =
-        (pixelFormat == MTLPixelFormatRGBA16Unorm ||
-         pixelFormat == MTLPixelFormatRGBA16Snorm ||
-         pixelFormat == MTLPixelFormatRGBA16Float ||
-         pixelFormat == MTLPixelFormatRGBA16Sint ||
-         pixelFormat == MTLPixelFormatRGBA16Uint);
-    BOOL isRGBA32Variant =
-        (pixelFormat == MTLPixelFormatRGBA32Float ||
-         pixelFormat == MTLPixelFormatRGBA32Sint ||
-         pixelFormat == MTLPixelFormatRGBA32Uint);
-    if (!isRGBA16Variant && !isRGBA32Variant) {
-        return NO;
-    }
-
-    switch (internalformat) {
-        case GL_RGB16:
-        case GL_RGB16_SNORM:
-        case GL_RGB16F:
-        case GL_RGB16I:
-        case GL_RGB16UI:
-        case GL_RGB32F:
-        case GL_RGB32I:
-        case GL_RGB32UI:
-        case GL_RGB12:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-/* Create expanded upload data for 3-channel RGB -> 4-channel RGBA Metal formats.
- * Reads 3 channels from source, writes 4 channels to destination, setting alpha
- * to the appropriate default value. */
-static uint8_t *mglCreateChannelExpandedUpload(Texture *tex,
-                                                MTLPixelFormat pixelFormat,
-                                                const uint8_t *srcData,
-                                                NSUInteger width,
-                                                NSUInteger height,
-                                                NSUInteger srcBytesPerRow,
-                                                NSUInteger *outBytesPerRow,
-                                                NSUInteger *outBytesPerImage)
-{
-    if (!tex || !srcData || width == 0 || height == 0 ||
-        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage) {
-        return NULL;
-    }
-
-    /* Determine source and destination parameters */
-    NSUInteger srcCompBytes = 0;  /* bytes per component in source */
-    NSUInteger dstCompBytes = 0;  /* bytes per component in destination */
-    NSUInteger srcPixelBytes = 0; /* bytes per pixel in source (3 channels) */
-    NSUInteger dstPixelBytes = 0; /* bytes per pixel in destination (4 channels) */
-
-    /* Alpha default value as uint64_t to handle all sizes */
-    uint64_t alphaDefault = 0;
-
-    switch (pixelFormat) {
-        case MTLPixelFormatRGBA16Unorm:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 65535; /* 1.0 in unorm16 */
-            break;
-        case MTLPixelFormatRGBA16Snorm:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 32767; /* 1.0 in snorm16 */
-            break;
-        case MTLPixelFormatRGBA16Float:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 0x3C00; /* 1.0 in half float */
-            break;
-        case MTLPixelFormatRGBA16Sint:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA16Uint:
-            srcCompBytes = 2; dstCompBytes = 2;
-            srcPixelBytes = 6; dstPixelBytes = 8;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA32Float:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
-            break;
-        case MTLPixelFormatRGBA32Sint:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            alphaDefault = 1;
-            break;
-        case MTLPixelFormatRGBA32Uint:
-            srcCompBytes = 4; dstCompBytes = 4;
-            srcPixelBytes = 12; dstPixelBytes = 16;
-            alphaDefault = 1;
-            break;
-        default:
-            return NULL;
-    }
-
-    /* Verify source pixel bytes match internal format */
-    size_t expectedSrcBytes = sizeForInternalFormat(tex->internalformat, 0, 0);
-    if (expectedSrcBytes > 0 && expectedSrcBytes != srcPixelBytes) {
-        /* For GL_RGB12, sizeForInternalFormat might return a different value.
-         * Use the expected value if it's reasonable. */
-        if (tex->internalformat == GL_RGB12 && expectedSrcBytes == 6) {
-            /* OK - RGB12 is stored as 3x16-bit = 6 bytes */
-        } else if (expectedSrcBytes != srcPixelBytes) {
-            return NULL;
-        }
-    }
-
-    if (srcBytesPerRow < width * srcPixelBytes) {
-        return NULL;
-    }
-
-    NSUInteger dstBytesPerRow = width * dstPixelBytes;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
-            uint8_t *dstPixel = dstRow + x * dstPixelBytes;
-            /* Copy 3 channels (R, G, B) from source to destination */
-            memcpy(dstPixel, srcPixel, srcPixelBytes);
-            /* Set alpha channel to default value */
-            memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
-}
-
-static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
-                                             const uint8_t *srcData,
-                                             NSUInteger width,
-                                             NSUInteger height,
-                                             NSUInteger srcBytesPerRow,
-                                             NSUInteger *outBytesPerRow,
-                                             NSUInteger *outBytesPerImage)
-{
-    if (!tex || !srcData || width == 0 || height == 0 ||
-        srcBytesPerRow == 0 || !outBytesPerRow || !outBytesPerImage ||
-        !mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, MTLPixelFormatRGBA8Unorm)) {
-        return NULL;
-    }
-
-    NSUInteger srcPixelBytes = 0u;
-    switch (tex->internalformat) {
-        case GL_R3_G3_B2:
-            srcPixelBytes = 1u;
-            break;
-        case GL_RGBA2:
-        case GL_RGB4:
-        case GL_RGB5:
-        case GL_RGBA4:
-        case GL_RGB5_A1:
-            srcPixelBytes = 2u;
-            break;
-        case GL_RGB10:
-        case GL_RGB12:
-            srcPixelBytes = 4u;
-            break;
-        case GL_RGB8:
-        case GL_SRGB8:
-        case GL_RGB8_SNORM:
-        case GL_RGB8I:
-        case GL_RGB8UI:
-            srcPixelBytes = 3u;
-            break;
-        default:
-            return NULL;
-    }
-    if (srcBytesPerRow < width * srcPixelBytes) {
-        return NULL;
-    }
-
-    NSUInteger dstBytesPerRow = width * 4u;
-    NSUInteger dstBytesPerImage = dstBytesPerRow * height;
-    if (dstBytesPerImage == 0 || dstBytesPerImage > (512 * 1024 * 1024)) {
-        return NULL;
-    }
-
-    uint8_t *dst = (uint8_t *)malloc(dstBytesPerImage);
-    if (!dst) {
-        return NULL;
-    }
-
-    for (NSUInteger row = 0; row < height; row++) {
-        const uint8_t *srcRow = srcData + row * srcBytesPerRow;
-        uint8_t *dstRow = dst + row * dstBytesPerRow;
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *srcPixel = srcRow + x * srcPixelBytes;
-            uint32_t packed = mglReadPackedUploadLE(srcPixel, srcPixelBytes);
-            uint8_t r = 0u;
-            uint8_t g = 0u;
-            uint8_t b = 0u;
-            uint8_t a = 0xffu;
-
-            switch (tex->internalformat) {
-                case GL_RGB8:
-                case GL_SRGB8:
-                case GL_RGB:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 0xffu;
-                    break;
-                case GL_RGB8_SNORM:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 0x7fu;  /* 1.0 in snorm */
-                    break;
-                case GL_RGB8I:
-                case GL_RGB8UI:
-                    r = srcPixel[0];
-                    g = srcPixel[1];
-                    b = srcPixel[2];
-                    a = 1u;  /* 1 in integer */
-                    break;
-                case GL_R3_G3_B2:
-                    r = mglExpandUNormBitsTo8((packed >> 5u) & 0x7u, 3u);
-                    g = mglExpandUNormBitsTo8((packed >> 2u) & 0x7u, 3u);
-                    b = mglExpandUNormBitsTo8(packed & 0x3u, 2u);
-                    break;
-                case GL_RGB4:
-                case GL_RGB5:
-                    /* CPU data is raw GL_UNSIGNED_SHORT_5_6_5 (unpackTexture
-                     * memcpy fallback when mglBuildCPUPixelLayout fails).
-                     * R at bits 11-15, G at bits 5-10, B at bits 0-4. */
-                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglExpandUNormBitsTo8((packed >> 5u) & 0x3fu, 6u);
-                    b = mglExpandUNormBitsTo8(packed & 0x1fu, 5u);
-                    break;
-                case GL_RGB10:
-                    r = mglExpandUNormBitsTo8(packed & 0x3ffu, 10u);
-                    g = mglExpandUNormBitsTo8((packed >> 10u) & 0x3ffu, 10u);
-                    b = mglExpandUNormBitsTo8((packed >> 20u) & 0x3ffu, 10u);
-                    break;
-                case GL_RGB12:
-                    r = mglExpandUNormBitsTo8(packed & 0xfffu, 12u);
-                    g = mglExpandUNormBitsTo8((packed >> 12u) & 0xfffu, 12u);
-                    b = mglExpandUNormBitsTo8((packed >> 24u) & 0xfffu, 12u);
-                    break;
-                case GL_RGBA2:
-                    /* GL_RGBA2 stored as 4 bits/component (same as GL_RGBA4)
-                     * to preserve precision when CTS uses 4_4_4_4 type.
-                     * CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
-                case GL_RGBA4:
-                    /* CPU layout stores R at bit_offset 12, G at 8, B at 4, A at 0. */
-                    r = mglExpandUNormBitsTo8((packed >> 12u) & 0xfu, 4u);
-                    g = mglExpandUNormBitsTo8((packed >> 8u) & 0xfu, 4u);
-                    b = mglExpandUNormBitsTo8((packed >> 4u) & 0xfu, 4u);
-                    a = mglExpandUNormBitsTo8(packed & 0xfu, 4u);
-                    break;
-                case GL_RGB5_A1:
-                    /* CPU layout stores R at bit_offset 11, G at 6, B at 1, A at 0. */
-                    r = mglExpandUNormBitsTo8((packed >> 11u) & 0x1fu, 5u);
-                    g = mglExpandUNormBitsTo8((packed >> 6u) & 0x1fu, 5u);
-                    b = mglExpandUNormBitsTo8((packed >> 1u) & 0x1fu, 5u);
-                    a = (packed & 0x1u) ? 0xffu : 0x00u;
-                    break;
-                default:
-                    break;
-            }
-
-            uint8_t *out = dstRow + x * 4u;
-            out[0] = r;
-            out[1] = g;
-            out[2] = b;
-            out[3] = a;
-        }
-    }
-
-    *outBytesPerRow = dstBytesPerRow;
-    *outBytesPerImage = dstBytesPerImage;
-    return dst;
-}
 
 - (id<MTLTexture>) createMTLTextureFromGLTexture:(Texture *) tex
 {
@@ -11946,7 +10614,17 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
             texture1DBackedBy2D = true;
             break;
         case GL_RENDERBUFFER: tex_type = MTLTextureType2D; break;
-        case GL_TEXTURE_1D_ARRAY: tex_type = MTLTextureType1DArray; is_array = true; break;
+        case GL_TEXTURE_1D_ARRAY:
+            /* SPIRV-Cross lowers sampler1DArray to texture2d_array in MSL, and
+             * Metal does not allow texture views from MTLTextureType1DArray to
+             * MTLTextureType2DArray.  Always back GL_TEXTURE_1D_ARRAY with
+             * MTLTextureType2DArray (height=1), mirroring how GL_TEXTURE_1D is
+             * backed by MTLTextureType2D and how mipmapped/depth 1D arrays are
+             * already promoted below. */
+            tex_type = MTLTextureType2DArray;
+            is_array = true;
+            texture1DArrayBackedBy2DArray = true;
+            break;
         case GL_TEXTURE_2D:
         case GL_TEXTURE_RECTANGLE:
             tex_type = MTLTextureType2D;
@@ -12186,28 +10864,17 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     if (tex_type == MTLTextureType2DMultisample ||
         tex_type == MTLTextureType2DMultisampleArray) {
         /* Metal only supports a device-specific subset of sample counts.
-         * Apple Silicon (e.g. M4) only supports 1/2/4 — NOT 8 — as reported
-         * by -[MTLDevice supportsTextureSampleCount:].  Round up to the next
-         * supported value and verify against the device's reported support to
-         * avoid Metal validation assertion failures. */
+         * Apple Silicon (e.g. M4) only supports 1/2/4 — NOT 8.  Delegate to
+         * the AGX Capability Layer for centralized clamping. */
         NSUInteger samples = MAX((NSUInteger)2u, (NSUInteger)tex->samples);
-        if (samples > 4u) {
-            samples = 4u;
-        } else if (samples > 2u) {
-            samples = 4u;
-        }
-        /* Clamp to the highest sample count the device actually supports. */
-        while (samples > 1u && ![_device supportsTextureSampleCount:samples]) {
-            samples >>= 1;
-        }
-        if (samples < 1u) {
-            samples = 1u;
-        }
+        samples = MGLCapabilityClampSampleCount(&_capability, samples);
         tex_desc.sampleCount = samples;
     }
 
     // CONSERVATIVE: Use only Metal API patterns that work reliably with AGX driver
-    tex_desc.cpuCacheMode = MTLCPUCacheModeWriteCombined;  // More stable than DefaultCache
+    tex_desc.cpuCacheMode = MGLCapabilityUseConservativeCPUCache(&_capability)
+        ? MTLCPUCacheModeWriteCombined
+        : MTLCPUCacheModeDefaultCache;
 
     // Use shared storage for textures that need CPU upload (blit/replaceRegion).
     // Private storage is only safe for pure GPU render targets on Apple Silicon.
@@ -12277,6 +10944,12 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     }
     if (texture1DArrayBackedBy2DArray) {
         tex_desc.textureType = MTLTextureType2DArray;
+        /* For GL_TEXTURE_1D_ARRAY, the GL height parameter is the array slice
+         * count.  Since tex_type was promoted to MTLTextureType2DArray above,
+         * the arrayLength branch at line ~12397 (keyed on MTLTextureType1DArray)
+         * was skipped, leaving arrayLength=1 from the is_array/depth fallback.
+         * Set arrayLength from the GL height (slice count) here. */
+        tex_desc.arrayLength = MAX((NSUInteger)1, height);
         tex_desc.height = 1;
     }
 
@@ -12475,6 +11148,58 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                 }
                                 free(firstSlice);
                             }
+                        } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            /* GL_RGB16 / GL_RGB32 family (6/12 bytes/pixel CPU) maps to
+                             * Metal RGBA16 / RGBA32 family (8/16 bytes/pixel).  Expand each
+                             * slice before uploading; otherwise 6/12-byte CPU rows are
+                             * uploaded to 8/16-byte Metal textures, shifting pixels and
+                             * producing stripes.  Mirrors the RGBA8 3D block above. */
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImagePerSlice = 0;
+                            NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                            NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+
+                            uint8_t *firstSlice = mglCreateChannelExpandedUpload(tex,
+                                                                                  pixelFormat,
+                                                                                  (const uint8_t *)srcData,
+                                                                                  width,
+                                                                                  texHeight,
+                                                                                  bytesPerRow,
+                                                                                  &expandedBytesPerRow,
+                                                                                  &expandedBytesPerImagePerSlice);
+                            if (firstSlice) {
+                                NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                                if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                    expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                    if (expanded3DUploadData) {
+                                        memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                        for (NSUInteger z = 1; z < texDepth; z++) {
+                                            const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                            uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                            NSUInteger dummyRow = 0, dummyImage = 0;
+                                            uint8_t *sliceExpanded = mglCreateChannelExpandedUpload(tex,
+                                                                                                     pixelFormat,
+                                                                                                     sliceSrc,
+                                                                                                     width,
+                                                                                                     texHeight,
+                                                                                                     bytesPerRow,
+                                                                                                     &dummyRow,
+                                                                                                     &dummyImage);
+                                            if (sliceExpanded) {
+                                                memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                                free(sliceExpanded);
+                                            } else {
+                                                memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                            }
+                                        }
+                                        srcData = expanded3DUploadData;
+                                        bytesPerRow = expandedBytesPerRow;
+                                        bytesPerImage = expandedBytesPerImagePerSlice;
+                                        addr = (uintptr_t)srcData;
+                                    }
+                                }
+                                free(firstSlice);
+                            }
                         }
 
                         // Determine optimal alignment based on pixel format and GPU capabilities
@@ -12484,7 +11209,8 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                             alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
                         }
 
-                        if (addr % 256 != 0 || alignedBytesPerRow != bytesPerRow) {
+                        NSUInteger addrAlignment = MGLCapabilityTextureAlignment(&_capability);
+                        if (addr % addrAlignment != 0 || alignedBytesPerRow != bytesPerRow) {
                             // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy row by row
                             NSUInteger alignedBytesPerImage = alignedBytesPerRow * MAX((NSUInteger)height, 1UL);
                             NSUInteger alignedSize = alignedBytesPerImage * MAX((NSUInteger)depth, 1UL);
@@ -12677,10 +11403,31 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                 void *expandedUploadData = NULL;
                                 uintptr_t addr = (uintptr_t)srcData;
 
-                                /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats */
+                                /* Expand CPU data to Metal texel layout BEFORE alignment/upload.
+                                 * RGB8-family maps to RGBA8 (mglCreateRGBA8ExpandedUpload) or
+                                 * RGB16 / RGB32 family maps to RGBA16 / RGBA32 family
+                                 * (mglCreateChannelExpandedUpload).  Mutually exclusive.
+                                 * Without this, N-byte CPU rows upload to 4/8/16-byte Metal
+                                 * textures (pixel shift / stripes). */
                                 NSUInteger effectiveBytesPerRow = bytesPerRow;
                                 NSUInteger effectiveBytesPerImage = bytesPerImage;
-                                if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                    NSUInteger expandedBytesPerRow = 0;
+                                    NSUInteger expandedBytesPerImage = 0;
+                                    expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                       (const uint8_t *)srcData,
+                                                                                       width,
+                                                                                       uploadSliceHeight,
+                                                                                       bytesPerRow,
+                                                                                       &expandedBytesPerRow,
+                                                                                       &expandedBytesPerImage);
+                                    if (expandedUploadData) {
+                                        srcData = expandedUploadData;
+                                        effectiveBytesPerRow = expandedBytesPerRow;
+                                        effectiveBytesPerImage = expandedBytesPerImage;
+                                        addr = (uintptr_t)srcData;
+                                    }
+                                } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
                                     NSUInteger expandedBytesPerRow = 0;
                                     NSUInteger expandedBytesPerImage = 0;
                                     expandedUploadData = mglCreateChannelExpandedUpload(tex,
@@ -13021,7 +11768,6 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
             NSLog(@"MGL INFO: Re-uploading existing CPU texture data (tex=%d, dims=%lux%lu)",
                   tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
 
-            MTLRegion region;
             for (int face = 0; face < num_faces; face++) {
                 for (int level = 0; level < (int)upload_level_count; level++) {
                     TextureLevel *uploadLevel = &tex->faces[face].levels[level];
@@ -13035,35 +11781,176 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                     NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
                     if (lvlPitch == 0 || lvlWidth == 0) continue;
 
-                    if (texture1DBackedBy2D)
-                        region = MTLRegionMake2D(0,0,lvlWidth,1);
-                    else if (lvlDepth > 1)
-                        region = MTLRegionMake3D(0,0,0,lvlWidth,lvlHeight,lvlDepth);
-                    else if (lvlHeight > 1)
-                        region = MTLRegionMake2D(0,0,lvlWidth,lvlHeight);
-                    else
-                        region = MTLRegionMake1D(0,lvlWidth);
+                    if (is_array)
+                    {
+                        /* Array texture re-upload: loop over array layers and upload
+                         * each slice independently.  Mirrors the DIRTY_TEXTURE_DATA
+                         * array path (12861-13087).  The old code only uploaded
+                         * slice 0 and passed the entire array's data_size as
+                         * bytesPerImage with depth=num_layers, causing a crash in
+                         * uploadTextureSliceViaBlit's newBufferWithBytes. */
+                        GLuint num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
+                            ? tex->faces[face].levels[level].height
+                            : tex->faces[face].levels[level].depth;
+                        if (num_layers == 0) continue;
 
+                        BOOL arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
+                        NSUInteger uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)lvlHeight, 1UL);
+                        NSUInteger baseBytesPerRow = lvlPitch;
+                        NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceHeight;
+                        NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
+
+                        if (logicalBytesPerImage == 0 ||
+                            backingBytes < logicalBytesPerImage * MAX((NSUInteger)num_layers, 1UL)) {
+                            NSLog(@"MGL WARNING: Re-upload array backing too small tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
+                                  tex->name, face, level,
+                                  (unsigned long)backingBytes,
+                                  (unsigned long)logicalBytesPerImage,
+                                  num_layers);
+                            continue;
+                        }
+
+                        for (GLuint layer = 0; layer < num_layers; layer++)
+                        {
+                            size_t offset = logicalBytesPerImage * layer;
+                            const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
+                            void *expandedUploadData = NULL;
+                            NSUInteger effectiveBytesPerRow = baseBytesPerRow;
+                            NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
+
+                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                  (const uint8_t *)layerSrcData,
+                                                                                  lvlWidth,
+                                                                                  uploadSliceHeight,
+                                                                                  baseBytesPerRow,
+                                                                                  &expandedBPR,
+                                                                                  &expandedBPI);
+                                if (expandedUploadData) {
+                                    layerSrcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBPR;
+                                    effectiveBytesPerImage = expandedBPI;
+                                }
+                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                     pixelFormat,
+                                                                                     (const uint8_t *)layerSrcData,
+                                                                                     lvlWidth,
+                                                                                     uploadSliceHeight,
+                                                                                     baseBytesPerRow,
+                                                                                     &expandedBPR,
+                                                                                     &expandedBPI);
+                                if (expandedUploadData) {
+                                    layerSrcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBPR;
+                                    effectiveBytesPerImage = expandedBPI;
+                                }
+                            }
+
+                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                            NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
+                            if (alignedBytesPerRow % alignment != 0) {
+                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                            }
+
+                            uintptr_t addr = (uintptr_t)layerSrcData;
+                            if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
+                                NSUInteger alignedSize = alignedBytesPerRow * uploadSliceHeight;
+                                if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
+                                    void *alignedData = aligned_alloc(alignment, alignedSize);
+                                    if (alignedData) {
+                                        memset(alignedData, 0, alignedSize);
+                                        for (NSUInteger row = 0; row < uploadSliceHeight; row++) {
+                                            NSUInteger copySize = MIN(effectiveBytesPerRow, alignedBytesPerRow);
+                                            memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
+                                                   (const uint8_t *)layerSrcData + row * effectiveBytesPerRow, copySize);
+                                        }
+                                        [self uploadTextureSliceViaBlit:texture
+                                                               texName:tex->name
+                                                             texTarget:tex->target
+                                                                 bytes:alignedData
+                                                           bytesPerRow:alignedBytesPerRow
+                                                         bytesPerImage:alignedBytesPerRow * uploadSliceHeight
+                                                                 width:lvlWidth
+                                                                height:lvlHeight
+                                                                 depth:1
+                                                                 level:level
+                                                                 slice:layer];
+                                        free(alignedData);
+                                    }
+                                }
+                            } else {
+                                [self uploadTextureSliceViaBlit:texture
+                                                       texName:tex->name
+                                                     texTarget:tex->target
+                                                         bytes:layerSrcData
+                                                   bytesPerRow:effectiveBytesPerRow
+                                                 bytesPerImage:effectiveBytesPerImage
+                                                         width:lvlWidth
+                                                        height:lvlHeight
+                                                         depth:1
+                                                         level:level
+                                                         slice:layer];
+                            }
+                            free(expandedUploadData);
+                        }
+                    }
+                    else
+                    {
+                    /* Non-array re-upload (2D, 3D, 1D, cube).
+                     * For 3D textures, bytesPerImage must be a single 2D slice
+                     * (bytesPerRow * height), NOT the full volume data_size.
+                     * uploadTextureSliceViaBlit computes bufferSize =
+                     * safeBytesPerImage * copyDepth, so passing the full volume
+                     * as bytesPerImage AND depth would double-count and cause
+                     * newBufferWithBytes to read past the source buffer. */
                     NSUInteger bytesPerRow = lvlPitch;
-                    NSUInteger bytesPerImage = tex->faces[face].levels[level].data_size;
-                    if (bytesPerImage == 0) bytesPerImage = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+                    NSUInteger fullDataSize = tex->faces[face].levels[level].data_size;
+                    if (fullDataSize == 0) fullDataSize = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+
+                    BOOL is3DReupload = (tex->target == GL_TEXTURE_3D && lvlDepth > 1);
+                    NSUInteger singleSliceBPI = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+                    NSUInteger bytesPerImage = is3DReupload ? singleSliceBPI : fullDataSize;
+                    NSUInteger uploadDepth = is3DReupload ? lvlDepth : (lvlDepth > 1 ? lvlDepth : 1);
 
                     const void *srcData = (const void *)tex->faces[face].levels[level].data;
                     void *expandedUploadData = NULL;
-                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                        NSUInteger expandedBytesPerRow = 0;
-                        NSUInteger expandedBytesPerImage = 0;
-                        expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                          (const uint8_t *)srcData,
-                                                                          lvlWidth,
-                                                                          MAX((NSUInteger)lvlHeight, 1UL),
-                                                                          bytesPerRow,
-                                                                          &expandedBytesPerRow,
-                                                                          &expandedBytesPerImage);
-                        if (expandedUploadData) {
-                            srcData = expandedUploadData;
-                            bytesPerRow = expandedBytesPerRow;
-                            bytesPerImage = expandedBytesPerImage;
+                    /* Channel expansion for 2D/non-3D only.  3D expansion would
+                     * require per-slice handling (see DIRTY_TEXTURE_DATA 3D path). */
+                    if (!is3DReupload) {
+                        if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                              (const uint8_t *)srcData,
+                                                                              lvlWidth,
+                                                                              MAX((NSUInteger)lvlHeight, 1UL),
+                                                                              bytesPerRow,
+                                                                              &expandedBytesPerRow,
+                                                                              &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                            }
+                        } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                 pixelFormat,
+                                                                                 (const uint8_t *)srcData,
+                                                                                 lvlWidth,
+                                                                                 MAX((NSUInteger)lvlHeight, 1UL),
+                                                                                 bytesPerRow,
+                                                                                 &expandedBytesPerRow,
+                                                                                 &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                            }
                         }
                     }
                     NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
@@ -13075,46 +11962,32 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                     uintptr_t addr = (uintptr_t)srcData;
                     if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
                         NSUInteger rowCount = MAX((NSUInteger)lvlHeight, 1UL);
-                        NSUInteger alignedSize = alignedBytesPerRow * rowCount;
+                        NSUInteger alignedSliceBPI = alignedBytesPerRow * rowCount;
+                        NSUInteger alignedSize = alignedSliceBPI * uploadDepth;
                         if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
                             void *alignedData = aligned_alloc(alignment, alignedSize);
                             if (alignedData) {
                                 memset(alignedData, 0, alignedSize);
-                                for (NSUInteger row = 0; row < rowCount; row++) {
-                                    NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
-                                    memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
-                                           (const uint8_t *)srcData + row * bytesPerRow, copySize);
+                                for (NSUInteger z = 0; z < uploadDepth; z++) {
+                                    for (NSUInteger row = 0; row < rowCount; row++) {
+                                        NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
+                                        memcpy((uint8_t *)alignedData + z * alignedSliceBPI + row * alignedBytesPerRow,
+                                               (const uint8_t *)srcData + z * singleSliceBPI + row * bytesPerRow, copySize);
+                                    }
                                 }
                                 [self uploadTextureSliceViaBlit:texture
                                                        texName:tex->name
                                                      texTarget:tex->target
                                                          bytes:alignedData
                                                    bytesPerRow:alignedBytesPerRow
-                                                 bytesPerImage:alignedBytesPerRow * rowCount
+                                                 bytesPerImage:alignedSliceBPI
                                                          width:lvlWidth
                                                         height:lvlHeight
-                                                         depth:1
+                                                         depth:uploadDepth
                                                          level:level
-                                                         slice:(is_array ? 0 : face)];
+                                                         slice:face];
                                 free(alignedData);
                             }
-                        }
-                        free(expandedUploadData);
-                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                        NSUInteger expandedBytesPerRow = 0;
-                        NSUInteger expandedBytesPerImage = 0;
-                        expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                             pixelFormat,
-                                                                             (const uint8_t *)srcData,
-                                                                             lvlWidth,
-                                                                             MAX((NSUInteger)lvlHeight, 1UL),
-                                                                             bytesPerRow,
-                                                                             &expandedBytesPerRow,
-                                                                             &expandedBytesPerImage);
-                        if (expandedUploadData) {
-                            srcData = expandedUploadData;
-                            bytesPerRow = expandedBytesPerRow;
-                            bytesPerImage = expandedBytesPerImage;
                         }
                     } else {
                         [self uploadTextureSliceViaBlit:texture
@@ -13125,11 +11998,12 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                                          bytesPerImage:bytesPerImage
                                                  width:lvlWidth
                                                 height:lvlHeight
-                                                 depth:lvlDepth > 1 ? lvlDepth : 1
+                                                 depth:uploadDepth
                                                  level:level
-                                                 slice:(is_array ? 0 : face)];
-                        free(expandedUploadData);
+                                                 slice:face];
                     }
+                    free(expandedUploadData);
+                    } /* end else (non-array) */
                 }
             }
         } else if (tex->is_render_target || mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
@@ -14377,7 +13251,77 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     tex->mtl_gl_sampled_width = 0u;
     tex->mtl_gl_sampled_height = 0u;
     tex->mtl_gl_sampled_format = 0u;
+    tex->mtl_gl_sampled_levels = 0u;
     tex->mtl_gl_sampled_write_version = 0u;
+}
+
+/* Lazy refresh the Y-flipped sampled copy for `tex` if it is stale
+ * (mtl_gl_sampled_write_version != mtl_render_target_write_version) and it
+ * is safe to do so — i.e. the texture is NOT a color/depth attachment of
+ * the currently-active render pass (Metal forbids reading a texture that
+ * is being written in the same pass).
+ *
+ * UNUSED / DANGEROUS: callers inside bindTexturesToCurrentRenderEncoder
+ * were removed because updateGLSampledRenderTargetCopyForTexture creates
+ * its own renderCommandEncoder, which re-enters the Metal encoder during
+ * a flush triggered by mglBindBufferRange and crashes AGX
+ * (MTLReportFailure -> SIGABRT).  Retained as a helper in case a future
+ * caller outside an active flush wants lazy refresh; it must never be
+ * called from bindTexturesToCurrentRenderEncoder / processGLState /
+ * flushDrawBuffer paths. */
+- (BOOL)lazyRefreshGLSampledRenderTargetCopyForTexture:(Texture *)tex
+                                                 stage:(const char *)stage
+                                               program:(GLuint)programName
+                                              binding:(GLuint)binding
+                                                 unit:(GLuint)unit
+{
+    if (!tex || !tex->mtl_data) {
+        return NO;
+    }
+    if (!mglTextureCanUseGLSampledRenderTargetCopy(tex)) {
+        return NO;
+    }
+    if (tex->mtl_render_target_write_version == 0u) {
+        return NO;
+    }
+    /* Already fresh — nothing to do. */
+    if (tex->mtl_gl_sampled_data &&
+        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
+        return YES;
+    }
+    /* Stale (or no copy yet): safe to refresh only if the texture is not an
+     * attachment of the active render pass.  Reading a render-pass
+     * attachment mid-pass is a Metal read-after-write hazard. */
+    if (mglTextureIsAttachmentOfFramebuffer(_renderPassFramebuffer, tex)) {
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog("RT_SAMPLE_COPY_LAZY_SKIP stage=%s program=%u binding=%u unit=%u tex=%u writeVer=%u rtVer=%u reason=current-pass-attachment",
+                        stage ? stage : "",
+                        (unsigned)programName,
+                        (unsigned)binding,
+                        (unsigned)unit,
+                        (unsigned)tex->name,
+                        (unsigned)tex->mtl_gl_sampled_write_version,
+                        (unsigned)tex->mtl_render_target_write_version);
+        }
+        return NO;
+    }
+    id<MTLTexture> source = (__bridge id<MTLTexture>)(tex->mtl_data);
+    BOOL ok = [self updateGLSampledRenderTargetCopyForTexture:tex
+                                                       source:source
+                                                       reason:"lazy_sample_copy_refresh"];
+    if (mglTraceLogIsEnabled()) {
+        mglTraceLog("RT_SAMPLE_COPY_LAZY_REFRESH stage=%s program=%u binding=%u unit=%u tex=%u ok=%d writeVer=%u rtVer=%u",
+                    stage ? stage : "",
+                    (unsigned)programName,
+                    (unsigned)binding,
+                    (unsigned)unit,
+                    (unsigned)tex->name,
+                    ok ? 1 : 0,
+                    (unsigned)tex->mtl_gl_sampled_write_version,
+                    (unsigned)tex->mtl_render_target_write_version);
+    }
+    return ok && tex->mtl_gl_sampled_data &&
+                tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version;
 }
 
 - (BOOL)updateGLSampledRenderTargetCopyForTexture:(Texture *)tex
@@ -14396,6 +13340,7 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         tex->mtl_gl_sampled_width == (GLuint)source.width &&
         tex->mtl_gl_sampled_height == (GLuint)source.height &&
         tex->mtl_gl_sampled_format == (GLuint)source.pixelFormat &&
+        tex->mtl_gl_sampled_levels == (GLuint)source.mipmapLevelCount &&
         tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
         return YES;
     }
@@ -14404,15 +13349,34 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         tex->mtl_gl_sampled_data == NULL ||
         tex->mtl_gl_sampled_width != (GLuint)source.width ||
         tex->mtl_gl_sampled_height != (GLuint)source.height ||
-        tex->mtl_gl_sampled_format != (GLuint)source.pixelFormat;
+        tex->mtl_gl_sampled_format != (GLuint)source.pixelFormat ||
+        tex->mtl_gl_sampled_levels != (GLuint)source.mipmapLevelCount;
     if (needsNewCopy) {
         [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
+        /* Mirror the source's mip structure so textureLod / auto-mip sampling
+         * still works through the copy.  A mipmapped RT atlas (e.g. MC 1.21.11
+         * terrain atlas, 5 mip levels) sampled with LINEAR_MIPMAP_LINEAR /
+         * RGSS textureLod(level>0) cannot be served by a single-level copy:
+         * terrain would fall back to the un-flipped Metal RT and render
+         * vertical stripes.  genmipmap runs only at this refresh point
+         * (end_render_pass / blit_framebuffer), NOT on every RT write, so the
+         * per-draw perf killer noted in the old comment no longer applies. */
+        BOOL copyMipmapped = (source.mipmapLevelCount > 1u);
         MTLTextureDescriptor *desc =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
                                                                width:source.width
                                                               height:source.height
-                                                           mipmapped:NO];
+                                                           mipmapped:copyMipmapped];
+        /* When mipmapped, Metal derives mipmapLevelCount from the dimensions
+         * (e.g. 12 for a 2048x2048 texture), but the source RT atlas may only
+         * have 5 levels (0-4).  Cap the copy's level count to the source's so
+         * the per-level blit loop below never requests a level that exists on
+         * the destination but not on the source (which would assert inside
+         * newTextureViewWithPixelFormat). */
+        if (copyMipmapped) {
+            desc.mipmapLevelCount = source.mipmapLevelCount;
+        }
         desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
         desc.storageMode = MTLStorageModePrivate;
 
@@ -14436,6 +13400,7 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         tex->mtl_gl_sampled_width = (GLuint)source.width;
         tex->mtl_gl_sampled_height = (GLuint)source.height;
         tex->mtl_gl_sampled_format = (GLuint)source.pixelFormat;
+        tex->mtl_gl_sampled_levels = (GLuint)source.mipmapLevelCount;
     }
 
     id<MTLTexture> destination = (__bridge id<MTLTexture>)(tex->mtl_gl_sampled_data);
@@ -14460,18 +13425,37 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         return NO;
     }
 
-    // Small render targets (e.g. 16x16 lightmap textures) need a Y-flipped copy so
-    // that subsequent direct-UV sampling produces correct GL semantics. Larger render
-    // targets (screen-sized) need a direction-preserving copy. This matches the
-    // observed behavior across Minecraft versions: lightmap sampling requires the
-    // flipped orientation, while screen/GUI render targets require identity copy.
-    // NOTE: yFlipCopy=YES produces uvRect={0,1,1,0} which is direction-preserving
-    // (destination top = source top); yFlipCopy=NO produces uvRect={0,0,1,1} which
-    // Y-flips (destination top = source bottom).
-    BOOL isSmallRenderTarget = (tex && tex->is_render_target &&
-                                tex->width <= 16u && tex->height <= 16u);
-    // Small RTs need Y-flip (yFlipCopy=NO); large RTs need direction-preserving (yFlipCopy=YES)
-    BOOL yFlipCopy = !isSmallRenderTarget;
+    // Sampled render-target copy: flip rows once so that Metal row 0 (top, which
+    // is what Metal's texture::sample sees at v=0) holds GL row 0 (bottom).
+    //
+    // Metal and GL disagree on the texture Y origin: Metal's clip space puts
+    // gl_Position.y=+1 at the TOP (Metal row 0), and Metal's sampler reads v=0
+    // at the TOP (row 0) too — so render and sample are internally consistent
+    // in Metal and NO flip would be needed if a GL app sampled with v=0 meaning
+    // "top".  But GL apps sample with v=0 meaning "bottom" (GL lower-left
+    // origin), so a render target rendered by a GL shader then sampled by a GL
+    // shader comes out Y-inverted: the GL sampler's "bottom" (v≈0) hits the
+    // Metal "top" (row 0), which the GL renderer wrote at its "top".
+    //
+    // Flipping the copy once makes Metal row 0 hold the GL renderer's "bottom",
+    // restoring GL sampling semantics for every consumer.  This applies to ALL
+    // sampled 2D float render targets — the lightmap (16x16, sampled by
+    // block.vsh's texture(Sampler2, UV2/256+0.5/16)), the screen/GUI targets
+    // (sampled by the post chain), etc.
+    //
+    // The previous size-based gating (small RT -> "no flip", large RT -> "flip")
+    // was a Minecraft-specific heuristic whose polarity was inverted relative to
+    // its own comment: uvRect={0,1,1,0} (the "large RT" path) actually FLIPS
+    // rows, and uvRect={0,0,1,1} (the "small RT" lightmap path) is IDENTITY —
+    // so the lightmap was never flipped, inverting its brightness.  MC 1.21.8+
+    // renders the lightmap on the GPU (so it's now a render target and hits
+    // this path), which is why the symptom appears only there.
+    //
+    // uvRect={0,1,1,0} with the blit VS below:
+    //   pos[0]=(-1,-1)[dest row 15] -> uv=(0,0)[src row 0, top]
+    //   pos[2]=(-1,+1)[dest row 0]  -> uv=(0,1)[src row 15, bottom]
+    // i.e. dest row 0 = src row 15 -> one row flip.
+    BOOL yFlipCopy = YES;
 
     MGLScaledBlitParams params;
     params.uvRect = yFlipCopy
@@ -14480,47 +13464,90 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     params.forceOpaqueAlpha = 0.0f;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-    MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
-    copyPass.colorAttachments[0].texture = destination;
-    copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-    copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    copyPass.renderTargetWidth = destination.width;
-    copyPass.renderTargetHeight = destination.height;
-
-    id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
-    if (!copyEncoder) {
-        static uint64_t s_copyEncoderFailCount = 0;
-        uint64_t hit = ++s_copyEncoderFailCount;
-        if (hit <= 32ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u reason=%s hit=%llu",
-                  (unsigned)tex->name,
-                  reason ? reason : "(null)",
-                  (unsigned long long)hit);
-        }
-        return NO;
+    /* Y-flip blit each mip level independently.  MC 1.21.11's terrain atlas
+     * is a 5-level mipmapped RT whose mip 1-4 are NOT box-filtered downscales
+     * of level 0 — they are independently rendered by the sprite-animation
+     * pass (program 80) sampling a custom-mipped source atlas (986), so each
+     * mip level carries distinct, MipmapStrategy-filtered content (important
+     * for cutout alpha coverage on leaves etc.).  generateMipmapsForTexture
+     * would box-filter the flipped level 0 and overwrite those custom mip
+     * levels, corrupting them.  Instead, blit each source mip level into the
+     * matching destination mip level with a Y-flipped uvRect, using level
+     * views so the fragment shader's auto-mip sampler reads exactly the
+     * intended source level. */
+    NSUInteger mipLevels = MAX(destination.mipmapLevelCount, 1u);
+    if (mipLevels > (NSUInteger)source.mipmapLevelCount) {
+        mipLevels = (NSUInteger)source.mipmapLevelCount;
     }
+    for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
+        id<MTLTexture> srcLvl = source;
+        id<MTLTexture> dstLvl = destination;
+        if (mipLevels > 1u) {
+            srcLvl = [source newTextureViewWithPixelFormat:source.pixelFormat
+                                               textureType:MTLTextureType2D
+                                                    levels:NSMakeRange(lvl, 1u)
+                                                    slices:NSMakeRange(0, 1u)];
+            dstLvl = [destination newTextureViewWithPixelFormat:destination.pixelFormat
+                                                    textureType:MTLTextureType2D
+                                                         levels:NSMakeRange(lvl, 1u)
+                                                         slices:NSMakeRange(0, 1u)];
+            if (!srcLvl || !dstLvl) {
+                static uint64_t s_levelViewFailCount = 0;
+                uint64_t hit = ++s_levelViewFailCount;
+                if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                    NSLog(@"MGL RT-SAMPLE-COPY level view failed tex=%u lvl=%lu hit=%llu",
+                          (unsigned)tex->name,
+                          (unsigned long)lvl,
+                          (unsigned long long)hit);
+                }
+                continue;
+            }
+        }
 
-    [copyEncoder setRenderPipelineState:pipeline];
-    [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
-    [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
-    [copyEncoder setFragmentTexture:source atIndex:0];
-    [copyEncoder setFragmentSamplerState:sampler atIndex:0];
-    [copyEncoder setViewport:(MTLViewport){
-        .originX = 0.0,
-        .originY = 0.0,
-        .width = (double)destination.width,
-        .height = (double)destination.height,
-        .znear = 0.0,
-        .zfar = 1.0
-    }];
-    [copyEncoder setScissorRect:(MTLScissorRect){
-        .x = 0,
-        .y = 0,
-        .width = destination.width,
-        .height = destination.height
-    }];
-    [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-    [copyEncoder endEncoding];
+        MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
+        copyPass.colorAttachments[0].texture = dstLvl;
+        copyPass.colorAttachments[0].level = 0u;
+        copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+        copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+        copyPass.renderTargetWidth = dstLvl.width;
+        copyPass.renderTargetHeight = dstLvl.height;
+
+        id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+        if (!copyEncoder) {
+            static uint64_t s_copyEncoderFailCount = 0;
+            uint64_t hit = ++s_copyEncoderFailCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u lvl=%lu reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      (unsigned long)lvl,
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
+            }
+            continue;
+        }
+
+        [copyEncoder setRenderPipelineState:pipeline];
+        [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+        [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+        [copyEncoder setFragmentTexture:srcLvl atIndex:0];
+        [copyEncoder setFragmentSamplerState:sampler atIndex:0];
+        [copyEncoder setViewport:(MTLViewport){
+            .originX = 0.0,
+            .originY = 0.0,
+            .width = (double)dstLvl.width,
+            .height = (double)dstLvl.height,
+            .znear = 0.0,
+            .zfar = 1.0
+        }];
+        [copyEncoder setScissorRect:(MTLScissorRect){
+            .x = 0,
+            .y = 0,
+            .width = dstLvl.width,
+            .height = dstLvl.height
+        }];
+        [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+        [copyEncoder endEncoding];
+    }
 
     tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
 
@@ -14683,110 +13710,6 @@ static uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         default:
             return -1;
     }
-}
-
-static bool mglProgramHasSamplerResourceNamed(Program *program, const char *name)
-{
-    if (!program || !name) {
-        return false;
-    }
-
-    static const int samplerResourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
-    };
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
-            SpirvResourceList *resources =
-                &program->spirv_resources_list[stage][samplerResourceTypes[rt]];
-            for (GLuint i = 0; resources->list && i < resources->count; i++) {
-                if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool mglProgramHasUniformBufferNamed(Program *program, const char *name)
-{
-    if (!program || !name) {
-        return false;
-    }
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources =
-            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
-        for (GLuint i = 0; resources->list && i < resources->count; i++) {
-            if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static bool mglRendererSamplerNameLooksSamplerLike(const char *name)
-{
-    return name &&
-           (strstr(name, "Sampler") ||
-            !strcmp(name, "CloudFaces"));
-}
-
-static bool mglRendererResourceLooksSamplerLike(SpirvResource *res, int resType)
-{
-    if (!res) {
-        return false;
-    }
-
-    switch (resType) {
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
-        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
-            return true;
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-            return res->image_dim != 0u ||
-                   res->uniform_location >= 0x4000 ||
-                   mglRendererSamplerNameLooksSamplerLike(res->name);
-        default:
-            return false;
-    }
-}
-
-static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, int stage, GLuint metalBinding)
-{
-    static const int samplerResourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
-    };
-
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || metalBinding >= TEXTURE_UNITS) {
-        return NULL;
-    }
-
-    for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
-        int resType = samplerResourceTypes[rt];
-        SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
-        for (GLuint i = 0; resources->list && i < resources->count; i++) {
-            SpirvResource *res = &resources->list[i];
-            if (res->binding == metalBinding &&
-                mglRendererResourceLooksSamplerLike(res, resType)) {
-                return res;
-            }
-        }
-    }
-
-    return NULL;
 }
 
 - (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
@@ -15155,36 +14078,8 @@ static SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program, in
  * highest level.  When base_level == 0 the original texture is returned
  * unchanged so the common case has no overhead.
  */
-static id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
-                                                        id<MTLTexture> texture)
-{
-    if (!ptr || !texture) return texture;
-    if (ptr->params.base_level == 0u) return texture;
-    if (ptr->mipmap_levels == 0u) return texture;
-    if (ptr->params.base_level >= ptr->mipmap_levels) return texture;
-
-    GLuint baseLevel = ptr->params.base_level;
-    GLuint maxLevel = (ptr->params.max_level == 1000u)
-        ? (ptr->mipmap_levels - 1u)
-        : ptr->params.max_level;
-    if (maxLevel < baseLevel) maxLevel = baseLevel;
-    if (maxLevel >= ptr->mipmap_levels) maxLevel = ptr->mipmap_levels - 1u;
-
-    NSUInteger levelCount = maxLevel - baseLevel + 1u;
-    if (levelCount == 0u) return texture;
-
-    NSUInteger sliceCount = texture.arrayLength;
-    if (texture.textureType == MTLTextureTypeCube ||
-        texture.textureType == MTLTextureTypeCubeArray) {
-        sliceCount = texture.arrayLength * 6u;
-    }
-
-    id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                           textureType:texture.textureType
-                                                                levels:NSMakeRange(baseLevel, levelCount)
-                                                                slices:NSMakeRange(0, sliceCount)];
-    return levelView ? levelView : texture;
-}
+/* mglSampledTextureViewForBaseLevel now lives in mgl_texture_compat.m — see
+ * mgl_texture_compat.h. */
 
 - (bool) bindTexturesToCurrentRenderEncoder
 {
@@ -15355,81 +14250,108 @@ static id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                     glSampler->dirty_bits = 0;
                 }
                 sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+                mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u",
+                                    (unsigned)vertexProgramName,
+                                    (unsigned)spirvBinding,
+                                    (unsigned)textureUnit,
+                                    (unsigned)glSampler->name,
+                                    (unsigned)glSampler->params.min_filter,
+                                    (unsigned)glSampler->params.mag_filter,
+                                    (unsigned)glSampler->params.wrap_s,
+                                    (unsigned)glSampler->params.wrap_t,
+                                    (double)glSampler->params.min_lod,
+                                    (double)glSampler->params.max_lod,
+                                    (unsigned)ptr->name);
             } else if (ptr->params.mtl_data) {
                 sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+                mglTraceLogExternal("VERT_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u",
+                                    (unsigned)vertexProgramName,
+                                    (unsigned)spirvBinding,
+                                    (unsigned)textureUnit,
+                                    (unsigned)ptr->params.min_filter,
+                                    (unsigned)ptr->params.mag_filter,
+                                    (unsigned)ptr->params.wrap_s,
+                                    (unsigned)ptr->params.wrap_t,
+                                    (double)ptr->params.min_lod,
+                                    (double)ptr->params.max_lod,
+                                    (unsigned)ptr->name);
             }
         }
 
-        if (!usedTypeFallback &&
-            ptr &&
-            ptr->is_render_target &&
-            ptr->mtl_gl_sampled_data &&
-            ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
-            mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-            !mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
-            id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
-            if (sampledCopy &&
-                (expectedType == 0 || sampledCopy.textureType == expectedType) &&
-                mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
-                if (mglTraceLogIsEnabled()) {
-                    mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+        /* Y-Flip Subsystem: unified decision for sampling a render target.
+         *
+         * NOTE: lazy refresh from bindTexturesToCurrentRenderEncoder was
+         * removed — it re-enters the Metal render encoder during a flush and
+         * crashes AGX.  See the fragment counterpart above. */
+        if (!usedTypeFallback && ptr && ptr->is_render_target) {
+            MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr, currentProgram);
+
+            if (yflip == MGL_YFLIP_USE_SAMPLED_COPY) {
+                if (ptr->mtl_gl_sampled_data &&
+                    ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+                    mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
+                    id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
+                    if (sampledCopy &&
+                        (expectedType == 0 || sampledCopy.textureType == expectedType) &&
+                        mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                        if (mglTraceLogIsEnabled()) {
+                            mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+                                        (unsigned)vertexProgramName,
+                                        sampledName ? sampledName : "",
+                                        (unsigned)spirvBinding,
+                                        (unsigned)textureUnit,
+                                        (unsigned)ptr->name,
+                                        mglTraceTextureLabel(ptr),
+                                        texture,
+                                        sampledCopy,
+                                        (unsigned long)sampledCopy.width,
+                                        (unsigned long)sampledCopy.height,
+                                        (unsigned)ptr->mtl_gl_sampled_write_version);
+                        }
+                        texture = sampledCopy;
+                    }
+                } else if (ptr->mtl_gl_sampled_data &&
+                           !mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
+                    mglLogSkippedGLSampledRenderTargetCopy(ctx,
+                                                           currentProgram,
+                                                           ptr,
+                                                           "vertex",
+                                                           sampledName,
+                                                           spirvBinding,
+                                                           textureUnit,
+                                                           "target-gate");
+                } else if (mglTraceLogIsEnabled()) {
+                    BOOL hasCopy = (ptr->mtl_gl_sampled_data != NULL);
+                    BOOL verMatch = (ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version);
+                    BOOL canUse = mglTextureCanUseGLSampledRenderTargetCopy(ptr);
+                    mglTraceLog("RT_SAMPLE_COPY_GATE_MISS stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" isRT=%d hasCopy=%d verMatch=%d writeVer=%u rtVer=%u canUse=%d expectedType=%lu",
                                 (unsigned)vertexProgramName,
                                 sampledName ? sampledName : "",
                                 (unsigned)spirvBinding,
                                 (unsigned)textureUnit,
                                 (unsigned)ptr->name,
                                 mglTraceTextureLabel(ptr),
-                                texture,
-                                sampledCopy,
-                                (unsigned long)sampledCopy.width,
-                                (unsigned long)sampledCopy.height,
-                                (unsigned)ptr->mtl_gl_sampled_write_version);
+                                1, hasCopy ? 1 : 0, verMatch ? 1 : 0,
+                                (unsigned)ptr->mtl_gl_sampled_write_version,
+                                (unsigned)ptr->mtl_render_target_write_version,
+                                canUse ? 1 : 0,
+                                (unsigned long)expectedType);
                 }
-                texture = sampledCopy;
-            }
-        } else if (!usedTypeFallback &&
-                   ptr &&
-                   ptr->is_render_target &&
-                   ptr->mtl_gl_sampled_data &&
-                   !mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-                   !mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
-            mglLogSkippedGLSampledRenderTargetCopy(ctx,
-                                                   currentProgram,
-                                                   ptr,
-                                                   "vertex",
-                                                   sampledName,
-                                                   spirvBinding,
-                                                   textureUnit,
-                                                   "target-gate");
-        } else if (!usedTypeFallback &&
-                   ptr &&
-                   ptr->is_render_target &&
-                   ptr->mtl_gl_sampled_data &&
-                   mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-                   mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
-            mglLogSkippedGLSampledRenderTargetCopy(ctx,
-                                                   currentProgram,
-                                                   ptr,
-                                                   "vertex",
-                                                   sampledName,
-                                                   spirvBinding,
-                                                   textureUnit,
-                                                   "existing-yflip");
-        } else if (!usedTypeFallback &&
-                   ptr &&
-                   ptr->is_render_target &&
-                   ptr->mtl_gl_sampled_data &&
-                   mglProgramHasExistingFramebufferSampleYFlip(currentProgram)) {
-            static uint64_t s_vertexRTSampleCopySkipExistingFlipLogCount = 0;
-            uint64_t hit = ++s_vertexRTSampleCopySkipExistingFlipLogCount;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                mglTraceLog("RT_SAMPLE_COPY_SKIP_EXISTING_YFLIP hit=%llu stage=vertex program=%u name=%s binding=%u tex=%u label=\"%s\"",
-                            (unsigned long long)hit,
-                            (unsigned)vertexProgramName,
-                            sampledName ? sampledName : "",
-                            (unsigned)spirvBinding,
-                            (unsigned)(ptr ? ptr->name : 0u),
-                            mglTraceTextureLabel(ptr));
+            } else {
+                /* MGL_YFLIP_USE_ORIGINAL or MGL_YFLIP_USE_ORIGINAL_AND_INJECT:
+                 * keep the original texture; no copy needed. */
+                static uint64_t s_vertexRTSampleCopySkipExistingFlipLogCount = 0;
+                uint64_t hit = ++s_vertexRTSampleCopySkipExistingFlipLogCount;
+                if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                    mglTraceLog("RT_SAMPLE_COPY_SKIP_EXISTING_YFLIP hit=%llu stage=vertex program=%u name=%s binding=%u tex=%u label=\"%s\" decision=%d",
+                                (unsigned long long)hit,
+                                (unsigned)vertexProgramName,
+                                sampledName ? sampledName : "",
+                                (unsigned)spirvBinding,
+                                (unsigned)(ptr ? ptr->name : 0u),
+                                mglTraceTextureLabel(ptr),
+                                (int)yflip);
+                }
             }
         }
 
@@ -16050,90 +14972,104 @@ static id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                     }
                 }
             }
+            /* Y-Flip Subsystem: unified decision for sampling a render target.
+             *
+             * NOTE: lazy refresh from bindTexturesToCurrentRenderEncoder was
+             * removed — updateGLSampledRenderTargetCopyForTexture creates its
+             * own render encoder, which re-enters the encoder while a flush
+             * triggered by mglBindBufferRange is mid-process and crashes AGX
+             * (MTLReportFailure -> SIGABRT).  Refresh is left to the
+             * end_render_pass / blit_framebuffer paths, which run outside an
+             * active encoder and are encoder-safe. */
             if (texture &&
                 !usedFallbackTexture &&
                 ptr &&
-                ptr->is_render_target &&
-                ptr->mtl_gl_sampled_data &&
-                ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
-                mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-                !mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
-                directTextureForTrace = texture;
-                id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
-                if (sampledCopy &&
-                    (expectedType == 0 || sampledCopy.textureType == expectedType) &&
-                    mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
-                    sampledCopyForTrace = sampledCopy;
-                    if (mglTraceLogIsEnabled()) {
-                        mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+                ptr->is_render_target) {
+                MGLYFlipDecision yflip = mglDecideYFlipForSampledRT(ptr, sampleProgram);
+
+                if (yflip == MGL_YFLIP_USE_SAMPLED_COPY) {
+                    if (ptr->mtl_gl_sampled_data &&
+                        ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version &&
+                        mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
+                        directTextureForTrace = texture;
+                        id<MTLTexture> sampledCopy = (__bridge id<MTLTexture>)(ptr->mtl_gl_sampled_data);
+
+                        if (sampledCopy &&
+                            (expectedType == 0 || sampledCopy.textureType == expectedType) &&
+                            mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
+                            sampledCopyForTrace = sampledCopy;
+                            if (mglTraceLogIsEnabled()) {
+                                mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+                                            (unsigned)fragmentProgramName,
+                                            (unsigned)(ctx ? ctx->state.program_name : 0u),
+                                            (unsigned)(ctx ? ctx->state.var.current_program : 0u),
+                                            (unsigned)(ctx ? ctx->state.var.program_pipeline_binding : 0u),
+                                            (unsigned)vertexProgramName,
+                                            (unsigned)fragmentProgramName,
+                                            (unsigned)_pipelineProgramName,
+                                            sampledName ? sampledName : "",
+                                            (unsigned)spirvBinding,
+                                            (unsigned)textureUnit,
+                                            (unsigned)ptr->name,
+                                            mglTraceTextureLabel(ptr),
+                                            texture,
+                                            sampledCopy,
+                                            (unsigned long)sampledCopy.width,
+                                            (unsigned long)sampledCopy.height,
+                                            (unsigned)ptr->mtl_gl_sampled_write_version);
+                            }
+                            mglWriteProgramMSLDump(sampleProgram,
+                                                   [NSString stringWithFormat:@"tex-rt-sample-copy-fragment-binding-%u-program-%u",
+                                                                              (unsigned)spirvBinding,
+                                                                              (unsigned)(sampleProgram ? sampleProgram->name : fragmentProgramName)]);
+                            texture = sampledCopy;
+                            usedSampledCopyForTrace = YES;
+                        }
+                    } else if (ptr->mtl_gl_sampled_data &&
+                               !mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
+                        mglLogSkippedGLSampledRenderTargetCopy(ctx,
+                                                               sampleProgram,
+                                                               ptr,
+                                                               "fragment",
+                                                               sampledName,
+                                                               spirvBinding,
+                                                               textureUnit,
+                                                               "target-gate");
+                    } else if (mglTraceLogIsEnabled()) {
+                        BOOL hasCopy = (ptr->mtl_gl_sampled_data != NULL);
+                        BOOL verMatch = (ptr->mtl_gl_sampled_write_version == ptr->mtl_render_target_write_version);
+                        BOOL canUse = mglTextureCanUseGLSampledRenderTargetCopy(ptr);
+                        mglTraceLog("RT_SAMPLE_COPY_GATE_MISS stage=fragment program=%u stateProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" isRT=%d hasCopy=%d verMatch=%d writeVer=%u rtVer=%u canUse=%d expectedType=%lu",
                                     (unsigned)fragmentProgramName,
                                     (unsigned)(ctx ? ctx->state.program_name : 0u),
-                                    (unsigned)(ctx ? ctx->state.var.current_program : 0u),
-                                    (unsigned)(ctx ? ctx->state.var.program_pipeline_binding : 0u),
-                                    (unsigned)vertexProgramName,
-                                    (unsigned)fragmentProgramName,
-                                    (unsigned)_pipelineProgramName,
                                     sampledName ? sampledName : "",
                                     (unsigned)spirvBinding,
                                     (unsigned)textureUnit,
                                     (unsigned)ptr->name,
                                     mglTraceTextureLabel(ptr),
-                                    texture,
-                                    sampledCopy,
-                                    (unsigned long)sampledCopy.width,
-                                    (unsigned long)sampledCopy.height,
-                                    (unsigned)ptr->mtl_gl_sampled_write_version);
-	                    }
-	                    mglWriteProgramMSLDump(sampleProgram,
-	                                           [NSString stringWithFormat:@"tex-rt-sample-copy-fragment-binding-%u-program-%u",
-	                                                                      (unsigned)spirvBinding,
-	                                                                      (unsigned)(sampleProgram ? sampleProgram->name : fragmentProgramName)]);
-	                    texture = sampledCopy;
-	                    usedSampledCopyForTrace = YES;
-	                }
-            } else if (texture &&
-                       ptr &&
-                       ptr->is_render_target &&
-                       ptr->mtl_gl_sampled_data &&
-                       !mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-                       !mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
-                mglLogSkippedGLSampledRenderTargetCopy(ctx,
-                                                       sampleProgram,
-                                                       ptr,
-                                                       "fragment",
-                                                       sampledName,
-                                                       spirvBinding,
-                                                       textureUnit,
-                                                       "target-gate");
-            } else if (texture &&
-                       ptr &&
-                       ptr->is_render_target &&
-                       ptr->mtl_gl_sampled_data &&
-                       mglTextureCanUseGLSampledRenderTargetCopy(ptr) &&
-                       mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
-                mglLogSkippedGLSampledRenderTargetCopy(ctx,
-                                                       sampleProgram,
-                                                       ptr,
-                                                       "fragment",
-                                                       sampledName,
-                                                       spirvBinding,
-                                                       textureUnit,
-                                                       "existing-yflip");
-            } else if (texture &&
-                       ptr &&
-                       ptr->is_render_target &&
-                       ptr->mtl_gl_sampled_data &&
-                       mglProgramHasExistingFramebufferSampleYFlip(sampleProgram)) {
-                static uint64_t s_rtSampleCopySkipExistingFlipLogCount = 0;
-                uint64_t hit = ++s_rtSampleCopySkipExistingFlipLogCount;
-                if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                    mglTraceLog("RT_SAMPLE_COPY_SKIP_EXISTING_YFLIP hit=%llu stage=fragment program=%u name=%s binding=%u tex=%u label=\"%s\"",
-                                (unsigned long long)hit,
-                                (unsigned)fragmentProgramName,
-                                sampledName ? sampledName : "",
-                                (unsigned)spirvBinding,
-                                (unsigned)(ptr ? ptr->name : 0u),
-                                mglTraceTextureLabel(ptr));
+                                    ptr->is_render_target ? 1 : 0,
+                                    hasCopy ? 1 : 0,
+                                    verMatch ? 1 : 0,
+                                    (unsigned)ptr->mtl_gl_sampled_write_version,
+                                    (unsigned)ptr->mtl_render_target_write_version,
+                                    canUse ? 1 : 0,
+                                    (unsigned long)expectedType);
+                    }
+                } else {
+                    /* MGL_YFLIP_USE_ORIGINAL or MGL_YFLIP_USE_ORIGINAL_AND_INJECT:
+                     * keep the original texture; no copy needed. */
+                    static uint64_t s_rtSampleCopySkipExistingFlipLogCount = 0;
+                    uint64_t hit = ++s_rtSampleCopySkipExistingFlipLogCount;
+                    if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                        mglTraceLog("RT_SAMPLE_COPY_SKIP_EXISTING_YFLIP hit=%llu stage=fragment program=%u name=%s binding=%u tex=%u label=\"%s\" decision=%d",
+                                    (unsigned long long)hit,
+                                    (unsigned)fragmentProgramName,
+                                    sampledName ? sampledName : "",
+                                    (unsigned)spirvBinding,
+                                    (unsigned)(ptr ? ptr->name : 0u),
+                                    mglTraceTextureLabel(ptr),
+                                    (int)yflip);
+                    }
                 }
             }
             if (texture && expectedType != 0 && texture.textureType != expectedType) {
@@ -16191,8 +15127,31 @@ static id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                     glSampler->dirty_bits = 0;
                 }
                 sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+                mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=glSampler samplerName=%u minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u",
+                                    (unsigned)fragmentProgramName,
+                                    (unsigned)spirvBinding,
+                                    (unsigned)textureUnit,
+                                    (unsigned)glSampler->name,
+                                    (unsigned)glSampler->params.min_filter,
+                                    (unsigned)glSampler->params.mag_filter,
+                                    (unsigned)glSampler->params.wrap_s,
+                                    (unsigned)glSampler->params.wrap_t,
+                                    (double)glSampler->params.min_lod,
+                                    (double)glSampler->params.max_lod,
+                                    (unsigned)ptr->name);
             } else {
                 sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+                mglTraceLogExternal("FRAG_SAMPLER_RESOLVE program=%u binding=%u unit=%u source=texParamsFallback samplerName=0 minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x minLod=%.3f maxLod=%.3f glTex=%u",
+                                    (unsigned)fragmentProgramName,
+                                    (unsigned)spirvBinding,
+                                    (unsigned)textureUnit,
+                                    (unsigned)ptr->params.min_filter,
+                                    (unsigned)ptr->params.mag_filter,
+                                    (unsigned)ptr->params.wrap_s,
+                                    (unsigned)ptr->params.wrap_t,
+                                    (double)ptr->params.min_lod,
+                                    (double)ptr->params.max_lod,
+                                    (unsigned)ptr->name);
             }
         }
 
@@ -17844,6 +16803,19 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
     Texture *tex = [self framebufferAttachmentTexture:attachment];
     mglMarkTextureLevelRenderTargetWritten(tex, attachment->level);
+
+    /* Update Y-Flip Authority: if the current rendering program had VS
+     * Y-flip injection, the RT now holds GL-bottom-origin data and must
+     * NOT be re-flipped by RT_SAMPLE_COPY.  Set the low bit of authority
+     * to record this.  The version was already bumped by
+     * mglMarkTextureLevelRenderTargetWritten above. */
+    {
+        Program *renderingProgram = mglResolveProgramFromState(ctx);
+        if (renderingProgram &&
+            renderingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE) {
+            tex->mtl_render_yflip_authority |= 1u;
+        }
+    }
 
     if (attachmentIndex == 0u &&
         mglTraceLogIsEnabled() &&
@@ -21514,6 +20486,18 @@ create_new_command_buffer:
     return true;
 }
 
+/*
+ * copyTextureUploadWithDedicatedCommandBuffer:... — 纹理上传 blit 路径
+ *
+ * 纹理上传是 GL 命令，须与同一上下文的 draw 保持调用顺序；不得用独立 CB leapfrog
+ * 未提交的 render CB（否则上传可能先于已编码 draw 完成，破坏 GL 隐式排序）。
+ *
+ * 默认模式（!kMGLUseDedicatedTextureUploadCommandBuffer）：endRenderEncoding 关闭开启的
+ *   render encoder，随后在当前 CB 上编码 blit（copyFromBuffer:toTexture:），保证上传与
+ *   同 CB 内 draw 的 GPU 端排序。
+ * Dedicated 模式（kMGLUseDedicatedTextureUploadCommandBuffer）：用独立 CB 编码 blit，
+ *   可选 addCompletedHandler + semaphore 同步等待；该模式仅在确需异步上传时启用。
+ */
 - (bool)copyTextureUploadWithDedicatedCommandBuffer:(id<MTLBuffer>)sourceBuffer
                                         sourceOffset:(NSUInteger)sourceOffset
                                    sourceBytesPerRow:(NSUInteger)sourceBytesPerRow
@@ -21656,6 +20640,17 @@ create_new_command_buffer:
     return uploadCB.error == nil;
 }
 
+/*
+ * uploadTextureSliceViaBlit:... — 单 slice 纹理上传分发
+ *
+ * 按 Metal 纹理类型选择上传路径：
+ *   - 1D / 1DArray：低频，走 replaceRegion（见下方 1D 分支注释）。
+ *   - 3D：走 replaceRegion 规避 AGX driver 的 copyFromBuffer slice OOB 断言（见下方 3D 分支注释）。
+ *   - 2D / Array / Cube：不得用 replaceRegion（被 in-flight CB 采样时不安全），必须走 blit
+ *     路径（下方分配 uploadBuffer 并调用 copyTextureUploadWithDedicatedCommandBuffer），
+ *     由 GPU 端 CB 排序保证上传与采样的可见性顺序。
+ * 1D/3D 的 replaceRegion 失败会回落到 blit 路径。
+ */
 - (bool)uploadTextureSliceViaBlit:(id<MTLTexture>)texture
                           texName:(GLuint)texName
                          texTarget:(GLenum)texTarget
@@ -21726,6 +20721,11 @@ create_new_command_buffer:
               bytes);
     }
 
+    /* 1D 纹理上传走 replaceRegion 分支：
+     * - 1D 纹理属低频更新路径，replaceRegion 在此场景安全；
+     * - 调用方进入此函数前已通过 mglFlushPendingDrawsBeforeTextureWrite 刷新 CPU 侧
+     *   延迟 draw，避免上传与未提交 render 命令缓冲区产生顺序竞争；
+     * - 仅 shared storage 可用；Private storage（如 MSAA）须落回 blit 路径。 */
     if ((textureType == MTLTextureType1D || textureType == MTLTextureType1DArray) &&
         texture.storageMode != MTLStorageModePrivate) {
         @try {
@@ -21767,12 +20767,16 @@ create_new_command_buffer:
         }
     }
 
-    /* For 3D textures with shared storage, prefer replaceRegion over blit.
-     * The blit path (copyFromBuffer:toTexture:) triggers "slice OOB" assertions
-     * on AGX drivers for 3D textures, even with destinationSlice=0.
-     * Note: replaceRegion:mipmapLevel:withBytes:bytesPerRow: does not accept
-     * bytesPerImage, so data must be tightly packed (bytesPerImage == bytesPerRow * height). */
-    if (is3DTexture && texture.storageMode != MTLStorageModePrivate &&
+    /* 3D 纹理上传走 replaceRegion 分支：
+     * - 3D 用 replaceRegion 规避 AGX driver 的 copyFromBuffer:toTexture: slice OOB
+     *   断言（即便 destinationSlice=0 仍触发）；
+     *   Driver bug tracked via MGLCapabilityHasBug(MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB).
+     * - replaceRegion:mipmapLevel:withBytes:bytesPerRow: 不接受 bytesPerImage，
+     *   需紧密打包（safeBytesPerImage == bytesPerRow * height，即 expectedBytesPerImage）；
+     * - 仅 shared storage 可用；不满足紧密打包条件则落回 blit 路径。 */
+    if (is3DTexture &&
+        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB) &&
+        texture.storageMode != MTLStorageModePrivate &&
         safeBytesPerImage == expectedBytesPerImage) {
         @try {
             MTLRegion region = MTLRegionMake3D(0, 0, 0, width, safeHeight, copyDepth);
@@ -21788,6 +20792,14 @@ create_new_command_buffer:
         }
     }
 
+    /* 2D / 2DArray / Cube 纹理上传走 blit 路径（dedicated CB + completion handler）：
+     * - 不得用 replaceRegion：当该纹理正被 in-flight 命令缓冲区采样时，replaceRegion 的
+     *   CPU 直写不受 GPU 端排序约束，会与采样中的 draw 产生数据竞争（曾导致 Minecraft
+     *   GUI 物品渲染错乱）；
+     * - 必须走 blit 路径以保证 GPU 端排序：copyTextureUploadWithDedicatedCommandBuffer
+     *   会 endRenderEncoding 关闭当前 render encoder，并在 dedicated CB 上编码
+     *   copyFromBuffer:toTexture:，由 Metal 命令队列保证与既有 render CB 的提交顺序；
+     * - 1D/3D 分支不命中此前提（低频或 driver bug 规避），已先行返回。 */
     NSUInteger bufferSize = safeBytesPerImage * copyDepth;
     if (bufferSize == 0 || bufferSize > (512 * 1024 * 1024)) {
         NSLog(@"MGL WARNING: Rejecting texture upload with invalid buffer size: %lu", (unsigned long)bufferSize);
@@ -22822,6 +21834,43 @@ create_new_command_buffer:
         return;
     }
 
+    /* Early-out: skip the per-attachment copy loop entirely when no texture
+     * in this FBO is a sampled render target.  The old code unconditionally
+     * iterated all color attachments on every endRenderPass and created a
+     * Y-flipped copy for each (~313 copies/frame, most never sampled).  The
+     * copy is only needed when the texture will be sampled by a non-yflip
+     * shader in a subsequent draw, which we can't know here — but we CAN skip
+     * textures that were never written (rtVer==0) or never flagged as RT.
+     *
+     * NOTE: do NOT skip non-zero attachment levels here.  MC 1.21.11's
+     * terrain atlas is a mipmapped RT whose mip 1-4 are written by separate
+     * FBOs (one per mip level).  Skipping them left the Y-flip copy stale
+     * after those passes ended, so terrain sampling mip>0 fell back to the
+     * un-flipped Metal RT and rendered stripes.  The per-level blit inside
+     * updateGLSampledRenderTargetCopyForTexture handles non-zero levels
+     * correctly. */
+    bool anySampledRT = false;
+    for (GLsizei slot = 0; slot < drawCount; slot++) {
+        GLuint attachmentIndex = 0u;
+        if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
+                                                   drawBuffers[slot],
+                                                   &attachmentIndex) ||
+            attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
+            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+            continue;
+        }
+        FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
+        Texture *tex = [self framebufferAttachmentTexture:attachment];
+        if (tex && tex->mtl_data && tex->is_render_target &&
+            tex->mtl_render_target_write_version != 0u) {
+            anySampledRT = true;
+            break;
+        }
+    }
+    if (!anySampledRT) {
+        return;
+    }
+
     for (GLsizei slot = 0; slot < drawCount; slot++) {
         GLuint attachmentIndex = 0u;
         if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
@@ -22833,9 +21882,6 @@ create_new_command_buffer:
         }
 
         FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
-        if (attachment->level != 0) {
-            continue;
-        }
 
         Texture *tex = [self framebufferAttachmentTexture:attachment];
         if (!tex || !tex->mtl_data) {
@@ -22844,6 +21890,23 @@ create_new_command_buffer:
 
         id<MTLTexture> source = (__bridge id<MTLTexture>)(tex->mtl_data);
         if (![self textureCanUseGLSampledRenderTargetCopy:tex source:source]) {
+            continue;
+        }
+
+        /* Y-Flip Subsystem: if the RT was rendered by a program whose VS had
+         * Y-flip injection, the Metal texture already holds GL-bottom-origin
+         * data.  No Y-flipped copy is needed — sampling consumers will use
+         * the original via mglDecideYFlipForSampledRT.  Release any stale copy
+         * to save memory and prevent double-flip. */
+        if (mglRTWriteAuthorityIsCurrentAndInjected(tex)) {
+            if (tex->mtl_gl_sampled_data) {
+                [self releaseGLSampledRenderTargetCopyForTexture:tex];
+                if (mglTraceLogIsEnabled()) {
+                    mglTraceLog("RT_SAMPLE_COPY_SKIP_INJECTED_RENDER tex=%u label=\"%s\" reason=render_yflip_injected",
+                                (unsigned)tex->name,
+                                mglTraceTextureLabel(tex));
+                }
+            }
             continue;
         }
 
@@ -22950,6 +22013,15 @@ create_new_command_buffer:
     return NO;
 }
 
+/*
+ * synchronizeRenderPassForTextureReadback:reason: — 最重同步边界（CPU 读回前的 GPU 写入可见性保证）
+ *
+ * 触发条件：当待读回纹理恰好是当前 render pass 的渲染目标（color/depth/stencil attachment）时调用。
+ * 保证语义：endRenderEncoding 关闭开启的 render encoder → commitCommandBufferWithAGXRecovery:
+ *           提交当前 CB → waitUntilCompleted 阻塞至 GPU 完成 → newCommandBuffer 创建新 CB。
+ *           确保 CPU 读回前，所有已编码到该纹理的 GPU 渲染写入已完成并对 CPU 可见。
+ * 退化：若纹理非当前 render target，直接返回 YES（无需同步）；若 CB 已 finalized 则仅 rotate。
+ */
 - (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
                                          reason:(const char *)reason
 {
@@ -23611,7 +22683,7 @@ create_new_command_buffer:
 
                 // PROPER FIX: Disable async compilation that causes completion queue crashes
                 if (kMGLVerbosePipelineLogs &&
-                    [_device name] && ([[_device name] containsString:@"AGX"])) {
+                    MGLCapabilityHasBug(&_capability, MGL_BUG_ASYNC_SHADER_COMPILE_IN_VM)) {
                     NSLog(@"MGL INFO: AGX virtualization detected - using safe synchronous compilation");
                 }
 
@@ -25065,28 +24137,92 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
 }
 
 #pragma mark C interface to mtlGetSync
+/*
+ * mtlGetSync:sync: — fence 插入点命令捕获（CB-wait 机制）
+ *
+ * 触发条件：glFenceSync 创建 fence sync 对象时调用。
+ * 实现契约：
+ *   1. processGLState:false 刷新待处理 draw 到当前 command buffer；
+ *   2. endRenderEncoding 关闭开启的 render encoder；
+ *   3. retain 当前 command buffer 存入 sync->mtl_command_buffer（该 CB 恰好包含
+ *      fence 插入点之前的所有 GL 命令），随后通过 commitCommandBufferWithAGXRecovery:
+ *      将该 CB 提交至 GPU；
+ *   4. newCommandBuffer 创建新 CB，供后续 GL 命令编码（不得写入已提交的 fence CB）。
+ * 保证语义：fence 反映插入点之前命令的 GPU 完成状态。mtlWaitForSync 通过对该
+ *           CB 调用 waitUntilCompleted 真正阻塞至 GPU 完成，不再 no-op。
+ * 退化：若当前无可提交 CB（如 fence 前无 draw，或 CB 已 finalized/errored），
+ *       mtl_command_buffer 为 NULL，fence 立即处于 signaled 状态。
+ * kMGLDisableSharedEventSync 仅门控 legacy shared-event 路径（event 创建 + SyncList）；
+ * CB-wait 始终生效，是真正的等待机制。
+ */
 -(void) mtlGetSync:(GLMContext) glm_ctx sync: (Sync *)sync
 {
-    if (kMGLDisableSharedEventSync) {
-        if (sync) {
-            sync->mtl_event = NULL;
-        }
-        _currentEvent = NULL;
-        _currentSyncName = 0;
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: mtlGetSync no-op (shared event sync disabled)");
-        }
-        return;
-    }
-
     // SAFETY: Check Metal objects before processing
     if (!_device || !_commandQueue) {
         NSLog(@"MGL ERROR: Metal device or queue is NULL in mtlGetSync");
+        if (sync) {
+            sync->mtl_event = NULL;
+            sync->mtl_command_buffer = NULL;
+        }
         return;
     }
 
+    if (!sync) {
+        NSLog(@"MGL ERROR: mtlGetSync - sync object is NULL");
+        return;
+    }
+
+    // Flush pending draws into the current command buffer so the CB captures
+    // all GL commands issued before the fence insertion point.
     if (![self processGLState: false]) {
         NSLog(@"MGL WARNING: processGLState failed in mtlGetSync");
+    }
+
+    // End any open render encoder so the command buffer can be committed.
+    [self endRenderEncoding];
+
+    // CB-wait mechanism: retain the current command buffer (which now contains
+    // exactly the commands issued before the fence), commit it to the GPU, and
+    // create a fresh command buffer for subsequent GL commands. The retained CB
+    // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
+    // completion via waitUntilCompleted. This runs regardless of
+    // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
+    if (_currentCommandBuffer &&
+        _currentCommandBuffer.status == MTLCommandBufferStatusNotEnqueued &&
+        !_currentCommandBuffer.error) {
+        sync->mtl_command_buffer = (void *)CFBridgingRetain(_currentCommandBuffer);
+        id<MTLCommandBuffer> cbToCommit = _currentCommandBuffer;
+        _currentCommandBuffer = nil;
+
+        @try {
+            [self commitCommandBufferWithAGXRecovery:cbToCommit];
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Failed to commit fence command buffer: %@", exception);
+            [self recordGPUError];
+        }
+    } else {
+        // No in-flight command buffer (e.g. no draws issued before the fence)
+        // or the buffer is already finalized/errored: the fence is immediately
+        // signaled.
+        sync->mtl_command_buffer = NULL;
+    }
+
+    // Always provide a fresh command buffer for subsequent GL commands so they
+    // are not encoded into the already-committed fence command buffer.
+    [self newCommandBuffer];
+
+    // Legacy shared-event path. Gated by kMGLDisableSharedEventSync; when
+    // disabled, mtl_event stays NULL and the CB-wait above is the sole wait
+    // mechanism. The event/SyncList code below only runs when shared-event
+    // sync is explicitly enabled.
+    if (kMGLDisableSharedEventSync) {
+        sync->mtl_event = NULL;
+        _currentEvent = NULL;
+        _currentSyncName = 0;
+        if (kMGLVerboseFrameLoopLogs) {
+            NSLog(@"MGL INFO: mtlGetSync captured CB=%p (shared event sync disabled)",
+                  sync->mtl_command_buffer);
+        }
         return;
     }
 
@@ -25161,40 +24297,58 @@ void mtlGetSync (GLMContext glm_ctx, Sync *sync)
 }
 
 #pragma mark C interface to mtlWaitForSync
+/*
+ * mtlWaitForSync:sync: — fence 阻塞等待（CB-wait 机制）
+ *
+ * 触发条件：glClientWaitSync / glWaitSync / glDeleteSync 路径调用。
+ * 实现契约：对 mtlGetSync 捕获并 retain 的 command buffer 调用 waitUntilCompleted，
+ *           真正阻塞当前线程直至 GPU 完成该 CB（即完成 fence 插入点之前的所有命令）。
+ *           完成后 CFBridgingRelease 释放 CB 引用并清空 sync->mtl_command_buffer。
+ *           不再是 no-op（旧实现仅释放 mtl_event 即立即返回，违反 GL 语义）。
+ * 退化：若 mtl_command_buffer 为 NULL（fence 已完成或创建时无 CB），直接返回。
+ *      同时清理 legacy mtl_event 引用（若存在）。
+ * kMGLDisableSharedEventSync 不门控此路径——CB-wait 始终生效。
+ */
 -(void) mtlWaitForSync:(GLMContext) glm_ctx sync: (Sync *)sync
 {
-    if (kMGLDisableSharedEventSync) {
-        if (sync) {
-            sync->mtl_event = NULL;
-        }
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: mtlWaitForSync no-op (shared event sync disabled)");
-        }
-        return;
-    }
-
     // CRITICAL SAFETY: Validate sync object before processing
     if (!sync) {
         NSLog(@"MGL ERROR: mtlWaitForSync - sync object is NULL");
         return;
     }
 
-    // SAFETY: Validate mtl_event before releasing - prevent objc_release crash
-    if (!sync->mtl_event) {
-        NSLog(@"MGL WARNING: mtlWaitForSync - sync->mtl_event is NULL");
-        return;
+    // CB-wait path: block until the command buffer captured at fence insertion
+    // completes on the GPU. This is the real wait mechanism and runs regardless
+    // of kMGLDisableSharedEventSync.
+    if (sync->mtl_command_buffer) {
+        id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+        @try {
+            if (cb.status != MTLCommandBufferStatusCompleted) {
+                [cb waitUntilCompleted];
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception waiting on fence command buffer: %@", exception);
+        }
+        CFBridgingRelease(sync->mtl_command_buffer);
+        sync->mtl_command_buffer = NULL;
     }
 
-    @try {
-        if (kMGLVerboseFrameLoopLogs) {
-            NSLog(@"MGL INFO: Releasing Metal sync event");
+    // Legacy shared-event cleanup (harmless if mtl_event is NULL, which is the
+    // case when kMGLDisableSharedEventSync is enabled).
+    if (sync->mtl_event) {
+        @try {
+            if (kMGLVerboseFrameLoopLogs) {
+                NSLog(@"MGL INFO: Releasing Metal sync event");
+            }
+            CFBridgingRelease(sync->mtl_event);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
         }
-        CFBridgingRelease(sync->mtl_event);
         sync->mtl_event = NULL;
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
-        // Don't crash - set to NULL to prevent double release
-        sync->mtl_event = NULL;
+    }
+
+    if (kMGLDisableSharedEventSync && kMGLVerboseFrameLoopLogs) {
+        NSLog(@"MGL INFO: mtlWaitForSync completed via CB-wait (shared event sync disabled)");
     }
 }
 
@@ -25202,6 +24356,79 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
 {
     // Call the Objective-C method using Objective-C syntax
     [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlWaitForSync: glm_ctx sync: sync];
+}
+
+#pragma mark C interface to mtlGetSyncStatus
+/*
+ * mtlGetSyncStatus:sync: — fence 非阻塞状态查询
+ *
+ * 触发条件：mglGetSynciv(GL_SYNC_STATUS) / mglClientWaitSync 轮询调用。
+ * 保证语义：返回 GL_SIGNALED 当且仅当关联 CB 已完成（status == Completed）或
+ *           无关联 CB（mtl_command_buffer == NULL）；否则返回 GL_UNSIGNALED。
+ *           不阻塞。
+ */
+-(GLenum) mtlGetSyncStatus:(GLMContext) glm_ctx sync: (Sync *)sync
+{
+    if (!sync || !sync->mtl_command_buffer) {
+        return GL_SIGNALED;
+    }
+
+    id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
+    @try {
+        if (cb.status == MTLCommandBufferStatusCompleted) {
+            return GL_SIGNALED;
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: Exception querying fence command buffer status: %@", exception);
+    }
+
+    return GL_UNSIGNALED;
+}
+
+GLenum mtlGetSyncStatus (GLMContext glm_ctx, Sync *sync)
+{
+    // Call the Objective-C method using Objective-C syntax
+    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetSyncStatus: glm_ctx sync: sync];
+}
+
+#pragma mark C interface to mtlReleaseSync
+/*
+ * mtlReleaseSync:sync: — fence 资源非阻塞释放
+ *
+ * 触发条件：mglDeleteSync 调用。
+ * 保证语义：释放 fence 关联的 retained command buffer 与 legacy event 引用，
+ *           不等待 GPU 完成（Metal 内部会 retain in-flight CB，故释放我们的引用
+ *           安全且不会中断 GPU 执行）。避免泄漏，不阻塞。
+ */
+-(void) mtlReleaseSync:(GLMContext) glm_ctx sync: (Sync *)sync
+{
+    if (!sync) {
+        return;
+    }
+
+    if (sync->mtl_command_buffer) {
+        @try {
+            CFBridgingRelease(sync->mtl_command_buffer);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing fence command buffer: %@", exception);
+        }
+        sync->mtl_command_buffer = NULL;
+    }
+
+    if (sync->mtl_event) {
+        @try {
+            CFBridgingRelease(sync->mtl_event);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
+        }
+        sync->mtl_event = NULL;
+    }
+}
+
+void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
+{
+    // Call the Objective-C method using Objective-C syntax
+    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReleaseSync: glm_ctx sync: sync];
 }
 
 #pragma mark Draw command buffer flush
@@ -28205,6 +27432,17 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     }
 }
 
+/*
+ * mglReadColorTextureAsBGRA8:... — readPixels 颜色读回 staging buffer 路径
+ *
+ * 触发条件：glReadPixels 颜色读回（BGRA8 兼容格式）经此 staging buffer 路径。
+ * 保证语义：ensureWritableCommandBuffer 取得可写 CB → newBufferWithLength 创建 staging
+ *           buffer → blitCommandEncoder copyFromTexture 将 GPU 纹理数据拷贝至 staging →
+ *           addCompletedHandler + dispatch_semaphore_wait(250ms 超时) 阻塞至 CB 完成 →
+ *           从 stagingBuffer.contents 拷贝至用户 buffer → newCommandBuffer 创建新 CB。
+ *           确保 CPU 读回前该纹理的所有 GPU 写入已通过 CB 完成而对 CPU 可见。
+ * 退化：250ms 超时返回零数据并报 GL_INVALID_OPERATION；command buffer error 同样报错。
+ */
 - (BOOL)mglReadColorTextureAsBGRA8:(id<MTLTexture>)sourceTexture
                        sourceLevel:(NSUInteger)sourceLevel
                        sourceSlice:(NSUInteger)sourceSlice
@@ -28971,6 +28209,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return YES;
 }
 
+/*
+ * mglApplyPendingFBODepthClearForReadback:attachment:textureObj:mtlTexture: — 延迟深度 clear 物化
+ *
+ * 触发条件：readback 深度前，若 FBO depth attachment 存在未物化的 deferred lazy clear
+ *           （attachment->clear_bitmask & GL_DEPTH_BUFFER_BIT）。
+ * 保证语义：构造一个 loadAction=Clear 的 render pass（depthAttachment.loadAction=Clear），
+ *           立即 endEncoding 物化该 clear，使后续 readback 能读到 cleared 值而非未定义数据；
+ *           清除 clear_bitmask 中对应位以避免重复 clear。必须在读回 blit 之前完成，否则
+ *           CPU 读回前该 GPU 写入（clear）不可见。
+ */
 - (void)mglApplyPendingFBODepthClearForReadback:(Framebuffer *)fbo
                                      attachment:(FBOAttachment *)attachment
                                      textureObj:(Texture *)textureObj
@@ -29023,6 +28271,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 }
 
+/*
+ * mtlReadDepthPixels: — 深度读回路径
+ *
+ * 触发条件：glReadPixels 深度分量读回。
+ * 保证语义：endRenderEncoding 关闭开启的 render encoder → ensureWritableCommandBuffer 取得
+ *           可写 CB → mglApplyPendingFBODepthClearForReadback 物化延迟的 lazy 深度 clear
+ *           （loadAction=Clear）使读回看到 cleared 值 → 委托至 staging buffer 读回路径
+ *           （copyFromTexture + completed-handler semaphore）。
+ *           确保 CPU 读回前所有 GPU 深度写入与 deferred clear 已完成并对 CPU 可见。
+ */
 - (void)mtlReadDepthPixels:(GLMContext)glm_ctx
                 pixelBytes:(void *)pixelBytes
                bytesPerRow:(NSUInteger)bytesPerRow
@@ -29693,6 +28951,16 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 }
 
 #pragma mark C interface to mtlGetTexImage
+/*
+ * mtlGetTexImage: — 纹理图像读回路径
+ *
+ * 触发条件：glGetTexImage 读回整层纹理数据。
+ * 保证语义：对目标纹理调用 synchronizeRenderPassForTextureReadback（若为 render target，
+ *           则 endRenderEncoding + commit + waitUntilCompleted + newCommandBuffer）；
+ *           随后 endRenderEncoding + commit + waitUntilCompleted 提交并等待 dedicated blit CB
+ *           （编码 copyFromTexture 到 staging buffer），确保 CPU 读回前该纹理的所有 GPU 写入
+ *           （渲染 / 上传 blit）已完成并对 CPU 可见。
+ */
 -(void) mtlGetTexImage:(GLMContext) glm_ctx tex: (Texture *)tex pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region format:(GLenum)format type:(GLenum)type mipmapLevel:(NSUInteger)level slice:(NSUInteger)slice
 {
     id<MTLTexture> texture = nil;
@@ -30322,17 +29590,61 @@ static GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
                                                       copyWidth, copyHeight);
                         }
                         if (dstTexture.storageMode != MTLStorageModePrivate) {
+                            /* For CPU-backed RGB8-family / RGB16 / RGB32 family destinations,
+                             * CPU bpp (3/6/12) != Metal bpp (4/8/16).  The CPU memcpy
+                             * above preserved the CPU layout, so expand the copied
+                             * region to Metal texel layout before replaceRegion,
+                             * otherwise N-byte rows are uploaded to a 4/8/16-byte
+                             * Metal texture (pixel shift / stripes).  Mirrors the
+                             * private-storage sibling below. */
+                            NSUInteger dstMetalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
+                            size_t dstCpuBpp = (dstLvl->width > 0) ?
+                                (dstLvl->pitch / dstLvl->width) : 0;
+
+                            const void *upSrcPtr = (const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff;
+                            NSUInteger upBytesPerRow = dstLvl->pitch;
+                            NSUInteger upBytesPerImage = dstSlicePitch;
+                            void *expandedData = NULL;
+                            if (dstMetalBpp > 0 && dstCpuBpp != dstMetalBpp) {
+                                if (mglTextureInternalFormatNeedsRGBA8Expansion(
+                                        dstTex->internalformat, dstTexture.pixelFormat)) {
+                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                    expandedData = mglCreateRGBA8ExpandedUpload(
+                                        dstTex, (const uint8_t *)upSrcPtr,
+                                        copyWidth, copyHeight, upBytesPerRow,
+                                        &expandedBPR, &expandedBPI);
+                                    if (expandedData) {
+                                        upSrcPtr = expandedData;
+                                        upBytesPerRow = expandedBPR;
+                                        upBytesPerImage = expandedBPI;
+                                    }
+                                } else if (mglTextureNeedsChannelExpansion(
+                                        dstTex->internalformat, dstTexture.pixelFormat)) {
+                                    NSUInteger expandedBPR = 0, expandedBPI = 0;
+                                    expandedData = mglCreateChannelExpandedUpload(
+                                        dstTex, dstTexture.pixelFormat,
+                                        (const uint8_t *)upSrcPtr,
+                                        copyWidth, copyHeight, upBytesPerRow,
+                                        &expandedBPR, &expandedBPI);
+                                    if (expandedData) {
+                                        upSrcPtr = expandedData;
+                                        upBytesPerRow = expandedBPR;
+                                        upBytesPerImage = expandedBPI;
+                                    }
+                                }
+                            }
                             @try {
                                 [dstTexture replaceRegion:region
                                               mipmapLevel:(NSUInteger)dstLevel
                                                     slice:mtlSlice
-                                                withBytes:(const uint8_t *)(uintptr_t)dstLvl->data + dstSliceOff
-                                              bytesPerRow:dstLvl->pitch
-                                            bytesPerImage:dstSlicePitch];
+                                                withBytes:upSrcPtr
+                                              bytesPerRow:upBytesPerRow
+                                            bytesPerImage:upBytesPerImage];
                             } @catch (NSException *exception) {
                                 NSLog(@"MGL WARNING: CPU-to-CPU Metal update failed: %@",
                                       exception);
                             }
+                            free(expandedData);
                         } else {
                             /* Private storage: blit from a staging buffer.
                              * For bpp mismatch formats (CPU bpp != Metal bpp),
@@ -30631,8 +29943,10 @@ static GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
      *      textures, or blit-to-buffer for private textures)
      *   2. Write staging buffer to 3D destination via replaceRegion
      * This bypasses the buggy blit path entirely.  Private 3D destinations
-     * cannot use replaceRegion and fall through to the blit path below. */
-    if (dstType == MTLTextureType3D &&
+     * cannot use replaceRegion and fall through to the blit path below.
+     * Driver bug is tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB). */
+    if (MGLCapabilityHasBug(&_capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) &&
+        dstType == MTLTextureType3D &&
         dstTexture.storageMode != MTLStorageModePrivate) {
         NSUInteger bpp = mglMetalReadbackBytesPerPixel(srcTexture.pixelFormat);
         if (bpp == 0u) {
@@ -30958,7 +30272,6 @@ static GLboolean mglGetCPUFormatTypeForInternalFormat(GLenum internalformat,
             @try {
                 MTLRegion fullRegion = MTLRegionMake3D(0, 0, 0, levelWidth, levelHeight, levelDepth);
                 if (bppMismatch) {
-                    NSUInteger metalBpp = mglMetalReadbackBytesPerPixel(dstTexture.pixelFormat);
                     NSUInteger expandedBPR = 0, expandedBPI = 0;
                     void *expandedData = NULL;
                     if (mglTextureInternalFormatNeedsRGBA8Expansion(
@@ -31143,10 +30456,12 @@ blitPath:
      * outside of copied region" / "wrong layer" errors when non-blitted
      * regions of the same level have stale Metal data.
      *
-     * Skip readback for 3D destinations (AGX getBytes bug on 3D textures)
+     * Skip readback for 3D destinations (AGX getBytes bug on 3D textures,
+     * tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB))
      * and fall back to per-level authoritative instead. */
     bool readbackDone = false;
-    if (dstType != MTLTextureType3D &&
+    bool skip3DReadback = MGLCapabilityHasBug(&_capability, MGL_BUG_3D_GETBYTES_SLICE_OOB);
+    if ((!skip3DReadback || dstType != MTLTextureType3D) &&
         dstTexture.storageMode != MTLStorageModePrivate &&
         dstTex->faces && (NSUInteger)dstLevel < dstTex->num_levels) {
 
@@ -31476,7 +30791,8 @@ void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GL
         copyDepth = 1;
     }
 
-    NSUInteger copyHeight = (textureType == MTLTextureType1DArray)
+    NSUInteger copyHeight = (textureType == MTLTextureType1DArray ||
+                             tex->target == GL_TEXTURE_1D_ARRAY)
         ? 1UL
         : MAX(height, (NSUInteger)1);
     NSUInteger expectedBytesPerImage = sourceBytesPerRow * copyHeight;
@@ -31560,6 +30876,122 @@ void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GL
     if (!buffer) {
         NSLog(@"MGL ERROR: mtlTexSubImage missing Metal buffer object tex=%u", tex->name);
         return;
+    }
+
+    /* PBO source data is in CPU/client layout (e.g. 3 bytes/pixel for GL_RGB8).
+     * When the Metal destination has a different texel size (RGBA8 = 4, RGBA16* = 8,
+     * RGBA32* = 16), expand the PBO data into a staging buffer in Metal layout
+     * before the blit — otherwise sourceBytesPerRow (CPU pitch) mismatches the
+     * Metal texture's expected row stride and pixels shift / stripe.  The non-PBO
+     * path (mtlTexSubImageBytes) already expands; this mirrors it.  When no
+     * expansion is needed, fall through to the direct blit below. */
+    if (tex->mtl_data) {
+        id<MTLTexture> dstTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+        MTLPixelFormat dstPixelFormat = dstTexture.pixelFormat;
+        BOOL needsChannelExpand = mglTextureNeedsChannelExpansion(tex->internalformat, dstPixelFormat);
+        BOOL needsRGBA8Expand = NO;
+        if (!needsChannelExpand) {
+            needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, dstPixelFormat);
+        }
+        if (needsChannelExpand || needsRGBA8Expand) {
+            NSUInteger dstBytesPerPixel = needsChannelExpand
+                ? ((dstPixelFormat == MTLPixelFormatRGBA16Unorm ||
+                    dstPixelFormat == MTLPixelFormatRGBA16Snorm ||
+                    dstPixelFormat == MTLPixelFormatRGBA16Float ||
+                    dstPixelFormat == MTLPixelFormatRGBA16Sint ||
+                    dstPixelFormat == MTLPixelFormatRGBA16Uint) ? 8 : 16)
+                : 4;
+            NSUInteger cpuBytesPerPixel = (tex->faces[0].levels && level < tex->num_levels &&
+                                           tex->faces[0].levels[level].width > 0u &&
+                                           tex->faces[0].levels[level].pitch > 0u)
+                ? (NSUInteger)(tex->faces[0].levels[level].pitch / tex->faces[0].levels[level].width)
+                : [self bytesPerPixelForFormat:tex->internalformat];
+            if (cpuBytesPerPixel == 0u) {
+                cpuBytesPerPixel = (NSUInteger)sizeForInternalFormat(tex->internalformat, 0, 0);
+            }
+            if (cpuBytesPerPixel > 0u && cpuBytesPerPixel != dstBytesPerPixel) {
+                NSUInteger copyHeight = MAX((NSUInteger)height, 1UL);
+                NSUInteger copyDepth = MAX((NSUInteger)depth, 1UL);
+                NSUInteger dstRowBytes = (NSUInteger)width * dstBytesPerPixel;
+                NSUInteger dstImageBytes = dstRowBytes * copyHeight;
+                size_t sourceImagePitch = src_image_size;
+                size_t minimumImagePitch = src_pitch * copyHeight;
+                if (sourceImagePitch < minimumImagePitch) {
+                    sourceImagePitch = minimumImagePitch;
+                }
+                size_t packedBytes = dstImageBytes * copyDepth;
+                if (packedBytes != 0u && packedBytes <= (512u * 1024u * 1024u)) {
+                    const uint8_t *sourceBase = (const uint8_t *)buffer.contents;
+                    NSMutableData *packedUpload = [NSMutableData dataWithLength:packedBytes];
+                    if (packedUpload && packedUpload.mutableBytes && sourceBase) {
+                        uint8_t *packedBytesPtr = (uint8_t *)packedUpload.mutableBytes;
+                        bool expandOK = true;
+                        for (NSUInteger z = 0; z < copyDepth && expandOK; z++) {
+                            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
+                            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
+                            size_t rowBytesCpu = (NSUInteger)width * cpuBytesPerPixel;
+                            if (lastRowOff > src_size || rowBytesCpu > src_size - lastRowOff) {
+                                expandOK = false;
+                                break;
+                            }
+                            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
+                            NSUInteger expandedBPR = 0, expandedBPI = 0;
+                            uint8_t *expanded = NULL;
+                            if (needsRGBA8Expand) {
+                                expanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                                        sliceSrc,
+                                                                        width,
+                                                                        copyHeight,
+                                                                        src_pitch,
+                                                                        &expandedBPR,
+                                                                        &expandedBPI);
+                            } else {
+                                expanded = mglCreateChannelExpandedUpload(tex,
+                                                                           dstPixelFormat,
+                                                                           sliceSrc,
+                                                                           width,
+                                                                           copyHeight,
+                                                                           src_pitch,
+                                                                           &expandedBPR,
+                                                                           &expandedBPI);
+                            }
+                            if (!expanded) {
+                                expandOK = false;
+                                break;
+                            }
+                            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
+                            free(expanded);
+                        }
+                        if (expandOK) {
+                            id<MTLBuffer> uploadBuffer = [_device newBufferWithBytes:packedUpload.bytes
+                                                                                length:packedBytes
+                                                                               options:MTLResourceStorageModeShared];
+                            if (uploadBuffer) {
+                                bool uploaded = [self encodeTextureBytesUpload:tex
+                                                                        source:uploadBuffer
+                                                                  sourceOffset:0
+                                                              sourceBytesPerRow:dstRowBytes
+                                                            sourceBytesPerImage:dstImageBytes
+                                                                       width:width
+                                                                      height:height
+                                                                       depth:depth
+                                                                       slice:slice
+                                                                       level:level
+                                                                     xoffset:xoffset
+                                                                     yoffset:yoffset
+                                                                     zoffset:zoffset
+                                                                      reason:"mtlTexSubImage"];
+                                if (!uploaded) {
+                                    NSLog(@"MGL ERROR: mtlTexSubImage expanded PBO upload failed (tex=%u slice=%u level=%u)",
+                                          tex->name, slice, level);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     bool uploaded = [self encodeTextureBytesUpload:tex
@@ -31651,6 +31083,23 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
         }
     }
 
+    /* RGBA8 expansion: Metal has no RGB8 pixel format, so GL_RGB8-family
+     * internal formats (3 bytes/pixel in the CPU backing store) are backed
+     * by Metal RGBA8 variants (4 bytes/pixel).  Without per-pixel channel
+     * expansion the 3-byte source is uploaded directly into a 4-byte Metal
+     * texture, shifting pixels and producing vertical stripes.  Every other
+     * upload path (createMTLTextureFromGLTexture, refreshMetalTextureCPUData,
+     * mtlCopyImageSubData) expands via mglCreateRGBA8ExpandedUpload; the
+     * direct mtlTexSubImageBytes path must do the same. */
+    BOOL needsRGBA8Expand = NO;
+    if (!needsChannelExpand) {
+        needsRGBA8Expand = mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat,
+                                                                        dstPixelFormat);
+        if (needsRGBA8Expand) {
+            dstBytesPerPixel = 4;
+        }
+    }
+
     size_t sourceImagePitch = src_image_size;
     size_t minimumImagePitch = src_pitch * copyHeight;
     if (sourceImagePitch < minimumImagePitch) {
@@ -31719,6 +31168,36 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
                     memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
                 }
             }
+        }
+    } else if (needsRGBA8Expand) {
+        /* GL_RGB8-family / packed RGB formats (CPU bpp < 4) -> Metal RGBA8
+         * (4 bytes/pixel).  Delegate to mglCreateRGBA8ExpandedUpload, which
+         * correctly unpacks every supported internal format (3:3:2, 5_6_5,
+         * 10_10_10, 4_4_4_4, ...) into RGBA8 — matching what every other
+         * upload path (createMTLTextureFromGLTexture, refreshMetalTextureCPUData,
+         * mtlCopyImageSubData) does.  Without this, 3-byte RGB8 source is
+         * uploaded directly into a 4-byte Metal texture, shifting pixels and
+         * producing vertical stripes. */
+        for (NSUInteger z = 0; z < copyDepth; z++) {
+            size_t sliceBaseOff = src_offset + (size_t)z * sourceImagePitch;
+            size_t lastRowOff = sliceBaseOff + (size_t)(copyHeight - 1u) * src_pitch;
+            if (lastRowOff > bytes_size || rowBytes > bytes_size - lastRowOff) {
+                return false;
+            }
+            const uint8_t *sliceSrc = sourceBase + sliceBaseOff;
+            NSUInteger expandedBPR = 0, expandedBPI = 0;
+            uint8_t *expanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                              sliceSrc,
+                                                              width,
+                                                              copyHeight,
+                                                              src_pitch,
+                                                              &expandedBPR,
+                                                              &expandedBPI);
+            if (!expanded) {
+                return false;
+            }
+            memcpy(packedBytesPtr + (z * dstImageBytes), expanded, expandedBPI);
+            free(expanded);
         }
     } else {
         /* No channel expansion needed - direct copy */
@@ -32417,7 +31896,6 @@ typedef struct {
 
     SpirvResourceList *vsInputs =
         &activeProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
-    const char *vsMslStr = activeProgram->spirv[_VERTEX_SHADER].msl_str;
 
     for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
@@ -32613,6 +32091,18 @@ typedef struct {
         _currentRenderEncoder = NULL;
     }
 
+    /* Ensure a writable command buffer exists.  The GL_PATCHES path returns
+     * before processGLState() (which normally creates the command buffer),
+     * and prior operations (glBufferData, glEndQuery, etc.) may have
+     * committed the previous command buffer. */
+    if (!_currentCommandBuffer ||
+        _currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
+            return false;
+        }
+    }
+
     GLuint tcsImgCount = [self getProgramBindingCount:_TESS_CONTROL_SHADER
                                                   type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
     for (GLuint i = 0; i < tcsImgCount; i++) {
@@ -32738,7 +32228,86 @@ typedef struct {
     GLuint patchVertices = MAX(1u, (GLuint)STATE(var.patch_vertices));
     GLuint vertexCount = (GLuint)count;
     GLuint instanceCount = 1u;
-    GLuint indirectParams[2] = { vertexCount, instanceCount };
+
+    /* Create TCS per-vertex output buffer (buffer 28 = spvOut).
+     * TCS writes: spvOut[gl_PrimitiveID * outputVertices + invocationID]
+     * where outputVertices = tess_control_output_vertices (layout(vertices=N) out).
+     * Compute the per-vertex stride from the TCS stage output resources. */
+    GLuint tcsOutVertices = tcsProgram->tess_control_output_vertices;
+    if (tcsOutVertices == 0) tcsOutVertices = patchVertices;
+
+    /* Compute the per-vertex stride by parsing the MSL output wrapper struct.
+     * This includes built-in outputs (gl_Position, gl_PointSize, ...) and
+     * Metal alignment padding, which the SPIRV-Cross resource list omits. */
+    NSUInteger tcsOutStride = 0;
+    const char *tcsMsl = tcsProgram->spirv[_TESS_CONTROL_SHADER].msl_str;
+    if (tcsMsl) {
+        tcsOutStride = mglComputeMSLOutputStructSize(tcsMsl);
+    }
+    /* Fallback: sum user-defined outputs from the resource list. */
+    if (tcsOutStride == 0 && tcsProgram) {
+        SpirvResourceList *outs =
+            &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+        for (GLuint i = 0; outs->list && i < outs->count; i++) {
+            GLenum gt = outs->list[i].gl_type;
+            GLuint comps = 1, bytesPer = 4;
+            if (gt == GL_FLOAT_VEC4 || gt == GL_INT_VEC4 || gt == GL_UNSIGNED_INT_VEC4 ||
+                gt == GL_BOOL_VEC4) { comps = 4; }
+            else if (gt == GL_FLOAT_VEC3 || gt == GL_INT_VEC3 || gt == GL_UNSIGNED_INT_VEC3 ||
+                     gt == GL_BOOL_VEC3) { comps = 3; }
+            else if (gt == GL_FLOAT_VEC2 || gt == GL_INT_VEC2 || gt == GL_UNSIGNED_INT_VEC2 ||
+                     gt == GL_BOOL_VEC2) { comps = 2; }
+            else if (gt == GL_FLOAT || gt == GL_INT || gt == GL_UNSIGNED_INT || gt == GL_BOOL) { comps = 1; }
+            else if (gt == GL_DOUBLE_VEC4 || gt == GL_DOUBLE_VEC3 || gt == GL_DOUBLE_VEC2) {
+                comps = (gt == GL_DOUBLE_VEC4) ? 4 : (gt == GL_DOUBLE_VEC3 ? 3 : 2);
+                bytesPer = 8;
+            }
+            else { comps = 4; }
+            tcsOutStride += comps * bytesPer;
+        }
+    }
+    if (tcsOutStride == 0) tcsOutStride = 64;  /* fallback: 4 x float4 */
+    _tcsOutputStride = tcsOutStride;
+    _tcsOutVertices = tcsOutVertices;
+
+    GLuint patchCountTC = vertexCount / patchVertices;
+    if (patchCountTC == 0u) patchCountTC = 1u;
+    NSUInteger tcsOutSize = (NSUInteger)patchCountTC * tcsOutVertices * tcsOutStride;
+    _tcsOutputBuffer = [_device newBufferWithLength:tcsOutSize
+                                            options:MTLResourceStorageModeShared];
+    memset(_tcsOutputBuffer.contents, 0, tcsOutSize);
+    [computeEncoder setBuffer:_tcsOutputBuffer offset:0 atIndex:28];
+
+    /* Create TCS per-patch output buffer (buffer 27 = spvPatchOut).
+     * TCS writes: spvPatchOut[gl_PrimitiveID].
+     * The per-patch struct size is harder to compute generically; use a
+     * generous estimate based on the patch output resources. */
+    NSUInteger tcsPatchStride = 0;
+    if (tcsProgram) {
+        /* Per-patch outputs share SPVC_RESOURCE_TYPE_STAGE_OUTPUT with
+         * per-vertex outputs; SpvDecorationPatch is reflected as is_per_patch. */
+        SpirvResourceList *outs =
+            &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+        for (GLuint i = 0; outs->list && i < outs->count; i++) {
+            if (!outs->list[i].is_per_patch) continue;
+            GLenum gt = outs->list[i].gl_type;
+            GLuint comps = 1, bytesPer = 4;
+            if (gt == GL_FLOAT_VEC4 || gt == GL_INT_VEC4 || gt == GL_UNSIGNED_INT_VEC4) { comps = 4; }
+            else if (gt == GL_FLOAT_VEC3 || gt == GL_INT_VEC3 || gt == GL_UNSIGNED_INT_VEC3) { comps = 3; }
+            else if (gt == GL_FLOAT_VEC2 || gt == GL_INT_VEC2 || gt == GL_UNSIGNED_INT_VEC2) { comps = 2; }
+            else if (gt == GL_FLOAT || gt == GL_INT || gt == GL_UNSIGNED_INT) { comps = 1; }
+            else { comps = 4; }
+            tcsPatchStride += comps * bytesPer;
+        }
+    }
+    if (tcsPatchStride == 0) tcsPatchStride = 16;  /* fallback: 1 x float4 */
+    NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
+    _tcsPatchOutBuffer = [_device newBufferWithLength:tcsPatchSize
+                                              options:MTLResourceStorageModeShared];
+    memset(_tcsPatchOutBuffer.contents, 0, tcsPatchSize);
+    [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
+
+    GLuint indirectParams[2] = { patchVertices, instanceCount };
     id<MTLBuffer> indirectBuf = [_device newBufferWithBytes:indirectParams
                                                      length:sizeof(indirectParams)
                                                     options:MTLResourceStorageModeShared];
@@ -32754,9 +32323,9 @@ typedef struct {
     memset(tessFactorBuf.contents, 0, tessFactorSize);
     [computeEncoder setBuffer:tessFactorBuf offset:0 atIndex:26];
 
-    /* Dispatch: one threadgroup per patch, patchVertices threads per threadgroup. */
+    /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
-    MTLSize threadsPerTG = MTLSizeMake(patchVertices, 1, 1);
+    MTLSize threadsPerTG = MTLSizeMake(tcsOutVertices, 1, 1);
     [computeEncoder dispatchThreadgroups:threadgroups
                      threadsPerThreadgroup:threadsPerTG];
 
@@ -32810,6 +32379,15 @@ typedef struct {
     if (_currentRenderEncoder) {
         [_currentRenderEncoder endEncoding];
         _currentRenderEncoder = NULL;
+    }
+
+    /* Ensure a writable command buffer exists (same reason as TCS). */
+    if (!_currentCommandBuffer ||
+        _currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL TESS ERROR: failed to create command buffer for TES dispatch");
+            return false;
+        }
     }
 
     GLuint tesImgCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
@@ -32939,12 +32517,179 @@ typedef struct {
     GLuint vertexCount = (GLuint)count;
     GLuint patchCount = vertexCount / patchVertices;
     if (patchCount == 0u) patchCount = 1u;
+
+    /* Bind patch info to buffer(28): {patch_vertices_in, tcs_out_vertices}.
+     * _mgl_patch_info.x = patch vertices (gl_in.size() replacement)
+     * _mgl_patch_info.y = TCS output vertices per patch (for per-patch gl_in indexing) */
+    {
+        GLuint patchInfo[2] = { patchVertices, _tcsOutVertices };
+        if (patchInfo[1] == 0) patchInfo[1] = patchVertices;
+        [computeEncoder setBytes:patchInfo length:sizeof(patchInfo) atIndex:28];
+    }
+
+    /* Bind TCS output buffer to buffer(30) for TES gl_in.
+     * TCS writes per-vertex output to spvOut (buffer 28 in TCS).  TES reads
+     * gl_in[...] from buffer(30).  The data layout is: TCS writes
+     * spvOut[patchID * outputVertices + invocationID], so TES gl_in should
+     * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
+     * to "device <type> *gl_in [[buffer(30)]]". */
+    if (_tcsOutputBuffer) {
+        [computeEncoder setBuffer:_tcsOutputBuffer offset:0 atIndex:30];
+    }
+
+    /* Bind TCS patch output buffer to buffer(27) for TES patchIn.
+     * TCS writes per-patch output to spvPatchOut (buffer 27 in TCS).  TES
+     * reads patchIn[...] from buffer(27).  Note: buffer 27 is reused for both
+     * TCS spvPatchOut and TES patchIn, which is correct since the data flows
+     * TCS → TES. */
+    if (_tcsPatchOutBuffer) {
+        [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
+    }
+
+    /* Bind XFB output buffer to buffer(29) for _mgl_xfb_out.
+     * The TES kernel writes captured output fields into this buffer when
+     * transform feedback is active with GL_INTERLEAVED_ATTRIBS.  The MSL
+     * rewriter (mglFixMSLTesAsComputeKernel Step 6) injects the write code.
+     *
+     * TODO(gpu-xfb): General VS/GS XFB GPU capture. When
+     * spirv[_VERTEX_SHADER].msl_str_capture is non-NULL (compiled by
+     * mglCompileMSLCaptureVariant in program.c, gated on MGL_XFB_GPU_CAPTURE),
+     * build a rasterization-disabled render pipeline (or compute dispatch)
+     * that runs that capture-variant MSL and writes VS outputs to this same
+     * buffer(29). The bind logic below would then also apply to the VS path,
+     * generalized to N>0 buffers for GL_SEPARATE_ATTRIBS. Not yet wired —
+     * non-passthrough VS XFB currently falls through to the GPU render path
+     * which captures nothing (honest fail), and the CPU passthrough path in
+     * draw_buffers.c handles only true input→output copies. */
+    if (tesProgram &&
+        tesProgram->transform_feedback_varying_count > 0 &&
+        tesProgram->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS &&
+        glm_ctx->state.transform_feedback &&
+        glm_ctx->state.transform_feedback->active &&
+        !glm_ctx->state.transform_feedback->paused) {
+        BufferBaseTarget *xfbSlot =
+            &glm_ctx->state.buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
+        if (xfbSlot->buf) {
+            /* Lazily create Metal buffer backing if not yet created. */
+            if (!xfbSlot->buf->data.mtl_data) {
+                [self bindMTLBuffer:xfbSlot->buf];
+            }
+            if (xfbSlot->buf->data.mtl_data) {
+                id<MTLBuffer> xfbMTL = (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
+                [computeEncoder setBuffer:xfbMTL
+                                   offset:xfbSlot->offset
+                                  atIndex:29];
+                xfbSlot->buf->ever_written = GL_TRUE;
+            }
+        }
+    }
+
+    /* Compute vertsPerPatch from tessellation factors.
+     * We dispatch vertsPerPatch threads per threadgroup so each thread
+     * writes one XFB entry.  The vertex count formula matches what the
+     * CTS counter program expects (primitive count * vertices-per-primitive). */
+    GLuint vertsPerPatch = 1;
+    if (_tessFactorBuffer) {
+        const struct {
+            uint16_t edge[4];
+            uint16_t inside[2];
+        } __attribute__((packed)) *tf = (const void *)_tessFactorBuffer.contents;
+        GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
+        GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
+        if (patchCount > 0) {
+            float edge0 = *(const __fp16 *)&tf[0].edge[0];
+            float inside0 = *(const __fp16 *)&tf[0].inside[0];
+            float inside1 = *(const __fp16 *)&tf[0].inside[1];
+            if (edge0 < 1.0f) edge0 = 1.0f;
+            if (inside0 < 1.0f) inside0 = 1.0f;
+            if (inside1 < 1.0f) inside1 = 1.0f;
+            GLuint primPerPatch = 1;
+            if (genMode == GL_QUADS) {
+                primPerPatch = 2u * (GLuint)ceilf(inside0) * (GLuint)ceilf(inside1);
+            } else if (genMode == GL_TRIANGLES) {
+                primPerPatch = (GLuint)ceilf(inside0) * (GLuint)ceilf(inside0);
+            } else { /* GL_ISOLINES */
+                primPerPatch = (GLuint)ceilf(edge0);
+            }
+            if (primPerPatch == 0u) primPerPatch = 1u;
+            if (pointMode) {
+                vertsPerPatch = primPerPatch;
+            } else if (genMode == GL_ISOLINES) {
+                vertsPerPatch = primPerPatch * 2u;
+            } else {
+                vertsPerPatch = primPerPatch * 3u;
+            }
+        }
+    }
+    if (vertsPerPatch == 0) vertsPerPatch = 1;
+
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
-    MTLSize threadsPerTG = MTLSizeMake(1, 1, 1);
+    MTLSize threadsPerTG = MTLSizeMake(vertsPerPatch, 1, 1);
     [computeEncoder dispatchThreadgroups:threadgroups
                      threadsPerThreadgroup:threadsPerTG];
 
     [computeEncoder endEncoding];
+
+    /* Update GL_PRIMITIVES_GENERATED query by reading the tess factor buffer
+     * and computing the number of primitives generated per patch.  The TES
+     * compute kernel dispatch above only runs TES once per patch (not per
+     * tessellated vertex), so we must manually compute the primitive count
+     * that the hardware tessellator would have produced.
+     *
+     * MTLQuadTessellationFactorsHalf = { half edge[4]; half inside[2]; } = 12 B.
+     * For triangles: primitives ≈ ceil(inside)² (rough estimate).
+     * For quads:      primitives ≈ 2 × ceil(inside0) × ceil(inside1).
+     * For isolines:   primitives ≈ ceil(edge[0]). */
+    if (_tessFactorBuffer) {
+        const struct {
+            uint16_t edge[4];
+            uint16_t inside[2];
+        } __attribute__((packed)) *tessFactors =
+            (const void *)_tessFactorBuffer.contents;
+
+        GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
+        GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
+
+        GLuint64 totalPrimitives = 0;
+        for (GLuint p = 0; p < patchCount; p++) {
+            /* Tessellation factors are half-floats.  Convert to float. */
+            float edge[4], inside[2];
+            for (int i = 0; i < 4; i++) {
+                edge[i] = *(const __fp16 *)&tessFactors[p].edge[i];
+                if (edge[i] < 1.0f) edge[i] = 1.0f;
+            }
+            for (int i = 0; i < 2; i++) {
+                inside[i] = *(const __fp16 *)&tessFactors[p].inside[i];
+                if (inside[i] < 1.0f) inside[i] = 1.0f;
+            }
+
+            GLuint perPatch = 0;
+            if (pointMode) {
+                /* Point mode: 1 primitive per tessellated point. */
+                if (genMode == GL_QUADS) {
+                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[1]));
+                } else if (genMode == GL_TRIANGLES) {
+                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[0]));
+                } else { /* GL_ISOLINES */
+                    perPatch = (GLuint)ceilf(edge[0]);
+                }
+            } else {
+                if (genMode == GL_QUADS) {
+                    /* Each quad splits into 2 triangles. */
+                    perPatch = 2u * (GLuint)(ceilf(inside[0]) * ceilf(inside[1]));
+                } else if (genMode == GL_TRIANGLES) {
+                    perPatch = (GLuint)(ceilf(inside[0]) * ceilf(inside[0]));
+                } else { /* GL_ISOLINES */
+                    /* Each isoline segment is 1 line primitive (2 vertices). */
+                    perPatch = (GLuint)ceilf(edge[0]);
+                }
+            }
+            if (perPatch == 0u) perPatch = 1u;
+            totalPrimitives += perPatch;
+        }
+
+        mglRecordActivePrimitiveQueryDraw(glm_ctx, totalPrimitives, totalPrimitives);
+    }
 
     return true;
 }
@@ -36091,6 +35836,8 @@ void mtlMultiDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, 
 
     glm_ctx->mtl_funcs.mtlGetSync = mtlGetSync;
     glm_ctx->mtl_funcs.mtlWaitForSync = mtlWaitForSync;
+    glm_ctx->mtl_funcs.mtlGetSyncStatus = mtlGetSyncStatus;
+    glm_ctx->mtl_funcs.mtlReleaseSync = mtlReleaseSync;
     glm_ctx->mtl_funcs.mtlFlush = mtlFlush;
     glm_ctx->mtl_funcs.mtlSwapBuffers = mtlSwapBuffers;
     glm_ctx->mtl_funcs.mtlFlushDrawBuffer = mtlFlushDrawBuffer;
@@ -36259,12 +36006,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: Metal device created: %@", _device);
     [self initializeMTL4CompilerIfAvailable];
 
+    /* Initialize AGX Capability Layer (centralized device detection +
+     * capability queries + driver bug markers).  Replaces scattered
+     * `containsString:@"AGX"` checks and hardcoded constants. */
+    MGLCapabilityInit(&_capability, _device);
+
     // PROPER AGX VIRTUALIZATION DETECTION: Maintain Metal functionality with virtualization compatibility
-    BOOL isVirtualized = NO;
+    BOOL isVirtualized = _capability.isVirtualized;
     NSString *deviceName = [_device name];
 
     // DETECTION: Check if running in QEMU virtualization but keep Metal enabled
-    if ([deviceName containsString:@"AGX"]) {
+    if (isVirtualized) {
         isVirtualized = YES;
         NSLog(@"MGL INFO: AGX device detected - enabling virtualization compatibility mode: %@", deviceName);
         NSLog(@"MGL INFO: Metal functionality will be maintained with AGX virtualization safety measures");

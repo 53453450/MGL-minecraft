@@ -492,6 +492,13 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_tess_gen_level = 64;
     glm_ctx->state.var.max_patch_vertices = 32;
     glm_ctx->state.var.patch_vertices = 3;
+    /* GL default patch tessellation levels (per ARB_tessellation_shader). */
+    glm_ctx->state.var.patch_default_inner_level[0] = 1.0f;
+    glm_ctx->state.var.patch_default_inner_level[1] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[0] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[1] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[2] = 1.0f;
+    glm_ctx->state.var.patch_default_outer_level[3] = 1.0f;
     glm_ctx->state.var.max_tess_patch_components = 120;
     glm_ctx->state.var.max_tess_control_input_components = 128;
     glm_ctx->state.var.max_tess_control_output_components = 128;

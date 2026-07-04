@@ -388,6 +388,8 @@ typedef struct GLMParams_t {
     GLuint max_tess_gen_level;
     GLuint max_patch_vertices;
     GLuint patch_vertices;
+    GLfloat patch_default_inner_level[2];
+    GLfloat patch_default_outer_level[4];
     GLuint max_tess_patch_components;
     GLuint max_tess_control_input_components;
     GLuint max_tess_control_output_components;
