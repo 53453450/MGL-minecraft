@@ -5742,56 +5742,6 @@ static void mglLowerMSLDoubleTypesToFloat(char **pstr)
     }
 }
 
-static GLboolean mglProgramStageHasResourceName(Program *program, int stage, int res_type, const char *name)
-{
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES ||
-        res_type < 0 || res_type >= _MAX_SPIRV_RES || !name) {
-        return GL_FALSE;
-    }
-
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
-    for (GLuint i = 0; resources->list && i < resources->count; i++) {
-        if (resources->list[i].name && strcmp(resources->list[i].name, name) == 0) {
-            return GL_TRUE;
-        }
-    }
-
-    return GL_FALSE;
-}
-
-static GLboolean mglProgramHasAnyResourceName(Program *program, const char *name)
-{
-    if (!program || !name) {
-        return GL_FALSE;
-    }
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        for (int res_type = 0; res_type < _MAX_SPIRV_RES; res_type++) {
-            if (mglProgramStageHasResourceName(program, stage, res_type, name)) {
-                return GL_TRUE;
-            }
-        }
-    }
-
-    /* Also check UBO member names. */
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *ubo_list = &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
-        for (GLuint i = 0; ubo_list->list && i < ubo_list->count; i++) {
-            SpirvResource *ubo = &ubo_list->list[i];
-            if (ubo->ubo_members) {
-                for (GLuint m = 0; m < ubo->ubo_member_count; m++) {
-                    if (ubo->ubo_members[m].name &&
-                        strcmp(ubo->ubo_members[m].name, name) == 0) {
-                        return GL_TRUE;
-                    }
-                }
-            }
-        }
-    }
-
-    return GL_FALSE;
-}
-
 static GLboolean mglFindMSLUserLocationForName(const char *msl, const char *name, GLuint *location_out)
 {
     if (!msl || !name || !location_out) {
