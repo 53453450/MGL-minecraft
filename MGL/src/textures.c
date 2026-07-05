@@ -6466,6 +6466,24 @@ bool verifyInternalFormatAndFormatType(GLMContext ctx, GLint internalformat, GLe
     return true;
 }
 
+static bool mglVerifyInternalFormatAndFormatTypeForCall(GLMContext ctx, GLint internalformat, GLenum format, GLenum type)
+{
+    GLuint old_error_count = ctx ? ctx->state.error_count : 0u;
+    GLenum old_error = ctx ? ctx->state.error : GL_NO_ERROR;
+
+    if (verifyInternalFormatAndFormatType(ctx, internalformat, format, type)) {
+        return true;
+    }
+
+    if (ctx &&
+        ctx->state.error_count == old_error_count &&
+        ctx->state.error == old_error) {
+        ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    }
+
+    return false;
+}
+
 
 void unpackTexture(GLMContext ctx, Texture *tex, GLuint face, GLuint level, void *src_data, void *dst_data, size_t src_pitch, size_t src_image_pitch, size_t pixel_size, size_t xoffset, size_t yoffset, size_t zoffset, size_t width, size_t height, size_t depth)
 {
@@ -7143,15 +7161,13 @@ void mglTexImage1D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
 
-    // verifyFormatType sets the error
-    if (!verifyInternalFormatAndFormatType(ctx, internalformat, format, type)) {
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, internalformat, format, type)) {
         fprintf(stderr,
                 "MGL Error: mglTexImage2D rejected internalformat=0x%x format=0x%x type=0x%x target=0x%x\n",
                 internalformat,
                 format,
                 type,
                 target);
-        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
@@ -7250,8 +7266,9 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
         return;
     }
 
-    // verifyFormatType sets the error
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, internalformat, format, type)) {
+        return;
+    }
 
     /* GL_STENCIL_INDEX as a pixel transfer format is only valid when the
      * texture's internalformat is a stencil-only format (GL_STENCIL_INDEX,
@@ -7389,8 +7406,9 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
 
     ERROR_CHECK_RETURN(level >= 0, GL_INVALID_VALUE);
 
-    // verifyFormatType sets the error
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, internalformat, format, type), GL_INVALID_OPERATION);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, internalformat, format, type)) {
+        return;
+    }
 
     /* GL_STENCIL_INDEX as a pixel transfer format is only valid when the
      * texture's internalformat is a stencil-only format.  See glTexImage2D
@@ -8120,7 +8138,9 @@ void texSubImage1D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
     /* E: level must not exceed log2 of the implementation's max texture size. */
     ERROR_CHECK_RETURN(level < (GLint)tex->num_levels, GL_INVALID_VALUE);
 
-    ERROR_CHECK_RETURN(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, tex->internalformat, format, type)) {
+        return;
+    }
 
     ERROR_CHECK_RETURN(width >= 0, GL_INVALID_VALUE);
 
@@ -8181,7 +8201,9 @@ bool texSubImage2D(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint
     ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferFormat(format), GL_INVALID_ENUM, false);
     ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferType(type), GL_INVALID_ENUM, false);
 
-    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, tex->internalformat, format, type)) {
+        return false;
+    }
 
     ERROR_CHECK_RETURN_VALUE(width >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(height >= 0, GL_INVALID_VALUE, false);
@@ -8333,7 +8355,9 @@ bool texSubImage3D(GLMContext ctx, Texture *tex, GLint level, GLint xoffset, GLi
     ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferFormat(format), GL_INVALID_ENUM, false);
     ERROR_CHECK_RETURN_VALUE(mglIsValidPixelTransferType(type), GL_INVALID_ENUM, false);
 
-    ERROR_CHECK_RETURN_VALUE(verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type), GL_INVALID_OPERATION, false);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, tex->internalformat, format, type)) {
+        return false;
+    }
 
     ERROR_CHECK_RETURN_VALUE(width >= 0, GL_INVALID_VALUE, false);
     ERROR_CHECK_RETURN_VALUE(height >= 0, GL_INVALID_VALUE, false);
@@ -10177,8 +10201,7 @@ void mglGetTexImage(GLMContext ctx, GLenum target, GLint level, GLenum format, G
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (!verifyInternalFormatAndFormatType(ctx, tex->internalformat, format, type)) {
-        ERROR_RETURN(GL_INVALID_OPERATION);
+    if (!mglVerifyInternalFormatAndFormatTypeForCall(ctx, tex->internalformat, format, type)) {
         return;
     }
     /* GetTexImage-specific validation (CTS isFormatValid OUTPUT_GETTEXIMAGE):

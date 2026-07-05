@@ -2456,18 +2456,21 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     if (pixel_size == 0) {
         fprintf(stderr, "MGL Error: mglReadPixels: invalid format/type combination (format=0x%x type=0x%x)\n", format, type);
         ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
     // ERROR_CHECK_RETURN(width > 0, GL_INVALID_ENUM);
     if (width < 0) {
         fprintf(stderr, "MGL Error: mglReadPixels: width < 0 (%d)\n", width);
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     // ERROR_CHECK_RETURN(height > 0, GL_INVALID_ENUM);
     if (height < 0) {
         fprintf(stderr, "MGL Error: mglReadPixels: height < 0 (%d)\n", height);
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     if (width == 0 || height == 0)
@@ -2534,6 +2537,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             if (format != GL_RGB && format != GL_RGB_INTEGER) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
             break;
 
@@ -2549,6 +2553,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                   format == GL_RGBA_INTEGER || format == GL_BGRA_INTEGER)) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
             break;
 
@@ -2557,6 +2562,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             if (format != GL_RGB) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
             break;
 
@@ -2565,6 +2571,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             if (format != GL_DEPTH_STENCIL) {
                 fprintf(stderr, "MGL Error: mglReadPixels: invalid format for type (format=0x%x type=0x%x)\n", format, type);
                 ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
             break;
     }
@@ -2584,6 +2591,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (fmt_is_integer && (type == GL_FLOAT || type == GL_HALF_FLOAT)) {
             fprintf(stderr, "MGL Error: mglReadPixels: integer format with float type (format=0x%x type=0x%x)\n", format, type);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
     }
 
@@ -2633,6 +2641,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         if (fmt_is_int != fb_is_int) {
             fprintf(stderr, "MGL Error: mglReadPixels: integer/non-integer mismatch (format=0x%x fb_int=%d)\n", format, (int)fb_is_int);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
     }
 
@@ -2671,6 +2680,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                         (long long)ptr->mapped_offset,
                         (long long)ptr->mapped_length);
                 ERROR_RETURN(GL_INVALID_OPERATION);
+                return;
             }
 
             if (hit <= 32u || (hit % 256u) == 0u) {
@@ -2694,6 +2704,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         {
             fprintf(stderr, "MGL Error: mglReadPixels: pixel pack buffer has negative size (%ld)\n", (long)ptr->size);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         offset = (uintptr_t)pixels;
@@ -2701,6 +2712,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         {
             fprintf(stderr, "MGL Error: mglReadPixels: pixel pack buffer offset not aligned (offset=%lu pixel_size=%u)\n", (unsigned long)offset, pixel_size);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         if ((size_t)ptr->size < offset || (size_t)ptr->size - offset < pack_layout.required_bytes)
@@ -2708,6 +2720,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
             fprintf(stderr, "MGL Error: mglReadPixels: pixel pack buffer too small (size=%ld offset=%lu req=%zu)\n",
                     (long)ptr->size, (unsigned long)offset, pack_layout.required_bytes);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         base = (uint8_t *)(uintptr_t)ptr->data.buffer_data;
@@ -2715,6 +2728,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
         {
             fprintf(stderr, "MGL Error: mglReadPixels: pixel pack buffer has no CPU storage\n");
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         if (offset > (uintptr_t)INTPTR_MAX ||
@@ -2729,6 +2743,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                     pack_layout.skip_offset_bytes,
                     pack_layout.write_span_bytes);
             ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
         }
 
         pack_buffer = ptr;
@@ -2741,6 +2756,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     {
         fprintf(stderr, "MGL Error: mglReadPixels: pixels is NULL with no pixel pack buffer bound\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
     if (!STATE(buffers[_PIXEL_PACK_BUFFER])) {
@@ -3263,6 +3279,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                 width,
                 height);
         ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
     }
 
     mglFlushCommandBuffer(ctx);
@@ -3277,6 +3294,7 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
     if (err)
     {
         ERROR_RETURN(GL_OUT_OF_MEMORY);
+        return;
     }
 
     ctx->mtl_funcs.mtlReadDrawable(ctx, (void *)buffer_data, (GLuint)readback_pitch, (GLuint)readback_size, x, y, width, height);
@@ -3301,6 +3319,8 @@ void mglReadPixels(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei heig
                     (unsigned long long)hit);
         }
         ERROR_RETURN(GL_INVALID_OPERATION);
+        vm_deallocate(mach_task_self(), buffer_data, readback_size);
+        return;
     }
 
     if (STATE(pack.swap_bytes) == GL_TRUE) {
