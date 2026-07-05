@@ -11019,6 +11019,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     uint num_faces;
     GLuint effective_mipmap_levels;
     GLuint upload_level_count;
+    BOOL storageMipmapped;
     BOOL mipmapped;
     BOOL is_array;
     BOOL texture1DBackedBy2D;
@@ -11030,6 +11031,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     texture1DArrayBackedBy2DArray = false;
     effective_mipmap_levels = 0;
     upload_level_count = 0;
+    storageMipmapped = NO;
 
     switch(tex->target)
     {
@@ -11085,19 +11087,22 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     // verify completeness of texture when used
+    /* Texture storage is independent from GL_TEXTURE_MAX_LEVEL.  Minecraft
+     * uses BASE/MAX_LEVEL to express temporary GpuTextureView mip windows; if
+     * those sampler parameters shrink the Metal texture allocation, later
+     * full-atlas sampling loses the higher mip levels and distant terrain
+     * reads empty/incorrect data.  Apply BASE/MAX only to completeness checks
+     * and sampled Metal views, not to the underlying storage level count. */
     effective_mipmap_levels = tex->mipmap_levels;
-    if (tex->params.max_level != 1000u) {
-        GLuint max_level_count = tex->params.max_level + 1u;
-        if (max_level_count > 0 && max_level_count < effective_mipmap_levels) {
-            effective_mipmap_levels = max_level_count;
-        }
-    }
 
     /* For CUBE_MAP_ARRAY, glTexImage3D stores all layer data in faces[0] with
      * depth = 6 * num_cubes.  Faces 1-5 are never populated by createTextureLevel,
      * so only check face 0 for completeness.  The upload code also reads from
      * face 0 and distributes slices to Metal array layers. */
     uint completeness_check_faces = (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? 1 : num_faces;
+
+    storageMipmapped = (tex->mipmap_levels > 1u) &&
+        (tex->num_levels > 1u || tex->is_render_target);
 
     if (tex->num_levels > 1)
     {
@@ -11106,11 +11111,11 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             effective_mipmap_levels = tex->num_levels;
         }
 
-        if (tex->num_levels < effective_mipmap_levels)
+        if (!tex->is_render_target && tex->num_levels < effective_mipmap_levels)
         {
             static uint64_t s_mipmap_count_mismatch_logs = 0;
             if (++s_mipmap_count_mismatch_logs <= 32 || (s_mipmap_count_mismatch_logs % 512) == 0) {
-                NSLog(@"MGL TEXTURE MIP COMPAT: tex=%u target=0x%x size=%ux%u num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u immutable=%u; capping Metal mip count to uploaded levels hit=%llu",
+                NSLog(@"MGL TEXTURE MIP COMPAT: tex=%u target=0x%x size=%ux%u num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u immutable=%u isRT=%u; capping Metal mip count to uploaded levels hit=%llu",
                       tex->name,
                       tex->target,
                       tex->width,
@@ -11121,6 +11126,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                       tex->params.base_level,
                       tex->params.max_level,
                       tex->immutable_storage,
+                      tex->is_render_target,
                       (unsigned long long)s_mipmap_count_mismatch_logs);
             }
             effective_mipmap_levels = tex->num_levels;
@@ -11171,7 +11177,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
     else if (tex->num_levels == 1)
     {
-        effective_mipmap_levels = 1;
+        if (!storageMipmapped) {
+            effective_mipmap_levels = 1;
+        }
         // single level texture
         // incomplete texture
         for(int face=0; face<completeness_check_faces; face++)
@@ -11276,7 +11284,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     width = tex->width;
     height = tex->height;
     depth = tex->depth;
-    mipmapped = tex->mipmapped == 1;
+    mipmapped = storageMipmapped;
     upload_level_count = mipmapped ? effective_mipmap_levels : tex->num_levels;
 
     tex_desc = [[MTLTextureDescriptor alloc] init];
@@ -13859,11 +13867,35 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         return NO;
     }
 
+    NSUInteger copyLevelCount = 1u;
+    if (source.mipmapLevelCount > 1u) {
+        GLuint highestGLLevel = tex->num_levels > 0u ? tex->num_levels - 1u : 0u;
+        if (tex->mipmap_levels > 0u && highestGLLevel >= tex->mipmap_levels) {
+            highestGLLevel = tex->mipmap_levels - 1u;
+        }
+
+        GLuint maxParamLevel = tex->params.max_level;
+        if (maxParamLevel != 1000u && maxParamLevel < highestGLLevel) {
+            highestGLLevel = maxParamLevel;
+        }
+
+        NSUInteger highestSourceLevel = source.mipmapLevelCount - 1u;
+        if (tex->params.base_level > highestGLLevel &&
+            (NSUInteger)tex->params.base_level <= highestSourceLevel) {
+            highestGLLevel = tex->params.base_level;
+        }
+        if ((NSUInteger)highestGLLevel > highestSourceLevel) {
+            highestGLLevel = (GLuint)highestSourceLevel;
+        }
+
+        copyLevelCount = (NSUInteger)highestGLLevel + 1u;
+    }
+
     if (tex->mtl_gl_sampled_data &&
         tex->mtl_gl_sampled_width == (GLuint)source.width &&
         tex->mtl_gl_sampled_height == (GLuint)source.height &&
         tex->mtl_gl_sampled_format == (GLuint)source.pixelFormat &&
-        tex->mtl_gl_sampled_levels == (GLuint)source.mipmapLevelCount &&
+        tex->mtl_gl_sampled_levels == (GLuint)copyLevelCount &&
         tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
         return YES;
     }
@@ -13873,32 +13905,28 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         tex->mtl_gl_sampled_width != (GLuint)source.width ||
         tex->mtl_gl_sampled_height != (GLuint)source.height ||
         tex->mtl_gl_sampled_format != (GLuint)source.pixelFormat ||
-        tex->mtl_gl_sampled_levels != (GLuint)source.mipmapLevelCount;
+        tex->mtl_gl_sampled_levels != (GLuint)copyLevelCount;
     if (needsNewCopy) {
         [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
-        /* Mirror the source's mip structure so textureLod / auto-mip sampling
-         * still works through the copy.  A mipmapped RT atlas (e.g. MC 1.21.11
-         * terrain atlas, 5 mip levels) sampled with LINEAR_MIPMAP_LINEAR /
-         * RGSS textureLod(level>0) cannot be served by a single-level copy:
-         * terrain would fall back to the un-flipped Metal RT and render
-         * vertical stripes.  genmipmap runs only at this refresh point
-         * (end_render_pass / blit_framebuffer), NOT on every RT write, so the
-         * per-draw perf killer noted in the old comment no longer applies. */
-        BOOL copyMipmapped = (source.mipmapLevelCount > 1u);
+        /* Mirror the GL-visible mip window, not the whole Metal backing
+         * allocation.  MC 1.21.11 can attach a render target with full mip
+         * backing while sampling a view with MAX_LEVEL=0; copying every
+         * backing level on each end_render_pass is needlessly expensive.
+         * Mipmapped RT atlases that really expose levels 0..N still get an
+         * N+1-level copy so textureLod / auto-mip sampling stay flipped. */
+        BOOL copyMipmapped = (copyLevelCount > 1u);
         MTLTextureDescriptor *desc =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
                                                                width:source.width
                                                               height:source.height
                                                            mipmapped:copyMipmapped];
         /* When mipmapped, Metal derives mipmapLevelCount from the dimensions
-         * (e.g. 12 for a 2048x2048 texture), but the source RT atlas may only
-         * have 5 levels (0-4).  Cap the copy's level count to the source's so
-         * the per-level blit loop below never requests a level that exists on
-         * the destination but not on the source (which would assert inside
-         * newTextureViewWithPixelFormat). */
+         * (e.g. 12 for a 2048x2048 texture).  Pin it to the GL copy window so
+         * texture views keep absolute mip indices without forcing every
+         * backing level through the Y-flip pass. */
         if (copyMipmapped) {
-            desc.mipmapLevelCount = source.mipmapLevelCount;
+            desc.mipmapLevelCount = copyLevelCount;
         }
         desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
         desc.storageMode = MTLStorageModePrivate;
@@ -13923,7 +13951,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         tex->mtl_gl_sampled_width = (GLuint)source.width;
         tex->mtl_gl_sampled_height = (GLuint)source.height;
         tex->mtl_gl_sampled_format = (GLuint)source.pixelFormat;
-        tex->mtl_gl_sampled_levels = (GLuint)source.mipmapLevelCount;
+        tex->mtl_gl_sampled_levels = (GLuint)copyLevelCount;
     }
 
     id<MTLTexture> destination = (__bridge id<MTLTexture>)(tex->mtl_gl_sampled_data);
@@ -13998,7 +14026,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
      * matching destination mip level with a Y-flipped uvRect, using level
      * views so the fragment shader's auto-mip sampler reads exactly the
      * intended source level. */
-    NSUInteger mipLevels = MAX(destination.mipmapLevelCount, 1u);
+    NSUInteger mipLevels = MAX(copyLevelCount, 1u);
+    if (mipLevels > destination.mipmapLevelCount) {
+        mipLevels = destination.mipmapLevelCount;
+    }
     if (mipLevels > (NSUInteger)source.mipmapLevelCount) {
         mipLevels = (NSUInteger)source.mipmapLevelCount;
     }
@@ -14075,7 +14106,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
 
     if (mglTraceLogIsEnabled()) {
-        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu writeVersion=%u reason=%s",
+        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u reason=%s",
                     (unsigned)tex->name,
                     mglTraceTextureLabel(tex),
                     0,
@@ -14085,6 +14116,12 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     (unsigned long)destination.width,
                     (unsigned long)destination.height,
                     (unsigned long)destination.pixelFormat,
+                    (unsigned long)source.mipmapLevelCount,
+                    (unsigned long)destination.mipmapLevelCount,
+                    (unsigned)tex->num_levels,
+                    (unsigned)tex->mipmap_levels,
+                    (unsigned)tex->params.base_level,
+                    (unsigned)tex->params.max_level,
                     (unsigned)tex->mtl_gl_sampled_write_version,
                     reason ? reason : "(null)");
     }
@@ -14818,7 +14855,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         (expectedType == 0 || sampledCopy.textureType == expectedType) &&
                         mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
                         if (mglTraceLogIsEnabled()) {
-                            mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+                            mglTraceLog("RT_SAMPLE_COPY_BIND stage=vertex program=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                         (unsigned)vertexProgramName,
                                         sampledName ? sampledName : "",
                                         (unsigned)spirvBinding,
@@ -14829,9 +14866,15 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                         sampledCopy,
                                         (unsigned long)sampledCopy.width,
                                         (unsigned long)sampledCopy.height,
+                                        (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
+                                        (unsigned long)sampledCopy.mipmapLevelCount,
+                                        (unsigned)ptr->num_levels,
+                                        (unsigned)ptr->mipmap_levels,
+                                        (unsigned)ptr->params.base_level,
+                                        (unsigned)ptr->params.max_level,
                                         (unsigned)ptr->mtl_gl_sampled_write_version);
                         }
-                        texture = sampledCopy;
+                        texture = mglSampledTextureViewForBaseLevel(ptr, sampledCopy);
                     }
                 } else if (ptr->mtl_gl_sampled_data &&
                            !mglTextureCanUseGLSampledRenderTargetCopy(ptr)) {
@@ -15522,7 +15565,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             mglTexturePixelFormatCompatibleWithExpectedDataKind(sampledCopy.pixelFormat, expectedKind)) {
                             sampledCopyForTrace = sampledCopy;
                             if (mglTraceLogIsEnabled()) {
-                                mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu version=%u",
+                                mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                             (unsigned)fragmentProgramName,
                                             (unsigned)(ctx ? ctx->state.program_name : 0u),
                                             (unsigned)(ctx ? ctx->state.var.current_program : 0u),
@@ -15539,13 +15582,19 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                             sampledCopy,
                                             (unsigned long)sampledCopy.width,
                                             (unsigned long)sampledCopy.height,
+                                            (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
+                                            (unsigned long)sampledCopy.mipmapLevelCount,
+                                            (unsigned)ptr->num_levels,
+                                            (unsigned)ptr->mipmap_levels,
+                                            (unsigned)ptr->params.base_level,
+                                            (unsigned)ptr->params.max_level,
                                             (unsigned)ptr->mtl_gl_sampled_write_version);
                             }
                             mglWriteProgramMSLDump(sampleProgram,
                                                    [NSString stringWithFormat:@"tex-rt-sample-copy-fragment-binding-%u-program-%u",
                                                                               (unsigned)spirvBinding,
                                                                               (unsigned)(sampleProgram ? sampleProgram->name : fragmentProgramName)]);
-                            texture = sampledCopy;
+                            texture = mglSampledTextureViewForBaseLevel(ptr, sampledCopy);
                             usedSampledCopyForTrace = YES;
                         }
                     } else if (ptr->mtl_gl_sampled_data &&
@@ -17774,9 +17823,17 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     if (tex->mtl_data && tex->is_render_target) {
         id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
         MTLTextureUsage requiredRenderTargetUsage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-        if (existingTexture && ((existingTexture.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage)) {
-            NSLog(@"MGL WARNING: Recreating texture %u with RenderTarget+ShaderRead usage (old usage=0x%lx)",
-                  tex->name, (unsigned long)existingTexture.usage);
+        NSUInteger requiredMipLevels = (tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u;
+        BOOL usageMismatch = existingTexture &&
+            ((existingTexture.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage);
+        BOOL mipCountMismatch = existingTexture &&
+            requiredMipLevels > existingTexture.mipmapLevelCount;
+        if (existingTexture && (usageMismatch || mipCountMismatch)) {
+            NSLog(@"MGL WARNING: Recreating texture %u for render-target use (old usage=0x%lx oldMips=%lu requiredMips=%lu)",
+                  tex->name,
+                  (unsigned long)existingTexture.usage,
+                  (unsigned long)existingTexture.mipmapLevelCount,
+                  (unsigned long)requiredMipLevels);
 
             // Keep a strong reference to the old texture so we can blit its GPU
             // data to the new one after releasing tex->mtl_data.
@@ -17801,8 +17858,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 if ([self ensureWritableCommandBuffer:"is_render_target_blit"]) {
                     id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
                     if (blit) {
-                        for (NSUInteger slice = 0; slice < oldTexture.arrayLength; slice++) {
-                            for (NSUInteger level = 0; level < oldTexture.mipmapLevelCount; level++) {
+                        NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
+                        NSUInteger copyLevels = MIN(oldTexture.mipmapLevelCount, newTexture.mipmapLevelCount);
+                        for (NSUInteger slice = 0; slice < copySlices; slice++) {
+                            for (NSUInteger level = 0; level < copyLevels; level++) {
                                 NSUInteger lw = (oldTexture.width >> level);
                                 NSUInteger lh = (oldTexture.height >> level);
                                 if (lw == 0 || lh == 0) continue;
@@ -19892,8 +19951,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 // Keep render pass dimensions aligned with attached color targets.
                 // Some FBO paths use textures (not renderbuffers), and Metal still requires
                 // scissor/viewport to be bounded by the attachment dimensions.
-                NSUInteger attWidth = (NSUInteger)tex->width;
-                NSUInteger attHeight = (NSUInteger)tex->height;
+                NSUInteger attWidth = mglMetalTextureLevelDimension((NSUInteger)tex->width,
+                                                                    subresource.level);
+                NSUInteger attHeight = mglMetalTextureLevelDimension((NSUInteger)tex->height,
+                                                                     subresource.level);
                 if (attWidth > 0 && attHeight > 0) {
                     if (_renderPassDescriptor.renderTargetWidth == 0 || _renderPassDescriptor.renderTargetHeight == 0) {
                         _renderPassDescriptor.renderTargetWidth = attWidth;

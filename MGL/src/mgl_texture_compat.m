@@ -106,11 +106,16 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
     if (ptr->params.base_level >= ptr->mipmap_levels) return texture;
 
     GLuint baseLevel = ptr->params.base_level;
+    if ((NSUInteger)baseLevel >= texture.mipmapLevelCount) {
+        return texture;
+    }
+
     GLuint maxLevel = (ptr->params.max_level == 1000u)
         ? (ptr->mipmap_levels - 1u)
         : ptr->params.max_level;
     if (maxLevel < baseLevel) maxLevel = baseLevel;
     if (maxLevel >= ptr->mipmap_levels) maxLevel = ptr->mipmap_levels - 1u;
+    if ((NSUInteger)maxLevel >= texture.mipmapLevelCount) maxLevel = (GLuint)texture.mipmapLevelCount - 1u;
 
     NSUInteger levelCount = maxLevel - baseLevel + 1u;
     if (levelCount == 0u) return texture;
