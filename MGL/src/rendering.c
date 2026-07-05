@@ -1354,6 +1354,22 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                     break;
             }
             break;
+        case GL_PACK_COMPRESSED_BLOCK_WIDTH:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.pack.compressed_block_width = param;
+            break;
+        case GL_PACK_COMPRESSED_BLOCK_HEIGHT:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.pack.compressed_block_height = param;
+            break;
+        case GL_PACK_COMPRESSED_BLOCK_DEPTH:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.pack.compressed_block_depth = param;
+            break;
+        case GL_PACK_COMPRESSED_BLOCK_SIZE:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.pack.compressed_block_size = param;
+            break;
 
         case GL_UNPACK_SWAP_BYTES:
             ctx->state.unpack.swap_bytes = (param != 0 ? true : false);
@@ -1422,6 +1438,22 @@ void mglPixelStorei(GLMContext ctx, GLenum pname, GLint param)
                     ERROR_RETURN(GL_INVALID_VALUE);
                     break;
             }
+            break;
+        case GL_UNPACK_COMPRESSED_BLOCK_WIDTH:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.unpack.compressed_block_width = param;
+            break;
+        case GL_UNPACK_COMPRESSED_BLOCK_HEIGHT:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.unpack.compressed_block_height = param;
+            break;
+        case GL_UNPACK_COMPRESSED_BLOCK_DEPTH:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.unpack.compressed_block_depth = param;
+            break;
+        case GL_UNPACK_COMPRESSED_BLOCK_SIZE:
+            if (param < 0) { ERROR_RETURN(GL_INVALID_VALUE); return; }
+            ctx->state.unpack.compressed_block_size = param;
             break;
 
         default:

@@ -738,6 +738,12 @@ typedef struct PixelStore_t {
     GLint skip_pixels;
     GLint skip_images;
     GLint alignment;
+    /* GL_ARB_compressed_texture_pixel_storage (core since 4.2).
+     * Width + size defaulting to 0 leaves compressed pixel storage inactive. */
+    GLint compressed_block_width;
+    GLint compressed_block_height;
+    GLint compressed_block_depth;
+    GLint compressed_block_size;
 } PixelStore;
 
 

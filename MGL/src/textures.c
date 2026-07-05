@@ -2913,49 +2913,93 @@ static bool mglFillTextureRectCPU(GLenum internalformat,
     return true;
 }
 
-static bool mglClearTexFormatCompatible(GLMContext ctx, GLenum internalformat, GLenum format)
+static bool mglClearTexInternalFormatIsColor(GLenum internalformat)
 {
-    (void)ctx;
+    switch (mglTexLevelCanonicalInternalFormat((GLint)internalformat)) {
+        case GL_R8: case GL_R8_SNORM: case GL_R16: case GL_R16_SNORM:
+        case GL_R16F: case GL_R32F:
+        case GL_R8I: case GL_R16I: case GL_R32I:
+        case GL_R8UI: case GL_R16UI: case GL_R32UI:
+        case GL_RG8: case GL_RG8_SNORM: case GL_RG16: case GL_RG16_SNORM:
+        case GL_RG16F: case GL_RG32F:
+        case GL_RG8I: case GL_RG16I: case GL_RG32I:
+        case GL_RG8UI: case GL_RG16UI: case GL_RG32UI:
+        case GL_R3_G3_B2:
+        case GL_RGB4: case GL_RGB5: case GL_RGB8: case GL_RGB8_SNORM:
+        case GL_RGB10: case GL_RGB12: case GL_RGB16: case GL_RGB16_SNORM:
+        case GL_SRGB8: case GL_RGB565:
+        case GL_RGB16F: case GL_RGB32F:
+        case GL_R11F_G11F_B10F: case GL_RGB9_E5:
+        case GL_RGB8I: case GL_RGB16I: case GL_RGB32I:
+        case GL_RGB8UI: case GL_RGB16UI: case GL_RGB32UI:
+        case GL_RGBA2: case GL_RGBA4: case GL_RGB5_A1:
+        case GL_RGBA8: case GL_RGBA8_SNORM:
+        case GL_RGB10_A2: case GL_RGBA12: case GL_RGBA16:
+        case GL_RGBA16_SNORM: case GL_SRGB8_ALPHA8:
+        case GL_RGBA16F: case GL_RGBA32F:
+        case GL_RGBA8I: case GL_RGBA16I: case GL_RGBA32I:
+        case GL_RGBA8UI: case GL_RGBA16UI: case GL_RGBA32UI:
+        case GL_RGB10_A2UI:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static GLenum mglClearTexFormatCompatibilityError(GLenum internalformat, GLenum format)
+{
     GLint canonical = mglTexLevelCanonicalInternalFormat((GLint)internalformat);
-    GLint red_type = mglTexLevelComponentType((GLint)internalformat, GL_TEXTURE_RED_TYPE);
-    bool has_color = red_type != GL_NONE;
-    bool has_depth = (canonical == GL_DEPTH_COMPONENT16 ||
-                      canonical == GL_DEPTH_COMPONENT24 ||
-                      canonical == GL_DEPTH_COMPONENT32 ||
-                      canonical == GL_DEPTH_COMPONENT32F ||
-                      canonical == GL_DEPTH24_STENCIL8 ||
-                      canonical == GL_DEPTH32F_STENCIL8);
+    bool has_color = mglClearTexInternalFormatIsColor((GLenum)canonical);
+    bool has_depth_only = (canonical == GL_DEPTH_COMPONENT16 ||
+                           canonical == GL_DEPTH_COMPONENT24 ||
+                           canonical == GL_DEPTH_COMPONENT32 ||
+                           canonical == GL_DEPTH_COMPONENT32F);
+    bool has_depth_stencil = (canonical == GL_DEPTH24_STENCIL8 ||
+                              canonical == GL_DEPTH32F_STENCIL8);
     bool has_stencil_only = (canonical == GL_STENCIL_INDEX8 ||
                              canonical == GL_STENCIL_INDEX ||
                              canonical == GL_STENCIL_INDEX1 ||
                              canonical == GL_STENCIL_INDEX4 ||
                              canonical == GL_STENCIL_INDEX16);
-    bool internal_integer = has_color && (red_type == GL_INT || red_type == GL_UNSIGNED_INT);
+    bool internal_integer = has_color && mglInternalFormatIsInteger(canonical);
     bool format_integer = mglExternalFormatIsInteger(format);
 
-    if (has_depth) {
-        if (format != GL_DEPTH_COMPONENT && format != GL_DEPTH_STENCIL) {
-            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+    if (has_depth_only) {
+        if (format != GL_DEPTH_COMPONENT) {
+            return GL_INVALID_OPERATION;
         }
-        return true;
+        return GL_NO_ERROR;
+    }
+    if (has_depth_stencil) {
+        if (format != GL_DEPTH_STENCIL) {
+            return GL_INVALID_OPERATION;
+        }
+        return GL_NO_ERROR;
     }
     if (has_stencil_only) {
         if (format != GL_STENCIL_INDEX) {
-            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            return GL_INVALID_OPERATION;
         }
-        return true;
+        return GL_NO_ERROR;
     }
 
     if (has_color) {
         if (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL || format == GL_STENCIL_INDEX) {
-            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            return GL_INVALID_OPERATION;
         }
         if (internal_integer != format_integer) {
-            ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            return GL_INVALID_OPERATION;
         }
     }
 
-    return true;
+    return GL_NO_ERROR;
+}
+
+static bool mglTextureHasCompressedInternalFormat(Texture *tex)
+{
+    return tex && (mglTexLevelInternalFormatCompressed(tex->internalformat) ||
+                   (tex->compressed_internalformat != 0u &&
+                    mglTexLevelInternalFormatCompressed(tex->compressed_internalformat)));
 }
 
 static bool mglCopyTextureRectFromCPU(GLenum internalformat,
@@ -8747,15 +8791,6 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
-
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
-    if (ctx->sync_strict) {
-        mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
-
-    ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
 
     if (level < 0 || level >= (GLint)tex->num_levels ||
         !tex->faces[0].levels ||
@@ -8770,9 +8805,23 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
     }
 
     TextureLevel *lvl = &tex->faces[0].levels[level];
-    if (mglTexLevelInternalFormatCompressed(tex->internalformat)) {
+    if (mglTextureHasCompressedInternalFormat(tex)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+
+    GLenum compatibility_error = mglClearTexFormatCompatibilityError(tex->internalformat, format);
+    if (compatibility_error != GL_NO_ERROR) {
+        ERROR_RETURN(compatibility_error);
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
     GLsizei width = (GLsizei)lvl->width;
@@ -8844,21 +8893,9 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
-
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
-    if (ctx->sync_strict) {
-        mglFlushCommandBuffer(ctx);
-        ctx->mtl_funcs.mtlFlush(ctx, true);
-    }
-
-    ERROR_CHECK_RETURN(mglClearTexFormatCompatible(ctx, tex->internalformat, format), false);
 
     if (width < 0 || height < 0 || depth < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
-        return;
-    }
-    if (width == 0 || height == 0 || depth == 0) {
         return;
     }
     if (level < 0 || level >= (GLint)tex->num_levels ||
@@ -8873,9 +8910,27 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
     }
 
     TextureLevel *lvl = &tex->faces[0].levels[level];
-    if (mglTexLevelInternalFormatCompressed(tex->internalformat)) {
+    if (mglTextureHasCompressedInternalFormat(tex)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+
+    GLenum compatibility_error = mglClearTexFormatCompatibilityError(tex->internalformat, format);
+    if (compatibility_error != GL_NO_ERROR) {
+        ERROR_RETURN(compatibility_error);
+        return;
+    }
+
+    if (width == 0 || height == 0 || depth == 0) {
+        return;
+    }
+
+    mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
+
+    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    if (ctx->sync_strict) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
     if (mglClearTextureLevelCPU(lvl, tex->internalformat, xoffset, yoffset, zoffset, width, height, depth, format, type, data)) {
@@ -8912,6 +8967,124 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
             free(fill_data);
         }
     }
+}
+
+/*
+ * Returns the byte stride of one row of compressed blocks for the given
+ * compressed internalformat and image width. Returns 0 for non-compressed or
+ * unknown formats (caller should fall back to pitch=0).
+ *
+ * For block-compressed textures, Metal requires bytesPerRow to be the number
+ * of bytes from the start of one row of blocks to the next, i.e.
+ *   ceil(width / block_w) * bytes_per_block
+ * The CPU-side data layout stored by mglStoreCompressedTextureImage matches.
+ */
+static GLuint mglCompressedBytesPerRowOf(GLenum internalformat, GLsizei width)
+{
+    GLuint bw = 0, bsz = 0;
+    switch (internalformat) {
+        /* S3TC/DXT */
+        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+        case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
+        case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
+            bw = 4;  bsz = 8;  break;
+        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+        case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
+        case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
+            bw = 4;  bsz = 16; break;
+        /* ASTC LDR: all 16 bytes/block, block size varies */
+        case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:       bw = 4;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:       bw = 5;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:       bw = 5;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:       bw = 6;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:       bw = 6;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:       bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:       bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:       bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:      bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:      bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:      bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:     bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:     bw = 12; bsz = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:     bw = 12; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:   bw = 4;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:   bw = 5;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:   bw = 5;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:   bw = 6;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:   bw = 6;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:   bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:   bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:   bw = 8;  bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:  bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:  bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:  bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR: bw = 10; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR: bw = 12; bsz = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR: bw = 12; bsz = 16; break;
+        default:
+            return 0;
+    }
+    if (width <= 0 || bw == 0) return 0;
+    /* Rounded-up block count per row x bytes per block. */
+    return ((GLuint)((width + bw - 1) / bw)) * bsz;
+}
+
+static bool mglCompressedBlockInfoOf(GLenum internalformat,
+                                     GLuint *out_bw,
+                                     GLuint *out_bh,
+                                     GLuint *out_bd,
+                                     GLuint *out_bs)
+{
+    GLuint bw = 0, bh = 0, bd = 1, bs = 0;
+    switch (internalformat) {
+        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+        case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
+        case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
+            bw = 4;  bh = 4;  bs = 8;  break;
+        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+        case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
+        case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
+            bw = 4;  bh = 4;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:       bw = 4;  bh = 4;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:       bw = 5;  bh = 4;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:       bw = 5;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:       bw = 6;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:       bw = 6;  bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:       bw = 8;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:       bw = 8;  bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:       bw = 8;  bh = 8;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:      bw = 10; bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:      bw = 10; bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:      bw = 10; bh = 8;  bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:     bw = 10; bh = 10; bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:     bw = 12; bh = 10; bs = 16; break;
+        case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:     bw = 12; bh = 12; bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:   bw = 4;  bh = 4;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:   bw = 5;  bh = 4;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:   bw = 5;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:   bw = 6;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:   bw = 6;  bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:   bw = 8;  bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:   bw = 8;  bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:   bw = 8;  bh = 8;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:  bw = 10; bh = 5;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:  bw = 10; bh = 6;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:  bw = 10; bh = 8;  bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR: bw = 10; bh = 10; bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR: bw = 12; bh = 10; bs = 16; break;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR: bw = 12; bh = 12; bs = 16; break;
+        default:
+            return false;
+    }
+    if (out_bw) *out_bw = bw;
+    if (out_bh) *out_bh = bh;
+    if (out_bd) *out_bd = bd;
+    if (out_bs) *out_bs = bs;
+    return true;
 }
 
 #pragma mark compressed tex image
@@ -8951,6 +9124,12 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
                 return false;
             }
             tex->compressed_internalformat = internalformat;
+            /* Compressed textures created via glCompressedTexImage* are
+             * sampler-readable by default, not image-binding targets; mirror
+             * the GL_READ_ONLY default glTexImage* uses (textures.c:5883) so
+             * the Metal-texture-creation path's switch(tex->access) doesn't
+             * fall through to return nil. */
+            tex->access = GL_READ_ONLY;
         } else if (tex->width != (GLuint)width ||
                    tex->height != (GLuint)height ||
                    tex->depth != (GLuint)depth ||
@@ -8961,6 +9140,7 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
                 return false;
             }
             tex->compressed_internalformat = internalformat;
+            tex->access = GL_READ_ONLY;
         }
     } else if (tex->mipmap_levels == 0 || tex->internalformat != internalformat) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
@@ -8985,6 +9165,7 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
      * CPU pointer (may be NULL) and is used as-is.
      */
     const uint8_t *resolved_src = (const uint8_t *)data;
+    size_t resolved_src_available = SIZE_MAX;
     Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
     if (unpack_buf) {
         const uint8_t *pbo_data = (const uint8_t *)getBufferData(ctx, unpack_buf);
@@ -8996,12 +9177,129 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
             (size_t)imageSize > (size_t)unpack_buf->size - raw_off) {
             ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
         }
+        resolved_src_available = (size_t)unpack_buf->size - raw_off;
         resolved_src = pbo_data + raw_off;
     }
 
     if (imageSize > 0) {
-        vm_address_t compressed_data = 0;
+        /* Repack block-compressed data into the destination (tightly packed)
+         * layout required by Metal when GL_UNPACK_COMPRESSED_BLOCK_WIDTH and
+         * GL_UNPACK_COMPRESSED_BLOCK_SIZE enable compressed pixel storage and
+         * the GL unpack state specifies a non-tight source layout.  Per GL 4.6
+         * section 8.4.4 the source stride per block row is
+         *   ceil(row_length / block_w) * block_bytes
+         * and per source image is
+         *   block_rows_per_image * src_blocks_per_row * block_bytes
+         * where block_rows_per_image is ceil(image_height / block_h) (or
+         * ceil(height / block_h) when UNPACK_IMAGE_HEIGHT is 0).  When layout
+         * is already tight, fall through to a plain memcpy of imageSize bytes
+         * (matches historic behaviour). */
+        GLint user_cbw = ctx->state.unpack.compressed_block_width;
+        GLint user_cbh = ctx->state.unpack.compressed_block_height;
+        GLint user_cbd = ctx->state.unpack.compressed_block_depth;
+        GLint user_cbs = ctx->state.unpack.compressed_block_size;
+        bool compressed_pixel_store_active = (user_cbw > 0 && user_cbs > 0);
+        GLuint ubw = 0, ubh = 0, ubs = 0, ubd = 1;
+        GLint row_length  = ctx->state.unpack.row_length;
+        GLint image_height = (depth > 1) ? ctx->state.unpack.image_height : 0;
+        GLint skip_p = ctx->state.unpack.skip_pixels;
+        GLint skip_r = (height > 1) ? ctx->state.unpack.skip_rows : 0;
+        GLint skip_i = (depth > 1) ? ctx->state.unpack.skip_images : 0;
+
+        if (compressed_pixel_store_active) {
+            GLuint fmt_bh = 0, fmt_bd = 1;
+            (void)mglCompressedBlockInfoOf(internalformat, NULL, &fmt_bh, &fmt_bd, NULL);
+            ubw = (GLuint)user_cbw;
+            ubh = (user_cbh > 0) ? (GLuint)user_cbh : fmt_bh;
+            ubd = (user_cbd > 0) ? (GLuint)user_cbd : fmt_bd;
+            ubs = (GLuint)user_cbs;
+            if (height <= 1 && ubh == 0) {
+                ubh = 1;
+            }
+            if (depth <= 1 && ubd == 0) {
+                ubd = 1;
+            }
+            if (ubw == 0 || ubs == 0 ||
+                (height > 1 && ubh == 0) ||
+                (depth > 1 && ubd == 0)) {
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            }
+            if ((skip_p % user_cbw) != 0 ||
+                (height > 1 && (skip_r % (GLint)ubh) != 0) ||
+                (depth > 1 && (skip_i % (GLint)ubd) != 0)) {
+                ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+            }
+        }
+
+        bool needs_repack = compressed_pixel_store_active &&
+                            ((row_length > 0 && (GLuint)row_length  != (GLuint)width)  ||
+                             (image_height > 0 && (GLuint)image_height != (GLuint)height) ||
+                             skip_p > 0 || skip_r > 0 || skip_i > 0 ||
+                             depth > 1);
+
+        bool do_repack = needs_repack && ubw != 0 && ubh != 0 && ubd != 0 && ubs != 0;
+        GLuint dst_blocks_per_row = 0, dst_block_rows = 0, dst_block_depths = 0;
+        GLuint src_blocks_per_row = 0, src_rows_per_image = 0;
+        size_t src_row_bytes = 0, src_image_bytes = 0, skip_offset = 0;
+        size_t dst_row_bytes = 0, dst_image_bytes = 0, dst_total_bytes = 0;
         size_t alloc_size = (size_t)imageSize;
+
+        if (compressed_pixel_store_active && !do_repack) {
+            if (!mglMulSizeT((size_t)((width  + (GLint)ubw - 1) / (GLint)ubw), (size_t)ubs, &dst_row_bytes) ||
+                !mglMulSizeT(dst_row_bytes, (size_t)((height + (GLint)ubh - 1) / (GLint)ubh), &dst_image_bytes) ||
+                !mglMulSizeT(dst_image_bytes, (size_t)((depth  + (GLint)ubd - 1) / (GLint)ubd), &dst_total_bytes)) {
+                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            }
+            if ((size_t)imageSize != dst_total_bytes) {
+                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            }
+        }
+
+        if (do_repack) {
+            dst_blocks_per_row = ((GLuint)(width  + (GLint)ubw - 1) / ubw);
+            dst_block_rows    = ((GLuint)(height + (GLint)ubh - 1) / ubh);
+            dst_block_depths  = ((GLuint)(depth  + (GLint)ubd - 1) / ubd);
+
+            src_blocks_per_row = (row_length > 0)
+                ? ((GLuint)(row_length + (GLint)ubw - 1) / ubw)
+                : dst_blocks_per_row;
+            src_rows_per_image = (image_height > 0)
+                ? ((GLuint)(image_height + (GLint)ubh - 1) / ubh)
+                : dst_block_rows;
+
+            GLuint skip_block_rows = (GLuint)(skip_r / (GLint)ubh);
+            GLuint skip_block_cols = (GLuint)(skip_p / (GLint)ubw);
+            GLuint skip_block_imgs = (GLuint)(skip_i / (GLint)ubd);
+
+            size_t skip_imgs_bytes = 0, skip_rows_bytes = 0, skip_cols_bytes = 0;
+            size_t trailing_img_bytes = 0, trailing_row_bytes = 0, source_span = 0;
+            if (!mglMulSizeT((size_t)src_blocks_per_row, (size_t)ubs, &src_row_bytes) ||
+                !mglMulSizeT(src_row_bytes, (size_t)src_rows_per_image, &src_image_bytes) ||
+                !mglMulSizeT((size_t)skip_block_imgs, src_image_bytes, &skip_imgs_bytes) ||
+                !mglMulSizeT((size_t)skip_block_rows, src_row_bytes, &skip_rows_bytes) ||
+                !mglMulSizeT((size_t)skip_block_cols, (size_t)ubs, &skip_cols_bytes) ||
+                !mglAddSizeT(skip_imgs_bytes, skip_rows_bytes, &skip_offset) ||
+                !mglAddSizeT(skip_offset, skip_cols_bytes, &skip_offset) ||
+                !mglMulSizeT((size_t)dst_blocks_per_row, (size_t)ubs, &dst_row_bytes) ||
+                !mglMulSizeT(dst_row_bytes, (size_t)dst_block_rows, &dst_image_bytes) ||
+                !mglMulSizeT(dst_image_bytes, (size_t)dst_block_depths, &dst_total_bytes) ||
+                !mglMulSizeT((size_t)(dst_block_depths ? dst_block_depths - 1u : 0u), src_image_bytes, &trailing_img_bytes) ||
+                !mglMulSizeT((size_t)(dst_block_rows ? dst_block_rows - 1u : 0u), src_row_bytes, &trailing_row_bytes) ||
+                !mglAddSizeT(skip_offset, trailing_img_bytes, &source_span) ||
+                !mglAddSizeT(source_span, trailing_row_bytes, &source_span) ||
+                !mglAddSizeT(source_span, dst_row_bytes, &source_span)) {
+                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            }
+            if (dst_total_bytes == 0u || (size_t)imageSize != dst_total_bytes) {
+                ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+            }
+            if (resolved_src && source_span > resolved_src_available) {
+                ERROR_RETURN_VALUE(unpack_buf ? GL_INVALID_OPERATION : GL_INVALID_VALUE, false);
+            }
+            alloc_size = dst_total_bytes;
+        }
+
+        vm_address_t compressed_data = 0;
         kern_return_t kr = vm_allocate((vm_map_t)mach_task_self(),
                                        &compressed_data,
                                        alloc_size,
@@ -9009,19 +9307,38 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
         if (kr != KERN_SUCCESS || !compressed_data) {
             ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, false);
         }
-        if (resolved_src) {
-            memcpy((void *)(uintptr_t)compressed_data, resolved_src, (size_t)imageSize);
+
+        if (!resolved_src) {
+            memset((void *)(uintptr_t)compressed_data, 0, alloc_size);
+        } else if (!do_repack) {
+            memcpy((void *)(uintptr_t)compressed_data, resolved_src, alloc_size);
         } else {
-            memset((void *)(uintptr_t)compressed_data, 0, (size_t)imageSize);
+            uint8_t *dst = (uint8_t *)(uintptr_t)compressed_data;
+            const uint8_t *src_base = resolved_src + skip_offset;
+
+            for (GLuint di = 0; di < dst_block_depths; di++) {
+                const uint8_t *src_img = src_base + (size_t)di * src_image_bytes;
+                uint8_t *dst_img = dst + (size_t)di * dst_image_bytes;
+                for (GLuint dr = 0; dr < dst_block_rows; dr++) {
+                    const uint8_t *src_row = src_img + (size_t)dr * src_row_bytes;
+                    uint8_t *dst_row = dst_img + (size_t)dr * dst_row_bytes;
+                    memcpy(dst_row, src_row, dst_row_bytes);
+                }
+            }
         }
         lvl->data = compressed_data;
-        lvl->data_size = (size_t)imageSize;
+        lvl->data_size = alloc_size;
     }
 
     lvl->width = (GLuint)width;
     lvl->height = (GLuint)height;
     lvl->depth = (GLuint)depth;
-    lvl->pitch = 0u;
+    /* For block-compressed formats, pitch is the byte stride per row of blocks
+     * (ceil(width/block_w) * bytes_per_block); the Metal upload path requires
+     * a non-zero bytesPerRow to actually copy data into the compressed
+     * MTLPixelFormat texture.  For unknown/uncompressed formats this falls
+     * back to 0 (the historic behaviour). */
+    lvl->pitch = mglCompressedBytesPerRowOf(internalformat, width);
     lvl->mtl_format = 0u;
     lvl->complete = true;
     lvl->has_initialized_data = resolved_src ? GL_TRUE : GL_FALSE;
@@ -9036,8 +9353,7 @@ static bool mglStoreCompressedTextureImage(GLMContext ctx,
 
     tex->num_levels = MAX(tex->num_levels, (GLuint)level + 1u);
     tex->complete = GL_TRUE;
-    tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-    tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
+    tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     STATE(dirty_bits) |= DIRTY_TEX;
     return true;
 }
@@ -9064,9 +9380,10 @@ static bool mglIsGenericCompressedFormat(GLenum format)
 
 /*
  * Compressed block formats that are defined over a 2-D block (RGTC2, BPTC,
- * S3TC/DXT, ETC2, EAC) require a height and are therefore illegal as the
- * format of a CompressedTexSubImage1D update.  Used to raise GL_INVALID_ENUM
- * for the 1D target, matching the spec rule that these formats are not 1D.
+ * S3TC/DXT, ASTC LDR, ETC2, EAC) require a height and are therefore illegal
+ * as the format of a CompressedTexSubImage1D update.  Used to raise
+ * GL_INVALID_ENUM for the 1D target, matching the spec rule that these
+ * formats are not 1D.
  */
 static bool mglCompressedFormatRequiresHeight(GLenum format)
 {
@@ -9077,6 +9394,42 @@ static bool mglCompressedFormatRequiresHeight(GLenum format)
         case GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM:
         case GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT:
         case GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT:
+        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+        case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
+        case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
+        case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
+        case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
+        case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:
+        case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
         case GL_COMPRESSED_RGB8_ETC2:
         case GL_COMPRESSED_SRGB8_ETC2:
         case GL_COMPRESSED_RGB8_PUNCHTHROUGH_ALPHA1_ETC2:

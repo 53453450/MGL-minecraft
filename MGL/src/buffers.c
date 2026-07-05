@@ -1423,12 +1423,12 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         base_slot->offset = 0;
         base_slot->size = ptr->size;
         base_slot->buf = ptr;
-        /* Per GL 4.6 spec, glBindBufferBase only updates the indexed
-         * binding point — it must NOT modify the generic binding
-         * (STATE(buffers[buffer_index])).  The previous code polluted the
-         * generic binding state, which could cause later glBufferData /
-         * glBufferSubData calls targeting the generic binding to operate
-         * on the wrong buffer. */
+        /* Indexed buffer binds also update the generic binding for target.
+         * CTS allocates SSBO storage through glBindBufferBase followed by
+         * glBufferData(GL_SHADER_STORAGE_BUFFER, ...), so keep both views in
+         * sync. */
+        STATE(buffers[buffer_index]) = ptr;
+        mglSetGenericBufferBinding(ctx, target, buffer);
 
         ptr->target = target;
     }
@@ -1439,7 +1439,8 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             mglFlushPendingDraws(ctx);
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
-        /* Do not touch the generic binding here either. */
+        STATE(buffers[buffer_index]) = NULL;
+        mglSetGenericBufferBinding(ctx, target, 0u);
     }
 
     ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
@@ -3240,6 +3241,7 @@ void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei co
                 mglFlushPendingDraws(ctx);
             }
             bzero(base_slot, sizeof(BufferBaseTarget));
+            STATE(buffers[buffer_index]) = NULL;
             mglSetGenericBufferBinding(ctx, target, 0u);
             ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
             continue;

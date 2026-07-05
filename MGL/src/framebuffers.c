@@ -1135,16 +1135,16 @@ static GLboolean mglFramebufferDrawBufferReferencesMissingAttachment(GLMContext 
     }
 
     for (GLsizei i = 0; i < count; ++i) {
-        GLenum drawBuffer = fbo->draw_buffers[i];
-        if (drawBuffer == GL_NONE) {
+        GLenum draw_buffer = fbo->draw_buffers[i];
+        if (draw_buffer == GL_NONE) {
             continue;
         }
-        if (!mglFramebufferBufferIsColorAttachment(ctx, drawBuffer)) {
+        if (!mglFramebufferBufferIsColorAttachment(ctx, draw_buffer)) {
             return GL_TRUE;
         }
 
-        GLuint attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
-        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+        GLuint attachment_index = (GLuint)(draw_buffer - GL_COLOR_ATTACHMENT0);
+        if (((fbo->color_attachment_bitfield >> attachment_index) & 1u) == 0u) {
             return GL_TRUE;
         }
     }
@@ -1157,17 +1157,73 @@ static GLboolean mglFramebufferReadBufferReferencesMissingAttachment(GLMContext 
     if (!ctx || !fbo || fbo->read_buffer == GL_NONE) {
         return GL_FALSE;
     }
-
-    if (!mglFramebufferBufferIsColorAttachment(ctx, fbo->read_buffer)) {
+    if (!mglFramebufferBufferIsColorAttachment(ctx, (GLenum)fbo->read_buffer)) {
         return GL_TRUE;
     }
 
-    GLuint attachmentIndex = (GLuint)(fbo->read_buffer - GL_COLOR_ATTACHMENT0);
-    return ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u;
+    GLuint attachment_index = (GLuint)(fbo->read_buffer - GL_COLOR_ATTACHMENT0);
+    return ((fbo->color_attachment_bitfield >> attachment_index) & 1u) == 0u;
 }
 
+/* Returns the sample count of the backing texture for an attachment, or 0
+ * for single-sample.  Used for GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE. */
+static GLuint mglFramebufferAttachmentSamples(GLMContext ctx, FBOAttachment *att)
+{
+    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
+    return tex ? tex->samples : 0u;
+}
+
+#ifdef MGL_GL_CORE
+static GLboolean mglFramebufferAttachmentIsPopulated(FBOAttachment *att)
+{
+    return att && att->texture != 0u;
+}
+
+static GLboolean mglFramebufferHasLayerTargetMismatch(Framebuffer *fbo)
+{
+    GLboolean any_layered = GL_FALSE;
+    GLboolean any_non_layered = GL_FALSE;
+
+    if (!fbo) {
+        return GL_FALSE;
+    }
+
+    for (GLuint i = 0u; i < MAX_COLOR_ATTACHMENTS; ++i) {
+        if (((fbo->color_attachment_bitfield >> i) & 1u) == 0u) {
+            continue;
+        }
+
+        FBOAttachment *att = &fbo->color_attachments[i];
+        if (!mglFramebufferAttachmentIsPopulated(att)) {
+            continue;
+        }
+
+        if (att->layered) {
+            any_layered = GL_TRUE;
+        } else {
+            any_non_layered = GL_TRUE;
+        }
+    }
+
+    FBOAttachment *depth_stencil[] = { &fbo->depth, &fbo->stencil };
+    for (GLuint i = 0u; i < 2u; ++i) {
+        FBOAttachment *att = depth_stencil[i];
+        if (!mglFramebufferAttachmentIsPopulated(att)) {
+            continue;
+        }
+
+        if (att->layered) {
+            any_layered = GL_TRUE;
+        } else {
+            any_non_layered = GL_TRUE;
+        }
+    }
+
+    return any_layered && any_non_layered;
+}
+#else
 /* Returns the (width, height) of the backing texture for an attachment, or
- * (0,0) if the attachment has no backing storage.  Used for the
+ * (0,0) if the attachment has no backing storage.  Used for the GLES
  * GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS check. */
 static void mglFramebufferAttachmentDimensions(GLMContext ctx, FBOAttachment *att,
                                                GLuint *out_w, GLuint *out_h)
@@ -1194,14 +1250,7 @@ static void mglFramebufferAttachmentDimensions(GLMContext ctx, FBOAttachment *at
     *out_w = level->width;
     *out_h = level->height;
 }
-
-/* Returns the sample count of the backing texture for an attachment, or 0
- * for single-sample.  Used for GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE. */
-static GLuint mglFramebufferAttachmentSamples(GLMContext ctx, FBOAttachment *att)
-{
-    Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
-    return tex ? tex->samples : 0u;
-}
+#endif
 
 static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fbo)
 {
@@ -1253,20 +1302,19 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
         return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
     }
 
-    /* GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER: a draw buffer selects a color
-     * attachment that has no image attached. */
-    if (fbo == ctx->state.framebuffer &&
-        mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
+    if (mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
         return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
     }
 
-    /* GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER: the read buffer selects a color
-     * attachment that has no image attached. */
-    if (fbo == ctx->state.readbuffer &&
-        mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
+    if (mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
         return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
     }
 
+#ifdef MGL_GL_CORE
+    if (mglFramebufferHasLayerTargetMismatch(fbo)) {
+        return GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS;
+    }
+#else
     /* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS: all attached images must have
      * the same width and height. */
     {
@@ -1297,6 +1345,7 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             }
         }
     }
+#endif
 
     /* GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE: all attached images must have
      * the same sample count. */
@@ -3066,7 +3115,7 @@ void mglNamedFramebufferTextureLayer(GLMContext ctx, GLuint framebuffer, GLenum 
     mglFramebufferCaptureBindingSnapshot(ctx, &snapshot);
     mglFlushPendingDraws(ctx);
     mglFramebufferUseTemporaryDrawBinding(ctx, fbo);
-    framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_NONE, attachment, GL_NONE, texture, level, layer);
+    framebufferTexture(ctx, GL_DRAW_FRAMEBUFFER, GL_TEXTURE_3D, attachment, GL_NONE, texture, level, layer);
     mglFramebufferRestoreBindingSnapshot(ctx, &snapshot);
 }
 

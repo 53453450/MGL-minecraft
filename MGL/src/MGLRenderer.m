@@ -3509,6 +3509,86 @@ static inline bool mglTextureHasUploadableCPUData(Texture *tex, int numFaces, GL
     return false;
 }
 
+static inline NSUInteger mglMetalCompressedBlockHeight(MTLPixelFormat pixelFormat)
+{
+    switch (pixelFormat) {
+        case MTLPixelFormatBC1_RGBA:
+        case MTLPixelFormatBC1_RGBA_sRGB:
+        case MTLPixelFormatBC2_RGBA:
+        case MTLPixelFormatBC2_RGBA_sRGB:
+        case MTLPixelFormatBC3_RGBA:
+        case MTLPixelFormatBC3_RGBA_sRGB:
+        case MTLPixelFormatBC4_RUnorm:
+        case MTLPixelFormatBC4_RSnorm:
+        case MTLPixelFormatBC5_RGUnorm:
+        case MTLPixelFormatBC5_RGSnorm:
+        case MTLPixelFormatBC6H_RGBFloat:
+        case MTLPixelFormatBC6H_RGBUfloat:
+        case MTLPixelFormatBC7_RGBAUnorm:
+        case MTLPixelFormatBC7_RGBAUnorm_sRGB:
+        case MTLPixelFormatASTC_4x4_sRGB:
+        case MTLPixelFormatASTC_4x4_LDR:
+        case MTLPixelFormatASTC_4x4_HDR:
+        case MTLPixelFormatASTC_5x4_sRGB:
+        case MTLPixelFormatASTC_5x4_LDR:
+        case MTLPixelFormatASTC_5x4_HDR:
+            return 4u;
+        case MTLPixelFormatASTC_5x5_sRGB:
+        case MTLPixelFormatASTC_5x5_LDR:
+        case MTLPixelFormatASTC_5x5_HDR:
+        case MTLPixelFormatASTC_6x5_sRGB:
+        case MTLPixelFormatASTC_6x5_LDR:
+        case MTLPixelFormatASTC_6x5_HDR:
+        case MTLPixelFormatASTC_8x5_sRGB:
+        case MTLPixelFormatASTC_8x5_LDR:
+        case MTLPixelFormatASTC_8x5_HDR:
+        case MTLPixelFormatASTC_10x5_sRGB:
+        case MTLPixelFormatASTC_10x5_LDR:
+        case MTLPixelFormatASTC_10x5_HDR:
+            return 5u;
+        case MTLPixelFormatASTC_6x6_sRGB:
+        case MTLPixelFormatASTC_6x6_LDR:
+        case MTLPixelFormatASTC_6x6_HDR:
+        case MTLPixelFormatASTC_8x6_sRGB:
+        case MTLPixelFormatASTC_8x6_LDR:
+        case MTLPixelFormatASTC_8x6_HDR:
+        case MTLPixelFormatASTC_10x6_sRGB:
+        case MTLPixelFormatASTC_10x6_LDR:
+        case MTLPixelFormatASTC_10x6_HDR:
+            return 6u;
+        case MTLPixelFormatASTC_8x8_sRGB:
+        case MTLPixelFormatASTC_8x8_LDR:
+        case MTLPixelFormatASTC_8x8_HDR:
+        case MTLPixelFormatASTC_10x8_sRGB:
+        case MTLPixelFormatASTC_10x8_LDR:
+        case MTLPixelFormatASTC_10x8_HDR:
+            return 8u;
+        case MTLPixelFormatASTC_10x10_sRGB:
+        case MTLPixelFormatASTC_10x10_LDR:
+        case MTLPixelFormatASTC_10x10_HDR:
+        case MTLPixelFormatASTC_12x10_sRGB:
+        case MTLPixelFormatASTC_12x10_LDR:
+        case MTLPixelFormatASTC_12x10_HDR:
+            return 10u;
+        case MTLPixelFormatASTC_12x12_sRGB:
+        case MTLPixelFormatASTC_12x12_LDR:
+        case MTLPixelFormatASTC_12x12_HDR:
+            return 12u;
+        default:
+            return 1u;
+    }
+}
+
+static inline NSUInteger mglMetalUploadRowsForPixelFormat(MTLPixelFormat pixelFormat, NSUInteger pixelHeight)
+{
+    NSUInteger height = pixelHeight ? pixelHeight : 1u;
+    NSUInteger blockHeight = mglMetalCompressedBlockHeight(pixelFormat);
+    if (blockHeight <= 1u) {
+        return height;
+    }
+    return (height + blockHeight - 1u) / blockHeight;
+}
+
 /* Pixel format classification (mglMetalPixelFormatIsDepthOrStencil,
  * mglMetalPixelFormatIsPackedDepthStencil) and GL internal-format
  * classification (mglRendererGLInternalFormatLooksDepthOrStencil) now live
@@ -5296,6 +5376,8 @@ static inline bool mglPrimitiveModeHasDrawableSegment(GLenum mode, NSUInteger in
         case GL_TRIANGLE_STRIP:
         case GL_TRIANGLE_FAN:
             return indexCount >= 3u;
+        case GL_QUADS:
+            return indexCount >= 4u;
         default:
             return indexCount > 0u;
     }
@@ -5311,6 +5393,7 @@ static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
         case GL_TRIANGLES:
         case GL_TRIANGLE_STRIP:
         case GL_TRIANGLE_FAN:
+        case GL_QUADS:
             return YES;
         default:
             return NO;
@@ -5323,10 +5406,18 @@ static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
         case GL_TRIANGLES:
         case GL_TRIANGLE_STRIP:
         case GL_TRIANGLE_FAN:
+        case GL_QUADS:
             return YES;
         default:
             return NO;
     }
+}
+
+static inline BOOL mglPolygonModeLineForDrawMode(GLMContext ctx, GLenum mode)
+{
+    return ctx &&
+           ctx->state.var.polygon_mode == GL_LINE &&
+           mglDrawModeProducesPolygons(mode);
 }
 
 static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
@@ -5620,6 +5711,213 @@ static id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
+static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
+{
+    NSUInteger quadCount = sourceIndexCount / 4u;
+    if (quadCount > (NSUIntegerMax / 6u)) {
+        return 0u;
+    }
+    return quadCount * 6u;
+}
+
+static id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
+                                                NSUInteger vertexCount,
+                                                NSUInteger *outIndexCount)
+{
+    if (outIndexCount) {
+        *outIndexCount = 0u;
+    }
+
+    NSUInteger indexCount = mglQuadTriangleIndexCount(vertexCount);
+    if (!device || indexCount == 0u) {
+        return nil;
+    }
+    if (indexCount > (NSUIntegerMax / sizeof(uint32_t))) {
+        return nil;
+    }
+
+    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
+    if (!indices) {
+        return nil;
+    }
+
+    NSUInteger quadCount = vertexCount / 4u;
+    for (NSUInteger quad = 0; quad < quadCount; quad++) {
+        NSUInteger src = quad * 4u;
+        NSUInteger dst = quad * 6u;
+        if ((src + 3u) > UINT32_MAX) {
+            free(indices);
+            return nil;
+        }
+        indices[dst + 0u] = (uint32_t)(src + 0u);
+        indices[dst + 1u] = (uint32_t)(src + 1u);
+        indices[dst + 2u] = (uint32_t)(src + 2u);
+        indices[dst + 3u] = (uint32_t)(src + 0u);
+        indices[dst + 4u] = (uint32_t)(src + 2u);
+        indices[dst + 5u] = (uint32_t)(src + 3u);
+    }
+
+    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
+                                               length:(indexCount * sizeof(uint32_t))
+                                              options:MTLResourceStorageModeShared];
+    free(indices);
+
+    if (outIndexCount && buffer) {
+        *outIndexCount = indexCount;
+    }
+
+    return buffer;
+}
+
+static id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
+                                                  const uint8_t *sourceIndexBytes,
+                                                  GLenum sourceIndexType,
+                                                  NSUInteger sourceIndexCount,
+                                                  NSUInteger *outIndexCount)
+{
+    if (outIndexCount) {
+        *outIndexCount = 0u;
+    }
+
+    NSUInteger indexCount = mglQuadTriangleIndexCount(sourceIndexCount);
+    if (!device || !sourceIndexBytes || indexCount == 0u) {
+        return nil;
+    }
+    if (indexCount > (NSUIntegerMax / sizeof(uint32_t))) {
+        return nil;
+    }
+
+    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
+    if (!indices) {
+        return nil;
+    }
+
+    NSUInteger quadCount = sourceIndexCount / 4u;
+    for (NSUInteger quad = 0; quad < quadCount; quad++) {
+        NSUInteger src = quad * 4u;
+        NSUInteger dst = quad * 6u;
+        uint32_t i0 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 0u);
+        uint32_t i1 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 1u);
+        uint32_t i2 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 2u);
+        uint32_t i3 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 3u);
+        indices[dst + 0u] = i0;
+        indices[dst + 1u] = i1;
+        indices[dst + 2u] = i2;
+        indices[dst + 3u] = i0;
+        indices[dst + 4u] = i2;
+        indices[dst + 5u] = i3;
+    }
+
+    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
+                                               length:(indexCount * sizeof(uint32_t))
+                                              options:MTLResourceStorageModeShared];
+    free(indices);
+
+    if (outIndexCount && buffer) {
+        *outIndexCount = indexCount;
+    }
+
+    return buffer;
+}
+
+static id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
+                                                    NSUInteger vertexCount,
+                                                    NSUInteger *outIndexCount)
+{
+    if (outIndexCount) {
+        *outIndexCount = 0u;
+    }
+
+    NSUInteger quadCount = vertexCount / 4u;
+    if (!device || quadCount == 0u || quadCount > (NSUIntegerMax / (8u * sizeof(uint32_t)))) {
+        return nil;
+    }
+
+    NSUInteger indexCount = quadCount * 8u;
+    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
+    if (!indices) {
+        return nil;
+    }
+
+    for (NSUInteger quad = 0; quad < quadCount; quad++) {
+        NSUInteger src = quad * 4u;
+        NSUInteger dst = quad * 8u;
+        if ((src + 3u) > UINT32_MAX) {
+            free(indices);
+            return nil;
+        }
+        indices[dst + 0u] = (uint32_t)(src + 0u);
+        indices[dst + 1u] = (uint32_t)(src + 1u);
+        indices[dst + 2u] = (uint32_t)(src + 1u);
+        indices[dst + 3u] = (uint32_t)(src + 2u);
+        indices[dst + 4u] = (uint32_t)(src + 2u);
+        indices[dst + 5u] = (uint32_t)(src + 3u);
+        indices[dst + 6u] = (uint32_t)(src + 3u);
+        indices[dst + 7u] = (uint32_t)(src + 0u);
+    }
+
+    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
+                                               length:(indexCount * sizeof(uint32_t))
+                                              options:MTLResourceStorageModeShared];
+    free(indices);
+
+    if (outIndexCount && buffer) {
+        *outIndexCount = indexCount;
+    }
+
+    return buffer;
+}
+
+static id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
+                                                       const uint8_t *sourceIndexBytes,
+                                                       GLenum sourceIndexType,
+                                                       NSUInteger sourceIndexCount,
+                                                       NSUInteger *outIndexCount)
+{
+    if (outIndexCount) {
+        *outIndexCount = 0u;
+    }
+
+    NSUInteger quadCount = sourceIndexCount / 4u;
+    if (!device || !sourceIndexBytes || quadCount == 0u || quadCount > (NSUIntegerMax / (8u * sizeof(uint32_t)))) {
+        return nil;
+    }
+
+    NSUInteger indexCount = quadCount * 8u;
+    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
+    if (!indices) {
+        return nil;
+    }
+
+    for (NSUInteger quad = 0; quad < quadCount; quad++) {
+        NSUInteger src = quad * 4u;
+        NSUInteger dst = quad * 8u;
+        uint32_t i0 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 0u);
+        uint32_t i1 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 1u);
+        uint32_t i2 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 2u);
+        uint32_t i3 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 3u);
+        indices[dst + 0u] = i0;
+        indices[dst + 1u] = i1;
+        indices[dst + 2u] = i1;
+        indices[dst + 3u] = i2;
+        indices[dst + 4u] = i2;
+        indices[dst + 5u] = i3;
+        indices[dst + 6u] = i3;
+        indices[dst + 7u] = i0;
+    }
+
+    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
+                                               length:(indexCount * sizeof(uint32_t))
+                                              options:MTLResourceStorageModeShared];
+    free(indices);
+
+    if (outIndexCount && buffer) {
+        *outIndexCount = indexCount;
+    }
+
+    return buffer;
+}
+
 static id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
                                                       const uint8_t *sourceIndexBytes,
                                                       NSUInteger sourceIndexCount)
@@ -5867,6 +6165,89 @@ static BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
     return YES;
 }
 
+static BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
+                                id<MTLDevice> device,
+                                GLsizei count,
+                                GLint baseVertex,
+                                NSUInteger instanceCount,
+                                NSUInteger baseInstance,
+                                BOOL lineMode,
+                                const char *label)
+{
+    if (count < 4) {
+        return YES;
+    }
+
+    NSUInteger quadIndexCount = 0u;
+    id<MTLBuffer> quadIndexBuffer = lineMode
+        ? mglNewQuadArrayLineIndexBuffer(device, (NSUInteger)count, &quadIndexCount)
+        : mglNewQuadArrayIndexBuffer(device, (NSUInteger)count, &quadIndexCount);
+    if (!quadIndexBuffer || quadIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s quad array emulation failed count=%d baseVertex=%d",
+              label ? label : "draw",
+              (int)count,
+              (int)baseVertex);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
+                        indexCount:quadIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:quadIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+static BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
+                                  id<MTLDevice> device,
+                                  Buffer *glElementBuffer,
+                                  id<MTLBuffer> metalElementBuffer,
+                                  GLenum glIndexType,
+                                  NSUInteger indexOffset,
+                                  GLsizei count,
+                                  NSUInteger instanceCount,
+                                  NSInteger baseVertex,
+                                  NSUInteger baseInstance,
+                                  BOOL lineMode,
+                                  const char *label)
+{
+    if (count < 4) {
+        return YES;
+    }
+
+    const uint8_t *quadSource = mglElementIndexSourceForDraw(glElementBuffer,
+                                                             metalElementBuffer,
+                                                             glIndexType,
+                                                             indexOffset,
+                                                             count);
+    NSUInteger quadIndexCount = 0u;
+    id<MTLBuffer> quadIndexBuffer = lineMode
+        ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount)
+        : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount);
+    if (!quadIndexBuffer || quadIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s quad element emulation failed ebo=%u count=%d offset=%lu source=%p",
+              label ? label : "draw",
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned long)indexOffset,
+              quadSource);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
+                        indexCount:quadIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:quadIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
 static id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
                                                    Buffer *glElementBuffer,
                                                    id<MTLBuffer> metalElementBuffer,
@@ -5938,6 +6319,9 @@ static BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
     if (count < 3) {
         return YES;
     }
+    if (mode == GL_QUADS && count < 4) {
+        return YES;
+    }
 
     if (mode == GL_TRIANGLES) {
         NSUInteger drawableCount = ((NSUInteger)count / 3u) * 3u;
@@ -5962,6 +6346,10 @@ static BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
         pointIndexBuffer = mglNewTriangleStripArrayIndexBuffer(device,
                                                                (NSUInteger)count,
                                                                &pointIndexCount);
+    } else if (mode == GL_QUADS) {
+        pointIndexBuffer = mglNewQuadArrayIndexBuffer(device,
+                                                      (NSUInteger)count,
+                                                      &pointIndexCount);
     } else {
         return NO;
     }
@@ -6001,6 +6389,9 @@ static BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
                                          const char *label)
 {
     if (count < 3) {
+        return YES;
+    }
+    if (mode == GL_QUADS && count < 4) {
         return YES;
     }
 
@@ -6052,6 +6443,12 @@ static BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
                                                                  glIndexType,
                                                                  (NSUInteger)count,
                                                                  &pointIndexCount);
+    } else if (mode == GL_QUADS) {
+        pointIndexBuffer = mglNewQuadElementIndexBuffer(device,
+                                                        source,
+                                                        glIndexType,
+                                                        (NSUInteger)count,
+                                                        &pointIndexCount);
     } else {
         return NO;
     }
@@ -6099,6 +6496,7 @@ static BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
                                     NSUInteger instanceCount,
                                     NSInteger baseVertex,
                                     NSUInteger baseInstance,
+                                    BOOL lineMode,
                                     const char *label)
 {
     if (!mglPrimitiveModeHasDrawableSegment(mode, segmentIndexCount)) {
@@ -6121,7 +6519,7 @@ static BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
     }
 
     if (primitiveType == MTLPrimitiveTypePoint &&
-        (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN)) {
+        (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_QUADS)) {
         return mglEncodeElementPolygonPoint(encoder,
                                             device,
                                             glElementBuffer,
@@ -6163,6 +6561,21 @@ static BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
                                         baseVertex,
                                         baseInstance,
                                         label);
+    }
+
+    if (mode == GL_QUADS) {
+        return mglEncodeElementQuads(encoder,
+                                     device,
+                                     glElementBuffer,
+                                     metalElementBuffer,
+                                     glIndexType,
+                                     segmentGLByteOffset,
+                                     (GLsizei)segmentIndexCount,
+                                     instanceCount,
+                                     baseVertex,
+                                     baseInstance,
+                                     lineMode,
+                                     label);
     }
 
     NSUInteger preparedByteOffset = 0u;
@@ -6239,6 +6652,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id
 
     BOOL emulatedMode = (mode == GL_TRIANGLE_FAN ||
                          mode == GL_LINE_LOOP ||
+                         mode == GL_QUADS ||
                          (primitiveType == MTLPrimitiveTypePoint &&
                           (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP)));
     id<MTLBuffer> preparedIndexBuffer = metalElementBuffer;
@@ -6278,6 +6692,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id
                                      instanceCount,
                                      baseVertex,
                                      baseInstance,
+                                     mglPolygonModeLineForDrawMode(ctx, mode),
                                      label)) {
             encodedAllSegments = NO;
             break;
@@ -6302,6 +6717,7 @@ static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id
                                                      instanceCount,
                                                      baseVertex,
                                                      baseInstance,
+                                                     mglPolygonModeLineForDrawMode(ctx, mode),
                                                      label);
     }
 
@@ -11092,7 +11508,17 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         continue;
                     }
 
-                    bytesPerImage = bytesPerRow * height;
+                    NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
+                    if (uploadRows == 0 || bytesPerRow > (NSUIntegerMax / uploadRows)) {
+                        NSLog(@"MGL WARNING: Invalid 3D bytesPerImage overflow (tex=%d face=%d level=%d rows=%lu bpr=%lu)",
+                              tex->name,
+                              face,
+                              level,
+                              (unsigned long)uploadRows,
+                              (unsigned long)bytesPerRow);
+                        continue;
+                    }
+                    bytesPerImage = bytesPerRow * uploadRows;
 
                     // NUCLEAR OPTION: Disable all texture uploads temporarily to isolate the crash source
                     if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
@@ -11220,8 +11646,26 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         NSUInteger addrAlignment = MGLCapabilityTextureAlignment(&_capability);
                         if (addr % addrAlignment != 0 || alignedBytesPerRow != bytesPerRow) {
                             // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy row by row
-                            NSUInteger alignedBytesPerImage = alignedBytesPerRow * MAX((NSUInteger)height, 1UL);
-                            NSUInteger alignedSize = alignedBytesPerImage * MAX((NSUInteger)depth, 1UL);
+                            NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
+                            if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+                                NSLog(@"MGL WARNING: Rejecting aligned 3D upload row overflow (tex=%d level=%d rows=%lu bpr=%lu)",
+                                      tex->name,
+                                      level,
+                                      (unsigned long)alignedUploadRows,
+                                      (unsigned long)alignedBytesPerRow);
+                                continue;
+                            }
+                            NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
+                            NSUInteger alignedDepth = MAX((NSUInteger)depth, 1UL);
+                            if (alignedBytesPerImage > (NSUIntegerMax / alignedDepth)) {
+                                NSLog(@"MGL WARNING: Rejecting aligned 3D upload size overflow (tex=%d level=%d bpi=%lu depth=%lu)",
+                                      tex->name,
+                                      level,
+                                      (unsigned long)alignedBytesPerImage,
+                                      (unsigned long)alignedDepth);
+                                continue;
+                            }
+                            NSUInteger alignedSize = alignedBytesPerImage * alignedDepth;
                             if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                 NSLog(@"MGL WARNING: Rejecting aligned 3D upload staging size=%lu (tex=%d level=%d)",
                                       (unsigned long)alignedSize, tex->name, level);
@@ -11234,13 +11678,13 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                 // Copy data row by row to handle bytesPerRow alignment
                                 NSUInteger srcRowSize = bytesPerRow;
                                 NSUInteger dstRowSize = alignedBytesPerRow;
-                                NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+                                NSUInteger texUploadRows = alignedUploadRows;
                                 NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
                                 uint8_t *srcPtr = (uint8_t *)srcData;
                                 uint8_t *dstPtr = (uint8_t *)alignedData;
 
                                 for (NSUInteger z = 0; z < texDepth; z++) {
-                                    for (NSUInteger row = 0; row < texHeight; row++) {
+                                    for (NSUInteger row = 0; row < texUploadRows; row++) {
                                         NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
                                         NSUInteger dstOffset = z * alignedBytesPerImage + row * dstRowSize;
                                         NSUInteger srcOffset = z * bytesPerImage + row * srcRowSize;
@@ -11366,9 +11810,28 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
                         uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)height, 1UL);
                         backingBytes = bytesPerImage;
-                        logicalBytesPerImage = bytesPerRow * uploadSliceHeight;
+                        NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                        if (uploadSliceRows == 0 || bytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
+                            NSLog(@"MGL WARNING: Array texture invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
+                                  tex->name,
+                                  face,
+                                  level,
+                                  (unsigned long)bytesPerRow,
+                                  (unsigned long)uploadSliceRows);
+                            continue;
+                        }
+                        logicalBytesPerImage = bytesPerRow * uploadSliceRows;
+                        if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
+                            NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
+                            if (dividedLayerBytes >= logicalBytesPerImage) {
+                                logicalBytesPerImage = dividedLayerBytes;
+                            }
+                        }
+                        NSUInteger requiredArrayBytes = 0;
+                        NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
                         if (logicalBytesPerImage == 0 ||
-                            backingBytes < logicalBytesPerImage * MAX((NSUInteger)num_layers, 1UL)) {
+                            logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
+                            backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
                             NSLog(@"MGL WARNING: Array texture backing too small for logical slices tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
                                   tex->name,
                                   face,
@@ -11463,7 +11926,18 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                                 if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
                                     // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy
-                                    NSUInteger alignedBytesPerImage = alignedBytesPerRow * uploadSliceHeight;
+                                    NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                                    if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+                                        NSLog(@"MGL WARNING: Rejecting aligned array upload row layout bpr=%lu rows=%lu (tex=%d level=%d layer=%d)",
+                                              (unsigned long)alignedBytesPerRow,
+                                              (unsigned long)alignedUploadRows,
+                                              tex->name,
+                                              level,
+                                              layer);
+                                        free(expandedUploadData);
+                                        continue;
+                                    }
+                                    NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
                                     NSUInteger alignedSize = alignedBytesPerImage;
                                     if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                         NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
@@ -11481,7 +11955,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                         uint8_t *srcPtr = (uint8_t *)srcData;
                                         uint8_t *dstPtr = (uint8_t *)alignedData;
 
-                                        for (NSUInteger row = 0; row < uploadSliceHeight; row++) {
+                                        for (NSUInteger row = 0; row < alignedUploadRows; row++) {
                                             NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
                                             memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
                                             // Clear padding to zero
@@ -11660,7 +12134,19 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
                                 // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy
                                 NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
-                                NSUInteger alignedBytesPerImage = alignedBytesPerRow * texHeight;
+                                NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, texHeight);
+                                if (uploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / uploadRows)) {
+                                    NSLog(@"MGL WARNING: Rejecting aligned 2D upload row layout bpr=%lu rows=%lu (tex=%d level=%d face=%d)",
+                                          (unsigned long)alignedBytesPerRow,
+                                          (unsigned long)uploadRows,
+                                          tex->name,
+                                          level,
+                                          face);
+                                    free(swizzledUploadData);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                NSUInteger alignedBytesPerImage = alignedBytesPerRow * uploadRows;
                                 NSUInteger alignedSize = alignedBytesPerImage;
                                 if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
                                     NSLog(@"MGL WARNING: Rejecting aligned 2D upload staging size=%lu (tex=%d level=%d face=%d)",
@@ -11679,7 +12165,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                     uint8_t *srcPtr = (uint8_t *)srcData;
                                     uint8_t *dstPtr = (uint8_t *)alignedData;
 
-                                    for (NSUInteger row = 0; row < texHeight; row++) {
+                                    for (NSUInteger row = 0; row < uploadRows; row++) {
                                         NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
                                         memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
                                         // Clear padding to zero
@@ -11805,11 +12291,30 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         BOOL arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
                         NSUInteger uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)lvlHeight, 1UL);
                         NSUInteger baseBytesPerRow = lvlPitch;
-                        NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceHeight;
+                        NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                        if (uploadSliceRows == 0 || baseBytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
+                            NSLog(@"MGL WARNING: Re-upload array invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
+                                  tex->name,
+                                  face,
+                                  level,
+                                  (unsigned long)baseBytesPerRow,
+                                  (unsigned long)uploadSliceRows);
+                            continue;
+                        }
+                        NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceRows;
                         NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
+                        if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
+                            NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
+                            if (dividedLayerBytes >= logicalBytesPerImage) {
+                                logicalBytesPerImage = dividedLayerBytes;
+                            }
+                        }
 
+                        NSUInteger requiredArrayBytes = 0;
+                        NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
                         if (logicalBytesPerImage == 0 ||
-                            backingBytes < logicalBytesPerImage * MAX((NSUInteger)num_layers, 1UL)) {
+                            logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
+                            backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
                             NSLog(@"MGL WARNING: Re-upload array backing too small tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
                                   tex->name, face, level,
                                   (unsigned long)backingBytes,
@@ -11865,12 +12370,24 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                             uintptr_t addr = (uintptr_t)layerSrcData;
                             if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
-                                NSUInteger alignedSize = alignedBytesPerRow * uploadSliceHeight;
+                                NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                                if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+                                    NSLog(@"MGL WARNING: Re-upload array rejecting aligned row layout bpr=%lu rows=%lu tex=%d face=%d level=%d layer=%u",
+                                          (unsigned long)alignedBytesPerRow,
+                                          (unsigned long)alignedUploadRows,
+                                          tex->name,
+                                          face,
+                                          level,
+                                          layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                NSUInteger alignedSize = alignedBytesPerRow * alignedUploadRows;
                                 if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
                                     void *alignedData = aligned_alloc(alignment, alignedSize);
                                     if (alignedData) {
                                         memset(alignedData, 0, alignedSize);
-                                        for (NSUInteger row = 0; row < uploadSliceHeight; row++) {
+                                        for (NSUInteger row = 0; row < alignedUploadRows; row++) {
                                             NSUInteger copySize = MIN(effectiveBytesPerRow, alignedBytesPerRow);
                                             memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
                                                    (const uint8_t *)layerSrcData + row * effectiveBytesPerRow, copySize);
@@ -11880,7 +12397,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                                              texTarget:tex->target
                                                                  bytes:alignedData
                                                            bytesPerRow:alignedBytesPerRow
-                                                         bytesPerImage:alignedBytesPerRow * uploadSliceHeight
+                                                         bytesPerImage:alignedSize
                                                                  width:lvlWidth
                                                                 height:lvlHeight
                                                                  depth:1
@@ -20767,9 +21284,24 @@ create_new_command_buffer:
 
     NSUInteger safeHeight = (height > 0) ? height : 1;
     NSUInteger safeDepth = (depth > 0) ? depth : 1;
-    NSUInteger expectedBytesPerImage = bytesPerRow * safeHeight;
+    NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(texture.pixelFormat, safeHeight);
+    if (uploadRows == 0 || bytesPerRow > (NSUIntegerMax / uploadRows)) {
+        NSLog(@"MGL WARNING: Rejecting texture upload with invalid row layout: bpr=%lu rows=%lu",
+              (unsigned long)bytesPerRow,
+              (unsigned long)uploadRows);
+        return false;
+    }
+    NSUInteger expectedBytesPerImage = bytesPerRow * uploadRows;
     NSUInteger copyDepth = is3DTexture ? safeDepth : 1;
     NSUInteger safeBytesPerImage = bytesPerImage;
+
+    if (safeBytesPerImage < expectedBytesPerImage) {
+        NSLog(@"MGL WARNING: Rejecting texture upload with short image stride: bpi=%lu expected=%lu fmt=%lu",
+              (unsigned long)safeBytesPerImage,
+              (unsigned long)expectedBytesPerImage,
+              (unsigned long)texture.pixelFormat);
+        return false;
+    }
 
     if (isArrayOrCubeTexture) {
         // For array/cubemap uploads each slice is uploaded independently.
@@ -20780,10 +21312,6 @@ create_new_command_buffer:
                   (unsigned long)safeBytesPerImage, (unsigned long)expectedBytesPerImage);
         }
         safeBytesPerImage = expectedBytesPerImage;
-    } else if (is3DTexture) {
-        if (safeBytesPerImage < expectedBytesPerImage) {
-            safeBytesPerImage = expectedBytesPerImage;
-        }
     } else {
         // Non-array/non-3D uploads should still represent a single image.
         safeBytesPerImage = expectedBytesPerImage;
@@ -20883,6 +21411,12 @@ create_new_command_buffer:
      *   会 endRenderEncoding 关闭当前 render encoder，并在 dedicated CB 上编码
      *   copyFromBuffer:toTexture:，由 Metal 命令队列保证与既有 render CB 的提交顺序；
      * - 1D/3D 分支不命中此前提（低频或 driver bug 规避），已先行返回。 */
+    if (copyDepth > 0 && safeBytesPerImage > (NSUIntegerMax / copyDepth)) {
+        NSLog(@"MGL WARNING: Rejecting texture upload with overflowing buffer size: bpi=%lu depth=%lu",
+              (unsigned long)safeBytesPerImage,
+              (unsigned long)copyDepth);
+        return false;
+    }
     NSUInteger bufferSize = safeBytesPerImage * copyDepth;
     if (bufferSize == 0 || bufferSize > (512 * 1024 * 1024)) {
         NSLog(@"MGL WARNING: Rejecting texture upload with invalid buffer size: %lu", (unsigned long)bufferSize);
@@ -20959,8 +21493,13 @@ create_new_command_buffer:
             }
 
             NSUInteger copyDepth = (texture.textureType == MTLTextureType3D) ? depth : 1UL;
-            NSUInteger bytesPerImage = bytesPerRow * height;
             NSUInteger availableBytes = uploadLevel->data_size;
+            /* For block-compressed formats, `data_size` is the actual byte
+             * count of one block-aligned image (e.g. BC1 32x32 = 512 B), not
+             * bytesPerRow * pixel_height (which would over-count by block_h).
+             * Use the smaller of availableBytes/copyDepth and the linear
+             * stride so neither compressed nor uncompressed uploads overflow. */
+            NSUInteger bytesPerImage = MIN(availableBytes / copyDepth, bytesPerRow * height);
             void *expandedUploadData = NULL;
             if (availableBytes < bytesPerImage * copyDepth) {
                 static uint64_t s_shortBackingLogs = 0;
@@ -25254,9 +25793,10 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
                              flushId:_traceReplayFlushId
                           batchIndex:_traceReplayBatchIndex
                         commandIndex:0
-                               phase:"SKIP"
+                               phase:"FALLBACK"
                               reason:"stream_unsupported_primitive"];
         }
+        [self issueDirectBatch:batch context:glm_ctx];
         return;
     }
 
@@ -25701,12 +26241,14 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
         BOOL polygonModePoint = mglPolygonModePointForDrawMode(glm_ctx, mode);
         BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
         BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
+        BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
         MTLPrimitiveType primType = polygonModePoint
             ? MTLPrimitiveTypePoint
             : (emulateTriangleFan ? MTLPrimitiveTypeTriangle
                                   : (emulateLineLoop ? MTLPrimitiveTypeLineStrip
-                                                     : (MTLPrimitiveType)batch->key.primitive_type));
-        if (!polygonModePoint && !emulateTriangleFan && !emulateLineLoop &&
+                                                     : (emulateQuads ? MTLPrimitiveTypeTriangle
+                                                                    : (MTLPrimitiveType)batch->key.primitive_type)));
+        if (!polygonModePoint && !emulateTriangleFan && !emulateLineLoop && !emulateQuads &&
             batch->key.primitive_type == 0xFFu) {
             [self traceReplayCommand:batch
                              command:cmd
@@ -25816,6 +26358,23 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
                                            phase:"SKIP"
                                           reason:"direct_arrays_line_loop_small"];
                     }
+                } else if (emulateQuads) {
+                    BOOL ok = mglEncodeArrayQuads(_currentRenderEncoder,
+                                                  _device,
+                                                  count,
+                                                  cmd->first,
+                                                  1u,
+                                                  0u,
+                                                  mglPolygonModeLineForDrawMode(glm_ctx, mode),
+                                                  "batch");
+                    [self traceReplayCommand:batch
+                                     command:cmd
+                                     context:glm_ctx
+                                     flushId:_traceReplayFlushId
+                                  batchIndex:_traceReplayBatchIndex
+                                commandIndex:i
+                                       phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
+                                      reason:(ok ? "direct_arrays_quads" : "direct_arrays_quads_buffer")];
                 } else {
                     mglTraceLog("DIRECT_BATCH_DRAW_ARRAYS_SUBMIT flush=%llu batch=%u cmd=%u program=%u mode=0x%x first=%d count=%d encoder=%p pipeline=%p",
                                 (unsigned long long)_traceReplayFlushId,
@@ -25947,6 +26506,23 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
                                            phase:"SKIP"
                                           reason:"direct_arrays_instanced_line_loop_small"];
                     }
+                } else if (emulateQuads) {
+                    BOOL ok = mglEncodeArrayQuads(_currentRenderEncoder,
+                                                  _device,
+                                                  count,
+                                                  cmd->first,
+                                                  instanceCount,
+                                                  0u,
+                                                  mglPolygonModeLineForDrawMode(glm_ctx, mode),
+                                                  "batch");
+                    [self traceReplayCommand:batch
+                                     command:cmd
+                                     context:glm_ctx
+                                     flushId:_traceReplayFlushId
+                                  batchIndex:_traceReplayBatchIndex
+                                commandIndex:i
+                                       phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
+                                      reason:(ok ? "direct_arrays_instanced_quads" : "direct_arrays_instanced_quads_buffer")];
                 } else {
                     /* Cull distance emulation: bind vertex/params buffers before
                      * drawPrimitives in the deferred batch path. */
@@ -26069,6 +26645,23 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
                                            phase:"SKIP"
                                           reason:"direct_arrays_base_instance_line_loop_small"];
                     }
+                } else if (emulateQuads) {
+                    BOOL ok = mglEncodeArrayQuads(_currentRenderEncoder,
+                                                  _device,
+                                                  count,
+                                                  cmd->first,
+                                                  instanceCount,
+                                                  cmd->baseInstance,
+                                                  mglPolygonModeLineForDrawMode(glm_ctx, mode),
+                                                  "batch");
+                    [self traceReplayCommand:batch
+                                     command:cmd
+                                     context:glm_ctx
+                                     flushId:_traceReplayFlushId
+                                  batchIndex:_traceReplayBatchIndex
+                                commandIndex:i
+                                       phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
+                                      reason:(ok ? "direct_arrays_base_instance_quads" : "direct_arrays_base_instance_quads_buffer")];
                 } else {
                     /* Cull distance emulation: bind vertex/params buffers before
                      * drawPrimitives in the deferred batch path. */
@@ -26199,8 +26792,25 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
                                      flushId:_traceReplayFlushId
                                   batchIndex:_traceReplayBatchIndex
                                 commandIndex:i
-                                       phase:(count >= 2 ? "SUBMIT" : "SKIP")
+                                     phase:(count >= 2 ? "SUBMIT" : "SKIP")
                                       reason:"direct_elements_line_loop"];
+                } else if (emulateQuads) {
+                    BOOL ok = mglEncodeElementQuads(_currentRenderEncoder, _device,
+                                                    glBuf, idxBuf,
+                                                    cmd->indexType, idxOffset,
+                                                    count, instanceCount,
+                                                    cmd->baseVertex,
+                                                    cmd->baseInstance,
+                                                    mglPolygonModeLineForDrawMode(glm_ctx, mode),
+                                                    "batch");
+                    [self traceReplayCommand:batch
+                                     command:cmd
+                                     context:glm_ctx
+                                     flushId:_traceReplayFlushId
+                                  batchIndex:_traceReplayBatchIndex
+                                commandIndex:i
+                                       phase:(ok && count >= 4 ? "SUBMIT" : "SKIP")
+                                      reason:(ok ? "direct_elements_quads" : "direct_elements_quads_buffer")];
                 } else {
                     MTLIndexType drawIndexType = mtlIdxType;
                     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -31453,6 +32063,7 @@ MTLPrimitiveType getMTLPrimitiveType(GLenum mode)
         case GL_LINE_STRIP_ADJACENCY:
         case GL_LINES_ADJACENCY:
         case GL_TRIANGLE_FAN:
+        case GL_QUADS:
         case GL_TRIANGLE_STRIP_ADJACENCY:
         case GL_PATCHES:
             return (MTLPrimitiveType)0xFFFFFFFF;
@@ -33100,6 +33711,7 @@ typedef struct {
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
     if (polygonModePoint) {
         if (!mglEncodeArrayPolygonPoint(_currentRenderEncoder,
                                         _device,
@@ -33207,6 +33819,23 @@ typedef struct {
             }
             return;
         }
+    } else if (emulateQuads) {
+        if (!mglEncodeArrayQuads(_currentRenderEncoder,
+                                 _device,
+                                 count,
+                                 first,
+                                 1u,
+                                 0u,
+                                 mglPolygonModeLineForDrawMode(ctx, mode),
+                                 "drawArrays")) {
+            g_mglDrawArraysSkippedSinceSwap++;
+            if (traceLogDraw) {
+                mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=quad_emulation_failed",
+                            (unsigned long long)drawCall,
+                            activeProgram ? (unsigned)activeProgram->name : (unsigned)mglCurrentRenderProgramKey(ctx));
+            }
+            return;
+        }
     } else {
         primitiveType = getMTLPrimitiveType(mode);
         if ((GLuint)primitiveType == 0xFFFFFFFF) {
@@ -33264,15 +33893,7 @@ typedef struct {
     }
 
     g_mglLastDrawArraysCall = drawCall;
-    g_mglLastDrawArraysSeconds = mglNowSeconds();
-    g_mglLastDrawArraysProgram = mglCurrentRenderProgramKey(ctx);
-    g_mglLastDrawArraysMode = mode;
-    g_mglLastDrawArraysCount = count;
-    g_mglDrawArraysSinceSwap++;
-    if (count > 0) {
-        g_mglDrawArrayVerticesSinceSwap += (uint64_t)count;
-    }
-    [self markCurrentFramebufferDrawAttachmentsWritten];
+    [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0)];
     mglLogDrawWithoutSwapWatchdog("arrays",
                                   drawCall,
                                   ctx,
@@ -33458,7 +34079,8 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         if (traceLogDraw) {
@@ -34252,6 +34874,28 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                                              indexBuffer:loopIndexBuffer
                                        indexBufferOffset:0
                                            instanceCount:1];
+        } else if (emulateQuads) {
+            if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                       _device,
+                                       gl_element_buffer,
+                                       indexBuffer,
+                                       type,
+                                       indexOffset,
+                                       count,
+                                       1u,
+                                       0,
+                                       0u,
+                                       mglPolygonModeLineForDrawMode(ctx, mode),
+                                       "drawElements")) {
+                g_mglDrawElementsSkippedSinceSwap++;
+                if (traceLogDraw) {
+                    mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=quad_emulation_failed ebo=%u",
+                                (unsigned long long)drawCall,
+                                (unsigned)activeProgramName,
+                                (unsigned)gl_element_buffer->name);
+                }
+                return;
+            }
         } else {
             NSUInteger drawIndexOffset = indexOffset;
             MTLIndexType drawIndexType = indexType;
@@ -34302,15 +34946,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
     }
 
     g_mglLastDrawElementsCall = drawCall;
-    g_mglLastDrawElementsSeconds = mglNowSeconds();
-    g_mglLastDrawElementsProgram = mglCurrentRenderProgramKey(ctx);
-    g_mglLastDrawElementsMode = mode;
-    g_mglLastDrawElementsCount = count;
-    g_mglDrawElementsSinceSwap++;
-    if (count > 0) {
-        g_mglDrawElementIndicesSinceSwap += (uint64_t)count;
-    }
-    [self markCurrentFramebufferDrawAttachmentsWritten];
+    [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
     mglLogDrawWithoutSwapWatchdog("elements",
                                   drawCall,
                                   ctx,
@@ -34356,7 +34992,8 @@ void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -34445,6 +35082,24 @@ void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
         return;
     }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   1u,
+                                   0,
+                                   0u,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawRangeElements")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
 
     MTLIndexType drawIndexType = indexType;
     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -34521,6 +35176,19 @@ void mtlDrawRangeElements(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint 
         }
         return;
     }
+    if (mode == GL_QUADS) {
+        if (mglEncodeArrayQuads(_currentRenderEncoder,
+                                _device,
+                                count,
+                                first,
+                                (NSUInteger)instancecount,
+                                0u,
+                                mglPolygonModeLineForDrawMode(ctx, mode),
+                                "drawArraysInstanced")) {
+            [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
+        }
+        return;
+    }
 
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
@@ -34553,7 +35221,8 @@ void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsize
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -34642,6 +35311,24 @@ void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsize
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
         return;
     }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   (NSUInteger)instancecount,
+                                   0,
+                                   0u,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawElementsInstanced")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
 
     MTLIndexType drawIndexType = indexType;
     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -34688,7 +35375,8 @@ void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GL
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -34777,6 +35465,24 @@ void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GL
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
         return;
     }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   1u,
+                                   basevertex,
+                                   0u,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawElementsBaseVertex")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
 
     MTLIndexType drawIndexType = indexType;
     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -34819,7 +35525,8 @@ void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, G
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -34908,6 +35615,24 @@ void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, G
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
         return;
     }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   1u,
+                                   basevertex,
+                                   0u,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawRangeElementsBaseVertex")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
 
     MTLIndexType drawIndexType = indexType;
     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -34948,7 +35673,8 @@ void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint star
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -35032,6 +35758,24 @@ void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint star
                                       basevertex,
                                       0u,
                                       "drawElementsInstancedBaseVertex")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)count * (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   (GLsizei)count,
+                                   (NSUInteger)instancecount,
+                                   basevertex,
+                                   0u,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawElementsInstancedBaseVertex")) {
             return;
         }
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)count * (uint64_t)MAX(instancecount, 0)];
@@ -35215,6 +35959,19 @@ void mtlDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const
         }
         return;
     }
+    if (mode == GL_QUADS) {
+        if (mglEncodeArrayQuads(_currentRenderEncoder,
+                                _device,
+                                count,
+                                first,
+                                (NSUInteger)instancecount,
+                                (NSUInteger)baseinstance,
+                                mglPolygonModeLineForDrawMode(ctx, mode),
+                                "drawArraysInstancedBaseInstance")) {
+            [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
+        }
+        return;
+    }
 
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
@@ -35247,7 +36004,8 @@ void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint f
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -35336,6 +36094,24 @@ void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint f
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
         return;
     }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   (NSUInteger)instancecount,
+                                   0,
+                                   (NSUInteger)baseinstance,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawElementsInstancedBaseInstance")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
 
     MTLIndexType drawIndexType = indexType;
     id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -35382,7 +36158,8 @@ void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsiz
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -35466,6 +36243,24 @@ void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsiz
                                       basevertex,
                                       (NSUInteger)baseinstance,
                                       "drawElementsInstancedBaseVertexBaseInstance")) {
+            return;
+        }
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
+    if (emulateQuads) {
+        if (!mglEncodeElementQuads(_currentRenderEncoder,
+                                   _device,
+                                   gl_element_buffer,
+                                   indexBuffer,
+                                   type,
+                                   offset,
+                                   count,
+                                   (NSUInteger)instancecount,
+                                   basevertex,
+                                   (NSUInteger)baseinstance,
+                                   mglPolygonModeLineForDrawMode(ctx, mode),
+                                   "drawElementsInstancedBaseVertexBaseInstance")) {
             return;
         }
         [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
@@ -35569,6 +36364,25 @@ void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum m
         }
         return;
     }
+    if (mode == GL_QUADS) {
+        uint64_t submittedVertices = 0u;
+        for (int i = 0; i < drawcount; i++) {
+            if (mglEncodeArrayQuads(_currentRenderEncoder,
+                                    _device,
+                                    count[i],
+                                    first[i],
+                                    1u,
+                                    0u,
+                                    mglPolygonModeLineForDrawMode(ctx, mode),
+                                    "multiDrawArrays")) {
+                submittedVertices += (uint64_t)MAX(count[i], 0);
+            }
+        }
+        if (submittedVertices > 0u) {
+            [self recordArrayDrawSubmittedMode:mode vertexCount:submittedVertices];
+        }
+        return;
+    }
 
     primitiveType = getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
@@ -35610,7 +36424,8 @@ void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, con
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -35699,6 +36514,23 @@ void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, con
             }
             continue;
         }
+        if (emulateQuads) {
+            if (mglEncodeElementQuads(_currentRenderEncoder,
+                                      _device,
+                                      gl_element_buffer,
+                                      indexBuffer,
+                                      type,
+                                      offset,
+                                      count[i],
+                                      1u,
+                                      0,
+                                      0u,
+                                      mglPolygonModeLineForDrawMode(ctx, mode),
+                                      "multiDrawElements")) {
+                submittedIndices += (uint64_t)MAX(count[i], 0);
+            }
+            continue;
+        }
 
         MTLIndexType drawIndexType = indexType;
         id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(_device,
@@ -35747,7 +36579,8 @@ void mtlMultiDrawElements(GLMContext glm_ctx, GLenum mode, const GLsizei *count,
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
-    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : getMTLPrimitiveType(mode)));
+    BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    primitiveType = polygonModePoint ? MTLPrimitiveTypePoint : (emulateTriangleFan ? MTLPrimitiveTypeTriangle : (emulateLineLoop ? MTLPrimitiveTypeLineStrip : (emulateQuads ? MTLPrimitiveTypeTriangle : getMTLPrimitiveType(mode))));
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
     indexType = getMTLIndexType(type);
@@ -35834,6 +36667,23 @@ void mtlMultiDrawElements(GLMContext glm_ctx, GLenum mode, const GLsizei *count,
                                          basevertex[i],
                                          0u,
                                          "multiDrawElementsBaseVertex")) {
+                submittedIndices += (uint64_t)MAX(count[i], 0);
+            }
+            continue;
+        }
+        if (emulateQuads) {
+            if (mglEncodeElementQuads(_currentRenderEncoder,
+                                      _device,
+                                      gl_element_buffer,
+                                      indexBuffer,
+                                      type,
+                                      offset,
+                                      count[i],
+                                      1u,
+                                      basevertex[i],
+                                      0u,
+                                      mglPolygonModeLineForDrawMode(ctx, mode),
+                                      "multiDrawElementsBaseVertex")) {
                 submittedIndices += (uint64_t)MAX(count[i], 0);
             }
             continue;

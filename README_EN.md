@@ -27,6 +27,8 @@
 
 **Prerequisites:**
 
+- macOS 14 or newer
+
 - Xcode Command Line Tools  
 
 - Homebrew  
@@ -94,40 +96,38 @@ Point them to the built libraries so they can take over rendering.
 
 ## Current Status
 
-- The standardized GL46CTS test is being carried out now, so the operation of the game is uncontrollable. Now{"completed": 12080, "crash": 0, "fail": 1224,"not_supported": 2199, "pass": 8655, "timeout": 1, "total": 12080, "unknown": 0},For details, please refer to[here](summary.tsv)
-
+- The current priority is GL46CTS conformance. Minecraft/mod runtime behavior may still regress while CTS fixes are landing.
 
 ## Project Structure
 
 ```
 MGL-minecraft/
-├── MGL/                          # Core library source
-│   ├── src/                      # C/Objective-C source files
-│   │   ├── gl_core.c            # OpenGL Core API entry
-│   │   ├── gl_es.c              # OpenGL ES API entry
-│   │   ├── shaders.c            # Shader management
-│   │   ├── textures.c           # Texture management
-│   │   ├── buffers.c            # Buffer management
-│   │   ├── programs.c           # Shader program management
-│   │   ├── rendering.c          # Rendering state management
-│   │   ├── MGLRenderer.m        # Metal renderer implementation
-│   │   └── MGLTextures.m        # Metal texture implementation
-│   ├── include/                  # Headers
-│   │   ├── GL/                  # OpenGL headers
-│   │   └── glm/                 # GLM math library
-│   └── spirv_cross_c.cpp        # SPIRV-Cross bridge
-├── external/                     # External dependencies
-│   ├── SPIRV-Cross/             # SPIR-V to MSL translator
-│   ├── SPIRV-Tools/             # SPIR-V toolchain
-│   ├── SPIRV-Headers/           # SPIR-V headers
-│   ├── glslang/                 # GLSL compiler
-│   ├── OpenGL-Registry/         # OpenGL specifications
-│   ├── glfw/                    # Modified GLFW
-│   └── ezxml/                   # XML parser
-│
-├── test_mgl_glfw/               # Test cases
+├── MGL/                         # Core library source
+│   ├── include/                 # OpenGL/MGL headers
+│   └── src/                     # C/Objective-C implementation
+│       ├── MGLRenderer.m        # Metal renderer and draw paths
+│       ├── MGLTextures.m        # Metal texture bridge
+│       ├── buffers.c            # Buffer/UBO/SSBO state
+│       ├── framebuffers.c       # FBO/RBO and completeness
+│       ├── get.c                # glGet/internalformat queries
+│       ├── pixel_utils.c        # Pixel format and layout helpers
+│       ├── rendering.c          # Render state and draw dispatch
+│       ├── shaders.c            # GLSL/SPIR-V/MSL translation entry
+│       ├── tex_param.c          # Texture parameters and internalformat queries
+│       └── textures.c           # Texture upload, clear, and compressed paths
+├── external/                    # SPIRV-Cross, SPIRV-Tools, glslang, GLFW, etc.
+├── benchmark/                   # Performance test tools
+├── test_mgl/                    # Local smoke/functional tests
+├── MGL Tests/                   # Xcode test target
+├── MGL_Golden_Images/           # Image regression baselines
+├── TestImages/                  # Test texture assets
+├── enum_parser/                 # OpenGL enum generation helper
+├── spec_parser/                 # Specification parsing helper
+├── build/                       # Local build output
 ├── MGL.xcodeproj/               # Xcode project
 ├── Makefile                     # Build script
+├── README.md                    # Chinese README
+├── README_EN.md                 # English README
 └── LICENSE                      # Apache 2.0 License
 ```
 

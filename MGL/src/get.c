@@ -63,6 +63,8 @@ static const char *kMglExtensions[] = {
     "GL_EXT_texture_shadow_lod",           /* glslang + SPIRV-Cross lower Dref+LOD shadow sampling */
     "GL_ARB_parallel_shader_compile",      /* no-op hint; mglMaxShaderCompilerThreadsKHR stores value */
     "GL_KHR_parallel_shader_compile",      /* alias */
+    "GL_EXT_texture_compression_s3tc",     /* MGL maps compressed S3TC internal formats in textures.c */
+    "GL_KHR_texture_compression_astc_ldr", /* MGL maps compressed ASTC LDR internal formats in textures.c */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -461,12 +463,20 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case GL_UNPACK_SKIP_ROWS: RET_TYPE(type, unpack.skip_rows); break;
         case GL_UNPACK_SKIP_PIXELS: RET_TYPE(type, unpack.skip_pixels); break;
         case GL_UNPACK_ALIGNMENT: RET_TYPE(type, unpack.alignment); break;
+        case GL_UNPACK_COMPRESSED_BLOCK_WIDTH: RET_TYPE(type, unpack.compressed_block_width); break;
+        case GL_UNPACK_COMPRESSED_BLOCK_HEIGHT: RET_TYPE(type, unpack.compressed_block_height); break;
+        case GL_UNPACK_COMPRESSED_BLOCK_DEPTH: RET_TYPE(type, unpack.compressed_block_depth); break;
+        case GL_UNPACK_COMPRESSED_BLOCK_SIZE: RET_TYPE(type, unpack.compressed_block_size); break;
         case GL_PACK_SWAP_BYTES: RET_TYPE(type, pack.swap_bytes); break;
         case GL_PACK_LSB_FIRST: RET_TYPE(type, pack.lsb_first); break;
         case GL_PACK_ROW_LENGTH: RET_TYPE(type, pack.row_length); break;
         case GL_PACK_SKIP_ROWS: RET_TYPE(type, pack.skip_rows); break;
         case GL_PACK_SKIP_PIXELS: RET_TYPE(type, pack.skip_pixels); break;
         case GL_PACK_ALIGNMENT: RET_TYPE(type, pack.alignment); break;
+        case GL_PACK_COMPRESSED_BLOCK_WIDTH: RET_TYPE(type, pack.compressed_block_width); break;
+        case GL_PACK_COMPRESSED_BLOCK_HEIGHT: RET_TYPE(type, pack.compressed_block_height); break;
+        case GL_PACK_COMPRESSED_BLOCK_DEPTH: RET_TYPE(type, pack.compressed_block_depth); break;
+        case GL_PACK_COMPRESSED_BLOCK_SIZE: RET_TYPE(type, pack.compressed_block_size); break;
         case 0x0D16: RET_TYPE_VAR(type, zoom_x); break; // GL_ZOOM_X
         case 0x0D17: RET_TYPE_VAR(type, zoom_y); break; // GL_ZOOM_Y
         case 0x0D30: RET_TYPE_VAR(type, max_eval_order); break; // GL_MAX_EVAL_ORDER

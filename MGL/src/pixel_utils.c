@@ -2291,6 +2291,80 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
 
         case GL_COMPRESSED_SIGNED_RG_RGTC2:
             return MTLPixelFormatBC5_RGSnorm;
+        /* S3TC/DXT (GL_EXT_texture_compression_s3tc) — BC1/BC2/BC3.
+         * Available on macOS 10.11+; native on Apple Silicon. */
+        case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
+        case GL_COMPRESSED_RGBA_S3TC_DXT1_EXT:
+            return MTLPixelFormatBC1_RGBA;
+        case 0x8c4c: /* GL_COMPRESSED_SRGB_S3TC_DXT1_EXT */
+        case 0x8c4d: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT */
+            return MTLPixelFormatBC1_RGBA_sRGB;
+        case GL_COMPRESSED_RGBA_S3TC_DXT3_EXT:
+            return MTLPixelFormatBC2_RGBA;
+        case 0x8c4e: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT */
+            return MTLPixelFormatBC2_RGBA_sRGB;
+        case GL_COMPRESSED_RGBA_S3TC_DXT5_EXT:
+            return MTLPixelFormatBC3_RGBA;
+        case 0x8c4f: /* GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT */
+            return MTLPixelFormatBC3_RGBA_sRGB;
+
+        /* ASTC LDR (GL_KHR_texture_compression_astc_ldr) — macOS 11+. */
+        case GL_COMPRESSED_RGBA_ASTC_4x4_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_4x4_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_5x4_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x4_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_5x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x5_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_6x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x5_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_6x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x6_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_8x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x5_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_8x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x6_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_8x8_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x8_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_10x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x5_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_10x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x6_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_10x8_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x8_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_10x10_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x10_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_12x10_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x10_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_RGBA_ASTC_12x12_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x12_LDR : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_4x4_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_4x4_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x4_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x4_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_5x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_5x5_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x5_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_6x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_6x6_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x5_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x6_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_8x8_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_8x8_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x5_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x5_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x6_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x6_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x8_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x8_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_10x10_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_10x10_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x10_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x10_sRGB : MTLPixelFormatInvalid;
+        case GL_COMPRESSED_SRGB8_ALPHA8_ASTC_12x12_KHR:
+            return __builtin_available(macOS 11.0, *) ? MTLPixelFormatASTC_12x12_sRGB : MTLPixelFormatInvalid;
 
         case GL_R8:
             return MTLPixelFormatR8Unorm;

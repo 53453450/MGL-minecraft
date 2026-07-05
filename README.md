@@ -22,6 +22,7 @@ Language: 中文 | [English](README_EN.md)
 
 **前置**: 
 
+- macOS 14 或更新版本
 - Xcode Command Line Tools
 - Homebrew
 - Cmake
@@ -77,40 +78,38 @@ make
 
 ## 现状
 
-- 现在在进行规范的GL46CTS测试，所以游戏的运行是不可控的，现在{"completed": 12080, "crash": 0, "fail": 1224,"not_supported": 2199, "pass": 8655, "timeout": 1, "total": 12080, "unknown": 0}详情参阅[这里](summary.tsv)
+- 当前优先目标是 GL46CTS 规范兼容性；Minecraft/Mod 运行仍可能随 CTS 修复出现回归。
 
 ## 项目结构
 
 ```
 MGL-minecraft/
-├── MGL/                          # 核心库源码
-│   ├── src/                      # C/Objective-C 源文件
-│   │   ├── gl_core.c            # OpenGL Core API 入口
-│   │   ├── gl_es.c              # OpenGL ES API 入口
-│   │   ├── shaders.c            # 着色器管理
-│   │   ├── textures.c           # 纹理管理
-│   │   ├── buffers.c            # 缓冲区管理
-│   │   ├── programs.c           # 着色器程序管理
-│   │   ├── rendering.c          # 渲染状态管理
-│   │   ├── MGLRenderer.m        # Metal 渲染器实现
-│   │   └── MGLTextures.m        # Metal 纹理实现
-│   ├── include/                  # 头文件
-│   │   ├── GL/                  # OpenGL 头文件
-│   │   └── glm/                 # GLM 数学库
-│   └── spirv_cross_c.cpp        # SPIRV-Cross C++ 桥接
-│
-├── external/                     # 外部依赖
-│   ├── SPIRV-Cross/             # SPIR-V 到 MSL 转译器
-│   ├── SPIRV-Tools/             # SPIR-V 工具链
-│   ├── SPIRV-Headers/           # SPIR-V 头文件
-│   ├── glslang/                 # GLSL 编译器
-│   ├── OpenGL-Registry/         # OpenGL 规范
-│   ├── glfw/                    # 修改版 GLFW
-│   └── ezxml/                   # XML 解析器
-│
-├── test_mgl_glfw/               # 测试用例
-├── MGL.xcodeproj/               # Xcode 项目文件
+├── MGL/                         # 核心库源码
+│   ├── include/                 # OpenGL/MGL 头文件
+│   └── src/                     # C/Objective-C 实现
+│       ├── MGLRenderer.m        # Metal 渲染器与绘制路径
+│       ├── MGLTextures.m        # Metal 纹理桥接
+│       ├── buffers.c            # Buffer/UBO/SSBO 状态
+│       ├── framebuffers.c       # FBO/RBO 与 completeness
+│       ├── get.c                # glGet/internalformat 查询
+│       ├── pixel_utils.c        # 像素格式与布局工具
+│       ├── rendering.c          # 渲染状态与 draw 调度
+│       ├── shaders.c            # GLSL/SPIR-V/MSL 转译入口
+│       ├── tex_param.c          # 纹理参数与 internalformat 查询
+│       └── textures.c           # 纹理上传、清理、压缩格式路径
+├── external/                    # SPIRV-Cross、SPIRV-Tools、glslang、GLFW 等依赖
+├── benchmark/                   # 性能测试工具
+├── test_mgl/                    # 本地 smoke/功能测试
+├── MGL Tests/                   # Xcode 测试目标
+├── MGL_Golden_Images/           # 图像回归基准
+├── TestImages/                  # 测试纹理素材
+├── enum_parser/                 # OpenGL enum 生成辅助
+├── spec_parser/                 # 规范解析辅助
+├── build/                       # 本地构建输出
+├── MGL.xcodeproj/               # Xcode 项目
 ├── Makefile                     # 构建脚本
+├── README.md                    # 中文说明
+├── README_EN.md                 # English README
 └── LICENSE                      # Apache 2.0 许可证
 ```
 
