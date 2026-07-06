@@ -2355,6 +2355,61 @@ static GLint64 mglInternalFormatSupportValue(GLboolean supported)
     return supported ? GL_FULL_SUPPORT : GL_NONE;
 }
 
+static GLuint mglInternalFormatMaxSamples(GLMContext ctx, GLenum target, GLenum storage)
+{
+    if (!ctx) {
+        return 4u;
+    }
+
+    GLuint limit = ctx->state.var.max_samples ? ctx->state.var.max_samples : 4u;
+    if (target == GL_RENDERBUFFER) {
+        GLuint framebuffer_limit = ctx->state.var.max_framebuffer_samples ? ctx->state.var.max_framebuffer_samples : limit;
+        if (framebuffer_limit < limit) {
+            limit = framebuffer_limit;
+        }
+    }
+    if (mglInternalFormatIsInteger(storage)) {
+        GLuint integer_limit = ctx->state.var.max_integer_samples ? ctx->state.var.max_integer_samples : limit;
+        if (integer_limit < limit) {
+            limit = integer_limit;
+        }
+    } else if (mglInternalFormatHasDepth(storage) || mglInternalFormatHasStencil(storage)) {
+        GLuint depth_limit = ctx->state.var.max_depth_texture_samples ? ctx->state.var.max_depth_texture_samples : limit;
+        if (depth_limit < limit) {
+            limit = depth_limit;
+        }
+    } else {
+        GLuint color_limit = ctx->state.var.max_color_texture_samples ? ctx->state.var.max_color_texture_samples : limit;
+        if (color_limit < limit) {
+            limit = color_limit;
+        }
+    }
+
+    return limit ? limit : 1u;
+}
+
+static GLsizei mglInternalFormatSampleCounts(GLMContext ctx, GLenum target, GLenum storage, GLint64 *params, GLsizei count)
+{
+    static const GLuint candidates[] = { 32u, 16u, 8u, 4u, 2u, 1u };
+    GLuint max_samples = mglInternalFormatMaxSamples(ctx, target, storage);
+    GLsizei written = 0;
+    GLsizei available = 0;
+
+    for (GLuint i = 0u; i < (GLuint)(sizeof(candidates) / sizeof(candidates[0])); ++i) {
+        GLuint samples = candidates[i];
+        if (samples > max_samples) {
+            continue;
+        }
+        if (params && written < count) {
+            params[written] = (GLint64)samples;
+            ++written;
+        }
+        ++available;
+    }
+
+    return params ? written : available;
+}
+
 static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum internalformat, GLenum pname, GLint64 *params, GLsizei count)
 {
     if (!mglInternalformatTargetValid(target)) {
@@ -2558,13 +2613,13 @@ static GLsizei mglGetInternalformatValues(GLMContext ctx, GLenum target, GLenum 
             value = mglInternalFormatSupportValue(supported && target != GL_RENDERBUFFER);
             break;
         case GL_NUM_SAMPLE_COUNTS:
-            value = supported ? 1 : 0;
+            value = supported ? mglInternalFormatSampleCounts(ctx, target, storage, NULL, 0) : 0;
             break;
         case GL_SAMPLES:
-            if (supported && count > 0) {
-                params[0] = 0;
+            if (!supported) {
+                return 0;
             }
-            return supported ? 1 : 0;
+            return mglInternalFormatSampleCounts(ctx, target, storage, params, count);
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
             return -1;

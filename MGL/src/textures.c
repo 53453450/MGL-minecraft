@@ -7448,6 +7448,7 @@ void mglTexImage3D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
     tex = getTex(ctx, 0, target);
 
     ERROR_CHECK_RETURN(tex, GL_INVALID_OPERATION);
+    ERROR_CHECK_RETURN(!tex->immutable_storage, GL_INVALID_OPERATION);
 
     tex->access = GL_READ_ONLY;
 

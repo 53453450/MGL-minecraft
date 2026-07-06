@@ -39,9 +39,11 @@ void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device)
 
     /* === Capability queries === */
     cap->maxSampleCount = 1;
-    for (NSUInteger s = 8; s >= 2; s >>= 1) {
-        if ([device supportsTextureSampleCount:s]) {
-            cap->maxSampleCount = s;
+    static const NSUInteger sampleCounts[] = { 32u, 16u, 8u, 4u, 2u };
+    for (NSUInteger i = 0; i < sizeof(sampleCounts) / sizeof(sampleCounts[0]); ++i) {
+        NSUInteger sampleCount = sampleCounts[i];
+        if ([device supportsTextureSampleCount:sampleCount]) {
+            cap->maxSampleCount = sampleCount;
             break;
         }
     }
@@ -77,7 +79,8 @@ void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device)
 bool MGLCapabilitySupportsSampleCount(MGLCapability *cap, NSUInteger samples)
 {
     if (!cap || samples <= 1) return true;
-    return samples <= cap->maxSampleCount;
+    return samples <= cap->maxSampleCount &&
+        [cap->device supportsTextureSampleCount:samples];
 }
 
 NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requested)
@@ -85,16 +88,16 @@ NSUInteger MGLCapabilityClampSampleCount(MGLCapability *cap, NSUInteger requeste
     if (!cap) return 1;
     if (requested <= 1) return 1;
 
-    NSUInteger clamped = requested;
-    /* Apple M4 hardware only supports 1/2/4 — NOT 8. */
-    if (!cap->supports8xMSAA && clamped > 4) {
-        clamped = 4;
+    static const NSUInteger candidates[] = { 32u, 16u, 8u, 4u, 2u };
+
+    for (NSUInteger i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        NSUInteger candidate = candidates[i];
+        if (candidate <= requested && [cap->device supportsTextureSampleCount:candidate]) {
+            return candidate;
+        }
     }
-    /* Clamp to device-reported support. */
-    while (clamped > 1 && !MGLCapabilitySupportsSampleCount(cap, clamped)) {
-        clamped >>= 1;
-    }
-    return MAX(clamped, (NSUInteger)1);
+
+    return 1u;
 }
 
 NSUInteger MGLCapabilityTextureAlignment(MGLCapability *cap)

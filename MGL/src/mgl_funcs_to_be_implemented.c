@@ -15,6 +15,8 @@
 #include "draw_command.h"
 #include "pixel_utils.h"
 
+extern void mglTraceLogExternal(const char *fmt, ...);
+
 #ifndef MGL_VERBOSE_TEXBUFFER_LOGS
 #define MGL_VERBOSE_TEXBUFFER_LOGS 0
 #endif
@@ -5198,6 +5200,96 @@ GLboolean mglIsTransformFeedback(GLMContext ctx, GLuint id)
 	return (ptr && ptr->created) ? GL_TRUE : GL_FALSE;
 }
 
+static bool mglReadIndirectCountParameter(GLMContext ctx,
+                                          const char *label,
+                                          GLintptr drawcount,
+                                          GLuint *actual_drawcount,
+                                          Buffer **out_parameter_buffer)
+{
+	Buffer *parameter_buffer;
+	const uint8_t *base;
+	size_t logical_size;
+	size_t backing_size;
+	size_t readable_size;
+
+	if (!ctx || !actual_drawcount) {
+		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+	}
+	*actual_drawcount = 0u;
+	if (out_parameter_buffer) {
+		*out_parameter_buffer = NULL;
+	}
+
+	if (drawcount < 0 || (drawcount & 3) != 0) {
+		mglTraceLogExternal("%s_SKIP reason=bad_drawcount_offset drawcountOffset=%lld program=%u",
+		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
+		                    (long long)drawcount,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN_VALUE(GL_INVALID_VALUE, false);
+	}
+
+	parameter_buffer = STATE(buffers[_PARAMETER_BUFFER]);
+	if (!parameter_buffer) {
+		mglTraceLogExternal("%s_SKIP reason=no_parameter_buffer program=%u",
+		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+	}
+	if (parameter_buffer->mapped &&
+	    !(parameter_buffer->access_flags & GL_MAP_PERSISTENT_BIT)) {
+		mglTraceLogExternal("%s_SKIP reason=parameter_buffer_mapped buffer=%u program=%u",
+		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
+		                    (unsigned)parameter_buffer->name,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+	}
+	if (parameter_buffer->size < 0 ||
+	    drawcount > parameter_buffer->size ||
+	    (GLsizeiptr)sizeof(*actual_drawcount) > parameter_buffer->size - drawcount) {
+		mglTraceLogExternal("%s_SKIP reason=count_oob buffer=%u offset=%lld size=%lld program=%u",
+		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
+		                    (unsigned)parameter_buffer->name,
+		                    (long long)drawcount,
+		                    (long long)parameter_buffer->size,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+	}
+
+	/* GPU writes to the parameter buffer must be visible before the CPU-side
+	 * fallback reads the command count. mglFlushCommandBuffer only drains MGL's
+	 * deferred draw buffer; mtlFlush(..., true) commits and waits for Metal. */
+	mglFlushCommandBuffer(ctx);
+	if (ctx->mtl_funcs.mtlFlush) {
+		ctx->mtl_funcs.mtlFlush(ctx, true);
+	}
+
+	base = (const uint8_t *)(uintptr_t)parameter_buffer->data.buffer_data;
+	logical_size = parameter_buffer->size > 0 ? (size_t)parameter_buffer->size : 0u;
+	backing_size = parameter_buffer->data.buffer_size;
+	readable_size = logical_size < backing_size ? logical_size : backing_size;
+	if (!base ||
+	    readable_size == 0u ||
+	    (size_t)drawcount > readable_size ||
+	    sizeof(*actual_drawcount) > readable_size - (size_t)drawcount) {
+		mglTraceLogExternal("%s_SKIP reason=count_unreadable buffer=%u data=%p size=%zu backing=%zu readable=%zu offset=%lld program=%u",
+		                    label ? label : "MULTI_DRAW_INDIRECT_COUNT",
+		                    (unsigned)parameter_buffer->name,
+		                    base,
+		                    logical_size,
+		                    backing_size,
+		                    readable_size,
+		                    (long long)drawcount,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN_VALUE(GL_INVALID_OPERATION, false);
+	}
+
+	memcpy(actual_drawcount, base + drawcount, sizeof(*actual_drawcount));
+	if (out_parameter_buffer) {
+		*out_parameter_buffer = parameter_buffer;
+	}
+	return true;
+}
+
 void mglMinSampleShading(GLMContext ctx, GLfloat value)
 {
 	/* GL 4.6 §14.3.1: clamps to [0,1]. Metal does not natively support
@@ -5212,14 +5304,108 @@ void mglMinSampleShading(GLMContext ctx, GLfloat value)
 
 void mglMultiDrawArraysIndirectCount(GLMContext ctx, GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLuint actual_drawcount = 0u;
+	GLsizei effective_drawcount;
+	Buffer *parameter_buffer = NULL;
+
+	mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_ENTRY mode=0x%x indirect=%p drawcountOffset=%lld maxdrawcount=%d stride=%d program=%u",
+	                    (unsigned)mode,
+	                    indirect,
+	                    (long long)drawcount,
+	                    (int)maxdrawcount,
+	                    (int)stride,
+	                    (unsigned)(ctx ? ctx->state.var.current_program : 0u));
+
+	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
+	if (drawcount < 0 || maxdrawcount < 0) {
+		mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_SKIP reason=bad_count_args drawcountOffset=%lld maxdrawcount=%d program=%u",
+		                    (long long)drawcount,
+		                    (int)maxdrawcount,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (maxdrawcount == 0) {
+		mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_SKIP reason=zero_maxdrawcount program=%u",
+	                    (unsigned)ctx->state.var.current_program);
+		return;
+	}
+
+	if (!mglReadIndirectCountParameter(ctx,
+	                                   "MULTI_DRAW_ARRAYS_INDIRECT_COUNT",
+	                                   drawcount,
+	                                   &actual_drawcount,
+	                                   &parameter_buffer)) {
+		return;
+	}
+
+	effective_drawcount = (actual_drawcount > (GLuint)maxdrawcount)
+		? maxdrawcount
+		: (GLsizei)actual_drawcount;
+	mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_COUNT_DISPATCH mode=0x%x indirect=%p count=%u effective=%d maxdrawcount=%d stride=%d parameterBuffer=%u program=%u",
+	                    (unsigned)mode,
+	                    indirect,
+	                    (unsigned)actual_drawcount,
+	                    (int)effective_drawcount,
+	                    (int)maxdrawcount,
+	                    (int)stride,
+	                    (unsigned)(parameter_buffer ? parameter_buffer->name : 0u),
+	                    (unsigned)ctx->state.var.current_program);
+	mglMultiDrawArraysIndirect(ctx, mode, indirect, effective_drawcount, stride);
 }
 
 void mglMultiDrawElementsIndirectCount(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
-	mgl_unimplemented(ctx, __FUNCTION__);
-	(void)ctx;
+	GLuint actual_drawcount = 0u;
+	GLsizei effective_drawcount;
+	Buffer *parameter_buffer = NULL;
+
+	mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_ENTRY mode=0x%x type=0x%x indirect=%p drawcountOffset=%lld maxdrawcount=%d stride=%d program=%u",
+	                    (unsigned)mode,
+	                    (unsigned)type,
+	                    indirect,
+	                    (long long)drawcount,
+	                    (int)maxdrawcount,
+	                    (int)stride,
+	                    (unsigned)(ctx ? ctx->state.var.current_program : 0u));
+
+	ERROR_CHECK_RETURN(ctx, GL_INVALID_OPERATION);
+	if (drawcount < 0 || maxdrawcount < 0) {
+		mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_SKIP reason=bad_count_args drawcountOffset=%lld maxdrawcount=%d program=%u",
+		                    (long long)drawcount,
+		                    (int)maxdrawcount,
+		                    (unsigned)ctx->state.var.current_program);
+		ERROR_RETURN(GL_INVALID_VALUE);
+		return;
+	}
+	if (maxdrawcount == 0) {
+		mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_SKIP reason=zero_maxdrawcount program=%u",
+	                    (unsigned)ctx->state.var.current_program);
+		return;
+	}
+
+	if (!mglReadIndirectCountParameter(ctx,
+	                                   "MULTI_DRAW_ELEMENTS_INDIRECT_COUNT",
+	                                   drawcount,
+	                                   &actual_drawcount,
+	                                   &parameter_buffer)) {
+		return;
+	}
+
+	effective_drawcount = (actual_drawcount > (GLuint)maxdrawcount)
+		? maxdrawcount
+		: (GLsizei)actual_drawcount;
+	mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_COUNT_DISPATCH mode=0x%x type=0x%x indirect=%p count=%u effective=%d maxdrawcount=%d stride=%d parameterBuffer=%u program=%u",
+	                    (unsigned)mode,
+	                    (unsigned)type,
+	                    indirect,
+	                    (unsigned)actual_drawcount,
+	                    (int)effective_drawcount,
+	                    (int)maxdrawcount,
+	                    (int)stride,
+	                    (unsigned)(parameter_buffer ? parameter_buffer->name : 0u),
+	                    (unsigned)ctx->state.var.current_program);
+	mglMultiDrawElementsIndirect(ctx, mode, type, indirect, effective_drawcount, stride);
 }
 
 void mglNormalP3ui(GLMContext ctx, GLenum type, GLuint coords)

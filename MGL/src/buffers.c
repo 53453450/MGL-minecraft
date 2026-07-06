@@ -1516,6 +1516,8 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             mglFlushPendingDraws(ctx);
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
+        /* Keep indexed and generic target bindings in sync.  CTS exercises
+         * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = NULL;
         mglSetGenericBufferBinding(ctx, target, 0);
         ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
@@ -1589,6 +1591,8 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         base_slot->offset = offset;
         base_slot->size = size;
         base_slot->buf = ptr;
+        /* Keep indexed and generic target bindings in sync.  CTS exercises
+         * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = ptr;
 
         ptr->target = target;

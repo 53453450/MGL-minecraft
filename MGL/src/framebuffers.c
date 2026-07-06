@@ -538,6 +538,18 @@ static GLuint mglFramebufferMaxDrawBuffers(GLMContext ctx)
     return maxDrawBuffers;
 }
 
+static GLboolean mglFramebufferStatusTraceEnabled(void)
+{
+    static int initialized = 0;
+    static GLboolean enabled = GL_FALSE;
+    if (!initialized) {
+        const char *value = getenv("MGL_TRACE_FBO_STATUS");
+        enabled = (value && value[0] && strcmp(value, "0") != 0) ? GL_TRUE : GL_FALSE;
+        initialized = 1;
+    }
+    return enabled;
+}
+
 static void mglFramebufferSetSingleDrawBuffer(GLMContext ctx, GLenum buffer)
 {
     ctx->state.draw_buffer = buffer;
@@ -706,6 +718,13 @@ static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFrameb
     for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; ++i) {
         ctx->state.draw_buffers[i] = snapshot->draw_buffers[i];
     }
+    if (ctx->state.framebuffer) {
+        ctx->state.framebuffer->dirty_bits |= DIRTY_FBO_BINDING;
+    }
+    if (ctx->state.readbuffer) {
+        ctx->state.readbuffer->dirty_bits |= DIRTY_FBO_BINDING;
+    }
+    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
 }
 
 static void mglNormalizeDrawBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
@@ -1040,6 +1059,16 @@ static GLboolean mglInternalFormatIsInteger(GLint internalformat)
     }
 }
 
+static GLboolean mglRenderbufferInternalFormatRenderable(GLint internalformat)
+{
+    if (mglIsColorRenderableInternalFormat(internalformat)) {
+        return GL_TRUE;
+    }
+
+    return bitcountForInternalFormat(internalformat, GL_DEPTH) > 0 ||
+           bitcountForInternalFormat(internalformat, GL_STENCIL) > 0;
+}
+
 static Texture *mglFramebufferAttachmentTextureObject(GLMContext ctx, FBOAttachment *att)
 {
     if (!ctx || !att || att->texture == 0u) {
@@ -1123,6 +1152,7 @@ static GLboolean mglFramebufferHasAnyAttachment(Framebuffer *fbo)
     return GL_FALSE;
 }
 
+#ifndef MGL_GL_CORE
 static GLboolean mglFramebufferDrawBufferReferencesMissingAttachment(GLMContext ctx, Framebuffer *fbo)
 {
     if (!ctx || !fbo) {
@@ -1164,6 +1194,7 @@ static GLboolean mglFramebufferReadBufferReferencesMissingAttachment(GLMContext 
     GLuint attachment_index = (GLuint)(fbo->read_buffer - GL_COLOR_ATTACHMENT0);
     return ((fbo->color_attachment_bitfield >> attachment_index) & 1u) == 0u;
 }
+#endif
 
 /* Returns the sample count of the backing texture for an attachment, or 0
  * for single-sample.  Used for GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE. */
@@ -1171,6 +1202,86 @@ static GLuint mglFramebufferAttachmentSamples(GLMContext ctx, FBOAttachment *att
 {
     Texture *tex = mglFramebufferAttachmentTextureObject(ctx, att);
     return tex ? tex->samples : 0u;
+}
+
+static GLuint mglRenderbufferStorageSamples(GLMContext ctx, GLsizei samples)
+{
+    GLuint sample_count = samples > 0 ? (GLuint)samples : 0u;
+    GLuint sample_limit = 4u;
+
+    if (ctx) {
+        GLuint fb_limit = ctx->state.var.max_framebuffer_samples;
+        GLuint render_limit = ctx->state.var.max_samples;
+        if (fb_limit == 0u) fb_limit = sample_limit;
+        if (render_limit == 0u) render_limit = sample_limit;
+        sample_limit = fb_limit < render_limit ? fb_limit : render_limit;
+        if (sample_limit == 0u) sample_limit = 1u;
+    }
+
+    return sample_count > sample_limit ? sample_limit : sample_count;
+}
+
+static GLenum mglRenderbufferStorageValidationError(GLMContext ctx, GLsizei samples, GLenum internalformat)
+{
+    if (!mglRenderbufferInternalFormatRenderable((GLint)internalformat)) {
+        return GL_INVALID_ENUM;
+    }
+
+    if (samples > 0 && ctx) {
+        GLuint max_samples = ctx->state.var.max_samples ? ctx->state.var.max_samples : 4u;
+        if ((GLuint)samples > max_samples) {
+            return GL_INVALID_OPERATION;
+        }
+
+        if (mglInternalFormatIsInteger((GLint)internalformat)) {
+            GLuint max_integer_samples = ctx->state.var.max_integer_samples ? ctx->state.var.max_integer_samples : max_samples;
+            if ((GLuint)samples > max_integer_samples) {
+                return GL_INVALID_OPERATION;
+            }
+        }
+    }
+
+    return GL_NO_ERROR;
+}
+
+static GLenum mglFramebufferStatusReturn(GLMContext ctx,
+                                         Framebuffer *fbo,
+                                         GLenum status,
+                                         const char *reason,
+                                         GLuint attachment_index,
+                                         FBOAttachment *att)
+{
+    if (mglFramebufferStatusTraceEnabled()) {
+        Texture *tex = att ? mglFramebufferAttachmentTextureObject(ctx, att) : NULL;
+        TextureLevel *level = NULL;
+        if (tex && tex->faces[0].levels && att && att->level < tex->num_levels) {
+            level = &tex->faces[0].levels[att->level];
+        }
+        fprintf(stderr,
+                "MGL TRACE FBO_STATUS fbo=%u status=0x%x reason=%s attachment=%u bitfield=0x%x draw=0x%x drawCount=%d read=0x%x attTex=%u textarget=0x%x level=%u rbo=%p tex=%p ifmt=0x%x texLevels=%u mipLevels=%u complete=%d size=%ux%ux%u samples=%u\n",
+                fbo ? fbo->name : 0u,
+                status,
+                reason ? reason : "",
+                attachment_index,
+                fbo ? fbo->color_attachment_bitfield : 0u,
+                fbo ? fbo->draw_buffer : 0u,
+                fbo ? (int)fbo->draw_buffer_count : 0,
+                fbo ? fbo->read_buffer : 0u,
+                att ? att->texture : 0u,
+                att ? att->textarget : 0u,
+                att ? att->level : 0u,
+                att ? (void *)att->buf.rbo : NULL,
+                tex,
+                tex ? tex->internalformat : 0u,
+                tex ? tex->num_levels : 0u,
+                tex ? tex->mipmap_levels : 0u,
+                level ? (int)level->complete : -1,
+                level ? level->width : 0u,
+                level ? level->height : 0u,
+                level ? level->depth : 0u,
+                tex ? tex->samples : 0u);
+    }
+    return status;
 }
 
 #ifdef MGL_GL_CORE
@@ -1255,7 +1366,7 @@ static void mglFramebufferAttachmentDimensions(GLMContext ctx, FBOAttachment *at
 static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fbo)
 {
     if (!fbo) {
-        return GL_FRAMEBUFFER_COMPLETE;
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_COMPLETE, "default", 0u, NULL);
     }
 
     if (fbo == ctx->state.framebuffer) {
@@ -1271,9 +1382,9 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
 
     if (!mglFramebufferHasAnyAttachment(fbo)) {
         if (fbo->default_width > 0 && fbo->default_height > 0) {
-            return GL_FRAMEBUFFER_COMPLETE;
+            return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_COMPLETE, "no-attachments-default-size", 0u, NULL);
         }
-        return GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT;
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT, "missing-attachment", 0u, NULL);
     }
 
     for (GLuint i = 0; i < STATE(max_color_attachments) && i < MAX_COLOR_ATTACHMENTS; ++i) {
@@ -1281,40 +1392,40 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             continue;
         }
         if (!mglFramebufferAttachmentHasStorage(ctx, &fbo->color_attachments[i])) {
-            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+            return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-no-storage", i, &fbo->color_attachments[i]);
         }
         /* Color attachments must use a color-renderable internal format.
          * Non-renderable formats (SNORM, RGB-only, compressed, luminance,
          * etc.) cause the framebuffer to be incomplete per GL 4.6 spec. */
         GLint ifmt = mglFramebufferAttachmentInternalFormat(ctx, &fbo->color_attachments[i]);
         if (ifmt != 0 && !mglIsColorRenderableInternalFormat(ifmt)) {
-            return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+            return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "color-not-renderable", i, &fbo->color_attachments[i]);
         }
     }
 
     if (fbo->depth.texture != 0u &&
         !mglFramebufferAttachmentHasStorage(ctx, &fbo->depth)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "depth-no-storage", 0u, &fbo->depth);
     }
 
     if (fbo->stencil.texture != 0u &&
         !mglFramebufferAttachmentHasStorage(ctx, &fbo->stencil)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT;
-    }
-
-    if (mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER;
-    }
-
-    if (mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER;
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, "stencil-no-storage", 0u, &fbo->stencil);
     }
 
 #ifdef MGL_GL_CORE
     if (mglFramebufferHasLayerTargetMismatch(fbo)) {
-        return GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS;
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_LAYER_TARGETS, "layer-target-mismatch", 0u, NULL);
     }
 #else
+    if (mglFramebufferDrawBufferReferencesMissingAttachment(ctx, fbo)) {
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_DRAW_BUFFER, "draw-buffer-missing", 0u, NULL);
+    }
+
+    if (mglFramebufferReadBufferReferencesMissingAttachment(ctx, fbo)) {
+        return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_READ_BUFFER, "read-buffer-missing", 0u, NULL);
+    }
+
     /* GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS: all attached images must have
      * the same width and height. */
     {
@@ -1327,21 +1438,21 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             if (w == 0u || h == 0u) continue;
             if (!have_ref) { ref_w = w; ref_h = h; have_ref = GL_TRUE; }
             else if (w != ref_w || h != ref_h) {
-                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS, "dimension-mismatch-color", i, &fbo->color_attachments[i]);
             }
         }
         if (fbo->depth.texture != 0u) {
             GLuint w = 0u, h = 0u;
             mglFramebufferAttachmentDimensions(ctx, &fbo->depth, &w, &h);
             if (w != 0u && h != 0u && have_ref && (w != ref_w || h != ref_h)) {
-                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS, "dimension-mismatch-depth", 0u, &fbo->depth);
             }
         }
         if (fbo->stencil.texture != 0u) {
             GLuint w = 0u, h = 0u;
             mglFramebufferAttachmentDimensions(ctx, &fbo->stencil, &w, &h);
             if (w != 0u && h != 0u && have_ref && (w != ref_w || h != ref_h)) {
-                return GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS, "dimension-mismatch-stencil", 0u, &fbo->stencil);
             }
         }
     }
@@ -1357,24 +1468,24 @@ static GLenum mglCheckFramebufferStatusForObject(GLMContext ctx, Framebuffer *fb
             GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->color_attachments[i]);
             if (!have_ref) { ref_samples = s; have_ref = GL_TRUE; }
             else if (s != ref_samples) {
-                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE, "sample-mismatch-color", i, &fbo->color_attachments[i]);
             }
         }
         if (fbo->depth.texture != 0u) {
             GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->depth);
             if (have_ref && s != ref_samples) {
-                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE, "sample-mismatch-depth", 0u, &fbo->depth);
             }
         }
         if (fbo->stencil.texture != 0u) {
             GLuint s = mglFramebufferAttachmentSamples(ctx, &fbo->stencil);
             if (have_ref && s != ref_samples) {
-                return GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE;
+                return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE, "sample-mismatch-stencil", 0u, &fbo->stencil);
             }
         }
     }
 
-    return GL_FRAMEBUFFER_COMPLETE;
+    return mglFramebufferStatusReturn(ctx, fbo, GL_FRAMEBUFFER_COMPLETE, "complete", 0u, NULL);
 }
 
 GLenum  mglCheckFramebufferStatus(GLMContext ctx, GLenum target)
@@ -1513,6 +1624,11 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    GLenum validation_error = mglRenderbufferStorageValidationError(ctx, 0, internalformat);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
 
     if(ctx->state.renderbuffer == NULL)
     {
@@ -1534,6 +1650,8 @@ void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat
 
     tex->access = GL_READ_WRITE;
     tex->is_render_target = true;
+    tex->num_levels = 1u;
+    tex->mipmap_levels = 1u;
 
     ctx->state.renderbuffer->tex = tex;
 }
@@ -1584,7 +1702,7 @@ void mglGetRenderbufferParameteriv(GLMContext ctx, GLenum target, GLenum pname, 
             *params = RENDBUF_STATE(tex) ? (GLint)bitcountForInternalFormat(RENDBUF_STATE(tex->internalformat), GL_STENCIL) : 0; break;
 
         case GL_RENDERBUFFER_SAMPLES:
-            *params = 0; break;
+            *params = RENDBUF_STATE(tex) ? (GLint)RENDBUF_STATE(tex->samples) : 0; break;
 
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
@@ -2727,17 +2845,19 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    GLenum validation_error = mglRenderbufferStorageValidationError(ctx, samples, internalformat);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
     if(ctx->state.renderbuffer == NULL)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
-    /* Allocate the renderbuffer storage at the requested sample count.
-     * Previously this silently degraded to single-sample, which broke
-     * GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE checks and MSAA rendering.
-     * We clamp samples to the device-supported maximum (Apple M-series
-     * supports 1x/2x/4x; 8x is clamped to 4x via the capability layer). */
+    /* Allocate storage and retain the requested sample count on the backing
+     * texture so the Metal layer creates a multisample render target. */
     mglRenderbufferStorage(ctx, target, internalformat, width, height);
 
     /* Apply the requested sample count to the backing texture so that
@@ -2746,11 +2866,7 @@ void mglRenderbufferStorageMultisample(GLMContext ctx, GLenum target, GLsizei sa
      * resolve when this renderbuffer is attached. */
     if (ctx->state.renderbuffer && ctx->state.renderbuffer->tex)
     {
-        GLuint clamped = (GLuint)samples;
-        /* Clamp to 4x max on Apple GPUs (M4 hardware limit).  Zero or
-         * one means single-sample. */
-        if (clamped > 4u) clamped = 4u;
-        ctx->state.renderbuffer->tex->samples = clamped;
+        ctx->state.renderbuffer->tex->samples = mglRenderbufferStorageSamples(ctx, samples);
     }
 }
 
@@ -3493,6 +3609,11 @@ void mglNamedRenderbufferStorage(GLMContext ctx, GLuint renderbuffer, GLenum int
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
+    GLenum validation_error = mglRenderbufferStorageValidationError(ctx, 0, internalformat);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
 
     Texture *tex = newTexObj(ctx, GL_RENDERBUFFER);
     if (!tex) {
@@ -3503,6 +3624,8 @@ void mglNamedRenderbufferStorage(GLMContext ctx, GLuint renderbuffer, GLenum int
     createTextureLevel(ctx, tex, 0, 0, false, internalformat, width, height, 1, 0, 0, NULL, false);
     tex->access = GL_READ_WRITE;
     tex->is_render_target = true;
+    tex->num_levels = 1u;
+    tex->mipmap_levels = 1u;
     rbo->tex = tex;
     rbo->dirty_bits |= DIRTY_RENDBUF_TEX;
     STATE(dirty_bits) |= DIRTY_FBO;
@@ -3514,12 +3637,21 @@ void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer,
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (renderbuffer == 0u || !findRenderbuffer(ctx, renderbuffer)) {
+    GLenum validation_error = mglRenderbufferStorageValidationError(ctx, samples, internalformat);
+    if (validation_error != GL_NO_ERROR) {
+        ERROR_RETURN(validation_error);
+        return;
+    }
+    Renderbuffer *rbo = findRenderbuffer(ctx, renderbuffer);
+    if (renderbuffer == 0u || !rbo) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
     mglNamedRenderbufferStorage(ctx, renderbuffer, internalformat, width, height);
+    if (rbo->tex) {
+        rbo->tex->samples = mglRenderbufferStorageSamples(ctx, samples);
+    }
 }
 
 void mglGetNamedRenderbufferParameteriv(GLMContext ctx, GLuint renderbuffer, GLenum pname, GLint *params)
