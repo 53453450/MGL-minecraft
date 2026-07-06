@@ -3914,6 +3914,89 @@ static GLboolean mglReplaceMSLIdentifier(char **msl_ptr,
     return GL_TRUE;
 }
 
+static GLboolean mglReplaceMSLIdentifierBeforeChar(char **msl_ptr,
+                                                   const char *from,
+                                                   const char *to,
+                                                   char required_after)
+{
+    const char *src;
+    const char *cursor;
+    char *out;
+    char *dst;
+    size_t from_len;
+    size_t to_len;
+    size_t src_len;
+    size_t new_len;
+    size_t count = 0u;
+
+    if (!msl_ptr || !*msl_ptr || !from || !to) {
+        return GL_FALSE;
+    }
+
+    from_len = strlen(from);
+    to_len = strlen(to);
+    if (from_len == 0u || strcmp(from, to) == 0) {
+        return GL_FALSE;
+    }
+
+    src = *msl_ptr;
+    cursor = src;
+    while ((cursor = strstr(cursor, from)) != NULL) {
+        char before = (cursor == src) ? '\0' : cursor[-1];
+        char after = cursor[from_len];
+        if (!mglMSLIdentifierChar(before) && before != '.' && after == required_after) {
+            count++;
+        }
+        cursor += from_len;
+    }
+
+    if (count == 0u) {
+        return GL_FALSE;
+    }
+
+    src_len = strlen(src);
+    if (to_len >= from_len) {
+        new_len = src_len + count * (to_len - from_len);
+    } else {
+        new_len = src_len - count * (from_len - to_len);
+    }
+    out = (char *)malloc(new_len + 1u);
+    if (!out) {
+        return GL_FALSE;
+    }
+
+    cursor = src;
+    dst = out;
+    while (*cursor) {
+        const char *match = strstr(cursor, from);
+        if (!match) {
+            strcpy(dst, cursor);
+            break;
+        }
+
+        char before = (match == src) ? '\0' : match[-1];
+        char after = match[from_len];
+        if (mglMSLIdentifierChar(before) || before == '.' || after != required_after) {
+            size_t chunk = (size_t)(match - cursor) + from_len;
+            memcpy(dst, cursor, chunk);
+            dst += chunk;
+            cursor = match + from_len;
+            continue;
+        }
+
+        size_t prefix = (size_t)(match - cursor);
+        memcpy(dst, cursor, prefix);
+        dst += prefix;
+        memcpy(dst, to, to_len);
+        dst += to_len;
+        cursor = match + from_len;
+    }
+
+    free(*msl_ptr);
+    *msl_ptr = out;
+    return GL_TRUE;
+}
+
 static GLboolean mglInsertStringAt(char **pstr, const char *position, const char *insertion)
 {
     if (!pstr || !*pstr || !position || !insertion ||
@@ -8400,58 +8483,91 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 
         /* Some generated MSL uses `sampler` as an identifier, which collides
          * with Metal's `sampler` type in function signatures. Normalize these
-         * generated helper names to keep compilation valid. */
+         * generated helper names to keep compilation valid.
+         *
+         * SPIRV-Cross names the texture parameter after the original GLSL
+         * variable name (e.g. "sampler") and appends "Smplr" for the sampler
+         * parameter.  When the GLSL variable is named "sampler", this creates
+         * "sampler" (texture param) and "samplerSmplr" (sampler param), both
+         * of which collide with the Metal type keyword.  We handle this in
+         * three passes:
+         *
+         *   1. Rename the texture parameter named exactly "sampler" to "sourceTex"
+         *   2. Rename the sampler parameter: " samplerSmplr" → " sourceSmplr"
+         *   3. Rename method calls:          "sampler."   → "sourceTex."
+         *
+         * This covers all texture types, all [[texture(N)]]/[[sampler(N)]]
+         * indices, all method names (sample, gather, read, lod, etc.), and
+         * both direct params ("sampler samplerSmplr") and reference params
+         * ("thread const sampler& samplerSmplr"). */
         static const char *sampler_shadowing_texture_types[] = {
-            "texture1d<float>",
-            "texture1d<int>",
-            "texture1d<uint>",
-            "texture1d_array<float>",
-            "texture1d_array<int>",
-            "texture1d_array<uint>",
-            "texture2d<float>",
-            "texture2d<int>",
-            "texture2d<uint>",
-            "texture2d_array<float>",
-            "texture2d_array<int>",
-            "texture2d_array<uint>",
-            "texture3d<float>",
-            "texture3d<int>",
-            "texture3d<uint>",
-            "texturecube<float>",
-            "texturecube<int>",
-            "texturecube<uint>",
-            "texturecube_array<float>",
-            "texturecube_array<int>",
-            "texturecube_array<uint>",
+            "texture1d<float>", "texture1d<int>", "texture1d<uint>",
+            "texture1d_array<float>", "texture1d_array<int>", "texture1d_array<uint>",
+            "texture2d<float>", "texture2d<int>", "texture2d<uint>",
+            "texture2d_array<float>", "texture2d_array<int>", "texture2d_array<uint>",
+            "texture2d_ms<float>", "texture2d_ms<int>", "texture2d_ms<uint>",
+            "texture2d_ms_array<float>", "texture2d_ms_array<int>", "texture2d_ms_array<uint>",
+            "texture_buffer<float>", "texture_buffer<int>", "texture_buffer<uint>",
+            "texture3d<float>", "texture3d<int>", "texture3d<uint>",
+            "texturecube<float>", "texturecube<int>", "texturecube<uint>",
+            "texturecube_array<float>", "texturecube_array<int>", "texturecube_array<uint>",
+            "depth2d<float>", "depth2d<int>", "depth2d<uint>",
+            "depth2d_array<float>", "depth2d_array<int>", "depth2d_array<uint>",
+            "depth2d_ms<float>", "depth2d_ms<int>", "depth2d_ms<uint>",
+            "depth2d_ms_array<float>", "depth2d_ms_array<int>", "depth2d_ms_array<uint>",
+            "depthcube<float>", "depthcube<int>", "depthcube<uint>",
+            "depthcube_array<float>", "depthcube_array<int>", "depthcube_array<uint>",
         };
+        size_t n_types = sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]);
         GLboolean renamed_sampler_parameter = GL_FALSE;
-        for (size_t ti = 0; ti < sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]); ti++) {
-            char from[96];
-            char to[96];
-            snprintf(from, sizeof(from),
-                     "%s sampler, sampler samplerSmplr",
-                     sampler_shadowing_texture_types[ti]);
-            snprintf(to, sizeof(to),
-                     "%s sourceTex, sampler sourceSmplr",
-                     sampler_shadowing_texture_types[ti]);
-            if (strstr(str_ret, from)) {
+        for (size_t ti = 0; ti < n_types; ti++) {
+            const char *type = sampler_shadowing_texture_types[ti];
+            /* Pass 1: Rename texture parameters named exactly "sampler".
+             * Match the delimiters SPIRV-Cross emits after a parameter name
+             * without touching names like "sampler2D" or "samplerColor". */
+            char from[128], to[128];
+            snprintf(from, sizeof(from), "%s sampler,", type);
+            snprintf(to, sizeof(to), "%s sourceTex,", type);
+            if (strstr(str_ret, from))
                 renamed_sampler_parameter = GL_TRUE;
-            }
             replace_all_substr(&str_ret, from, to);
-            snprintf(from, sizeof(from),
-                     "%s sampler [[texture(0)]], sampler samplerSmplr [[sampler(0)]]",
-                     sampler_shadowing_texture_types[ti]);
-            snprintf(to, sizeof(to),
-                     "%s sourceTex [[texture(0)]], sampler sourceSmplr [[sampler(0)]]",
-                     sampler_shadowing_texture_types[ti]);
-            if (strstr(str_ret, from)) {
+
+            snprintf(from, sizeof(from), "%s sampler)", type);
+            snprintf(to, sizeof(to), "%s sourceTex)", type);
+            if (strstr(str_ret, from))
                 renamed_sampler_parameter = GL_TRUE;
-            }
+            replace_all_substr(&str_ret, from, to);
+
+            snprintf(from, sizeof(from), "%s sampler [[", type);
+            snprintf(to, sizeof(to), "%s sourceTex [[", type);
+            if (strstr(str_ret, from))
+                renamed_sampler_parameter = GL_TRUE;
             replace_all_substr(&str_ret, from, to);
         }
+        /* Pass 2: Rename the companion sampler parameter.  SPIRV-Cross appends
+         * "Smplr" to the texture variable name, so "sampler" → "samplerSmplr".
+         * Now that the texture variable is "sourceTex", rename its sampler
+         * companion to "sourceSmplr".  The " samplerSmplr" pattern (with a
+         * leading space) matches both bare " samplerSmplr" and
+         * " thread const sampler& samplerSmplr" contexts; additionally
+         * "(samplerSmplr" matches function-argument usage like
+         * sourceTex.sample(samplerSmplr, ...). */
         if (renamed_sampler_parameter) {
-            replace_all_substr(&str_ret, "sampler.sample(samplerSmplr,", "sourceTex.sample(sourceSmplr,");
-            replace_all_substr(&str_ret, "sampler.read(", "sourceTex.read(");
+            replace_all_substr(&str_ret, " samplerSmplr", " sourceSmplr");
+            /* Also rename samplerSmplr appearing as function argument:
+             * sourceTex.sample(samplerSmplr, ...) or helper(..., samplerSmplr, ...) */
+            replace_all_substr(&str_ret, "(samplerSmplr", "(sourceSmplr");
+            replace_all_substr(&str_ret, ", samplerSmplr", ", sourceSmplr");
+            /* Pass 3: Rename method calls on the old texture variable.
+             * Match only the identifier named exactly "sampler"; variables
+             * like "depth_sampler" must remain untouched. */
+            mglReplaceMSLIdentifierBeforeChar(&str_ret, "sampler", "sourceTex", '.');
+            /* Also rename standalone passes of sampler+samplerSmplr as
+             * function arguments: helper(sampler, samplerSmplr, ...) */
+            replace_all_substr(&str_ret, "(sampler, ", "(sourceTex, ");
+            replace_all_substr(&str_ret, ", sampler, ", ", sourceTex, ");
+            replace_all_substr(&str_ret, "(sampler)", "(sourceTex)");
+            replace_all_substr(&str_ret, ", sampler)", ", sourceTex)");
         }
         /*
          * SPIRV-Cross can emit this placeholder for sampler2DRect. Metal has no
@@ -8474,6 +8590,12 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         replace_all_substr(&str_ret, "thread const uint4&", "uint4");
         replace_all_substr(&str_ret, "thread const float3x3&", "float3x3");
         replace_all_substr(&str_ret, "thread const float4x4&", "float4x4");
+        /* SPIRV-Cross may generate helper functions named `length_squared`
+         * for float2/float3/float4 types. Metal has a built-in `length_squared`
+         * for vector types (MSL 3.1+), causing an ambiguity error when both
+         * the user-defined function and the built-in are in scope. Rename the
+         * generated helper function and all call sites to avoid the conflict. */
+        mglReplaceMSLIdentifier(&str_ret, "length_squared", "_mgl_length_squared");
         mglLowerMSLDoubleTypesToFloat(&str_ret);
         replace_all_substr(&str_ret,
                            "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
