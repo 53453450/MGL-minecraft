@@ -7530,7 +7530,21 @@ void glMultiDrawArraysIndirectCount(GLenum mode, const void *indirect, GLintptr 
     ctx->dispatch.multi_draw_arrays_indirect_count(ctx, mode, indirect, drawcount, maxdrawcount, stride);
 }
 
+void glMultiDrawArraysIndirectCountARB(GLenum mode, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.multi_draw_arrays_indirect_count(ctx, mode, indirect, drawcount, maxdrawcount, stride);
+}
+
 void glMultiDrawElementsIndirectCount(GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
+{
+    GLMContext ctx = GET_CONTEXT();
+
+    ctx->dispatch.multi_draw_elements_indirect_count(ctx, mode, type, indirect, drawcount, maxdrawcount, stride);
+}
+
+void glMultiDrawElementsIndirectCountARB(GLenum mode, GLenum type, const void *indirect, GLintptr drawcount, GLsizei maxdrawcount, GLsizei stride)
 {
     GLMContext ctx = GET_CONTEXT();
 

@@ -94,6 +94,20 @@
 		FFA83092277026C5003F1EA0 /* gl.xml in CopyFiles */ = {isa = PBXBuildFile; fileRef = FFA83091277026B6003F1EA0 /* gl.xml */; };
 		FFD4EE2E2F1429700023B6C3 /* hash_table.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EE2B2F1429700023B6C3 /* hash_table.m */; };
 		FFD4EE2F2F1429700023B6C3 /* mgl_toolchain.c in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */; };
+		FFD4EF012F1801010023B6C3 /* mgl_capability.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF002F1801010023B6C3 /* mgl_capability.m */; };
+		FFD4EF032F1801020023B6C3 /* mgl_coordinate.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */; };
+		FFD4EF052F1801030023B6C3 /* mgl_msl_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */; };
+		FFD4EF072F1801040023B6C3 /* mgl_rt_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */; };
+		FFD4EF092F1801050023B6C3 /* mgl_sampler_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */; };
+		FFD4EF0B2F1801060023B6C3 /* mgl_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */; };
+		FFD4EF0D2F1801070023B6C3 /* mgl_texture_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */; };
+		FFD4EF0E2F1801080023B6C3 /* mgl_capability.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF002F1801010023B6C3 /* mgl_capability.m */; };
+		FFD4EF0F2F1801090023B6C3 /* mgl_coordinate.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */; };
+		FFD4EF102F18010A0023B6C3 /* mgl_msl_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */; };
+		FFD4EF112F18010B0023B6C3 /* mgl_rt_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */; };
+		FFD4EF122F18010C0023B6C3 /* mgl_sampler_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */; };
+		FFD4EF132F18010D0023B6C3 /* mgl_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */; };
+		FFD4EF142F18010E0023B6C3 /* mgl_texture_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */; };
 		FFD4EE302F1429700023B6C3 /* mgl_safety.h in Headers */ = {isa = PBXBuildFile; fileRef = FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */; };
 		FFD4EE312F144A8F0023B6C3 /* gl.xml in CopyFiles */ = {isa = PBXBuildFile; fileRef = FFA83091277026B6003F1EA0 /* gl.xml */; };
 		FFD4EE3C2F14585E0023B6C3 /* gltypes.h in Headers */ = {isa = PBXBuildFile; fileRef = FF7B7ABB27728C3100C2028F /* gltypes.h */; };
@@ -424,6 +438,13 @@
 			FFD4EE2B2F1429700023B6C3 /* hash_table.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = hash_table.m; sourceTree = "<group>"; };
 		FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_safety.h; sourceTree = "<group>"; };
 		FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mgl_toolchain.c; sourceTree = "<group>"; };
+		FFD4EF002F1801010023B6C3 /* mgl_capability.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_capability.m; sourceTree = "<group>"; };
+		FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_coordinate.m; sourceTree = "<group>"; };
+		FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_msl_compat.m; sourceTree = "<group>"; };
+		FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_rt_sync.m; sourceTree = "<group>"; };
+		FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_sampler_compat.m; sourceTree = "<group>"; };
+		FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_sync.m; sourceTree = "<group>"; };
+		FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_texture_compat.m; sourceTree = "<group>"; };
 		FFD4EE322F1454E70023B6C3 /* gl_es.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = gl_es.c; sourceTree = "<group>"; };
 		FFD4EE8C2F14585E0023B6C3 /* libMGL_ES.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libMGL_ES.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFE8B2C82D29B4CA006B1015 /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
@@ -561,6 +582,13 @@
 				FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */,
 				FFD4EE2B2F1429700023B6C3 /* hash_table.m */,
 				FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */,
+				FFD4EF002F1801010023B6C3 /* mgl_capability.m */,
+				FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */,
+				FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */,
+				FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */,
+				FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */,
+				FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */,
+				FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */,
 				FF7B7AF6277290EB00C2028F /* gl_core.c */,
 				FFD4EE322F1454E70023B6C3 /* gl_es.c */,
 				FF7B7A9327728C1D00C2028F /* mgl_funcs_to_be_implemented.c */,
@@ -1093,6 +1121,13 @@
 				FF7B7AB327728C1D00C2028F /* MGLRenderer.m in Sources */,
 				FFD4EE2E2F1429700023B6C3 /* hash_table.m in Sources */,
 				FFD4EE2F2F1429700023B6C3 /* mgl_toolchain.c in Sources */,
+				FFD4EF012F1801010023B6C3 /* mgl_capability.m in Sources */,
+				FFD4EF032F1801020023B6C3 /* mgl_coordinate.m in Sources */,
+				FFD4EF052F1801030023B6C3 /* mgl_msl_compat.m in Sources */,
+				FFD4EF072F1801040023B6C3 /* mgl_rt_sync.m in Sources */,
+				FFD4EF092F1801050023B6C3 /* mgl_sampler_compat.m in Sources */,
+				FFD4EF0B2F1801060023B6C3 /* mgl_sync.m in Sources */,
+				FFD4EF0D2F1801070023B6C3 /* mgl_texture_compat.m in Sources */,
 				FF7B7AB027728C1D00C2028F /* glm_dispatch.c in Sources */,
 				FF8F91A82780FBBD00A1E546 /* samplers.c in Sources */,
 				FF7B7A9D27728C1D00C2028F /* state.c in Sources */,
@@ -1146,6 +1181,13 @@
 				FFD4EE5C2F14585E0023B6C3 /* MGLRenderer.m in Sources */,
 				FFD4EE5D2F14585E0023B6C3 /* hash_table.m in Sources */,
 				FFD4EE5E2F14585E0023B6C3 /* mgl_toolchain.c in Sources */,
+				FFD4EF0E2F1801080023B6C3 /* mgl_capability.m in Sources */,
+				FFD4EF0F2F1801090023B6C3 /* mgl_coordinate.m in Sources */,
+				FFD4EF102F18010A0023B6C3 /* mgl_msl_compat.m in Sources */,
+				FFD4EF112F18010B0023B6C3 /* mgl_rt_sync.m in Sources */,
+				FFD4EF122F18010C0023B6C3 /* mgl_sampler_compat.m in Sources */,
+				FFD4EF132F18010D0023B6C3 /* mgl_sync.m in Sources */,
+				FFD4EF142F18010E0023B6C3 /* mgl_texture_compat.m in Sources */,
 				FFD4EE5F2F14585E0023B6C3 /* glm_dispatch.c in Sources */,
 				FFD4EE602F14585E0023B6C3 /* gl_es.c in Sources */,
 				FFD4EE612F14585E0023B6C3 /* samplers.c in Sources */,

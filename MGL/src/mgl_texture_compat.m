@@ -31,11 +31,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern void mglTraceLogExternal(const char *fmt, ...);
+
 /* GL format introspection helpers implemented in pixel_utils.c.  Declared
  * here so this module does not need to include the full MGLRenderer private
  * header. */
 GLuint numComponentsForFormat(GLenum format);
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
+
+static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)
+{
+    switch (minFilter) {
+        case GL_NEAREST_MIPMAP_NEAREST:
+        case GL_LINEAR_MIPMAP_NEAREST:
+        case GL_NEAREST_MIPMAP_LINEAR:
+        case GL_LINEAR_MIPMAP_LINEAR:
+            return true;
+        default:
+            return false;
+    }
+}
 
 MGLTextureDataKind mglTextureDataKindForPixelFormat(MTLPixelFormat pixelFormat)
 {
@@ -130,6 +145,33 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                                                            textureType:texture.textureType
                                                                 levels:NSMakeRange(baseLevel, levelCount)
                                                                 slices:NSMakeRange(0, sliceCount)];
+    if (levelView) {
+        static uint64_t s_sampledBaseViewTraceCount = 0;
+        uint64_t hit = ++s_sampledBaseViewTraceCount;
+        if (hit <= 256ull || (hit % 1024ull) == 0ull) {
+            mglTraceLogExternal("TEX_BASE_VIEW tex=%u target=0x%x minFilter=0x%x mipFilter=%d base=%u max=%u levels=%lu glLevels=%u mips=%u original=%p originalSize=%lux%lu originalLevels=%lu view=%p viewSize=%lux%lu viewLevels=%lu fmt=%lu type=%lu hit=%llu",
+                                (unsigned)ptr->name,
+                                (unsigned)ptr->target,
+                                (unsigned)ptr->params.min_filter,
+                                mglTextureMinFilterUsesMipmaps(ptr->params.min_filter) ? 1 : 0,
+                                (unsigned)baseLevel,
+                                (unsigned)maxLevel,
+                                (unsigned long)levelCount,
+                                (unsigned)ptr->num_levels,
+                                (unsigned)ptr->mipmap_levels,
+                                texture,
+                                (unsigned long)texture.width,
+                                (unsigned long)texture.height,
+                                (unsigned long)texture.mipmapLevelCount,
+                                levelView,
+                                (unsigned long)levelView.width,
+                                (unsigned long)levelView.height,
+                                (unsigned long)levelView.mipmapLevelCount,
+                                (unsigned long)texture.pixelFormat,
+                                (unsigned long)texture.textureType,
+                                (unsigned long long)hit);
+        }
+    }
     return levelView ? levelView : texture;
 }
 

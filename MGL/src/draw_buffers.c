@@ -42,6 +42,102 @@ static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
     return false;
 }
 
+static GLuint mglTraceDrawProgram(GLMContext ctx)
+{
+    return ctx ? ctx->state.var.current_program : 0u;
+}
+
+static bool mglValidateDrawIndirectCommands(GLMContext ctx,
+                                            const char *label,
+                                            const void *indirect,
+                                            GLsizei drawcount,
+                                            GLsizei stride,
+                                            GLsizeiptr commandSize)
+{
+    Buffer *buf = ctx ? STATE(buffers[_DRAW_INDIRECT_BUFFER]) : NULL;
+    const char *caller = label ? label : "DRAW_INDIRECT";
+    intptr_t baseOffset = (intptr_t)indirect;
+    GLsizeiptr commandStride;
+    GLsizeiptr lastOffset;
+
+    if (!buf) {
+        mglTraceLogExternal("%s_SKIP reason=no_draw_indirect_buffer program=%u",
+                            caller,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+    if (buf->mapped && !(buf->access_flags & GL_MAP_PERSISTENT_BIT)) {
+        mglTraceLogExternal("%s_SKIP reason=draw_indirect_buffer_mapped buffer=%u program=%u",
+                            caller,
+                            (unsigned)buf->name,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+    if (baseOffset < 0 || (baseOffset & 3) != 0) {
+        mglTraceLogExternal("%s_SKIP reason=bad_indirect_offset offset=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
+        return false;
+    }
+    if (drawcount < 0 || stride < 0 || (stride & 3) != 0) {
+        mglTraceLogExternal("%s_SKIP reason=bad_drawcount_or_stride drawcount=%d stride=%d program=%u",
+                            caller,
+                            (int)drawcount,
+                            (int)stride,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_VALUE);
+        return false;
+    }
+    if (drawcount == 0) {
+        return true;
+    }
+    if (commandSize <= 0 || buf->size < 0 || baseOffset > buf->size) {
+        mglTraceLogExternal("%s_SKIP reason=bad_indirect_range offset=%lld size=%lld commandSize=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (long long)(buf ? buf->size : -1),
+                            (long long)commandSize,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    commandStride = stride ? (GLsizeiptr)stride : commandSize;
+    if (drawcount > 1 &&
+        commandStride > 0 &&
+        (GLsizeiptr)(drawcount - 1) > (GLsizeiptr)((INTPTR_MAX - baseOffset) / commandStride)) {
+        mglTraceLogExternal("%s_SKIP reason=indirect_offset_overflow offset=%lld drawcount=%d stride=%lld program=%u",
+                            caller,
+                            (long long)baseOffset,
+                            (int)drawcount,
+                            (long long)commandStride,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    lastOffset = (GLsizeiptr)baseOffset + (GLsizeiptr)(drawcount - 1) * commandStride;
+    if (lastOffset > buf->size || commandSize > buf->size - lastOffset) {
+        mglTraceLogExternal("%s_SKIP reason=indirect_range_oob buffer=%u offset=%lld drawcount=%d stride=%lld commandSize=%lld size=%lld program=%u",
+                            caller,
+                            (unsigned)buf->name,
+                            (long long)baseOffset,
+                            (int)drawcount,
+                            (long long)commandStride,
+                            (long long)commandSize,
+                            (long long)buf->size,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglDispatchError(ctx, caller, GL_INVALID_OPERATION);
+        return false;
+    }
+
+    return true;
+}
+
 static void mglInitVertexArrayDefaultsForDraw(VertexArray *vao)
 {
     if (!vao)
@@ -126,17 +222,6 @@ static bool should_log_throttled(uint64_t *counter, uint64_t burst_limit, uint64
 {
     (*counter)++;
     return (*counter <= burst_limit) || ((*counter % every_n) == 0);
-}
-
-static Texture *mglDrawBuffersAttachmentTexture(FBOAttachment *attachment)
-{
-    if (!attachment) {
-        return NULL;
-    }
-    if (attachment->textarget == GL_RENDERBUFFER) {
-        return attachment->buf.rbo ? attachment->buf.rbo->tex : NULL;
-    }
-    return attachment->buf.tex;
 }
 
 static void mglDropCurrentVAO(GLMContext ctx)
@@ -1804,48 +1889,110 @@ void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei cou
 
 void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_ENTRY mode=0x%x indirect=%p program=%u",
+                        (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
 
-    ERROR_CHECK_RETURN(STATE(buffers[_DRAW_INDIRECT_BUFFER]), GL_INVALID_OPERATION);
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "DRAW_ARRAYS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         1,
+                                         0,
+                                         (GLsizeiptr)sizeof(DrawArraysIndirectCommand))) {
+        return;
+    }
 
     if(validate_vao(ctx, false) == false)
     {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
+    if (!validate_program(ctx)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+
+    if (mglSkipOrRecordConditionalDraw(ctx)) {
+        mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=conditional_render program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
 
     mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
+                        (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
     ctx->mtl_funcs.mtlDrawArraysIndirect(ctx, mode, indirect);
 }
 
 void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (unsigned)mglTraceDrawProgram(ctx));
 
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
+
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "DRAW_ELEMENTS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         1,
+                                         0,
+                                         (GLsizeiptr)sizeof(DrawElementsIndirectCommand))) {
+        return;
+    }
+
+    if (!check_element_type(type)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_type type=0x%x program=%u",
+                            (unsigned)type, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=no_element_buffer program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
 
     if(validate_vao(ctx, true) == false)
     {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    ERROR_CHECK_RETURN(STATE(buffers[_DRAW_INDIRECT_BUFFER]), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
+    if (!validate_program(ctx)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
         return;
+    }
+
+    if (mglSkipOrRecordConditionalDraw(ctx)) {
+        mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=conditional_render program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
 
     mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (unsigned)mglTraceDrawProgram(ctx));
     ctx->mtl_funcs.mtlDrawElementsIndirect(ctx, mode, type, indirect);
 }
 
@@ -2133,51 +2280,133 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
 
 void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
 
-    ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
-    if (drawcount == 0) return;
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
-    ERROR_CHECK_RETURN(stride % 4 == 0, GL_INVALID_VALUE);
+    if (drawcount < 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_drawcount drawcount=%d program=%u",
+                            (int)drawcount, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (drawcount == 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+    if (stride % 4 != 0) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=bad_stride stride=%d program=%u",
+                            (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
     if(validate_vao(ctx, false) == false)
     {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+    if (!validate_program(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
-    ERROR_CHECK_RETURN(STATE(buffers[_DRAW_INDIRECT_BUFFER]), GL_INVALID_OPERATION);
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         drawcount,
+                                         stride,
+                                         (GLsizeiptr)sizeof(DrawArraysIndirectCommand))) {
+        return;
+    }
 
     mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
     ctx->mtl_funcs.mtlMultiDrawArraysIndirect(ctx, mode, indirect, drawcount, stride);
 }
 
 void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
 
-    ERROR_CHECK_RETURN(drawcount >= 0, GL_INVALID_VALUE);
-    if (drawcount == 0) return;
+    if (!check_draw_modes(mode)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_mode mode=0x%x program=%u",
+                            (unsigned)mode, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
-    ERROR_CHECK_RETURN(stride % 4 == 0, GL_INVALID_VALUE);
+    if (drawcount < 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_drawcount drawcount=%d program=%u",
+                            (int)drawcount, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (drawcount == 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=zero_drawcount program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+    if (stride % 4 != 0) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_stride stride=%d program=%u",
+                            (int)stride, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
 
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
+    if (!check_element_type(type)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=bad_type type=0x%x program=%u",
+                            (unsigned)type, (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
+    }
 
     if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=no_element_buffer program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         return;
     }
 
     if(validate_vao(ctx, true) == false)
     {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_vao program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+    if (!validate_program(ctx)) {
+        mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=validate_program program=%u",
+                            (unsigned)mglTraceDrawProgram(ctx));
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
-    ERROR_CHECK_RETURN(STATE(buffers[_DRAW_INDIRECT_BUFFER]), GL_INVALID_OPERATION);
+    if (!mglValidateDrawIndirectCommands(ctx,
+                                         "MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND",
+                                         indirect,
+                                         drawcount,
+                                         stride,
+                                         (GLsizeiptr)sizeof(DrawElementsIndirectCommand))) {
+        return;
+    }
 
     mglFlushCommandBuffer(ctx);
+    mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
+                        (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
     ctx->mtl_funcs.mtlMultiDrawElementsIndirect(ctx, mode, type, indirect, drawcount, stride);
 }

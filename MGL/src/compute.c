@@ -20,7 +20,36 @@
 
 #include "glm_context.h"
 #include "draw_command.h"
+#include "mgl_safety.h"
 #include <string.h>
+
+static GLboolean mglReadDispatchIndirectGroups(Buffer *buf,
+                                               GLintptr indirect,
+                                               GLuint groups[3])
+{
+    const uint8_t *base;
+    size_t offset;
+
+    if (!buf || !groups || indirect < 0) {
+        return GL_FALSE;
+    }
+
+    offset = (size_t)indirect;
+    if (!buf->data.buffer_data ||
+        buf->data.buffer_size == 0u ||
+        offset > buf->data.buffer_size ||
+        (3u * sizeof(GLuint)) > buf->data.buffer_size - offset) {
+        return GL_FALSE;
+    }
+
+    base = (const uint8_t *)(uintptr_t)buf->data.buffer_data;
+    if (!mglPointerRangeIsReadable(base + offset, 3u * sizeof(GLuint))) {
+        return GL_FALSE;
+    }
+
+    memcpy(groups, base + offset, 3u * sizeof(GLuint));
+    return GL_TRUE;
+}
 
 void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z)
 {
@@ -41,7 +70,6 @@ void mglDispatchCompute(GLMContext ctx, GLuint num_groups_x, GLuint num_groups_y
 void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
 {
     Buffer *buf;
-    const uint8_t *base;
     GLuint groups[3] = {0u, 0u, 0u};
 
     if (!ctx)
@@ -67,19 +95,33 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    if (buf->mapped || !buf->data.buffer_data)
+    if (buf->mapped && !(buf->access_flags & GL_MAP_PERSISTENT_BIT))
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
-    if (buf->size < 0 || indirect > buf->size || (GLsizeiptr)sizeof(groups) > buf->size - indirect)
+    if (buf->size < 0 || indirect > buf->size || (GLsizeiptr)(3u * sizeof(GLuint)) > buf->size - indirect)
     {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
-    base = (const uint8_t *)(uintptr_t)buf->data.buffer_data;
-    memcpy(groups, base + indirect, sizeof(groups));
+    if (!mglReadDispatchIndirectGroups(buf, indirect, groups))
+    {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
 
-    mglDispatchCompute(ctx, groups[0], groups[1], groups[2]);
+    if ((ctx->state.var.max_compute_work_group_count[0] > 0 &&
+         groups[0] > (GLuint)ctx->state.var.max_compute_work_group_count[0]) ||
+        (ctx->state.var.max_compute_work_group_count[1] > 0 &&
+         groups[1] > (GLuint)ctx->state.var.max_compute_work_group_count[1]) ||
+        (ctx->state.var.max_compute_work_group_count[2] > 0 &&
+         groups[2] > (GLuint)ctx->state.var.max_compute_work_group_count[2]))
+    {
+        return;
+    }
+
+    mglFlushCommandBuffer(ctx);
+    ctx->mtl_funcs.mtlDispatchComputeIndirect(ctx, indirect);
 }

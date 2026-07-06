@@ -20,6 +20,8 @@
 
 #include "glm_context.h"
 #include "pixel_utils.h"
+#include <stdlib.h>
+#include <string.h>
 
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
@@ -136,12 +138,41 @@ static bool mglTextureParameterValidateNamedTarget(GLMContext ctx, Texture *tex,
     return true;
 }
 
+extern void mglTraceLogExternal(const char *fmt, ...);
+
+static GLboolean mglTraceTextureNameDiagnosticsEnabled(void)
+{
+    static int initialized = 0;
+    static GLboolean enabled = GL_FALSE;
+    if (!initialized) {
+        const char *value = getenv("MGL_TRACE_TEXTURE_NAMES");
+        enabled = (value && value[0] && strcmp(value, "0") != 0) ? GL_TRUE : GL_FALSE;
+        initialized = 1;
+    }
+    return enabled;
+}
+
 static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pname)
 {
     if (!tex) {
         return;
     }
 
+    if ((tex->name == 21u || tex->name == 27u) &&
+        mglTraceTextureNameDiagnosticsEnabled()) {
+        mglTraceLogExternal("TEX_PARAM tex=%u pname=0x%x minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x base=%u max=%u minLod=%.3f maxLod=%.3f mips=%u",
+                            (unsigned)tex->name,
+                            (unsigned)pname,
+                            (unsigned)tex->params.min_filter,
+                            (unsigned)tex->params.mag_filter,
+                            (unsigned)tex->params.wrap_s,
+                            (unsigned)tex->params.wrap_t,
+                            (unsigned)tex->params.base_level,
+                            (unsigned)tex->params.max_level,
+                            (double)tex->params.min_lod,
+                            (double)tex->params.max_lod,
+                            (unsigned)tex->mipmap_levels);
+    }
     tex->dirty_bits |= DIRTY_TEXTURE_PARAM;
     if (mglTextureParameterAffectsTextureDescriptor(pname)) {
         tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
