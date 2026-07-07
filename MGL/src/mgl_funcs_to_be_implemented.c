@@ -5504,7 +5504,7 @@ void mglPatchParameteri(GLMContext ctx, GLenum pname, GLint value)
 	switch (pname)
 	{
 		case GL_PATCH_VERTICES:
-			if (value <= 0)
+			if (value <= 0 || value > (GLint)ctx->state.var.max_patch_vertices)
 			{
 				ERROR_RETURN(GL_INVALID_VALUE);
 				return;

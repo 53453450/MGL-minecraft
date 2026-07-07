@@ -4314,7 +4314,9 @@ static void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
     }
 
     GLboolean has_point_size = strstr(*msl_ptr, "[[point_size]]") != NULL;
-    GLboolean dynamic_vertex_point_size = (stage == _VERTEX_SHADER);
+    GLboolean dynamic_vertex_point_size = (stage == _VERTEX_SHADER ||
+                                           stage == _TESS_EVALUATION_SHADER ||
+                                           stage == _GEOMETRY_SHADER);
     char point_size_name[128] = "mgl_injected_point_size";
 
     /* Find the [[position]] qualifier in the output struct. */
@@ -4600,7 +4602,9 @@ static void mglFixMSLTcsStageIn(char **msl_ptr)
         *msl_ptr = new_msl2;
     }
 
-    /* Strip [[attribute(N)]] from struct members (invalid in device buffer context). */
+    /* Strip [[attribute(N)]] from struct members (invalid in device buffer context),
+     * but keep a comment marker so the TCS compute dispatch can pack the
+     * replacement stage_in buffer with the original VAO locations. */
     {
         const char *attr_prefix = "[[attribute(";
         char *apos = *msl_ptr;
@@ -4615,12 +4619,30 @@ static void mglFixMSLTcsStageIn(char **msl_ptr)
             }
             size_t strip_len = (size_t)(close + 2 - strip_start);
             size_t before = (size_t)(strip_start - *msl_ptr);
-            char *strip_msl = (char *)malloc(strlen(*msl_ptr) - strip_len + 1);
+            char *num_start = apos + strlen(attr_prefix);
+            char *num_end = num_start;
+            while (num_end < close && isdigit((unsigned char)*num_end)) {
+                num_end++;
+            }
+            char marker[64] = "";
+            if (num_end > num_start) {
+                size_t num_len = (size_t)(num_end - num_start);
+                if (num_len > 20u) {
+                    num_len = 20u;
+                }
+                char num[24];
+                memcpy(num, num_start, num_len);
+                num[num_len] = '\0';
+                snprintf(marker, sizeof(marker), " /*mgl_attribute(%s)*/", num);
+            }
+            size_t marker_len = strlen(marker);
+            char *strip_msl = (char *)malloc(strlen(*msl_ptr) - strip_len + marker_len + 1);
             memcpy(strip_msl, *msl_ptr, before);
-            strcpy(strip_msl + before, close + 2);
+            memcpy(strip_msl + before, marker, marker_len);
+            strcpy(strip_msl + before + marker_len, close + 2);
             free(*msl_ptr);
             *msl_ptr = strip_msl;
-            apos = *msl_ptr + before;
+            apos = *msl_ptr + before + marker_len;
         }
     }
 }

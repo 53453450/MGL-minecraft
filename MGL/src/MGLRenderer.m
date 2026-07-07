@@ -39,6 +39,7 @@
 #include <pthread.h>
 #include <errno.h>
 #include <limits.h>
+#include <ctype.h>
 #include <dispatch/dispatch.h>
 #include <os/lock.h>
 
@@ -1901,6 +1902,272 @@ static NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
             };
             memcpy(bytes, packed, sizeof(packed));
             return sizeof(packed);
+        }
+    }
+}
+
+typedef enum MGLTCSStageInBaseType_t {
+    MGLTCSStageInBaseFloat = 0,
+    MGLTCSStageInBaseInt,
+    MGLTCSStageInBaseUInt
+} MGLTCSStageInBaseType;
+
+typedef struct MGLTCSStageInMember_t {
+    GLuint attribute;
+    NSUInteger offset;
+    NSUInteger size;
+    NSUInteger componentBytes;
+    GLuint components;
+    MGLTCSStageInBaseType baseType;
+} MGLTCSStageInMember;
+
+static const uint8_t *mglRendererReadableBufferBytes(Buffer *buffer)
+{
+    if (!buffer) {
+        return NULL;
+    }
+    if (buffer->data.buffer_data && ((uintptr_t)buffer->data.buffer_data >= 0x1000ull)) {
+        return (const uint8_t *)(uintptr_t)buffer->data.buffer_data;
+    }
+    if (buffer->data.mtl_data) {
+        id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(buffer->data.mtl_data);
+        if (mtlBuffer && mtlBuffer.contents) {
+            return (const uint8_t *)mtlBuffer.contents;
+        }
+    }
+    return NULL;
+}
+
+static bool mglTCSStageInParseAttributeMarker(const char *member, GLuint *outAttribute)
+{
+    if (!member || !outAttribute) {
+        return false;
+    }
+    const char *marker = strstr(member, "/*mgl_attribute(");
+    if (marker) {
+        marker += strlen("/*mgl_attribute(");
+        char *end = NULL;
+        unsigned long value = strtoul(marker, &end, 10);
+        if (end && end != marker && value < MAX_ATTRIBS) {
+            *outAttribute = (GLuint)value;
+            return true;
+        }
+    }
+
+    const char *attr = strstr(member, "[[attribute(");
+    if (attr) {
+        attr += strlen("[[attribute(");
+        char *end = NULL;
+        unsigned long value = strtoul(attr, &end, 10);
+        if (end && end != attr && value < MAX_ATTRIBS) {
+            *outAttribute = (GLuint)value;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void mglTCSStageInDescribeMember(const char *member,
+                                        NSUInteger *outSize,
+                                        NSUInteger *outAlign,
+                                        NSUInteger *outComponentBytes,
+                                        GLuint *outComponents,
+                                        MGLTCSStageInBaseType *outBaseType)
+{
+    NSUInteger memberSize = 16u;
+    NSUInteger memberAlign = 16u;
+    NSUInteger componentBytes = 4u;
+    GLuint components = 4u;
+    MGLTCSStageInBaseType baseType = MGLTCSStageInBaseFloat;
+
+    if (!member) {
+        goto done;
+    }
+
+    if (strstr(member, "uint") || strstr(member, "uchar") || strstr(member, "ushort")) {
+        baseType = MGLTCSStageInBaseUInt;
+    } else if (strstr(member, "int") || strstr(member, "char") || strstr(member, "short")) {
+        baseType = MGLTCSStageInBaseInt;
+    }
+
+    if      (strstr(member, "float4"))  { memberSize = 16; memberAlign = 16; componentBytes = 4; components = 4; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "float3"))  { memberSize = 16; memberAlign = 16; componentBytes = 4; components = 3; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "float2"))  { memberSize =  8; memberAlign =  8; componentBytes = 4; components = 2; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "float"))   { memberSize =  4; memberAlign =  4; componentBytes = 4; components = 1; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "double4")) { memberSize = 32; memberAlign = 32; componentBytes = 8; components = 4; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "double3")) { memberSize = 32; memberAlign = 32; componentBytes = 8; components = 3; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "double2")) { memberSize = 16; memberAlign = 16; componentBytes = 8; components = 2; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "double"))  { memberSize =  8; memberAlign =  8; componentBytes = 8; components = 1; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "half4"))   { memberSize =  8; memberAlign =  8; componentBytes = 2; components = 4; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "half3"))   { memberSize =  8; memberAlign =  8; componentBytes = 2; components = 3; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "half2"))   { memberSize =  4; memberAlign =  4; componentBytes = 2; components = 2; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "half"))    { memberSize =  2; memberAlign =  2; componentBytes = 2; components = 1; baseType = MGLTCSStageInBaseFloat; }
+    else if (strstr(member, "4") && (strstr(member, "int") || strstr(member, "char"))) { memberSize = 16; memberAlign = 16; componentBytes = 4; components = 4; }
+    else if (strstr(member, "3") && (strstr(member, "int") || strstr(member, "char"))) { memberSize = 16; memberAlign = 16; componentBytes = 4; components = 3; }
+    else if (strstr(member, "2") && (strstr(member, "int") || strstr(member, "char"))) { memberSize =  8; memberAlign =  8; componentBytes = 4; components = 2; }
+    else if (strstr(member, "int") || strstr(member, "uint") || strstr(member, "char") || strstr(member, "uchar")) { memberSize = 4; memberAlign = 4; componentBytes = 4; components = 1; }
+    else if (strstr(member, "short4") || strstr(member, "ushort4")) { memberSize = 8; memberAlign = 8; componentBytes = 2; components = 4; }
+    else if (strstr(member, "short3") || strstr(member, "ushort3")) { memberSize = 8; memberAlign = 8; componentBytes = 2; components = 3; }
+    else if (strstr(member, "short2") || strstr(member, "ushort2")) { memberSize = 4; memberAlign = 4; componentBytes = 2; components = 2; }
+    else if (strstr(member, "short")  || strstr(member, "ushort"))  { memberSize = 2; memberAlign = 2; componentBytes = 2; components = 1; }
+    else if (strstr(member, "bool"))   { memberSize = 1; memberAlign = 1; componentBytes = 1; components = 1; baseType = MGLTCSStageInBaseUInt; }
+
+done:
+    if (outSize) *outSize = memberSize;
+    if (outAlign) *outAlign = memberAlign;
+    if (outComponentBytes) *outComponentBytes = componentBytes;
+    if (outComponents) *outComponents = components;
+    if (outBaseType) *outBaseType = baseType;
+}
+
+static NSUInteger mglParseTCSStageInMembers(const char *msl,
+                                            MGLTCSStageInMember *members,
+                                            NSUInteger capacity,
+                                            NSUInteger *outStride)
+{
+    if (outStride) {
+        *outStride = 0u;
+    }
+    if (!msl) {
+        return 0u;
+    }
+
+    const char *cursor = msl;
+    while ((cursor = strstr(cursor, "struct ")) != NULL) {
+        cursor += 7;
+        while (*cursor == ' ' || *cursor == '\t') {
+            cursor++;
+        }
+        const char *nameStart = cursor;
+        while (*cursor && *cursor != ' ' && *cursor != '\t' &&
+               *cursor != '\n' && *cursor != '\r' && *cursor != '{') {
+            cursor++;
+        }
+        size_t nameLen = (size_t)(cursor - nameStart);
+        if (nameLen <= 3u || strncmp(nameStart + nameLen - 3u, "_in", 3u) != 0) {
+            continue;
+        }
+
+        const char *braceStart = strchr(cursor, '{');
+        if (!braceStart) {
+            continue;
+        }
+        const char *braceEnd = braceStart + 1;
+        int depth = 1;
+        while (*braceEnd && depth > 0) {
+            if (*braceEnd == '{') depth++;
+            else if (*braceEnd == '}') depth--;
+            braceEnd++;
+        }
+        if (depth != 0) {
+            continue;
+        }
+
+        NSUInteger running = 0u;
+        NSUInteger maxAlign = 1u;
+        NSUInteger memberCount = 0u;
+        const char *p = braceStart + 1;
+        while (p < braceEnd - 1) {
+            const char *semi = p;
+            while (semi < braceEnd - 1 && *semi != ';') {
+                semi++;
+            }
+            if (semi >= braceEnd - 1) {
+                break;
+            }
+
+            const char *mp = p;
+            while (mp < semi && isspace((unsigned char)*mp)) {
+                mp++;
+            }
+            size_t mlen = (size_t)(semi - mp);
+            if (mlen > 0u) {
+                char member[512];
+                if (mlen >= sizeof(member)) {
+                    mlen = sizeof(member) - 1u;
+                }
+                memcpy(member, mp, mlen);
+                member[mlen] = '\0';
+
+                NSUInteger arrayCount = 1u;
+                char *arr = strchr(member, '[');
+                if (arr) {
+                    *arr = '\0';
+                    unsigned long cnt = strtoul(arr + 1, NULL, 10);
+                    if (cnt > 0u) {
+                        arrayCount = (NSUInteger)cnt;
+                    }
+                }
+
+                NSUInteger memberSize = 0u;
+                NSUInteger memberAlign = 0u;
+                NSUInteger componentBytes = 0u;
+                GLuint components = 0u;
+                MGLTCSStageInBaseType baseType = MGLTCSStageInBaseFloat;
+                mglTCSStageInDescribeMember(member,
+                                            &memberSize,
+                                            &memberAlign,
+                                            &componentBytes,
+                                            &components,
+                                            &baseType);
+                if (memberAlign == 0u) {
+                    memberAlign = 1u;
+                }
+                if (memberAlign > maxAlign) {
+                    maxAlign = memberAlign;
+                }
+                running = (running + memberAlign - 1u) & ~(memberAlign - 1u);
+
+                GLuint attribute = 0u;
+                if (mglTCSStageInParseAttributeMarker(mp, &attribute) && memberCount < capacity) {
+                    members[memberCount].attribute = attribute;
+                    members[memberCount].offset = running;
+                    members[memberCount].size = memberSize * arrayCount;
+                    members[memberCount].componentBytes = componentBytes;
+                    members[memberCount].components = components;
+                    members[memberCount].baseType = baseType;
+                    memberCount++;
+                }
+
+                running += memberSize * arrayCount;
+            }
+            p = semi + 1;
+        }
+
+        running = (running + maxAlign - 1u) & ~(maxAlign - 1u);
+        if (outStride) {
+            *outStride = running;
+        }
+        return memberCount;
+    }
+    return 0u;
+}
+
+static void mglWriteTCSStageInComponent(uint8_t *dst,
+                                        const MGLTCSStageInMember *member,
+                                        NSUInteger component,
+                                        double value)
+{
+    if (!dst || !member || component >= member->components) {
+        return;
+    }
+    uint8_t *componentDst = dst + member->offset + (component * member->componentBytes);
+    switch (member->baseType) {
+        case MGLTCSStageInBaseInt: {
+            int32_t v = (int32_t)value;
+            memcpy(componentDst, &v, MIN(member->componentBytes, sizeof(v)));
+            break;
+        }
+        case MGLTCSStageInBaseUInt: {
+            uint32_t v = (value < 0.0) ? 0u : (uint32_t)value;
+            memcpy(componentDst, &v, MIN(member->componentBytes, sizeof(v)));
+            break;
+        }
+        case MGLTCSStageInBaseFloat:
+        default: {
+            float v = (float)value;
+            memcpy(componentDst, &v, MIN(member->componentBytes, sizeof(v)));
+            break;
         }
     }
 }
@@ -5441,9 +5708,17 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         }
     }
 
-    if (activeProgram &&
-        activeProgram->spirv[_VERTEX_SHADER].msl_str &&
-        strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "_mgl_point_size_params")) {
+    BOOL needsPointSizeParams = NO;
+    int pointSizeStages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
+    for (NSUInteger ps = 0; ps < sizeof(pointSizeStages) / sizeof(pointSizeStages[0]); ps++) {
+        Program *pointProgram = mglResolveProgramForStageFromState(ctx, pointSizeStages[ps]);
+        const char *pointMsl = pointProgram ? pointProgram->spirv[pointSizeStages[ps]].msl_str : NULL;
+        if (pointMsl && strstr(pointMsl, "_mgl_point_size_params")) {
+            needsPointSizeParams = YES;
+            break;
+        }
+    }
+    if (needsPointSizeParams) {
         float pointSizeParams[2] = {
             ctx && ctx->state.var.point_size > 0.0f ? ctx->state.var.point_size : 1.0f,
             ctx && ctx->state.caps.program_point_size ? 1.0f : 0.0f
@@ -14612,11 +14887,11 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
                 static uint64_t s_geometryShaderMetalSkipCount = 0;
                 uint64_t hit = ++s_geometryShaderMetalSkipCount;
                 if (hit <= 16ull || (hit % 512ull) == 0ull) {
-                    NSLog(@"MGL WARNING: Skipping direct Metal compile for geometry shader program=%u hit=%llu",
+                    NSLog(@"MGL WARNING: Blocking draw for unsupported geometry shader program=%u hit=%llu",
                           (unsigned)ptr->name,
                           (unsigned long long)hit);
                 }
-                continue;
+                return false;
             }
             if (!ptr->spirv[i].msl_str) {
                 NSLog(@"MGL WARNING: Program %u stage %d has reflection but no MSL; skipping Metal bind",
@@ -29027,10 +29302,225 @@ typedef struct {
  * For shader_image_size tests the TCS kernel only needs storage images and
  * the tess-factor / indirect-param buffers — it has no vertex input.
  */
+- (void)bindPointSizeParamsToComputeEncoder:(id<MTLComputeCommandEncoder>)computeEncoder
+                                    program:(Program *)program
+                                      stage:(int)stage
+{
+    if (!computeEncoder || !program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return;
+    }
+    const char *msl = program->spirv[stage].msl_str;
+    if (!msl || !strstr(msl, "_mgl_point_size_params")) {
+        return;
+    }
+    float pointSizeParams[2] = {
+        ctx && ctx->state.var.point_size > 0.0f ? ctx->state.var.point_size : 1.0f,
+        ctx && ctx->state.caps.program_point_size ? 1.0f : 0.0f
+    };
+    [computeEncoder setBytes:pointSizeParams
+                      length:sizeof(pointSizeParams)
+                     atIndex:kMGLPointSizeParamBufferIndex];
+}
+
+- (id<MTLBuffer>)newTCSStageInBufferForContext:(GLMContext)drawCtx
+                                       program:(Program *)tcsProgram
+                                         first:(GLint)first
+                                         count:(GLsizei)count
+                                     indexType:(GLenum)indexType
+                                       indices:(const void *)indices
+                                    baseVertex:(GLint)baseVertex
+                                  baseInstance:(GLuint)baseInstance
+                                 patchVertices:(GLuint)patchVertices
+                                    patchCount:(GLuint)patchCount
+                                     outStride:(NSUInteger *)outStride
+{
+    if (outStride) {
+        *outStride = 0u;
+    }
+    if (!drawCtx || !tcsProgram || count <= 0) {
+        return nil;
+    }
+
+    const char *tcsMsl = tcsProgram->spirv[_TESS_CONTROL_SHADER].msl_str;
+    if (!tcsMsl || !strstr(tcsMsl, "_mgl_tcs_in_buffer")) {
+        return nil;
+    }
+
+    MGLTCSStageInMember members[MAX_ATTRIBS];
+    memset(members, 0, sizeof(members));
+    NSUInteger tcsInStride = 0u;
+    NSUInteger memberCount = mglParseTCSStageInMembers(tcsMsl,
+                                                       members,
+                                                       MAX_ATTRIBS,
+                                                       &tcsInStride);
+    if (tcsInStride == 0u) {
+        tcsInStride = mglComputeMSLStructSizeBySuffix(tcsMsl, "_in", 3);
+    }
+    if (tcsInStride == 0u) {
+        NSLog(@"MGL TESS WARNING: unable to compute TCS stage_in stride for program %u",
+              (unsigned)tcsProgram->name);
+        return nil;
+    }
+
+    NSUInteger tcsInVertices = (NSUInteger)patchCount * (NSUInteger)MAX(patchVertices, 1u);
+    if (tcsInVertices < (NSUInteger)count) {
+        tcsInVertices = (NSUInteger)count;
+    }
+    if (tcsInVertices == 0u || tcsInStride > NSUIntegerMax / tcsInVertices) {
+        return nil;
+    }
+
+    VertexArray *vao = mglRendererGetValidatedVAO(drawCtx, "tcs.stage_in");
+    if (!vao) {
+        return nil;
+    }
+
+    const uint8_t *indexBytes = NULL;
+    NSUInteger indexOffset = (NSUInteger)(uintptr_t)indices;
+    NSUInteger indexStride = 0u;
+    uint32_t restartIndex = 0u;
+    bool primitiveRestart = false;
+    if (indexType != 0u) {
+        indexStride = mglGLIndexElementSize(indexType);
+        if (indexStride == 0u || indexOffset > NSUIntegerMax - ((NSUInteger)count * indexStride)) {
+            return nil;
+        }
+        Buffer *ebo = getElementBuffer(drawCtx);
+        if (!ebo || ![self processBuffer:ebo]) {
+            NSLog(@"MGL TESS WARNING: TCS indexed stage_in has no readable element buffer");
+            return nil;
+        }
+        const uint8_t *eboBytes = mglRendererReadableBufferBytes(ebo);
+        NSUInteger bytesNeeded = (NSUInteger)count * indexStride;
+        if (!eboBytes || indexOffset > (NSUInteger)ebo->size || ((NSUInteger)ebo->size - indexOffset) < bytesNeeded) {
+            NSLog(@"MGL TESS WARNING: TCS indexed stage_in element range OOB offset=%lu needed=%lu size=%lld",
+                  (unsigned long)indexOffset,
+                  (unsigned long)bytesNeeded,
+                  (long long)ebo->size);
+            return nil;
+        }
+        indexBytes = eboBytes + indexOffset;
+        primitiveRestart = mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
+    }
+
+    NSUInteger tcsInSize = tcsInStride * tcsInVertices;
+    id<MTLBuffer> stageInBuffer = [_device newBufferWithLength:tcsInSize
+                                                       options:MTLResourceStorageModeShared];
+    if (!stageInBuffer) {
+        return nil;
+    }
+    memset(stageInBuffer.contents, 0, tcsInSize);
+
+    if (memberCount == 0u) {
+        if (outStride) {
+            *outStride = tcsInStride;
+        }
+        return stageInBuffer;
+    }
+
+    for (NSUInteger v = 0; v < tcsInVertices; v++) {
+        if (v >= (NSUInteger)count) {
+            continue;
+        }
+
+        int64_t vertexIndex64 = (int64_t)first + (int64_t)v;
+        if (indexBytes) {
+            uint32_t rawIndex = mglReadGLIndexValue(indexBytes, indexType, v);
+            if (primitiveRestart && rawIndex == restartIndex) {
+                continue;
+            }
+            vertexIndex64 = (int64_t)rawIndex + (int64_t)baseVertex;
+        }
+        if (vertexIndex64 < 0) {
+            continue;
+        }
+
+        uint8_t *dstVertex = (uint8_t *)stageInBuffer.contents + (v * tcsInStride);
+        for (NSUInteger m = 0; m < memberCount; m++) {
+            const MGLTCSStageInMember *member = &members[m];
+            if (member->attribute >= MAX_ATTRIBS ||
+                member->offset >= tcsInStride ||
+                member->size > tcsInStride - member->offset) {
+                continue;
+            }
+
+            double values[4] = {0.0, 0.0, 0.0, 1.0};
+            const VertexAttrib *attrib = &vao->attrib[member->attribute];
+            MGLResolvedVertexAttribBinding resolved = {0};
+            bool hasBinding = mglRendererResolveVertexAttribBinding(drawCtx,
+                                                                    vao,
+                                                                    member->attribute,
+                                                                    "tcs.stage_in",
+                                                                    &resolved);
+            bool useCurrentValue =
+                ((vao->enabled_attribs & (0x1u << member->attribute)) == 0u) &&
+                !(vao->enabled_attribs == 0u && hasBinding);
+
+            if (useCurrentValue) {
+                uint8_t currentBytes[16];
+                if (mglRendererBuildCurrentVertexAttribBytes(drawCtx,
+                                                             member->attribute,
+                                                             attrib,
+                                                             currentBytes) > 0u) {
+                    for (GLuint c = 0; c < MIN(attrib->size, 4u); c++) {
+                        values[c] = mglDecodeVertexAttribComponent(currentBytes,
+                                                                   attrib->type,
+                                                                   attrib->normalized,
+                                                                   c);
+                    }
+                }
+            } else if (hasBinding) {
+                Buffer *vbo = resolved.buffer;
+                if (vbo && [self processBuffer:vbo]) {
+                    const uint8_t *vboBytes = mglRendererReadableBufferBytes(vbo);
+                    NSUInteger elementBytes = mglVertexAttribElementBytes(attrib->type, attrib->size);
+                    NSUInteger stride = resolved.stride > 0u ? (NSUInteger)resolved.stride : elementBytes;
+                    NSUInteger attribIndex = (NSUInteger)vertexIndex64;
+                    if (resolved.divisor > 0u) {
+                        attribIndex = (NSUInteger)(baseInstance / resolved.divisor);
+                    }
+                    if (vboBytes && elementBytes > 0u && stride > 0u &&
+                        resolved.binding_offset >= 0 && resolved.relativeoffset >= 0) {
+                        NSUInteger baseOffset = (NSUInteger)resolved.binding_offset + (NSUInteger)resolved.relativeoffset;
+                        if (attribIndex <= (NSUIntegerMax - baseOffset) / stride) {
+                            NSUInteger vertexOffset = baseOffset + attribIndex * stride;
+                            if (vertexOffset <= (NSUInteger)vbo->size &&
+                                ((NSUInteger)vbo->size - vertexOffset) >= elementBytes) {
+                                GLboolean effectiveNormalized = attrib->normalized;
+                                const uint8_t *src = vboBytes + vertexOffset;
+                                for (GLuint c = 0; c < MIN(attrib->size, 4u); c++) {
+                                    values[c] = mglDecodeVertexAttribComponent(src,
+                                                                               attrib->type,
+                                                                               effectiveNormalized,
+                                                                               c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (GLuint c = 0; c < member->components && c < 4u; c++) {
+                mglWriteTCSStageInComponent(dstVertex, member, c, values[c]);
+            }
+        }
+    }
+
+    if (outStride) {
+        *outStride = tcsInStride;
+    }
+    return stageInBuffer;
+}
+
 -(bool) dispatchTessControlShader:(GLMContext) glm_ctx
                           program:(Program *) tcsProgram
                             first:(GLint) first
                             count:(GLsizei) count
+                        indexType:(GLenum) indexType
+                          indices:(const void *) indices
+                       baseVertex:(GLint) baseVertex
+                     instanceCount:(GLsizei) drawInstanceCount
+                     baseInstance:(GLuint) baseInstance
 {
     if (!tcsProgram || !glm_ctx) {
         return false;
@@ -29195,12 +29685,15 @@ typedef struct {
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TCS. */
     [self bindTessStageBuffersToComputeEncoder:computeEncoder
                                          stage:_TESS_CONTROL_SHADER];
+    [self bindPointSizeParamsToComputeEncoder:computeEncoder
+                                      program:tcsProgram
+                                        stage:_TESS_CONTROL_SHADER];
 
     /* Create indirect params buffer (buffer 29).
      * spvIndirectParams[0] = vertexCount, [1] = instanceCount. */
     GLuint patchVertices = MAX(1u, (GLuint)STATE(var.patch_vertices));
     GLuint vertexCount = (GLuint)count;
-    GLuint instanceCount = 1u;
+    GLuint instanceCount = (drawInstanceCount > 0) ? (GLuint)drawInstanceCount : 1u;
 
     /* Create TCS per-vertex output buffer (buffer 28 = spvOut).
      * TCS writes: spvOut[gl_PrimitiveID * outputVertices + invocationID]
@@ -29296,36 +29789,29 @@ typedef struct {
     memset(tessFactorBuf.contents, 0, tessFactorSize);
     [computeEncoder setBuffer:tessFactorBuf offset:0 atIndex:26];
 
-    if (tcsMsl && strstr(tcsMsl, "_mgl_tcs_in_buffer[")) {
-        NSLog(@"MGL TESS WARNING: TCS stage_in vertex input is not emulated yet; skipping TCS dispatch for program %u",
-              tcsProgram ? (unsigned)tcsProgram->name : 0u);
-        [computeEncoder endEncoding];
-        return false;
-    }
-
     if (tcsMsl && strstr(tcsMsl, "_mgl_tcs_in_buffer")) {
-        NSUInteger tcsInStride = mglComputeMSLStructSizeBySuffix(tcsMsl, "_in", 3);
-        if (tcsInStride == 0u) {
-            tcsInStride = 256u;
+        NSUInteger tcsInStride = 0u;
+        id<MTLBuffer> tcsStageInBuffer =
+            [self newTCSStageInBufferForContext:glm_ctx
+                                        program:tcsProgram
+                                          first:first
+                                          count:count
+                                      indexType:indexType
+                                        indices:indices
+                                     baseVertex:baseVertex
+                                   baseInstance:baseInstance
+                                  patchVertices:patchVertices
+                                     patchCount:patchCount
+                                      outStride:&tcsInStride];
+        if (!tcsStageInBuffer) {
+            NSLog(@"MGL TESS WARNING: failed to pack TCS stage_in buffer for program %u",
+                  tcsProgram ? (unsigned)tcsProgram->name : 0u);
+            [computeEncoder endEncoding];
+            return false;
         }
-        NSUInteger tcsInVertices = (NSUInteger)patchCount * (NSUInteger)patchVertices;
-        if (tcsInVertices < (NSUInteger)vertexCount) {
-            tcsInVertices = (NSUInteger)vertexCount;
-        }
-        if (tcsInVertices == 0u) {
-            tcsInVertices = 1u;
-        }
-        if (tcsInStride <= NSUIntegerMax / tcsInVertices) {
-            NSUInteger tcsInSize = tcsInStride * tcsInVertices;
-            id<MTLBuffer> tcsStageInFallback = [_device newBufferWithLength:tcsInSize
-                                                                     options:MTLResourceStorageModeShared];
-            if (tcsStageInFallback) {
-                memset(tcsStageInFallback.contents, 0, tcsInSize);
-                [computeEncoder setBuffer:tcsStageInFallback
-                                  offset:0
-                                  atIndex:kMGLTCSStageInReplBufferIndex];
-            }
-        }
+        [computeEncoder setBuffer:tcsStageInBuffer
+                            offset:0
+                           atIndex:kMGLTCSStageInReplBufferIndex];
     }
 
     /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
@@ -29514,6 +30000,9 @@ typedef struct {
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TES. */
     [self bindTessStageBuffersToComputeEncoder:computeEncoder
                                          stage:_TESS_EVALUATION_SHADER];
+    [self bindPointSizeParamsToComputeEncoder:computeEncoder
+                                      program:tesProgram
+                                        stage:_TESS_EVALUATION_SHADER];
 
     /* Dispatch: one threadgroup per patch, 1 thread per threadgroup.
      * gl_PrimitiveID → threadgroup_position_in_grid gives the patch index.
@@ -29703,6 +30192,11 @@ typedef struct {
                                         mode:(GLenum)mode
                                        first:(GLint)first
                                        count:(GLsizei)count
+                                   indexType:(GLenum)indexType
+                                     indices:(const void *)indices
+                                  baseVertex:(GLint)baseVertex
+                               instanceCount:(GLsizei)instanceCount
+                                baseInstance:(GLuint)baseInstance
                                        label:(const char *)label
 {
     if (mode != GL_PATCHES) {
@@ -29724,7 +30218,15 @@ typedef struct {
         if (tcsProgram->dirty_bits) {
             [self bindMTLProgram:tcsProgram];
         }
-        if (![self dispatchTessControlShader:drawCtx program:tcsProgram first:first count:count]) {
+        if (![self dispatchTessControlShader:drawCtx
+                                     program:tcsProgram
+                                       first:first
+                                       count:count
+                                   indexType:indexType
+                                     indices:indices
+                                  baseVertex:baseVertex
+                               instanceCount:instanceCount
+                                baseInstance:baseInstance]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
         }
@@ -29783,6 +30285,11 @@ typedef struct {
                                              mode:mode
                                             first:first
                                             count:count
+                                        indexType:0
+                                          indices:NULL
+                                       baseVertex:0
+                                    instanceCount:1
+                                     baseInstance:0
                                             label:"drawArrays"]) {
         return;
     }
@@ -30239,6 +30746,11 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:0
+                                    instanceCount:1
+                                     baseInstance:0
                                             label:"drawElements"]) {
         return;
     }
@@ -31238,6 +31750,11 @@ void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:0
+                                    instanceCount:1
+                                     baseInstance:0
                                             label:"drawRangeElements"]) {
         return;
     }
@@ -31476,6 +31993,11 @@ void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsize
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:0
+                                    instanceCount:instancecount
+                                     baseInstance:0
                                             label:"drawElementsInstanced"]) {
         return;
     }
@@ -31638,6 +32160,11 @@ void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GL
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:basevertex
+                                    instanceCount:1
+                                     baseInstance:0
                                             label:"drawElementsBaseVertex"]) {
         return;
     }
@@ -31796,6 +32323,11 @@ void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, G
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:basevertex
+                                    instanceCount:1
+                                     baseInstance:0
                                             label:"drawRangeElementsBaseVertex"]) {
         return;
     }
@@ -31953,6 +32485,11 @@ void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint star
                                              mode:mode
                                             first:0
                                             count:(GLsizei)count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:basevertex
+                                    instanceCount:instancecount
+                                     baseInstance:0
                                             label:"drawElementsInstancedBaseVertex"]) {
         return;
     }
@@ -32534,6 +33071,11 @@ void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint f
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:0
+                                    instanceCount:instancecount
+                                     baseInstance:baseinstance
                                             label:"drawElementsInstancedBaseInstance"]) {
         return;
     }
@@ -32696,6 +33238,11 @@ void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsiz
                                              mode:mode
                                             first:0
                                             count:count
+                                        indexType:type
+                                          indices:indices
+                                       baseVertex:basevertex
+                                    instanceCount:instancecount
+                                     baseInstance:baseinstance
                                             label:"drawElementsInstancedBaseVertexBaseInstance"]) {
         return;
     }
@@ -32864,6 +33411,11 @@ void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum m
                                                        mode:mode
                                                       first:first[i]
                                                       count:count[i]
+                                                 indexType:0
+                                                   indices:NULL
+                                                baseVertex:0
+                                             instanceCount:1
+                                              baseInstance:0
                                                       label:"multiDrawArrays"]) {
                 handled = NO;
                 break;
@@ -33004,6 +33556,11 @@ void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, con
                                                        mode:mode
                                                       first:0
                                                       count:count[i]
+                                                 indexType:type
+                                                   indices:indices ? indices[i] : NULL
+                                                baseVertex:0
+                                             instanceCount:1
+                                              baseInstance:0
                                                       label:"multiDrawElements"]) {
                 handled = NO;
                 break;
@@ -33184,6 +33741,11 @@ void mtlMultiDrawElements(GLMContext glm_ctx, GLenum mode, const GLsizei *count,
                                                        mode:mode
                                                       first:0
                                                       count:count[i]
+                                                 indexType:type
+                                                   indices:indices ? indices[i] : NULL
+                                                baseVertex:basevertex ? basevertex[i] : 0
+                                             instanceCount:1
+                                              baseInstance:0
                                                       label:"multiDrawElementsBaseVertex"]) {
                 handled = NO;
                 break;
