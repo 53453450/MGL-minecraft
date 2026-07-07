@@ -2212,7 +2212,12 @@ static GLboolean mglInternalFormatTargetSupported(GLenum target, GLenum internal
     switch (target) {
         case GL_TEXTURE_2D_MULTISAMPLE:
         case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-            return GL_FALSE;
+            /* Multisample texture targets are supported for any format that
+             * has a valid Metal pixel format (checked above).  Returning
+             * GL_FALSE here causes glGetInternalformativ(GL_SAMPLES) to
+             * return 0 values without writing the output buffer, leaving
+             * callers (including CTS) reading uninitialized memory. */
+            return GL_TRUE;
         case GL_TEXTURE_BUFFER:
             return mglInternalFormatIsColor(storage) && !mglInternalFormatIsCompressed(storage);
         case GL_RENDERBUFFER:
