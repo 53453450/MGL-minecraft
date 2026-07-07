@@ -28,6 +28,8 @@
 
 #include <assert.h>
 #include <CoreFoundation/CoreFoundation.h>
+
+#include "mgl_metal_ref.h"
 #include <mach/mach_init.h>
 #include <mach/vm_map.h>
 
@@ -43,7 +45,7 @@ extern void getMacOSDefaults(GLMContext glm_ctx);
 extern void init_dispatch(GLMContext ctx);
 extern void invalidateTexture(GLMContext ctx, Texture *tex);
 extern void mglFreeProgram(GLMContext ctx, Program *ptr);
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 static _Thread_local GLMContext _ctx = NULL;
 static _Thread_local GLboolean _ctx_explicitly_unbound = GL_FALSE;
@@ -672,14 +674,7 @@ static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
 
     GLboolean had_mtl_data = buffer->data.mtl_data ? GL_TRUE : GL_FALSE;
 
-    if (buffer->data.mtl_data) {
-        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, buffer->data.mtl_data);
-        } else {
-            CFRelease(buffer->data.mtl_data);
-        }
-        buffer->data.mtl_data = NULL;
-    }
+    mglSafeReleaseMetalObj((void **)&buffer->data.mtl_data);
 
     if (buffer->data.buffer_data && buffer->data.buffer_size > 0) {
         GLboolean release_cpu_backing = !had_mtl_data;
@@ -761,14 +756,7 @@ static void mglDestroyContextSampler(GLuint name, void *data, void *user)
         return;
     }
 
-    if (sampler->mtl_data) {
-        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, sampler->mtl_data);
-        } else {
-            CFRelease(sampler->mtl_data);
-        }
-        sampler->mtl_data = NULL;
-    }
+    mglSafeReleaseMetalObj((void **)&sampler->mtl_data);
 
     free(sampler);
 }

@@ -21,8 +21,9 @@
 #include <strings.h>
 #include <stdio.h>
 #include "glm_context.h"
+#include "mgl_metal_ref.h"
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *param);
 bool setTexParamsi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, const GLint *params);
@@ -256,10 +257,7 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
 
             deleteHashElement(&ctx->state.sampler_table, sampler);
 
-            if (ptr->mtl_data)
-            {
-                ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data);
-            }
+            mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
             free(ptr);
         }

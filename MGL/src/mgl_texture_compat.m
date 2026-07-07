@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#import "mgl_trace_log.h"
 
 /* GL format introspection helpers implemented in pixel_utils.c.  Declared
  * here so this module does not need to include the full MGLRenderer private
@@ -633,4 +633,35 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
     *outBytesPerRow = dstBytesPerRow;
     *outBytesPerImage = dstBytesPerImage;
     return dst;
+}
+
+/* === Layer pixel format helpers === */
+
+BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat)
+{
+    switch (pixelFormat) {
+        case MTLPixelFormatBGRA8Unorm:
+        case MTLPixelFormatBGRA8Unorm_sRGB:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt)
+{
+    switch (fmt) {
+        case MTLPixelFormatRGBA8Unorm:   return MTLPixelFormatRGBA8Unorm_sRGB;
+        case MTLPixelFormatBGRA8Unorm:   return MTLPixelFormatBGRA8Unorm_sRGB;
+        default: return fmt;
+    }
+}
+
+MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt)
+{
+    switch (fmt) {
+        case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
+        case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
+        default: return fmt;
+    }
 }

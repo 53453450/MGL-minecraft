@@ -165,17 +165,37 @@ Objective-C 实现的 Metal 渲染器，处理：
 
 设置 `MGL_TRACE_LOG=1` 可以启用 MGL 内部 trace 日志。日志默认写到 `libmgl.dylib` 所在目录，文件名格式为 `mgl-trace-<pid>.log`。
 
+默认情况下，trace 不会再直接输出到终端或系统 Console，避免 Minecraft/启动器日志被大量诊断信息刷屏。需要同时镜像到 `stderr` 时，额外设置 `MGL_TRACE_LOG_STDERR=1`。
+
 常用开关：
 
 ```bash
 MGL_TRACE_LOG=1
+MGL_TRACE_LOG_STDERR=1
 MGL_TRACE_LOG_DRAW=1
 MGL_TRACE_LOG_RESOURCES=1
 MGL_TRACE_LOG_GUI=1
 MGL_TRACE_LOG_PROGRAMS=91,92,93
 ```
 
-这些变量可以按需加入启动器环境变量，用于捕获 draw、资源绑定、GUI 或指定 program 的调试信息。
+| 变量 | 说明 |
+|------|------|
+| `MGL_TRACE_LOG` | 启用 trace 文件输出 |
+| `MGL_TRACE_LOG_STDERR` | 将 trace 同步镜像到 `stderr`，默认关闭 |
+| `MGL_TRACE_LOG_DRAW` | 记录绘制调用与 draw replay 相关诊断 |
+| `MGL_TRACE_LOG_RESOURCES` | 记录更详细的 buffer/texture/sampler 绑定诊断 |
+| `MGL_TRACE_LOG_GUI` | 记录 GUI 相关诊断 |
+| `MGL_TRACE_LOG_PROGRAMS` | 只重点追踪指定 program，支持逗号/空格/分号/冒号分隔 |
+
+`MGL TRACE`、`MGL DUMP`、shader interface dump 等诊断输出统一进入 trace 文件。`MGL ERROR` / `MGL WARNING` 仍会保留在普通日志路径中，方便第一时间发现真实故障。
+
+示例：
+
+```bash
+MGL_TRACE_LOG=1 MGL_TRACE_LOG_DRAW=1 MGL_TRACE_LOG_PROGRAMS=91,92
+```
+
+启动后，在 MGL dylib 所在目录查找 `mgl-trace-<pid>.log`。
 
 ## 致谢
 

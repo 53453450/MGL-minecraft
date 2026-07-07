@@ -48,7 +48,7 @@ extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern GLsizei mglSafeMaxTextureSize(GLMContext ctx);
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern bool getParam(GLMContext ctx, TextureParameter *tex_params, GLenum pname, GLint *iparam, GLfloat *fparam);
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 extern GLint mglTexLevelCanonicalInternalFormat(GLint internalformat);
 extern bool mglTexLevelInternalFormatCompressed(GLint internalformat);
 extern GLint mglCompressedInternalFormatToSizedUncompressed(GLint internalformat);

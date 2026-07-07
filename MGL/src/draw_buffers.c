@@ -31,7 +31,7 @@
 #include "mgl_safety.h"
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 #include "spirv_cross_c.h"
 
 static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)

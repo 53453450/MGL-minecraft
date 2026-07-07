@@ -138,7 +138,7 @@ static bool mglTextureParameterValidateNamedTarget(GLMContext ctx, Texture *tex,
     return true;
 }
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 static GLboolean mglTraceTextureNameDiagnosticsEnabled(void)
 {

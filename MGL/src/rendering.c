@@ -34,7 +34,7 @@
 #include "draw_command.h"
 #include "mgl_safety.h"
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 static Texture *mglStencilAttachmentTexture(FBOAttachment *attachment)
 {

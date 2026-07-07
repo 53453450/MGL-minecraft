@@ -40,6 +40,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <dispatch/dispatch.h>
+#include <os/lock.h>
 
 // Header shared between C code here, which executes Metal API commands, and .metal files, which
 // uses these types as inputs to the shaders.
@@ -56,11 +57,30 @@
 #import "mgl_sampler_compat.h"
 #import "mgl_sync.h"
 #import "mgl_msl_compat.h"
+#import "mgl_state_compat.h"
+#import "mgl_spirv_resource.h"
+#import "mgl_state_log.h"
+#import "mgl_blit_clip.h"
+#import "mgl_trace_log.h"
+#import "mgl_trace_strategy.h"
+#import "mgl_byte_hash.h"
+#import "mgl_vertex_format.h"
+#import "mgl_focus_program.h"
+#import "mgl_frame_activity.h"
+#import "mgl_index_buffer.h"
+#import "mgl_draw_mode.h"
+#import "mgl_vertex_attrib_query.h"
+#import "mgl_draw_buffer.h"
+#import "mgl_buffer_query.h"
+#import "mgl_draw_encode.h"
+#import "mgl_msl_compiler.h"
+#import "mgl_metal_ref.h"
 
 /* Metal.framework (imported below) provides its own MTLPixelFormat definition,
  * so skip the local enum in pixel_utils.h to avoid a redefinition conflict. */
 #define MGL_NO_MTL_PIXEL_FORMAT
 #include "pixel_utils.h"
+#import "mgl_readback.h"
 
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
@@ -101,24 +121,7 @@ typedef struct MGLDrawable_t {
     id<MTLTexture> stencilbuffer;
 } MGLDrawable;
 
-typedef struct MGLFragmentTextureTraceBinding_t {
-    GLuint gl_texture_name;
-    GLuint sampler_unit;
-    GLuint metal_binding;
-    GLuint program_name;
-    GLuint rt_write_version;
-    GLuint sampled_write_version;
-    void *gl_texture_ptr;
-    void *mtl_texture_ptr;
-    void *direct_mtl_texture_ptr;
-    void *sampled_copy_ptr;
-    NSUInteger width;
-    NSUInteger height;
-    NSUInteger pixel_format;
-    NSUInteger texture_type;
-    uint8_t used_sampled_copy;
-    uint8_t used_fallback;
-} MGLFragmentTextureTraceBinding;
+/* MGLFragmentTextureTraceBinding typedef moved to mgl_trace_strategy.h. */
 
 enum {
     _FRONT,
@@ -130,280 +133,10 @@ enum {
     _MAX_DRAW_BUFFERS
 };
 
-static GLuint mglDefaultDrawBufferIndexForGL(GLenum drawBuffer)
-{
-    switch (drawBuffer)
-    {
-        case GL_FRONT: return _FRONT;
-        case GL_BACK: return _FRONT;
-        case GL_FRONT_LEFT: return _FRONT_LEFT;
-        case GL_FRONT_RIGHT: return _FRONT_RIGHT;
-        case GL_BACK_LEFT: return _FRONT_LEFT;
-        case GL_BACK_RIGHT: return _FRONT_RIGHT;
-        case GL_LEFT: return _FRONT_LEFT;
-        case GL_RIGHT: return _FRONT_RIGHT;
-        case GL_FRONT_AND_BACK: return _FRONT;
-        case GL_COLOR_ATTACHMENT0: return _FRONT;
-        case GL_NONE: return _FRONT;
-        default: return _FRONT;
-    }
-}
+/* Draw buffer mapping helpers moved to mgl_draw_buffer.h/.m. */
 
-static GLsizei mglMetalDrawBufferCount(GLMContext drawCtx)
-{
-    if (!drawCtx || drawCtx->state.draw_buffer_count <= 0) {
-        return 0;
-    }
-    if (drawCtx->state.draw_buffer_count > (GLsizei)MAX_COLOR_ATTACHMENTS) {
-        return MAX_COLOR_ATTACHMENTS;
-    }
-    return drawCtx->state.draw_buffer_count;
-}
-
-static GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
-{
-    if (!drawCtx) {
-        return GL_NONE;
-    }
-
-    GLsizei count = mglMetalDrawBufferCount(drawCtx);
-    if (slot < (GLuint)count) {
-        return drawCtx->state.draw_buffers[slot];
-    }
-
-    return GL_NONE;
-}
-
-static BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
-                                                  GLenum drawBuffer,
-                                                  GLuint *attachmentIndex)
-{
-    if (!drawCtx || drawBuffer == GL_NONE) {
-        return NO;
-    }
-
-    if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + drawCtx->state.max_color_attachments) &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS)) {
-        if (attachmentIndex) {
-            *attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
-        }
-        return YES;
-    }
-
-    switch (drawBuffer) {
-        case GL_FRONT:
-        case GL_BACK:
-        case GL_FRONT_LEFT:
-        case GL_FRONT_RIGHT:
-        case GL_BACK_LEFT:
-        case GL_BACK_RIGHT:
-        case GL_LEFT:
-        case GL_RIGHT:
-        case GL_FRONT_AND_BACK:
-            if (attachmentIndex) {
-                *attachmentIndex = 0u;
-            }
-            return YES;
-
-        default:
-            return NO;
-    }
-}
-
-static GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot)
-{
-    if (!drawCtx || drawCtx->state.draw_buffer_count == 1u) {
-        return 0u;
-    }
-    return drawBufferSlot;
-}
-
-static BOOL mglMetalReadbackFormatIsBGRA8Compatible(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatBGRA8Unorm:
-        case MTLPixelFormatBGRA8Unorm_sRGB:
-        case MTLPixelFormatRGBA8Unorm:
-        case MTLPixelFormatRGBA8Unorm_sRGB:
-        case MTLPixelFormatRGBA32Float:
-        case MTLPixelFormatR8Unorm:
-        case MTLPixelFormatRG8Unorm:
-        case MTLPixelFormatR16Unorm:
-        case MTLPixelFormatR16Snorm:
-        case MTLPixelFormatRG16Unorm:
-        case MTLPixelFormatRG16Snorm:
-        case MTLPixelFormatRGBA16Unorm:
-        case MTLPixelFormatRGBA16Snorm:
-        case MTLPixelFormatABGR4Unorm:
-        case MTLPixelFormatBGR5A1Unorm:
-        case MTLPixelFormatRG11B10Float:
-        case MTLPixelFormatR32Float:
-        case MTLPixelFormatRG32Float:
-        case MTLPixelFormatRG16Float:
-        case MTLPixelFormatR16Float:
-        case MTLPixelFormatRGBA16Float:
-        case MTLPixelFormatBGR10A2Unorm:
-        case MTLPixelFormatRGB10A2Unorm:
-        case MTLPixelFormatR8Snorm:
-        case MTLPixelFormatRG8Snorm:
-        case MTLPixelFormatRGBA8Snorm:
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGB9E5Float:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static BOOL mglMetalPixelFormatIsIntegerColor(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatR16Uint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatR32Uint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRG16Uint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRG32Uint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGBA16Uint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatRGBA32Uint:
-        case MTLPixelFormatRGBA32Sint:
-        case MTLPixelFormatRGB10A2Uint:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static BOOL mglMetalPixelFormatIsSignedIntegerColor(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatR8Sint:
-        case MTLPixelFormatR16Sint:
-        case MTLPixelFormatR32Sint:
-        case MTLPixelFormatRG8Sint:
-        case MTLPixelFormatRG16Sint:
-        case MTLPixelFormatRG32Sint:
-        case MTLPixelFormatRGBA8Sint:
-        case MTLPixelFormatRGBA16Sint:
-        case MTLPixelFormatRGBA32Sint:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static NSUInteger mglMetalReadbackBytesPerPixel(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatRGBA32Float:
-            return sizeof(float) * 4u;
-        case MTLPixelFormatR8Unorm:
-            return 1u;
-        case MTLPixelFormatR16Unorm:
-        case MTLPixelFormatR16Snorm:
-        case MTLPixelFormatRG8Unorm:
-        case MTLPixelFormatABGR4Unorm:
-        case MTLPixelFormatBGR5A1Unorm:
-        case MTLPixelFormatR16Float:
-            return 2u;
-        case MTLPixelFormatRG32Float:
-        case MTLPixelFormatRGBA16Float:
-        case MTLPixelFormatRGBA16Unorm:
-        case MTLPixelFormatRGBA16Snorm:
-            return 8u;
-        case MTLPixelFormatR8Snorm:
-        case MTLPixelFormatR8Uint:
-        case MTLPixelFormatR8Sint:
-            return 1u;
-        case MTLPixelFormatRG8Snorm:
-        case MTLPixelFormatRG8Uint:
-        case MTLPixelFormatRG8Sint:
-            return 2u;
-        case MTLPixelFormatRG16Unorm:
-        case MTLPixelFormatRG16Snorm:
-        case MTLPixelFormatRG16Float:
-        case MTLPixelFormatRGBA8Snorm:
-        case MTLPixelFormatRGBA8Uint:
-        case MTLPixelFormatRGBA8Sint:
-        default:
-            return 4u;
-    }
-}
-
-static uint8_t mglMetalFloatToUnorm8(float value)
-{
-    if (!(value > 0.0f)) {
-        return 0u;
-    }
-    if (value >= 1.0f) {
-        return 255u;
-    }
-    return (uint8_t)(value * 255.0f + 0.5f);
-}
-
-static float mglMetalSnorm16ToFloat(int16_t value)
-{
-    if (value == INT16_MIN) {
-        return -1.0f;
-    }
-    return (float)value / 32767.0f;
-}
-
-static float mglMetalSnorm8ToFloat(int8_t value)
-{
-    if (value == INT8_MIN) {
-        return -1.0f;
-    }
-    return (float)value / 127.0f;
-}
-
-static BOOL mglMetalLayerPixelFormatIsSupported(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatBGRA8Unorm:
-        case MTLPixelFormatBGRA8Unorm_sRGB:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-// Returns the sRGB variant of a color-renderable pixel format.
-// Returns the original format if no sRGB variant exists.
-static MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt)
-{
-    switch (fmt) {
-        case MTLPixelFormatRGBA8Unorm:   return MTLPixelFormatRGBA8Unorm_sRGB;
-        case MTLPixelFormatBGRA8Unorm:   return MTLPixelFormatBGRA8Unorm_sRGB;
-        default: return fmt;
-    }
-}
-
-// Returns the linear variant of a color-renderable pixel format.
-// Returns the original format if no linear variant exists.
-static MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt)
-{
-    switch (fmt) {
-        case MTLPixelFormatRGBA8Unorm_sRGB: return MTLPixelFormatRGBA8Unorm;
-        case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
-        default: return fmt;
-    }
-}
+/* Pixel readback helpers (7 functions) moved to mgl_readback.m */
+/* Layer pixel format / sRGB / linear helpers moved to mgl_texture_compat */
 
 // Applies GL_FRAMEBUFFER_SRGB state to a render-target texture by creating
 // a Metal texture view with the appropriate pixel format. The view shares
@@ -464,271 +197,7 @@ static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
     return fallback;
 }
 
-static void mglMetalCopyTextureBytesToBGRA8(const uint8_t *src,
-                                            NSUInteger srcBytesPerRow,
-                                            uint8_t *dst,
-                                            NSUInteger dstBytesPerRow,
-                                            NSUInteger width,
-                                            NSUInteger height,
-                                            MTLPixelFormat pixelFormat,
-                                            BOOL flipY)
-{
-    if (!src || !dst || width == 0u || height == 0u) {
-        return;
-    }
-
-    BOOL sourceIsRGBA =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-    BOOL sourceIsRGBA32Float = (pixelFormat == MTLPixelFormatRGBA32Float);
-    BOOL sourceIsR8 = (pixelFormat == MTLPixelFormatR8Unorm);
-    BOOL sourceIsRG8 = (pixelFormat == MTLPixelFormatRG8Unorm);
-    BOOL sourceIsR16Unorm = (pixelFormat == MTLPixelFormatR16Unorm);
-    BOOL sourceIsRG16Unorm = (pixelFormat == MTLPixelFormatRG16Unorm);
-    BOOL sourceIsRGBA16Unorm = (pixelFormat == MTLPixelFormatRGBA16Unorm);
-    BOOL sourceIsR16Snorm = (pixelFormat == MTLPixelFormatR16Snorm);
-    BOOL sourceIsRG16Snorm = (pixelFormat == MTLPixelFormatRG16Snorm);
-    BOOL sourceIsRGBA16Snorm = (pixelFormat == MTLPixelFormatRGBA16Snorm);
-    BOOL sourceIsBGR5A1 = (pixelFormat == MTLPixelFormatBGR5A1Unorm);
-    BOOL sourceIsABGR4 = (pixelFormat == MTLPixelFormatABGR4Unorm);
-    BOOL sourceIsRG11B10Float = (pixelFormat == MTLPixelFormatRG11B10Float);
-    BOOL sourceIsR32Float = (pixelFormat == MTLPixelFormatR32Float);
-    BOOL sourceIsRG32Float = (pixelFormat == MTLPixelFormatRG32Float);
-    BOOL sourceIsRG16Float = (pixelFormat == MTLPixelFormatRG16Float);
-    BOOL sourceIsR16Float = (pixelFormat == MTLPixelFormatR16Float);
-    BOOL sourceIsRGBA16Float = (pixelFormat == MTLPixelFormatRGBA16Float);
-    BOOL sourceIsBGR10A2 = (pixelFormat == MTLPixelFormatBGR10A2Unorm);
-    BOOL sourceIsRGB10A2 = (pixelFormat == MTLPixelFormatRGB10A2Unorm);
-    BOOL sourceIsR8Snorm = (pixelFormat == MTLPixelFormatR8Snorm);
-    BOOL sourceIsRG8Snorm = (pixelFormat == MTLPixelFormatRG8Snorm);
-    BOOL sourceIsRGBA8Snorm = (pixelFormat == MTLPixelFormatRGBA8Snorm);
-    BOOL sourceIsR8Uint = (pixelFormat == MTLPixelFormatR8Uint);
-    BOOL sourceIsR8Sint = (pixelFormat == MTLPixelFormatR8Sint);
-    BOOL sourceIsRG8Uint = (pixelFormat == MTLPixelFormatRG8Uint);
-    BOOL sourceIsRG8Sint = (pixelFormat == MTLPixelFormatRG8Sint);
-    BOOL sourceIsRGBA8Uint = (pixelFormat == MTLPixelFormatRGBA8Uint);
-    BOOL sourceIsRGBA8Sint = (pixelFormat == MTLPixelFormatRGBA8Sint);
-    BOOL sourceIsRGB9E5 = (pixelFormat == MTLPixelFormatRGB9E5Float);
-
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-
-        if (!sourceIsRGBA && !sourceIsRGBA32Float && !sourceIsR8 && !sourceIsRG8 &&
-            !sourceIsR16Unorm && !sourceIsRG16Unorm && !sourceIsRGBA16Unorm &&
-            !sourceIsR16Snorm && !sourceIsRG16Snorm && !sourceIsRGBA16Snorm &&
-            !sourceIsBGR5A1 && !sourceIsABGR4 && !sourceIsRG11B10Float &&
-            !sourceIsR32Float && !sourceIsRG32Float && !sourceIsRG16Float &&
-            !sourceIsR16Float && !sourceIsRGBA16Float && !sourceIsBGR10A2 &&
-            !sourceIsRGB10A2 &&
-            !sourceIsR8Snorm && !sourceIsRG8Snorm && !sourceIsRGBA8Snorm &&
-            !sourceIsR8Uint && !sourceIsR8Sint && !sourceIsRG8Uint && !sourceIsRG8Sint &&
-            !sourceIsRGBA8Uint && !sourceIsRGBA8Sint && !sourceIsRGB9E5) {
-            memcpy(dstRow, srcRow, width * 4u);
-            continue;
-        }
-
-        for (NSUInteger x = 0; x < width; x++) {
-            uint8_t *d = dstRow + (x * 4u);
-            if (sourceIsRGBA32Float) {
-                const float *s = (const float *)(const void *)(srcRow + (x * sizeof(float) * 4u));
-                d[0] = mglMetalFloatToUnorm8(s[2]);
-                d[1] = mglMetalFloatToUnorm8(s[1]);
-                d[2] = mglMetalFloatToUnorm8(s[0]);
-                d[3] = mglMetalFloatToUnorm8(s[3]);
-            } else if (sourceIsRGBA16Float) {
-                uint16_t components[4] = {0u, 0u, 0u, 0u};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = mglMetalFloatToUnorm8(mglHalfToFloat(components[2]));
-                d[1] = mglMetalFloatToUnorm8(mglHalfToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(components[0]));
-                d[3] = mglMetalFloatToUnorm8(mglHalfToFloat(components[3]));
-            } else if (sourceIsRG11B10Float) {
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = mglMetalFloatToUnorm8(mglUnpackUnsignedFloatComponent(packed >> 22u, 5u));
-                d[1] = mglMetalFloatToUnorm8(mglUnpackUnsignedFloatComponent(packed >> 11u, 6u));
-                d[2] = mglMetalFloatToUnorm8(mglUnpackUnsignedFloatComponent(packed, 6u));
-                d[3] = 255u;
-            } else if (sourceIsRG32Float) {
-                const float *s = (const float *)(const void *)(srcRow + (x * sizeof(float) * 2u));
-                d[0] = 0u;
-                d[1] = mglMetalFloatToUnorm8(s[1]);
-                d[2] = mglMetalFloatToUnorm8(s[0]);
-                d[3] = 255u;
-            } else if (sourceIsR32Float) {
-                float component = 0.0f;
-                memcpy(&component, srcRow + x * sizeof(component), sizeof(component));
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = mglMetalFloatToUnorm8(component);
-                d[3] = 255u;
-            } else if (sourceIsRG16Float) {
-                uint16_t components[2] = {0u, 0u};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = 0u;
-                d[1] = mglMetalFloatToUnorm8(mglHalfToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(components[0]));
-                d[3] = 255u;
-            } else if (sourceIsR16Float) {
-                uint16_t component = 0u;
-                memcpy(&component, srcRow + x * sizeof(component), sizeof(component));
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = mglMetalFloatToUnorm8(mglHalfToFloat(component));
-                d[3] = 255u;
-            } else if (sourceIsRGBA16Unorm) {
-                uint16_t components[4] = {0u, 0u, 0u, 0u};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = (uint8_t)((components[2] * 255u + 32767u) / 65535u);
-                d[1] = (uint8_t)((components[1] * 255u + 32767u) / 65535u);
-                d[2] = (uint8_t)((components[0] * 255u + 32767u) / 65535u);
-                d[3] = (uint8_t)((components[3] * 255u + 32767u) / 65535u);
-            } else if (sourceIsRG16Unorm) {
-                uint16_t components[2] = {0u, 0u};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = 0u;
-                d[1] = (uint8_t)((components[1] * 255u + 32767u) / 65535u);
-                d[2] = (uint8_t)((components[0] * 255u + 32767u) / 65535u);
-                d[3] = 255u;
-            } else if (sourceIsR16Unorm) {
-                uint16_t component = 0u;
-                memcpy(&component, srcRow + x * sizeof(component), sizeof(component));
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = (uint8_t)((component * 255u + 32767u) / 65535u);
-                d[3] = 255u;
-            } else if (sourceIsRGBA16Snorm) {
-                int16_t components[4] = {0, 0, 0, 0};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[2]));
-                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[0]));
-                d[3] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[3]));
-            } else if (sourceIsRG16Snorm) {
-                int16_t components[2] = {0, 0};
-                memcpy(components, srcRow + x * sizeof(components), sizeof(components));
-                d[0] = 0u;
-                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(components[0]));
-                d[3] = 255u;
-            } else if (sourceIsR16Snorm) {
-                int16_t component = 0;
-                memcpy(&component, srcRow + x * sizeof(component), sizeof(component));
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm16ToFloat(component));
-                d[3] = 255u;
-            } else if (sourceIsBGR10A2) {
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)(((packed & 1023u) * 255u) / 1023u);
-                d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
-                d[2] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
-                d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
-            } else if (sourceIsRGB10A2) {
-                /* MTLPixelFormatRGB10A2Unorm: R[0:9], G[10:19], B[20:29], A[30:31]
-                 * (LSB-first, same as GL_UNSIGNED_INT_2_10_10_10_REV).
-                 * Convert to BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)((((packed >> 20u) & 1023u) * 255u) / 1023u);
-                d[1] = (uint8_t)((((packed >> 10u) & 1023u) * 255u) / 1023u);
-                d[2] = (uint8_t)(((packed & 1023u) * 255u) / 1023u);
-                d[3] = (uint8_t)((((packed >> 30u) & 3u) * 255u) / 3u);
-            } else if (sourceIsR8) {
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = srcRow[x];
-                d[3] = 255u;
-            } else if (sourceIsRG8) {
-                const uint8_t *s = srcRow + x * 2u;
-                d[0] = 0u;
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = 255u;
-            } else if (sourceIsBGR5A1) {
-                /* MTLPixelFormatBGR5A1Unorm: B[0:4], G[5:9], R[10:14], A[15].
-                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
-                uint16_t packed = 0u;
-                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)(((packed & 31u) * 255u) / 31u);
-                d[1] = (uint8_t)((((packed >> 5u) & 31u) * 255u) / 31u);
-                d[2] = (uint8_t)((((packed >> 10u) & 31u) * 255u) / 31u);
-                d[3] = ((packed >> 15u) & 1u) ? 255u : 0u;
-            } else if (sourceIsABGR4) {
-                /* MTLPixelFormatABGR4Unorm: A[0:3], B[4:7], G[8:11], R[12:15].
-                 * Output BGRA8: d[0]=B, d[1]=G, d[2]=R, d[3]=A. */
-                uint16_t packed = 0u;
-                memcpy(&packed, srcRow + x * sizeof(packed), sizeof(packed));
-                d[0] = (uint8_t)((((packed >> 4u) & 15u) * 255u) / 15u);
-                d[1] = (uint8_t)((((packed >> 8u) & 15u) * 255u) / 15u);
-                d[2] = (uint8_t)((((packed >> 12u) & 15u) * 255u) / 15u);
-                d[3] = (uint8_t)(((packed & 15u) * 255u) / 15u);
-            } else if (sourceIsR8Snorm || sourceIsR8Sint) {
-                int8_t s = (int8_t)srcRow[x];
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s));
-                d[3] = 255u;
-            } else if (sourceIsRG8Snorm || sourceIsRG8Sint) {
-                const int8_t *s = (const int8_t *)(srcRow + x * 2u);
-                d[0] = 0u;
-                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[0]));
-                d[3] = 255u;
-            } else if (sourceIsRGBA8Snorm || sourceIsRGBA8Sint) {
-                const int8_t *s = (const int8_t *)(srcRow + x * 4u);
-                d[0] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[2]));
-                d[1] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[1]));
-                d[2] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[0]));
-                d[3] = mglMetalFloatToUnorm8(mglMetalSnorm8ToFloat(s[3]));
-            } else if (sourceIsR8Uint) {
-                d[0] = 0u;
-                d[1] = 0u;
-                d[2] = srcRow[x];
-                d[3] = 255u;
-            } else if (sourceIsRG8Uint) {
-                const uint8_t *s = srcRow + x * 2u;
-                d[0] = 0u;
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = 255u;
-            } else if (sourceIsRGBA8Uint) {
-                const uint8_t *s = srcRow + x * 4u;
-                d[0] = s[2];
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = s[3];
-            } else if (sourceIsRGB9E5) {
-                /* MTLPixelFormatRGB9E5Float: 4 bytes/pixel, shared exponent.
-                 * Unpack to float R,G,B then convert to BGRA8 UNORM. */
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + x * 4u, sizeof(packed));
-                uint32_t exp = (packed >> 27u) & 31u;
-                uint32_t mant_r = packed & 511u;
-                uint32_t mant_g = (packed >> 9u) & 511u;
-                uint32_t mant_b = (packed >> 18u) & 511u;
-                float scale = ldexpf(1.0f, (int)exp - 24);
-                float rf = (float)mant_r * scale;
-                float gf = (float)mant_g * scale;
-                float bf = (float)mant_b * scale;
-                d[0] = mglMetalFloatToUnorm8(bf);
-                d[1] = mglMetalFloatToUnorm8(gf);
-                d[2] = mglMetalFloatToUnorm8(rf);
-                d[3] = 255u;
-            } else {
-                const uint8_t *s = srcRow + (x * 4u);
-                d[0] = s[2];
-                d[1] = s[1];
-                d[2] = s[0];
-                d[3] = s[3];
-            }
-        }
-    }
-}
-
+/* mglMetalCopyTextureBytesToBGRA8 moved to mgl_readback.m */
 static void mglMetalCopyRows(const uint8_t *src,
                              NSUInteger srcBytesPerRow,
                              uint8_t *dst,
@@ -749,1139 +218,7 @@ static void mglMetalCopyRows(const uint8_t *src,
     }
 }
 
-static BOOL mglMetalCopyBGRA8CompatibleTextureBytesToGL(const uint8_t *src,
-                                                        NSUInteger srcBytesPerRow,
-                                                        uint8_t *dst,
-                                                        NSUInteger dstBytesPerRow,
-                                                        NSUInteger width,
-                                                        NSUInteger height,
-                                                        MTLPixelFormat pixelFormat,
-                                                        GLenum format,
-                                                        GLenum type,
-                                                        BOOL flipY)
-{
-    if (!src || !dst || width == 0u || height == 0u) {
-        return NO;
-    }
-
-    if (type != GL_UNSIGNED_BYTE &&
-        type != GL_UNSIGNED_INT_8_8_8_8 &&
-        type != GL_UNSIGNED_INT_8_8_8_8_REV &&
-        type != GL_FLOAT &&
-        type != GL_BYTE &&
-        type != GL_SHORT &&
-        type != GL_INT &&
-        type != GL_UNSIGNED_INT &&
-        type != GL_UNSIGNED_SHORT &&
-        type != GL_HALF_FLOAT &&
-        type != GL_UNSIGNED_BYTE_3_3_2 &&
-        type != GL_UNSIGNED_BYTE_2_3_3_REV &&
-        type != GL_UNSIGNED_SHORT_5_6_5 &&
-        type != GL_UNSIGNED_SHORT_5_6_5_REV &&
-        type != GL_UNSIGNED_SHORT_4_4_4_4 &&
-        type != GL_UNSIGNED_SHORT_4_4_4_4_REV &&
-        type != GL_UNSIGNED_SHORT_5_5_5_1 &&
-        type != GL_UNSIGNED_SHORT_1_5_5_5_REV &&
-        type != GL_UNSIGNED_INT_10_10_10_2 &&
-        type != GL_UNSIGNED_INT_2_10_10_10_REV &&
-        type != GL_UNSIGNED_INT_10F_11F_11F_REV &&
-        type != GL_UNSIGNED_INT_5_9_9_9_REV) {
-        return NO;
-    }
-
-    /* Direct SNORM conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * SNORM int8_t -> BGRA8 UNORM loses sign information, so we convert directly
-     * from the native SNORM texture data to the requested GL format/type. */
-    BOOL sourceIsSnorm8 =
-        (pixelFormat == MTLPixelFormatR8Snorm ||
-         pixelFormat == MTLPixelFormatRG8Snorm ||
-         pixelFormat == MTLPixelFormatRGBA8Snorm);
-    if (sourceIsSnorm8) {
-        NSUInteger srcBpp = mglMetalReadbackBytesPerPixel(pixelFormat);
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-        int srcChannels = (int)(srcBpp); /* 1 for R8, 2 for RG8, 4 for RGBA8 */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0};
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const int8_t *s = (const int8_t *)(srcRow + (x * srcBpp));
-                uint8_t *dp = dstRow + (x * dstPixelBytes);
-                for (int c = 0; c < slots; ++c) {
-                    int idx = srcIdx[c];
-                    if (idx >= srcChannels) idx = srcChannels - 1;
-                    int8_t sv = s[idx];
-                    float fv = mglMetalSnorm8ToFloat(sv);
-                    uint8_t *out = dp + (NSUInteger)c * compBytes;
-                    if (type == GL_BYTE) {
-                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
-                        if (iv > 127) iv = 127;
-                        if (iv < -128) iv = -128;
-                        int8_t biv = (int8_t)iv;
-                        memcpy(out, &biv, sizeof(biv));
-                    } else if (type == GL_UNSIGNED_BYTE) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_FLOAT) {
-                        memcpy(out, &fv, sizeof(fv));
-                    } else if (type == GL_HALF_FLOAT) {
-                        uint16_t iv = mglFloatToHalf(fv);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
-                        int32_t iv = (int32_t)lroundf(fv * 32767.0f);
-                        if (iv > 32767) iv = 32767;
-                        if (iv < -32768) iv = -32768;
-                        int16_t siv = (int16_t)iv;
-                        memcpy(out, &siv, sizeof(siv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
-                        int64_t iv = (int64_t)llroundf(fv * 2147483647.0f);
-                        if (iv > 2147483647LL) iv = 2147483647LL;
-                        if (iv < -2147483648LL) iv = -2147483648LL;
-                        int32_t iiv = (int32_t)iv;
-                        memcpy(out, &iiv, sizeof(iiv));
-                    } else if (type == GL_UNSIGNED_INT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    }
-                }
-            }
-        }
-        return YES;
-    }
-
-    /* Direct RGB10A2 conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * RGB10A2 has 10-bit color channels; going through BGRA8 (8-bit) loses ~2 bits
-     * of precision, causing CTS gradient comparison failures. Convert directly
-     * from the native 10-bit packed data to the requested GL format/type. */
-    BOOL sourceIsRGB10A2Direct = (pixelFormat == MTLPixelFormatRGB10A2Unorm);
-    if (sourceIsRGB10A2Direct &&
-        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
-         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
-         type == GL_UNSIGNED_INT || type == GL_INT ||
-         type == GL_FLOAT || type == GL_HALF_FLOAT ||
-         type == GL_UNSIGNED_INT_10_10_10_2 ||
-         type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-         type == GL_UNSIGNED_INT_5_9_9_9_REV ||
-         type == GL_UNSIGNED_INT_8_8_8_8 ||
-         type == GL_UNSIGNED_INT_8_8_8_8_REV))
-    {
-        NSUInteger srcBpp = 4u; /* RGB10A2 is 4 bytes per pixel */
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-
-        /* Determine output channel mapping */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0}; /* indices into R,G,B,A (0=R,1=G,2=B,3=A) */
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + (x * srcBpp), sizeof(packed));
-                /* Extract 10-bit/2-bit unorm values from LSB-first layout */
-                uint32_t rgb10a2_vals[4] = {
-                    packed & 1023u,           /* R: bits 0-9 */
-                    (packed >> 10u) & 1023u,  /* G: bits 10-19 */
-                    (packed >> 20u) & 1023u,  /* B: bits 20-29 */
-                    (packed >> 30u) & 3u      /* A: bits 30-31 */
-                };
-
-                if (type == GL_UNSIGNED_INT_10_10_10_2) {
-                    /* MSB-first: R[22:31], G[12:21], B[2:11], A[0:1] */
-                    uint32_t r10 = rgb10a2_vals[srcIdx[0]];
-                    uint32_t g10 = (slots > 1) ? rgb10a2_vals[srcIdx[1]] : 0u;
-                    uint32_t b10 = (slots > 2) ? rgb10a2_vals[srcIdx[2]] : 0u;
-                    uint32_t a2 = (slots > 3) ? rgb10a2_vals[srcIdx[3]] : 0u;
-                    uint32_t out = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-                    /* LSB-first: same layout as source, just remap channels */
-                    uint32_t r10 = rgb10a2_vals[srcIdx[0]];
-                    uint32_t g10 = (slots > 1) ? rgb10a2_vals[srcIdx[1]] : 0u;
-                    uint32_t b10 = (slots > 2) ? rgb10a2_vals[srcIdx[2]] : 0u;
-                    uint32_t a2 = (slots > 3) ? rgb10a2_vals[srcIdx[3]] : 0u;
-                    uint32_t out = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                    /* Pack 10-bit unorm channels to shared-exponent RGB9E5
-                     * directly from 10-bit values to avoid 8-bit precision loss. */
-                    float rf = (float)rgb10a2_vals[srcIdx[0]] / 1023.0f;
-                    float gf = (slots > 1) ? (float)rgb10a2_vals[srcIdx[1]] / 1023.0f : 0.0f;
-                    float bf = (slots > 2) ? (float)rgb10a2_vals[srcIdx[2]] / 1023.0f : 0.0f;
-                    uint32_t out = mglPackRGBToSharedExp(rf, gf, bf);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                    /* CTS: R=(val>>24), G=(val>>16), B=(val>>8), A=(val>>0).
-                     * Convert 10-bit to 8-bit directly for best precision. */
-                    uint8_t r8 = (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[0]] * 255u / 1023u);
-                    uint8_t g8 = (slots > 1) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[1]] * 255u / 1023u) : 0u;
-                    uint8_t b8 = (slots > 2) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[2]] * 255u / 1023u) : 0u;
-                    uint8_t a8 = (slots > 3) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[3]] * 255u / 3u) : 0u;
-                    uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) | ((uint32_t)b8 << 8u) | a8;
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                    /* CTS: R=(val>>0), G=(val>>8), B=(val>>16), A=(val>>24). */
-                    uint8_t r8 = (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[0]] * 255u / 1023u);
-                    uint8_t g8 = (slots > 1) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[1]] * 255u / 1023u) : 0u;
-                    uint8_t b8 = (slots > 2) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[2]] * 255u / 1023u) : 0u;
-                    uint8_t a8 = (slots > 3) ? (uint8_t)((uint64_t)rgb10a2_vals[srcIdx[3]] * 255u / 3u) : 0u;
-                    uint32_t out = r8 | ((uint32_t)g8 << 8u) | ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else {
-                    /* Non-packed types: convert via float to preserve precision */
-                    for (int c = 0; c < slots; ++c) {
-                        uint32_t raw = rgb10a2_vals[srcIdx[c]];
-                        float fv = (srcIdx[c] == 3) ? (float)raw / 3.0f : (float)raw / 1023.0f;
-                        uint8_t *out = dstRow + (x * dstPixelBytes) + (NSUInteger)c * compBytes;
-                        if (type == GL_UNSIGNED_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int8_t iv = (int8_t)lroundf(cv * 127.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int16_t iv = (int16_t)lroundf(cv * 32767.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_FLOAT) {
-                            memcpy(out, &fv, sizeof(fv));
-                        } else { /* GL_HALF_FLOAT */
-                            uint16_t iv = mglFloatToHalf(fv);
-                            memcpy(out, &iv, sizeof(iv));
-                        }
-                    }
-                }
-            }
-        }
-        return YES;
-    }
-
-    /* Direct RG11B10Float conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * RG11B10Float has float channels; going through BGRA8 (8-bit unorm) loses
-     * precision and changes bit patterns, causing CTS copy_image failures.
-     * Convert directly from the native packed float data to the requested GL format/type. */
-    BOOL sourceIsRG11B10FloatDirect = (pixelFormat == MTLPixelFormatRG11B10Float);
-    if (sourceIsRG11B10FloatDirect &&
-        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
-         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
-         type == GL_UNSIGNED_INT || type == GL_INT ||
-         type == GL_FLOAT || type == GL_HALF_FLOAT ||
-         type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
-         type == GL_UNSIGNED_INT_5_9_9_9_REV ||
-         type == GL_UNSIGNED_INT_8_8_8_8 ||
-         type == GL_UNSIGNED_INT_8_8_8_8_REV))
-    {
-        NSUInteger srcBpp = 4u; /* RG11B10Float is 4 bytes per pixel */
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-
-        /* For GL_UNSIGNED_INT_10F_11F_11F_REV with GL_RGB, Metal's RG11B10Float
-         * uses the exact same LSB-first bit layout (R[0:10], G[11:21], B[22:31]).
-         * Raw memcpy preserves the exact bits. */
-        if (type == GL_UNSIGNED_INT_10F_11F_11F_REV && format == GL_RGB) {
-            for (NSUInteger y = 0; y < height; y++) {
-                const uint8_t *srcRow = src + (y * srcBytesPerRow);
-                NSUInteger dstY = flipY ? (height - 1u - y) : y;
-                uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-                memcpy(dstRow, srcRow, width * srcBpp);
-            }
-            return YES;
-        }
-
-        /* Determine output channel mapping */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0}; /* indices into R,G,B,A (0=R,1=G,2=B,3=A) */
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                uint32_t packed = 0u;
-                memcpy(&packed, srcRow + (x * srcBpp), sizeof(packed));
-                /* Decode float channels from RG11B10Float packed format.
-                 * R: bits 0-10 (11-bit float, 6-bit mantissa)
-                 * G: bits 11-21 (11-bit float, 6-bit mantissa)
-                 * B: bits 22-31 (10-bit float, 5-bit mantissa) */
-                float float_vals[4] = {
-                    mglUnpackUnsignedFloatComponent(packed, 6u),         /* R */
-                    mglUnpackUnsignedFloatComponent(packed >> 11u, 6u),  /* G */
-                    mglUnpackUnsignedFloatComponent(packed >> 22u, 5u),  /* B */
-                    1.0f                                                /* A (always 1) */
-                };
-
-                if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                    /* Pack as R11G11B10 float with remapped channels.
-                     * Layout: R[0:10], G[11:21], B[22:31] */
-                    float r = float_vals[srcIdx[0]];
-                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
-                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
-                    uint32_t out = (mglFloatToFloat11(r) & 0x7ffu) |
-                                   ((mglFloatToFloat11(g) & 0x7ffu) << 11u) |
-                                   ((mglFloatToFloat10(b) & 0x3ffu) << 22u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                    float r = float_vals[srcIdx[0]];
-                    float g = (slots > 1) ? float_vals[srcIdx[1]] : 0.0f;
-                    float b = (slots > 2) ? float_vals[srcIdx[2]] : 0.0f;
-                    uint32_t out = mglPackRGBToSharedExp(r, g, b);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
-                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
-                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
-                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
-                    uint32_t out = ((uint32_t)r8 << 24u) | ((uint32_t)g8 << 16u) | ((uint32_t)b8 << 8u) | a8;
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                    uint8_t r8 = mglMetalFloatToUnorm8(float_vals[srcIdx[0]]);
-                    uint8_t g8 = (slots > 1) ? mglMetalFloatToUnorm8(float_vals[srcIdx[1]]) : 0u;
-                    uint8_t b8 = (slots > 2) ? mglMetalFloatToUnorm8(float_vals[srcIdx[2]]) : 0u;
-                    uint8_t a8 = (slots > 3) ? mglMetalFloatToUnorm8(float_vals[srcIdx[3]]) : 0u;
-                    uint32_t out = r8 | ((uint32_t)g8 << 8u) | ((uint32_t)b8 << 16u) | ((uint32_t)a8 << 24u);
-                    memcpy(dstRow + (x * dstPixelBytes), &out, sizeof(out));
-                } else {
-                    /* Non-packed types: convert via float */
-                    for (int c = 0; c < slots; ++c) {
-                        float fv = float_vals[srcIdx[c]];
-                        uint8_t *out = dstRow + (x * dstPixelBytes) + (NSUInteger)c * compBytes;
-                        if (type == GL_UNSIGNED_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_BYTE) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int8_t iv = (int8_t)lroundf(cv * 127.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_SHORT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int16_t iv = (int16_t)lroundf(cv * 32767.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_UNSIGNED_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                            uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_INT) {
-                            float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                            int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
-                            memcpy(out, &iv, sizeof(iv));
-                        } else if (type == GL_FLOAT) {
-                            memcpy(out, &fv, sizeof(fv));
-                        } else { /* GL_HALF_FLOAT */
-                            uint16_t iv = mglFloatToHalf(fv);
-                            memcpy(out, &iv, sizeof(iv));
-                        }
-                    }
-                }
-            }
-        }
-        return YES;
-    }
-
-    /* Direct 16-bit/32-bit conversion path: bypass the lossy BGRA8 UNORM intermediate.
-     * R16/RG16/RGBA16 Unorm/Snorm/Float and R32/RG32/RGBA32 Float -> BGRA8 UNORM
-     * loses precision, so we convert directly from the native texture data to the
-     * requested GL format/type. */
-    BOOL sourceIs16BitUnorm =
-        (pixelFormat == MTLPixelFormatR16Unorm ||
-         pixelFormat == MTLPixelFormatRG16Unorm ||
-         pixelFormat == MTLPixelFormatRGBA16Unorm);
-    BOOL sourceIs16BitSnorm =
-        (pixelFormat == MTLPixelFormatR16Snorm ||
-         pixelFormat == MTLPixelFormatRG16Snorm ||
-         pixelFormat == MTLPixelFormatRGBA16Snorm);
-    BOOL sourceIs16BitFloat =
-        (pixelFormat == MTLPixelFormatR16Float ||
-         pixelFormat == MTLPixelFormatRG16Float ||
-         pixelFormat == MTLPixelFormatRGBA16Float);
-    BOOL sourceIs32BitFloat =
-        (pixelFormat == MTLPixelFormatR32Float ||
-         pixelFormat == MTLPixelFormatRG32Float ||
-         pixelFormat == MTLPixelFormatRGBA32Float);
-
-    if ((sourceIs16BitUnorm || sourceIs16BitSnorm || sourceIs16BitFloat || sourceIs32BitFloat) &&
-        (type == GL_UNSIGNED_BYTE || type == GL_BYTE ||
-         type == GL_UNSIGNED_SHORT || type == GL_SHORT ||
-         type == GL_UNSIGNED_INT || type == GL_INT ||
-         type == GL_FLOAT || type == GL_HALF_FLOAT ||
-         type == GL_UNSIGNED_BYTE_3_3_2 || type == GL_UNSIGNED_BYTE_2_3_3_REV ||
-         type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV ||
-         type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-         type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-         type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-         type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-         type == GL_UNSIGNED_INT_10F_11F_11F_REV || type == GL_UNSIGNED_INT_5_9_9_9_REV))
-    {
-        NSUInteger srcBpp = mglMetalReadbackBytesPerPixel(pixelFormat);
-        NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-        if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-            return NO;
-        }
-
-        /* Determine source channels: 1 for R16, 2 for RG16, 4 for RGBA16 */
-        int srcChannels = 0;
-        if (sourceIs32BitFloat) {
-            switch (pixelFormat) {
-                case MTLPixelFormatR32Float: srcChannels = 1; break;
-                case MTLPixelFormatRG32Float: srcChannels = 2; break;
-                case MTLPixelFormatRGBA32Float: srcChannels = 4; break;
-                default: break;
-            }
-        } else {
-            switch (pixelFormat) {
-                case MTLPixelFormatR16Unorm:
-                case MTLPixelFormatR16Snorm:
-                case MTLPixelFormatR16Float:
-                    srcChannels = 1; break;
-                case MTLPixelFormatRG16Unorm:
-                case MTLPixelFormatRG16Snorm:
-                case MTLPixelFormatRG16Float:
-                    srcChannels = 2; break;
-                case MTLPixelFormatRGBA16Unorm:
-                case MTLPixelFormatRGBA16Snorm:
-                case MTLPixelFormatRGBA16Float:
-                    srcChannels = 4; break;
-                default: break;
-            }
-        }
-        if (srcChannels == 0) return NO;
-
-        /* Map output format to source channel indices */
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0};
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const uint8_t *s = srcRow + (x * srcBpp);
-                uint8_t *dp = dstRow + (x * dstPixelBytes);
-
-                /* Packed output types: extract all source components as float,
-                 * then pack into the output word. This preserves precision
-                 * compared to going through a BGRA8 intermediate. */
-                BOOL outputIsPackedType =
-                    (type == GL_UNSIGNED_BYTE_3_3_2 || type == GL_UNSIGNED_BYTE_2_3_3_REV ||
-                     type == GL_UNSIGNED_SHORT_5_6_5 || type == GL_UNSIGNED_SHORT_5_6_5_REV ||
-                     type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-                     type == GL_UNSIGNED_SHORT_5_5_5_1 || type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-                     type == GL_UNSIGNED_INT_8_8_8_8 || type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-                     type == GL_UNSIGNED_INT_10_10_10_2 || type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-                     type == GL_UNSIGNED_INT_10F_11F_11F_REV || type == GL_UNSIGNED_INT_5_9_9_9_REV);
-                if (outputIsPackedType) {
-                    /* Extract up to 4 source components as float values. */
-                    float fvals[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                    for (int c = 0; c < slots; ++c) {
-                        int idx = srcIdx[c];
-                        if (idx >= srcChannels) idx = srcChannels - 1;
-                        if (sourceIs16BitUnorm) {
-                            uint16_t uv;
-                            memcpy(&uv, s + (NSUInteger)idx * 2u, sizeof(uv));
-                            fvals[c] = (float)uv / 65535.0f;
-                        } else if (sourceIs16BitSnorm) {
-                            int16_t sv;
-                            memcpy(&sv, s + (NSUInteger)idx * 2u, sizeof(sv));
-                            fvals[c] = (float)sv / 32767.0f;
-                        } else if (sourceIs16BitFloat) {
-                            uint16_t hv;
-                            memcpy(&hv, s + (NSUInteger)idx * 2u, sizeof(hv));
-                            fvals[c] = mglHalfToFloat(hv);
-                        } else {
-                            memcpy(&fvals[c], s + (NSUInteger)idx * 4u, sizeof(float));
-                        }
-                    }
-                    /* For formats with < 4 components, pad with defaults. */
-                    /* R, G, B default to 0; A defaults to 1 for RGBA outputs. */
-                    if (slots < 4) {
-                        BOOL needsAlpha = (type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-                            type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-                            type == GL_UNSIGNED_SHORT_5_5_5_1 ||
-                            type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-                            type == GL_UNSIGNED_INT_8_8_8_8 ||
-                            type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-                            type == GL_UNSIGNED_INT_10_10_10_2 ||
-                            type == GL_UNSIGNED_INT_2_10_10_10_REV);
-                        if (needsAlpha) fvals[3] = 1.0f;
-                    }
-
-                    if (type == GL_UNSIGNED_BYTE_3_3_2) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        dp[0] = (uint8_t)(((uint32_t)lroundf(r * 7.0f) << 5) |
-                                          ((uint32_t)lroundf(g * 7.0f) << 2) |
-                                          (uint32_t)lroundf(b * 3.0f));
-                    } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        dp[0] = (uint8_t)((uint32_t)lroundf(r * 7.0f) |
-                                          ((uint32_t)lroundf(g * 7.0f) << 3) |
-                                          ((uint32_t)lroundf(b * 3.0f) << 6));
-                    } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 31.0f) << 11) |
-                                                     ((uint32_t)lroundf(g * 63.0f) << 5) |
-                                                     (uint32_t)lroundf(b * 31.0f));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 31.0f) |
-                                                     ((uint32_t)lroundf(g * 63.0f) << 5) |
-                                                     ((uint32_t)lroundf(b * 31.0f) << 11));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 15.0f) << 12) |
-                                                     ((uint32_t)lroundf(g * 15.0f) << 8) |
-                                                     ((uint32_t)lroundf(b * 15.0f) << 4) |
-                                                     (uint32_t)lroundf(a * 15.0f));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 15.0f) |
-                                                     ((uint32_t)lroundf(g * 15.0f) << 4) |
-                                                     ((uint32_t)lroundf(b * 15.0f) << 8) |
-                                                     ((uint32_t)lroundf(a * 15.0f) << 12));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint16_t packed = (uint16_t)(((uint32_t)lroundf(r * 31.0f) << 11) |
-                                                     ((uint32_t)lroundf(g * 31.0f) << 6) |
-                                                     ((uint32_t)lroundf(b * 31.0f) << 1) |
-                                                     (a >= 0.5f ? 1u : 0u));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint16_t packed = (uint16_t)((uint32_t)lroundf(r * 31.0f) |
-                                                     ((uint32_t)lroundf(g * 31.0f) << 5) |
-                                                     ((uint32_t)lroundf(b * 31.0f) << 10) |
-                                                     ((a >= 0.5f ? 1u : 0u) << 15));
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint32_t packed = ((uint32_t)lroundf(r * 255.0f) << 24) |
-                                          ((uint32_t)lroundf(g * 255.0f) << 16) |
-                                          ((uint32_t)lroundf(b * 255.0f) << 8) |
-                                          (uint32_t)lroundf(a * 255.0f);
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint32_t packed = (uint32_t)lroundf(r * 255.0f) |
-                                          ((uint32_t)lroundf(g * 255.0f) << 8) |
-                                          ((uint32_t)lroundf(b * 255.0f) << 16) |
-                                          ((uint32_t)lroundf(a * 255.0f) << 24);
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint32_t packed = ((uint32_t)lroundf(r * 1023.0f) << 22) |
-                                          ((uint32_t)lroundf(g * 1023.0f) << 12) |
-                                          ((uint32_t)lroundf(b * 1023.0f) << 2) |
-                                          (uint32_t)lroundf(a * 3.0f);
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-                        float r = fvals[0] > 1.0f ? 1.0f : (fvals[0] < 0.0f ? 0.0f : fvals[0]);
-                        float g = (slots > 1) ? (fvals[1] > 1.0f ? 1.0f : (fvals[1] < 0.0f ? 0.0f : fvals[1])) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] > 1.0f ? 1.0f : (fvals[2] < 0.0f ? 0.0f : fvals[2])) : 0.0f;
-                        float a = (slots > 3) ? (fvals[3] > 1.0f ? 1.0f : (fvals[3] < 0.0f ? 0.0f : fvals[3])) : 1.0f;
-                        uint32_t packed = (uint32_t)lroundf(r * 1023.0f) |
-                                          ((uint32_t)lroundf(g * 1023.0f) << 10) |
-                                          ((uint32_t)lroundf(b * 1023.0f) << 20) |
-                                          ((uint32_t)lroundf(a * 3.0f) << 30);
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                        float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
-                        float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
-                        uint32_t packed = mglFloatToFloat11(r) |
-                                          (mglFloatToFloat11(g) << 11) |
-                                          (mglFloatToFloat10(b) << 22);
-                        memcpy(dp, &packed, sizeof(packed));
-                    } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                        float r = fvals[0] < 0.0f ? 0.0f : fvals[0];
-                        float g = (slots > 1) ? (fvals[1] < 0.0f ? 0.0f : fvals[1]) : 0.0f;
-                        float b = (slots > 2) ? (fvals[2] < 0.0f ? 0.0f : fvals[2]) : 0.0f;
-                        uint32_t packed = mglPackRGBToSharedExp(r, g, b);
-                        memcpy(dp, &packed, sizeof(packed));
-                    }
-                    continue; /* Packed output handled, skip per-component loop */
-                }
-
-                for (int c = 0; c < slots; ++c) {
-                    int idx = srcIdx[c];
-                    if (idx >= srcChannels) idx = srcChannels - 1;
-                    float fv = 0.0f;
-                    if (sourceIs16BitUnorm) {
-                        uint16_t uv;
-                        memcpy(&uv, s + (NSUInteger)idx * 2u, sizeof(uv));
-                        fv = (float)uv / 65535.0f;
-                    } else if (sourceIs16BitSnorm) {
-                        int16_t sv;
-                        memcpy(&sv, s + (NSUInteger)idx * 2u, sizeof(sv));
-                        fv = (float)sv / 32767.0f;
-                    } else if (sourceIs16BitFloat) {
-                        uint16_t hv;
-                        memcpy(&hv, s + (NSUInteger)idx * 2u, sizeof(hv));
-                        fv = mglHalfToFloat(hv);
-                    } else { /* sourceIs32BitFloat */
-                        memcpy(&fv, s + (NSUInteger)idx * 4u, sizeof(fv));
-                    }
-                    uint8_t *out = dp + (NSUInteger)c * compBytes;
-                    if (type == GL_UNSIGNED_BYTE) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint8_t iv = (uint8_t)lroundf(cv * 255.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_BYTE) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                        int8_t iv = (int8_t)lroundf(cv * 127.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint16_t iv = (uint16_t)lroundf(cv * 65535.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                        int16_t iv = (int16_t)lroundf(cv * 32767.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_INT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < 0.0f ? 0.0f : fv);
-                        uint32_t iv = (uint32_t)llroundf(cv * 4294967295.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
-                        float cv = fv > 1.0f ? 1.0f : (fv < -1.0f ? -1.0f : fv);
-                        int32_t iv = (int32_t)llroundf(cv * 2147483647.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_FLOAT) {
-                        memcpy(out, &fv, sizeof(fv));
-                    } else { /* GL_HALF_FLOAT */
-                        uint16_t iv = mglFloatToHalf(fv);
-                        memcpy(out, &iv, sizeof(iv));
-                    }
-                }
-            }
-        }
-        return YES;
-    }
-
-    BOOL sourceIsRGBA =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-    BOOL sourceIsBGRA =
-        (pixelFormat == MTLPixelFormatBGRA8Unorm ||
-         pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
-    if (!sourceIsRGBA && !sourceIsBGRA) {
-        if (!mglMetalReadbackFormatIsBGRA8Compatible(pixelFormat) ||
-            width > NSUIntegerMax / 4u ||
-            height > NSUIntegerMax / (width * 4u)) {
-            return NO;
-        }
-        NSUInteger bgraBytesPerRow = width * 4u;
-        NSMutableData *bgra = [NSMutableData dataWithLength:bgraBytesPerRow * height];
-        if (!bgra) {
-            return NO;
-        }
-        mglMetalCopyTextureBytesToBGRA8(src,
-                                        srcBytesPerRow,
-                                        (uint8_t *)bgra.mutableBytes,
-                                        bgraBytesPerRow,
-                                        width,
-                                        height,
-                                        pixelFormat,
-                                        NO);
-        return mglMetalCopyBGRA8CompatibleTextureBytesToGL((const uint8_t *)bgra.bytes,
-                                                           bgraBytesPerRow,
-                                                           dst,
-                                                           dstBytesPerRow,
-                                                           width,
-                                                           height,
-                                                           MTLPixelFormatBGRA8Unorm,
-                                                           format,
-                                                           type,
-                                                           flipY);
-    }
-
-    NSUInteger dstPixelBytes = (NSUInteger)sizeForFormatType(format, type);
-    if (dstPixelBytes == 0u || dstBytesPerRow < width * dstPixelBytes) {
-        return NO;
-    }
-
-    /* Scalar integer / half-float readback from BGRA8 UNORM source.
-     * Components are scaled to the destination type's unsigned range. */
-    if (type == GL_BYTE || type == GL_SHORT ||
-        type == GL_INT || type == GL_UNSIGNED_INT ||
-        type == GL_UNSIGNED_SHORT || type == GL_HALF_FLOAT ||
-        type == GL_FLOAT) {
-        NSUInteger compBytes = (NSUInteger)sizeForType(type);
-        int slots = 0;
-        int srcIdx[4] = {0,0,0,0};
-        switch (format) {
-            case GL_RGBA: slots = 4; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; srcIdx[3]=3; break;
-            case GL_BGRA: slots = 4; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; srcIdx[3]=3; break;
-            case GL_RGB:  slots = 3; srcIdx[0]=0; srcIdx[1]=1; srcIdx[2]=2; break;
-            case GL_BGR:  slots = 3; srcIdx[0]=2; srcIdx[1]=1; srcIdx[2]=0; break;
-            case GL_RG:   slots = 2; srcIdx[0]=0; srcIdx[1]=1; break;
-            case GL_RED:  slots = 1; srcIdx[0]=0; break;
-            case GL_GREEN: slots = 1; srcIdx[0]=1; break;
-            case GL_BLUE:  slots = 1; srcIdx[0]=2; break;
-            case GL_ALPHA: slots = 1; srcIdx[0]=3; break;
-            default: return NO;
-        }
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const uint8_t *s = srcRow + (x * 4u);
-                /* cv[0]=R, cv[1]=G, cv[2]=B, cv[3]=A in logical order.
-                 * BGRA8 source: s[0]=B, s[1]=G, s[2]=R, s[3]=A.
-                 * RGBA8 source: s[0]=R, s[1]=G, s[2]=B, s[3]=A. */
-                const unsigned cv[4] = {
-                    sourceIsRGBA ? s[0] : s[2],
-                    s[1],
-                    sourceIsRGBA ? s[2] : s[0],
-                    s[3]
-                };
-                uint8_t *dp = dstRow + (x * dstPixelBytes);
-                for (int c = 0; c < slots; ++c) {
-                    unsigned v = cv[srcIdx[c]];
-                    uint8_t *out = dp + (NSUInteger)c * compBytes;
-                    if (type == GL_BYTE) {
-                        /* UNORM (0-255) -> SNORM (-128..127) */
-                        float fv = (float)v / 255.0f;
-                        int32_t iv = (int32_t)lroundf(fv * 127.0f);
-                        if (iv > 127) iv = 127;
-                        if (iv < -128) iv = -128;
-                        int8_t biv = (int8_t)iv;
-                        memcpy(out, &biv, sizeof(biv));
-                    } else if (type == GL_UNSIGNED_SHORT) {
-                        uint16_t iv = (uint16_t)((uint32_t)v * 257u);
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_SHORT) {
-                        int32_t scaled = (int32_t)((uint32_t)v * 32767u / 255u);
-                        if (scaled > 32767) scaled = 32767;
-                        int16_t iv = (int16_t)scaled;
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_UNSIGNED_INT) {
-                        uint32_t iv = (uint32_t)v * 16843009u;
-                        memcpy(out, &iv, sizeof(iv));
-                    } else if (type == GL_INT) {
-                        /* Use 64-bit arithmetic to avoid uint32 overflow:
-                         * v * 2147483647 overflows uint32 for v > 1. */
-                        int32_t scaled = (int32_t)((uint64_t)v * 2147483647ULL / 255u);
-                        if (scaled > 2147483647) scaled = 2147483647;
-                        memcpy(out, &scaled, sizeof(scaled));
-                    } else if (type == GL_FLOAT) {
-                        float fv = (float)v / 255.0f;
-                        memcpy(out, &fv, sizeof(fv));
-                    } else { /* GL_HALF_FLOAT */
-                        uint16_t iv = mglFloatToHalf((float)v / 255.0f);
-                        memcpy(out, &iv, sizeof(iv));
-                    }
-                }
-            }
-        }
-        return YES;
-    }
-
-    /* Packed type readback from BGRA8/RGBA8 UNORM source.
-     * Each pixel is extracted from 4-byte BGRA8/RGBA8 source and packed
-     * into the destination packed type. */
-    if (type == GL_UNSIGNED_BYTE_3_3_2 ||
-        type == GL_UNSIGNED_BYTE_2_3_3_REV ||
-        type == GL_UNSIGNED_SHORT_5_6_5 ||
-        type == GL_UNSIGNED_SHORT_5_6_5_REV ||
-        type == GL_UNSIGNED_SHORT_4_4_4_4 ||
-        type == GL_UNSIGNED_SHORT_4_4_4_4_REV ||
-        type == GL_UNSIGNED_SHORT_5_5_5_1 ||
-        type == GL_UNSIGNED_SHORT_1_5_5_5_REV ||
-        type == GL_UNSIGNED_INT_8_8_8_8 ||
-        type == GL_UNSIGNED_INT_8_8_8_8_REV ||
-        type == GL_UNSIGNED_INT_10_10_10_2 ||
-        type == GL_UNSIGNED_INT_2_10_10_10_REV ||
-        type == GL_UNSIGNED_INT_10F_11F_11F_REV ||
-        type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-        for (NSUInteger y = 0; y < height; y++) {
-            const uint8_t *srcRow = src + (y * srcBytesPerRow);
-            NSUInteger dstY = flipY ? (height - 1u - y) : y;
-            uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-            for (NSUInteger x = 0; x < width; x++) {
-                const uint8_t *s = srcRow + (x * 4u);
-                uint32_t r = sourceIsRGBA ? s[0] : s[2];
-                uint32_t g = s[1];
-                uint32_t b = sourceIsRGBA ? s[2] : s[0];
-                uint32_t a = s[3];
-                /* Apply format channel mapping */
-                uint32_t rr = r, gg = g, bb = b, aa = a;
-                switch (format) {
-                    case GL_RGBA: case GL_RGB: case GL_RED: case GL_RG:
-                    case GL_GREEN: case GL_BLUE: case GL_ALPHA:
-                        break;
-                    case GL_BGRA: case GL_BGR: {
-                        uint32_t tmp = rr; rr = bb; bb = tmp;
-                        break;
-                    }
-                    default:
-                        break;
-                }
-                uint8_t *d = dstRow + (x * dstPixelBytes);
-                if (type == GL_UNSIGNED_BYTE_3_3_2) {
-                    d[0] = (uint8_t)(((rr >> 5u) << 5u) | ((gg >> 5u) << 2u) | (bb >> 6u));
-                } else if (type == GL_UNSIGNED_BYTE_2_3_3_REV) {
-                    d[0] = (uint8_t)((rr >> 5u) | ((gg >> 5u) << 3u) | ((bb >> 6u) << 6u));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5) {
-                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 2u) << 5u) | (bb >> 3u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_6_5_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 2u) << 5u) | ((bb >> 3u) << 11u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4) {
-                    uint16_t packed = (uint16_t)(((rr >> 4u) << 12u) | ((gg >> 4u) << 8u) | ((bb >> 4u) << 4u) | (aa >> 4u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 4u) | ((gg >> 4u) << 4u) | ((bb >> 4u) << 8u) | ((aa >> 4u) << 12u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_5_5_5_1) {
-                    uint16_t packed = (uint16_t)(((rr >> 3u) << 11u) | ((gg >> 3u) << 6u) | ((bb >> 3u) << 1u) | (aa >= 128u ? 1u : 0u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_SHORT_1_5_5_5_REV) {
-                    uint16_t packed = (uint16_t)((rr >> 3u) | ((gg >> 3u) << 5u) | ((bb >> 3u) << 10u) | ((aa >= 128u ? 1u : 0u) << 15u));
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8) {
-                    /* CTS: R=(val>>24), G=(val>>16), B=(val>>8), A=(val>>0).
-                     * On little-endian this stores as [A,B,G,R] in memory. */
-                    uint32_t packed = ((uint32_t)rr << 24u) | ((uint32_t)gg << 16u) | ((uint32_t)bb << 8u) | aa;
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_8_8_8_8_REV) {
-                    /* CTS: R=(val>>0), G=(val>>8), B=(val>>16), A=(val>>24).
-                     * On little-endian this stores as [R,G,B,A] in memory. */
-                    uint32_t packed = rr | ((uint32_t)gg << 8u) | ((uint32_t)bb << 16u) | ((uint32_t)aa << 24u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10_10_10_2) {
-                    uint32_t r10 = rr * 1023u / 255u;
-                    uint32_t g10 = gg * 1023u / 255u;
-                    uint32_t b10 = bb * 1023u / 255u;
-                    uint32_t a2 = aa * 3u / 255u;
-                    uint32_t packed = (r10 << 22u) | (g10 << 12u) | (b10 << 2u) | a2;
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_2_10_10_10_REV) {
-                    uint32_t r10 = rr * 1023u / 255u;
-                    uint32_t g10 = gg * 1023u / 255u;
-                    uint32_t b10 = bb * 1023u / 255u;
-                    uint32_t a2 = aa * 3u / 255u;
-                    uint32_t packed = r10 | (g10 << 10u) | (b10 << 20u) | (a2 << 30u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
-                    uint32_t packed = mglPackUnsignedFloatFromUNorm8(rr, 6u) |
-                                      (mglPackUnsignedFloatFromUNorm8(gg, 6u) << 11u) |
-                                      (mglPackUnsignedFloatFromUNorm8(bb, 5u) << 22u);
-                    memcpy(d, &packed, sizeof(packed));
-                } else if (type == GL_UNSIGNED_INT_5_9_9_9_REV) {
-                    uint32_t packed = mglPackRGBToSharedExp((double)rr / 255.0, (double)gg / 255.0, (double)bb / 255.0);
-                    memcpy(d, &packed, sizeof(packed));
-                }
-            }
-        }
-        return YES;
-    }
-
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *s = srcRow + (x * 4u);
-            uint8_t r = sourceIsRGBA ? s[0] : s[2];
-            uint8_t g = s[1];
-            uint8_t b = sourceIsRGBA ? s[2] : s[0];
-            uint8_t a = s[3];
-            uint8_t *d = dstRow + (x * dstPixelBytes);
-
-            switch (format) {
-                case GL_BGRA:
-                    if (dstPixelBytes != 4u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    d[3] = a;
-                    break;
-                case GL_RGBA:
-                    if (dstPixelBytes != 4u && (type != GL_FLOAT || dstPixelBytes != 16u)) {
-                        return NO;
-                    }
-                    if (type == GL_FLOAT) {
-                        float *fd = (float *)d;
-                        fd[0] = (float)r / 255.0f;
-                        fd[1] = (float)g / 255.0f;
-                        fd[2] = (float)b / 255.0f;
-                        fd[3] = (float)a / 255.0f;
-                    } else {
-                        d[0] = r;
-                        d[1] = g;
-                        d[2] = b;
-                        d[3] = a;
-                    }
-                    break;
-                case GL_BGR:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 3u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    d[1] = g;
-                    d[2] = r;
-                    break;
-                case GL_RGB:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 3u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    d[1] = g;
-                    d[2] = b;
-                    break;
-                case GL_RG:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 2u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    d[1] = g;
-                    break;
-                case GL_RED:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = r;
-                    break;
-                case GL_GREEN:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = g;
-                    break;
-                case GL_BLUE:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = b;
-                    break;
-                case GL_ALPHA:
-                    if (type != GL_UNSIGNED_BYTE || dstPixelBytes != 1u) {
-                        return NO;
-                    }
-                    d[0] = a;
-                    break;
-                default:
-                    return NO;
-            }
-        }
-    }
-
-    return YES;
-}
-
-static BOOL mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes(const uint8_t *src,
-                                                                 NSUInteger srcBytesPerRow,
-                                                                 uint8_t *dst,
-                                                                 NSUInteger dstBytesPerRow,
-                                                                 NSUInteger width,
-                                                                 NSUInteger height,
-                                                                 MTLPixelFormat pixelFormat,
-                                                                 BOOL flipY)
-{
-    if (!src || !dst || width == 0u || height == 0u) {
-        return NO;
-    }
-    if (srcBytesPerRow < width * 4u || dstBytesPerRow < width * 4u) {
-        return NO;
-    }
-
-    BOOL destinationIsRGBA =
-        (pixelFormat == MTLPixelFormatRGBA8Unorm ||
-         pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
-    BOOL destinationIsBGRA =
-        (pixelFormat == MTLPixelFormatBGRA8Unorm ||
-         pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB);
-    BOOL destinationIsRGB9E5 = (pixelFormat == MTLPixelFormatRGB9E5Float);
-    BOOL destinationIsRGB10A2 = (pixelFormat == MTLPixelFormatRGB10A2Unorm ||
-                                 pixelFormat == MTLPixelFormatBGR10A2Unorm);
-    if (!destinationIsRGBA && !destinationIsBGRA && !destinationIsRGB9E5 && !destinationIsRGB10A2) {
-        return NO;
-    }
-
-    for (NSUInteger y = 0; y < height; y++) {
-        const uint8_t *srcRow = src + (y * srcBytesPerRow);
-        NSUInteger dstY = flipY ? (height - 1u - y) : y;
-        uint8_t *dstRow = dst + (dstY * dstBytesPerRow);
-
-        for (NSUInteger x = 0; x < width; x++) {
-            const uint8_t *s = srcRow + (x * 4u);
-            uint8_t *d = dstRow + (x * 4u);
-            uint8_t b = s[0];
-            uint8_t g = s[1];
-            uint8_t r = s[2];
-            uint8_t a = s[3];
-
-            if (destinationIsBGRA) {
-                d[0] = b;
-                d[1] = g;
-                d[2] = r;
-                d[3] = a;
-            } else if (destinationIsRGB10A2) {
-                /* RGB10A2Unorm: bits [0:9]=R, [10:19]=G, [20:29]=B, [30:31]=A.
-                 * BGR10A2Unorm: bits [0:9]=B, [10:19]=G, [20:29]=R, [30:31]=A. */
-                uint32_t r10 = ((uint32_t)r * 1023u + 127u) / 255u;
-                uint32_t g10 = ((uint32_t)g * 1023u + 127u) / 255u;
-                uint32_t b10 = ((uint32_t)b * 1023u + 127u) / 255u;
-                uint32_t a2 = ((uint32_t)a * 3u + 127u) / 255u;
-                uint32_t packed;
-                if (pixelFormat == MTLPixelFormatBGR10A2Unorm) {
-                    packed = b10 | (g10 << 10) | (r10 << 20) | (a2 << 30);
-                } else {
-                    packed = r10 | (g10 << 10) | (b10 << 20) | (a2 << 30);
-                }
-                d[0] = (uint8_t)(packed & 0xFF);
-                d[1] = (uint8_t)((packed >> 8) & 0xFF);
-                d[2] = (uint8_t)((packed >> 16) & 0xFF);
-                d[3] = (uint8_t)((packed >> 24) & 0xFF);
-            } else if (destinationIsRGB9E5) {
-                /* GL_RGB9_E5 packs three 9-bit mantissas and a 5-bit
-                 * shared exponent into a 32-bit word. Source is BGRA8. */
-                uint32_t packed = mglPackRGBToSharedExp((double)r / 255.0,
-                                                        (double)g / 255.0,
-                                                        (double)b / 255.0);
-                d[0] = (uint8_t)(packed & 0xFF);
-                d[1] = (uint8_t)((packed >> 8) & 0xFF);
-                d[2] = (uint8_t)((packed >> 16) & 0xFF);
-                d[3] = (uint8_t)((packed >> 24) & 0xFF);
-            } else {
-                d[0] = r;
-                d[1] = g;
-                d[2] = b;
-                d[3] = a;
-            }
-        }
-    }
-
-    return YES;
-}
-
+/* mglMetalCopyBGRA8CompatibleTextureBytesToGL and mglMetalCopyGLBGRA8RowsToBGRA8CompatibleTextureBytes moved to mgl_readback.m */
 typedef struct MGLScaledBlitParams_t {
     vector_float4 uvRect; // xy=min, zw=max in normalized Metal texture coordinates.
     float forceOpaqueAlpha;
@@ -1901,285 +238,14 @@ typedef struct MGLClearRectParams_t {
     vector_float3 _padding;
 } MGLClearRectParams;
 
-typedef struct MGLBlitAxis_t {
-    double src0;
-    double src1;
-    double dst0;
-    double dst1;
-} MGLBlitAxis;
+/* MGLBlitAxis struct + blit axis clipping helpers (mglClipBlitAxisToDestination,
+ * mglClipBlitAxisToSource, mglClipBlitAxis) moved to mgl_blit_clip.h/.m. */
 
 /* mglMetalTextureLevelDimension now lives in mgl_texture_compat.m — see
  * mgl_texture_compat.h. */
 
-static BOOL mglClipBlitAxisToDestination(MGLBlitAxis *axis, double dstLimit)
-{
-    if (!axis || axis->dst0 == axis->dst1 || axis->src0 == axis->src1 || dstLimit <= 0.0) {
-        return NO;
-    }
-
-    double dstMin = fmin(axis->dst0, axis->dst1);
-    double dstMax = fmax(axis->dst0, axis->dst1);
-    double clippedMin = fmax(dstMin, 0.0);
-    double clippedMax = fmin(dstMax, dstLimit);
-    if (clippedMax <= clippedMin) {
-        return NO;
-    }
-
-    double dstSpan = axis->dst1 - axis->dst0;
-    double srcSpan = axis->src1 - axis->src0;
-    double tMin = (clippedMin - axis->dst0) / dstSpan;
-    double tMax = (clippedMax - axis->dst0) / dstSpan;
-    double srcAtMin = axis->src0 + tMin * srcSpan;
-    double srcAtMax = axis->src0 + tMax * srcSpan;
-
-    if (axis->dst1 >= axis->dst0) {
-        axis->dst0 = clippedMin;
-        axis->dst1 = clippedMax;
-        axis->src0 = srcAtMin;
-        axis->src1 = srcAtMax;
-    } else {
-        axis->dst0 = clippedMax;
-        axis->dst1 = clippedMin;
-        axis->src0 = srcAtMax;
-        axis->src1 = srcAtMin;
-    }
-
-    return YES;
-}
-
-static BOOL mglClipBlitAxisToSource(MGLBlitAxis *axis, double srcLimit)
-{
-    if (!axis || axis->dst0 == axis->dst1 || axis->src0 == axis->src1 || srcLimit <= 0.0) {
-        return NO;
-    }
-
-    double srcMin = fmin(axis->src0, axis->src1);
-    double srcMax = fmax(axis->src0, axis->src1);
-    double clippedMin = fmax(srcMin, 0.0);
-    double clippedMax = fmin(srcMax, srcLimit);
-    if (clippedMax <= clippedMin) {
-        return NO;
-    }
-
-    double srcSpan = axis->src1 - axis->src0;
-    double dstSpan = axis->dst1 - axis->dst0;
-    double tMin = (clippedMin - axis->src0) / srcSpan;
-    double tMax = (clippedMax - axis->src0) / srcSpan;
-    double dstAtMin = axis->dst0 + tMin * dstSpan;
-    double dstAtMax = axis->dst0 + tMax * dstSpan;
-
-    if (axis->src1 >= axis->src0) {
-        axis->src0 = clippedMin;
-        axis->src1 = clippedMax;
-        axis->dst0 = dstAtMin;
-        axis->dst1 = dstAtMax;
-    } else {
-        axis->src0 = clippedMax;
-        axis->src1 = clippedMin;
-        axis->dst0 = dstAtMax;
-        axis->dst1 = dstAtMin;
-    }
-
-    return YES;
-}
-
-static BOOL mglClipBlitAxis(MGLBlitAxis *axis, double srcLimit, double dstLimit)
-{
-    return mglClipBlitAxisToDestination(axis, dstLimit) &&
-           mglClipBlitAxisToSource(axis, srcLimit);
-}
-
-static BOOL mglNearlyEqual(double a, double b)
-{
-    return fabs(a - b) <= 0.00001;
-}
-
-static MTLCompareFunction mglMTLCompareFunctionForGL(GLenum func,
-                                                     MTLCompareFunction fallback,
-                                                     const char *label)
-{
-    switch (func) {
-        case GL_NEVER: return MTLCompareFunctionNever;
-        case GL_LESS: return MTLCompareFunctionLess;
-        case GL_EQUAL: return MTLCompareFunctionEqual;
-        case GL_LEQUAL: return MTLCompareFunctionLessEqual;
-        case GL_GREATER: return MTLCompareFunctionGreater;
-        case GL_NOTEQUAL: return MTLCompareFunctionNotEqual;
-        case GL_GEQUAL: return MTLCompareFunctionGreaterEqual;
-        case GL_ALWAYS: return MTLCompareFunctionAlways;
-        default: {
-            static uint64_t s_badCompareFunctionCount = 0;
-            uint64_t hit = ++s_badCompareFunctionCount;
-
-            if (hit <= 32 || (hit % 256) == 0) {
-                NSLog(@"MGL WARNING: invalid %s compare func=0x%x, fallback=%lu hit=%llu",
-                      label ? label : "unknown",
-                      func,
-                      (unsigned long)fallback,
-                      (unsigned long long)hit);
-            }
-
-            return fallback;
-        }
-    }
-}
-
-static MTLWinding mglMTLWindingForGL(GLenum frontFace)
-{
-    switch (frontFace) {
-        case GL_CW:
-            return MTLWindingClockwise;
-        case GL_CCW:
-            return MTLWindingCounterClockwise;
-        default: {
-            static uint64_t s_badFrontFaceCount = 0;
-            uint64_t hit = ++s_badFrontFaceCount;
-
-            if (hit <= 32 || (hit % 256) == 0) {
-                NSLog(@"MGL WARNING: invalid front face enum=0x%x, fallback=GL_CCW hit=%llu",
-                      frontFace,
-                      (unsigned long long)hit);
-            }
-
-            return MTLWindingCounterClockwise;
-        }
-    }
-}
-
-static BOOL mglIsValidGLCompareFunction(GLenum func)
-{
-    switch (func) {
-        case GL_NEVER:
-        case GL_LESS:
-        case GL_EQUAL:
-        case GL_LEQUAL:
-        case GL_GREATER:
-        case GL_NOTEQUAL:
-        case GL_GEQUAL:
-        case GL_ALWAYS:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static BOOL mglIsValidGLBlendEquation(GLenum op)
-{
-    switch (op) {
-        case GL_FUNC_ADD:
-        case GL_FUNC_SUBTRACT:
-        case GL_FUNC_REVERSE_SUBTRACT:
-        case GL_MIN:
-        case GL_MAX:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static BOOL mglIsValidGLBlendFactor(GLenum factor)
-{
-    switch (factor) {
-        case GL_ZERO:
-        case GL_ONE:
-        case GL_SRC_COLOR:
-        case GL_ONE_MINUS_SRC_COLOR:
-        case GL_DST_COLOR:
-        case GL_ONE_MINUS_DST_COLOR:
-        case GL_SRC_ALPHA:
-        case GL_ONE_MINUS_SRC_ALPHA:
-        case GL_DST_ALPHA:
-        case GL_ONE_MINUS_DST_ALPHA:
-        case GL_CONSTANT_COLOR:
-        case GL_ONE_MINUS_CONSTANT_COLOR:
-        case GL_CONSTANT_ALPHA:
-        case GL_ONE_MINUS_CONSTANT_ALPHA:
-        case GL_SRC_ALPHA_SATURATE:
-        case GL_SRC1_COLOR:
-        case GL_ONE_MINUS_SRC1_COLOR:
-        case GL_SRC1_ALPHA:
-        case GL_ONE_MINUS_SRC1_ALPHA:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static void mglLogRenderStateRepair(const char *field, GLenum value, GLenum fallback)
-{
-    static uint64_t s_stateRepairCount = 0;
-    uint64_t hit = ++s_stateRepairCount;
-
-    if (hit <= 64 || (hit % 512) == 0) {
-        NSLog(@"MGL WARNING: repairing invalid render state %s=0x%x -> 0x%x hit=%llu",
-              field ? field : "unknown",
-              value,
-              fallback,
-              (unsigned long long)hit);
-    }
-}
-
-static BOOL mglShouldLogSmallBaseBinding(GLuint programName,
-                                         int stage,
-                                         int resourceType,
-                                         GLuint binding,
-                                         GLuint glName,
-                                         GLsizeiptr rangeSize,
-                                         NSUInteger reflectedSize)
-{
-    typedef struct MGLSmallBaseBindingLogKey_t {
-        GLuint programName;
-        int stage;
-        int resourceType;
-        GLuint binding;
-        GLuint glName;
-        GLsizeiptr rangeSize;
-        NSUInteger reflectedSize;
-        uint64_t hits;
-    } MGLSmallBaseBindingLogKey;
-
-    static MGLSmallBaseBindingLogKey s_keys[128];
-    static uint32_t s_keyCount = 0;
-    static uint64_t s_overflowHits = 0;
-
-    for (uint32_t i = 0; i < s_keyCount; i++) {
-        MGLSmallBaseBindingLogKey *key = &s_keys[i];
-        if (key->programName == programName &&
-            key->stage == stage &&
-            key->resourceType == resourceType &&
-            key->binding == binding &&
-            key->glName == glName &&
-            key->rangeSize == rangeSize &&
-            key->reflectedSize == reflectedSize) {
-            key->hits++;
-            return key->hits <= 4 || (key->hits % 1024) == 0;
-        }
-    }
-
-    if (s_keyCount < (uint32_t)(sizeof(s_keys) / sizeof(s_keys[0]))) {
-        if (s_keyCount >= 32 && (s_keyCount % 16) != 0) {
-            return NO;
-        }
-        s_keys[s_keyCount++] = (MGLSmallBaseBindingLogKey){
-            .programName = programName,
-            .stage = stage,
-            .resourceType = resourceType,
-            .binding = binding,
-            .glName = glName,
-            .rangeSize = rangeSize,
-            .reflectedSize = reflectedSize,
-            .hits = 1
-        };
-        return YES;
-    }
-
-    s_overflowHits++;
-    return s_overflowHits <= 8 || (s_overflowHits % 2048) == 0;
-}
-
-static void mglInitTraceLogIfNeeded(void);
-static void mglTraceLog(const char *fmt, ...);
-void mglTraceLogExternal(const char *fmt, ...);
+/* mglInitTraceLogIfNeeded / mglTraceLog / mglTraceLogExternal are now
+ * declared in mgl_trace_log.h. */
 
 __attribute__((constructor))
 static void mglRendererDiagnosticBuildMarker(void)
@@ -2265,7 +331,7 @@ static const BOOL kMGLValidateDrawArraysVboRange = YES;
 // Validate indexed draws against VBO size + written-range metadata.
 static const BOOL kMGLValidateDrawElementsVboRange = YES;
 
-static BOOL mglEnvFlagEnabled(const char *name)
+BOOL mglEnvFlagEnabled(const char *name)
 {
     const char *value = name ? getenv(name) : NULL;
     if (!value || value[0] == '\0') {
@@ -2280,68 +346,9 @@ static BOOL mglEnvFlagEnabled(const char *name)
     return YES;
 }
 
-static FILE *g_mglTraceLogFile = NULL;
-static BOOL g_mglTraceLogEnabled = NO;
-static pthread_mutex_t g_mglTraceLogMutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void mglInitTraceLogIfNeeded(void)
-{
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        g_mglTraceLogEnabled = mglEnvFlagEnabled("MGL_TRACE_LOG");
-        if (!g_mglTraceLogEnabled) {
-            return;
-        }
-
-        Dl_info info;
-        char dylibPath[PATH_MAX] = {0};
-        if (dladdr((const void *)&mglInitTraceLogIfNeeded, &info) != 0 &&
-            info.dli_fname &&
-            info.dli_fname[0] != '\0') {
-            snprintf(dylibPath, sizeof(dylibPath), "%s", info.dli_fname);
-        } else {
-            snprintf(dylibPath, sizeof(dylibPath), ".");
-        }
-
-        char dirPath[PATH_MAX] = {0};
-        snprintf(dirPath, sizeof(dirPath), "%s", dylibPath);
-        char *dirName = dirname(dirPath);
-        if (!dirName || dirName[0] == '\0') {
-            dirName = ".";
-        }
-
-        char logPath[PATH_MAX] = {0};
-        snprintf(logPath,
-                 sizeof(logPath),
-                 "%s/mgl-trace-%d.log",
-                 dirName,
-                 (int)getpid());
-
-        g_mglTraceLogFile = fopen(logPath, "a");
-        if (!g_mglTraceLogFile) {
-            NSLog(@"MGL TRACE LOG open failed path=%s errno=%d", logPath, errno);
-            g_mglTraceLogEnabled = NO;
-            return;
-        }
-
-        setvbuf(g_mglTraceLogFile, NULL, _IOLBF, 0);
-        fprintf(g_mglTraceLogFile,
-                "MGL TRACE LOG begin pid=%d dylib=%s log=%s built=%s %s\n",
-                (int)getpid(),
-                info.dli_fname ? info.dli_fname : "(unknown)",
-                logPath,
-                __DATE__,
-                __TIME__);
-        fflush(g_mglTraceLogFile);
-        NSLog(@"MGL TRACE LOG enabled path=%s", logPath);
-    });
-}
-
-static inline BOOL mglTraceLogIsEnabled(void)
-{
-    mglInitTraceLogIfNeeded();
-    return g_mglTraceLogEnabled && g_mglTraceLogFile;
-}
+/* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
+ * mglTraceLogIsEnabled, mglTraceLogV, mglTraceLog, mglTraceLogExternal,
+ * MGLTraceNSLog) moved to mgl_trace_log.h/.m. */
 
 static inline BOOL mglTraceRTYFlipDiagnosticsEnabled(void)
 {
@@ -2358,377 +365,11 @@ static inline const char *mglYFlipDecisionName(MGLYFlipDecision decision)
     }
 }
 
-static void mglTraceLogV(const char *fmt, va_list args)
-{
-    if (!mglTraceLogIsEnabled() || !fmt) {
-        return;
-    }
+/* Fragment texture trace binding helpers moved to mgl_trace_strategy.h/.m. */
 
-    pthread_mutex_lock(&g_mglTraceLogMutex);
-    if (g_mglTraceLogFile) {
-        vfprintf(g_mglTraceLogFile, fmt, args);
-        fputc('\n', g_mglTraceLogFile);
-        fflush(g_mglTraceLogFile);
-    }
-    pthread_mutex_unlock(&g_mglTraceLogMutex);
-}
-
-static void mglTraceLog(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    mglTraceLogV(fmt, args);
-    va_end(args);
-}
-
-void mglTraceLogExternal(const char *fmt, ...)
-{
-    va_list args;
-    va_start(args, fmt);
-    mglTraceLogV(fmt, args);
-    va_end(args);
-}
-
-static BOOL mglFragmentTextureTraceBindingIsInteresting(const MGLFragmentTextureTraceBinding *binding)
-{
-    return binding &&
-           (binding->rt_write_version != 0u ||
-            binding->sampled_write_version != 0u ||
-            binding->used_sampled_copy ||
-            binding->used_fallback ||
-            binding->sampled_copy_ptr != NULL);
-}
-
-static BOOL mglFragmentTextureTraceBindingsHaveInterestingState(const MGLFragmentTextureTraceBinding *bindings,
-                                                               NSUInteger count)
-{
-    if (!bindings) {
-        return NO;
-    }
-
-    for (NSUInteger i = 0; i < count; i++) {
-        if (mglFragmentTextureTraceBindingIsInteresting(&bindings[i])) {
-            return YES;
-        }
-    }
-
-    return NO;
-}
-
-static BOOL mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTraceBinding *bindings,
-                                                           NSUInteger count)
-{
-    if (!bindings) {
-        return NO;
-    }
-
-    for (NSUInteger i = 0; i < count; i++) {
-        if (bindings[i].used_sampled_copy) {
-            return YES;
-        }
-    }
-
-    return NO;
-}
-
-static void mglTraceFragmentTextureTraceBindings(const char *tag,
-                                                 const char *reason,
-                                                 const MGLFragmentTextureTraceBinding *bindings,
-                                                 NSUInteger count,
-                                                 GLuint program,
-                                                 GLuint pipelineProgram)
-{
-    if (!mglTraceLogIsEnabled() ||
-        !mglFragmentTextureTraceBindingsHaveInterestingState(bindings, count)) {
-        return;
-    }
-
-    const MGLFragmentTextureTraceBinding zero = {0};
-    const MGLFragmentTextureTraceBinding *s0 = count > 0 ? &bindings[0] : &zero;
-    const MGLFragmentTextureTraceBinding *s1 = count > 1 ? &bindings[1] : &zero;
-    const MGLFragmentTextureTraceBinding *s2 = count > 2 ? &bindings[2] : &zero;
-    const MGLFragmentTextureTraceBinding *s3 = count > 3 ? &bindings[3] : &zero;
-
-    mglTraceLog("RT_SAMPLE_COPY_SLOTS_%s reason=%s program=%u pipelineProgram=%u "
-                "s0(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                "s1(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                "s2(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu) "
-                "s3(tex=%u unit=%u prog=%u mtl=%p direct=%p copy=%p useCopy=%u fallback=%u rtVer=%u sampledVer=%u size=%lux%lu fmt=%lu type=%lu)",
-                tag ? tag : "STATE",
-                reason ? reason : "",
-                (unsigned)program,
-                (unsigned)pipelineProgram,
-                (unsigned)s0->gl_texture_name,
-                (unsigned)s0->sampler_unit,
-                (unsigned)s0->program_name,
-                s0->mtl_texture_ptr,
-                s0->direct_mtl_texture_ptr,
-                s0->sampled_copy_ptr,
-                (unsigned)s0->used_sampled_copy,
-                (unsigned)s0->used_fallback,
-                (unsigned)s0->rt_write_version,
-                (unsigned)s0->sampled_write_version,
-                (unsigned long)s0->width,
-                (unsigned long)s0->height,
-                (unsigned long)s0->pixel_format,
-                (unsigned long)s0->texture_type,
-                (unsigned)s1->gl_texture_name,
-                (unsigned)s1->sampler_unit,
-                (unsigned)s1->program_name,
-                s1->mtl_texture_ptr,
-                s1->direct_mtl_texture_ptr,
-                s1->sampled_copy_ptr,
-                (unsigned)s1->used_sampled_copy,
-                (unsigned)s1->used_fallback,
-                (unsigned)s1->rt_write_version,
-                (unsigned)s1->sampled_write_version,
-                (unsigned long)s1->width,
-                (unsigned long)s1->height,
-                (unsigned long)s1->pixel_format,
-                (unsigned long)s1->texture_type,
-                (unsigned)s2->gl_texture_name,
-                (unsigned)s2->sampler_unit,
-                (unsigned)s2->program_name,
-                s2->mtl_texture_ptr,
-                s2->direct_mtl_texture_ptr,
-                s2->sampled_copy_ptr,
-                (unsigned)s2->used_sampled_copy,
-                (unsigned)s2->used_fallback,
-                (unsigned)s2->rt_write_version,
-                (unsigned)s2->sampled_write_version,
-                (unsigned long)s2->width,
-                (unsigned long)s2->height,
-                (unsigned long)s2->pixel_format,
-                (unsigned long)s2->texture_type,
-                (unsigned)s3->gl_texture_name,
-                (unsigned)s3->sampler_unit,
-                (unsigned)s3->program_name,
-                s3->mtl_texture_ptr,
-                s3->direct_mtl_texture_ptr,
-                s3->sampled_copy_ptr,
-                (unsigned)s3->used_sampled_copy,
-                (unsigned)s3->used_fallback,
-                (unsigned)s3->rt_write_version,
-                (unsigned)s3->sampled_write_version,
-                (unsigned long)s3->width,
-                (unsigned long)s3->height,
-                (unsigned long)s3->pixel_format,
-                (unsigned long)s3->texture_type);
-}
-
-// Cross-stage frame activity breadcrumbs for black-screen/beachball diagnostics.
-static volatile uint64_t g_mglLastDrawArraysCall = 0;
-static volatile double g_mglLastDrawArraysSeconds = 0.0;
-static volatile uint64_t g_mglLastDrawElementsCall = 0;
-static volatile double g_mglLastDrawElementsSeconds = 0.0;
-static volatile GLuint g_mglLastDrawArraysProgram = 0;
-static volatile GLuint g_mglLastDrawArraysMode = 0;
-static volatile GLsizei g_mglLastDrawArraysCount = 0;
-static volatile GLuint g_mglLastDrawElementsProgram = 0;
-static volatile GLuint g_mglLastDrawElementsMode = 0;
-static volatile GLsizei g_mglLastDrawElementsCount = 0;
-static volatile uint64_t g_mglDrawArraysSinceSwap = 0;
-static volatile uint64_t g_mglDrawElementsSinceSwap = 0;
-static volatile uint64_t g_mglDrawArrayVerticesSinceSwap = 0;
-static volatile uint64_t g_mglDrawElementIndicesSinceSwap = 0;
-static volatile uint64_t g_mglDrawArraysSkippedSinceSwap = 0;
-static volatile uint64_t g_mglDrawElementsSkippedSinceSwap = 0;
-static volatile uint64_t g_mglProcessDrawCallsSinceSwap = 0;
-static volatile uint64_t g_mglSwapCallCount = 0;
-static volatile double g_mglLastSwapSeconds = 0.0;
-
-static GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *res)
-{
-    if (!res) {
-        return 0u;
-    }
-
-    GLint knownPlainUniformBinding = -1;
-    if (res->name) {
-        if (!strcmp(res->name, "ModelViewMat")) {
-            knownPlainUniformBinding = 0;
-        } else if (!strcmp(res->name, "ProjMat")) {
-            knownPlainUniformBinding = 1;
-        } else if (!strcmp(res->name, "TextureMat")) {
-            knownPlainUniformBinding = 2;
-        } else if (!strcmp(res->name, "ColorModulator")) {
-            knownPlainUniformBinding = 3;
-        } else if (!strcmp(res->name, "FogStart")) {
-            knownPlainUniformBinding = 4;
-        } else if (!strcmp(res->name, "FogEnd")) {
-            knownPlainUniformBinding = 5;
-        } else if (!strcmp(res->name, "FogColor")) {
-            knownPlainUniformBinding = 6;
-        } else if (!strcmp(res->name, "FogShape")) {
-            knownPlainUniformBinding = 7;
-        } else if (!strcmp(res->name, "GameTime")) {
-            knownPlainUniformBinding = 8;
-        } else if (!strcmp(res->name, "ScreenSize")) {
-            knownPlainUniformBinding = 9;
-        } else if (!strcmp(res->name, "LineWidth")) {
-            knownPlainUniformBinding = 10;
-        } else if (!strcmp(res->name, "IViewRotMat")) {
-            knownPlainUniformBinding = 11;
-        } else if (!strcmp(res->name, "ChunkOffset")) {
-            knownPlainUniformBinding = 12;
-        } else if (!strcmp(res->name, "u_ProjectionMatrix")) {
-            knownPlainUniformBinding = 0;
-        } else if (!strcmp(res->name, "u_ModelViewMatrix")) {
-            knownPlainUniformBinding = 1;
-        } else if (!strcmp(res->name, "u_RegionOffset")) {
-            knownPlainUniformBinding = 2;
-        } else if (!strcmp(res->name, "u_TexCoordShrink")) {
-            knownPlainUniformBinding = 3;
-        } else if (!strcmp(res->name, "u_FogColor")) {
-            knownPlainUniformBinding = 4;
-        } else if (!strcmp(res->name, "u_EnvironmentFog")) {
-            knownPlainUniformBinding = 5;
-        } else if (!strcmp(res->name, "u_RenderFog")) {
-            knownPlainUniformBinding = 6;
-        /* 1.21.11 new plain uniforms */
-        } else if (!strcmp(res->name, "CameraBlockPos")) {
-            knownPlainUniformBinding = 13;
-        } else if (!strcmp(res->name, "CameraOffset")) {
-            knownPlainUniformBinding = 14;
-        } else if (!strcmp(res->name, "UseRgss")) {
-            knownPlainUniformBinding = 15;
-        } else if (!strcmp(res->name, "ChunkVisibility")) {
-            knownPlainUniformBinding = 16;
-        }
-    }
-
-    /*
-     * Plain uniforms are represented internally as one tiny GL buffer per
-     * uniform location. SPIRV-Cross usually reports descriptor binding 0 for
-     * all of them, while the generated MSL assigns distinct [[buffer(n)]]
-     * slots. Use the GL uniform location to find the client-side buffer, then
-     * map that location to the reflected Metal slot later.
-     */
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
-        if (knownPlainUniformBinding >= 0) {
-            return (GLuint)knownPlainUniformBinding;
-        }
-        if (res->uniform_location >= 0 && res->uniform_location < MAX_BINDABLE_BUFFERS) {
-            return (GLuint)res->uniform_location;
-        }
-        if (res->location < MAX_BINDABLE_BUFFERS) {
-            return res->location;
-        }
-        if (res->gl_binding < MAX_BINDABLE_BUFFERS) {
-            return res->gl_binding;
-        }
-    }
-
-    return res->gl_binding;
-}
-
-static GLuint mglMetalResourceSlot(const SpirvResource *res)
-{
-    return res ? res->binding : 0u;
-}
-
-static GLuint mglStageBufferResourceElementCount(int resourceType, const SpirvResource *res)
-{
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-        res &&
-        res->ubo_array_size > 1u) {
-        return res->ubo_array_size;
-    }
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
-        res &&
-        res->ubo_members &&
-        res->gl_array_size > 1) {
-        return (GLuint)res->gl_array_size;
-    }
-    if (resourceType == SPVC_RESOURCE_TYPE_STORAGE_BUFFER &&
-        res &&
-        res->gl_array_size > 1) {
-        return (GLuint)res->gl_array_size;
-    }
-
-    return 1u;
-}
-
-static GLuint mglClientBufferBindingForResourceElement(int resourceType,
-                                                       const SpirvResource *res,
-                                                       GLuint element)
-{
-    GLuint baseBinding = mglClientBufferBindingForResource(resourceType, res);
-
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
-        res &&
-        res->ubo_array_bindings &&
-        element < res->ubo_array_size) {
-        return res->ubo_array_bindings[element];
-    }
-
-    return baseBinding + element;
-}
-
-static GLuint mglMetalResourceSlotForElement(const SpirvResource *res, GLuint element)
-{
-    return mglMetalResourceSlot(res) + element;
-}
-
-static bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
-{
-    if (!res || !res->name) {
-        return true;
-    }
-
-    /*
-     * Mojang/Iris' newer item/entity programs use u_* plain uniforms with the
-     * same numeric locations as the old ShaderInstance uniforms, but the slots
-     * do not mean the same thing. Falling back from u_RegionOffset or
-     * u_TexCoordShrink to TextureMat/ColorModulator corrupts first-person items
-     * and can make inventory icons disappear.
-     */
-    if (!strcmp(res->name, "u_ProjectionMatrix") ||
-        !strcmp(res->name, "u_ModelViewMatrix") ||
-        !strcmp(res->name, "u_RegionOffset") ||
-        !strcmp(res->name, "u_TexCoordShrink") ||
-        !strcmp(res->name, "u_FogColor") ||
-        !strcmp(res->name, "u_EnvironmentFog") ||
-        !strcmp(res->name, "u_RenderFog")) {
-        return false;
-    }
-
-    return true;
-}
-
-typedef struct MGLSwapDrawCounters {
-    uint64_t draw_arrays;
-    uint64_t draw_elements;
-    uint64_t array_vertices;
-    uint64_t element_indices;
-    uint64_t draw_arrays_skipped;
-    uint64_t draw_elements_skipped;
-    uint64_t process_draw_calls;
-} MGLSwapDrawCounters;
-
-static inline MGLSwapDrawCounters mglSnapshotSwapDrawCounters(void)
-{
-    MGLSwapDrawCounters counters;
-    counters.draw_arrays = g_mglDrawArraysSinceSwap;
-    counters.draw_elements = g_mglDrawElementsSinceSwap;
-    counters.array_vertices = g_mglDrawArrayVerticesSinceSwap;
-    counters.element_indices = g_mglDrawElementIndicesSinceSwap;
-    counters.draw_arrays_skipped = g_mglDrawArraysSkippedSinceSwap;
-    counters.draw_elements_skipped = g_mglDrawElementsSkippedSinceSwap;
-    counters.process_draw_calls = g_mglProcessDrawCallsSinceSwap;
-    return counters;
-}
-
-static inline void mglResetSwapDrawCounters(void)
-{
-    g_mglDrawArraysSinceSwap = 0;
-    g_mglDrawElementsSinceSwap = 0;
-    g_mglDrawArrayVerticesSinceSwap = 0;
-    g_mglDrawElementIndicesSinceSwap = 0;
-    g_mglDrawArraysSkippedSinceSwap = 0;
-    g_mglDrawElementsSkippedSinceSwap = 0;
-    g_mglProcessDrawCallsSinceSwap = 0;
-}
+/* Frame activity breadcrumbs (19 volatile globals + MGLSwapDrawCounters
+ * struct + mglSnapshotSwapDrawCounters/mglResetSwapDrawCounters inline
+ * helpers) moved to mgl_frame_activity.h/.m. */
 
 static BOOL mglRendererPointerInHashTable(HashTable *table, const void *ptr);
 static Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *where);
@@ -3015,22 +656,6 @@ static GLuint mglCurrentRenderProgramKey(GLMContext ctx)
     return hash ? hash : 0x80000000u;
 }
 
-static const char *mglSpirvResourceTypeName(int type)
-{
-    switch (type) {
-        case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER: return "uniform_buffer";
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT: return "uniform_constant";
-        case SPVC_RESOURCE_TYPE_STORAGE_BUFFER: return "storage_buffer";
-        case SPVC_RESOURCE_TYPE_STAGE_INPUT: return "stage_input";
-        case SPVC_RESOURCE_TYPE_STAGE_OUTPUT: return "stage_output";
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE: return "sampled_image";
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE: return "separate_image";
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS: return "separate_sampler";
-        case SPVC_RESOURCE_TYPE_PUSH_CONSTANT: return "push_constant";
-        default: return "resource";
-    }
-}
-
 static void mglLogProgramResourceInterface(Program *program, int stage, int type)
 {
     if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || type < 0 || type >= _MAX_SPIRV_RES) {
@@ -3038,26 +663,26 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
     }
 
     SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
-    NSLog(@"MGL IFACE program=%u stage=%s type=%s count=%u",
-          (unsigned)program->name,
-          mglShaderStageName(stage),
-          mglSpirvResourceTypeName(type),
-          (unsigned)resources->count);
+    MGLTraceNSLog(@"MGL IFACE program=%u stage=%s type=%s count=%u",
+                  (unsigned)program->name,
+                  mglShaderStageName(stage),
+                  mglSpirvResourceTypeName(type),
+                  (unsigned)resources->count);
 
     for (GLuint i = 0; i < resources->count; i++) {
         SpirvResource *res = &resources->list[i];
-        NSLog(@"MGL IFACE   #%u name=%s loc=%u glBinding=%u metalBinding=%u set=%u typeId=%u baseTypeId=%u required=%zu imageDim=%u arrayed=%u",
-              (unsigned)i,
-              res->name ? res->name : "(null)",
-              (unsigned)res->location,
-              (unsigned)res->gl_binding,
-              (unsigned)res->binding,
-              (unsigned)res->set,
-              (unsigned)res->type_id,
-              (unsigned)res->base_type_id,
-              res->required_size,
-              (unsigned)res->image_dim,
-              (unsigned)res->image_arrayed);
+        MGLTraceNSLog(@"MGL IFACE   #%u name=%s loc=%u glBinding=%u metalBinding=%u set=%u typeId=%u baseTypeId=%u required=%zu imageDim=%u arrayed=%u",
+                      (unsigned)i,
+                      res->name ? res->name : "(null)",
+                      (unsigned)res->location,
+                      (unsigned)res->gl_binding,
+                      (unsigned)res->binding,
+                      (unsigned)res->set,
+                      (unsigned)res->type_id,
+                      (unsigned)res->base_type_id,
+                      res->required_size,
+                      (unsigned)res->image_dim,
+                      (unsigned)res->image_arrayed);
     }
 }
 
@@ -3101,10 +726,10 @@ static void mglWriteProgramMSLDump(Program *program, NSString *reason)
     }
     s_dumpGeneration++;
 
-    NSLog(@"MGL IFACE DUMP begin program=%u reason=%@ generation=%u",
-          (unsigned)program->name,
-          reason ?: @"(none)",
-          (unsigned)s_dumpGeneration);
+    MGLTraceNSLog(@"MGL IFACE DUMP begin program=%u reason=%@ generation=%u",
+                  (unsigned)program->name,
+                  reason ?: @"(none)",
+                  (unsigned)s_dumpGeneration);
 
     mglLogProgramResourceInterface(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_STAGE_OUTPUT);
     mglLogProgramResourceInterface(program, _FRAGMENT_SHADER, SPVC_RESOURCE_TYPE_STAGE_INPUT);
@@ -3135,139 +760,25 @@ static void mglWriteProgramMSLDump(Program *program, NSString *reason)
                            atomically:YES
                              encoding:NSUTF8StringEncoding
                                 error:&writeError];
-        NSLog(@"MGL IFACE DUMP msl program=%u stage=%s entry=%s path=%@ ok=%d error=%@",
-              (unsigned)program->name,
-              mglShaderStageName(stage),
-              program->shader_slots[stage]->entry_point ? program->shader_slots[stage]->entry_point : "(null)",
-              path,
-              ok ? 1 : 0,
-              writeError);
+        MGLTraceNSLog(@"MGL IFACE DUMP msl program=%u stage=%s entry=%s path=%@ ok=%d error=%@",
+                      (unsigned)program->name,
+                      mglShaderStageName(stage),
+                      program->shader_slots[stage]->entry_point ? program->shader_slots[stage]->entry_point : "(null)",
+                      path,
+                      ok ? 1 : 0,
+                      writeError);
     }
 }
 
-static GLuint g_mglFocusedLoadingPrograms[32] = {0};
-static uint32_t g_mglFocusedLoadingProgramCount = 0;
+/* Focus program observation state machine (g_mglFocusedLoadingPrograms,
+ * g_mglFocusedLoadingProgramCount, mglFocusLoadingProgram,
+ * mglObserveProgramDrawForFocus, mglIsFocusedLoadingProgram) moved to
+ * mgl_focus_program.h/.m. */
 
-static bool mglTraceLogProgramListContains(GLuint programName)
-{
-    if (programName == 0u) {
-        return false;
-    }
+/* Program trace gating helpers moved to mgl_trace_strategy.h/.m. */
 
-    const char *list = getenv("MGL_TRACE_LOG_PROGRAMS");
-    if (!list || list[0] == '\0') {
-        return false;
-    }
-
-    const char *p = list;
-    while (*p != '\0') {
-        while (*p == ' ' || *p == '\t' || *p == '\n' ||
-               *p == ',' || *p == ';' || *p == ':') {
-            p++;
-        }
-        if (*p == '\0') {
-            break;
-        }
-
-        char *end = NULL;
-        unsigned long value = strtoul(p, &end, 0);
-        if (end == p) {
-            while (*p != '\0' && *p != ',' && *p != ';' &&
-                   *p != ':' && *p != ' ' && *p != '\t' && *p != '\n') {
-                p++;
-            }
-            continue;
-        }
-
-        if (value == (unsigned long)programName) {
-            return true;
-        }
-        p = end;
-    }
-
-    return false;
-}
-
-static bool mglProgramExplicitlyTraced(Program *program)
-{
-    return mglTraceLogIsEnabled() &&
-           program &&
-           mglTraceLogProgramListContains(program->name);
-}
-
-static bool mglProgramNeedsTraceLog(Program *program)
-{
-    return mglTraceLogIsEnabled() &&
-           program &&
-           (mglProgramExplicitlyTraced(program) ||
-            mglProgramNeedsBindingTrace(program));
-}
-
-static inline bool mglIsFocusedLoadingProgram(GLuint programName);
-
-static bool mglTraceLogDrawAll(void)
-{
-    return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_LOG_DRAW");
-}
-
-static bool mglTraceLogResourcesVerbose(void)
-{
-    return mglTraceLogIsEnabled() && mglEnvFlagEnabled("MGL_TRACE_LOG_RESOURCES");
-}
-
-static bool mglShouldLogFocusedBinding(uint64_t *counter)
-{
-    if (!counter) {
-        return false;
-    }
-
-    uint64_t hit = ++(*counter);
-    return hit <= 96ull || (hit % 512ull) == 0ull;
-}
-
-static bool mglShouldLogTraceFileBindingForProgram(Program *program, uint64_t *counter)
-{
-    if (!mglTraceLogIsEnabled()) {
-        return false;
-    }
-    if (mglTraceLogResourcesVerbose() ||
-        mglProgramExplicitlyTraced(program)) {
-        return true;
-    }
-    return mglShouldLogFocusedBinding(counter);
-}
-
-static const char *mglDrawCommandTypeName(MGLDrawCommandType type)
-{
-    switch (type) {
-        case MGL_CMD_DRAW_ARRAYS: return "draw_arrays";
-        case MGL_CMD_DRAW_ELEMENTS: return "draw_elements";
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED: return "draw_arrays_instanced";
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED: return "draw_elements_instanced";
-        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX: return "draw_elements_base_vertex";
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX: return "draw_elements_instanced_base_vertex";
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE: return "draw_arrays_instanced_base_instance";
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE: return "draw_elements_instanced_base_instance";
-        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE: return "draw_elements_instanced_base_vertex_base_instance";
-        default: return "unknown";
-    }
-}
-
-static bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
-{
-    if (!cmd) {
-        return false;
-    }
-
-    switch (cmd->type) {
-        case MGL_CMD_DRAW_ARRAYS:
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-            return false;
-        default:
-            return true;
-    }
-}
+/* Draw command classification helpers (mglDrawCommandTypeName,
+ * mglDrawCommandUsesElements) moved to draw_command.h/.c. */
 
 static Program *mglTraceResolveDrawProgram(GLMContext traceCtx)
 {
@@ -3310,100 +821,12 @@ static bool mglTraceShouldLogReplay(GLMContext traceCtx, Program *program)
  * call a single unified query and makes the coordinate-compatibility
  * subsystem testable in isolation. */
 
-static void mglFocusLoadingProgram(GLuint programName, const char *reason, uint64_t detail)
-{
-    if (programName == 0) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < g_mglFocusedLoadingProgramCount; i++) {
-        if (g_mglFocusedLoadingPrograms[i] == programName) {
-            return;
-        }
-    }
-
-    if (g_mglFocusedLoadingProgramCount >= (uint32_t)(sizeof(g_mglFocusedLoadingPrograms) / sizeof(g_mglFocusedLoadingPrograms[0]))) {
-        return;
-    }
-
-    g_mglFocusedLoadingPrograms[g_mglFocusedLoadingProgramCount++] = programName;
-    if (mglTraceLogIsEnabled()) {
-        mglTraceLog("FOCUS_PROGRAM program=%u reason=%s detail=%llu",
-                    (unsigned)programName,
-                    reason ? reason : "(none)",
-                    (unsigned long long)detail);
-    }
-}
-
-static void mglObserveProgramDrawForFocus(GLuint programName,
-                                          GLsizei count,
-                                          GLuint enabledAttribs)
-{
-    typedef struct MGLProgramDrawObservation {
-        GLuint program;
-        GLsizei count;
-        GLuint enabledAttribs;
-        uint64_t hits;
-    } MGLProgramDrawObservation;
-
-    static MGLProgramDrawObservation s_observations[64] = {{0, 0, 0, 0}};
-
-    if (programName == 0) {
-        return;
-    }
-
-    for (uint32_t i = 0; i < (uint32_t)(sizeof(s_observations) / sizeof(s_observations[0])); i++) {
-        if (s_observations[i].program == programName ||
-            s_observations[i].program == 0) {
-            if (s_observations[i].program == 0) {
-                s_observations[i].program = programName;
-                s_observations[i].count = count;
-                s_observations[i].enabledAttribs = enabledAttribs;
-            }
-
-            if (s_observations[i].count == count &&
-                s_observations[i].enabledAttribs == enabledAttribs) {
-                s_observations[i].hits++;
-            } else {
-                s_observations[i].count = count;
-                s_observations[i].enabledAttribs = enabledAttribs;
-                s_observations[i].hits = 1;
-            }
-
-            if (s_observations[i].hits == 16ull) {
-                mglFocusLoadingProgram(programName, "repeated-draw-pattern", s_observations[i].hits);
-            }
-            return;
-        }
-    }
-}
-
-static inline bool mglIsFocusedLoadingProgram(GLuint programName)
-{
-    for (uint32_t i = 0; i < g_mglFocusedLoadingProgramCount; i++) {
-        if (g_mglFocusedLoadingPrograms[i] == programName) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 static inline bool mglShouldTraceCall(uint64_t count)
 {
     if (!kMGLDiagnosticStateLogs) {
         return false;
     }
     return (count <= 80ull) || ((count % 500ull) == 0ull);
-}
-
-static inline TextureLevel *mglTraceTextureBaseLevel(Texture *tex)
-{
-    if (!tex || tex->num_levels == 0 || !tex->faces[0].levels) {
-        return NULL;
-    }
-
-    return &tex->faces[0].levels[0];
 }
 
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
@@ -3423,33 +846,6 @@ static inline Texture *mglTraceFramebufferAttachmentTexture(GLMContext glctx, FB
         return findTexture(glctx, attachment->texture);
     }
     return NULL;
-}
-
-static inline TextureLevel *mglTextureAttachmentLevel(Texture *tex, GLuint level)
-{
-    if (!tex || tex->num_levels == 0 || !tex->faces[0].levels || level >= tex->num_levels) {
-        return NULL;
-    }
-
-    return &tex->faces[0].levels[level];
-}
-
-static inline void mglTraceTextureLevelSummary(Texture *tex,
-                                               GLuint level,
-                                               GLuint *ever,
-                                               GLuint *full,
-                                               GLuint *source)
-{
-    TextureLevel *texLevel = mglTextureAttachmentLevel(tex, level);
-    if (ever) {
-        *ever = texLevel ? (GLuint)texLevel->ever_written : 0u;
-    }
-    if (full) {
-        *full = texLevel ? (GLuint)texLevel->has_initialized_data : 0u;
-    }
-    if (source) {
-        *source = texLevel ? (GLuint)texLevel->last_init_source : 0u;
-    }
 }
 
 static inline void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
@@ -3532,130 +928,9 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
     }
 }
 
-static inline bool mglTextureLevelHasUploadableCPUData(const TextureLevel *level)
-{
-    if (!level ||
-        !level->complete ||
-        !level->data ||
-        level->data_size == 0u ||
-        level->pitch == 0u) {
-        return false;
-    }
-
-    switch (level->last_init_source) {
-        case kTexImageCopy:
-        case kTexImagePBO:
-        case kTexSubImageCPU:
-        case kTexSubImagePBO:
-        case kTexMetalFill:
-            return (level->has_initialized_data || level->ever_written) ? true : false;
-        case kTexInitNone:
-        case kTexImageNull:
-        case kTexRenderTargetWrite:
-        default:
-            return false;
-    }
-}
-
-static inline bool mglTextureHasUploadableCPUData(Texture *tex, int numFaces, GLuint levelCount)
-{
-    if (!tex || numFaces <= 0 || levelCount == 0u) {
-        return false;
-    }
-
-    for (int face = 0; face < numFaces; face++) {
-        if (!tex->faces[face].levels) {
-            continue;
-        }
-        for (GLuint level = 0; level < levelCount; level++) {
-            if (mglTextureLevelHasUploadableCPUData(&tex->faces[face].levels[level])) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
-
-static inline NSUInteger mglMetalCompressedBlockHeight(MTLPixelFormat pixelFormat)
-{
-    switch (pixelFormat) {
-        case MTLPixelFormatBC1_RGBA:
-        case MTLPixelFormatBC1_RGBA_sRGB:
-        case MTLPixelFormatBC2_RGBA:
-        case MTLPixelFormatBC2_RGBA_sRGB:
-        case MTLPixelFormatBC3_RGBA:
-        case MTLPixelFormatBC3_RGBA_sRGB:
-        case MTLPixelFormatBC4_RUnorm:
-        case MTLPixelFormatBC4_RSnorm:
-        case MTLPixelFormatBC5_RGUnorm:
-        case MTLPixelFormatBC5_RGSnorm:
-        case MTLPixelFormatBC6H_RGBFloat:
-        case MTLPixelFormatBC6H_RGBUfloat:
-        case MTLPixelFormatBC7_RGBAUnorm:
-        case MTLPixelFormatBC7_RGBAUnorm_sRGB:
-        case MTLPixelFormatASTC_4x4_sRGB:
-        case MTLPixelFormatASTC_4x4_LDR:
-        case MTLPixelFormatASTC_4x4_HDR:
-        case MTLPixelFormatASTC_5x4_sRGB:
-        case MTLPixelFormatASTC_5x4_LDR:
-        case MTLPixelFormatASTC_5x4_HDR:
-            return 4u;
-        case MTLPixelFormatASTC_5x5_sRGB:
-        case MTLPixelFormatASTC_5x5_LDR:
-        case MTLPixelFormatASTC_5x5_HDR:
-        case MTLPixelFormatASTC_6x5_sRGB:
-        case MTLPixelFormatASTC_6x5_LDR:
-        case MTLPixelFormatASTC_6x5_HDR:
-        case MTLPixelFormatASTC_8x5_sRGB:
-        case MTLPixelFormatASTC_8x5_LDR:
-        case MTLPixelFormatASTC_8x5_HDR:
-        case MTLPixelFormatASTC_10x5_sRGB:
-        case MTLPixelFormatASTC_10x5_LDR:
-        case MTLPixelFormatASTC_10x5_HDR:
-            return 5u;
-        case MTLPixelFormatASTC_6x6_sRGB:
-        case MTLPixelFormatASTC_6x6_LDR:
-        case MTLPixelFormatASTC_6x6_HDR:
-        case MTLPixelFormatASTC_8x6_sRGB:
-        case MTLPixelFormatASTC_8x6_LDR:
-        case MTLPixelFormatASTC_8x6_HDR:
-        case MTLPixelFormatASTC_10x6_sRGB:
-        case MTLPixelFormatASTC_10x6_LDR:
-        case MTLPixelFormatASTC_10x6_HDR:
-            return 6u;
-        case MTLPixelFormatASTC_8x8_sRGB:
-        case MTLPixelFormatASTC_8x8_LDR:
-        case MTLPixelFormatASTC_8x8_HDR:
-        case MTLPixelFormatASTC_10x8_sRGB:
-        case MTLPixelFormatASTC_10x8_LDR:
-        case MTLPixelFormatASTC_10x8_HDR:
-            return 8u;
-        case MTLPixelFormatASTC_10x10_sRGB:
-        case MTLPixelFormatASTC_10x10_LDR:
-        case MTLPixelFormatASTC_10x10_HDR:
-        case MTLPixelFormatASTC_12x10_sRGB:
-        case MTLPixelFormatASTC_12x10_LDR:
-        case MTLPixelFormatASTC_12x10_HDR:
-            return 10u;
-        case MTLPixelFormatASTC_12x12_sRGB:
-        case MTLPixelFormatASTC_12x12_LDR:
-        case MTLPixelFormatASTC_12x12_HDR:
-            return 12u;
-        default:
-            return 1u;
-    }
-}
-
-static inline NSUInteger mglMetalUploadRowsForPixelFormat(MTLPixelFormat pixelFormat, NSUInteger pixelHeight)
-{
-    NSUInteger height = pixelHeight ? pixelHeight : 1u;
-    NSUInteger blockHeight = mglMetalCompressedBlockHeight(pixelFormat);
-    if (blockHeight <= 1u) {
-        return height;
-    }
-    return (height + blockHeight - 1u) / blockHeight;
-}
+/* Compressed block height / upload row helpers (mglMetalCompressedBlockHeight,
+ * mglMetalUploadRowsForPixelFormat) moved to mgl_texture_compat.h as
+ * static inline helpers. */
 
 /* Pixel format classification (mglMetalPixelFormatIsDepthOrStencil,
  * mglMetalPixelFormatIsPackedDepthStencil) and GL internal-format
@@ -3695,16 +970,6 @@ static void mglNormalizePipelineDepthStencilFormats(MTLRenderPipelineDescriptor 
     }
     desc.depthAttachmentPixelFormat = packedFormat;
     desc.stencilAttachmentPixelFormat = packedFormat;
-}
-
-static inline GLuint mglTraceTextureName(Texture *tex)
-{
-    return tex ? tex->name : 0u;
-}
-
-static inline const char *mglTraceTextureLabel(Texture *tex)
-{
-    return (tex && tex->debug_label[0] != '\0') ? tex->debug_label : "";
 }
 
 /* RT Sync gate helpers (mglTextureCanUseGLSampledRenderTargetCopy,
@@ -3861,14 +1126,14 @@ static inline void mglLogLoopHeartbeat(const char *tag,
     if (*lastCallSeconds > 0.0 &&
         warnGapSeconds > 0.0 &&
         (nowSeconds - *lastCallSeconds) >= warnGapSeconds) {
-        NSLog(@"MGL TRACE %s gap=%.2fms deltaCalls=%llu call=%llu",
+        MGLTraceNSLog(@"MGL TRACE %s gap=%.2fms deltaCalls=%llu call=%llu",
               tag ? tag : "loop",
               deltaMs,
               (unsigned long long)deltaCalls,
               (unsigned long long)callCount);
     } else if (mglShouldTraceCall(callCount) &&
                (callCount <= 20ull || (callCount % 60ull) == 0ull)) {
-        NSLog(@"MGL TRACE %s heartbeat delta=%.2fms deltaCalls=%llu call=%llu",
+        MGLTraceNSLog(@"MGL TRACE %s heartbeat delta=%.2fms deltaCalls=%llu call=%llu",
               tag ? tag : "loop",
               deltaMs,
               (unsigned long long)deltaCalls,
@@ -3879,62 +1144,8 @@ static inline void mglLogLoopHeartbeat(const char *tag,
     *lastCallCount = callCount;
 }
 
-static inline void mglAppendFlagName(char *dst, size_t dstSize, const char *name, bool *first)
-{
-    if (!dst || !name || dstSize == 0) {
-        return;
-    }
-
-    size_t used = strlen(dst);
-    if (used >= dstSize - 1) {
-        return;
-    }
-
-    int written = snprintf(dst + used,
-                           dstSize - used,
-                           "%s%s",
-                           (*first ? "" : "|"),
-                           name);
-    if (written > 0) {
-        *first = false;
-    }
-}
-
-static void mglFormatDirtyBits(uint32_t bits, char *dst, size_t dstSize)
-{
-    if (!dst || dstSize == 0) {
-        return;
-    }
-
-    dst[0] = '\0';
-    if (bits == 0) {
-        snprintf(dst, dstSize, "none");
-        return;
-    }
-
-    bool first = true;
-    if (bits & DIRTY_VAO) mglAppendFlagName(dst, dstSize, "VAO", &first);
-    if (bits & DIRTY_STATE) mglAppendFlagName(dst, dstSize, "STATE", &first);
-    if (bits & DIRTY_BUFFER) mglAppendFlagName(dst, dstSize, "BUFFER", &first);
-    if (bits & DIRTY_TEX) mglAppendFlagName(dst, dstSize, "TEX", &first);
-    if (bits & DIRTY_TEX_PARAM) mglAppendFlagName(dst, dstSize, "TEX_PARAM", &first);
-    if (bits & DIRTY_TEX_BINDING) mglAppendFlagName(dst, dstSize, "TEX_BINDING", &first);
-    if (bits & DIRTY_SAMPLER) mglAppendFlagName(dst, dstSize, "SAMPLER", &first);
-    if (bits & DIRTY_SHADER) mglAppendFlagName(dst, dstSize, "SHADER", &first);
-    if (bits & DIRTY_PROGRAM) mglAppendFlagName(dst, dstSize, "PROGRAM", &first);
-    if (bits & DIRTY_FBO) mglAppendFlagName(dst, dstSize, "FBO", &first);
-    if (bits & DIRTY_DRAWABLE) mglAppendFlagName(dst, dstSize, "DRAWABLE", &first);
-    if (bits & DIRTY_RENDER_STATE) mglAppendFlagName(dst, dstSize, "RENDER_STATE", &first);
-    if (bits & DIRTY_ALPHA_STATE) mglAppendFlagName(dst, dstSize, "ALPHA_STATE", &first);
-    if (bits & DIRTY_IMAGE_UNIT_STATE) mglAppendFlagName(dst, dstSize, "IMAGE_UNIT", &first);
-    if (bits & DIRTY_BUFFER_BASE_STATE) mglAppendFlagName(dst, dstSize, "BUFFER_BASE", &first);
-    if (bits & DIRTY_ALL_BIT) mglAppendFlagName(dst, dstSize, "ALL_BIT", &first);
-    if (bits == DIRTY_ALL) mglAppendFlagName(dst, dstSize, "ALL", &first);
-
-    if (first) {
-        snprintf(dst, dstSize, "0x%x", bits);
-    }
-}
+/* Dirty-bits formatting helpers (mglAppendFlagName, mglFormatDirtyBits)
+ * moved to mgl_state_log.h/.m. */
 
 static void mglLogStateSnapshot(const char *tag,
                                 GLMContext ctx,
@@ -3948,7 +1159,7 @@ static void mglLogStateSnapshot(const char *tag,
     }
 
     if (!mglRendererContextLikelyValid(ctx)) {
-        NSLog(@"MGL TRACE %s ctx=%p(invalid) cb=%p enc=%p rpd=%p drawable=%p",
+        MGLTraceNSLog(@"MGL TRACE %s ctx=%p(invalid) cb=%p enc=%p rpd=%p drawable=%p",
               tag ? tag : "snapshot", ctx, commandBuffer, renderEncoder, renderPassDescriptor, drawable);
         return;
     }
@@ -3963,7 +1174,7 @@ static void mglLogStateSnapshot(const char *tag,
             mglPointerRangeIsReadable(drawFBO, sizeof(*drawFBO))) {
             drawFBOName = drawFBO->name;
         } else {
-            NSLog(@"MGL TRACE %s invalid drawFBO=%p", tag ? tag : "snapshot", drawFBO);
+            MGLTraceNSLog(@"MGL TRACE %s invalid drawFBO=%p", tag ? tag : "snapshot", drawFBO);
             drawFBO = NULL;
         }
     }
@@ -3986,7 +1197,7 @@ static void mglLogStateSnapshot(const char *tag,
 
     id<MTLTexture> drawableTexture = drawable ? drawable.texture : nil;
 
-    NSLog(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
+    MGLTraceNSLog(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
           "vp=(%u,%u,%u,%u) scissor(en=%d box=%d,%d,%d,%d) caps(depth=%d blend=%d cull=%d) "
           "stateClear=(%.3f,%.3f,%.3f,%.3f) cb=%p[%s] label=%@ enc=%p rpd=%p rt=%lux%lu "
           "c0=%p fmt=%lu usage=0x%lx la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
@@ -4046,7 +1257,7 @@ static void mglLogStateSnapshot(const char *tag,
           (unsigned long)(drawableTexture ? drawableTexture.width : 0),
           (unsigned long)(drawableTexture ? drawableTexture.height : 0));
 
-    NSLog(@"MGL TRACE %s masks color0(use=%d rgba=%d%d%d%d) depthWrite=%d stencilWrite=0x%x",
+    MGLTraceNSLog(@"MGL TRACE %s masks color0(use=%d rgba=%d%d%d%d) depthWrite=%d stencilWrite=0x%x",
           tag ? tag : "snapshot",
           ctx->state.caps.use_color_mask[0] ? 1 : 0,
           ctx->state.var.color_writemask[0][0] ? 1 : 0,
@@ -4573,161 +1784,9 @@ static GLuint mglRendererSafeFramebufferName(GLMContext ctx)
     return fbo ? fbo->name : 0u;
 }
 
-static BOOL mglRendererSameVertexStream(Buffer *lhsBuffer,
-                                        GLintptr lhsOffset,
-                                        GLuint lhsStride,
-                                        GLuint lhsDivisor,
-                                        Buffer *rhsBuffer,
-                                        GLintptr rhsOffset,
-                                        GLuint rhsStride,
-                                        GLuint rhsDivisor)
-{
-    /* Compare offsets as well: attributes that share the same buffer/stride/
-     * divisor but have different binding offsets (e.g. interleaved vertex
-     * arrays submitted via a single VBO with per-attribute glVertexAttribPointer
-     * offsets) must get separate Metal buffer slots. This is required for
-     * CPU-converted attribs (GL_DOUBLE, GL_INT→float, integer signedness
-     * mismatch), where each attrib produces its own converted buffer starting
-     * at its binding_offset. If they shared a slot, the second binding would
-     * overwrite the first. */
-    if (!lhsBuffer || !rhsBuffer ||
-        lhsOffset != rhsOffset ||
-        lhsStride != rhsStride ||
-        lhsDivisor != rhsDivisor) {
-        return NO;
-    }
+/* Buffer query helpers moved to mgl_buffer_query.h/.m. */
 
-    return lhsBuffer == rhsBuffer ||
-           (lhsBuffer->name == rhsBuffer->name && lhsBuffer->target == rhsBuffer->target);
-}
-
-static BOOL mglRendererBufferMayHaveMappedWrites(Buffer *buffer)
-{
-    if (!buffer || !buffer->mapped) {
-        return NO;
-    }
-
-    if ((buffer->access_flags & GL_MAP_WRITE_BIT) != 0) {
-        return YES;
-    }
-
-    return buffer->access == GL_WRITE_ONLY || buffer->access == GL_READ_WRITE;
-}
-
-static BOOL mglRendererBufferHasDrawableContents(Buffer *buffer)
-{
-    if (!buffer) {
-        return NO;
-    }
-
-    if (buffer->ever_written || buffer->has_initialized_data) {
-        return YES;
-    }
-
-    /*
-     * Persistent/coherent mapped buffers are commonly written directly by the
-     * client through the returned pointer. Those writes do not pass through
-     * glBufferSubData, so ever_written can remain false even though the Metal
-     * backing contains valid stream vertices.
-     */
-    return mglRendererBufferMayHaveMappedWrites(buffer) &&
-           buffer->data.buffer_data != 0 &&
-           buffer->size > 0;
-}
-
-static BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
-{
-    if (attribute >= MAX_ATTRIBS) {
-        return NO;
-    }
-    if (!program) {
-        return NO;
-    }
-
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
-    if (!inputs->list || inputs->count == 0) {
-        return NO;
-    }
-
-    for (GLuint i = 0; i < inputs->count; i++) {
-        GLuint location = inputs->list[i].location;
-        if (location == attribute) {
-            return YES;
-        }
-
-        /* Array stage inputs occupy consecutive locations.  SPIRV-Cross
-         * reflects only the base location, but the generated MSL flattens
-         * the array into individual [[attribute(N)]] inputs at locations
-         * [base, base + array_size - 1]. */
-        if (inputs->list[i].gl_array_size > 1 &&
-            attribute >= location &&
-            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
-            return YES;
-        }
-
-        if (location == 0xffffffffu && i == attribute) {
-            return YES;
-        }
-    }
-
-    return NO;
-}
-
-static SpirvResource *mglRendererProgramVertexAttribResource(Program *program, GLuint attribute)
-{
-    if (!program || attribute >= MAX_ATTRIBS) {
-        return NULL;
-    }
-
-    SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
-    if (!inputs->list || inputs->count == 0) {
-        return NULL;
-    }
-
-    for (GLuint i = 0; i < inputs->count; i++) {
-        GLuint location = inputs->list[i].location;
-        if (location == attribute) {
-            return &inputs->list[i];
-        }
-
-        /* Array stage inputs span consecutive locations (see
-         * mglRendererProgramUsesVertexAttrib). */
-        if (inputs->list[i].gl_array_size > 1 &&
-            attribute >= location &&
-            attribute < location + (GLuint)inputs->list[i].gl_array_size) {
-            return &inputs->list[i];
-        }
-
-        if (location == 0xffffffffu && i == attribute) {
-            return &inputs->list[i];
-        }
-    }
-
-    return NULL;
-}
-
-static bool mglRendererVertexAttribIsColorInput(Program *program, GLuint attribute)
-{
-    SpirvResource *resource = mglRendererProgramVertexAttribResource(program, attribute);
-    const char *name = resource ? resource->name : NULL;
-    return name &&
-           (strcasecmp(name, "Color") == 0 ||
-            strcasecmp(name, "a_Color") == 0 ||
-            strcasecmp(name, "in_Color") == 0 ||
-            strcasecmp(name, "vertColor") == 0 ||
-           strcasecmp(name, "vertexColor") == 0 ||
-           strcasecmp(name, "VertColor") == 0);
-}
-
-static BOOL mglRendererVertexAttribUsesCurrentValue(VertexArray *vao, GLuint attribute)
-{
-    return vao &&
-           attribute < MAX_ATTRIBS &&
-           vao->enabled_attribs != 0u &&
-           (vao->enabled_attribs & (0x1u << attribute)) == 0u;
-}
+/* Vertex attrib query helpers moved to mgl_vertex_attrib_query.h/.m. */
 
 static NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
                                                            GLuint attribute,
@@ -4964,11 +2023,59 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (void)recordGPUError;
 - (void)recordGPUSuccess;
 - (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format;
-- (BOOL)commitCommandBufferWithAGXRecovery:(NSString *)reason;
+- (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer;
 - (void)resetMetalState;
 - (BOOL)validateMetalObjects;
 - (void)cleanupCommandBuffer;
+
+// Phase 3 Thread Safety: *Locked variants (private, no lock — called from public wrappers)
+- (void)endRenderEncodingLocked;
+- (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;
+- (void)bindMTLBufferLocked:(Buffer *)ptr;
+- (bool)bindMTLProgramLocked:(Program *)ptr;
+- (bool)newCommandBufferLocked;
+- (bool)ensureWritableCommandBufferLocked:(const char *)reason;
+- (bool)bindMTLTextureLocked:(Texture *)tex;
+- (bool)newRenderEncoderLocked;
+- (void)flushCommandBufferLocked:(bool)finish;
+- (bool)processGLStateLocked:(bool)draw_command;
+- (void)mtlDrawArraysLocked:(GLMContext)ctx mode:(GLenum)mode first:(GLint)first count:(GLsizei)count;
+- (void)mtlDrawElementsLocked:(GLMContext)glm_ctx mode:(GLenum)mode count:(GLsizei)count type:(GLenum)type indices:(const void *)indices;
+- (void)mtlSwapBuffersLocked:(GLMContext)glm_ctx;
+- (void)mtlBufferSubDataLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr;
+- (void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset;
 @end
+
+// === Phase 3: Thread Safety Lock Macros ===
+//
+// NSRecursiveLock is reentrant — required because the MGLRenderer call graph
+// is densely interconnected (e.g. endRenderEncoding → updateGLSampledCopies
+// → updateGLSampledRenderTargetCopyForTexture → ensureWritableCommandBuffer,
+// which is another target method).  A non-reentrant lock deadlocked on
+// indirect re-entry through non-target helper methods.
+//
+// Two independent locks:
+//   _metalStateLock  — guards the 15 Locked-method targets (draw path)
+//   _syncListLock    — guards _currentCommandBufferSyncList access
+//                      (mtlGetSync: vs newCommandBufferLocked)
+//
+// The Locked pattern (public wrapper + *Locked impl) is retained for
+// structural clarity but no longer relies on non-reentrancy.
+
+// Helper for the independent _syncListLock (os_unfair_lock). It protects only
+// _currentCommandBufferSyncList and is always acquired after _metalStateLock
+// when both locks are needed.
+static inline void mglMetalLock(os_unfair_lock *lock) {
+    os_unfair_lock_lock(lock);
+}
+static inline void mglMetalUnlock(os_unfair_lock *lock) {
+    os_unfair_lock_unlock(lock);
+}
+
+#define METAL_LOCK()   [_metalStateLock lock]
+#define METAL_UNLOCK() [_metalStateLock unlock]
+#define SYNC_LOCK()    do { mglMetalLock(&_syncListLock); } while (0)
+#define SYNC_UNLOCK()  do { mglMetalUnlock(&_syncListLock); } while (0)
 
 // Main class performing the rendering
 @implementation MGLRenderer
@@ -4987,8 +2094,16 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
      * calls after init.  See mgl_capability.h. */
     MGLCapability _capability;
 
-    // CRITICAL FIX: Thread synchronization to prevent race conditions
-    NSLock *_metalStateLock;
+    // CRITICAL FIX: Thread synchronization to prevent race conditions.
+    // NSRecursiveLock is reentrant — required because the MGLRenderer call
+    // graph is densely interconnected (draw → processGLState → newRenderEncoder
+    // → endRenderEncoding → updateGLSampledRenderTargetCopyForTexture →
+    // ensureWritableCommandBuffer, etc.).  A non-reentrant lock (os_unfair_lock)
+    // deadlocked on indirect re-entry through non-target helper methods.
+    // The Locked pattern (public wrapper + *Locked impl) is retained for
+    // structural clarity but no longer relies on non-reentrancy.
+    NSRecursiveLock *_metalStateLock;
+    os_unfair_lock _syncListLock;   // independent lock for _currentCommandBufferSyncList
 
     // AGX GPU Error Tracking - Prevent command queue from entering error state
     NSUInteger _consecutiveGPUErrors;
@@ -5240,67 +2355,7 @@ MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
     return MTLVertexFormatInvalid;
 }
 
-static inline size_t mglVertexAttribComponentSize(GLenum type)
-{
-    switch (type)
-    {
-        case GL_BYTE:
-        case GL_UNSIGNED_BYTE:
-            return 1u;
-        case GL_SHORT:
-        case GL_UNSIGNED_SHORT:
-        case GL_HALF_FLOAT:
-            return 2u;
-        case GL_INT:
-        case GL_UNSIGNED_INT:
-        case GL_FLOAT:
-        case GL_FIXED:
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-            return 4u;
-        case GL_DOUBLE:
-            return 8u;
-        default:
-            return 0u;
-    }
-}
-
-static const char *mglVertexFormatName(MTLVertexFormat format)
-{
-    switch (format) {
-        case MTLVertexFormatFloat: return "Float";
-        case MTLVertexFormatFloat2: return "Float2";
-        case MTLVertexFormatFloat3: return "Float3";
-        case MTLVertexFormatFloat4: return "Float4";
-        case MTLVertexFormatUChar4: return "UChar4";
-        case MTLVertexFormatUChar4Normalized: return "UChar4Normalized";
-        case MTLVertexFormatUChar3: return "UChar3";
-        case MTLVertexFormatUChar3Normalized: return "UChar3Normalized";
-        case MTLVertexFormatUChar2: return "UChar2";
-        case MTLVertexFormatUChar2Normalized: return "UChar2Normalized";
-        case MTLVertexFormatUChar: return "UChar";
-        case MTLVertexFormatUCharNormalized: return "UCharNormalized";
-        case MTLVertexFormatShort: return "Short";
-        case MTLVertexFormatShort2: return "Short2";
-        case MTLVertexFormatShort3: return "Short3";
-        case MTLVertexFormatShort4: return "Short4";
-        case MTLVertexFormatShortNormalized: return "ShortNormalized";
-        case MTLVertexFormatShort2Normalized: return "Short2Normalized";
-        case MTLVertexFormatShort3Normalized: return "Short3Normalized";
-        case MTLVertexFormatShort4Normalized: return "Short4Normalized";
-        case MTLVertexFormatUShort: return "UShort";
-        case MTLVertexFormatUShort2: return "UShort2";
-        case MTLVertexFormatUShort3: return "UShort3";
-        case MTLVertexFormatUShort4: return "UShort4";
-        case MTLVertexFormatUShortNormalized: return "UShortNormalized";
-        case MTLVertexFormatUShort2Normalized: return "UShort2Normalized";
-        case MTLVertexFormatUShort3Normalized: return "UShort3Normalized";
-        case MTLVertexFormatUShort4Normalized: return "UShort4Normalized";
-        case MTLVertexFormatUInt1010102Normalized: return "UInt1010102Normalized";
-        case MTLVertexFormatInt1010102Normalized: return "Int1010102Normalized";
-        default: return "Unknown";
-    }
-}
+/* mglVertexAttribComponentSize / mglVertexFormatName moved to mgl_vertex_format.h/.m. */
 
 static inline bool mglShouldInspectDrawCall(uint64_t drawCall, GLuint programName)
 {
@@ -5324,1659 +2379,27 @@ static inline bool mglShouldInspectDrawCall(uint64_t drawCall, GLuint programNam
     return ((drawCall % 128ull) == 0ull);
 }
 
-static inline NSUInteger mglGLIndexElementSize(GLenum type)
-{
-    switch (type) {
-        case GL_UNSIGNED_BYTE: return 1u;
-        case GL_UNSIGNED_SHORT: return 2u;
-        case GL_UNSIGNED_INT: return 4u;
-        default: return 0u;
-    }
-}
+/* mglGLIndexElementSize / mglReadGLIndexValue moved to mgl_vertex_format.h/.m. */
 
-static inline uint32_t mglReadGLIndexValue(const uint8_t *indexBytes,
-                                           GLenum type,
-                                           NSUInteger elementIndex)
-{
-    if (!indexBytes) {
-        return 0u;
-    }
+/* Index buffer builder helpers moved to mgl_index_buffer.h/.m. */
 
-    switch (type) {
-        case GL_UNSIGNED_BYTE: {
-            uint8_t v = 0;
-            memcpy(&v, indexBytes + elementIndex, sizeof(v));
-            return (uint32_t)v;
-        }
-        case GL_UNSIGNED_SHORT: {
-            uint16_t v = 0;
-            memcpy(&v, indexBytes + (elementIndex * 2u), sizeof(v));
-            return (uint32_t)v;
-        }
-        case GL_UNSIGNED_INT: {
-            uint32_t v = 0;
-            memcpy(&v, indexBytes + (elementIndex * 4u), sizeof(v));
-            return v;
-        }
-        default:
-            return 0u;
-    }
-}
+/* GL draw-mode classification helpers (mglPrimitiveModeHasDrawableSegment,
+ * mglDrawModeProducesPolygons, mglPolygonModePointForDrawMode,
+ * mglPolygonModeLineForDrawMode) moved to mgl_draw_mode.h. */
 
-static inline bool mglScanIndexRangeIgnoringRestart(const uint8_t *indexBytes,
-                                                    GLenum indexType,
-                                                    GLsizei count,
-                                                    bool primitiveRestartEnabled,
-                                                    uint32_t restartIndex,
-                                                    uint32_t *outMin,
-                                                    uint32_t *outMax)
-{
-    if (!indexBytes || count <= 0 || !outMin || !outMax) {
-        return false;
-    }
+/* Index buffer builder helpers moved to mgl_index_buffer.h/.m. */
 
-    uint32_t minIndex = UINT32_MAX;
-    uint32_t maxIndex = 0u;
-    for (GLsizei i = 0; i < count; i++) {
-        uint32_t idxValue = mglReadGLIndexValue(indexBytes, indexType, (NSUInteger)i);
-        if (primitiveRestartEnabled && idxValue == restartIndex) {
-            continue;
-        }
-        if (idxValue < minIndex) {
-            minIndex = idxValue;
-        }
-        if (idxValue > maxIndex) {
-            maxIndex = idxValue;
-        }
-    }
+/* Draw encode helpers (mglEncodeArrayLineLoop, mglEncodeArrayTriangleFan,
+ * mglEncodeElementLineLoop, mglEncodeElementTriangleFan, mglEncodeArrayQuads,
+ * mglEncodeElementQuads, mglEncodeArrayPolygonPoint, mglEncodeElementPolygonPoint,
+ * mglEncodeRestartSegment, mglEncodePrimitiveRestartedElementDraw,
+ * mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled,
+ * mglSkipIndirectDrawWhenPolygonPointEmulationNeeded) moved to
+ * mgl_draw_encode.h/.m. */
 
-    if (minIndex == UINT32_MAX) {
-        return false;
-    }
+/* mglHashStepU64 moved to mgl_byte_hash.h as static inline. */
 
-    *outMin = minIndex;
-    *outMax = maxIndex;
-    return true;
-}
-
-static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
-                                                  GLenum indexType,
-                                                  uint32_t *outRestartIndex)
-{
-    if (!ctx || (!ctx->state.caps.primitive_restart && !ctx->state.caps.primitive_restart_fixed_index)) {
-        return false;
-    }
-
-    uint32_t restartIndex = 0u;
-    if (ctx->state.caps.primitive_restart_fixed_index) {
-        switch (indexType) {
-            case GL_UNSIGNED_BYTE:
-                restartIndex = 0xffu;
-                break;
-            case GL_UNSIGNED_SHORT:
-                restartIndex = 0xffffu;
-                break;
-            case GL_UNSIGNED_INT:
-                restartIndex = 0xffffffffu;
-                break;
-            default:
-                return false;
-        }
-    } else {
-        restartIndex = ctx->state.var.primitive_restart_index;
-    }
-
-    if (outRestartIndex) {
-        *outRestartIndex = restartIndex;
-    }
-    return true;
-}
-
-static inline bool mglPrimitiveModeHasDrawableSegment(GLenum mode, NSUInteger indexCount)
-{
-    switch (mode) {
-        case GL_POINTS:
-            return indexCount >= 1u;
-        case GL_LINES:
-        case GL_LINE_STRIP:
-        case GL_LINE_LOOP:
-            return indexCount >= 2u;
-        case GL_TRIANGLES:
-        case GL_TRIANGLE_STRIP:
-        case GL_TRIANGLE_FAN:
-            return indexCount >= 3u;
-        case GL_QUADS:
-            return indexCount >= 4u;
-        default:
-            return indexCount > 0u;
-    }
-}
-
-static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
-{
-    if (!ctx || ctx->state.var.polygon_mode != GL_POINT) {
-        return NO;
-    }
-
-    switch (mode) {
-        case GL_TRIANGLES:
-        case GL_TRIANGLE_STRIP:
-        case GL_TRIANGLE_FAN:
-        case GL_QUADS:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
-{
-    switch (mode) {
-        case GL_TRIANGLES:
-        case GL_TRIANGLE_STRIP:
-        case GL_TRIANGLE_FAN:
-        case GL_QUADS:
-            return YES;
-        default:
-            return NO;
-    }
-}
-
-static inline BOOL mglPolygonModeLineForDrawMode(GLMContext ctx, GLenum mode)
-{
-    return ctx &&
-           ctx->state.var.polygon_mode == GL_LINE &&
-           mglDrawModeProducesPolygons(mode);
-}
-
-static inline bool mglComputeIndexByteOffset(NSUInteger baseByteOffset,
-                                             NSUInteger firstElement,
-                                             NSUInteger indexStride,
-                                             NSUInteger *outByteOffset)
-{
-    if (!outByteOffset || indexStride == 0u) {
-        return false;
-    }
-    if (firstElement > (NSUIntegerMax / indexStride)) {
-        return false;
-    }
-
-    NSUInteger relativeByteOffset = firstElement * indexStride;
-    if (baseByteOffset > (NSUIntegerMax - relativeByteOffset)) {
-        return false;
-    }
-
-    *outByteOffset = baseByteOffset + relativeByteOffset;
-    return true;
-}
-
-static inline bool mglComputePreparedIndexByteOffset(GLenum glIndexType,
-                                                    NSUInteger glByteOffset,
-                                                    NSUInteger *outPreparedByteOffset)
-{
-    if (!outPreparedByteOffset) {
-        return false;
-    }
-    if (glIndexType == GL_UNSIGNED_BYTE) {
-        if (glByteOffset > (NSUIntegerMax / sizeof(uint16_t))) {
-            return false;
-        }
-        *outPreparedByteOffset = glByteOffset * sizeof(uint16_t);
-        return true;
-    }
-
-    *outPreparedByteOffset = glByteOffset;
-    return true;
-}
-
-static id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
-                                                       NSUInteger vertexCount,
-                                                       NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || vertexCount < 3u) {
-        return nil;
-    }
-
-    NSUInteger triangleCount = vertexCount - 2u;
-    if (triangleCount > (NSUIntegerMax / (3u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = 0u;
-        indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
-        indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
-                                                    NSUInteger firstVertex,
-                                                    NSUInteger vertexCount,
-                                                    NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || vertexCount < 2u) {
-        return nil;
-    }
-    if (vertexCount > (NSUIntegerMax - 1u) ||
-        firstVertex > ((NSUInteger)UINT32_MAX) ||
-        vertexCount > (((NSUInteger)UINT32_MAX + 1u) - firstVertex)) {
-        return nil;
-    }
-
-    NSUInteger indexCount = vertexCount + 1u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger i = 0; i < vertexCount; i++) {
-        if (i > UINT32_MAX) {
-            free(indices);
-            return nil;
-        }
-        indices[i] = (uint32_t)(firstVertex + i);
-    }
-    indices[vertexCount] = (uint32_t)firstVertex;
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
-                                                         NSUInteger vertexCount,
-                                                         NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || vertexCount < 3u) {
-        return nil;
-    }
-
-    NSUInteger triangleCount = vertexCount - 2u;
-    if (triangleCount > (NSUIntegerMax / (3u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = (uint32_t)tri;
-        indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
-        indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
-                                                         const uint8_t *sourceIndexBytes,
-                                                         GLenum sourceIndexType,
-                                                         NSUInteger sourceIndexCount,
-                                                         NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || !sourceIndexBytes || sourceIndexCount < 3u) {
-        return nil;
-    }
-
-    NSUInteger triangleCount = sourceIndexCount - 2u;
-    if (triangleCount > (NSUIntegerMax / (3u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    uint32_t center = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, 0u);
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = center;
-        indices[(tri * 3u) + 1u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 1u);
-        indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
-                                                           const uint8_t *sourceIndexBytes,
-                                                           GLenum sourceIndexType,
-                                                           NSUInteger sourceIndexCount,
-                                                           NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || !sourceIndexBytes || sourceIndexCount < 3u) {
-        return nil;
-    }
-
-    NSUInteger triangleCount = sourceIndexCount - 2u;
-    if (triangleCount > (NSUIntegerMax / (3u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri);
-        indices[(tri * 3u) + 1u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 1u);
-        indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
-                                                      const uint8_t *sourceIndexBytes,
-                                                      GLenum sourceIndexType,
-                                                      NSUInteger sourceIndexCount,
-                                                      NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    if (!device || !sourceIndexBytes || sourceIndexCount < 2u) {
-        return nil;
-    }
-    if (sourceIndexCount > (NSUIntegerMax - 1u)) {
-        return nil;
-    }
-
-    NSUInteger indexCount = sourceIndexCount + 1u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger i = 0; i < sourceIndexCount; i++) {
-        indices[i] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, i);
-    }
-    indices[sourceIndexCount] = indices[0];
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static inline NSUInteger mglQuadTriangleIndexCount(NSUInteger sourceIndexCount)
-{
-    NSUInteger quadCount = sourceIndexCount / 4u;
-    if (quadCount > (NSUIntegerMax / 6u)) {
-        return 0u;
-    }
-    return quadCount * 6u;
-}
-
-static id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
-                                                NSUInteger vertexCount,
-                                                NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    NSUInteger indexCount = mglQuadTriangleIndexCount(vertexCount);
-    if (!device || indexCount == 0u) {
-        return nil;
-    }
-    if (indexCount > (NSUIntegerMax / sizeof(uint32_t))) {
-        return nil;
-    }
-
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    NSUInteger quadCount = vertexCount / 4u;
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 6u;
-        if ((src + 3u) > UINT32_MAX) {
-            free(indices);
-            return nil;
-        }
-        indices[dst + 0u] = (uint32_t)(src + 0u);
-        indices[dst + 1u] = (uint32_t)(src + 1u);
-        indices[dst + 2u] = (uint32_t)(src + 2u);
-        indices[dst + 3u] = (uint32_t)(src + 0u);
-        indices[dst + 4u] = (uint32_t)(src + 2u);
-        indices[dst + 5u] = (uint32_t)(src + 3u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
-                                                  const uint8_t *sourceIndexBytes,
-                                                  GLenum sourceIndexType,
-                                                  NSUInteger sourceIndexCount,
-                                                  NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    NSUInteger indexCount = mglQuadTriangleIndexCount(sourceIndexCount);
-    if (!device || !sourceIndexBytes || indexCount == 0u) {
-        return nil;
-    }
-    if (indexCount > (NSUIntegerMax / sizeof(uint32_t))) {
-        return nil;
-    }
-
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    NSUInteger quadCount = sourceIndexCount / 4u;
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 6u;
-        uint32_t i0 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 0u);
-        uint32_t i1 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 1u);
-        uint32_t i2 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 2u);
-        uint32_t i3 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 3u);
-        indices[dst + 0u] = i0;
-        indices[dst + 1u] = i1;
-        indices[dst + 2u] = i2;
-        indices[dst + 3u] = i0;
-        indices[dst + 4u] = i2;
-        indices[dst + 5u] = i3;
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
-                                                    NSUInteger vertexCount,
-                                                    NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    NSUInteger quadCount = vertexCount / 4u;
-    if (!device || quadCount == 0u || quadCount > (NSUIntegerMax / (8u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = quadCount * 8u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 8u;
-        if ((src + 3u) > UINT32_MAX) {
-            free(indices);
-            return nil;
-        }
-        indices[dst + 0u] = (uint32_t)(src + 0u);
-        indices[dst + 1u] = (uint32_t)(src + 1u);
-        indices[dst + 2u] = (uint32_t)(src + 1u);
-        indices[dst + 3u] = (uint32_t)(src + 2u);
-        indices[dst + 4u] = (uint32_t)(src + 2u);
-        indices[dst + 5u] = (uint32_t)(src + 3u);
-        indices[dst + 6u] = (uint32_t)(src + 3u);
-        indices[dst + 7u] = (uint32_t)(src + 0u);
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
-                                                       const uint8_t *sourceIndexBytes,
-                                                       GLenum sourceIndexType,
-                                                       NSUInteger sourceIndexCount,
-                                                       NSUInteger *outIndexCount)
-{
-    if (outIndexCount) {
-        *outIndexCount = 0u;
-    }
-
-    NSUInteger quadCount = sourceIndexCount / 4u;
-    if (!device || !sourceIndexBytes || quadCount == 0u || quadCount > (NSUIntegerMax / (8u * sizeof(uint32_t)))) {
-        return nil;
-    }
-
-    NSUInteger indexCount = quadCount * 8u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
-        return nil;
-    }
-
-    for (NSUInteger quad = 0; quad < quadCount; quad++) {
-        NSUInteger src = quad * 4u;
-        NSUInteger dst = quad * 8u;
-        uint32_t i0 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 0u);
-        uint32_t i1 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 1u);
-        uint32_t i2 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 2u);
-        uint32_t i3 = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, src + 3u);
-        indices[dst + 0u] = i0;
-        indices[dst + 1u] = i1;
-        indices[dst + 2u] = i1;
-        indices[dst + 3u] = i2;
-        indices[dst + 4u] = i2;
-        indices[dst + 5u] = i3;
-        indices[dst + 6u] = i3;
-        indices[dst + 7u] = i0;
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
-        *outIndexCount = indexCount;
-    }
-
-    return buffer;
-}
-
-static id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
-                                                      const uint8_t *sourceIndexBytes,
-                                                      NSUInteger sourceIndexCount)
-{
-    if (!device || !sourceIndexBytes) {
-        return nil;
-    }
-    if (sourceIndexCount == 0u) {
-        return nil;
-    }
-    if (sourceIndexCount > (NSUIntegerMax / sizeof(uint16_t))) {
-        return nil;
-    }
-
-    uint16_t *indices = (uint16_t *)calloc(sourceIndexCount, sizeof(uint16_t));
-    if (!indices) {
-        return nil;
-    }
-    for (NSUInteger i = 0; i < sourceIndexCount; i++) {
-        indices[i] = (uint16_t)sourceIndexBytes[i];
-    }
-
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(sourceIndexCount * sizeof(uint16_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-    return buffer;
-}
-
-static const uint8_t *mglReadableBufferBytes(Buffer *glBuffer,
-                                             id<MTLBuffer> metalBuffer,
-                                             NSUInteger *outSourceByteCount)
-{
-    if (outSourceByteCount) {
-        *outSourceByteCount = 0u;
-    }
-
-    if (glBuffer && glBuffer->data.buffer_data) {
-        NSUInteger glByteCount = 0u;
-        if (glBuffer->data.buffer_size > 0u) {
-            glByteCount = (NSUInteger)glBuffer->data.buffer_size;
-        } else if (glBuffer->size > 0) {
-            glByteCount = (NSUInteger)glBuffer->size;
-        }
-        const void *glBytes = (const void *)(uintptr_t)glBuffer->data.buffer_data;
-        if (glByteCount > 0u &&
-            mglPointerRangeIsReadable(glBytes, glByteCount)) {
-            if (outSourceByteCount) {
-                *outSourceByteCount = glByteCount;
-            }
-            return (const uint8_t *)glBytes;
-        }
-    }
-
-    if (metalBuffer && metalBuffer.contents && metalBuffer.length > 0u) {
-        if (outSourceByteCount) {
-            *outSourceByteCount = metalBuffer.length;
-        }
-        return (const uint8_t *)metalBuffer.contents;
-    }
-
-    return NULL;
-}
-
-static const uint8_t *mglElementIndexSourceBytes(Buffer *glElementBuffer,
-                                                 id<MTLBuffer> metalElementBuffer,
-                                                 NSUInteger *outSourceByteCount)
-{
-    return mglReadableBufferBytes(glElementBuffer,
-                                  metalElementBuffer,
-                                  outSourceByteCount);
-}
-
-static const uint8_t *mglElementIndexSourceForDraw(Buffer *glElementBuffer,
-                                                   id<MTLBuffer> metalElementBuffer,
-                                                   GLenum glIndexType,
-                                                   NSUInteger indexOffset,
-                                                   GLsizei indexCount)
-{
-    NSUInteger sourceByteCount = 0u;
-    const uint8_t *sourceBytes = mglElementIndexSourceBytes(glElementBuffer,
-                                                            metalElementBuffer,
-                                                            &sourceByteCount);
-    NSUInteger indexStride = mglGLIndexElementSize(glIndexType);
-    if (!sourceBytes || sourceByteCount == 0u || indexStride == 0u || indexCount <= 0) {
-        return NULL;
-    }
-    if ((NSUInteger)indexCount > (NSUIntegerMax / indexStride)) {
-        return NULL;
-    }
-
-    NSUInteger neededBytes = (NSUInteger)indexCount * indexStride;
-    if (indexOffset > sourceByteCount || (sourceByteCount - indexOffset) < neededBytes) {
-        return NULL;
-    }
-
-    return sourceBytes + indexOffset;
-}
-
-static BOOL mglReadBufferBytes(Buffer *glBuffer,
-                               id<MTLBuffer> metalBuffer,
-                               NSUInteger byteOffset,
-                               void *dst,
-                               NSUInteger byteCount,
-                               const char *label)
-{
-    if (!dst || byteCount == 0u) {
-        return NO;
-    }
-
-    NSUInteger sourceByteCount = 0u;
-    const uint8_t *sourceBytes = mglReadableBufferBytes(glBuffer,
-                                                        metalBuffer,
-                                                        &sourceByteCount);
-    if (!sourceBytes || byteOffset > sourceByteCount ||
-        (sourceByteCount - byteOffset) < byteCount) {
-        NSLog(@"MGL WARNING: %s CPU read unavailable buffer=%u offset=%lu bytes=%lu source=%p sourceBytes=%lu mtl=%p",
-              label ? label : "buffer",
-              glBuffer ? glBuffer->name : 0u,
-              (unsigned long)byteOffset,
-              (unsigned long)byteCount,
-              sourceBytes,
-              (unsigned long)sourceByteCount,
-              metalBuffer);
-        return NO;
-    }
-
-    memcpy(dst, sourceBytes + byteOffset, byteCount);
-    return YES;
-}
-
-static BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
-                                   GLMContext drawCtx,
-                                   id<MTLDevice> device,
-                                   GLsizei count,
-                                   GLint firstVertex,
-                                   NSUInteger instanceCount,
-                                   NSUInteger baseInstance,
-                                   const char *label)
-{
-    if (count < 2) {
-        return YES;
-    }
-    if (firstVertex < 0) {
-        NSLog(@"MGL WARNING: %s line loop array emulation invalid first=%d",
-              label ? label : "draw",
-              (int)firstVertex);
-        if (drawCtx) {
-            mglDispatchError(drawCtx, label ? label : __FUNCTION__, GL_INVALID_VALUE);
-        }
-        return NO;
-    }
-
-    NSUInteger loopIndexCount = 0u;
-    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(device,
-                                                                   (NSUInteger)firstVertex,
-                                                                   (NSUInteger)count,
-                                                                   &loopIndexCount);
-    if (!loopIndexBuffer || loopIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s line loop array emulation failed count=%d first=%d",
-              label ? label : "draw",
-              (int)count,
-              (int)firstVertex);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                         indexCount:loopIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:loopIndexBuffer
-                  indexBufferOffset:0
-	                      instanceCount:instanceCount
-	                         baseVertex:0
-	                       baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
-                                      id<MTLDevice> device,
-                                      GLsizei count,
-                                      GLint baseVertex,
-                                      NSUInteger instanceCount,
-                                      NSUInteger baseInstance,
-                                      const char *label)
-{
-    if (count < 3) {
-        return YES;
-    }
-
-    NSUInteger fanIndexCount = 0u;
-    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
-                                                                     (NSUInteger)count,
-                                                                     &fanIndexCount);
-    if (!fanIndexBuffer || fanIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s triangle fan array emulation failed count=%d baseVertex=%d",
-              label ? label : "draw",
-              (int)count,
-              (int)baseVertex);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                         indexCount:fanIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:fanIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
-                                     id<MTLDevice> device,
-                                     Buffer *glElementBuffer,
-                                     id<MTLBuffer> metalElementBuffer,
-                                     GLenum glIndexType,
-                                     NSUInteger indexOffset,
-                                     GLsizei count,
-                                     NSUInteger instanceCount,
-                                     NSInteger baseVertex,
-                                     NSUInteger baseInstance,
-                                     const char *label)
-{
-    if (count < 2) {
-        return YES;
-    }
-
-    const uint8_t *loopSource = mglElementIndexSourceForDraw(glElementBuffer,
-                                                             metalElementBuffer,
-                                                             glIndexType,
-                                                             indexOffset,
-                                                             count);
-    NSUInteger loopIndexCount = 0u;
-    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopElementIndexBuffer(device,
-                                                                     loopSource,
-                                                                     glIndexType,
-                                                                     (NSUInteger)count,
-                                                                     &loopIndexCount);
-    if (!loopIndexBuffer || loopIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s line loop element emulation failed ebo=%u count=%d offset=%lu source=%p",
-              label ? label : "draw",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (int)count,
-              (unsigned long)indexOffset,
-              loopSource);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                         indexCount:loopIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:loopIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
-                                        id<MTLDevice> device,
-                                        Buffer *glElementBuffer,
-                                        id<MTLBuffer> metalElementBuffer,
-                                        GLenum glIndexType,
-                                        NSUInteger indexOffset,
-                                        GLsizei count,
-                                        NSUInteger instanceCount,
-                                        NSInteger baseVertex,
-                                        NSUInteger baseInstance,
-                                        const char *label)
-{
-    if (count < 3) {
-        return YES;
-    }
-
-    const uint8_t *fanSource = mglElementIndexSourceForDraw(glElementBuffer,
-                                                            metalElementBuffer,
-                                                            glIndexType,
-                                                            indexOffset,
-                                                            count);
-    NSUInteger fanIndexCount = 0u;
-    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
-                                                                       fanSource,
-                                                                       glIndexType,
-                                                                       (NSUInteger)count,
-                                                                       &fanIndexCount);
-    if (!fanIndexBuffer || fanIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s triangle fan element emulation failed ebo=%u count=%d offset=%lu source=%p",
-              label ? label : "draw",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (int)count,
-              (unsigned long)indexOffset,
-              fanSource);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                         indexCount:fanIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:fanIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
-                                id<MTLDevice> device,
-                                GLsizei count,
-                                GLint baseVertex,
-                                NSUInteger instanceCount,
-                                NSUInteger baseInstance,
-                                BOOL lineMode,
-                                const char *label)
-{
-    if (count < 4) {
-        return YES;
-    }
-
-    NSUInteger quadIndexCount = 0u;
-    id<MTLBuffer> quadIndexBuffer = lineMode
-        ? mglNewQuadArrayLineIndexBuffer(device, (NSUInteger)count, &quadIndexCount)
-        : mglNewQuadArrayIndexBuffer(device, (NSUInteger)count, &quadIndexCount);
-    if (!quadIndexBuffer || quadIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s quad array emulation failed count=%d baseVertex=%d",
-              label ? label : "draw",
-              (int)count,
-              (int)baseVertex);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
-                        indexCount:quadIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:quadIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
-                                  id<MTLDevice> device,
-                                  Buffer *glElementBuffer,
-                                  id<MTLBuffer> metalElementBuffer,
-                                  GLenum glIndexType,
-                                  NSUInteger indexOffset,
-                                  GLsizei count,
-                                  NSUInteger instanceCount,
-                                  NSInteger baseVertex,
-                                  NSUInteger baseInstance,
-                                  BOOL lineMode,
-                                  const char *label)
-{
-    if (count < 4) {
-        return YES;
-    }
-
-    const uint8_t *quadSource = mglElementIndexSourceForDraw(glElementBuffer,
-                                                             metalElementBuffer,
-                                                             glIndexType,
-                                                             indexOffset,
-                                                             count);
-    NSUInteger quadIndexCount = 0u;
-    id<MTLBuffer> quadIndexBuffer = lineMode
-        ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount)
-        : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount);
-    if (!quadIndexBuffer || quadIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s quad element emulation failed ebo=%u count=%d offset=%lu source=%p",
-              label ? label : "draw",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (int)count,
-              (unsigned long)indexOffset,
-              quadSource);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
-                        indexCount:quadIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:quadIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
-    return YES;
-}
-
-static id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
-                                                   Buffer *glElementBuffer,
-                                                   id<MTLBuffer> metalElementBuffer,
-                                                   GLenum glIndexType,
-                                                   NSUInteger *ioIndexBufferOffset,
-                                                   MTLIndexType *outMetalIndexType)
-{
-    if (outMetalIndexType) {
-        switch (glIndexType) {
-            case GL_UNSIGNED_BYTE:
-            case GL_UNSIGNED_SHORT:
-                *outMetalIndexType = MTLIndexTypeUInt16;
-                break;
-            case GL_UNSIGNED_INT:
-                *outMetalIndexType = MTLIndexTypeUInt32;
-                break;
-            default:
-                *outMetalIndexType = (MTLIndexType)0xFFFFFFFF;
-                break;
-        }
-    }
-    if (glIndexType != GL_UNSIGNED_BYTE) {
-        return metalElementBuffer;
-    }
-
-    NSUInteger sourceOffset = ioIndexBufferOffset ? *ioIndexBufferOffset : 0u;
-    NSUInteger sourceByteCount = 0u;
-    const uint8_t *sourceBytes = mglElementIndexSourceBytes(glElementBuffer,
-                                                            metalElementBuffer,
-                                                            &sourceByteCount);
-
-    if (!sourceBytes || sourceByteCount == 0u) {
-        NSLog(@"MGL WARNING: unable to expand GL_UNSIGNED_BYTE element buffer gl=%u source=%p bytes=%lu",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              sourceBytes,
-              (unsigned long)sourceByteCount);
-        return nil;
-    }
-
-    id<MTLBuffer> expanded = mglNewUInt16IndexBufferFromUInt8(device, sourceBytes, sourceByteCount);
-    if (!expanded) {
-        NSLog(@"MGL WARNING: failed to allocate expanded UInt16 element buffer for GL_UNSIGNED_BYTE gl=%u bytes=%lu",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (unsigned long)sourceByteCount);
-        return nil;
-    }
-
-    if (ioIndexBufferOffset) {
-        if (sourceOffset > (NSUIntegerMax / sizeof(uint16_t))) {
-            return nil;
-        }
-        *ioIndexBufferOffset = sourceOffset * sizeof(uint16_t);
-    }
-    if (outMetalIndexType) {
-        *outMetalIndexType = MTLIndexTypeUInt16;
-    }
-    return expanded;
-}
-
-static BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
-                                       id<MTLDevice> device,
-                                       GLenum mode,
-                                       GLint first,
-                                       GLsizei count,
-                                       NSUInteger instanceCount,
-                                       NSUInteger baseInstance,
-                                       const char *label)
-{
-    if (count < 3) {
-        return YES;
-    }
-    if (mode == GL_QUADS && count < 4) {
-        return YES;
-    }
-
-    if (mode == GL_TRIANGLES) {
-        NSUInteger drawableCount = ((NSUInteger)count / 3u) * 3u;
-        if (drawableCount == 0u) {
-            return YES;
-        }
-        [encoder drawPrimitives:MTLPrimitiveTypePoint
-                    vertexStart:first
-                    vertexCount:drawableCount
-                  instanceCount:instanceCount
-                   baseInstance:baseInstance];
-        return YES;
-    }
-
-    NSUInteger pointIndexCount = 0u;
-    id<MTLBuffer> pointIndexBuffer = nil;
-    if (mode == GL_TRIANGLE_FAN) {
-        pointIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
-                                                             (NSUInteger)count,
-                                                             &pointIndexCount);
-    } else if (mode == GL_TRIANGLE_STRIP) {
-        pointIndexBuffer = mglNewTriangleStripArrayIndexBuffer(device,
-                                                               (NSUInteger)count,
-                                                               &pointIndexCount);
-    } else if (mode == GL_QUADS) {
-        pointIndexBuffer = mglNewQuadArrayIndexBuffer(device,
-                                                      (NSUInteger)count,
-                                                      &pointIndexCount);
-    } else {
-        return NO;
-    }
-
-    if (!pointIndexBuffer || pointIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s polygon point array emulation failed mode=0x%x count=%d first=%d",
-              label ? label : "draw",
-              (unsigned)mode,
-              (int)count,
-              (int)first);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                        indexCount:pointIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:pointIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:first
-                      baseInstance:baseInstance];
-    return YES;
-}
-
-static BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
-                                         id<MTLDevice> device,
-                                         Buffer *glElementBuffer,
-                                         id<MTLBuffer> metalElementBuffer,
-                                         GLenum mode,
-                                         GLenum glIndexType,
-                                         MTLIndexType metalIndexType,
-                                         NSUInteger indexOffset,
-                                         GLsizei count,
-                                         NSUInteger instanceCount,
-                                         NSInteger baseVertex,
-                                         NSUInteger baseInstance,
-                                         const char *label)
-{
-    if (count < 3) {
-        return YES;
-    }
-    if (mode == GL_QUADS && count < 4) {
-        return YES;
-    }
-
-    if (mode == GL_TRIANGLES) {
-        NSUInteger drawableIndexCount = ((NSUInteger)count / 3u) * 3u;
-        if (drawableIndexCount == 0u) {
-            return YES;
-        }
-
-        NSUInteger drawIndexOffset = indexOffset;
-        MTLIndexType drawIndexType = metalIndexType;
-        id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(device,
-                                                                      glElementBuffer,
-                                                                      metalElementBuffer,
-                                                                      glIndexType,
-                                                                      &drawIndexOffset,
-                                                                      &drawIndexType);
-        if (!drawIndexBuffer) {
-            return NO;
-        }
-
-        [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                            indexCount:drawableIndexCount
-                             indexType:drawIndexType
-                           indexBuffer:drawIndexBuffer
-                     indexBufferOffset:drawIndexOffset
-                         instanceCount:instanceCount
-                            baseVertex:baseVertex
-                          baseInstance:baseInstance];
-        return YES;
-    }
-
-    const uint8_t *source = mglElementIndexSourceForDraw(glElementBuffer,
-                                                         metalElementBuffer,
-                                                         glIndexType,
-                                                         indexOffset,
-                                                         count);
-    NSUInteger pointIndexCount = 0u;
-    id<MTLBuffer> pointIndexBuffer = nil;
-    if (mode == GL_TRIANGLE_FAN) {
-        pointIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
-                                                               source,
-                                                               glIndexType,
-                                                               (NSUInteger)count,
-                                                               &pointIndexCount);
-    } else if (mode == GL_TRIANGLE_STRIP) {
-        pointIndexBuffer = mglNewTriangleStripElementIndexBuffer(device,
-                                                                 source,
-                                                                 glIndexType,
-                                                                 (NSUInteger)count,
-                                                                 &pointIndexCount);
-    } else if (mode == GL_QUADS) {
-        pointIndexBuffer = mglNewQuadElementIndexBuffer(device,
-                                                        source,
-                                                        glIndexType,
-                                                        (NSUInteger)count,
-                                                        &pointIndexCount);
-    } else {
-        return NO;
-    }
-
-    if (!pointIndexBuffer || pointIndexCount == 0u) {
-        NSLog(@"MGL WARNING: %s polygon point element emulation failed mode=0x%x ebo=%u count=%d offset=%lu source=%p",
-              label ? label : "draw",
-              (unsigned)mode,
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (int)count,
-              (unsigned long)indexOffset,
-              source);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                        indexCount:pointIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:pointIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
-    return YES;
-}
-
-typedef enum MGLPrimitiveRestartEncodeResult {
-    MGLPrimitiveRestartEncodeNotNeeded = 0,
-    MGLPrimitiveRestartEncodeHandled = 1,
-    MGLPrimitiveRestartEncodeFailed = 2,
-} MGLPrimitiveRestartEncodeResult;
-
-static BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
-                                    id<MTLDevice> device,
-                                    Buffer *glElementBuffer,
-                                    id<MTLBuffer> metalElementBuffer,
-                                    id<MTLBuffer> preparedIndexBuffer,
-                                    GLenum mode,
-                                    MTLPrimitiveType primitiveType,
-                                    GLenum glIndexType,
-                                    MTLIndexType preparedIndexType,
-                                    NSUInteger baseIndexByteOffset,
-                                    NSUInteger segmentStart,
-                                    NSUInteger segmentIndexCount,
-                                    NSUInteger instanceCount,
-                                    NSInteger baseVertex,
-                                    NSUInteger baseInstance,
-                                    BOOL lineMode,
-                                    const char *label)
-{
-    if (!mglPrimitiveModeHasDrawableSegment(mode, segmentIndexCount)) {
-        return YES;
-    }
-
-    NSUInteger segmentGLByteOffset = 0u;
-    NSUInteger indexStride = mglGLIndexElementSize(glIndexType);
-    if (!mglComputeIndexByteOffset(baseIndexByteOffset,
-                                   segmentStart,
-                                   indexStride,
-                                   &segmentGLByteOffset)) {
-        NSLog(@"MGL WARNING: %s primitive restart segment offset overflow base=%lu start=%lu stride=%lu count=%lu",
-              label ? label : "draw",
-              (unsigned long)baseIndexByteOffset,
-              (unsigned long)segmentStart,
-              (unsigned long)indexStride,
-              (unsigned long)segmentIndexCount);
-        return NO;
-    }
-
-    if (primitiveType == MTLPrimitiveTypePoint &&
-        (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_QUADS)) {
-        return mglEncodeElementPolygonPoint(encoder,
-                                            device,
-                                            glElementBuffer,
-                                            metalElementBuffer,
-                                            mode,
-                                            glIndexType,
-                                            preparedIndexType,
-                                            segmentGLByteOffset,
-                                            (GLsizei)segmentIndexCount,
-                                            instanceCount,
-                                            baseVertex,
-                                            baseInstance,
-                                            label);
-    }
-
-    if (mode == GL_TRIANGLE_FAN) {
-        return mglEncodeElementTriangleFan(encoder,
-                                           device,
-                                           glElementBuffer,
-                                           metalElementBuffer,
-                                           glIndexType,
-                                           segmentGLByteOffset,
-                                           (GLsizei)segmentIndexCount,
-                                           instanceCount,
-                                           baseVertex,
-                                           baseInstance,
-                                           label);
-    }
-
-    if (mode == GL_LINE_LOOP) {
-        return mglEncodeElementLineLoop(encoder,
-                                        device,
-                                        glElementBuffer,
-                                        metalElementBuffer,
-                                        glIndexType,
-                                        segmentGLByteOffset,
-                                        (GLsizei)segmentIndexCount,
-                                        instanceCount,
-                                        baseVertex,
-                                        baseInstance,
-                                        label);
-    }
-
-    if (mode == GL_QUADS) {
-        return mglEncodeElementQuads(encoder,
-                                     device,
-                                     glElementBuffer,
-                                     metalElementBuffer,
-                                     glIndexType,
-                                     segmentGLByteOffset,
-                                     (GLsizei)segmentIndexCount,
-                                     instanceCount,
-                                     baseVertex,
-                                     baseInstance,
-                                     lineMode,
-                                     label);
-    }
-
-    NSUInteger preparedByteOffset = 0u;
-    if (!mglComputePreparedIndexByteOffset(glIndexType,
-                                           segmentGLByteOffset,
-                                           &preparedByteOffset)) {
-        NSLog(@"MGL WARNING: %s primitive restart prepared offset overflow glType=0x%x byteOffset=%lu",
-              label ? label : "draw",
-              (unsigned)glIndexType,
-              (unsigned long)segmentGLByteOffset);
-        return NO;
-    }
-
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:segmentIndexCount
-                         indexType:preparedIndexType
-                       indexBuffer:preparedIndexBuffer
-                 indexBufferOffset:preparedByteOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
-    return YES;
-}
-
-static MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRenderCommandEncoder> encoder,
-                                                                              id<MTLDevice> device,
-                                                                              GLMContext ctx,
-                                                                              Buffer *glElementBuffer,
-                                                                              id<MTLBuffer> metalElementBuffer,
-                                                                              GLenum mode,
-                                                                              MTLPrimitiveType primitiveType,
-                                                                              GLenum glIndexType,
-                                                                              MTLIndexType metalIndexType,
-                                                                              NSUInteger indexOffset,
-                                                                              GLsizei count,
-                                                                              NSUInteger instanceCount,
-                                                                              NSInteger baseVertex,
-                                                                              NSUInteger baseInstance,
-                                                                              const char *label)
-{
-    uint32_t restartIndex = 0u;
-    if (!mglPrimitiveRestartIndexForType(ctx, glIndexType, &restartIndex)) {
-        return MGLPrimitiveRestartEncodeNotNeeded;
-    }
-    if (count <= 0) {
-        return MGLPrimitiveRestartEncodeHandled;
-    }
-
-    const uint8_t *source = mglElementIndexSourceForDraw(glElementBuffer,
-                                                         metalElementBuffer,
-                                                         glIndexType,
-                                                         indexOffset,
-                                                         count);
-    if (!source) {
-        NSLog(@"MGL WARNING: %s primitive restart enabled but index bytes are not CPU-readable ebo=%u count=%d type=0x%x offset=%lu; skipping draw to avoid treating restart as a vertex",
-              label ? label : "draw",
-              glElementBuffer ? glElementBuffer->name : 0u,
-              (int)count,
-              (unsigned)glIndexType,
-              (unsigned long)indexOffset);
-        return MGLPrimitiveRestartEncodeFailed;
-    }
-
-    BOOL sawRestart = NO;
-    for (GLsizei i = 0; i < count; i++) {
-        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) == restartIndex) {
-            sawRestart = YES;
-            break;
-        }
-    }
-    if (!sawRestart) {
-        return MGLPrimitiveRestartEncodeNotNeeded;
-    }
-
-    BOOL emulatedMode = (mode == GL_TRIANGLE_FAN ||
-                         mode == GL_LINE_LOOP ||
-                         mode == GL_QUADS ||
-                         (primitiveType == MTLPrimitiveTypePoint &&
-                          (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP)));
-    id<MTLBuffer> preparedIndexBuffer = metalElementBuffer;
-    MTLIndexType preparedIndexType = metalIndexType;
-    if (!emulatedMode) {
-        preparedIndexBuffer = mglPreparedElementIndexBuffer(device,
-                                                            glElementBuffer,
-                                                            metalElementBuffer,
-                                                            glIndexType,
-                                                            NULL,
-                                                            &preparedIndexType);
-        if (!preparedIndexBuffer) {
-            return MGLPrimitiveRestartEncodeFailed;
-        }
-    }
-
-    NSUInteger segmentStart = 0u;
-    BOOL encodedAllSegments = YES;
-    for (GLsizei i = 0; i < count; i++) {
-        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) != restartIndex) {
-            continue;
-        }
-
-        NSUInteger segmentCount = (NSUInteger)i - segmentStart;
-        if (!mglEncodeRestartSegment(encoder,
-                                     device,
-                                     glElementBuffer,
-                                     metalElementBuffer,
-                                     preparedIndexBuffer,
-                                     mode,
-                                     primitiveType,
-                                     glIndexType,
-                                     preparedIndexType,
-                                     indexOffset,
-                                     segmentStart,
-                                     segmentCount,
-                                     instanceCount,
-                                     baseVertex,
-                                     baseInstance,
-                                     mglPolygonModeLineForDrawMode(ctx, mode),
-                                     label)) {
-            encodedAllSegments = NO;
-            break;
-        }
-        segmentStart = (NSUInteger)i + 1u;
-    }
-
-    if (encodedAllSegments) {
-        NSUInteger trailingCount = (NSUInteger)count - segmentStart;
-        encodedAllSegments = mglEncodeRestartSegment(encoder,
-                                                     device,
-                                                     glElementBuffer,
-                                                     metalElementBuffer,
-                                                     preparedIndexBuffer,
-                                                     mode,
-                                                     primitiveType,
-                                                     glIndexType,
-                                                     preparedIndexType,
-                                                     indexOffset,
-                                                     segmentStart,
-                                                     trailingCount,
-                                                     instanceCount,
-                                                     baseVertex,
-                                                     baseInstance,
-                                                     mglPolygonModeLineForDrawMode(ctx, mode),
-                                                     label);
-    }
-
-    return encodedAllSegments ? MGLPrimitiveRestartEncodeHandled : MGLPrimitiveRestartEncodeFailed;
-}
-
-static BOOL mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,
-                                                                  GLenum glIndexType,
-                                                                  const char *label)
-{
-    uint32_t restartIndex = 0u;
-    if (!mglPrimitiveRestartIndexForType(ctx, glIndexType, &restartIndex)) {
-        return NO;
-    }
-
-    static uint64_t s_indirectRestartSkipCount = 0;
-    s_indirectRestartSkipCount++;
-    if (s_indirectRestartSkipCount <= 8u || (s_indirectRestartSkipCount % 1000u) == 0u) {
-        NSLog(@"MGL WARNING: %s primitive restart with indirect indexed draw is not emulated yet type=0x%x restart=%u occurrence=%llu; skipping draw",
-              label ? label : "drawElementsIndirect",
-              (unsigned)glIndexType,
-              (unsigned)restartIndex,
-              (unsigned long long)s_indirectRestartSkipCount);
-    }
-    return YES;
-}
-
-static BOOL mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
-                                                               GLenum mode,
-                                                               const char *label)
-{
-    if (!mglPolygonModePointForDrawMode(ctx, mode)) {
-        return NO;
-    }
-
-    static uint64_t s_indirectPolygonPointSkipCount = 0;
-    s_indirectPolygonPointSkipCount++;
-    if (s_indirectPolygonPointSkipCount <= 8u || (s_indirectPolygonPointSkipCount % 1000u) == 0u) {
-        NSLog(@"MGL WARNING: %s GL_POLYGON_MODE=GL_POINT requires triangle expansion for indirect draw mode=0x%x occurrence=%llu; skipping draw",
-              label ? label : "drawIndirect",
-              (unsigned)mode,
-              (unsigned long long)s_indirectPolygonPointSkipCount);
-    }
-    return YES;
-}
-
-static inline uint64_t mglHashStepU64(uint64_t hash, uint64_t value)
-{
-    // 64-bit FNV-1a
-    hash ^= value;
-    hash *= 1099511628211ull;
-    return hash;
-}
-
-static uint64_t mglVertexDescriptorSignature(MTLVertexDescriptor *vertexDescriptor)
-{
-    uint64_t hash = 1469598103934665603ull;
-    if (!vertexDescriptor) {
-        return hash;
-    }
-
-    for (NSUInteger i = 0; i < MAX_ATTRIBS; i++) {
-        MTLVertexAttributeDescriptor *attrib = vertexDescriptor.attributes[i];
-        if (!attrib) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)attrib.format);
-        hash = mglHashStepU64(hash, (uint64_t)attrib.offset);
-        hash = mglHashStepU64(hash, (uint64_t)attrib.bufferIndex);
-    }
-
-    for (NSUInteger i = 0; i < kMGLMaxMetalVertexBufferCount; i++) {
-        MTLVertexBufferLayoutDescriptor *layout = vertexDescriptor.layouts[i];
-        if (!layout) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)layout.stride);
-        hash = mglHashStepU64(hash, (uint64_t)layout.stepFunction);
-        hash = mglHashStepU64(hash, (uint64_t)layout.stepRate);
-    }
-
-    return hash;
-}
-
-static uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipelineStateDescriptor)
-{
-    uint64_t hash = 1469598103934665603ull;
-    if (!pipelineStateDescriptor) {
-        return hash;
-    }
-
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.rasterSampleCount);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.rasterizationEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToCoverageEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToOneEnabled);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.depthAttachmentPixelFormat);
-    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.stencilAttachmentPixelFormat);
-
-    for (NSUInteger i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        MTLRenderPipelineColorAttachmentDescriptor *attachment = pipelineStateDescriptor.colorAttachments[i];
-        if (!attachment) {
-            continue;
-        }
-        hash = mglHashStepU64(hash, (uint64_t)attachment.pixelFormat);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.blendingEnabled);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.sourceRGBBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.destinationRGBBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.rgbBlendOperation);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.sourceAlphaBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.destinationAlphaBlendFactor);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.alphaBlendOperation);
-        hash = mglHashStepU64(hash, (uint64_t)attachment.writeMask);
-    }
-
-    return hash;
-}
-
-static MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert)
-{
-    if (!invert) {
-        return winding;
-    }
-    return (winding == MTLWindingClockwise)
-        ? MTLWindingCounterClockwise
-        : MTLWindingClockwise;
-}
+/* mglVertexDescriptorSignature / mglPipelineDescriptorSignature / mglMaybeInvertMTLWinding moved to mgl_vertex_format.h/.m. */
 
 static void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pipelineStateDescriptor)
 {
@@ -7008,274 +2431,16 @@ static inline bool mglShouldTraceBufferTransferCall(uint64_t call)
     return ((call % 64ull) == 0ull);
 }
 
-static uint64_t mglTraceHashBytes(const void *data, size_t len)
-{
-    if (!data || len == 0) {
-        return 0ull;
-    }
+/* mglTraceHashBytes / mglTraceFormatBytes / mglDumpBytesToLog moved to
+ * mgl_byte_hash.h/.m. */
 
-    const uint8_t *bytes = (const uint8_t *)data;
-    size_t head = len < 1024 ? len : 1024;
-    uint64_t hash = 1469598103934665603ull;
+/* mglVertexAttribElementBytes / mglDoubleVertexAttribFloatFormat moved to mgl_vertex_format.h/.m. */
 
-    for (size_t i = 0; i < head; i++) {
-        hash ^= (uint64_t)bytes[i];
-        hash *= 1099511628211ull;
-    }
+/* mglIntegerAttribNeedsConversion (incl. preceding doc comment) moved to mgl_vertex_format.h/.m. */
 
-    if (len > head) {
-        const uint8_t *tail = bytes + (len - head);
-        for (size_t i = 0; i < head; i++) {
-            hash ^= (uint64_t)tail[i];
-            hash *= 1099511628211ull;
-        }
-    }
+/* mglHashVertexBytesFNV1a moved to mgl_byte_hash.h/.m. */
 
-    hash ^= (uint64_t)len;
-    hash *= 1099511628211ull;
-    return hash;
-}
-
-static void mglTraceFormatBytes(const void *data, size_t len, char *out, size_t outSize)
-{
-    if (!out || outSize == 0) {
-        return;
-    }
-
-    if (!data || len == 0) {
-        snprintf(out, outSize, "-");
-        return;
-    }
-
-    const uint8_t *bytes = (const uint8_t *)data;
-    size_t sample = len < 8 ? len : 8;
-    size_t used = 0;
-
-    for (size_t i = 0; i < sample && used + 3 < outSize; i++) {
-        int wrote = snprintf(out + used, outSize - used, "%02x", bytes[i]);
-        if (wrote <= 0) {
-            break;
-        }
-        used += (size_t)wrote;
-        if (i + 1 < sample && used + 2 < outSize) {
-            out[used++] = ':';
-            out[used] = '\0';
-        }
-    }
-
-    if (len > sample && used + 4 < outSize) {
-        snprintf(out + used, outSize - used, "...");
-    }
-}
-
-static void mglDumpBytesToLog(NSString *label,
-                              const uint8_t *bytes,
-                              size_t length,
-                              size_t baseOffset)
-{
-    if (!bytes || length == 0) {
-        NSLog(@"MGL DUMP %@ empty", label ?: @"(null)");
-        return;
-    }
-
-    const size_t row = 16u;
-    for (size_t off = 0; off < length; off += row) {
-        size_t n = MIN(row, length - off);
-        char hex[3 * row + 1];
-        char ascii[row + 1];
-        size_t hp = 0;
-
-        for (size_t i = 0; i < n; i++) {
-            uint8_t b = bytes[off + i];
-            int wrote = snprintf(hex + hp, sizeof(hex) - hp, "%02x", b);
-            if (wrote <= 0) {
-                break;
-            }
-            hp += (size_t)wrote;
-            if (i + 1 < n && hp + 1 < sizeof(hex)) {
-                hex[hp++] = ' ';
-            }
-            ascii[i] = (b >= 32u && b <= 126u) ? (char)b : '.';
-        }
-        hex[hp] = '\0';
-        ascii[n] = '\0';
-
-        NSLog(@"MGL DUMP %@ +0x%zx: %-47s |%s|",
-              label ?: @"(null)",
-              baseOffset + off,
-              hex,
-              ascii);
-    }
-}
-
-static inline size_t mglVertexAttribElementBytes(GLenum type, GLuint size)
-{
-    switch (type) {
-        case GL_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_2_10_10_10_REV:
-        case GL_UNSIGNED_INT_10_10_10_2:
-            return 4u;
-        default: {
-            size_t comp = mglVertexAttribComponentSize(type);
-            if (comp == 0u || size == 0u) {
-                return 0u;
-            }
-            return comp * (size_t)size;
-        }
-    }
-}
-
-static inline MTLVertexFormat mglDoubleVertexAttribFloatFormat(GLuint size)
-{
-    switch (size) {
-        case 1: return MTLVertexFormatFloat;
-        case 2: return MTLVertexFormatFloat2;
-        case 3: return MTLVertexFormatFloat3;
-        case 4: return MTLVertexFormatFloat4;
-        default: return MTLVertexFormatInvalid;
-    }
-}
-
-/* For glVertexAttribIFormat (integer) attribs, Metal only allows 32-bit Int
- * formats for int shader inputs and UInt formats for uint inputs. 8/16-bit
- * signed formats sign-extend to int, but unsigned source formats (UByte/
- * UShort/UInt) cannot feed int inputs, and signed sources cannot feed uint
- * inputs. In those cases the data must be converted to the shader's 32-bit
- * integer type on the CPU. Returns true and sets *outFormat when conversion
- * is required; returns false otherwise (source is directly Metal-compatible). */
-static bool mglIntegerAttribNeedsConversion(GLenum srcType,
-                                            GLuint shaderGlType,
-                                            GLuint size,
-                                            MTLVertexFormat *outFormat)
-{
-    if (outFormat) {
-        *outFormat = MTLVertexFormatInvalid;
-    }
-    if (size < 1u || size > 4u) {
-        return false;
-    }
-
-    bool shaderIsInt = (shaderGlType == GL_INT || shaderGlType == GL_INT_VEC2 ||
-                        shaderGlType == GL_INT_VEC3 || shaderGlType == GL_INT_VEC4);
-    bool shaderIsUint = (shaderGlType == GL_UNSIGNED_INT ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC2 ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC3 ||
-                         shaderGlType == GL_UNSIGNED_INT_VEC4);
-    if (!shaderIsInt && !shaderIsUint) {
-        return false;
-    }
-
-    bool srcUnsigned = (srcType == GL_UNSIGNED_BYTE ||
-                        srcType == GL_UNSIGNED_SHORT ||
-                        srcType == GL_UNSIGNED_INT);
-    bool srcSigned = (srcType == GL_BYTE || srcType == GL_SHORT || srcType == GL_INT);
-
-    bool needConv = (shaderIsInt && srcUnsigned) || (shaderIsUint && srcSigned);
-    if (!needConv) {
-        return false;
-    }
-
-    MTLVertexFormat f = MTLVertexFormatInvalid;
-    if (shaderIsInt) {
-        switch (size) {
-            case 1: f = MTLVertexFormatInt; break;
-            case 2: f = MTLVertexFormatInt2; break;
-            case 3: f = MTLVertexFormatInt3; break;
-            case 4: f = MTLVertexFormatInt4; break;
-        }
-    } else {
-        switch (size) {
-            case 1: f = MTLVertexFormatUInt; break;
-            case 2: f = MTLVertexFormatUInt2; break;
-            case 3: f = MTLVertexFormatUInt3; break;
-            case 4: f = MTLVertexFormatUInt4; break;
-        }
-    }
-    if (outFormat) {
-        *outFormat = f;
-    }
-    return f != MTLVertexFormatInvalid;
-}
-
-static uint64_t mglHashVertexBytesFNV1a(const uint8_t *bytes, size_t length)
-{
-    uint64_t hash = 1469598103934665603ull;
-    if (!bytes) {
-        return hash;
-    }
-    for (size_t i = 0; i < length; i++) {
-        hash ^= (uint64_t)bytes[i];
-        hash *= 1099511628211ull;
-    }
-    return hash;
-}
-
-static inline NSUInteger mglAlignVertexStrideForMetal(NSUInteger stride)
-{
-    return (stride + 3u) & ~(NSUInteger)3u;
-}
-
-static double mglDecodeVertexAttribComponent(const uint8_t *src,
-                                             GLenum type,
-                                             GLboolean normalized,
-                                             NSUInteger component)
-{
-    if (!src) {
-        return 0.0;
-    }
-
-    switch (type) {
-        case GL_FLOAT: {
-            float v = 0.0f;
-            memcpy(&v, src + component * sizeof(float), sizeof(v));
-            return (double)v;
-        }
-        case GL_UNSIGNED_BYTE: {
-            uint8_t v = 0;
-            memcpy(&v, src + component, sizeof(v));
-            return normalized ? ((double)v / 255.0) : (double)v;
-        }
-        case GL_BYTE: {
-            int8_t v = 0;
-            memcpy(&v, src + component, sizeof(v));
-            if (normalized) {
-                double d = (double)v / 127.0;
-                return d < -1.0 ? -1.0 : d;
-            }
-            return (double)v;
-        }
-        case GL_UNSIGNED_SHORT: {
-            uint16_t v = 0;
-            memcpy(&v, src + component * sizeof(uint16_t), sizeof(v));
-            return normalized ? ((double)v / 65535.0) : (double)v;
-        }
-        case GL_SHORT: {
-            int16_t v = 0;
-            memcpy(&v, src + component * sizeof(int16_t), sizeof(v));
-            if (normalized) {
-                double d = (double)v / 32767.0;
-                return d < -1.0 ? -1.0 : d;
-            }
-            return (double)v;
-        }
-        case GL_UNSIGNED_INT: {
-            uint32_t v = 0;
-            memcpy(&v, src + component * sizeof(uint32_t), sizeof(v));
-            return normalized ? ((double)v / 4294967295.0) : (double)v;
-        }
-        case GL_INT: {
-            int32_t v = 0;
-            memcpy(&v, src + component * sizeof(int32_t), sizeof(v));
-            if (normalized) {
-                double d = (double)v / 2147483647.0;
-                return d < -1.0 ? -1.0 : d;
-            }
-            return (double)v;
-        }
-        default:
-            return 0.0;
-    }
-}
+/* mglAlignVertexStrideForMetal / mglDecodeVertexAttribComponent moved to mgl_vertex_format.h/.m. */
 
 static void mglTraceDrawElementsAttrib(GLMContext ctx,
                                        VertexArray *vao,
@@ -7299,7 +2464,7 @@ static void mglTraceDrawElementsAttrib(GLMContext ctx,
                                                attrib,
                                                "drawElements.attrib",
                                                &resolved)) {
-        NSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u invalid buffer",
+        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u invalid buffer",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName);
@@ -7323,7 +2488,7 @@ static void mglTraceDrawElementsAttrib(GLMContext ctx,
     }
 
     if (!vboBytes) {
-        NSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u vbo=%u no readable bytes",
+        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u vbo=%u no readable bytes",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -7341,7 +2506,7 @@ static void mglTraceDrawElementsAttrib(GLMContext ctx,
     uint32_t firstIndex = mglReadGLIndexValue(indexBytes, indexType, indexElement);
     int64_t vertexIndex64 = (int64_t)firstIndex + (int64_t)baseVertex;
     if (vertexIndex64 < 0) {
-        NSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u negative vertexIndex rawIndex=%u baseVertex=%d",
+        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u negative vertexIndex rawIndex=%u baseVertex=%d",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -7379,7 +2544,7 @@ static void mglTraceDrawElementsAttrib(GLMContext ctx,
     if (elemBytes == 0u ||
         vertexOffset > (NSUInteger)vbo->size ||
         ((NSUInteger)vbo->size - vertexOffset) < elemBytes) {
-        NSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u OOB rawIndex=%u baseVertex=%d vertexIndex=%llu bindingOffset=%lu relOffset=%lu stride=%lu size=%u type=0x%x normalized=%u elemBytes=%zu vboSize=%lld",
+        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u OOB rawIndex=%u baseVertex=%d vertexIndex=%llu bindingOffset=%lu relOffset=%lu stride=%lu size=%u type=0x%x normalized=%u elemBytes=%zu vboSize=%lld",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -7441,7 +2606,7 @@ static void mglTraceDrawElementsAttrib(GLMContext ctx,
     MTLVertexFormat format = glTypeSizeToMtlType(a->type, a->size, effectiveNormalized);
     int mappedIndex = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, attrib, "drawElements.attrib.trace");
     SpirvResource *resource = mglRendererProgramVertexAttribResource(program, attrib);
-    NSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu resource=%s metalSlot=%d vbo=%u rawIndex=%u baseVertex=%d vertexIndex=%llu bindingIndex=%u bindingOffset=%lu relOffset=%lu vertexOffset=%lu stride=%lu size=%u type=0x%x normalized=%u/%u format=%lu(%s) decoded=(%.6f,%.6f,%.6f,%.6f) raw=%s",
+    MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu resource=%s metalSlot=%d vbo=%u rawIndex=%u baseVertex=%d vertexIndex=%llu bindingIndex=%u bindingOffset=%lu relOffset=%lu vertexOffset=%lu stride=%lu size=%u type=0x%x normalized=%u/%u format=%lu(%s) decoded=(%.6f,%.6f,%.6f,%.6f) raw=%s",
           (unsigned)attrib,
           (unsigned long long)drawCall,
           (unsigned)programName,
@@ -8095,6 +3260,13 @@ void logDirtyBits(GLMContext ctx)
 
 - (void) bindMTLBuffer:(Buffer *) ptr
 {
+    METAL_LOCK();
+    [self bindMTLBufferLocked:ptr];
+    METAL_UNLOCK();
+}
+
+- (void) bindMTLBufferLocked:(Buffer *) ptr
+{
     MTLResourceOptions options;
     const size_t kMaxSafeBufferSize = (size_t)2 * 1024 * 1024 * 1024; // 2 GiB safety cap
 
@@ -8383,9 +3555,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
     /* Release previous Metal buffer if any */
     if (buf->data.mtl_data) {
-        id<MTLBuffer> oldMtl = CFBridgingRelease(buf->data.mtl_data);
-        (void)oldMtl;
-        buf->data.mtl_data = NULL;
+        mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
     }
 
     /* Create new Metal buffer with packed data.
@@ -8440,7 +3610,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        NSLog(@"MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
+        MGLTraceNSLog(@"MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0,
@@ -8807,69 +3977,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         }
                     }
 
-                    /* Diagnostic: dump ChunkSection UBO buffer contents */
-                    if (resource->name && !strcmp(resource->name, "ChunkSection") &&
-                        buf->data.buffer_data != 0 && baseBinding->size >= 80) {
-                        const uint8_t *raw = (const uint8_t *)buf->data.buffer_data + (size_t)baseBinding->offset;
-                        const float *fv = (const float *)raw;
-                        const int32_t *iv = (const int32_t *)raw;
-                        NSLog(@"MGL CHUNKSECTION DUMP program=%u buffer=%u offset=%lld size=%lld reflected=%lu",
-                              (unsigned)program->name, (unsigned)buf->name,
-                              (long long)baseBinding->offset, (long long)baseBinding->size,
-                              (unsigned long)reflectedRequiredSize);
-                        NSLog(@"  ModelViewMat[0]=[%.6f %.6f %.6f %.6f]", fv[0],fv[1],fv[2],fv[3]);
-                        NSLog(@"  ModelViewMat[1]=[%.6f %.6f %.6f %.6f]", fv[4],fv[5],fv[6],fv[7]);
-                        NSLog(@"  ModelViewMat[2]=[%.6f %.6f %.6f %.6f]", fv[8],fv[9],fv[10],fv[11]);
-                        NSLog(@"  ModelViewMat[3]=[%.6f %.6f %.6f %.6f]", fv[12],fv[13],fv[14],fv[15]);
-                        NSLog(@"  ChunkVisibility=%.6f (raw=0x%08x)", fv[16], iv[16]);
-                        NSLog(@"  TextureSize=[%d %d]", iv[18], iv[19]);
-                        NSLog(@"  ChunkPosition=[%d %d %d]", iv[20], iv[21], iv[22]);
-                        NSLog(@"  RawBytes[0..79]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              raw[0],raw[1],raw[2],raw[3],raw[4],raw[5],raw[6],raw[7],
-                              raw[8],raw[9],raw[10],raw[11],raw[12],raw[13],raw[14],raw[15]);
-                        NSLog(@"  RawBytes[16..31]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              raw[16],raw[17],raw[18],raw[19],raw[20],raw[21],raw[22],raw[23],
-                              raw[24],raw[25],raw[26],raw[27],raw[28],raw[29],raw[30],raw[31]);
-                        NSLog(@"  RawBytes[32..47]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              raw[32],raw[33],raw[34],raw[35],raw[36],raw[37],raw[38],raw[39],
-                              raw[40],raw[41],raw[42],raw[43],raw[44],raw[45],raw[46],raw[47]);
-                        NSLog(@"  RawBytes[48..63]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              raw[48],raw[49],raw[50],raw[51],raw[52],raw[53],raw[54],raw[55],
-                              raw[56],raw[57],raw[58],raw[59],raw[60],raw[61],raw[62],raw[63]);
-                        NSLog(@"  RawBytes[64..79]: %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                              raw[64],raw[65],raw[66],raw[67],raw[68],raw[69],raw[70],raw[71],
-                              raw[72],raw[73],raw[74],raw[75],raw[76],raw[77],raw[78],raw[79]);
-                    }
-
-                    /* Diagnostic: dump DynamicTransforms UBO buffer contents */
-                    if (resource->name && !strcmp(resource->name, "DynamicTransforms") &&
-                        buf->data.buffer_data != 0 && baseBinding->size >= 160) {
-                        const uint8_t *raw = (const uint8_t *)buf->data.buffer_data + (size_t)baseBinding->offset;
-                        const float *fv = (const float *)raw;
-                        NSLog(@"MGL DYNAMICTRANSFORMS DUMP program=%u buffer=%u offset=%lld size=%lld reflected=%lu",
-                              (unsigned)program->name, (unsigned)buf->name,
-                              (long long)baseBinding->offset, (long long)baseBinding->size,
-                              (unsigned long)reflectedRequiredSize);
-                        NSLog(@"  ColorModulator=[%.6f %.6f %.6f %.6f]", fv[16],fv[17],fv[18],fv[19]);
-                        NSLog(@"  ModelOffset=[%.6f %.6f %.6f]", fv[20],fv[21],fv[22]);
-                    }
-
-                    /* Diagnostic: dump Globals UBO buffer contents */
-                    if (resource->name && !strcmp(resource->name, "Globals") &&
-                        buf->data.buffer_data != 0 && baseBinding->size >= 56) {
-                        const uint8_t *raw = (const uint8_t *)buf->data.buffer_data + (size_t)baseBinding->offset;
-                        const int32_t *iv = (const int32_t *)raw;
-                        const float *fv = (const float *)raw;
-                        NSLog(@"MGL GLOBALS DUMP program=%u buffer=%u offset=%lld size=%lld reflected=%lu",
-                              (unsigned)program->name, (unsigned)buf->name,
-                              (long long)baseBinding->offset, (long long)baseBinding->size,
-                              (unsigned long)reflectedRequiredSize);
-                        NSLog(@"  CameraBlockPos=[%d %d %d]", iv[0], iv[1], iv[2]);
-                        NSLog(@"  CameraOffset=[%.6f %.6f %.6f]", fv[4], fv[5], fv[6]);
-                        NSLog(@"  ScreenSize=[%.1f %.1f]", fv[8], fv[9]);
-                        NSLog(@"  GlintAlpha=%.6f GameTime=%.6f", fv[10], fv[11]);
-                        NSLog(@"  MenuBlurRadius=%d UseRgss=%d", iv[12], iv[13]);
-                    }
+                    /* Trace file: log UBO binding for program trace */
                     static uint64_t s_traceFileUBOMapLogs = 0;
                     if (mglProgramNeedsTraceLog(program) &&
                         mglShouldLogTraceFileBindingForProgram(program, &s_traceFileUBOMapLogs)) {
@@ -9173,7 +4281,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        NSLog(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
+        MGLTraceNSLog(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0);
@@ -9264,7 +4372,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     mtlHead[0] = '\0';
                     mglTraceFormatBytes(cpuSample, sampleLen, cpuHead, sizeof(cpuHead));
                     mglTraceFormatBytes(mtlSample, sampleLen, mtlHead, sizeof(mtlHead));
-                    NSLog(@"MGL TRACE smallBufferDirty.upload call=%llu buffer=%u size=%lld dirty=0x%x copy=%lu cpuHash=0x%016llx cpuHead=%s mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
+                    MGLTraceNSLog(@"MGL TRACE smallBufferDirty.upload call=%llu buffer=%u size=%lld dirty=0x%x copy=%lu cpuHash=0x%016llx cpuHead=%s mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
                           (unsigned long long)call,
                           ptr->name,
                           (long long)ptr->size,
@@ -9313,7 +4421,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     }
                 }
 
-                NSLog(@"MGL TRACE smallBufferDirty.skip call=%llu buffer=%u size=%lld dirty=0x%x cpuHash=0x%016llx cpuHead=%s mtl=%p mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
+                MGLTraceNSLog(@"MGL TRACE smallBufferDirty.skip call=%llu buffer=%u size=%lld dirty=0x%x cpuHash=0x%016llx cpuHead=%s mtl=%p mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
                       (unsigned long long)call,
                       ptr->name,
                       (long long)ptr->size,
@@ -10316,7 +5424,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 baseSlots++;
             }
         }
-        NSLog(@"MGL TRACE vbind.end call=%llu mapCount=%u boundSlots=%lu reservedAttribSlots=%lu baseSlots=%lu elapsed=%.3fms",
+        MGLTraceNSLog(@"MGL TRACE vbind.end call=%llu mapCount=%u boundSlots=%lu reservedAttribSlots=%lu baseSlots=%lu elapsed=%.3fms",
               (unsigned long long)vbindCall,
               (unsigned)mapCount,
               (unsigned long)boundSlots,
@@ -10781,7 +5889,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 baseSlots++;
             }
         }
-        NSLog(@"MGL TRACE fbind.end call=%llu mapCount=%u boundSlots=%lu baseSlots=%lu elapsed=%.3fms",
+        MGLTraceNSLog(@"MGL TRACE fbind.end call=%llu mapCount=%u boundSlots=%lu baseSlots=%lu elapsed=%.3fms",
               (unsigned long long)fbindCall,
               (unsigned)mapCount,
               (unsigned long)boundSlots,
@@ -11351,8 +6459,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         pixelFormat = MTLPixelFormatRGBA8Unorm;
     }
 
-    NSLog(@"MGL INFO: PROPER FIX - Original texture format: internal=0x%x, mtl=0x%lx", tex->internalformat, (unsigned long)pixelFormat);
-
     // Validate format compatibility with AGX, but preserve original intent
     BOOL needsFormatConversion = NO;
     MTLPixelFormat originalFormat = pixelFormat;
@@ -11386,12 +6492,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         default:
             // Most modern formats should work fine
             break;
-    }
-
-    if (needsFormatConversion) {
-        NSLog(@"MGL INFO: PROPER FIX - Using RGBA8 Metal backing for AGX-incompatible format 0x%lx", (unsigned long)originalFormat);
-    } else {
-        NSLog(@"MGL INFO: PROPER FIX - Using original format 0x%lx (AGX compatible)", (unsigned long)pixelFormat);
     }
 
     /* Metal does not allow depth/stencil pixel formats with MTLTextureType1DArray.
@@ -11672,10 +6772,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                     // NUCLEAR OPTION: Disable all texture uploads temporarily to isolate the crash source
                     if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
-                        NSLog(@"MGL INFO: PROPER FIX - Processing 3D texture upload (tex=%d, face=%d, level=%d, size=%lu)", tex->name, face, level, (unsigned long)bytesPerImage);
-
-                        // PROPER FIX: Enable texture uploads but with safety checks
-                        // continue; // Remove the continue to re-enable uploads
                         // PROPER FIX: Dynamic memory alignment based on GPU characteristics
                         void *srcData = (void *)tex->faces[face].levels[level].data;
                         uintptr_t addr = (uintptr_t)srcData;
@@ -12014,11 +7110,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             tex_data += offset;
 
                             // NUCLEAR OPTION: Disable all texture uploads temporarily to isolate the crash source
-                        if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
-                                NSLog(@"MGL INFO: PROPER FIX - Processing array texture upload (tex=%d, face=%d, level=%d, layer=%d, size=%lu)", tex->name, face, level, layer, (unsigned long)bytesPerImage);
-
-                                // PROPER FIX: Enable texture uploads but with safety checks
-                                // continue; // Remove the continue to re-enable uploads
+                            if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
                                 // Ensure memory is aligned for AGX compression (256-byte requirement)
                                 void *srcData = (void *)tex_data;
                                 void *expandedUploadData = NULL;
@@ -12202,8 +7294,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                         // PROPER FIX: Enable 2D texture uploads with AGX safety and alignment
                         if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
-                            NSLog(@"MGL INFO: PROPER FIX - Processing 2D texture upload (tex=%d, face=%d, level=%d, size=%lu)", tex->name, face, level, (unsigned long)bytesPerImage);
-
                             // Ensure memory is aligned for AGX compression (256-byte requirement)
                             void *srcData = (void *)tex->faces[face].levels[level].data;
                             void *swizzledUploadData = NULL;
@@ -12693,8 +7783,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             }
         } else {
             // No existing data — fill with safe initial contents
-            NSLog(@"MGL INFO: PROPER FIX - Processing texture fill (tex=%d, dims=%lux%lu)", tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
-
         if (texture.width == 0 || texture.height == 0 || texture.width > 16384 || texture.height > 16384) {
             NSLog(@"MGL WARNING: Skipping texture fill due to invalid dimensions: %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
         } else {
@@ -14198,8 +9286,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (tex->mtl_gl_sampled_data) {
-        CFBridgingRelease(tex->mtl_gl_sampled_data);
-        tex->mtl_gl_sampled_data = NULL;
+        mglSafeReleaseMetalObj((void **)&tex->mtl_gl_sampled_data);
     }
 
     tex->mtl_gl_sampled_width = 0u;
@@ -14927,7 +10014,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         fmt == MTLPixelFormatBGRA8Unorm ||
         fmt == MTLPixelFormatBGRA8Unorm_sRGB;
     if (!fourByteColor) {
-        NSLog(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
+        MGLTraceNSLog(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
@@ -14960,7 +10047,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     id<MTLCommandBuffer> cb = [_commandQueue commandBuffer];
     id<MTLBlitCommandEncoder> blit = cb ? [cb blitCommandEncoder] : nil;
     if (!readback || !cb || !blit) {
-        NSLog(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
+        MGLTraceNSLog(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
@@ -15017,7 +10104,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         }
     }
 
-    NSLog(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
+    MGLTraceNSLog(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
           "mtl=%p fmt=%lu type=%lu size=%lux%lu sample=%lux%lu status=%s error=%@ "
           "nonZero=%lu/%lu sum=%llu first=0x%08x min=0x%08x max=0x%08x xor=0x%08x "
           "level(init ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx)",
@@ -15225,8 +10312,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
                 Sampler *glSampler = STATE(texture_samplers[textureUnit]);
                 if (glSampler->dirty_bits && glSampler->mtl_data) {
-                    CFBridgingRelease(glSampler->mtl_data);
-                    glSampler->mtl_data = NULL;
+                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
                 }
                 if (glSampler->mtl_data == NULL) {
                     glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
@@ -15510,7 +10596,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
                         : 0ull;
 
-                    NSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=vertex program=%u name=%s binding=%u "
+                    MGLTraceNSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=vertex program=%u name=%s binding=%u "
                           "unit=%u expectedType=%lu expectedIndex=%d ptrTex=%u ptr=%p target=0x%x fallback=%d mtlTex=%p mtlType=%lu mtlSize=%lux%lu "
                           "unit(active=%u expected=%u) "
                           "l0=%ux%ux%u bytes=%lu init(ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx dataHash=0x%016llx)",
@@ -16168,8 +11254,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
                 Sampler *glSampler = STATE(texture_samplers[textureUnit]);
                 if (glSampler->dirty_bits && glSampler->mtl_data) {
-                    CFBridgingRelease(glSampler->mtl_data);
-                    glSampler->mtl_data = NULL;
+                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
                 }
                 if (glSampler->mtl_data == NULL) {
                     glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
@@ -16291,7 +11376,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 	                    ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
 	                    : 0ull;
 
-	                NSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=fragment program=%u name=%s binding=%u "
+	                MGLTraceNSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=fragment program=%u name=%s binding=%u "
 	                      "unit=%u expectedType=%lu expectedIndex=%d ptrTex=%u ptr=%p target=0x%x fallback=%d mtlTex=%p mtlType=%lu mtlSize=%lux%lu "
 	                      "unit(active=%u expected=%u tex2D=%u cube=%u) "
 	                      "l0=%ux%ux%u bytes=%lu init(ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx dataHash=0x%016llx)",
@@ -16519,7 +11604,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 cpuFirstTexelValid = true;
             }
 
-            NSLog(@"MGL TRACE texbind.sampled call=%llu idx=%u binding=%u glTex=%u target=0x%x internal=0x%x "
+            MGLTraceNSLog(@"MGL TRACE texbind.sampled call=%llu idx=%u binding=%u glTex=%u target=0x%x internal=0x%x "
                   "l0=%ux%ux%u l0bytes=%lu l0first=0x%08x(valid=%d) "
                   "l0src(source=%u upload=%lu srcPtr=%p hash=0x%016llx init(ever=%u full=%u zero=%u)) "
                   "mtlTex=%p size=%lux%lu sampler=%p fallback=%d",
@@ -16772,8 +11857,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
             Sampler *glSampler = STATE(texture_samplers[textureUnit]);
             if (glSampler->dirty_bits && glSampler->mtl_data) {
-                CFBridgingRelease(glSampler->mtl_data);
-                glSampler->mtl_data = NULL;
+                mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
             }
             if (glSampler->mtl_data == NULL) {
                 glSampler->mtl_data = (void *)CFBridgingRetain([self createMTLSamplerForTexParam:&glSampler->params target:GL_TEXTURE_2D]);
@@ -16791,7 +11875,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         }
 
         if (traceBind && i < 6) {
-            NSLog(@"MGL TRACE texbind.separateSampler call=%llu idx=%u binding=%u unit=%u sampler=%p",
+            MGLTraceNSLog(@"MGL TRACE texbind.separateSampler call=%llu idx=%u binding=%u unit=%u sampler=%p",
                   (unsigned long long)bindCall,
                   (unsigned)i,
                   (unsigned)spirvBinding,
@@ -16883,7 +11967,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
     if (logTextureSummary) {
         GLuint programName = mglCurrentRenderProgramKey(ctx);
-        NSLog(@"MGL TRACE texbind.summary call=%llu program=%u vertexSampled=%u vertexBoundTex=%u vertexFallback=%u sampled=%u boundTex=%u nilTex=%u fallbackTex=%u sampledSamplers=%u separateSamplers=%u boundSeparate=%u",
+        MGLTraceNSLog(@"MGL TRACE texbind.summary call=%llu program=%u vertexSampled=%u vertexBoundTex=%u vertexFallback=%u sampled=%u boundTex=%u nilTex=%u fallbackTex=%u sampledSamplers=%u separateSamplers=%u boundSeparate=%u",
               (unsigned long long)bindCall,
               (unsigned)programName,
               (unsigned)vertexSampledCount,
@@ -17440,7 +12524,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
             [clearEncoder endEncoding];
             readFBOAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             mglMarkTextureLevelRenderTargetWritten(readTextureObject, readFBOAttachment->level);
-            NSLog(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
+            MGLTraceNSLog(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
                   (unsigned)readfbo->name,
                   (unsigned)readAttachment,
                   (unsigned)readTextureObject->name,
@@ -17575,7 +12659,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
         static uint64_t s_msaaResolveLogCount = 0;
         uint64_t msaaHit = ++s_msaaResolveLogCount;
         if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
-            NSLog(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
+            MGLTraceNSLog(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
                   (unsigned long long)msaaHit,
                   (unsigned long)readtexid.sampleCount,
                   (unsigned long)srcTexW, (unsigned long)srcTexH,
@@ -17698,7 +12782,7 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
                         (unsigned)(glm_ctx ? glm_ctx->state.draw_buffer : 0u),
                         (unsigned)(glm_ctx ? glm_ctx->state.read_buffer : 0u));
         } else {
-            NSLog(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%zx filter=0x%x "
+            MGLTraceNSLog(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%zx filter=0x%x "
                   "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
                   "copy srcGL=(%.3f,%.3f %.3fx%.3f) dstGL=(%.3f,%.3f %.3fx%.3f) srcMTL=(%ld,%ld) dstMTL=(%ld,%ld) scaled=%d flip=%d "
                   "srcObj=%u dstObj=%u srcRT=%d dstRT=%d srcAuth=0x%x dstAuth=0x%x srcRtVer=%u dstRtVer=%u srcCopyVer=%u dstCopyVer=%u "
@@ -18525,6 +13609,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 - (bool)bindMTLTexture:(Texture *)tex
 {
+    METAL_LOCK();
+    bool result = [self bindMTLTextureLocked:tex];
+    METAL_UNLOCK();
+    return result;
+}
+
+- (bool)bindMTLTextureLocked:(Texture *)tex
+{
     if (tex && tex->target == GL_TEXTURE_BUFFER && tex->texture_buffer &&
         tex->texture_buffer->data.dirty_bits) {
         tex->dirty_bits |= DIRTY_TEXTURE_DATA;
@@ -18557,8 +13649,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             // data to the new one after releasing tex->mtl_data.
             __strong id<MTLTexture> oldTexture = existingTexture;
 
-            CFBridgingRelease(tex->mtl_data);
-            tex->mtl_data = NULL;
+            mglSafeReleaseMetalObj((void **)&tex->mtl_data);
             [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
             // Create a new texture with correct usage.  Don't set
@@ -18572,8 +13663,8 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                 // Blit GPU data from old texture to new texture to preserve
                 // any writes (e.g. imageStore) that occurred before the
                 // is_render_target transition.
-                [self endRenderEncoding];
-                if ([self ensureWritableCommandBuffer:"is_render_target_blit"]) {
+                [self endRenderEncodingLocked];
+                if ([self ensureWritableCommandBufferLocked:"is_render_target_blit"]) {
                     id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
                     if (blit) {
                         NSUInteger copySlices = MIN(oldTexture.arrayLength, newTexture.arrayLength);
@@ -18638,23 +13729,19 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         if (tex->mtl_data)
         {
             if (textureNeedsRebuild) {
-                CFBridgingRelease(tex->mtl_data);
-                tex->mtl_data = NULL;
+                mglSafeReleaseMetalObj((void **)&tex->mtl_data);
                 [self releaseGLSampledRenderTargetCopyForTexture:tex];
             }
         }
 
         if (samplerNeedsRebuild && tex->params.mtl_data)
         {
-            CFBridgingRelease(tex->params.mtl_data);
-            tex->params.mtl_data = NULL;
+            mglSafeReleaseMetalObj((void **)&tex->params.mtl_data);
         }
     }
 
     if (tex->mtl_data == NULL)
     {
-        NSLog(@"MGL INFO: Creating MTL texture for texture (size: %dx%dx%d)", tex->width, tex->height, tex->depth);
-
         tex->mtl_data = (void *)CFBridgingRetain([self createMTLTextureFromGLTexture: tex]);
 
         // AGX-SAFE: Handle NULL texture gracefully when in GPU recovery mode
@@ -19292,56 +14379,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                                       label:(NSString *)label
                                       error:(NSError **)error
 {
-    if (!source) {
-        return nil;
-    }
-
-    if ([source rangeOfString:@"EmitVertex"].location != NSNotFound ||
-        [source rangeOfString:@"EndPrimitive"].location != NSNotFound) {
-        static uint64_t s_unsupportedGeometryMSLSkipCount = 0;
-        uint64_t hit = ++s_unsupportedGeometryMSLSkipCount;
-        if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL WARNING: Refusing to compile geometry-shader MSL with unsupported Metal emission semantics label=%@ hit=%llu",
-                  label ?: @"shader",
-                  (unsigned long long)hit);
-        }
-        if (error) {
-            NSString *description =
-                @"Geometry shader MSL contains EmitVertex/EndPrimitive, which Metal cannot compile directly";
-            *error = [NSError errorWithDomain:@"MGLRenderer"
-                                         code:GL_INVALID_OPERATION
-                                     userInfo:@{NSLocalizedDescriptionKey: description}];
-        }
-        return nil;
-    }
-
-#if MGL_HAS_MTL4_COMPILER
-    if (_mtl4Compiler && !mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER")) {
-        if (@available(macOS 26.0, *)) {
-            MTL4LibraryDescriptor *descriptor = [[MTL4LibraryDescriptor alloc] init];
-            descriptor.source = source;
-            descriptor.options = options;
-            descriptor.name = label;
-
-            id<MTLLibrary> library = [_mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
-            if (library) {
-                return library;
-            }
-
-            static uint64_t s_mtl4LibraryFallbackCount = 0;
-            uint64_t hit = ++s_mtl4LibraryFallbackCount;
-            if (hit <= 8ull || (hit % 256ull) == 0ull) {
-                NSError *compileError = error ? *error : nil;
-                NSLog(@"MGL WARNING: Metal 4 library compile failed label=%@ hit=%llu, falling back to MTLDevice: %@",
-                      label ?: @"shader",
-                      (unsigned long long)hit,
-                      compileError.localizedDescription ?: compileError);
-            }
-        }
-    }
-#endif
-
-    return [_device newLibraryWithSource:source options:options error:error];
+    return mglCompileMSL(_device, _mtl4Compiler, source, options, label, error);
 }
 
 - (id<MTLLibrary>) compileShader: (const char *) str
@@ -19374,38 +14412,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                                    source:(const char *)source
                                     label:(NSString *)label
 {
-    if (!library || !entryName) {
-        return nil;
-    }
-
-    /*
-     * SPIRV-Cross emits this function constant when it emulates R32UI linear
-     * texture atomics. Metal requires such functions to be explicitly
-     * specialized before they can be used in a render pipeline.
-     */
-    BOOL needsR32UI = (source &&
-                       strstr(source, "spvLinearTextureAlignmentOverride") &&
-                       strstr(source, "[[function_constant(65535)]]"));
-
-    if (needsR32UI) {
-        MTLFunctionConstantValues *values = [[MTLFunctionConstantValues alloc] init];
-
-        uint32_t alignment = 4u;
-        [values setConstantValue:&alignment type:MTLDataTypeUInt atIndex:65535];
-
-        __autoreleasing NSError *error = nil;
-        id<MTLFunction> function = [library newFunctionWithName:entryName
-                                                 constantValues:values
-                                                          error:&error];
-        if (!function) {
-            NSLog(@"MGL ERROR: Failed to specialize %@ with function constants: %@",
-                  label ?: entryName,
-                  error.localizedDescription ?: error);
-        }
-        return function;
-    }
-
-    return [library newFunctionWithName:entryName];
+    return mglNewFunctionFromLibrary(library, entryName, source, label);
 }
 
 - (void)invalidateCurrentPipelineStateForReason:(NSString *)reason
@@ -19428,6 +14435,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 -(bool)bindMTLProgram:(Program *)ptr
 {
+    METAL_LOCK();
+    bool result = [self bindMTLProgramLocked:ptr];
+    METAL_UNLOCK();
+    return result;
+}
+
+-(bool)bindMTLProgramLocked:(Program *)ptr
+{
     if (ptr->dirty_bits & DIRTY_PROGRAM)
     {
         // release mtl shaders
@@ -19440,31 +14455,23 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 	            {
 	                if (shader->mtl_data.library)
 	                {
-	                    CFBridgingRelease(shader->mtl_data.library);
-	                    CFBridgingRelease(shader->mtl_data.function);
-	                    shader->mtl_data.library = NULL;
-	                    shader->mtl_data.function = NULL;
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.library);
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.function);
 	                }
 	                if (shader->mtl_data.zero_to_one_library)
 	                {
-	                    CFBridgingRelease(shader->mtl_data.zero_to_one_library);
-	                    CFBridgingRelease(shader->mtl_data.zero_to_one_function);
-	                    shader->mtl_data.zero_to_one_library = NULL;
-	                    shader->mtl_data.zero_to_one_function = NULL;
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.zero_to_one_library);
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.zero_to_one_function);
 	                }
 	                if (shader->mtl_data.upper_left_library)
 	                {
-	                    CFBridgingRelease(shader->mtl_data.upper_left_library);
-	                    CFBridgingRelease(shader->mtl_data.upper_left_function);
-	                    shader->mtl_data.upper_left_library = NULL;
-	                    shader->mtl_data.upper_left_function = NULL;
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_library);
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_function);
 	                }
 	                if (shader->mtl_data.upper_left_zero_to_one_library)
 	                {
-	                    CFBridgingRelease(shader->mtl_data.upper_left_zero_to_one_library);
-	                    CFBridgingRelease(shader->mtl_data.upper_left_zero_to_one_function);
-	                    shader->mtl_data.upper_left_zero_to_one_library = NULL;
-	                    shader->mtl_data.upper_left_zero_to_one_function = NULL;
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_zero_to_one_library);
+	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_zero_to_one_function);
 	                }
 	            }
 	        }
@@ -19482,12 +14489,10 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         {
             if (i == _GEOMETRY_SHADER) {
                 if (shader->mtl_data.library) {
-                    CFBridgingRelease(shader->mtl_data.library);
-                    shader->mtl_data.library = NULL;
+                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.library);
                 }
                 if (shader->mtl_data.function) {
-                    CFBridgingRelease(shader->mtl_data.function);
-                    shader->mtl_data.function = NULL;
+                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.function);
                 }
                 static uint64_t s_geometryShaderMetalSkipCount = 0;
                 uint64_t hit = ++s_geometryShaderMetalSkipCount;
@@ -20507,7 +15512,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             static uint64_t s_defaultSampledCullBypassCount = 0;
             uint64_t hit = ++s_defaultSampledCullBypassCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
+                MGLTraceNSLog(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
                       (unsigned long long)hit,
                       (unsigned)(ctx ? ctx->state.program_name : 0u),
                       (unsigned)(ctx ? ctx->state.draw_buffer : 0u));
@@ -20567,6 +15572,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 - (bool) newRenderEncoder
 {
+    METAL_LOCK();
+    bool result = [self newRenderEncoderLocked];
+    METAL_UNLOCK();
+    return result;
+}
+
+- (bool) newRenderEncoderLocked
+{
     // I can't remember why this is here...
     @autoreleasepool {
     static uint64_t s_newRenderEncoderCallCount = 0;
@@ -20584,7 +15597,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     // CRITICAL SAFETY: Check command buffer before creating render encoder
     if (!_currentCommandBuffer) {
         // Attempt recovery: create a new command buffer instead of failing immediately
-        if ([self newCommandBuffer]) {
+        if ([self newCommandBufferLocked]) {
             // Successfully created - continue
         } else {
             NSLog(@"MGL ERROR: Cannot create render encoder - no command buffer available");
@@ -20594,7 +15607,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     }
 
     // end encoding on current render encoder
-    [self endRenderEncoding];
+    [self endRenderEncodingLocked];
 
     // grab the next drawable from CAMetalLayer
     if (_drawable == NULL)
@@ -20659,7 +15672,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
                 // Ensure attachment textures are created with RenderTarget usage.
                 tex->is_render_target = true;
-                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+                RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
                 if (!tex->mtl_data) {
                     continue;
                 }
@@ -20717,7 +15730,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             tex = [self framebufferAttachmentTexture: &fbo->depth];
             if (tex) {
                 tex->is_render_target = true;
-                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+                RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
             }
             if (tex && tex->mtl_data) {
                 _renderPassDescriptor.depthAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
@@ -20737,7 +15750,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
             tex = [self framebufferAttachmentTexture: &fbo->stencil];
             if (tex) {
                 tex->is_render_target = true;
-                RETURN_FALSE_ON_FAILURE([self bindMTLTexture: tex]);
+                RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
             }
             if (tex && tex->mtl_data) {
                 _renderPassDescriptor.stencilAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
@@ -21110,7 +16123,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 	    if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
 	        MTLClearColor c0 = _renderPassDescriptor.colorAttachments[0].clearColor;
-	        NSLog(@"MGL TRACE clear.resolve call=%llu fbo=%u "
+	        MGLTraceNSLog(@"MGL TRACE clear.resolve call=%llu fbo=%u "
 	              "fboColorClears=%u fboColorMask=0x%x fboAtt0ClearMask=0x%x c0LA=%s depthLA=%s stencilLA=%s "
 	              "c0Clear=(%.3f,%.3f,%.3f,%.3f) depthClear=%.3f stencilClear=%u",
               (unsigned long long)renderEncoderCall,
@@ -21203,7 +16216,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         id<MTLTexture> c0Tex = _renderPassDescriptor.colorAttachments[0].texture;
         id<MTLTexture> dTex = _renderPassDescriptor.depthAttachment.texture;
         id<MTLTexture> sTex = _renderPassDescriptor.stencilAttachment.texture;
-        NSLog(@"MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
+        MGLTraceNSLog(@"MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
               "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
               (unsigned long long)renderEncoderCall,
               (unsigned)(mglRendererSafeFramebufferName(ctx)),
@@ -21389,7 +16402,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     MTLCommandBufferStatus bufferStatus = _currentCommandBuffer.status;
     if (bufferStatus >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
-        if (![self newCommandBuffer]) {
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer before creating render encoder");
             [self recordGPUError];
             return false;
@@ -21609,6 +16622,14 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
 
 - (bool) newCommandBuffer
 {
+    METAL_LOCK();
+    bool result = [self newCommandBufferLocked];
+    METAL_UNLOCK();
+    return result;
+}
+
+- (bool) newCommandBufferLocked
+{
     // CRITICAL FIX: Proper encoder cleanup BEFORE creating new command buffer
     // Metal API requires ending encoders before creating new command buffers
 
@@ -21629,12 +16650,11 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     // STEP 1: Clean up sync tracking list safely.
     // IMPORTANT: Do NOT dereference Sync* entries here. Sync objects are owned by GL sync lifecycle
     // and may already be deleted by glDeleteSync on other paths.
+    SYNC_LOCK();
     if (_currentCommandBufferSyncList)
     {
-        // CRITICAL: Add thread synchronization for sync list access
-        if (_metalStateLock) {
-            [_metalStateLock lock];
-        }
+        // Sync list access must use _syncListLock because mtlGetSync may append
+        // while another thread rotates this context's command buffer.
 
         GLuint count = _currentCommandBufferSyncList->count;
         GLuint size = _currentCommandBufferSyncList->size;
@@ -21642,9 +16662,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         if (_currentCommandBufferSyncList->list == NULL || size == 0) {
             NSLog(@"MGL WARNING: Sync list storage invalid (list=%p size=%u), resetting", _currentCommandBufferSyncList->list, size);
             _currentCommandBufferSyncList->count = 0;
-            if (_metalStateLock) {
-                [_metalStateLock unlock];
-            }
+            SYNC_UNLOCK();
             goto create_new_command_buffer;
         }
 
@@ -21659,11 +16677,8 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         }
 
         _currentCommandBufferSyncList->count = 0;
-
-        if (_metalStateLock) {
-            [_metalStateLock unlock];
-        }
     }
+    SYNC_UNLOCK();
 
 create_new_command_buffer:
     // CRITICAL SAFETY: Validate command queue before creating buffer
@@ -21852,9 +16867,17 @@ create_new_command_buffer:
 
 - (bool)ensureWritableCommandBuffer:(const char *)reason
 {
+    METAL_LOCK();
+    bool result = [self ensureWritableCommandBufferLocked:reason];
+    METAL_UNLOCK();
+    return result;
+}
+
+- (bool)ensureWritableCommandBufferLocked:(const char *)reason
+{
     if (!_currentCommandBuffer) {
         NSLog(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
-        if (![self newCommandBuffer]) {
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -21863,8 +16886,8 @@ create_new_command_buffer:
     MTLCommandBufferStatus status = _currentCommandBuffer.status;
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
-        [self endRenderEncoding];
-        if (![self newCommandBuffer]) {
+        [self endRenderEncodingLocked];
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -23342,6 +18365,13 @@ create_new_command_buffer:
 
 - (void) endRenderEncoding
 {
+    METAL_LOCK();
+    [self endRenderEncodingLocked];
+    METAL_UNLOCK();
+}
+
+- (void) endRenderEncodingLocked
+{
     if (_currentRenderEncoder)
     {
         Framebuffer *endedFramebuffer = _renderPassFramebuffer;
@@ -23526,6 +18556,14 @@ create_new_command_buffer:
 
 - (bool) processGLState: (bool) draw_command
 {
+    METAL_LOCK();
+    bool result = [self processGLStateLocked:draw_command];
+    METAL_UNLOCK();
+    return result;
+}
+
+- (bool) processGLStateLocked: (bool) draw_command
+{
     static uint64_t s_processGLStateCallCount = 0;
     static double s_processGLStateLastCallTime = 0.0;
     static uint64_t s_processGLStateLastCallCount = 0;
@@ -23540,7 +18578,7 @@ create_new_command_buffer:
                         &s_processGLStateLastCallCount,
                         0.25);
     if (traceProcess) {
-        NSLog(@"MGL TRACE processGLState.begin call=%llu draw=%d",
+        MGLTraceNSLog(@"MGL TRACE processGLState.begin call=%llu draw=%d",
               (unsigned long long)processCall, draw_command ? 1 : 0);
         mglLogStateSnapshot("processGLState.enter",
                             ctx,
@@ -23635,11 +18673,8 @@ create_new_command_buffer:
         // for a clear flush sequence...
         if (ctx->state.dirty_bits & DIRTY_STATE)
         {
-            // RESTORED: Attempt render encoder creation with improved error handling
-            NSLog(@"MGL INFO: RESTORED - Attempting newRenderEncoder with GPU throttling protection");
-
             // end encoding on current render encoder
-            [self endRenderEncoding];
+            [self endRenderEncodingLocked];
 
             // Use GPU throttling to prevent crashes when creating new render encoder
             if (![self validateMetalObjects]) {
@@ -23649,15 +18684,9 @@ create_new_command_buffer:
             }
 
             @try {
-                NSLog(@"MGL INFO: Attempting to create new render encoder with safety protection");
-                if ([self newRenderEncoder]) {
-                    NSLog(@"MGL SUCCESS: New render encoder created successfully");
-                } else {
-                    NSLog(@"MGL WARNING: Failed to create render encoder - continuing with degraded functionality");
-                }
+                [self newRenderEncoderLocked];
             } @catch (NSException *exception) {
                 NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
-                NSLog(@"MGL INFO: Continuing without render encoder for stability");
             }
 
             // Clear the dirty bit to prevent repeated attempts
@@ -23725,7 +18754,7 @@ create_new_command_buffer:
         MTLCommandBufferStatus preStatus = _currentCommandBuffer.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld)", (long)preStatus);
-            if (![self newCommandBuffer]) {
+            if (![self newCommandBufferLocked]) {
                 NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
                 if (traceProcess) {
                     mglLogStateSnapshot("processGLState.fail.new_cb_rotate",
@@ -23742,7 +18771,7 @@ create_new_command_buffer:
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: processGLState found NULL command buffer, creating one");
         }
-        if (![self newCommandBuffer]) {
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: processGLState could not create initial command buffer");
             if (traceProcess) {
                 mglLogStateSnapshot("processGLState.fail.new_cb_initial",
@@ -23783,8 +18812,8 @@ create_new_command_buffer:
                     }
                 }
 
-                [self endRenderEncoding];
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoder]);
+                [self endRenderEncodingLocked];
+                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
             }
         }
 
@@ -23870,7 +18899,7 @@ create_new_command_buffer:
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
 
             if (!_currentRenderEncoder) {
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoder]);
+                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
             }
 
             [self updateCurrentRenderEncoder];
@@ -23890,7 +18919,7 @@ create_new_command_buffer:
         {
             if (_currentRenderEncoder == NULL)
             {
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoder]);
+                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
             }
 
             // a dirty render state may just be something like alpha changes which don't require a new renderbuffer
@@ -24440,7 +19469,7 @@ create_new_command_buffer:
                                       _renderPassDrawBuffer,
                                       _renderPassDrawBufferCount);
         }
-        RETURN_FALSE_ON_FAILURE([self newRenderEncoder]);
+        RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
         if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
             mglLogRenderPassLifecycle("nil-encoder-after-recovery",
                                       nilHit,
@@ -24693,7 +19722,7 @@ stencil_format_ok:;
 
     double processElapsedMs = (mglNowSeconds() - processStartSeconds) * 1000.0;
     if (traceProcess) {
-        NSLog(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.3fms",
+        MGLTraceNSLog(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.3fms",
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
         mglLogStateSnapshot("processGLState.exit.ok",
                             ctx,
@@ -24702,7 +19731,7 @@ stencil_format_ok:;
                             _renderPassDescriptor,
                             _drawable);
     } else if (processElapsedMs >= 25.0) {
-        NSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
+        MGLTraceNSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
     }
     return true;
@@ -25033,8 +20062,7 @@ stencil_format_ok:;
                         {
                             if (gl_sampler->mtl_data)
                             {
-                                CFBridgingRelease(gl_sampler->mtl_data);
-                                gl_sampler->mtl_data = NULL;
+                                mglSafeReleaseMetalObj((void **)&gl_sampler->mtl_data);
                             }
                         }
 
@@ -25630,6 +20658,13 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
 }
 -(void) flushCommandBuffer: (bool) finish
 {
+    METAL_LOCK();
+    [self flushCommandBufferLocked:finish];
+    METAL_UNLOCK();
+}
+
+-(void) flushCommandBufferLocked: (bool) finish
+{
     if (!_device || !_commandQueue) {
         NSLog(@"MGL ERROR: Metal device or queue is NULL in flushCommandBuffer");
         return;
@@ -25637,13 +20672,13 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
 
     [self flushDrawBuffer:ctx];
 
-    if (![self processGLState: false]) {
+    if (![self processGLStateLocked: false]) {
         NSLog(@"MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup");
     }
 
-    [self endRenderEncoding];
+    [self endRenderEncodingLocked];
 
-    if (![self ensureWritableCommandBuffer:"flushCommandBuffer"]) {
+    if (![self ensureWritableCommandBufferLocked:"flushCommandBuffer"]) {
         NSLog(@"MGL ERROR: Unable to obtain writable command buffer in flushCommandBuffer");
         return;
     }
@@ -25656,7 +20691,7 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
     MTLCommandBufferStatus currentStatus = _currentCommandBuffer.status;
     if (currentStatus != MTLCommandBufferStatusNotEnqueued) {
         NSLog(@"MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating", (long)currentStatus);
-        if (![self newCommandBuffer]) {
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to rotate command buffer in flushCommandBuffer");
         }
         return;
@@ -25689,7 +20724,7 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
     }
 
     if (!finish) {
-        [self newCommandBuffer];
+        [self newCommandBufferLocked];
     }
 }
 #pragma mark C interface to mtlBindBuffer
@@ -25715,6 +20750,13 @@ void mtlBindProgram(GLMContext glm_ctx, Program *ptr)
 
 #pragma mark C interface to mtlDeleteMTLObj
 -(void) mtlDeleteMTLObj:(GLMContext) glm_ctx buffer: (void *)obj
+{
+    METAL_LOCK();
+    [self mtlDeleteMTLObjLocked:glm_ctx buffer:obj];
+    METAL_UNLOCK();
+}
+
+-(void) mtlDeleteMTLObjLocked:(GLMContext) glm_ctx buffer: (void *)obj
 {
     if (!obj)
         return;
@@ -25752,6 +20794,8 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
  */
 -(void) mtlGetSync:(GLMContext) glm_ctx sync: (Sync *)sync
 {
+    METAL_LOCK();
+    @try {
     // SAFETY: Check Metal objects before processing
     if (!_device || !_commandQueue) {
         NSLog(@"MGL ERROR: Metal device or queue is NULL in mtlGetSync");
@@ -25839,12 +20883,20 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
 
     sync->mtl_event = (void *)CFBridgingRetain(_currentEvent);
 
+    // Phase 3: Lock the sync list for the write path — newCommandBuffer
+    // acquires the same lock on the read/clear path, so without this lock
+    // mtlGetSync: would race against newCommandBuffer on multi-thread use.
+    // Uses _syncListLock (independent from _metalStateLock) to avoid
+    // deadlock if mtlGetSync: is ever called from within a Locked method.
+    SYNC_LOCK();
+
     if (_currentCommandBufferSyncList == NULL)
     {
         // CRITICAL SECURITY FIX: Check malloc results instead of using assert()
         _currentCommandBufferSyncList = (SyncList *)malloc(sizeof(SyncList));
         if (!_currentCommandBufferSyncList) {
             NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList");
+            SYNC_UNLOCK();
             return;
         }
 
@@ -25854,6 +20906,7 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
             NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList array");
             free(_currentCommandBufferSyncList);
             _currentCommandBufferSyncList = NULL;
+            SYNC_UNLOCK();
             return;
         }
 
@@ -25866,6 +20919,7 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
         size_t current_size = (size_t)_currentCommandBufferSyncList->size;
         if (current_size > SIZE_MAX / 2 / sizeof(Sync *)) {
             NSLog(@"MGL SECURITY ERROR: SyncList size would overflow, preventing expansion");
+            SYNC_UNLOCK();
             return;
         }
 
@@ -25874,6 +20928,7 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
                                            sizeof(Sync *) * new_size);
         if (!new_list) {
             NSLog(@"MGL SECURITY ERROR: Failed to reallocate SyncList array");
+            SYNC_UNLOCK();
             return;
         }
 
@@ -25883,6 +20938,11 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
 
     _currentCommandBufferSyncList->list[_currentCommandBufferSyncList->count] = sync;
     _currentCommandBufferSyncList->count++;
+
+    SYNC_UNLOCK();
+    } @finally {
+        METAL_UNLOCK();
+    }
 }
 
 void mtlGetSync (GLMContext glm_ctx, Sync *sync)
@@ -25924,8 +20984,7 @@ void mtlGetSync (GLMContext glm_ctx, Sync *sync)
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Exception waiting on fence command buffer: %@", exception);
         }
-        CFBridgingRelease(sync->mtl_command_buffer);
-        sync->mtl_command_buffer = NULL;
+        mglSafeReleaseMetalObj((void **)&sync->mtl_command_buffer);
     }
 
     // Legacy shared-event cleanup (harmless if mtl_event is NULL, which is the
@@ -25935,11 +20994,10 @@ void mtlGetSync (GLMContext glm_ctx, Sync *sync)
             if (kMGLVerboseFrameLoopLogs) {
                 NSLog(@"MGL INFO: Releasing Metal sync event");
             }
-            CFBridgingRelease(sync->mtl_event);
+            mglSafeReleaseMetalObj((void **)&sync->mtl_event);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
         }
-        sync->mtl_event = NULL;
     }
 
     if (kMGLDisableSharedEventSync && kMGLVerboseFrameLoopLogs) {
@@ -26003,20 +21061,18 @@ GLenum mtlGetSyncStatus (GLMContext glm_ctx, Sync *sync)
 
     if (sync->mtl_command_buffer) {
         @try {
-            CFBridgingRelease(sync->mtl_command_buffer);
+            mglSafeReleaseMetalObj((void **)&sync->mtl_command_buffer);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Exception releasing fence command buffer: %@", exception);
         }
-        sync->mtl_command_buffer = NULL;
     }
 
     if (sync->mtl_event) {
         @try {
-            CFBridgingRelease(sync->mtl_event);
+            mglSafeReleaseMetalObj((void **)&sync->mtl_event);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
         }
-        sync->mtl_event = NULL;
     }
 }
 
@@ -26637,7 +21693,7 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
 
     g_mglLastDrawArraysSeconds = mglNowSeconds();
     if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
-        NSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
+        MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
               cb->batch_count, cb->total_commands,
               cb->array_cmd_count, cb->element_cmd_count,
@@ -27765,6 +22821,13 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
 #pragma mark C interface to mtlSwapBuffers
 -(void) mtlSwapBuffers:(GLMContext) glm_ctx
 {
+    METAL_LOCK();
+    [self mtlSwapBuffersLocked:glm_ctx];
+    METAL_UNLOCK();
+}
+
+-(void) mtlSwapBuffersLocked:(GLMContext) glm_ctx
+{
     static uint64_t s_swapCallCount = 0;
     static double s_swapLastCallTime = 0.0;
     static uint64_t s_swapLastCallCount = 0;
@@ -27795,7 +22858,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
     }
 
     if (ctx != glm_ctx) {
-        NSLog(@"MGL TRACE swap.contextSync old=%p new=%p", ctx, glm_ctx);
+        MGLTraceNSLog(@"MGL TRACE swap.contextSync old=%p new=%p", ctx, glm_ctx);
         ctx = glm_ctx;
     }
 
@@ -27803,7 +22866,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
     GLenum drawBuffer = activeCtx->state.draw_buffer;
     bool shouldPresent = (drawBuffer != GL_NONE);
     if (traceSwap) {
-        NSLog(@"MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
+        MGLTraceNSLog(@"MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
@@ -27826,7 +22889,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         if (hb > 0.0) {
             double lagMs = (swapStartSeconds - hb) * 1000.0;
             if (lagMs > 500.0) {
-                NSLog(@"MGL TRACE mainthread.stall suspected lag=%.2fms swapCall=%llu pingCount=%llu",
+                MGLTraceNSLog(@"MGL TRACE mainthread.stall suspected lag=%.2fms swapCall=%llu pingCount=%llu",
                       lagMs,
                       (unsigned long long)swapCall,
                       (unsigned long long)s_mainThreadPingCount);
@@ -27839,13 +22902,13 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                                         _drawable);
                 }
             } else if (traceSwap) {
-                NSLog(@"MGL TRACE mainthread.heartbeat lag=%.2fms swapCall=%llu pingCount=%llu",
+                MGLTraceNSLog(@"MGL TRACE mainthread.heartbeat lag=%.2fms swapCall=%llu pingCount=%llu",
                       lagMs,
                       (unsigned long long)swapCall,
                       (unsigned long long)s_mainThreadPingCount);
             }
         } else if (traceSwap) {
-            NSLog(@"MGL TRACE mainthread.heartbeat uninitialized swapCall=%llu", (unsigned long long)swapCall);
+            MGLTraceNSLog(@"MGL TRACE mainthread.heartbeat uninitialized swapCall=%llu", (unsigned long long)swapCall);
         }
     }
 
@@ -27875,7 +22938,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                              frameCounters.draw_elements_skipped > 0 ||
                              frameCounters.process_draw_calls > 0);
         if (traceSwap || hasFrameWork || swapCall <= 20ull || (swapCall % 20ull) == 0ull) {
-            NSLog(@"MGL TRACE swap.drawActivity call=%llu processDrawCalls=%llu drawArrays=%llu verts=%llu "
+            MGLTraceNSLog(@"MGL TRACE swap.drawActivity call=%llu processDrawCalls=%llu drawArrays=%llu verts=%llu "
                   "drawElements=%llu indices=%llu skipArrays=%llu skipElements=%llu "
                   "lastDrawArrays=%llu prog=%u mode=0x%x count=%d age=%.2fms "
                   "lastDrawElements=%llu prog=%u mode=0x%x count=%d age=%.2fms",
@@ -27904,7 +22967,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
     {
         [self flushDrawBuffer:activeCtx];
 
-        if (![self processGLState: false]) {
+        if (![self processGLStateLocked: false]) {
             static uint64_t s_swapProcessStateFailCount = 0;
             s_swapProcessStateFailCount++;
             if (s_swapProcessStateFailCount <= 16 || (s_swapProcessStateFailCount % 500) == 0) {
@@ -27913,9 +22976,9 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
             }
         }
 
-        [self endRenderEncoding];
+        [self endRenderEncodingLocked];
 
-        if (![self ensureWritableCommandBuffer:"mtlSwapBuffers"]) {
+        if (![self ensureWritableCommandBufferLocked:"mtlSwapBuffers"]) {
             NSLog(@"MGL ERROR: Failed to obtain writable command buffer in mtlSwapBuffers");
             return;
         }
@@ -27923,13 +22986,13 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         if (_drawable == NULL)
         {
             if (traceSwap) {
-                NSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present", (unsigned long long)swapCall);
+                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present", (unsigned long long)swapCall);
             }
             [self mglSyncLayerDrawableSizeFromView:"swap.pre_present"];
             _drawable = [_layer nextDrawable];
             if (traceSwap) {
                 id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-                NSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
+                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
                       (unsigned long long)swapCall,
                       _drawable,
                       tex,
@@ -27941,13 +23004,13 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         if (_drawable == NULL) {
             NSLog(@"MGL WARNING: Drawable is NULL in mtlSwapBuffers, getting new drawable");
             if (traceSwap) {
-                NSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry", (unsigned long long)swapCall);
+                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry", (unsigned long long)swapCall);
             }
             [self mglSyncLayerDrawableSizeFromView:"swap.pre_present_retry"];
             _drawable = [_layer nextDrawable];
             if (traceSwap) {
                 id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-                NSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
+                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
                       (unsigned long long)swapCall,
                       _drawable,
                       tex,
@@ -27974,7 +23037,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                 (kMGLSwapPresentDiagnostics &&
                  (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
             if (traceCopyToDrawable) {
-                NSLog(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
+                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
                       (unsigned long long)swapCall,
                       rpColor0,
                       (unsigned long)rpColor0.pixelFormat,
@@ -28051,7 +23114,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
             }
 
             if (traceCopyToDrawable) {
-                NSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
+                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
             }
         } else if (ctx->state.framebuffer == NULL &&
                    _defaultDrawableWrittenSinceLastSwap &&
@@ -28062,7 +23125,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                 (kMGLSwapPresentDiagnostics &&
                  (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
             if (traceSkipCopyToDrawable) {
-                NSLog(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
+                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
                       (unsigned long long)swapCall,
                       rpColor0,
                       drawableTexture);
@@ -28077,7 +23140,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
             void (^scheduleTextureSample)(id<MTLTexture>, NSString *, NSUInteger, NSUInteger) =
                 ^(id<MTLTexture> sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
                     if (!sampleTexture) {
-                        NSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
+                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
                               sampleTag,
                               (unsigned long long)swapCall);
                         return;
@@ -28085,7 +23148,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
 
                     if (sampleTexture.pixelFormat != MTLPixelFormatBGRA8Unorm &&
                         sampleTexture.pixelFormat != MTLPixelFormatRGBA8Unorm) {
-                        NSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
+                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
                               sampleTag,
                               (unsigned long long)swapCall,
                               (unsigned long)sampleTexture.pixelFormat,
@@ -28100,7 +23163,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                     NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
                     NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
                     if (sampleWidth == 0 || sampleHeight == 0 || sampleBytesPerImage == 0) {
-                        NSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
+                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
                               sampleTag,
                               (unsigned long long)swapCall,
                               (unsigned long)sampleTexture.width,
@@ -28160,7 +23223,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                     [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
                         const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
                         if (!p) {
-                            NSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
+                            MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
                                   sampleTagCopy,
                                   (unsigned long long)sampleSwapCall,
                                   mglCommandBufferStatusName(sampleCB.status),
@@ -28204,7 +23267,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                         }
                         BOOL appearsSolid = (pixelCount > 0u && diffFromFirst == 0u);
 
-                        NSLog(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
+                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
                               "nonZero=%lu/%lu sum=%llu firstPixel=0x%08x min=0x%08x max=0x%08x xor=0x%08x diff=%lu solid=%d status=%s error=%@",
                               sampleTagCopy,
                               (unsigned long long)sampleSwapCall,
@@ -28239,7 +23302,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                             if (s_sameCenterPixelRun == 10ull ||
                                 s_sameCenterPixelRun == 30ull ||
                                 (s_sameCenterPixelRun % 120ull) == 0ull) {
-                                NSLog(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
+                                MGLTraceNSLog(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
                                       firstPixel,
                                       (unsigned long long)s_sameCenterPixelRun,
                                       appearsSolid ? 1 : 0,
@@ -28297,8 +23360,8 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         MTLCommandBufferStatus bufferStatus = _currentCommandBuffer.status;
         if (bufferStatus != MTLCommandBufferStatusNotEnqueued) {
             NSLog(@"MGL WARNING: mtlSwapBuffers found finalized command buffer (status: %ld), rotating", (long)bufferStatus);
-            [self endRenderEncoding];
-            [self newCommandBuffer];
+            [self endRenderEncodingLocked];
+            [self newCommandBufferLocked];
             if (!_currentCommandBuffer) {
                 NSLog(@"MGL ERROR: Failed to create new command buffer for presentation");
                 return;
@@ -28325,7 +23388,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
 
             [_currentCommandBuffer presentDrawable: _drawable];
             if (traceSwap) {
-                NSLog(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
+                MGLTraceNSLog(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
                       (unsigned long long)swapCall, _currentCommandBuffer, _drawable);
             }
 
@@ -28340,7 +23403,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         _currentCommandBuffer = nil;
         @try {
             if (traceSwap) {
-                NSLog(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
+                MGLTraceNSLog(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
                       (unsigned long long)swapCall,
                       commandBufferToCommit,
                       mglCommandBufferStatusName(commandBufferToCommit ? commandBufferToCommit.status : MTLCommandBufferStatusError),
@@ -28348,7 +23411,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
             }
             [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
             if (traceSwap) {
-                NSLog(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
+                MGLTraceNSLog(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Failed to commit command buffer: %@", exception);
@@ -28356,12 +23419,12 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         }
 
         if (traceSwap) {
-            NSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
+            MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
         }
         _drawable = [_layer nextDrawable];
         if (traceSwap) {
             id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-            NSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
+            MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
                   (unsigned long long)swapCall,
                   _drawable,
                   tex,
@@ -28373,7 +23436,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
             return;
         }
 
-        if (![self newCommandBuffer]) {
+        if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create post-swap command buffer");
             return;
         }
@@ -28381,7 +23444,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE;
         double swapElapsedMs = (mglNowSeconds() - swapStartSeconds) * 1000.0;
         if (traceSwap) {
-            NSLog(@"MGL TRACE swap.end call=%llu elapsed=%.3fms",
+            MGLTraceNSLog(@"MGL TRACE swap.end call=%llu elapsed=%.3fms",
                   (unsigned long long)swapCall,
                   swapElapsedMs);
             mglLogStateSnapshot("swap.exit.ok",
@@ -28391,7 +23454,7 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
                                 _renderPassDescriptor,
                                 _drawable);
         } else if (swapElapsedMs >= 25.0) {
-            NSLog(@"MGL TRACE swap.slow call=%llu elapsed=%.3fms",
+            MGLTraceNSLog(@"MGL TRACE swap.slow call=%llu elapsed=%.3fms",
                   (unsigned long long)swapCall,
                   swapElapsedMs);
         }
@@ -28726,6 +23789,13 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
 
 -(void) mtlBufferSubData:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
 {
+    METAL_LOCK();
+    [self mtlBufferSubDataLocked:glm_ctx buf:buf offset:offset size:size ptr:ptr];
+    METAL_UNLOCK();
+}
+
+-(void) mtlBufferSubDataLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
+{
     static uint64_t s_mtlBufferSubDataCalls = 0;
     uint64_t call = ++s_mtlBufferSubDataCalls;
     bool trace = kMGLDiagnosticStateLogs && mglShouldTraceBufferTransferCall(call);
@@ -28751,7 +23821,7 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
         srcHead[0] = '\0';
         mglTraceFormatBytes(ptr, size, srcHead, sizeof(srcHead));
         uint64_t srcHash = mglTraceHashBytes(ptr, size);
-        NSLog(@"MGL TRACE mtlBufferSubData.begin call=%llu buffer=%u size=%lld off=%zu len=%zu mtl=%p cpu=%p dirty=0x%x srcHash=0x%016llx srcHead=%s",
+        MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.begin call=%llu buffer=%u size=%lld off=%zu len=%zu mtl=%p cpu=%p dirty=0x%x srcHash=0x%016llx srcHead=%s",
               (unsigned long long)call,
               buf->name,
               (long long)buf->size,
@@ -28766,7 +23836,7 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
 
     if (buf->data.mtl_data == NULL)
     {
-        [self bindMTLBuffer:buf];
+        [self bindMTLBufferLocked:buf];
     }
 
     // AGX Driver Compatibility: For small buffers, bindMTLBuffer may still have NULL mtl_data
@@ -28783,7 +23853,7 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
                 dstHead[0] = '\0';
                 mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
                 uint64_t dstHash = mglTraceHashBytes(dst, size);
-                NSLog(@"MGL TRACE mtlBufferSubData.cpuFallback call=%llu buffer=%u off=%zu len=%zu dstHash=0x%016llx dstHead=%s",
+                MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.cpuFallback call=%llu buffer=%u off=%zu len=%zu dstHash=0x%016llx dstHead=%s",
                       (unsigned long long)call,
                       buf->name,
                       offset,
@@ -28827,7 +23897,7 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
         dstHead[0] = '\0';
         mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
         uint64_t dstHash = mglTraceHashBytes(dst, size);
-        NSLog(@"MGL TRACE mtlBufferSubData.end call=%llu buffer=%u off=%zu len=%zu mtlLen=%lu dstHash=0x%016llx dstHead=%s",
+        MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.end call=%llu buffer=%u off=%zu len=%zu mtlLen=%lu dstHash=0x%016llx dstHead=%s",
               (unsigned long long)call,
               buf->name,
               offset,
@@ -28895,7 +23965,7 @@ void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t siz
             cpuHead[0] = '\0';
             mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
 
-            NSLog(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+            MGLTraceNSLog(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
                   buf->name,
                   offset,
                   size,
@@ -28939,7 +24009,7 @@ void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t siz
         cpuHead[0] = '\0';
         mglTraceFormatBytes(mtlPtr, (size_t)safeLen, mtlHead, sizeof(mtlHead));
         mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-        NSLog(@"MGL TRACE mtlMap.unmap buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+        MGLTraceNSLog(@"MGL TRACE mtlMap.unmap buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
               buf->name,
               offset,
               size,
@@ -32574,6 +27644,13 @@ void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GL
 
 -(void)mtlTexSubImage:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
 {
+    METAL_LOCK();
+    [self mtlTexSubImageLocked:glm_ctx tex:tex buf:buf src_offset:src_offset src_pitch:src_pitch src_image_size:src_image_size src_size:src_size slice:slice level:level width:width height:height depth:depth xoffset:xoffset yoffset:yoffset zoffset:zoffset];
+    METAL_UNLOCK();
+}
+
+-(void)mtlTexSubImageLocked:(GLMContext)glm_ctx tex:(Texture *)tex buf:(Buffer *)buf src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size src_size:(size_t)src_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
+{
     if (!tex || !buf) {
         NSLog(@"MGL ERROR: mtlTexSubImage called with null tex/buf (tex=%p buf=%p)", tex, buf);
         return;
@@ -32588,7 +27665,7 @@ void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GL
     // we can deal with a null buffer but we need a texture
     if (buf->data.mtl_data == NULL)
     {
-        [self bindMTLBuffer: buf];
+        [self bindMTLBufferLocked: buf];
         RETURN_ON_NULL(buf->data.mtl_data);
     }
 
@@ -33301,7 +28378,7 @@ Buffer *getElementBuffer(GLMContext ctx)
 
         GLuint drawProgramKey = mglCurrentRenderProgramKey(drawCtx);
         if (mglShouldInspectDrawCall(drawCall, drawProgramKey) && attrib == 0u) {
-            NSLog(@"MGL TRACE drawArrays.attrib0 call=%llu program=%u buffer=%u first=%d count=%d "
+            MGLTraceNSLog(@"MGL TRACE drawArrays.attrib0 call=%llu program=%u buffer=%u first=%d count=%d "
                   "byteRange=[%llu,%llu) vboSize=%llu metalLen=%llu stride=%llu bindingOffset=%llu relOffset=%llu elemBytes=%llu",
                   (unsigned long long)drawCall,
                   (unsigned)drawProgramKey,
@@ -34488,6 +29565,13 @@ typedef struct {
 #pragma mark C interface to mtlDrawArrays
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
+    METAL_LOCK();
+    [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
+    METAL_UNLOCK();
+}
+
+-(void) mtlDrawArraysLocked: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
+{
     self->ctx = ctx;
 
     static uint64_t s_drawArraysCallCount = 0;
@@ -34523,7 +29607,7 @@ typedef struct {
         return;
     }
 
-    if ([self processGLState: true] == false) {
+    if ([self processGLStateLocked: true] == false) {
         process_state_fail_count++;
         g_mglDrawArraysSkippedSinceSwap++;
         if (process_state_fail_count <= 8 || (process_state_fail_count % 1000) == 0) {
@@ -34588,7 +29672,7 @@ typedef struct {
     // Additional safety check after processGLState
     if (!_currentRenderEncoder) {
         // One recovery attempt to avoid persistent "No current render encoder" failure loops.
-        [self newRenderEncoder];
+        [self newRenderEncoderLocked];
         if (!_currentRenderEncoder) {
             no_render_encoder_count++;
             if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {
@@ -34878,7 +29962,7 @@ typedef struct {
 
     double drawElapsedMs = (mglNowSeconds() - drawStartSeconds) * 1000.0;
     if (traceDraw || drawElapsedMs >= 16.0) {
-        NSLog(@"MGL TRACE drawArrays.end call=%llu mode=0x%x first=%d count=%d elapsed=%.3fms encoder=%p",
+        MGLTraceNSLog(@"MGL TRACE drawArrays.end call=%llu mode=0x%x first=%d count=%d elapsed=%.3fms encoder=%p",
               (unsigned long long)drawCall,
               (unsigned)mode,
               (int)first,
@@ -34919,6 +30003,13 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
 #pragma mark C interface to mtlDrawElements
 -(void) mtlDrawElements: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
+    METAL_LOCK();
+    [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type indices:indices];
+    METAL_UNLOCK();
+}
+
+-(void) mtlDrawElementsLocked: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
+{
     ctx = glm_ctx;
 
     static uint64_t s_drawElementsCallCount = 0;
@@ -34944,7 +30035,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
     bool drawProgramUsesCloudFaces = false;
 
     if (traceDraw) {
-        NSLog(@"MGL TRACE drawElements.begin call=%llu mode=0x%x count=%d type=0x%x indices=%p program=%u vao=%p fbo=%p",
+        MGLTraceNSLog(@"MGL TRACE drawElements.begin call=%llu mode=0x%x count=%d type=0x%x indices=%p program=%u vao=%p fbo=%p",
               (unsigned long long)drawCall,
               (unsigned)mode,
               (int)count,
@@ -34957,7 +30048,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
 
     if (count <= 0) {
         if (traceDraw) {
-            NSLog(@"MGL TRACE drawElements.skip.invalidCount call=%llu count=%d",
+            MGLTraceNSLog(@"MGL TRACE drawElements.skip.invalidCount call=%llu count=%d",
                   (unsigned long long)drawCall,
                   (int)count);
         }
@@ -34972,11 +30063,11 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
         return;
     }
 
-    if ([self processGLState: true] == false) {
+    if ([self processGLStateLocked: true] == false) {
         s_drawElementsProcessStateFailCount++;
         g_mglDrawElementsSkippedSinceSwap++;
         if (traceDraw || s_drawElementsProcessStateFailCount <= 16 || (s_drawElementsProcessStateFailCount % 500) == 0) {
-            NSLog(@"MGL TRACE drawElements.skip.processGLState call=%llu failCount=%llu",
+            MGLTraceNSLog(@"MGL TRACE drawElements.skip.processGLState call=%llu failCount=%llu",
                   (unsigned long long)drawCall,
                   (unsigned long long)s_drawElementsProcessStateFailCount);
         }
@@ -35390,7 +30481,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                 }
 
                 if (!vbo->data.mtl_data) {
-                    [self bindMTLBuffer:vbo];
+                    [self bindMTLBufferLocked:vbo];
                 }
                 if (!vbo->data.mtl_data) {
                     NSLog(@"MGL VBORANGE BLOCK drawElements call=%llu attrib=%u buffer=%u has no Metal backing byteRange=[%llu,%llu)",
@@ -35454,7 +30545,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
     }
 
     if (traceDraw || indexOffset != 0u) {
-        NSLog(@"MGL TRACE drawElements.indices call=%llu gl=%u offset=%lu stride=%lu needed=%lu len=%lu",
+        MGLTraceNSLog(@"MGL TRACE drawElements.indices call=%llu gl=%u offset=%lu stride=%lu needed=%lu len=%lu",
               (unsigned long long)drawCall,
               gl_element_buffer->name,
               (unsigned long)indexOffset,
@@ -35489,7 +30580,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                 (mglDrawModeProducesPolygons(mode) && ctx->state.var.polygon_mode == GL_LINE)
                     ? MTLTriangleFillModeLines
                     : MTLTriangleFillModeFill;
-            NSLog(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
+            MGLTraceNSLog(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
                   (unsigned)mode,
@@ -35545,7 +30636,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                 }
             }
 
-            NSLog(@"MGL TRACE drawElements.preview call=%llu program=%u ebo=%u count=%d type=0x%x offset=%lu first[%lu]={%s} min=%u max=%u",
+            MGLTraceNSLog(@"MGL TRACE drawElements.preview call=%llu program=%u ebo=%u count=%d type=0x%x offset=%lu first[%lu]={%s} min=%u max=%u",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
                   (unsigned)gl_element_buffer->name,
@@ -35606,7 +30697,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                             ((NSUInteger)vbo->size - vertexOffset) >= needed) {
                             float comps[4] = {0.f, 0.f, 0.f, 0.f};
                             memcpy(comps, vboBytes + vertexOffset, needed);
-                            NSLog(@"MGL TRACE drawElements.attrib0 call=%llu program=%u vbo=%u firstIndex=%u bindingOffset=%lu relOffset=%u stride=%u size=%u vec=(%.4f,%.4f,%.4f,%.4f) vboSize=%lld init(ever=%u full=%u source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
+                            MGLTraceNSLog(@"MGL TRACE drawElements.attrib0 call=%llu program=%u vbo=%u firstIndex=%u bindingOffset=%lu relOffset=%u stride=%u size=%u vec=(%.4f,%.4f,%.4f,%.4f) vboSize=%lld init(ever=%u full=%u source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
                                   (unsigned long long)drawCall,
                                   (unsigned)activeProgramName,
                                   (unsigned)vbo->name,
@@ -35654,16 +30745,16 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                                     windowLen = MIN((size_t)128, totalSize - windowOffset);
                                 }
 
-                                NSLog(@"MGL DUMP attrib0.raw.begin call=%llu program=%u vbo=%u size=%zu firstIndex=%u vertexOffset=%zu stride=%u bindingOffset=%lu relOffset=%u",
-                                      (unsigned long long)drawCall,
-                                      (unsigned)activeProgramName,
-                                      (unsigned)vbo->name,
-                                      totalSize,
-                                      (unsigned)firstIndex,
-                                      (size_t)vertexOffset,
-                                      (unsigned)stride,
-                                      (unsigned long)bindingOffset,
-                                      (unsigned)relativeOffset);
+                                MGLTraceNSLog(@"MGL DUMP attrib0.raw.begin call=%llu program=%u vbo=%u size=%zu firstIndex=%u vertexOffset=%zu stride=%u bindingOffset=%lu relOffset=%u",
+                                              (unsigned long long)drawCall,
+                                              (unsigned)activeProgramName,
+                                              (unsigned)vbo->name,
+                                              totalSize,
+                                              (unsigned)firstIndex,
+                                              (size_t)vertexOffset,
+                                              (unsigned)stride,
+                                              (unsigned long)bindingOffset,
+                                              (unsigned)relativeOffset);
                                 mglDumpBytesToLog(@"attrib0.vbo.head", vboBytes, headLen, 0u);
                                 if (windowLen > 0) {
                                     mglDumpBytesToLog(@"attrib0.vbo.vertexWindow",
@@ -35671,7 +30762,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                                                       windowLen,
                                                       windowOffset);
                                 }
-                                NSLog(@"MGL DUMP attrib0.raw.end vbo=%u", (unsigned)vbo->name);
+                                MGLTraceNSLog(@"MGL DUMP attrib0.raw.end vbo=%u", (unsigned)vbo->name);
                                 s_dumpedAttrib0RawBuffers[s_dumpedAttrib0RawBufferCount].program = activeProgramName;
                                 s_dumpedAttrib0RawBuffers[s_dumpedAttrib0RawBufferCount].vbo = vbo->name;
                                 s_dumpedAttrib0RawBufferCount++;
@@ -35687,7 +30778,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
                                   (long long)vbo->size);
                         }
                     } else {
-                        NSLog(@"MGL TRACE drawElements.attrib0 call=%llu skipped(vboBytes=%p type=0x%x size=%u stride=%u)",
+                        MGLTraceNSLog(@"MGL TRACE drawElements.attrib0 call=%llu skipped(vboBytes=%p type=0x%x size=%u stride=%u)",
                               (unsigned long long)drawCall,
                               vboBytes,
                               (unsigned)a0->type,
@@ -35705,7 +30796,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
 
     if (mglShouldInspectDrawCall(drawCall, activeProgramName) || drawProgramUsesCloudFaces) {
         VertexArray *submitVAO = ctx ? ctx->state.vao : NULL;
-        NSLog(@"MGL TRACE drawElements.submit call=%llu program=%u mode=0x%x count=%d type=0x%x ebo=%u offset=%lu stride=%lu needed=%lu len=%lu haveRange=%d range=[%u,%u] vao=%p enabled=0x%x encoder=%p cloudFaces=%d",
+        MGLTraceNSLog(@"MGL TRACE drawElements.submit call=%llu program=%u mode=0x%x count=%d type=0x%x ebo=%u offset=%lu stride=%lu needed=%lu len=%lu haveRange=%d range=[%u,%u] vao=%p enabled=0x%x encoder=%p cloudFaces=%d",
               (unsigned long long)drawCall,
               (unsigned)activeProgramName,
               (unsigned)mode,
@@ -35939,7 +31030,7 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
 
     double drawElapsedMs = (mglNowSeconds() - drawStartSeconds) * 1000.0;
     if (traceDraw || drawElapsedMs >= 16.0) {
-        NSLog(@"MGL TRACE drawElements.end call=%llu elapsed=%.3fms indexBuffer=%u len=%lu encoder=%p",
+        MGLTraceNSLog(@"MGL TRACE drawElements.end call=%llu elapsed=%.3fms indexBuffer=%u len=%lu encoder=%p",
               (unsigned long long)drawCall,
               drawElapsedMs,
               gl_element_buffer->name,
@@ -38642,13 +33733,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     ctx = glm_ctx;
 
-    // CRITICAL FIX: Initialize thread synchronization lock
-    _metalStateLock = [[NSLock alloc] init];
-    if (!_metalStateLock) {
-        NSLog(@"MGL ERROR: Failed to create metal state lock");
-    } else {
-        NSLog(@"MGL INFO: Metal state lock created successfully");
-    }
+    // CRITICAL FIX: Initialize thread synchronization locks.
+    // _metalStateLock: NSRecursiveLock (reentrant) — required because the
+    //   MGLRenderer call graph has indirect re-entry paths through non-target
+    //   helper methods.  A non-reentrant lock deadlocked on first frame.
+    // _syncListLock: os_unfair_lock (non-reentrant, value type) - protects
+    //   only _currentCommandBufferSyncList and is acquired after
+    //   _metalStateLock when both locks are needed.
+    _metalStateLock = [[NSRecursiveLock alloc] init];
+    _syncListLock   = OS_UNFAIR_LOCK_INIT;
+    NSLog(@"MGL INFO: Metal state lock (NSRecursiveLock) + sync list lock (os_unfair_lock) initialized");
 
     // Initialize AGX GPU error tracking
     _consecutiveGPUErrors = 0;
@@ -38933,9 +34027,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             _device = nil;
         }
 
-        // Cleanup thread lock
+        // Cleanup thread lock — _metalStateLock is an NSRecursiveLock (ObjC object,
+        // requires nil release under ARC). _syncListLock is an os_unfair_lock value
+        // type and needs no cleanup.
         if (_metalStateLock) {
-            NSLog(@"MGL INFO: Releasing metal state lock");
             _metalStateLock = nil;
         }
 
@@ -39143,7 +34238,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     if (traceCommit) {
-        NSLog(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
+        MGLTraceNSLog(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
               (unsigned long long)commitCall,
               commandBuffer,
               mglCommandBufferStatusName(commandBuffer.status),
@@ -39164,7 +34259,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
             double completeElapsedMs = (mglNowSeconds() - commitQueuedAtSeconds) * 1000.0;
             if (traceCommitForBlock || buffer.error || completeElapsedMs >= 50.0) {
-                NSLog(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.3fms error=%@",
+                MGLTraceNSLog(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.3fms error=%@",
                       (unsigned long long)commitCallForBlock,
                       mglCommandBufferStatusName(buffer.status),
                       completeElapsedMs,
@@ -39212,7 +34307,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL AGX WARNING: Command buffer already committed (status: %ld) - skipping commit", (long)status);
         if (traceCommit) {
-            NSLog(@"MGL TRACE commit.skip.already_committed call=%llu status=%s",
+            MGLTraceNSLog(@"MGL TRACE commit.skip.already_committed call=%llu status=%s",
                   (unsigned long long)commitCall, mglCommandBufferStatusName(status));
         }
         return;
@@ -39223,7 +34318,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL AGX ERROR: Command buffer in error state - skipping commit");
         [self recordGPUError];
         if (traceCommit) {
-            NSLog(@"MGL TRACE commit.skip.error_state call=%llu", (unsigned long long)commitCall);
+            MGLTraceNSLog(@"MGL TRACE commit.skip.error_state call=%llu", (unsigned long long)commitCall);
         }
         return;
     }
@@ -39231,7 +34326,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     if (_isCommittingCommandBuffer) {
         NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
         if (traceCommit) {
-            NSLog(@"MGL TRACE commit.skip.nested call=%llu", (unsigned long long)commitCall);
+            MGLTraceNSLog(@"MGL TRACE commit.skip.nested call=%llu", (unsigned long long)commitCall);
         }
         return;
     }
@@ -39260,7 +34355,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     } @finally {
         _isCommittingCommandBuffer = NO;
         if (traceCommit) {
-            NSLog(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
+            MGLTraceNSLog(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
                   (unsigned long long)commitCall,
                   commandBuffer,
                   mglCommandBufferStatusName(commandBuffer.status));

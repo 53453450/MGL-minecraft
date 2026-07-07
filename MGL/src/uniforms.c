@@ -39,7 +39,7 @@
 #define MGL_SAFE_SPIRV_RESOURCE_MAX 4096u
 #define MGL_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
 {

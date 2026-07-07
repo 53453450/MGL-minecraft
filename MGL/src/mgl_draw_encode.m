@@ -1,0 +1,722 @@
+/*
+ * mgl_draw_encode.m
+ * MGL
+ *
+ * Implementation of the Draw Encode Subsystem.
+ * See mgl_draw_encode.h for the API contract.
+ */
+
+#import "mgl_draw_encode.h"
+
+#include <stdlib.h>
+
+BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
+                            GLMContext drawCtx,
+                            id<MTLDevice> device,
+                            GLsizei count,
+                            GLint firstVertex,
+                            NSUInteger instanceCount,
+                            NSUInteger baseInstance,
+                            const char *label)
+{
+    if (count < 2) {
+        return YES;
+    }
+    if (firstVertex < 0) {
+        NSLog(@"MGL WARNING: %s line loop array emulation invalid first=%d",
+              label ? label : "draw",
+              (int)firstVertex);
+        if (drawCtx) {
+            mglDispatchError(drawCtx, label ? label : __FUNCTION__, GL_INVALID_VALUE);
+        }
+        return NO;
+    }
+
+    NSUInteger loopIndexCount = 0u;
+    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopArrayIndexBuffer(device,
+                                                                   (NSUInteger)firstVertex,
+                                                                   (NSUInteger)count,
+                                                                   &loopIndexCount);
+    if (!loopIndexBuffer || loopIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s line loop array emulation failed count=%d first=%d",
+              label ? label : "draw",
+              (int)count,
+              (int)firstVertex);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
+                         indexCount:loopIndexCount
+                          indexType:MTLIndexTypeUInt32
+                        indexBuffer:loopIndexBuffer
+                  indexBufferOffset:0
+	                      instanceCount:instanceCount
+	                         baseVertex:0
+	                       baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
+                                      id<MTLDevice> device,
+                                      GLsizei count,
+                                      GLint baseVertex,
+                                      NSUInteger instanceCount,
+                                      NSUInteger baseInstance,
+                                      const char *label)
+{
+    if (count < 3) {
+        return YES;
+    }
+
+    NSUInteger fanIndexCount = 0u;
+    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
+                                                                     (NSUInteger)count,
+                                                                     &fanIndexCount);
+    if (!fanIndexBuffer || fanIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s triangle fan array emulation failed count=%d baseVertex=%d",
+              label ? label : "draw",
+              (int)count,
+              (int)baseVertex);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                         indexCount:fanIndexCount
+                          indexType:MTLIndexTypeUInt32
+                        indexBuffer:fanIndexBuffer
+                  indexBufferOffset:0
+                      instanceCount:instanceCount
+                         baseVertex:baseVertex
+                       baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
+                                     id<MTLDevice> device,
+                                     Buffer *glElementBuffer,
+                                     id<MTLBuffer> metalElementBuffer,
+                                     GLenum glIndexType,
+                                     NSUInteger indexOffset,
+                                     GLsizei count,
+                                     NSUInteger instanceCount,
+                                     NSInteger baseVertex,
+                                     NSUInteger baseInstance,
+                                     const char *label)
+{
+    if (count < 2) {
+        return YES;
+    }
+
+    const uint8_t *loopSource = mglElementIndexSourceForDraw(glElementBuffer,
+                                                             metalElementBuffer,
+                                                             glIndexType,
+                                                             indexOffset,
+                                                             count);
+    NSUInteger loopIndexCount = 0u;
+    id<MTLBuffer> loopIndexBuffer = mglNewLineLoopElementIndexBuffer(device,
+                                                                     loopSource,
+                                                                     glIndexType,
+                                                                     (NSUInteger)count,
+                                                                     &loopIndexCount);
+    if (!loopIndexBuffer || loopIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s line loop element emulation failed ebo=%u count=%d offset=%lu source=%p",
+              label ? label : "draw",
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned long)indexOffset,
+              loopSource);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
+                         indexCount:loopIndexCount
+                          indexType:MTLIndexTypeUInt32
+                        indexBuffer:loopIndexBuffer
+                  indexBufferOffset:0
+                      instanceCount:instanceCount
+                         baseVertex:baseVertex
+                       baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
+                                        id<MTLDevice> device,
+                                        Buffer *glElementBuffer,
+                                        id<MTLBuffer> metalElementBuffer,
+                                        GLenum glIndexType,
+                                        NSUInteger indexOffset,
+                                        GLsizei count,
+                                        NSUInteger instanceCount,
+                                        NSInteger baseVertex,
+                                        NSUInteger baseInstance,
+                                        const char *label)
+{
+    if (count < 3) {
+        return YES;
+    }
+
+    const uint8_t *fanSource = mglElementIndexSourceForDraw(glElementBuffer,
+                                                            metalElementBuffer,
+                                                            glIndexType,
+                                                            indexOffset,
+                                                            count);
+    NSUInteger fanIndexCount = 0u;
+    id<MTLBuffer> fanIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
+                                                                       fanSource,
+                                                                       glIndexType,
+                                                                       (NSUInteger)count,
+                                                                       &fanIndexCount);
+    if (!fanIndexBuffer || fanIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s triangle fan element emulation failed ebo=%u count=%d offset=%lu source=%p",
+              label ? label : "draw",
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned long)indexOffset,
+              fanSource);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                         indexCount:fanIndexCount
+                          indexType:MTLIndexTypeUInt32
+                        indexBuffer:fanIndexBuffer
+                  indexBufferOffset:0
+                      instanceCount:instanceCount
+                         baseVertex:baseVertex
+                       baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
+                                id<MTLDevice> device,
+                                GLsizei count,
+                                GLint baseVertex,
+                                NSUInteger instanceCount,
+                                NSUInteger baseInstance,
+                                BOOL lineMode,
+                                const char *label)
+{
+    if (count < 4) {
+        return YES;
+    }
+
+    NSUInteger quadIndexCount = 0u;
+    id<MTLBuffer> quadIndexBuffer = lineMode
+        ? mglNewQuadArrayLineIndexBuffer(device, (NSUInteger)count, &quadIndexCount)
+        : mglNewQuadArrayIndexBuffer(device, (NSUInteger)count, &quadIndexCount);
+    if (!quadIndexBuffer || quadIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s quad array emulation failed count=%d baseVertex=%d",
+              label ? label : "draw",
+              (int)count,
+              (int)baseVertex);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
+                        indexCount:quadIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:quadIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
+                                  id<MTLDevice> device,
+                                  Buffer *glElementBuffer,
+                                  id<MTLBuffer> metalElementBuffer,
+                                  GLenum glIndexType,
+                                  NSUInteger indexOffset,
+                                  GLsizei count,
+                                  NSUInteger instanceCount,
+                                  NSInteger baseVertex,
+                                  NSUInteger baseInstance,
+                                  BOOL lineMode,
+                                  const char *label)
+{
+    if (count < 4) {
+        return YES;
+    }
+
+    const uint8_t *quadSource = mglElementIndexSourceForDraw(glElementBuffer,
+                                                             metalElementBuffer,
+                                                             glIndexType,
+                                                             indexOffset,
+                                                             count);
+    NSUInteger quadIndexCount = 0u;
+    id<MTLBuffer> quadIndexBuffer = lineMode
+        ? mglNewQuadElementLineIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount)
+        : mglNewQuadElementIndexBuffer(device, quadSource, glIndexType, (NSUInteger)count, &quadIndexCount);
+    if (!quadIndexBuffer || quadIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s quad element emulation failed ebo=%u count=%d offset=%lu source=%p",
+              label ? label : "draw",
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned long)indexOffset,
+              quadSource);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
+                        indexCount:quadIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:quadIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
+                                       id<MTLDevice> device,
+                                       GLenum mode,
+                                       GLint first,
+                                       GLsizei count,
+                                       NSUInteger instanceCount,
+                                       NSUInteger baseInstance,
+                                       const char *label)
+{
+    if (count < 3) {
+        return YES;
+    }
+    if (mode == GL_QUADS && count < 4) {
+        return YES;
+    }
+
+    if (mode == GL_TRIANGLES) {
+        NSUInteger drawableCount = ((NSUInteger)count / 3u) * 3u;
+        if (drawableCount == 0u) {
+            return YES;
+        }
+        [encoder drawPrimitives:MTLPrimitiveTypePoint
+                    vertexStart:first
+                    vertexCount:drawableCount
+                  instanceCount:instanceCount
+                   baseInstance:baseInstance];
+        return YES;
+    }
+
+    NSUInteger pointIndexCount = 0u;
+    id<MTLBuffer> pointIndexBuffer = nil;
+    if (mode == GL_TRIANGLE_FAN) {
+        pointIndexBuffer = mglNewTriangleFanArrayIndexBuffer(device,
+                                                             (NSUInteger)count,
+                                                             &pointIndexCount);
+    } else if (mode == GL_TRIANGLE_STRIP) {
+        pointIndexBuffer = mglNewTriangleStripArrayIndexBuffer(device,
+                                                               (NSUInteger)count,
+                                                               &pointIndexCount);
+    } else if (mode == GL_QUADS) {
+        pointIndexBuffer = mglNewQuadArrayIndexBuffer(device,
+                                                      (NSUInteger)count,
+                                                      &pointIndexCount);
+    } else {
+        return NO;
+    }
+
+    if (!pointIndexBuffer || pointIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s polygon point array emulation failed mode=0x%x count=%d first=%d",
+              label ? label : "draw",
+              (unsigned)mode,
+              (int)count,
+              (int)first);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
+                        indexCount:pointIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:pointIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:first
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
+                                         id<MTLDevice> device,
+                                         Buffer *glElementBuffer,
+                                         id<MTLBuffer> metalElementBuffer,
+                                         GLenum mode,
+                                         GLenum glIndexType,
+                                         MTLIndexType metalIndexType,
+                                         NSUInteger indexOffset,
+                                         GLsizei count,
+                                         NSUInteger instanceCount,
+                                         NSInteger baseVertex,
+                                         NSUInteger baseInstance,
+                                         const char *label)
+{
+    if (count < 3) {
+        return YES;
+    }
+    if (mode == GL_QUADS && count < 4) {
+        return YES;
+    }
+
+    if (mode == GL_TRIANGLES) {
+        NSUInteger drawableIndexCount = ((NSUInteger)count / 3u) * 3u;
+        if (drawableIndexCount == 0u) {
+            return YES;
+        }
+
+        NSUInteger drawIndexOffset = indexOffset;
+        MTLIndexType drawIndexType = metalIndexType;
+        id<MTLBuffer> drawIndexBuffer = mglPreparedElementIndexBuffer(device,
+                                                                      glElementBuffer,
+                                                                      metalElementBuffer,
+                                                                      glIndexType,
+                                                                      &drawIndexOffset,
+                                                                      &drawIndexType);
+        if (!drawIndexBuffer) {
+            return NO;
+        }
+
+        [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
+                            indexCount:drawableIndexCount
+                             indexType:drawIndexType
+                           indexBuffer:drawIndexBuffer
+                     indexBufferOffset:drawIndexOffset
+                         instanceCount:instanceCount
+                            baseVertex:baseVertex
+                          baseInstance:baseInstance];
+        return YES;
+    }
+
+    const uint8_t *source = mglElementIndexSourceForDraw(glElementBuffer,
+                                                         metalElementBuffer,
+                                                         glIndexType,
+                                                         indexOffset,
+                                                         count);
+    NSUInteger pointIndexCount = 0u;
+    id<MTLBuffer> pointIndexBuffer = nil;
+    if (mode == GL_TRIANGLE_FAN) {
+        pointIndexBuffer = mglNewTriangleFanElementIndexBuffer(device,
+                                                               source,
+                                                               glIndexType,
+                                                               (NSUInteger)count,
+                                                               &pointIndexCount);
+    } else if (mode == GL_TRIANGLE_STRIP) {
+        pointIndexBuffer = mglNewTriangleStripElementIndexBuffer(device,
+                                                                 source,
+                                                                 glIndexType,
+                                                                 (NSUInteger)count,
+                                                                 &pointIndexCount);
+    } else if (mode == GL_QUADS) {
+        pointIndexBuffer = mglNewQuadElementIndexBuffer(device,
+                                                        source,
+                                                        glIndexType,
+                                                        (NSUInteger)count,
+                                                        &pointIndexCount);
+    } else {
+        return NO;
+    }
+
+    if (!pointIndexBuffer || pointIndexCount == 0u) {
+        NSLog(@"MGL WARNING: %s polygon point element emulation failed mode=0x%x ebo=%u count=%d offset=%lu source=%p",
+              label ? label : "draw",
+              (unsigned)mode,
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned long)indexOffset,
+              source);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
+                        indexCount:pointIndexCount
+                         indexType:MTLIndexTypeUInt32
+                       indexBuffer:pointIndexBuffer
+                 indexBufferOffset:0
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
+                                    id<MTLDevice> device,
+                                    Buffer *glElementBuffer,
+                                    id<MTLBuffer> metalElementBuffer,
+                                    id<MTLBuffer> preparedIndexBuffer,
+                                    GLenum mode,
+                                    MTLPrimitiveType primitiveType,
+                                    GLenum glIndexType,
+                                    MTLIndexType preparedIndexType,
+                                    NSUInteger baseIndexByteOffset,
+                                    NSUInteger segmentStart,
+                                    NSUInteger segmentIndexCount,
+                                    NSUInteger instanceCount,
+                                    NSInteger baseVertex,
+                                    NSUInteger baseInstance,
+                                    BOOL lineMode,
+                                    const char *label)
+{
+    if (!mglPrimitiveModeHasDrawableSegment(mode, segmentIndexCount)) {
+        return YES;
+    }
+
+    NSUInteger segmentGLByteOffset = 0u;
+    NSUInteger indexStride = mglGLIndexElementSize(glIndexType);
+    if (!mglComputeIndexByteOffset(baseIndexByteOffset,
+                                   segmentStart,
+                                   indexStride,
+                                   &segmentGLByteOffset)) {
+        NSLog(@"MGL WARNING: %s primitive restart segment offset overflow base=%lu start=%lu stride=%lu count=%lu",
+              label ? label : "draw",
+              (unsigned long)baseIndexByteOffset,
+              (unsigned long)segmentStart,
+              (unsigned long)indexStride,
+              (unsigned long)segmentIndexCount);
+        return NO;
+    }
+
+    if (primitiveType == MTLPrimitiveTypePoint &&
+        (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP || mode == GL_TRIANGLE_FAN || mode == GL_QUADS)) {
+        return mglEncodeElementPolygonPoint(encoder,
+                                            device,
+                                            glElementBuffer,
+                                            metalElementBuffer,
+                                            mode,
+                                            glIndexType,
+                                            preparedIndexType,
+                                            segmentGLByteOffset,
+                                            (GLsizei)segmentIndexCount,
+                                            instanceCount,
+                                            baseVertex,
+                                            baseInstance,
+                                            label);
+    }
+
+    if (mode == GL_TRIANGLE_FAN) {
+        return mglEncodeElementTriangleFan(encoder,
+                                           device,
+                                           glElementBuffer,
+                                           metalElementBuffer,
+                                           glIndexType,
+                                           segmentGLByteOffset,
+                                           (GLsizei)segmentIndexCount,
+                                           instanceCount,
+                                           baseVertex,
+                                           baseInstance,
+                                           label);
+    }
+
+    if (mode == GL_LINE_LOOP) {
+        return mglEncodeElementLineLoop(encoder,
+                                        device,
+                                        glElementBuffer,
+                                        metalElementBuffer,
+                                        glIndexType,
+                                        segmentGLByteOffset,
+                                        (GLsizei)segmentIndexCount,
+                                        instanceCount,
+                                        baseVertex,
+                                        baseInstance,
+                                        label);
+    }
+
+    if (mode == GL_QUADS) {
+        return mglEncodeElementQuads(encoder,
+                                     device,
+                                     glElementBuffer,
+                                     metalElementBuffer,
+                                     glIndexType,
+                                     segmentGLByteOffset,
+                                     (GLsizei)segmentIndexCount,
+                                     instanceCount,
+                                     baseVertex,
+                                     baseInstance,
+                                     lineMode,
+                                     label);
+    }
+
+    NSUInteger preparedByteOffset = 0u;
+    if (!mglComputePreparedIndexByteOffset(glIndexType,
+                                           segmentGLByteOffset,
+                                           &preparedByteOffset)) {
+        NSLog(@"MGL WARNING: %s primitive restart prepared offset overflow glType=0x%x byteOffset=%lu",
+              label ? label : "draw",
+              (unsigned)glIndexType,
+              (unsigned long)segmentGLByteOffset);
+        return NO;
+    }
+
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:segmentIndexCount
+                         indexType:preparedIndexType
+                       indexBuffer:preparedIndexBuffer
+                 indexBufferOffset:preparedByteOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+    return YES;
+}
+
+MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRenderCommandEncoder> encoder,
+                                                                              id<MTLDevice> device,
+                                                                              GLMContext ctx,
+                                                                              Buffer *glElementBuffer,
+                                                                              id<MTLBuffer> metalElementBuffer,
+                                                                              GLenum mode,
+                                                                              MTLPrimitiveType primitiveType,
+                                                                              GLenum glIndexType,
+                                                                              MTLIndexType metalIndexType,
+                                                                              NSUInteger indexOffset,
+                                                                              GLsizei count,
+                                                                              NSUInteger instanceCount,
+                                                                              NSInteger baseVertex,
+                                                                              NSUInteger baseInstance,
+                                                                              const char *label)
+{
+    uint32_t restartIndex = 0u;
+    if (!mglPrimitiveRestartIndexForType(ctx, glIndexType, &restartIndex)) {
+        return MGLPrimitiveRestartEncodeNotNeeded;
+    }
+    if (count <= 0) {
+        return MGLPrimitiveRestartEncodeHandled;
+    }
+
+    const uint8_t *source = mglElementIndexSourceForDraw(glElementBuffer,
+                                                         metalElementBuffer,
+                                                         glIndexType,
+                                                         indexOffset,
+                                                         count);
+    if (!source) {
+        NSLog(@"MGL WARNING: %s primitive restart enabled but index bytes are not CPU-readable ebo=%u count=%d type=0x%x offset=%lu; skipping draw to avoid treating restart as a vertex",
+              label ? label : "draw",
+              glElementBuffer ? glElementBuffer->name : 0u,
+              (int)count,
+              (unsigned)glIndexType,
+              (unsigned long)indexOffset);
+        return MGLPrimitiveRestartEncodeFailed;
+    }
+
+    BOOL sawRestart = NO;
+    for (GLsizei i = 0; i < count; i++) {
+        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) == restartIndex) {
+            sawRestart = YES;
+            break;
+        }
+    }
+    if (!sawRestart) {
+        return MGLPrimitiveRestartEncodeNotNeeded;
+    }
+
+    BOOL emulatedMode = (mode == GL_TRIANGLE_FAN ||
+                         mode == GL_LINE_LOOP ||
+                         mode == GL_QUADS ||
+                         (primitiveType == MTLPrimitiveTypePoint &&
+                          (mode == GL_TRIANGLES || mode == GL_TRIANGLE_STRIP)));
+    id<MTLBuffer> preparedIndexBuffer = metalElementBuffer;
+    MTLIndexType preparedIndexType = metalIndexType;
+    if (!emulatedMode) {
+        preparedIndexBuffer = mglPreparedElementIndexBuffer(device,
+                                                            glElementBuffer,
+                                                            metalElementBuffer,
+                                                            glIndexType,
+                                                            NULL,
+                                                            &preparedIndexType);
+        if (!preparedIndexBuffer) {
+            return MGLPrimitiveRestartEncodeFailed;
+        }
+    }
+
+    NSUInteger segmentStart = 0u;
+    BOOL encodedAllSegments = YES;
+    for (GLsizei i = 0; i < count; i++) {
+        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) != restartIndex) {
+            continue;
+        }
+
+        NSUInteger segmentCount = (NSUInteger)i - segmentStart;
+        if (!mglEncodeRestartSegment(encoder,
+                                     device,
+                                     glElementBuffer,
+                                     metalElementBuffer,
+                                     preparedIndexBuffer,
+                                     mode,
+                                     primitiveType,
+                                     glIndexType,
+                                     preparedIndexType,
+                                     indexOffset,
+                                     segmentStart,
+                                     segmentCount,
+                                     instanceCount,
+                                     baseVertex,
+                                     baseInstance,
+                                     mglPolygonModeLineForDrawMode(ctx, mode),
+                                     label)) {
+            encodedAllSegments = NO;
+            break;
+        }
+        segmentStart = (NSUInteger)i + 1u;
+    }
+
+    if (encodedAllSegments) {
+        NSUInteger trailingCount = (NSUInteger)count - segmentStart;
+        encodedAllSegments = mglEncodeRestartSegment(encoder,
+                                                     device,
+                                                     glElementBuffer,
+                                                     metalElementBuffer,
+                                                     preparedIndexBuffer,
+                                                     mode,
+                                                     primitiveType,
+                                                     glIndexType,
+                                                     preparedIndexType,
+                                                     indexOffset,
+                                                     segmentStart,
+                                                     trailingCount,
+                                                     instanceCount,
+                                                     baseVertex,
+                                                     baseInstance,
+                                                     mglPolygonModeLineForDrawMode(ctx, mode),
+                                                     label);
+    }
+
+    return encodedAllSegments ? MGLPrimitiveRestartEncodeHandled : MGLPrimitiveRestartEncodeFailed;
+}
+
+BOOL mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(GLMContext ctx,
+                                                                  GLenum glIndexType,
+                                                                  const char *label)
+{
+    uint32_t restartIndex = 0u;
+    if (!mglPrimitiveRestartIndexForType(ctx, glIndexType, &restartIndex)) {
+        return NO;
+    }
+
+    static uint64_t s_indirectRestartSkipCount = 0;
+    s_indirectRestartSkipCount++;
+    if (s_indirectRestartSkipCount <= 8u || (s_indirectRestartSkipCount % 1000u) == 0u) {
+        NSLog(@"MGL WARNING: %s primitive restart with indirect indexed draw is not emulated yet type=0x%x restart=%u occurrence=%llu; skipping draw",
+              label ? label : "drawElementsIndirect",
+              (unsigned)glIndexType,
+              (unsigned)restartIndex,
+              (unsigned long long)s_indirectRestartSkipCount);
+    }
+    return YES;
+}
+
+BOOL mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(GLMContext ctx,
+                                                               GLenum mode,
+                                                               const char *label)
+{
+    if (!mglPolygonModePointForDrawMode(ctx, mode)) {
+        return NO;
+    }
+
+    static uint64_t s_indirectPolygonPointSkipCount = 0;
+    s_indirectPolygonPointSkipCount++;
+    if (s_indirectPolygonPointSkipCount <= 8u || (s_indirectPolygonPointSkipCount % 1000u) == 0u) {
+        NSLog(@"MGL WARNING: %s GL_POLYGON_MODE=GL_POINT requires triangle expansion for indirect draw mode=0x%x occurrence=%llu; skipping draw",
+              label ? label : "drawIndirect",
+              (unsigned)mode,
+              (unsigned long long)s_indirectPolygonPointSkipCount);
+    }
+    return YES;
+}

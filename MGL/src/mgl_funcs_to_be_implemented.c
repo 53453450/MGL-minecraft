@@ -15,7 +15,7 @@
 #include "draw_command.h"
 #include "pixel_utils.h"
 
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 #ifndef MGL_VERBOSE_TEXBUFFER_LOGS
 #define MGL_VERBOSE_TEXBUFFER_LOGS 0
@@ -153,7 +153,6 @@ extern Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
 extern Buffer *findBuffer(GLMContext ctx, GLuint buffer);
 extern Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer);
 extern void mglTextureBufferRange(GLMContext ctx, GLuint texture, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size);
-extern void mglTraceLogExternal(const char *fmt, ...);
 // Forward declaration for renderbuffer lookup from framebuffers.c
 extern Renderbuffer *findRenderbuffer(GLMContext ctx, GLuint renderbuffer);
 

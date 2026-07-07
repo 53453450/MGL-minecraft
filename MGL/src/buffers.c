@@ -28,13 +28,14 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "glm_context.h"
+#include "mgl_metal_ref.h"
 #include "buffers.h"
 #include "pixel_utils.h"
 #include "mgl_safety.h"
 
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 
 void *mglMapNamedBufferRange(GLMContext ctx, GLuint buffer, GLintptr offset, GLsizeiptr length, GLbitfield access);
 
@@ -826,14 +827,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
         return;
     }
 
-    if (ptr->data.mtl_data) {
-        if (ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
-            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
-        } else {
-            CFRelease(ptr->data.mtl_data);
-        }
-        ptr->data.mtl_data = NULL;
-    }
+    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
     if (ptr->data.buffer_data && ptr->data.buffer_size > 0) {
         vm_deallocate((vm_map_t)mach_task_self(),
                       (vm_address_t)ptr->data.buffer_data,
@@ -1199,6 +1193,10 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
                     buffer,
                     (void *)ptr,
                     ((uintptr_t)ptr >= 0x10000u) ? ptr->name : 0u);
+            // ptr may be garbage (< 0x10000), so we cannot safely access
+            // ptr->data.mtl_data.  Just remove the hash entry and move on.
+            // The Metal object (if any) will leak, but this path only fires
+            // on hash-table corruption where the buffer is already suspect.
             deleteHashElement(&STATE(buffer_table), buffer);
             continue;
         }
@@ -1664,25 +1662,20 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
             if (ptr->data.mtl_data)
             {
                 // the mtl buffer has a deallocator for the vm allocate
-                ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
-                ptr->data.mtl_data = NULL;
+                mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
             }
             else
             {
                 vm_deallocate(mach_host_self(), ptr->data.buffer_data, ptr->data.buffer_size);
             }
-            
+
             ptr->data.buffer_data = 0;
             ptr->data.buffer_size = 0;
         }
         else
         {
-            if (ptr->data.mtl_data)
-            {
-                ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->data.mtl_data);
-                ptr->data.mtl_data = NULL;
-            }
-            
+            mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
+
             ptr->data.buffer_data = 0;
             ptr->data.buffer_size = 0;
         }

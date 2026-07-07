@@ -52,7 +52,7 @@ extern void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, co
 extern void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLuint *value);
 extern void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLfloat *value);
 extern void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil);
-extern void mglTraceLogExternal(const char *fmt, ...);
+#include "mgl_trace_log.h"
 extern void mglBlitStencilShadow(GLMContext ctx,
                                  GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
                                  GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1);

@@ -190,17 +190,37 @@ Implemented in Objective-C, responsible for:
 
 Set `MGL_TRACE_LOG=1` to enable MGL internal trace logging. Logs are written next to `libmgl.dylib` by default, using the file name format `mgl-trace-<pid>.log`.
 
+By default, trace output is not written directly to the terminal or system Console, which keeps Minecraft/launcher logs readable. Set `MGL_TRACE_LOG_STDERR=1` when you also want the trace stream mirrored to `stderr`.
+
 Useful switches:
 
 ```bash
 MGL_TRACE_LOG=1
+MGL_TRACE_LOG_STDERR=1
 MGL_TRACE_LOG_DRAW=1
 MGL_TRACE_LOG_RESOURCES=1
 MGL_TRACE_LOG_GUI=1
 MGL_TRACE_LOG_PROGRAMS=91,92,93
 ```
 
-These variables can be added to the launcher environment as needed to capture draw, resource binding, GUI, or selected program diagnostics.
+| Variable | Description |
+|------|------|
+| `MGL_TRACE_LOG` | Enables trace file output |
+| `MGL_TRACE_LOG_STDERR` | Mirrors trace output to `stderr`; disabled by default |
+| `MGL_TRACE_LOG_DRAW` | Logs draw-call and draw-replay diagnostics |
+| `MGL_TRACE_LOG_RESOURCES` | Logs more detailed buffer/texture/sampler binding diagnostics |
+| `MGL_TRACE_LOG_GUI` | Logs GUI-related diagnostics |
+| `MGL_TRACE_LOG_PROGRAMS` | Focuses tracing on selected programs; accepts comma/space/semicolon/colon-separated values |
+
+`MGL TRACE`, `MGL DUMP`, and shader interface dump diagnostics go through the trace file. `MGL ERROR` / `MGL WARNING` messages remain on the normal log path so real failures are still visible immediately.
+
+Example:
+
+```bash
+MGL_TRACE_LOG=1 MGL_TRACE_LOG_DRAW=1 MGL_TRACE_LOG_PROGRAMS=91,92
+```
+
+After launch, look for `mgl-trace-<pid>.log` next to the MGL dylib.
 
 ## Acknowledgements
 

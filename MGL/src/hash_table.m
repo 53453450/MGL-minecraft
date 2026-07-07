@@ -596,82 +596,22 @@ void deleteHashElement(HashTable *table, GLuint name)
         return;
     }
 
-    void *obj_data = table->keys[slot].data;
-
-    // Perform Metal cleanup for different object types
-    if (obj_data) {
-        GLMContext current = MGLgetCurrentContext();
-
-        // Check if this is a shader object
-        if (current && table == &current->state.shader_table) {
-            // Shader-specific Metal cleanup
-            Shader *shader = (Shader *)obj_data;
-            if (shader->mtl_data.function || shader->mtl_data.library ||
-                shader->mtl_data.zero_to_one_function || shader->mtl_data.zero_to_one_library ||
-                shader->mtl_data.upper_left_function || shader->mtl_data.upper_left_library ||
-                shader->mtl_data.upper_left_zero_to_one_function || shader->mtl_data.upper_left_zero_to_one_library) {
-                fprintf(stderr, "MGL: Metal cleanup for shader object %u\n", name);
-                // In ARC mode, we just need to set the pointers to nil
-                // The memory will be automatically released
-                shader->mtl_data.function = NULL;
-                shader->mtl_data.library = NULL;
-                shader->mtl_data.zero_to_one_function = NULL;
-                shader->mtl_data.zero_to_one_library = NULL;
-                shader->mtl_data.upper_left_function = NULL;
-                shader->mtl_data.upper_left_library = NULL;
-                shader->mtl_data.upper_left_zero_to_one_function = NULL;
-                shader->mtl_data.upper_left_zero_to_one_library = NULL;
-            }
-        }
-        // Check if this is a program object
-        else if (current && table == &current->state.program_table) {
-            // Program-specific Metal cleanup
-            Program *program = (Program *)obj_data;
-            if (program->mtl_data) {
-                fprintf(stderr, "MGL: Metal cleanup for program object %u\n", name);
-                // In ARC mode, we just need to set the pointer to nil
-                // The memory will be automatically released
-                program->mtl_data = NULL;
-            }
-        }
-        // Check if this is a texture object
-        else if (current && table == &current->state.texture_table) {
-            // Texture-specific Metal cleanup
-            Texture *texture = (Texture *)obj_data;
-            if (texture->mtl_data) {
-                fprintf(stderr, "MGL: Metal cleanup for texture object %u\n", name);
-                // In ARC mode, we just need to set the pointer to nil
-                // The memory will be automatically released
-                texture->mtl_data = NULL;
-            }
-            if (texture->mtl_gl_sampled_data) {
-                if (current->mtl_funcs.mtlDeleteMTLObj) {
-                    current->mtl_funcs.mtlDeleteMTLObj(current, texture->mtl_gl_sampled_data);
-                }
-                texture->mtl_gl_sampled_data = NULL;
-                texture->mtl_gl_sampled_width = 0;
-                texture->mtl_gl_sampled_height = 0;
-                texture->mtl_gl_sampled_format = 0;
-                texture->mtl_gl_sampled_write_version = 0;
-                texture->mtl_render_target_write_version = 0;
-            }
-        }
-        // Check if this is a buffer object
-        else if (current && table == &current->state.buffer_table) {
-            // Buffer-specific Metal cleanup
-            Buffer *buffer = (Buffer *)obj_data;
-            if (buffer->data.mtl_data) {
-                fprintf(stderr, "MGL: Metal cleanup for buffer object %u\n", name);
-                // In ARC mode, we just need to set the pointer to nil
-                // The memory will be automatically released
-                buffer->data.mtl_data = NULL;
-            }
-        }
-        else {
-            // Generic cleanup for unknown object types
-            fprintf(stderr, "MGL: deleteHashElement called for object %u (Metal cleanup implemented)\n", name);
-        }
-    }
+    /* Metal object lifecycle is owned by the caller.  Previous code here
+     * nullified shader/program/texture/buffer mtl_data fields WITHOUT
+     * releasing them, which leaked the Metal objects AND prevented the
+     * caller's own cleanup (e.g. mglFreeShader / mglFreeProgram) from
+     * releasing them because the pointers were already NULL.
+     *
+     * Callers MUST release Metal objects before calling deleteHashElement:
+     *   - Textures:  invalidateTexture() releases mtl_data / sampled_data /
+     *                params.mtl_data before deleteHashElement.
+     *   - Shaders:   mglFreeShader() releases function/library variants after
+     *                deleteHashElement (deleteHashElement must not null them).
+     *   - Programs:  mglFreeProgram() releases mtl_data after deleteHashElement.
+     *   - Buffers:   mtl_data is saved/restored across deleteHashElement for
+     *                tombstone lifetime; released later by context teardown.
+     *   - Samplers:  caller releases mtl_data after deleteHashElement.
+     */
 
     table->keys[slot].name = 0;
     table->keys[slot].data = NULL;

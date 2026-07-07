@@ -35,6 +35,9 @@
 #include "shaders.h"
 #include "buffers.h"
 #include "mgl_safety.h"
+#include "mgl_buffer_slots.h"
+#include "msl_patch_pipeline.h"
+#include "mgl_metal_ref.h"
 
 #ifndef MGL_VERBOSE_PROGRAM_LOGS
 #define MGL_VERBOSE_PROGRAM_LOGS 0
@@ -2984,12 +2987,15 @@ static GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
     return 1;
 }
 
-static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
+static void replace_all_substr(char **pstr, const char *from, const char *to);
+
+static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
 {
-    if (!pptr || !msl || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+    if (!pptr || !msl_ptr || !*msl_ptr || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return;
     }
 
+    const char *msl = *msl_ptr;
     MGLMSLBindingMap binding_map;
     mglBuildMSLBindingMap(msl, &binding_map);
 
@@ -3038,6 +3044,14 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
         SPVC_RESOURCE_TYPE_PUSH_CONSTANT
     };
 
+    GLboolean used_slots[32] = {0};
+    for (size_t k = 0; k < binding_map.count; k++) {
+        if (binding_map.entries[k].kind == MGL_MSL_BINDING_BUFFER &&
+            binding_map.entries[k].index < 32) {
+            used_slots[binding_map.entries[k].index] = GL_TRUE;
+        }
+    }
+
     for (size_t t = 0; t < sizeof(buffer_resource_types) / sizeof(buffer_resource_types[0]); t++) {
         int res_type = buffer_resource_types[t];
         SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
@@ -3047,6 +3061,148 @@ static void applyMSLResourceBindings(Program *pptr, int stage, const char *msl)
             if (!res->name ||
                 !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_BUFFER, res->name, &metal_index)) {
                 continue;
+            }
+
+            {
+                GLboolean slot_conflicts = mglBufferSlotIsReserved(metal_index);
+
+                if (!slot_conflicts &&
+                    (pptr->shader_slots[_TESS_CONTROL_SHADER] ||
+                     pptr->shader_slots[_TESS_EVALUATION_SHADER]) &&
+                    mglBufferSlotIsReservedForTessellation(metal_index)) {
+                    slot_conflicts = GL_TRUE;
+                }
+                if (!slot_conflicts &&
+                    pptr->spirv[_VERTEX_SHADER].msl_str &&
+                    strstr(pptr->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance") &&
+                    mglBufferSlotIsReservedForCullDistance(metal_index)) {
+                    slot_conflicts = GL_TRUE;
+                }
+                if (!slot_conflicts &&
+                    pptr->spirv[_FRAGMENT_SHADER].msl_str &&
+                    strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, "_mglFragCoordParams") &&
+                    mglBufferSlotIsReservedForFragCoordFixup(metal_index)) {
+                    slot_conflicts = GL_TRUE;
+                }
+
+                if (slot_conflicts) {
+                    /*
+                     * Remap this user buffer away from the reserved slot.
+                     * Find the entry in the binding map so we can target
+                     * this specific parameter's [[buffer(N)]] attribute
+                     * without touching any MGL-internal buffer that may
+                     * share the same slot.
+                     */
+                    const MGLMSLBindingEntry *map_entry = NULL;
+                    for (size_t k = 0; k < binding_map.count; k++) {
+                        if (binding_map.entries[k].kind == MGL_MSL_BINDING_BUFFER &&
+                            binding_map.entries[k].index == metal_index &&
+                            mglSegmentContainsIdentifier(
+                                binding_map.entries[k].segment,
+                                binding_map.entries[k].segment_len,
+                                res->name)) {
+                            map_entry = &binding_map.entries[k];
+                            break;
+                        }
+                    }
+
+                    GLuint free_slot = 32;
+                    if (map_entry) {
+                        for (GLuint s = 0; s < 25; s++) {
+                            if (!used_slots[s]) {
+                                free_slot = s;
+                                break;
+                            }
+                        }
+
+                        if (free_slot < 32) {
+                            char *old_decl = strndup(map_entry->segment,
+                                                     map_entry->segment_len);
+                            if (old_decl) {
+                                char old_attr[48], new_attr[48];
+                                snprintf(old_attr, sizeof(old_attr),
+                                         "[[buffer(%u)]]", (unsigned)metal_index);
+                                snprintf(new_attr, sizeof(new_attr),
+                                         "[[buffer(%u)]]", (unsigned)free_slot);
+
+                                char *attr_pos = strstr(old_decl, old_attr);
+                                if (attr_pos) {
+                                    size_t head_len = attr_pos - old_decl;
+                                    const char *tail = attr_pos + strlen(old_attr);
+                                    size_t new_len = head_len +
+                                                     strlen(new_attr) +
+                                                     strlen(tail);
+                                    char *new_decl = malloc(new_len + 1);
+                                    if (new_decl) {
+                                        memcpy(new_decl, old_decl, head_len);
+                                        memcpy(new_decl + head_len, new_attr,
+                                               strlen(new_attr));
+                                        memcpy(new_decl + head_len +
+                                               strlen(new_attr), tail,
+                                               strlen(tail) + 1);
+
+                                        replace_all_substr(msl_ptr,
+                                                           old_decl, new_decl);
+                                        free(new_decl);
+
+                                        mglBuildMSLBindingMap(*msl_ptr,
+                                                              &binding_map);
+                                        memset(used_slots, 0,
+                                               sizeof(used_slots));
+                                        for (size_t k = 0; k < binding_map.count; k++) {
+                                            if (binding_map.entries[k].kind ==
+                                                    MGL_MSL_BINDING_BUFFER &&
+                                                binding_map.entries[k].index < 32) {
+                                                used_slots[
+                                                    binding_map.entries[k].index] = GL_TRUE;
+                                            }
+                                        }
+
+                                        fprintf(stderr,
+                                                "MGL RESOURCE CONFLICT RESOLVED: "
+                                                "program=%u stage=%d %s buffer '%s' "
+                                                "remapped from reserved slot %u "
+                                                "to slot %u\n",
+                                                pptr->name, stage,
+                                                res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER
+                                                    ? "UBO" :
+                                                res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER
+                                                    ? "SSBO" :
+                                                res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
+                                                    ? "atomic" : "buffer",
+                                                res->name,
+                                                (unsigned)metal_index,
+                                                (unsigned)free_slot);
+                                        metal_index = free_slot;
+                                    }
+                                }
+                                free(old_decl);
+                            }
+                        }
+                    }
+
+                    if (metal_index != free_slot) {
+                        const char *reserved_name =
+                            mglBufferSlotReservedName(metal_index);
+                        fprintf(stderr,
+                                "MGL RESOURCE CONFLICT: program=%u stage=%d "
+                                "%s buffer '%s' at reserved slot %u (%s) -- "
+                                "%s\n",
+                                pptr->name, stage,
+                                res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER
+                                    ? "UBO" :
+                                res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER
+                                    ? "SSBO" :
+                                res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
+                                    ? "atomic" : "buffer",
+                                res->name,
+                                (unsigned)metal_index,
+                                reserved_name ? reserved_name : "?",
+                                free_slot < 32
+                                    ? "parameter declaration not found in MSL"
+                                    : "no free slot available in [0,24]");
+                    }
+                }
             }
 
             if (res->binding != metal_index) {
@@ -3308,15 +3464,14 @@ GLuint mglCreateProgram(GLMContext ctx)
 
 void mglFreeProgram(GLMContext ctx, Program *ptr)
 {
-    /* linked_glsl_program is used as a linked-state marker only. Do not delete
-     * here: glslang_program_delete has been observed to crash on some runtime
-     * paths (SIGSEGV in native code). */
+    /* linked_glsl_program is a non-NULL linked-state marker (set to
+     * (glslang_program_t*)ptr on successful link), NOT a real glslang
+     * program.  The real glslang_program_t is deleted at the end of
+     * mglLinkProgram.  Do NOT call glslang_program_delete here — it would
+     * dereference the marker as if it were a glslang object. */
     ptr->linked_glsl_program = NULL;
 
-    if (ptr->mtl_data)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data);
-    }
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
     for(int i=0; i<_MAX_SHADER_TYPES; i++)
     {
@@ -3337,14 +3492,8 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             free(ptr->spirv[i].entry_point);
             ptr->spirv[i].entry_point = NULL;
         }
-        if (ptr->spirv[i].mtl_function) {
-            CFRelease(ptr->spirv[i].mtl_function);
-            ptr->spirv[i].mtl_function = NULL;
-        }
-        if (ptr->spirv[i].mtl_library) {
-            CFRelease(ptr->spirv[i].mtl_library);
-            ptr->spirv[i].mtl_library = NULL;
-        }
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
         
         for(int j=0; j<_MAX_SPIRV_RES; j++)
         {
@@ -3814,6 +3963,15 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     }
     out = (char *)malloc(new_len + 1);
     if (!out) {
+        /* Allocation failed — preserve the original string (rollback
+         * semantics).  Log loudly so silent MSL corruption is visible:
+         * the caller's patch did not apply, and the resulting MSL may
+         * reference un-rewritten patterns that fail Metal compilation
+         * or produce wrong behavior. */
+        fprintf(stderr,
+                "MGL MSL PATCH FAIL: replace_all_substr('%s'->'%s') allocation "
+                "of %zu bytes failed; original MSL preserved (patch NOT applied)\n",
+                from, to, new_len + 1);
         return;
     }
 
@@ -3879,6 +4037,10 @@ static GLboolean mglReplaceMSLIdentifier(char **msl_ptr,
     src_len = strlen(src);
     out = (char *)malloc(src_len + count * (to_len > from_len ? (to_len - from_len) : 0u) + 1u);
     if (!out) {
+        fprintf(stderr,
+                "MGL MSL PATCH FAIL: mglReplaceMSLIdentifier('%s'->'%s') allocation failed; "
+                "original MSL preserved (patch NOT applied)\n",
+                from, to);
         return GL_FALSE;
     }
 
@@ -6947,6 +7109,258 @@ static GLboolean is_glslang_bug_affected(spvc_basetype bt, unsigned vecsize,
     return (vector_components == 2) ? GL_TRUE : GL_FALSE;
 }
 
+/* === MSL Patch Pipeline wrappers ===
+ *
+ * Each wrapper matches the MSLPatchFn signature and adapts one step of the
+ * MSL post-processing that previously ran inline in parseSPIRVShaderToMetal.
+ * The wrappers extract `ptr` (the Program) and `stage` from the patch context.
+ * Existing patch helpers mostly return void and cannot signal failure, so the
+ * wrappers return GL_TRUE on success (the pipeline's per-step rollback still
+ * guards against a NULL result). */
+
+static GLboolean mglPatchRemoveRestrict(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* Remove C99 `restrict` qualifier that SPIRV-Cross emits on reference
+     * and pointer parameters (e.g. "device T& restrict var" or
+     * "device T* restrict ptr").  Metal's compiler rejects `restrict`
+     * in these positions (it expects `__restrict` on pointers and does
+     * not support it on references at all).  Removing it is safe because
+     * it is only an optimization hint with no semantic effect. */
+    char *str_ret = *msl_ptr;
+    char *read = str_ret;
+    char *write = str_ret;
+    while (*read) {
+        /* Look for " restrict " preceded by '&' or '*'. */
+        if ((read[0] == '&' || read[0] == '*') &&
+            read[1] == ' ' &&
+            strncmp(read + 2, "restrict ", 9) == 0) {
+            /* Skip " restrict " (9 chars after "& "), keeping the & and space. */
+            *write++ = *read++;  /* copy & or * */
+            *write++ = *read++;  /* copy space */
+            read += 9;            /* skip "restrict " */
+        } else {
+            *write++ = *read++;
+        }
+    }
+    *write = '\0';
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFixSamplerShadowing(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* Some generated MSL uses `sampler` as an identifier, which collides
+     * with Metal's `sampler` type in function signatures. Normalize these
+     * generated helper names to keep compilation valid. */
+    char *str_ret = *msl_ptr;
+    static const char *sampler_shadowing_texture_types[] = {
+        "texture1d<float>", "texture1d<int>", "texture1d<uint>",
+        "texture1d_array<float>", "texture1d_array<int>", "texture1d_array<uint>",
+        "texture2d<float>", "texture2d<int>", "texture2d<uint>",
+        "texture2d_array<float>", "texture2d_array<int>", "texture2d_array<uint>",
+        "texture2d_ms<float>", "texture2d_ms<int>", "texture2d_ms<uint>",
+        "texture2d_ms_array<float>", "texture2d_ms_array<int>", "texture2d_ms_array<uint>",
+        "texture_buffer<float>", "texture_buffer<int>", "texture_buffer<uint>",
+        "texture3d<float>", "texture3d<int>", "texture3d<uint>",
+        "texturecube<float>", "texturecube<int>", "texturecube<uint>",
+        "texturecube_array<float>", "texturecube_array<int>", "texturecube_array<uint>",
+        "depth2d<float>", "depth2d<int>", "depth2d<uint>",
+        "depth2d_array<float>", "depth2d_array<int>", "depth2d_array<uint>",
+        "depth2d_ms<float>", "depth2d_ms<int>", "depth2d_ms<uint>",
+        "depth2d_ms_array<float>", "depth2d_ms_array<int>", "depth2d_ms_array<uint>",
+        "depthcube<float>", "depthcube<int>", "depthcube<uint>",
+        "depthcube_array<float>", "depthcube_array<int>", "depthcube_array<uint>",
+    };
+    size_t n_types = sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]);
+    GLboolean renamed_sampler_parameter = GL_FALSE;
+    for (size_t ti = 0; ti < n_types; ti++) {
+        const char *type = sampler_shadowing_texture_types[ti];
+        char from[128], to[128];
+        snprintf(from, sizeof(from), "%s sampler,", type);
+        snprintf(to, sizeof(to), "%s sourceTex,", type);
+        if (strstr(str_ret, from))
+            renamed_sampler_parameter = GL_TRUE;
+        replace_all_substr(&str_ret, from, to);
+
+        snprintf(from, sizeof(from), "%s sampler)", type);
+        snprintf(to, sizeof(to), "%s sourceTex)", type);
+        if (strstr(str_ret, from))
+            renamed_sampler_parameter = GL_TRUE;
+        replace_all_substr(&str_ret, from, to);
+
+        snprintf(from, sizeof(from), "%s sampler [[", type);
+        snprintf(to, sizeof(to), "%s sourceTex [[", type);
+        if (strstr(str_ret, from))
+            renamed_sampler_parameter = GL_TRUE;
+        replace_all_substr(&str_ret, from, to);
+    }
+    if (renamed_sampler_parameter) {
+        replace_all_substr(&str_ret, " samplerSmplr", " sourceSmplr");
+        replace_all_substr(&str_ret, "(samplerSmplr", "(sourceSmplr");
+        replace_all_substr(&str_ret, ", samplerSmplr", ", sourceSmplr");
+        mglReplaceMSLIdentifierBeforeChar(&str_ret, "sampler", "sourceTex", '.');
+        replace_all_substr(&str_ret, "(sampler, ", "(sourceTex, ");
+        replace_all_substr(&str_ret, ", sampler, ", ", sourceTex, ");
+        replace_all_substr(&str_ret, "(sampler)", "(sourceTex)");
+        replace_all_substr(&str_ret, ", sampler)", ", sourceTex)");
+    }
+    *msl_ptr = str_ret;
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFixUnknownTextureType(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross can emit this placeholder for sampler2DRect. Metal has no
+     * rectangle texture object; MGL stores GL_TEXTURE_RECTANGLE as a 2D Metal
+     * texture and the CTS rectangle samples here use normalized coordinates. */
+    replace_all_substr(msl_ptr, "unknown_texture_type<", "texture2d<");
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchStripThreadConstRef(MSLPatchContext *ctx, char **msl_ptr)
+{
+    replace_all_substr(msl_ptr, "thread const bool&", "bool");
+    replace_all_substr(msl_ptr, "thread const int&", "int");
+    replace_all_substr(msl_ptr, "thread const uint&", "uint");
+    replace_all_substr(msl_ptr, "thread const float&", "float");
+    replace_all_substr(msl_ptr, "thread const float2&", "float2");
+    replace_all_substr(msl_ptr, "thread const float3&", "float3");
+    replace_all_substr(msl_ptr, "thread const float4&", "float4");
+    replace_all_substr(msl_ptr, "thread const int2&", "int2");
+    replace_all_substr(msl_ptr, "thread const int3&", "int3");
+    replace_all_substr(msl_ptr, "thread const int4&", "int4");
+    replace_all_substr(msl_ptr, "thread const uint2&", "uint2");
+    replace_all_substr(msl_ptr, "thread const uint3&", "uint3");
+    replace_all_substr(msl_ptr, "thread const uint4&", "uint4");
+    replace_all_substr(msl_ptr, "thread const float3x3&", "float3x3");
+    replace_all_substr(msl_ptr, "thread const float4x4&", "float4x4");
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchRenameLengthSquared(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross may generate helper functions named `length_squared`
+     * for float2/float3/float4 types. Metal has a built-in `length_squared`
+     * for vector types (MSL 3.1+), causing an ambiguity error when both
+     * the user-defined function and the built-in are in scope. Rename the
+     * generated helper function and all call sites to avoid the conflict. */
+    mglReplaceMSLIdentifier(msl_ptr, "length_squared", "_mgl_length_squared");
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchLowerDoubleTypes(MSLPatchContext *ctx, char **msl_ptr)
+{
+    mglLowerMSLDoubleTypesToFloat(msl_ptr);
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFixEndPortalLayer(MSLPatchContext *ctx, char **msl_ptr)
+{
+    replace_all_substr(msl_ptr,
+                       "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
+                       "float4x4 end_portal_layer(float layer, float GameTime)");
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFullscreenFBYFlip(MSLPatchContext *ctx, char **msl_ptr)
+{
+    Program *ptr = ctx->program;
+    int stage = ctx->stage;
+    char *str_ret = *msl_ptr;
+    if (stage == _VERTEX_SHADER &&
+        strstr(str_ret, "float2 screenPos = (in.Position.xy * 2.0) - float2(1.0);") &&
+        strstr(str_ret, "out.gl_Position = float4(screenPos.x, screenPos.y, 1.0, 1.0);") &&
+        strstr(str_ret, "out.texCoord = in.Position.xy;")) {
+        fprintf(stderr,
+                "MGL MSL FULLSCREEN FIX: program=%u flips sampled framebuffer texcoord Y\n",
+                ptr->name);
+        replace_all_substr(&str_ret,
+                           "out.texCoord = in.Position.xy;",
+                           "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);");
+        ptr->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip = GL_TRUE;
+    }
+    *msl_ptr = str_ret;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFragCoordOriginFix(MSLPatchContext *ctx, char **msl_ptr)
+{
+    applyMSLFragCoordOriginFix(ctx->stage, msl_ptr);
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFixPlainStructPointerArray(MSLPatchContext *ctx, char **msl_ptr)
+{
+    mglFixMSLPlainStructPointerArrayAccess(ctx->program, ctx->stage, msl_ptr);
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchInjectAtomicCounterArgs(MSLPatchContext *ctx, char **msl_ptr)
+{
+    mglInjectMSLAtomicCounterArguments(ctx->program, ctx->stage, msl_ptr);
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* Mutates both the program state (binding slots) and the MSL string
+     * (remaps any user buffers that land on MGL-reserved slots).  Returns
+     * GL_TRUE so the pipeline does not roll back. */
+    applyMSLResourceBindings(ctx->program, ctx->stage, msl_ptr);
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr)
+{
+    Program *ptr = ctx->program;
+    int stage = ctx->stage;
+    /* Skip point_size injection for the vertex shader when a geometry
+     * shader is present.  Metal does not support geometry shaders, so
+     * the GS is skipped at bind time — but injecting [[point_size]] into
+     * the VS would cause GL_POINTS draws to rasterize even though the
+     * (skipped) geometry shader is supposed to re-emit the vertices. */
+    if (!(stage == _VERTEX_SHADER && ptr->shader_slots[_GEOMETRY_SHADER])) {
+        mglInjectMSLPointSizeBuiltin(stage, msl_ptr);
+    }
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchFixImage2DRectImageSize(MSLPatchContext *ctx, char **msl_ptr)
+{
+    mglFixMSLImage2DRectImageSize(msl_ptr);
+    (void)ctx;
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchTesAsComputeKernel(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* TES is lowered to a post-tessellation vertex function by SPIRV-Cross,
+     * but macOS 26.5 SDK removed postTessellationVertexFunction /
+     * isTessellationEnabled from MTLRenderPipelineDescriptor. Rewrite the
+     * MSL to a plain compute kernel so we can dispatch it like TCS. */
+    if (ctx->stage == _TESS_EVALUATION_SHADER) {
+        mglFixMSLTesAsComputeKernel(ctx->program, msl_ptr);
+    }
+    return GL_TRUE;
+}
+
+static GLboolean mglPatchTcsStageInFix(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* TCS is generated by SPIRV-Cross as a compute kernel, but it has a
+     * [[stage_in]] parameter for vertex input which Metal compute pipelines
+     * don't support.  Replace it with a device buffer [[buffer(31)]]. */
+    if (ctx->stage == _TESS_CONTROL_SHADER) {
+        mglFixMSLTcsStageIn(msl_ptr);
+    }
+    return GL_TRUE;
+}
+
 char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 {
     const SpvId *spirv;
@@ -8368,297 +8782,42 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 
     str_ret = strdup(result);
     if (str_ret) {
-        /* Remove C99 `restrict` qualifier that SPIRV-Cross emits on reference
-         * and pointer parameters (e.g. "device T& restrict var" or
-         * "device T* restrict ptr").  Metal's compiler rejects `restrict`
-         * in these positions (it expects `__restrict` on pointers and does
-         * not support it on references at all).  Removing it is safe because
-         * it is only an optimization hint with no semantic effect. */
-        {
-            char *read = str_ret;
-            char *write = str_ret;
-            while (*read) {
-                /* Look for " restrict " preceded by '&' or '*'. */
-                if ((read[0] == '&' || read[0] == '*') &&
-                    read[1] == ' ' &&
-                    strncmp(read + 2, "restrict ", 9) == 0) {
-                    /* Skip " restrict " (9 chars after "& "), keeping the & and space. */
-                    *write++ = *read++;  /* copy & or * */
-                    *write++ = *read++;  /* copy space */
-                    read += 9;            /* skip "restrict " */
-                } else {
-                    *write++ = *read++;
-                }
-            }
-            *write = '\0';
+        MSLPatchPipeline pipeline;
+        if (mslPipelineInit(&pipeline, ptr, stage, str_ret)) {
+            str_ret = NULL;  /* pipeline owns it now */
+
+            mslPipelineAddStep(&pipeline, "remove_restrict", mglPatchRemoveRestrict);
+            mslPipelineAddStep(&pipeline, "fix_sampler_shadowing", mglPatchFixSamplerShadowing);
+            mslPipelineAddStep(&pipeline, "fix_unknown_texture_type", mglPatchFixUnknownTextureType);
+            mslPipelineAddStep(&pipeline, "strip_thread_const_ref", mglPatchStripThreadConstRef);
+            mslPipelineAddStep(&pipeline, "rename_length_squared", mglPatchRenameLengthSquared);
+            mslPipelineAddStep(&pipeline, "lower_double_types", mglPatchLowerDoubleTypes);
+            mslPipelineAddStep(&pipeline, "fix_end_portal_layer", mglPatchFixEndPortalLayer);
+            mslPipelineAddStep(&pipeline, "fullscreen_fb_yflip", mglPatchFullscreenFBYFlip);
+            mslPipelineAddStep(&pipeline, "fragcoord_origin_fix", mglPatchFragCoordOriginFix);
+            mslPipelineAddStep(&pipeline, "fix_plain_struct_pointer_array", mglPatchFixPlainStructPointerArray);
+            mslPipelineAddStep(&pipeline, "inject_atomic_counter_args", mglPatchInjectAtomicCounterArgs);
+            mslPipelineAddStep(&pipeline, "apply_resource_bindings", mglPatchApplyResourceBindings);
+            mslPipelineAddStep(&pipeline, "inject_point_size_builtin", mglPatchInjectPointSizeBuiltin);
+            mslPipelineAddStep(&pipeline, "fix_image2drect_imagesize", mglPatchFixImage2DRectImageSize);
+            mslPipelineAddStep(&pipeline, "tes_as_compute_kernel", mglPatchTesAsComputeKernel);
+            mslPipelineAddStep(&pipeline, "tcs_stage_in_fix", mglPatchTcsStageInFix);
+
+            mslPipelineRun(&pipeline);
+            str_ret = mslPipelineTakeResult(&pipeline);
+            mslPipelineDestroy(&pipeline);
         }
 
-        /* Strip the [[sample_mask]] fragment output.  Metal honours the
-         * [[sample_mask]] output even when rasterSampleCount == 1, which
-         * causes fragments to be discarded when the shader writes a zero
-         * mask.  The OpenGL spec requires that gl_SampleMask writes be
-         * ignored when SAMPLE_BUFFERS == 0 (single-sample framebuffers),
-         * so we remove the output entirely.  This matches the original
-         * behaviour that passed the sample_variables tests. */
-        if (false && stage == _FRAGMENT_SHADER && strstr(str_ret, "[[sample_mask]]")) {
-            /* DISABLED: Strip was breaking all sample_variables tests (samples_1/2/4).
-             * TODO: Re-evaluate whether conditional stripping is needed. */
-            /* Remove lines inside output structs that declare a [[sample_mask]]
-             * member, e.g. "    uint gl_SampleMask [[sample_mask]];" */
-            char *read = str_ret;
-            char *write = str_ret;
-            while (*read) {
-                /* Find the start of the current line. */
-                char *line_start = read;
-                char *nl = strchr(read, '\n');
-                char *line_end = nl ? nl + 1 : read + strlen(read);
-                size_t line_len = line_end - line_start;
-
-                /* Check if this line is inside a struct (indented) and contains
-                 * [[sample_mask]] as a struct member declaration. We match
-                 * patterns like "uint <name> [[sample_mask]];" */
-                bool is_sample_mask_member = false;
-                /* Copy the current line into a NUL-terminated buffer first so
-                 * that strstr() does not bleed past the line boundary into
-                 * following lines (which would wrongly match sibling struct
-                 * members like "int4 o_color [[color(0)]];"). */
-                char tmp[256];
-                size_t copy_len = line_len < sizeof(tmp) ? line_len : sizeof(tmp) - 1;
-                memcpy(tmp, line_start, copy_len);
-                tmp[copy_len] = '\0';
-                if (copy_len > 20 && strstr(tmp, "[[sample_mask]]") &&
-                    strstr(tmp, ";")) {
-                    /* Check it's a struct member (not a function parameter) by
-                     * looking for a type keyword at the start. */
-                    char *p = tmp;
-                    while (*p == ' ' || *p == '\t') p++;
-                    if (strncmp(p, "uint", 4) == 0 || strncmp(p, "int", 3) == 0) {
-                        is_sample_mask_member = true;
-                    }
-                }
-
-                if (!is_sample_mask_member) {
-                    memmove(write, line_start, line_len);
-                    write += line_len;
-                }
-                read = line_end;
-            }
-            *write = '\0';
-
-            /* Now remove assignments to the output sample mask variable.
-             * SPIRV-Cross generates "out.gl_SampleMask = ...;" lines. */
-            read = str_ret;
-            write = str_ret;
-            while (*read) {
-                char *line_start = read;
-                char *nl = strchr(read, '\n');
-                char *line_end = nl ? nl + 1 : read + strlen(read);
-                size_t line_len = line_end - line_start;
-
-                /* Check if this line assigns to the sample mask output. */
-                char tmp[512];
-                size_t copy_len = line_len < sizeof(tmp) ? line_len : sizeof(tmp) - 1;
-                memcpy(tmp, line_start, copy_len);
-                tmp[copy_len] = '\0';
-
-                bool is_sample_mask_assign = false;
-                /* Match "out.gl_SampleMask =" or "out.gl_SampleMask[" but NOT
-                 * "gl_SampleMaskIn" (the input). */
-                char *sm = strstr(tmp, ".gl_SampleMask");
-                if (sm && sm[14] != 'I') {  /* not gl_SampleMaskIn */
-                    /* Check there's an assignment on this line */
-                    if (strchr(sm, '=')) {
-                        is_sample_mask_assign = true;
-                    }
-                }
-
-                if (!is_sample_mask_assign) {
-                    memmove(write, line_start, line_len);
-                    write += line_len;
-                }
-                read = line_end;
-            }
-            *write = '\0';
-        }
-
-        /* Some generated MSL uses `sampler` as an identifier, which collides
-         * with Metal's `sampler` type in function signatures. Normalize these
-         * generated helper names to keep compilation valid.
-         *
-         * SPIRV-Cross names the texture parameter after the original GLSL
-         * variable name (e.g. "sampler") and appends "Smplr" for the sampler
-         * parameter.  When the GLSL variable is named "sampler", this creates
-         * "sampler" (texture param) and "samplerSmplr" (sampler param), both
-         * of which collide with the Metal type keyword.  We handle this in
-         * three passes:
-         *
-         *   1. Rename the texture parameter named exactly "sampler" to "sourceTex"
-         *   2. Rename the sampler parameter: " samplerSmplr" → " sourceSmplr"
-         *   3. Rename method calls:          "sampler."   → "sourceTex."
-         *
-         * This covers all texture types, all [[texture(N)]]/[[sampler(N)]]
-         * indices, all method names (sample, gather, read, lod, etc.), and
-         * both direct params ("sampler samplerSmplr") and reference params
-         * ("thread const sampler& samplerSmplr"). */
-        static const char *sampler_shadowing_texture_types[] = {
-            "texture1d<float>", "texture1d<int>", "texture1d<uint>",
-            "texture1d_array<float>", "texture1d_array<int>", "texture1d_array<uint>",
-            "texture2d<float>", "texture2d<int>", "texture2d<uint>",
-            "texture2d_array<float>", "texture2d_array<int>", "texture2d_array<uint>",
-            "texture2d_ms<float>", "texture2d_ms<int>", "texture2d_ms<uint>",
-            "texture2d_ms_array<float>", "texture2d_ms_array<int>", "texture2d_ms_array<uint>",
-            "texture_buffer<float>", "texture_buffer<int>", "texture_buffer<uint>",
-            "texture3d<float>", "texture3d<int>", "texture3d<uint>",
-            "texturecube<float>", "texturecube<int>", "texturecube<uint>",
-            "texturecube_array<float>", "texturecube_array<int>", "texturecube_array<uint>",
-            "depth2d<float>", "depth2d<int>", "depth2d<uint>",
-            "depth2d_array<float>", "depth2d_array<int>", "depth2d_array<uint>",
-            "depth2d_ms<float>", "depth2d_ms<int>", "depth2d_ms<uint>",
-            "depth2d_ms_array<float>", "depth2d_ms_array<int>", "depth2d_ms_array<uint>",
-            "depthcube<float>", "depthcube<int>", "depthcube<uint>",
-            "depthcube_array<float>", "depthcube_array<int>", "depthcube_array<uint>",
-        };
-        size_t n_types = sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]);
-        GLboolean renamed_sampler_parameter = GL_FALSE;
-        for (size_t ti = 0; ti < n_types; ti++) {
-            const char *type = sampler_shadowing_texture_types[ti];
-            /* Pass 1: Rename texture parameters named exactly "sampler".
-             * Match the delimiters SPIRV-Cross emits after a parameter name
-             * without touching names like "sampler2D" or "samplerColor". */
-            char from[128], to[128];
-            snprintf(from, sizeof(from), "%s sampler,", type);
-            snprintf(to, sizeof(to), "%s sourceTex,", type);
-            if (strstr(str_ret, from))
-                renamed_sampler_parameter = GL_TRUE;
-            replace_all_substr(&str_ret, from, to);
-
-            snprintf(from, sizeof(from), "%s sampler)", type);
-            snprintf(to, sizeof(to), "%s sourceTex)", type);
-            if (strstr(str_ret, from))
-                renamed_sampler_parameter = GL_TRUE;
-            replace_all_substr(&str_ret, from, to);
-
-            snprintf(from, sizeof(from), "%s sampler [[", type);
-            snprintf(to, sizeof(to), "%s sourceTex [[", type);
-            if (strstr(str_ret, from))
-                renamed_sampler_parameter = GL_TRUE;
-            replace_all_substr(&str_ret, from, to);
-        }
-        /* Pass 2: Rename the companion sampler parameter.  SPIRV-Cross appends
-         * "Smplr" to the texture variable name, so "sampler" → "samplerSmplr".
-         * Now that the texture variable is "sourceTex", rename its sampler
-         * companion to "sourceSmplr".  The " samplerSmplr" pattern (with a
-         * leading space) matches both bare " samplerSmplr" and
-         * " thread const sampler& samplerSmplr" contexts; additionally
-         * "(samplerSmplr" matches function-argument usage like
-         * sourceTex.sample(samplerSmplr, ...). */
-        if (renamed_sampler_parameter) {
-            replace_all_substr(&str_ret, " samplerSmplr", " sourceSmplr");
-            /* Also rename samplerSmplr appearing as function argument:
-             * sourceTex.sample(samplerSmplr, ...) or helper(..., samplerSmplr, ...) */
-            replace_all_substr(&str_ret, "(samplerSmplr", "(sourceSmplr");
-            replace_all_substr(&str_ret, ", samplerSmplr", ", sourceSmplr");
-            /* Pass 3: Rename method calls on the old texture variable.
-             * Match only the identifier named exactly "sampler"; variables
-             * like "depth_sampler" must remain untouched. */
-            mglReplaceMSLIdentifierBeforeChar(&str_ret, "sampler", "sourceTex", '.');
-            /* Also rename standalone passes of sampler+samplerSmplr as
-             * function arguments: helper(sampler, samplerSmplr, ...) */
-            replace_all_substr(&str_ret, "(sampler, ", "(sourceTex, ");
-            replace_all_substr(&str_ret, ", sampler, ", ", sourceTex, ");
-            replace_all_substr(&str_ret, "(sampler)", "(sourceTex)");
-            replace_all_substr(&str_ret, ", sampler)", ", sourceTex)");
-        }
-        /*
-         * SPIRV-Cross can emit this placeholder for sampler2DRect. Metal has no
-         * rectangle texture object; MGL stores GL_TEXTURE_RECTANGLE as a 2D Metal
-         * texture and the CTS rectangle samples here use normalized coordinates.
-         */
-        replace_all_substr(&str_ret, "unknown_texture_type<", "texture2d<");
-        replace_all_substr(&str_ret, "thread const bool&", "bool");
-        replace_all_substr(&str_ret, "thread const int&", "int");
-        replace_all_substr(&str_ret, "thread const uint&", "uint");
-        replace_all_substr(&str_ret, "thread const float&", "float");
-        replace_all_substr(&str_ret, "thread const float2&", "float2");
-        replace_all_substr(&str_ret, "thread const float3&", "float3");
-        replace_all_substr(&str_ret, "thread const float4&", "float4");
-        replace_all_substr(&str_ret, "thread const int2&", "int2");
-        replace_all_substr(&str_ret, "thread const int3&", "int3");
-        replace_all_substr(&str_ret, "thread const int4&", "int4");
-        replace_all_substr(&str_ret, "thread const uint2&", "uint2");
-        replace_all_substr(&str_ret, "thread const uint3&", "uint3");
-        replace_all_substr(&str_ret, "thread const uint4&", "uint4");
-        replace_all_substr(&str_ret, "thread const float3x3&", "float3x3");
-        replace_all_substr(&str_ret, "thread const float4x4&", "float4x4");
-        /* SPIRV-Cross may generate helper functions named `length_squared`
-         * for float2/float3/float4 types. Metal has a built-in `length_squared`
-         * for vector types (MSL 3.1+), causing an ambiguity error when both
-         * the user-defined function and the built-in are in scope. Rename the
-         * generated helper function and all call sites to avoid the conflict. */
-        mglReplaceMSLIdentifier(&str_ret, "length_squared", "_mgl_length_squared");
-        mglLowerMSLDoubleTypesToFloat(&str_ret);
-        replace_all_substr(&str_ret,
-                           "float4x4 end_portal_layer(thread const float& layer, thread const float& GameTime)",
-                           "float4x4 end_portal_layer(float layer, float GameTime)");
-        if (stage == _VERTEX_SHADER &&
-            strstr(str_ret, "float2 screenPos = (in.Position.xy * 2.0) - float2(1.0);") &&
-            strstr(str_ret, "out.gl_Position = float4(screenPos.x, screenPos.y, 1.0, 1.0);") &&
-            strstr(str_ret, "out.texCoord = in.Position.xy;")) {
-            fprintf(stderr,
-                    "MGL MSL FULLSCREEN FIX: program=%u flips sampled framebuffer texcoord Y\n",
-                    ptr->name);
-            replace_all_substr(&str_ret,
-                               "out.texCoord = in.Position.xy;",
-                               "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);");
-            ptr->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip = GL_TRUE;
-        }
-        applyMSLFragCoordOriginFix(stage, &str_ret);
-        mglFixMSLPlainStructPointerArrayAccess(ptr, stage, &str_ret);
-        mglInjectMSLAtomicCounterArguments(ptr, stage, &str_ret);
-        applyMSLResourceBindings(ptr, stage, str_ret);
-        /* Skip point_size injection for the vertex shader when a geometry
-         * shader is present.  Metal does not support geometry shaders, so
-         * the GS is skipped at bind time — but injecting [[point_size]] into
-         * the VS would cause GL_POINTS draws to rasterize even though the
-         * (skipped) geometry shader is supposed to re-emit the vertices.
-         * This breaks tests like vertex_emit_at_end that expect no output
-         * when the GS is the stage responsible for emitting primitives. */
-        if (!(stage == _VERTEX_SHADER && ptr->shader_slots[_GEOMETRY_SHADER])) {
-            mglInjectMSLPointSizeBuiltin(stage, &str_ret);
-        }
-        mglFixMSLImage2DRectImageSize(&str_ret);
-        /* Logic op MSL injection is performed in bindMTLProgram: (MGLRenderer.m)
-         * at Metal library build time, not here, because the injection depends
-         * on the runtime GL_COLOR_LOGIC_OP state which may change after the
-         * program is linked. */
-        /* TES is lowered to a post-tessellation vertex function by SPIRV-Cross,
-         * but macOS 26.5 SDK removed postTessellationVertexFunction /
-         * isTessellationEnabled from MTLRenderPipelineDescriptor. Rewrite the
-         * MSL to a plain compute kernel so we can dispatch it like TCS. */
-        if (stage == _TESS_EVALUATION_SHADER) {
-            mglFixMSLTesAsComputeKernel(ptr, &str_ret);
-        }
-        /* TCS is generated by SPIRV-Cross as a compute kernel, but it has a
-         * [[stage_in]] parameter for vertex input which Metal compute pipelines
-         * don't support.  Replace it with a device buffer [[buffer(31)]]. */
-        if (stage == _TESS_CONTROL_SHADER) {
-            mglFixMSLTcsStageIn(&str_ret);
-        }
-        if (getenv("MGL_DUMP_MSL")) {
-            char dump_path[256];
-            snprintf(dump_path, sizeof(dump_path),
+        if (getenv("MGL_DUMP_MSL") && str_ret) {
+            char dumpPath[512];
+            snprintf(dumpPath, sizeof(dumpPath),
                      "/tmp/mgl_program_%u_stage_%d.msl",
-                     ptr->name,
-                     stage);
-            FILE *dump = fopen(dump_path, "w");
-            if (dump) {
-                fputs(str_ret, dump);
-                fclose(dump);
-                fprintf(stderr,
-                        "MGL MSL DUMP: program=%u stage=%d path=%s\n",
-                        ptr->name,
-                        stage,
-                        dump_path);
+                     ptr->name, stage);
+            FILE *dumpFile = fopen(dumpPath, "w");
+            if (dumpFile) {
+                fputs(str_ret, dumpFile);
+                fclose(dumpFile);
+                fprintf(stderr, "MGL DUMP MSL: wrote patched MSL to %s\n", dumpPath);
             }
         }
     }
@@ -8827,14 +8986,8 @@ static void clearStageCompileState(Program *pptr, int stage)
         free(pptr->spirv[stage].entry_point);
         pptr->spirv[stage].entry_point = NULL;
     }
-    if (pptr->spirv[stage].mtl_function) {
-        CFRelease(pptr->spirv[stage].mtl_function);
-        pptr->spirv[stage].mtl_function = NULL;
-    }
-    if (pptr->spirv[stage].mtl_library) {
-        CFRelease(pptr->spirv[stage].mtl_library);
-        pptr->spirv[stage].mtl_library = NULL;
-    }
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_function);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_library);
 
     for (int res_type = 0; res_type < _MAX_SPIRV_RES; res_type++) {
         SpirvResourceList *rl = &pptr->spirv_resources_list[stage][res_type];
@@ -9907,6 +10060,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr, "MGL Error: glslang_program_SPIRV_get_messages:\n%s\n", glslang_program_SPIRV_get_messages(glsl_program));
         fprintf(stderr, "MGL Error: glslang_program_get_info_log:\n%s\n", glslang_program_get_info_log(glsl_program));
         fprintf(stderr, "MGL Error: glslang_program_get_info_debug_log:\n%s\n", glslang_program_get_info_debug_log(glsl_program));
+        glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -9926,6 +10080,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     if (!link_ok) {
+        glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -9937,6 +10092,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
                 "varying not found in program outputs\n",
                 pptr->name);
+        glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -9975,6 +10131,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: separable program %u has incompatible gl_PerVertex redeclarations\n",
                 pptr->name);
+        glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -10074,11 +10231,17 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
 
         if (binding_error) {
+            glslang_program_delete(glsl_program);
             pptr->linked_glsl_program = NULL;
             return;
         }
     }
 
+    /* The glslang_program_t was only needed during linking for SPIR-V
+     * generation and reflection.  Release it now; pptr->linked_glsl_program
+     * is reused as a non-NULL linked-state marker (see callers that test
+     * `if (ptr->linked_glsl_program)` to check link status). */
+    glslang_program_delete(glsl_program);
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
     pptr->dirty_bits |= DIRTY_PROGRAM;

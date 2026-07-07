@@ -101,7 +101,87 @@
 		FFD4EF092F1801050023B6C3 /* mgl_sampler_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */; };
 		FFD4EF0B2F1801060023B6C3 /* mgl_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */; };
 		FFD4EF0D2F1801070023B6C3 /* mgl_texture_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */; };
-		FFD4EF0E2F1801080023B6C3 /* mgl_capability.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF002F1801010023B6C3 /* mgl_capability.m */; };
+		FFCE001B2F1802000000001B /* mgl_blit_clip.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00012F18020000000001 /* mgl_blit_clip.h */; };
+		FFCE001C2F1802000000001C /* mgl_blit_clip.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00012F18020000000001 /* mgl_blit_clip.h */; };
+		FFCE001D2F1802000000001D /* mgl_buffer_slots.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00022F18020000000002 /* mgl_buffer_slots.h */; };
+		FFCE001E2F1802000000001E /* mgl_buffer_slots.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00022F18020000000002 /* mgl_buffer_slots.h */; };
+		FFCE001F2F1802000000001F /* mgl_byte_hash.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00032F18020000000003 /* mgl_byte_hash.h */; };
+		FFCE00202F18020000000020 /* mgl_byte_hash.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00032F18020000000003 /* mgl_byte_hash.h */; };
+		FFCE00212F18020000000021 /* mgl_focus_program.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00042F18020000000004 /* mgl_focus_program.h */; };
+		FFCE00222F18020000000022 /* mgl_focus_program.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00042F18020000000004 /* mgl_focus_program.h */; };
+		FFCE00232F18020000000023 /* mgl_frame_activity.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00052F18020000000005 /* mgl_frame_activity.h */; };
+		FFCE00242F18020000000024 /* mgl_frame_activity.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00052F18020000000005 /* mgl_frame_activity.h */; };
+		FFCE00252F18020000000025 /* mgl_index_buffer.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00062F18020000000006 /* mgl_index_buffer.h */; };
+		FFCE00262F18020000000026 /* mgl_index_buffer.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00062F18020000000006 /* mgl_index_buffer.h */; };
+		FFCE00272F18020000000027 /* mgl_readback.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00072F18020000000007 /* mgl_readback.h */; };
+		FFCE00282F18020000000028 /* mgl_readback.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00072F18020000000007 /* mgl_readback.h */; };
+		FFCE00292F18020000000029 /* mgl_spirv_resource.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00082F18020000000008 /* mgl_spirv_resource.h */; };
+		FFCE002A2F1802000000002A /* mgl_spirv_resource.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00082F18020000000008 /* mgl_spirv_resource.h */; };
+		FFCE002B2F1802000000002B /* mgl_state_compat.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00092F18020000000009 /* mgl_state_compat.h */; };
+		FFCE002C2F1802000000002C /* mgl_state_compat.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE00092F18020000000009 /* mgl_state_compat.h */; };
+		FFCE002D2F1802000000002D /* mgl_state_log.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000A2F1802000000000A /* mgl_state_log.h */; };
+		FFCE002E2F1802000000002E /* mgl_state_log.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000A2F1802000000000A /* mgl_state_log.h */; };
+		FFCE002F2F1802000000002F /* mgl_trace_log.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000B2F1802000000000B /* mgl_trace_log.h */; };
+		FFCE00302F18020000000030 /* mgl_trace_log.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000B2F1802000000000B /* mgl_trace_log.h */; };
+		FFCE00312F18020000000031 /* mgl_trace_strategy.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000C2F1802000000000C /* mgl_trace_strategy.h */; };
+		FFCE00322F18020000000032 /* mgl_trace_strategy.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000C2F1802000000000C /* mgl_trace_strategy.h */; };
+		FFCE00332F18020000000033 /* mgl_vertex_format.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000D2F1802000000000D /* mgl_vertex_format.h */; };
+		FFCE00342F18020000000034 /* mgl_vertex_format.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCE000D2F1802000000000D /* mgl_vertex_format.h */; };
+		FFCE00352F18020000000035 /* mgl_blit_clip.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE000E2F1802000000000E /* mgl_blit_clip.m */; };
+		FFCE00362F18020000000036 /* mgl_blit_clip.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE000E2F1802000000000E /* mgl_blit_clip.m */; };
+		FFCE00372F18020000000037 /* mgl_buffer_slots.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCE000F2F1802000000000F /* mgl_buffer_slots.c */; };
+		FFCE00382F18020000000038 /* mgl_buffer_slots.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCE000F2F1802000000000F /* mgl_buffer_slots.c */; };
+		FFCE00392F18020000000039 /* mgl_byte_hash.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00102F18020000000010 /* mgl_byte_hash.m */; };
+		FFCE003A2F1802000000003A /* mgl_byte_hash.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00102F18020000000010 /* mgl_byte_hash.m */; };
+		FFCE003B2F1802000000003B /* mgl_focus_program.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00112F18020000000011 /* mgl_focus_program.m */; };
+		FFCE003C2F1802000000003C /* mgl_focus_program.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00112F18020000000011 /* mgl_focus_program.m */; };
+		FFCE003D2F1802000000003D /* mgl_frame_activity.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00122F18020000000012 /* mgl_frame_activity.m */; };
+		FFCE003E2F1802000000003E /* mgl_frame_activity.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00122F18020000000012 /* mgl_frame_activity.m */; };
+		FFCE003F2F1802000000003F /* mgl_index_buffer.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00132F18020000000013 /* mgl_index_buffer.m */; };
+		FFCE00402F18020000000040 /* mgl_index_buffer.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00132F18020000000013 /* mgl_index_buffer.m */; };
+		FFCE00412F18020000000041 /* mgl_readback.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00142F18020000000014 /* mgl_readback.m */; };
+		FFCE00422F18020000000042 /* mgl_readback.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00142F18020000000014 /* mgl_readback.m */; };
+		FFCE00432F18020000000043 /* mgl_spirv_resource.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00152F18020000000015 /* mgl_spirv_resource.m */; };
+		FFCE00442F18020000000044 /* mgl_spirv_resource.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00152F18020000000015 /* mgl_spirv_resource.m */; };
+		FFCE00452F18020000000045 /* mgl_state_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00162F18020000000016 /* mgl_state_compat.m */; };
+		FFCE00462F18020000000046 /* mgl_state_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00162F18020000000016 /* mgl_state_compat.m */; };
+		FFCE00472F18020000000047 /* mgl_state_log.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00172F18020000000017 /* mgl_state_log.m */; };
+		FFCE00482F18020000000048 /* mgl_state_log.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00172F18020000000017 /* mgl_state_log.m */; };
+		FFCE00492F18020000000049 /* mgl_trace_log.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00182F18020000000018 /* mgl_trace_log.m */; };
+		FFCE004A2F1802000000004A /* mgl_trace_log.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00182F18020000000018 /* mgl_trace_log.m */; };
+			FFCE004B2F1802000000004B /* mgl_trace_strategy.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00192F18020000000019 /* mgl_trace_strategy.m */; };
+			FFCE004C2F1802000000004C /* mgl_trace_strategy.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE00192F18020000000019 /* mgl_trace_strategy.m */; };
+			FFCE004D2F1802000000004D /* mgl_vertex_format.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE001A2F1802000000001A /* mgl_vertex_format.m */; };
+			FFCE004E2F1802000000004E /* mgl_vertex_format.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCE001A2F1802000000001A /* mgl_vertex_format.m */; };
+			FFCF00212F18030000000021 /* mgl_buffer_query.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00012F18030000000001 /* mgl_buffer_query.h */; };
+			FFCF00222F18030000000022 /* mgl_buffer_query.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00012F18030000000001 /* mgl_buffer_query.h */; };
+			FFCF00232F18030000000023 /* mgl_draw_buffer.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00022F18030000000002 /* mgl_draw_buffer.h */; };
+			FFCF00242F18030000000024 /* mgl_draw_buffer.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00022F18030000000002 /* mgl_draw_buffer.h */; };
+			FFCF00252F18030000000025 /* mgl_draw_encode.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00032F18030000000003 /* mgl_draw_encode.h */; };
+			FFCF00262F18030000000026 /* mgl_draw_encode.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00032F18030000000003 /* mgl_draw_encode.h */; };
+			FFCF00272F18030000000027 /* mgl_draw_mode.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00042F18030000000004 /* mgl_draw_mode.h */; };
+			FFCF00282F18030000000028 /* mgl_draw_mode.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00042F18030000000004 /* mgl_draw_mode.h */; };
+			FFCF00292F18030000000029 /* mgl_metal_ref.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00052F18030000000005 /* mgl_metal_ref.h */; };
+			FFCF002A2F1803000000002A /* mgl_metal_ref.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00052F18030000000005 /* mgl_metal_ref.h */; };
+			FFCF002B2F1803000000002B /* mgl_msl_compiler.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00062F18030000000006 /* mgl_msl_compiler.h */; };
+			FFCF002C2F1803000000002C /* mgl_msl_compiler.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00062F18030000000006 /* mgl_msl_compiler.h */; };
+			FFCF002D2F1803000000002D /* mgl_vertex_attrib_query.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */; };
+			FFCF002E2F1803000000002E /* mgl_vertex_attrib_query.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */; };
+			FFCF002F2F1803000000002F /* msl_patch_pipeline.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00082F18030000000008 /* msl_patch_pipeline.h */; };
+			FFCF00302F18030000000030 /* msl_patch_pipeline.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00082F18030000000008 /* msl_patch_pipeline.h */; };
+			FFCF00312F18030000000031 /* mgl_buffer_query.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00112F18030000000011 /* mgl_buffer_query.m */; };
+			FFCF00322F18030000000032 /* mgl_buffer_query.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00112F18030000000011 /* mgl_buffer_query.m */; };
+			FFCF00332F18030000000033 /* mgl_draw_buffer.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00122F18030000000012 /* mgl_draw_buffer.m */; };
+			FFCF00342F18030000000034 /* mgl_draw_buffer.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00122F18030000000012 /* mgl_draw_buffer.m */; };
+			FFCF00352F18030000000035 /* mgl_draw_encode.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00132F18030000000013 /* mgl_draw_encode.m */; };
+			FFCF00362F18030000000036 /* mgl_draw_encode.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00132F18030000000013 /* mgl_draw_encode.m */; };
+			FFCF00372F18030000000037 /* mgl_msl_compiler.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00142F18030000000014 /* mgl_msl_compiler.m */; };
+			FFCF00382F18030000000038 /* mgl_msl_compiler.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00142F18030000000014 /* mgl_msl_compiler.m */; };
+			FFCF00392F18030000000039 /* mgl_vertex_attrib_query.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00152F18030000000015 /* mgl_vertex_attrib_query.m */; };
+			FFCF003A2F1803000000003A /* mgl_vertex_attrib_query.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00152F18030000000015 /* mgl_vertex_attrib_query.m */; };
+			FFCF003B2F1803000000003B /* msl_patch_pipeline.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00162F18030000000016 /* msl_patch_pipeline.c */; };
+			FFCF003C2F1803000000003C /* msl_patch_pipeline.c in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00162F18030000000016 /* msl_patch_pipeline.c */; };
+			FFD4EF0E2F1801080023B6C3 /* mgl_capability.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF002F1801010023B6C3 /* mgl_capability.m */; };
 		FFD4EF0F2F1801090023B6C3 /* mgl_coordinate.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */; };
 		FFD4EF102F18010A0023B6C3 /* mgl_msl_compat.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */; };
 		FFD4EF112F18010B0023B6C3 /* mgl_rt_sync.m in Sources */ = {isa = PBXBuildFile; fileRef = FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */; };
@@ -445,7 +525,47 @@
 		FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_sampler_compat.m; sourceTree = "<group>"; };
 		FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_sync.m; sourceTree = "<group>"; };
 		FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_texture_compat.m; sourceTree = "<group>"; };
-		FFD4EE322F1454E70023B6C3 /* gl_es.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = gl_es.c; sourceTree = "<group>"; };
+		FFCE00012F18020000000001 /* mgl_blit_clip.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_blit_clip.h; sourceTree = "<group>"; };
+		FFCE00022F18020000000002 /* mgl_buffer_slots.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_buffer_slots.h; sourceTree = "<group>"; };
+		FFCE00032F18020000000003 /* mgl_byte_hash.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_byte_hash.h; sourceTree = "<group>"; };
+		FFCE00042F18020000000004 /* mgl_focus_program.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_focus_program.h; sourceTree = "<group>"; };
+		FFCE00052F18020000000005 /* mgl_frame_activity.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_frame_activity.h; sourceTree = "<group>"; };
+		FFCE00062F18020000000006 /* mgl_index_buffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_index_buffer.h; sourceTree = "<group>"; };
+		FFCE00072F18020000000007 /* mgl_readback.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_readback.h; sourceTree = "<group>"; };
+		FFCE00082F18020000000008 /* mgl_spirv_resource.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_spirv_resource.h; sourceTree = "<group>"; };
+		FFCE00092F18020000000009 /* mgl_state_compat.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_state_compat.h; sourceTree = "<group>"; };
+		FFCE000A2F1802000000000A /* mgl_state_log.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_state_log.h; sourceTree = "<group>"; };
+		FFCE000B2F1802000000000B /* mgl_trace_log.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_trace_log.h; sourceTree = "<group>"; };
+		FFCE000C2F1802000000000C /* mgl_trace_strategy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_trace_strategy.h; sourceTree = "<group>"; };
+		FFCE000D2F1802000000000D /* mgl_vertex_format.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_vertex_format.h; sourceTree = "<group>"; };
+		FFCE000E2F1802000000000E /* mgl_blit_clip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_blit_clip.m; sourceTree = "<group>"; };
+		FFCE000F2F1802000000000F /* mgl_buffer_slots.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = mgl_buffer_slots.c; sourceTree = "<group>"; };
+		FFCE00102F18020000000010 /* mgl_byte_hash.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_byte_hash.m; sourceTree = "<group>"; };
+		FFCE00112F18020000000011 /* mgl_focus_program.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_focus_program.m; sourceTree = "<group>"; };
+		FFCE00122F18020000000012 /* mgl_frame_activity.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_frame_activity.m; sourceTree = "<group>"; };
+		FFCE00132F18020000000013 /* mgl_index_buffer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_index_buffer.m; sourceTree = "<group>"; };
+		FFCE00142F18020000000014 /* mgl_readback.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_readback.m; sourceTree = "<group>"; };
+		FFCE00152F18020000000015 /* mgl_spirv_resource.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_spirv_resource.m; sourceTree = "<group>"; };
+		FFCE00162F18020000000016 /* mgl_state_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_state_compat.m; sourceTree = "<group>"; };
+		FFCE00172F18020000000017 /* mgl_state_log.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_state_log.m; sourceTree = "<group>"; };
+			FFCE00182F18020000000018 /* mgl_trace_log.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_trace_log.m; sourceTree = "<group>"; };
+			FFCE00192F18020000000019 /* mgl_trace_strategy.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_trace_strategy.m; sourceTree = "<group>"; };
+			FFCE001A2F1802000000001A /* mgl_vertex_format.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_vertex_format.m; sourceTree = "<group>"; };
+			FFCF00012F18030000000001 /* mgl_buffer_query.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_buffer_query.h; sourceTree = "<group>"; };
+			FFCF00022F18030000000002 /* mgl_draw_buffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_draw_buffer.h; sourceTree = "<group>"; };
+			FFCF00032F18030000000003 /* mgl_draw_encode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_draw_encode.h; sourceTree = "<group>"; };
+			FFCF00042F18030000000004 /* mgl_draw_mode.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_draw_mode.h; sourceTree = "<group>"; };
+			FFCF00052F18030000000005 /* mgl_metal_ref.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_metal_ref.h; sourceTree = "<group>"; };
+			FFCF00062F18030000000006 /* mgl_msl_compiler.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_msl_compiler.h; sourceTree = "<group>"; };
+			FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_vertex_attrib_query.h; sourceTree = "<group>"; };
+			FFCF00082F18030000000008 /* msl_patch_pipeline.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = msl_patch_pipeline.h; sourceTree = "<group>"; };
+			FFCF00112F18030000000011 /* mgl_buffer_query.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_buffer_query.m; sourceTree = "<group>"; };
+			FFCF00122F18030000000012 /* mgl_draw_buffer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_draw_buffer.m; sourceTree = "<group>"; };
+			FFCF00132F18030000000013 /* mgl_draw_encode.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_draw_encode.m; sourceTree = "<group>"; };
+			FFCF00142F18030000000014 /* mgl_msl_compiler.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_msl_compiler.m; sourceTree = "<group>"; };
+			FFCF00152F18030000000015 /* mgl_vertex_attrib_query.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_vertex_attrib_query.m; sourceTree = "<group>"; };
+			FFCF00162F18030000000016 /* msl_patch_pipeline.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = msl_patch_pipeline.c; sourceTree = "<group>"; };
+			FFD4EE322F1454E70023B6C3 /* gl_es.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = gl_es.c; sourceTree = "<group>"; };
 		FFD4EE8C2F14585E0023B6C3 /* libMGL_ES.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; includeInIndex = 0; path = libMGL_ES.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
 		FFE8B2C82D29B4CA006B1015 /* AppKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AppKit.framework; path = System/Library/Frameworks/AppKit.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
@@ -580,16 +700,56 @@
 			isa = PBXGroup;
 			children = (
 				FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */,
-				FFD4EE2B2F1429700023B6C3 /* hash_table.m */,
+					FFCE00012F18020000000001 /* mgl_blit_clip.h */,
+					FFCF00012F18030000000001 /* mgl_buffer_query.h */,
+					FFCE00022F18020000000002 /* mgl_buffer_slots.h */,
+					FFCE00032F18020000000003 /* mgl_byte_hash.h */,
+					FFCF00022F18030000000002 /* mgl_draw_buffer.h */,
+					FFCF00032F18030000000003 /* mgl_draw_encode.h */,
+					FFCF00042F18030000000004 /* mgl_draw_mode.h */,
+					FFCE00042F18020000000004 /* mgl_focus_program.h */,
+					FFCE00052F18020000000005 /* mgl_frame_activity.h */,
+					FFCE00062F18020000000006 /* mgl_index_buffer.h */,
+					FFCF00052F18030000000005 /* mgl_metal_ref.h */,
+					FFCF00062F18030000000006 /* mgl_msl_compiler.h */,
+					FFCE00072F18020000000007 /* mgl_readback.h */,
+					FFCE00082F18020000000008 /* mgl_spirv_resource.h */,
+					FFCE00092F18020000000009 /* mgl_state_compat.h */,
+					FFCE000A2F1802000000000A /* mgl_state_log.h */,
+					FFCE000B2F1802000000000B /* mgl_trace_log.h */,
+					FFCE000C2F1802000000000C /* mgl_trace_strategy.h */,
+					FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */,
+					FFCE000D2F1802000000000D /* mgl_vertex_format.h */,
+					FFCF00082F18030000000008 /* msl_patch_pipeline.h */,
+					FFD4EE2B2F1429700023B6C3 /* hash_table.m */,
 				FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */,
 				FFD4EF002F1801010023B6C3 /* mgl_capability.m */,
 				FFD4EF022F1801020023B6C3 /* mgl_coordinate.m */,
 				FFD4EF042F1801030023B6C3 /* mgl_msl_compat.m */,
 				FFD4EF062F1801040023B6C3 /* mgl_rt_sync.m */,
 				FFD4EF082F1801050023B6C3 /* mgl_sampler_compat.m */,
-				FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */,
-				FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */,
-				FF7B7AF6277290EB00C2028F /* gl_core.c */,
+					FFD4EF0A2F1801060023B6C3 /* mgl_sync.m */,
+					FFD4EF0C2F1801070023B6C3 /* mgl_texture_compat.m */,
+					FFCE000E2F1802000000000E /* mgl_blit_clip.m */,
+					FFCF00112F18030000000011 /* mgl_buffer_query.m */,
+					FFCE000F2F1802000000000F /* mgl_buffer_slots.c */,
+					FFCE00102F18020000000010 /* mgl_byte_hash.m */,
+					FFCF00122F18030000000012 /* mgl_draw_buffer.m */,
+					FFCF00132F18030000000013 /* mgl_draw_encode.m */,
+					FFCE00112F18020000000011 /* mgl_focus_program.m */,
+					FFCE00122F18020000000012 /* mgl_frame_activity.m */,
+					FFCE00132F18020000000013 /* mgl_index_buffer.m */,
+					FFCF00142F18030000000014 /* mgl_msl_compiler.m */,
+					FFCE00142F18020000000014 /* mgl_readback.m */,
+					FFCE00152F18020000000015 /* mgl_spirv_resource.m */,
+					FFCE00162F18020000000016 /* mgl_state_compat.m */,
+					FFCE00172F18020000000017 /* mgl_state_log.m */,
+					FFCE00182F18020000000018 /* mgl_trace_log.m */,
+					FFCE00192F18020000000019 /* mgl_trace_strategy.m */,
+					FFCF00152F18030000000015 /* mgl_vertex_attrib_query.m */,
+					FFCE001A2F1802000000001A /* mgl_vertex_format.m */,
+					FFCF00162F18030000000016 /* msl_patch_pipeline.c */,
+					FF7B7AF6277290EB00C2028F /* gl_core.c */,
 				FFD4EE322F1454E70023B6C3 /* gl_es.c */,
 				FF7B7A9327728C1D00C2028F /* mgl_funcs_to_be_implemented.c */,
 				FF7B7A8B27728C1D00C2028F /* non_core_unimplemented.c */,
@@ -772,7 +932,28 @@
 				FF7B7ACA27728C3100C2028F /* utils.h in Headers */,
 				FF7B7ACC27728C3100C2028F /* MGLRenderer.h in Headers */,
 				FFD4EE302F1429700023B6C3 /* mgl_safety.h in Headers */,
-				FF2DC2632D2C9B040040B838 /* programs.h in Headers */,
+					FFCE001B2F1802000000001B /* mgl_blit_clip.h in Headers */,
+					FFCF00212F18030000000021 /* mgl_buffer_query.h in Headers */,
+					FFCE001D2F1802000000001D /* mgl_buffer_slots.h in Headers */,
+					FFCE001F2F1802000000001F /* mgl_byte_hash.h in Headers */,
+					FFCF00232F18030000000023 /* mgl_draw_buffer.h in Headers */,
+					FFCF00252F18030000000025 /* mgl_draw_encode.h in Headers */,
+					FFCF00272F18030000000027 /* mgl_draw_mode.h in Headers */,
+					FFCE00212F18020000000021 /* mgl_focus_program.h in Headers */,
+					FFCE00232F18020000000023 /* mgl_frame_activity.h in Headers */,
+					FFCE00252F18020000000025 /* mgl_index_buffer.h in Headers */,
+					FFCF00292F18030000000029 /* mgl_metal_ref.h in Headers */,
+					FFCF002B2F1803000000002B /* mgl_msl_compiler.h in Headers */,
+					FFCE00272F18020000000027 /* mgl_readback.h in Headers */,
+					FFCE00292F18020000000029 /* mgl_spirv_resource.h in Headers */,
+					FFCE002B2F1802000000002B /* mgl_state_compat.h in Headers */,
+					FFCE002D2F1802000000002D /* mgl_state_log.h in Headers */,
+					FFCE002F2F1802000000002F /* mgl_trace_log.h in Headers */,
+					FFCE00312F18020000000031 /* mgl_trace_strategy.h in Headers */,
+					FFCF002D2F1803000000002D /* mgl_vertex_attrib_query.h in Headers */,
+					FFCE00332F18020000000033 /* mgl_vertex_format.h in Headers */,
+					FFCF002F2F1803000000002F /* msl_patch_pipeline.h in Headers */,
+					FF2DC2632D2C9B040040B838 /* programs.h in Headers */,
 				FF7B7AC927728C3100C2028F /* error.h in Headers */,
 				FF7B7AD027728C3100C2028F /* hash_table.h in Headers */,
 				FF7B7ACD27728C3100C2028F /* shaders.h in Headers */,
@@ -796,7 +977,28 @@
 				FFD4EE452F14585E0023B6C3 /* utils.h in Headers */,
 				FFD4EE462F14585E0023B6C3 /* MGLRenderer.h in Headers */,
 				FFD4EE472F14585E0023B6C3 /* mgl_safety.h in Headers */,
-				FFD4EE482F14585E0023B6C3 /* programs.h in Headers */,
+					FFCE001C2F1802000000001C /* mgl_blit_clip.h in Headers */,
+					FFCF00222F18030000000022 /* mgl_buffer_query.h in Headers */,
+					FFCE001E2F1802000000001E /* mgl_buffer_slots.h in Headers */,
+					FFCE00202F18020000000020 /* mgl_byte_hash.h in Headers */,
+					FFCF00242F18030000000024 /* mgl_draw_buffer.h in Headers */,
+					FFCF00262F18030000000026 /* mgl_draw_encode.h in Headers */,
+					FFCF00282F18030000000028 /* mgl_draw_mode.h in Headers */,
+					FFCE00222F18020000000022 /* mgl_focus_program.h in Headers */,
+					FFCE00242F18020000000024 /* mgl_frame_activity.h in Headers */,
+					FFCE00262F18020000000026 /* mgl_index_buffer.h in Headers */,
+					FFCF002A2F1803000000002A /* mgl_metal_ref.h in Headers */,
+					FFCF002C2F1803000000002C /* mgl_msl_compiler.h in Headers */,
+					FFCE00282F18020000000028 /* mgl_readback.h in Headers */,
+					FFCE002A2F1802000000002A /* mgl_spirv_resource.h in Headers */,
+					FFCE002C2F1802000000002C /* mgl_state_compat.h in Headers */,
+					FFCE002E2F1802000000002E /* mgl_state_log.h in Headers */,
+					FFCE00302F18020000000030 /* mgl_trace_log.h in Headers */,
+					FFCE00322F18020000000032 /* mgl_trace_strategy.h in Headers */,
+					FFCF002E2F1803000000002E /* mgl_vertex_attrib_query.h in Headers */,
+					FFCE00342F18020000000034 /* mgl_vertex_format.h in Headers */,
+					FFCF00302F18030000000030 /* msl_patch_pipeline.h in Headers */,
+					FFD4EE482F14585E0023B6C3 /* programs.h in Headers */,
 				FFD4EE492F14585E0023B6C3 /* error.h in Headers */,
 				FFD4EE4A2F14585E0023B6C3 /* hash_table.h in Headers */,
 				FFD4EE4B2F14585E0023B6C3 /* shaders.h in Headers */,
@@ -1128,7 +1330,26 @@
 				FFD4EF092F1801050023B6C3 /* mgl_sampler_compat.m in Sources */,
 				FFD4EF0B2F1801060023B6C3 /* mgl_sync.m in Sources */,
 				FFD4EF0D2F1801070023B6C3 /* mgl_texture_compat.m in Sources */,
-				FF7B7AB027728C1D00C2028F /* glm_dispatch.c in Sources */,
+					FFCE00352F18020000000035 /* mgl_blit_clip.m in Sources */,
+					FFCF00312F18030000000031 /* mgl_buffer_query.m in Sources */,
+					FFCE00372F18020000000037 /* mgl_buffer_slots.c in Sources */,
+					FFCE00392F18020000000039 /* mgl_byte_hash.m in Sources */,
+					FFCF00332F18030000000033 /* mgl_draw_buffer.m in Sources */,
+					FFCF00352F18030000000035 /* mgl_draw_encode.m in Sources */,
+					FFCE003B2F1802000000003B /* mgl_focus_program.m in Sources */,
+					FFCE003D2F1802000000003D /* mgl_frame_activity.m in Sources */,
+					FFCE003F2F1802000000003F /* mgl_index_buffer.m in Sources */,
+					FFCF00372F18030000000037 /* mgl_msl_compiler.m in Sources */,
+					FFCE00412F18020000000041 /* mgl_readback.m in Sources */,
+					FFCE00432F18020000000043 /* mgl_spirv_resource.m in Sources */,
+					FFCE00452F18020000000045 /* mgl_state_compat.m in Sources */,
+					FFCE00472F18020000000047 /* mgl_state_log.m in Sources */,
+					FFCE00492F18020000000049 /* mgl_trace_log.m in Sources */,
+					FFCE004B2F1802000000004B /* mgl_trace_strategy.m in Sources */,
+					FFCF00392F18030000000039 /* mgl_vertex_attrib_query.m in Sources */,
+					FFCE004D2F1802000000004D /* mgl_vertex_format.m in Sources */,
+					FFCF003B2F1803000000003B /* msl_patch_pipeline.c in Sources */,
+					FF7B7AB027728C1D00C2028F /* glm_dispatch.c in Sources */,
 				FF8F91A82780FBBD00A1E546 /* samplers.c in Sources */,
 				FF7B7A9D27728C1D00C2028F /* state.c in Sources */,
 				FF7B7AAA27728C1D00C2028F /* fence.c in Sources */,
@@ -1188,7 +1409,26 @@
 				FFD4EF122F18010C0023B6C3 /* mgl_sampler_compat.m in Sources */,
 				FFD4EF132F18010D0023B6C3 /* mgl_sync.m in Sources */,
 				FFD4EF142F18010E0023B6C3 /* mgl_texture_compat.m in Sources */,
-				FFD4EE5F2F14585E0023B6C3 /* glm_dispatch.c in Sources */,
+					FFCE00362F18020000000036 /* mgl_blit_clip.m in Sources */,
+					FFCF00322F18030000000032 /* mgl_buffer_query.m in Sources */,
+					FFCE00382F18020000000038 /* mgl_buffer_slots.c in Sources */,
+					FFCE003A2F1802000000003A /* mgl_byte_hash.m in Sources */,
+					FFCF00342F18030000000034 /* mgl_draw_buffer.m in Sources */,
+					FFCF00362F18030000000036 /* mgl_draw_encode.m in Sources */,
+					FFCE003C2F1802000000003C /* mgl_focus_program.m in Sources */,
+					FFCE003E2F1802000000003E /* mgl_frame_activity.m in Sources */,
+					FFCE00402F18020000000040 /* mgl_index_buffer.m in Sources */,
+					FFCF00382F18030000000038 /* mgl_msl_compiler.m in Sources */,
+					FFCE00422F18020000000042 /* mgl_readback.m in Sources */,
+					FFCE00442F18020000000044 /* mgl_spirv_resource.m in Sources */,
+					FFCE00462F18020000000046 /* mgl_state_compat.m in Sources */,
+					FFCE00482F18020000000048 /* mgl_state_log.m in Sources */,
+					FFCE004A2F1802000000004A /* mgl_trace_log.m in Sources */,
+					FFCE004C2F1802000000004C /* mgl_trace_strategy.m in Sources */,
+					FFCF003A2F1803000000003A /* mgl_vertex_attrib_query.m in Sources */,
+					FFCE004E2F1802000000004E /* mgl_vertex_format.m in Sources */,
+					FFCF003C2F1803000000003C /* msl_patch_pipeline.c in Sources */,
+					FFD4EE5F2F14585E0023B6C3 /* glm_dispatch.c in Sources */,
 				FFD4EE602F14585E0023B6C3 /* gl_es.c in Sources */,
 				FFD4EE612F14585E0023B6C3 /* samplers.c in Sources */,
 				FFD4EE622F14585E0023B6C3 /* state.c in Sources */,

@@ -25,6 +25,7 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_safety.h"
+#include "mgl_metal_ref.h"
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
@@ -36,10 +37,7 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
 {
     if (!buffer) return;
 
-    if (buffer->data.mtl_data && ctx && ctx->mtl_funcs.mtlDeleteMTLObj) {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, buffer->data.mtl_data);
-        buffer->data.mtl_data = NULL;
-    }
+    mglSafeReleaseMetalObj((void **)&buffer->data.mtl_data);
     if (buffer->data.buffer_data) {
         free((void *)(uintptr_t)buffer->data.buffer_data);
         buffer->data.buffer_data = 0;
@@ -2152,4 +2150,36 @@ void mglFlushPendingDraws(GLMContext ctx)
 {
     if (!ctx || !ctx->draw_defer_enabled) return;
     mglFlushCommandBuffer(ctx);
+}
+
+const char *mglDrawCommandTypeName(MGLDrawCommandType type)
+{
+    switch (type) {
+        case MGL_CMD_DRAW_ARRAYS: return "draw_arrays";
+        case MGL_CMD_DRAW_ELEMENTS: return "draw_elements";
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED: return "draw_arrays_instanced";
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED: return "draw_elements_instanced";
+        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX: return "draw_elements_base_vertex";
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX: return "draw_elements_instanced_base_vertex";
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE: return "draw_arrays_instanced_base_instance";
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE: return "draw_elements_instanced_base_instance";
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE: return "draw_elements_instanced_base_vertex_base_instance";
+        default: return "unknown";
+    }
+}
+
+bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
+{
+    if (!cmd) {
+        return false;
+    }
+
+    switch (cmd->type) {
+        case MGL_CMD_DRAW_ARRAYS:
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+            return false;
+        default:
+            return true;
+    }
 }

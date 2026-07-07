@@ -28,6 +28,7 @@
 
 #include "shaders.h"
 #include "glm_context.h"
+#include "mgl_metal_ref.h"
 
 const glslang_resource_t* glslang_default_resource(void);
 
@@ -1514,38 +1515,14 @@ void mglFreeShader(GLMContext ctx, Shader *ptr)
         glslang_shader_delete(ptr->compiled_glsl_shader);
     }
 
-    if (ptr->mtl_data.function)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.function);
-    }
-    if (ptr->mtl_data.library)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.library);
-    }
-    if (ptr->mtl_data.zero_to_one_function)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.zero_to_one_function);
-    }
-    if (ptr->mtl_data.zero_to_one_library)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.zero_to_one_library);
-    }
-    if (ptr->mtl_data.upper_left_function)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.upper_left_function);
-    }
-    if (ptr->mtl_data.upper_left_library)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.upper_left_library);
-    }
-    if (ptr->mtl_data.upper_left_zero_to_one_function)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.upper_left_zero_to_one_function);
-    }
-    if (ptr->mtl_data.upper_left_zero_to_one_library)
-    {
-        ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr->mtl_data.upper_left_zero_to_one_library);
-    }
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.function);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.library);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.zero_to_one_function);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.zero_to_one_library);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.upper_left_function);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.upper_left_library);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.upper_left_zero_to_one_function);
+    mglSafeReleaseMetalObj((void **)&ptr->mtl_data.upper_left_zero_to_one_library);
 
     free((void *)ptr->mtl_shader_type_name);
     free((void *)ptr->src);

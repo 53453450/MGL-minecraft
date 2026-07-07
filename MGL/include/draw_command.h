@@ -145,6 +145,16 @@ void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
 
+/* Draw command classification helpers (pure functions, no ctx dependency). */
+
+/* Human-readable name for a draw command type, or "unknown" for
+ * unrecognized values.  Used by diagnostic/trace logging. */
+const char *mglDrawCommandTypeName(MGLDrawCommandType type);
+
+/* Returns true if `cmd->type` is an indexed (glDrawElements*) variant,
+ * false for array (glDrawArrays*) variants or NULL cmd. */
+bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd);
+
 #ifdef __cplusplus
 }
 #endif
