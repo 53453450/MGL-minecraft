@@ -1506,69 +1506,154 @@ static uint64_t mglStreamHashAttrib(uint64_t hash,
     return hash;
 }
 
-static bool mglLooksLikeWeatherParticleStream(GLMContext ctx,
-                                              const VertexArray *vao,
-                                              const Buffer *vertexBuffer,
-                                              uint32_t attribMask,
-                                              size_t vertexStride)
-{
-    if (!ctx || !vao || !vertexBuffer) return false;
-    if (vertexBuffer->usage != GL_DYNAMIC_DRAW) return false;
-    if (vertexBuffer->size <= 0 ||
-        vertexBuffer->size > (GLsizeiptr)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
-        return false;
-    }
-    if (vertexStride != 28u || (attribMask & 0xfu) != 0xfu) return false;
+/* ---- Stream-merge incompatible vertex layout registry ----
+ *
+ * Certain vertex layouts are known to produce corrupt rendering when
+ * stream-merged (draw call batching that concatenates vertex/index data
+ * from multiple draws into a single transient buffer).  The two layouts
+ * below were identified from Minecraft's vertex formats:
+ *
+ *   - Weather particles: blending + depth-write-off, stride 28, 4 attribs.
+ *     Merging reorders draw calls relative to the blend equation, producing
+ *     visible particle sorting artifacts.
+ *
+ *   - Chunk terrain: stride 32, 5 attribs.  Merging concatenates terrain
+ *     slices from different chunks; the per-draw index base assumptions in
+ *     the terrain shader's gl_VertexID usage break, producing garbled
+ *     geometry.
+ *
+ * Set env var MGL_DISABLE_STREAM_MERGE_EXCLUSIONS=1 to bypass these
+ * exclusions (useful for testing whether MGL improvements have made them
+ * unnecessary).  Set MGL_DEBUG_STREAM_MERGE=1 to log each exclusion hit.
+ */
 
-    bool blendEnabled = (ctx->state.caps.blend == GL_TRUE);
-    if (!blendEnabled) {
-        GLuint maxDrawBuffers = ctx->state.var.max_draw_buffers;
-        if (maxDrawBuffers > MAX_COLOR_ATTACHMENTS) maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
-        for (GLuint i = 0; i < maxDrawBuffers; i++) {
-            if (ctx->state.caps.blendi[i] == GL_TRUE) {
-                blendEnabled = true;
+typedef struct {
+    const char *name;
+    size_t vertexStride;
+    uint32_t attribMask;      /* low bits that must ALL be set */
+    uint32_t attribCount;
+    struct {
+        GLenum type;
+        GLuint size;
+        GLuint normalized;
+        GLuint integer;
+        GLintptr relativeoffset;
+    } attribs[8];
+} MGLStreamMergeExcludedLayout;
+
+static const MGLStreamMergeExcludedLayout kStreamMergeExcludedLayouts[] = {
+    {
+        .name = "weather_particle",
+        .vertexStride = 28u,
+        .attribMask = 0xfu,
+        .attribCount = 4,
+        .attribs = {
+            /* pos:   vec3 float @ 0  */
+            { GL_FLOAT,         3, GL_FALSE, GL_FALSE, 0  },
+            /* uv:    vec2 float @ 12 */
+            { GL_FLOAT,         2, GL_FALSE, GL_FALSE, 12 },
+            /* color: vec4 ubyte normalized @ 20 */
+            { GL_UNSIGNED_BYTE, 4, GL_TRUE,  GL_FALSE, 20 },
+            /* light: vec2 short integer @ 24 */
+            { GL_SHORT,         2, GL_FALSE, GL_TRUE,  24 },
+        },
+    },
+    {
+        .name = "chunk_terrain",
+        .vertexStride = 32u,
+        .attribMask = 0x1fu,
+        .attribCount = 5,
+        .attribs = {
+            /* pos:    vec3 float @ 0  */
+            { GL_FLOAT,         3, GL_FALSE, GL_FALSE, 0  },
+            /* color:  vec4 ubyte normalized @ 12 */
+            { GL_UNSIGNED_BYTE, 4, GL_TRUE,  GL_FALSE, 12 },
+            /* uv:     vec2 float @ 16 */
+            { GL_FLOAT,         2, GL_FALSE, GL_FALSE, 16 },
+            /* light:  vec2 short integer @ 24 */
+            { GL_SHORT,         2, GL_FALSE, GL_TRUE,  24 },
+            /* normal: vec3 byte normalized @ 28 */
+            { GL_BYTE,          3, GL_TRUE,  GL_FALSE, 28 },
+        },
+    },
+};
+
+static bool mglAttribMatchesExclusion(const VertexAttrib *attr,
+                                      const MGLStreamMergeExcludedLayout *layout,
+                                      GLuint index)
+{
+    if (!attr || !layout || index >= layout->attribCount) return false;
+    const typeof(layout->attribs[0]) *e = &layout->attribs[index];
+    return attr->type == e->type &&
+           attr->size == e->size &&
+           attr->normalized == e->normalized &&
+           attr->integer == e->integer &&
+           attr->relativeoffset == e->relativeoffset;
+}
+
+static bool mglVAOMatchesExcludedLayout(const VertexArray *vao,
+                                        uint32_t attribMask,
+                                        size_t vertexStride,
+                                        const MGLStreamMergeExcludedLayout **outLayout)
+{
+    if (outLayout) *outLayout = NULL;
+    if (!vao) return false;
+
+    const size_t count =
+        sizeof(kStreamMergeExcludedLayouts) / sizeof(kStreamMergeExcludedLayouts[0]);
+    for (size_t i = 0; i < count; i++) {
+        const MGLStreamMergeExcludedLayout *layout = &kStreamMergeExcludedLayouts[i];
+        if (vertexStride != layout->vertexStride) continue;
+        if ((attribMask & layout->attribMask) != layout->attribMask) continue;
+
+        bool match = true;
+        for (GLuint a = 0; a < layout->attribCount; a++) {
+            if (!mglAttribMatchesExclusion(&vao->attrib[a], layout, a)) {
+                match = false;
                 break;
             }
         }
+        if (match) {
+            if (outLayout) *outLayout = layout;
+            return true;
+        }
     }
-    if (!blendEnabled || ctx->state.var.depth_writemask == GL_TRUE) return false;
-
-    const VertexAttrib *pos = &vao->attrib[0];
-    const VertexAttrib *uv = &vao->attrib[1];
-    const VertexAttrib *color = &vao->attrib[2];
-    const VertexAttrib *light = &vao->attrib[3];
-
-    return pos->type == GL_FLOAT && pos->size == 3 && pos->relativeoffset == 0 &&
-           uv->type == GL_FLOAT && uv->size == 2 && uv->relativeoffset == 12 &&
-           color->type == GL_UNSIGNED_BYTE && color->size == 4 &&
-           color->normalized == GL_TRUE && color->relativeoffset == 20 &&
-           light->type == GL_SHORT && light->size == 2 &&
-           light->integer == GL_TRUE && light->relativeoffset == 24;
+    return false;
 }
 
-static bool mglLooksLikeMinecraftChunkTerrainStream(const VertexArray *vao,
-                                                    uint32_t attribMask,
-                                                    size_t vertexStride)
+/* Weather-particle exclusion additionally requires blend-on + depth-write-off
+ * to avoid false-positives on other stride-28 layouts.  Chunk-terrain needs
+ * no extra state gating. */
+static bool mglStreamMergeExclusionStateOK(GLMContext ctx,
+                                           const MGLStreamMergeExcludedLayout *layout,
+                                           const Buffer *vertexBuffer)
 {
-    if (!vao) return false;
-    if (vertexStride != 32u || (attribMask & 0x1fu) != 0x1fu) return false;
+    if (!layout) return false;
 
-    const VertexAttrib *pos = &vao->attrib[0];
-    const VertexAttrib *color = &vao->attrib[1];
-    const VertexAttrib *uv = &vao->attrib[2];
-    const VertexAttrib *light = &vao->attrib[3];
-    const VertexAttrib *normal = &vao->attrib[4];
+    if (strcmp(layout->name, "weather_particle") == 0) {
+        if (!ctx || !vertexBuffer) return false;
+        if (vertexBuffer->usage != GL_DYNAMIC_DRAW) return false;
+        if (vertexBuffer->size <= 0 ||
+            vertexBuffer->size > (GLsizeiptr)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
+            return false;
+        }
+        bool blendEnabled = (ctx->state.caps.blend == GL_TRUE);
+        if (!blendEnabled) {
+            GLuint maxDrawBuffers = ctx->state.var.max_draw_buffers;
+            if (maxDrawBuffers > MAX_COLOR_ATTACHMENTS) maxDrawBuffers = MAX_COLOR_ATTACHMENTS;
+            for (GLuint i = 0; i < maxDrawBuffers; i++) {
+                if (ctx->state.caps.blendi[i] == GL_TRUE) {
+                    blendEnabled = true;
+                    break;
+                }
+            }
+        }
+        if (!blendEnabled || ctx->state.var.depth_writemask == GL_TRUE) return false;
+        return true;
+    }
 
-    return pos->type == GL_FLOAT && pos->size == 3 &&
-           pos->relativeoffset == 0 &&
-           color->type == GL_UNSIGNED_BYTE && color->size == 4 &&
-           color->normalized == GL_TRUE && color->relativeoffset == 12 &&
-           uv->type == GL_FLOAT && uv->size == 2 &&
-           uv->relativeoffset == 16 &&
-           light->type == GL_SHORT && light->size == 2 &&
-           light->integer == GL_TRUE && light->relativeoffset == 24 &&
-           normal->type == GL_BYTE && normal->size == 3 &&
-           normal->normalized == GL_TRUE && normal->relativeoffset == 28;
+    /* chunk_terrain — no extra state gating */
+    return true;
 }
 
 static bool mglProgramUsesStreamMergeUnsafeBuiltin(const Program *program)
@@ -1700,11 +1785,35 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         ((size_t)vertexBuffer->size % vertexStride) != 0u) {
         return false;
     }
-    if (mglLooksLikeWeatherParticleStream(ctx, vao, vertexBuffer, attribMask, vertexStride)) {
-        return false;
-    }
-    if (mglLooksLikeMinecraftChunkTerrainStream(vao, attribMask, vertexStride)) {
-        return false;
+    /* Exclude known-incompatible vertex layouts from stream merging.
+     * See kStreamMergeExcludedLayouts above for rationale.  Env var
+     * MGL_DISABLE_STREAM_MERGE_EXCLUSIONS=1 bypasses for testing. */
+    {
+        static bool sExclusionsDisabled = false;
+        static bool sExclusionsChecked = false;
+        if (!sExclusionsChecked) {
+            sExclusionsDisabled = (getenv("MGL_DISABLE_STREAM_MERGE_EXCLUSIONS") != NULL);
+            sExclusionsChecked = true;
+        }
+        if (!sExclusionsDisabled) {
+            const MGLStreamMergeExcludedLayout *excluded = NULL;
+            if (mglVAOMatchesExcludedLayout(vao, attribMask, vertexStride, &excluded) &&
+                mglStreamMergeExclusionStateOK(ctx, excluded, vertexBuffer)) {
+                static bool sDebugLog = false;
+                static bool sDebugChecked = false;
+                if (!sDebugChecked) {
+                    sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
+                    sDebugChecked = true;
+                }
+                if (sDebugLog && excluded) {
+                    fprintf(stderr,
+                            "MGL DEBUG: stream-merge excluded layout '%s' "
+                            "(stride=%zu attribMask=0x%x)\n",
+                            excluded->name, vertexStride, attribMask);
+                }
+                return false;
+            }
+        }
     }
 
     uint64_t minSourceIndex = UINT64_MAX;
@@ -1992,7 +2101,21 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
      */
     bool can_reuse_batch = can_stream_merge;
 
-    /* Find matching batch (check last first for spatial locality) */
+    /* Find matching batch (check last first for spatial locality).
+     *
+     * Batch matching uses memcmp on the full MGLStateKey struct (via
+     * mglStateKeysEqual).  The key contains two hash fields —
+     * texture_hash and render_state_hash — that summarize texture
+     * bindings and render state (blend/depth/stencil/etc.) into 64-bit
+     * values.  A hash collision would cause two different states to be
+     * falsely merged into one batch, resulting in the second draw using
+     * the first draw's render state during replay.
+     *
+     * Collision probability: for N=64 batches, P(collision) ≈ N²/2^65
+     * ≈ 2^-53, which is negligible.  The hash incorporates pointer
+     * addresses (for textures) and ~50 state fields (for render state),
+     * making intentional collision infeasible.  If correctness is ever
+     * questioned, enable MGL_DEBUG_STREAM_MERGE to log batch merges. */
     MGLDrawBatch *batch = NULL;
     if (can_reuse_batch && cb->batch_count > 0) {
         MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];

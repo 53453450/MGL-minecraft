@@ -163,6 +163,8 @@
 			FFCF00282F18030000000028 /* mgl_draw_mode.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00042F18030000000004 /* mgl_draw_mode.h */; };
 			FFCF00292F18030000000029 /* mgl_metal_ref.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00052F18030000000005 /* mgl_metal_ref.h */; };
 			FFCF002A2F1803000000002A /* mgl_metal_ref.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00052F18030000000005 /* mgl_metal_ref.h */; };
+			FFCF004F2F1803000000004F /* mgl_metal_bridge.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF004D2F1803000000004D /* mgl_metal_bridge.h */; };
+			FFCF00502F18030000000050 /* mgl_metal_bridge.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF004D2F1803000000004D /* mgl_metal_bridge.h */; };
 			FFCF002B2F1803000000002B /* mgl_msl_compiler.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00062F18030000000006 /* mgl_msl_compiler.h */; };
 			FFCF002C2F1803000000002C /* mgl_msl_compiler.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00062F18030000000006 /* mgl_msl_compiler.h */; };
 			FFCF002D2F1803000000002D /* mgl_vertex_attrib_query.h in Headers */ = {isa = PBXBuildFile; fileRef = FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */; };
@@ -175,6 +177,8 @@
 			FFCF00342F18030000000034 /* mgl_draw_buffer.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00122F18030000000012 /* mgl_draw_buffer.m */; };
 			FFCF00352F18030000000035 /* mgl_draw_encode.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00132F18030000000013 /* mgl_draw_encode.m */; };
 			FFCF00362F18030000000036 /* mgl_draw_encode.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00132F18030000000013 /* mgl_draw_encode.m */; };
+			FFCF00512F18030000000051 /* mgl_metal_bridge.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF004E2F1803000000004E /* mgl_metal_bridge.m */; };
+			FFCF00522F18030000000052 /* mgl_metal_bridge.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF004E2F1803000000004E /* mgl_metal_bridge.m */; };
 			FFCF00372F18030000000037 /* mgl_msl_compiler.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00142F18030000000014 /* mgl_msl_compiler.m */; };
 			FFCF00382F18030000000038 /* mgl_msl_compiler.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00142F18030000000014 /* mgl_msl_compiler.m */; };
 			FFCF00392F18030000000039 /* mgl_vertex_attrib_query.m in Sources */ = {isa = PBXBuildFile; fileRef = FFCF00152F18030000000015 /* mgl_vertex_attrib_query.m */; };
@@ -484,6 +488,7 @@
 		FF7B7ABA27728C3100C2028F /* utils.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = utils.h; sourceTree = "<group>"; };
 		FF7B7ABB27728C3100C2028F /* gltypes.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = gltypes.h; sourceTree = "<group>"; };
 		FF7B7ABC27728C3100C2028F /* MGLRenderer.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = MGLRenderer.h; sourceTree = "<group>"; };
+		FFCF004D2F1803000000004D /* mgl_metal_bridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = mgl_metal_bridge.h; sourceTree = "<group>"; };
 		FF7B7ABD27728C3100C2028F /* shaders.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = shaders.h; sourceTree = "<group>"; };
 		FF7B7ABE27728C3100C2028F /* glm_context.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = glm_context.h; sourceTree = "<group>"; };
 		FF7B7ABF27728C3100C2028F /* glm_dispatch.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = glm_dispatch.h; sourceTree = "<group>"; };
@@ -544,6 +549,7 @@
 		FFCE00112F18020000000011 /* mgl_focus_program.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_focus_program.m; sourceTree = "<group>"; };
 		FFCE00122F18020000000012 /* mgl_frame_activity.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_frame_activity.m; sourceTree = "<group>"; };
 		FFCE00132F18020000000013 /* mgl_index_buffer.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_index_buffer.m; sourceTree = "<group>"; };
+		FFCF004E2F1803000000004E /* mgl_metal_bridge.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_metal_bridge.m; sourceTree = "<group>"; };
 		FFCE00142F18020000000014 /* mgl_readback.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_readback.m; sourceTree = "<group>"; };
 		FFCE00152F18020000000015 /* mgl_spirv_resource.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_spirv_resource.m; sourceTree = "<group>"; };
 		FFCE00162F18020000000016 /* mgl_state_compat.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = mgl_state_compat.m; sourceTree = "<group>"; };
@@ -701,26 +707,18 @@
 			children = (
 				FFD4EE2C2F1429700023B6C3 /* mgl_safety.h */,
 					FFCE00012F18020000000001 /* mgl_blit_clip.h */,
-					FFCF00012F18030000000001 /* mgl_buffer_query.h */,
 					FFCE00022F18020000000002 /* mgl_buffer_slots.h */,
 					FFCE00032F18020000000003 /* mgl_byte_hash.h */,
-					FFCF00022F18030000000002 /* mgl_draw_buffer.h */,
-					FFCF00032F18030000000003 /* mgl_draw_encode.h */,
-					FFCF00042F18030000000004 /* mgl_draw_mode.h */,
 					FFCE00042F18020000000004 /* mgl_focus_program.h */,
 					FFCE00052F18020000000005 /* mgl_frame_activity.h */,
 					FFCE00062F18020000000006 /* mgl_index_buffer.h */,
-					FFCF00052F18030000000005 /* mgl_metal_ref.h */,
-					FFCF00062F18030000000006 /* mgl_msl_compiler.h */,
 					FFCE00072F18020000000007 /* mgl_readback.h */,
 					FFCE00082F18020000000008 /* mgl_spirv_resource.h */,
 					FFCE00092F18020000000009 /* mgl_state_compat.h */,
 					FFCE000A2F1802000000000A /* mgl_state_log.h */,
 					FFCE000B2F1802000000000B /* mgl_trace_log.h */,
 					FFCE000C2F1802000000000C /* mgl_trace_strategy.h */,
-					FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */,
 					FFCE000D2F1802000000000D /* mgl_vertex_format.h */,
-					FFCF00082F18030000000008 /* msl_patch_pipeline.h */,
 					FFD4EE2B2F1429700023B6C3 /* hash_table.m */,
 				FFD4EE2D2F1429700023B6C3 /* mgl_toolchain.c */,
 				FFD4EF002F1801010023B6C3 /* mgl_capability.m */,
@@ -739,6 +737,7 @@
 					FFCE00112F18020000000011 /* mgl_focus_program.m */,
 					FFCE00122F18020000000012 /* mgl_frame_activity.m */,
 					FFCE00132F18020000000013 /* mgl_index_buffer.m */,
+					FFCF004E2F1803000000004E /* mgl_metal_bridge.m */,
 					FFCF00142F18030000000014 /* mgl_msl_compiler.m */,
 					FFCE00142F18020000000014 /* mgl_readback.m */,
 					FFCE00152F18020000000015 /* mgl_spirv_resource.m */,
@@ -802,6 +801,15 @@
 					FF7B7AC827728C3100C2028F /* glm_limits.h */,
 					FF7B7AC327728C3100C2028F /* MGLContext.h */,
 					FFCD00042F18000100DCC001 /* draw_command.h */,
+					FFCF00012F18030000000001 /* mgl_buffer_query.h */,
+					FFCF00022F18030000000002 /* mgl_draw_buffer.h */,
+					FFCF00032F18030000000003 /* mgl_draw_encode.h */,
+					FFCF00042F18030000000004 /* mgl_draw_mode.h */,
+					FFCF004D2F1803000000004D /* mgl_metal_bridge.h */,
+					FFCF00052F18030000000005 /* mgl_metal_ref.h */,
+					FFCF00062F18030000000006 /* mgl_msl_compiler.h */,
+					FFCF00072F18030000000007 /* mgl_vertex_attrib_query.h */,
+					FFCF00082F18030000000008 /* msl_patch_pipeline.h */,
 					FF7B7ABC27728C3100C2028F /* MGLRenderer.h */,
 			);
 			path = include;
@@ -942,6 +950,7 @@
 					FFCE00212F18020000000021 /* mgl_focus_program.h in Headers */,
 					FFCE00232F18020000000023 /* mgl_frame_activity.h in Headers */,
 					FFCE00252F18020000000025 /* mgl_index_buffer.h in Headers */,
+					FFCF004F2F1803000000004F /* mgl_metal_bridge.h in Headers */,
 					FFCF00292F18030000000029 /* mgl_metal_ref.h in Headers */,
 					FFCF002B2F1803000000002B /* mgl_msl_compiler.h in Headers */,
 					FFCE00272F18020000000027 /* mgl_readback.h in Headers */,
@@ -987,6 +996,7 @@
 					FFCE00222F18020000000022 /* mgl_focus_program.h in Headers */,
 					FFCE00242F18020000000024 /* mgl_frame_activity.h in Headers */,
 					FFCE00262F18020000000026 /* mgl_index_buffer.h in Headers */,
+					FFCF00502F18030000000050 /* mgl_metal_bridge.h in Headers */,
 					FFCF002A2F1803000000002A /* mgl_metal_ref.h in Headers */,
 					FFCF002C2F1803000000002C /* mgl_msl_compiler.h in Headers */,
 					FFCE00282F18020000000028 /* mgl_readback.h in Headers */,
@@ -1339,6 +1349,7 @@
 					FFCE003B2F1802000000003B /* mgl_focus_program.m in Sources */,
 					FFCE003D2F1802000000003D /* mgl_frame_activity.m in Sources */,
 					FFCE003F2F1802000000003F /* mgl_index_buffer.m in Sources */,
+					FFCF00512F18030000000051 /* mgl_metal_bridge.m in Sources */,
 					FFCF00372F18030000000037 /* mgl_msl_compiler.m in Sources */,
 					FFCE00412F18020000000041 /* mgl_readback.m in Sources */,
 					FFCE00432F18020000000043 /* mgl_spirv_resource.m in Sources */,
@@ -1418,6 +1429,7 @@
 					FFCE003C2F1802000000003C /* mgl_focus_program.m in Sources */,
 					FFCE003E2F1802000000003E /* mgl_frame_activity.m in Sources */,
 					FFCE00402F18020000000040 /* mgl_index_buffer.m in Sources */,
+					FFCF00522F18030000000052 /* mgl_metal_bridge.m in Sources */,
 					FFCF00382F18030000000038 /* mgl_msl_compiler.m in Sources */,
 					FFCE00422F18020000000042 /* mgl_readback.m in Sources */,
 					FFCE00442F18020000000044 /* mgl_spirv_resource.m in Sources */,

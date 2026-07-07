@@ -83,6 +83,7 @@
 #define MGL_NO_MTL_PIXEL_FORMAT
 #include "pixel_utils.h"
 #import "mgl_readback.h"
+#import "mgl_metal_bridge.h"
 
 typedef unsigned int GLenum;
 typedef unsigned int GLuint;
@@ -13454,16 +13455,6 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
 }
 
-void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)
-{
-    if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
-        fprintf(stderr, "MGL ERROR: mtlBlitFramebuffer bridge received invalid glm_ctx=%p\n", (void*)glm_ctx);
-        return;
-    }
-
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBlitFramebuffer:glm_ctx srcX0:srcX0 srcY0:srcY0 srcX1:srcX1 srcY1:srcY1 dstX0:dstX0 dstY0:dstY0 dstX1:dstX1 dstY1:dstY1 mask:mask filter:filter];
-}
-
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
 {
     if (!glm_ctx || glm_ctx != ctx || !_currentRenderEncoder) {
@@ -13509,15 +13500,6 @@ void mtlBlitFramebuffer(GLMContext glm_ctx, GLint srcX0, GLint srcY0, GLint srcX
 
     [self flushDrawBuffer:glm_ctx];
     [self endRenderEncoding];
-}
-
-void mtlInvalidateRenderPass(GLMContext glm_ctx)
-{
-    if (!glm_ctx || !glm_ctx->mtl_funcs.mtlObj) {
-        return;
-    }
-
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlInvalidateRenderPass:glm_ctx];
 }
 
 - (Texture *)framebufferAttachmentTexture: (FBOAttachment *)fbo_attachment
@@ -20767,12 +20749,6 @@ stencil_format_ok:;
     //[self newRenderEncoder];
 }
 
-void mtlDispatchCompute(GLMContext glm_ctx, GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDispatchCompute: glm_ctx groupsX:num_groups_x groupsY:num_groups_y groupsZ:num_groups_z];
-}
-
 
 -(void)mtlDispatchComputeIndirect:(GLMContext)glm_ctx indirect:(GLintptr)indirect
 {
@@ -20990,39 +20966,6 @@ void mtlDispatchCompute(GLMContext glm_ctx, GLuint num_groups_x, GLuint num_grou
     return gpuTime;
 }
 
-void mtlBeginTimerQuery(GLMContext glm_ctx)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBeginTimerQuery: glm_ctx];
-}
-
-GLuint64 mtlEndTimerQuery(GLMContext glm_ctx)
-{
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlEndTimerQuery: glm_ctx];
-}
-
-GLuint64 mtlGetGPUTimestamp(GLMContext glm_ctx)
-{
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetGPUTimestamp: glm_ctx];
-}
-
-void mtlDispatchComputeIndirect(GLMContext glm_ctx, GLintptr indirect)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDispatchComputeIndirect: glm_ctx indirect:indirect];
-}
-
-#pragma mark C interface to mtlBeginSampleQuery / mtlEndSampleQuery
-
-void mtlBeginSampleQuery(GLMContext glm_ctx)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBeginSampleQuery: glm_ctx];
-}
-
-GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
-{
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlEndSampleQuery: glm_ctx];
-}
-
-
 -(bool) processBuffer:(Buffer*)ptr
 {
     if (ptr == NULL)
@@ -21116,27 +21059,6 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx)
         [self newCommandBufferLocked];
     }
 }
-#pragma mark C interface to mtlBindBuffer
-void mtlBindBuffer(GLMContext glm_ctx, Buffer *ptr)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj bindMTLBuffer:ptr];
-}
-
-#pragma mark C interface to mtlBindTexture
-void mtlBindTexture(GLMContext glm_ctx, Texture *ptr)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj bindMTLTexture:ptr];
-}
-
-#pragma mark C interface to mtlBindProgram
-void mtlBindProgram(GLMContext glm_ctx, Program *ptr)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj bindMTLProgram:ptr];
-}
-
 #pragma mark C interface to mtlDeleteMTLObj
 -(void) mtlDeleteMTLObj:(GLMContext) glm_ctx buffer: (void *)obj
 {
@@ -21154,12 +21076,6 @@ void mtlBindProgram(GLMContext glm_ctx, Program *ptr)
     // Metal command buffers retain referenced resources, so immediate release is safe and
     // avoids shutdown-time command-buffer storms (one commit per deleted object).
     CFBridgingRelease(obj);
-}
-
-void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDeleteMTLObj: glm_ctx buffer: obj];
 }
 
 #pragma mark C interface to mtlGetSync
@@ -21334,12 +21250,6 @@ void mtlDeleteMTLObj (GLMContext glm_ctx, void *obj)
     }
 }
 
-void mtlGetSync (GLMContext glm_ctx, Sync *sync)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetSync: glm_ctx sync: sync];
-}
-
 #pragma mark C interface to mtlWaitForSync
 /*
  * mtlWaitForSync:sync: — fence 阻塞等待（CB-wait 机制）
@@ -21394,12 +21304,6 @@ void mtlGetSync (GLMContext glm_ctx, Sync *sync)
     }
 }
 
-void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlWaitForSync: glm_ctx sync: sync];
-}
-
 #pragma mark C interface to mtlGetSyncStatus
 /*
  * mtlGetSyncStatus:sync: — fence 非阻塞状态查询
@@ -21425,12 +21329,6 @@ void mtlWaitForSync (GLMContext glm_ctx, Sync *sync)
     }
 
     return GL_UNSIGNALED;
-}
-
-GLenum mtlGetSyncStatus (GLMContext glm_ctx, Sync *sync)
-{
-    // Call the Objective-C method using Objective-C syntax
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetSyncStatus: glm_ctx sync: sync];
 }
 
 #pragma mark C interface to mtlReleaseSync
@@ -21463,12 +21361,6 @@ GLenum mtlGetSyncStatus (GLMContext glm_ctx, Sync *sync)
             NSLog(@"MGL ERROR: Exception releasing sync event: %@", exception);
         }
     }
-}
-
-void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReleaseSync: glm_ctx sync: sync];
 }
 
 #pragma mark Draw command buffer flush
@@ -21953,6 +21845,22 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
 
         if (batch->state_snapshot) {
             memcpy(&glm_ctx->state, batch->state_snapshot, sizeof(glm_ctx->state));
+            /* The snapshot shallow-copies the 10 embedded HashTables in
+             * GLMState.  Each HashTable owns a dynamically allocated
+             * keys/states array that may have been reallocated since the
+             * snapshot was taken, making the snapshot's copies stale
+             * (use-after-free risk).  Preserve the live HashTables from
+             * savedState so lookups during replay remain valid. */
+            glm_ctx->state.vao_table = savedState.vao_table;
+            glm_ctx->state.buffer_table = savedState.buffer_table;
+            glm_ctx->state.texture_table = savedState.texture_table;
+            glm_ctx->state.shader_table = savedState.shader_table;
+            glm_ctx->state.program_table = savedState.program_table;
+            glm_ctx->state.program_pipeline_table = savedState.program_pipeline_table;
+            glm_ctx->state.transform_feedback_table = savedState.transform_feedback_table;
+            glm_ctx->state.renderbuffer_table = savedState.renderbuffer_table;
+            glm_ctx->state.framebuffer_table = savedState.framebuffer_table;
+            glm_ctx->state.sampler_table = savedState.sampler_table;
             mglRestoreProgramPipelinePair(glm_ctx,
                                           glm_ctx->state.program_name,
                                           glm_ctx->state.var.program_pipeline_binding);
@@ -23185,26 +23093,10 @@ void mtlReleaseSync (GLMContext glm_ctx, Sync *sync)
     }
 }
 
-void mtlFlushDrawBuffer(GLMContext glm_ctx)
-{
-    if (!glm_ctx || !glm_ctx->mtl_funcs.mtlObj) return;
-    @try {
-        [(__bridge id)glm_ctx->mtl_funcs.mtlObj flushDrawBuffer:glm_ctx];
-    } @catch (NSException *e) {
-        NSLog(@"MGL ERROR: mtlFlushDrawBuffer exception: %@", e);
-    }
-}
-
 #pragma mark C interface to mtlFlush
 -(void) mtlFlush:(GLMContext) glm_ctx finish:(bool)finish
 {
     [self flushCommandBuffer: finish];
-}
-
-void mtlFlush (GLMContext glm_ctx, bool finish)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlFlush:glm_ctx finish:finish];
 }
 
 #pragma mark C interface to mtlSwapBuffers
@@ -23853,32 +23745,6 @@ void mtlFlush (GLMContext glm_ctx, bool finish)
         NSLog(@"MGL INFO: mtlSwapBuffers skipped present because draw_buffer is GL_NONE");
     }
 }
-void mtlSwapBuffers (GLMContext glm_ctx)
-{
-    // CRITICAL FIX: Validate context and Metal object pointer before dereferencing
-    // This prevents pointer authentication failures from corrupted pointers
-    if (!glm_ctx) {
-        NSLog(@"MGL CRITICAL: mtlSwapBuffers - GLM context is NULL");
-        return;
-    }
-
-    // Validate the Metal object pointer lower bound only.
-    if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000)) {
-        NSLog(@"MGL CRITICAL: mtlSwapBuffers - Invalid Metal object pointer: %p", glm_ctx->mtl_funcs.mtlObj);
-        NSLog(@"MGL CRITICAL: This indicates memory corruption or context destruction");
-        return;
-    }
-
-    // Call the Objective-C method using Objective-C syntax
-    @autoreleasepool {
-        @try {
-            [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlSwapBuffers: glm_ctx];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL CRITICAL: mtlSwapBuffers - Exception caught: %@", exception);
-            NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
-        }
-    }
-}
 
 #pragma mark C interface to mtlClearBuffer
 -(void) mtlClearBuffer:(GLMContext) glm_ctx type:(GLuint) type mask:(GLbitfield) mask
@@ -24168,12 +24034,6 @@ void mtlSwapBuffers (GLMContext glm_ctx)
     glm_ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE;
 }
 
-void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlClearBuffer: glm_ctx type: type mask: mask];
-}
-
 #pragma mark C interface to mtlBufferSubData
 
 -(void) mtlBufferSubData:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr
@@ -24297,12 +24157,6 @@ void mtlClearBuffer (GLMContext glm_ctx, GLuint type, GLbitfield mask)
     }
 }
 
-void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, const void *ptr)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlBufferSubData: glm_ctx buf: buf offset:offset size:size ptr:ptr];
-}
-
 #pragma mark C interface to mtlMapUnmapBuffer
 -(void *) mtlMapUnmapBuffer:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
@@ -24416,12 +24270,6 @@ void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t siz
     return NULL;
 }
 
-void *mtlMapUnmapBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, GLenum access, bool map)
-{
-    // Call the Objective-C method using Objective-C syntax
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMapUnmapBuffer: glm_ctx buf: buf offset: offset size: size access: access map: map];
-}
-
 #pragma mark C interface to mtlFlushMappedBufferRange
 -(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset length:(size_t) length
 {
@@ -24487,12 +24335,6 @@ void *mtlMapUnmapBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t s
     if (mtl_buffer.storageMode == MTLStorageModeManaged) {
         [mtl_buffer didModifyRange:NSMakeRange(offset, length)];
     }
-}
-
-void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlFlushMappedBufferRange: glm_ctx buf: buf offset: offset length: length];
 }
 
 - (void)mglApplyPendingDefaultColorClearToTexture:(id<MTLTexture>)texture
@@ -26498,31 +26340,6 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 }
 
-void mtlReadDrawable(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReadDrawable:glm_ctx pixelBytes:pixelBytes bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:MTLRegionMake2D(x,y,width,height)];
-}
-
-void mtlReadIntegerPixels(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReadIntegerPixels:glm_ctx pixelBytes:pixelBytes bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:MTLRegionMake2D(x,y,width,height) format:format type:type];
-}
-
-void mtlReadDepthPixels(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlReadDepthPixels:glm_ctx pixelBytes:pixelBytes bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:MTLRegionMake2D(x,y,width,height)];
-}
-
-void mtlGetTexImage(GLMContext glm_ctx, Texture *tex, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLuint level, GLuint slice)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGetTexImage:glm_ctx tex:tex pixelBytes:pixelBytes bytesPerRow:bytesPerRow bytesPerImage:bytesPerImage fromRegion:MTLRegionMake2D(x,y,width,height) format:format type:type mipmapLevel:level slice:slice];
-}
-
-void mtlCopyTexSubImage(GLMContext glm_ctx, Texture *tex, GLuint slice, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlCopyTexSubImage:glm_ctx tex:tex slice:slice mipmapLevel:(NSUInteger)level xoffset:xoffset yoffset:yoffset x:x y:y width:(NSUInteger)width height:(NSUInteger)height];
-}
-
 #pragma mark C interface to mtlGenerateMipmaps
 
 -(void)mtlGenerateMipmaps:(GLMContext)glm_ctx forTexture:(Texture *) tex
@@ -26580,11 +26397,6 @@ void mtlCopyTexSubImage(GLMContext glm_ctx, Texture *tex, GLuint slice, GLint le
         }
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
     }
-}
-
-void mtlGenerateMipmaps(GLMContext glm_ctx, Texture *tex)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlGenerateMipmaps:glm_ctx forTexture:tex];
 }
 
 /* Map GL internal format to the (format, type) pair that matches the CPU
@@ -27899,24 +27711,6 @@ blitPath:
     }
 }
 
-void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, Texture *dstTex, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei width, GLsizei height, GLsizei depth)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlCopyImageSubData:glm_ctx
-                                                      srcTexture:srcTex
-                                                       srcLevel:srcLevel
-                                                           srcX:srcX
-                                                           srcY:srcY
-                                                           srcZ:srcZ
-                                                      dstTexture:dstTex
-                                                       dstLevel:dstLevel
-                                                           dstX:dstX
-                                                           dstY:dstY
-                                                           dstZ:dstZ
-                                                          width:width
-                                                         height:height
-                                                         depth:depth];
-}
-
 
 #pragma mark C interface to mtlTexSubImage
 
@@ -28200,11 +27994,6 @@ void mtlCopyImageSubData(GLMContext glm_ctx, Texture *srcTex, GLint srcLevel, GL
     }
 }
 
-void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_offset, size_t src_pitch, size_t src_image_size, size_t src_size, GLuint slice, GLuint level, size_t width, size_t height, size_t depth, size_t xoffset, size_t yoffset, size_t zoffset)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlTexSubImage:glm_ctx tex:tex buf:buf src_offset:src_offset src_pitch:src_pitch src_image_size:src_image_size src_size:src_size slice:slice level:level width:width height:height depth:depth xoffset:xoffset yoffset:yoffset zoffset:zoffset];
-}
-
 -(bool)mtlTexSubImageBytes:(GLMContext)glm_ctx tex:(Texture *)tex bytes:(const void *)bytes bytesSize:(size_t)bytes_size src_offset:(size_t)src_offset src_pitch:(size_t)src_pitch src_image_size:(size_t)src_image_size slice:(GLuint)slice level:(GLuint)level width:(size_t)width height:(size_t)height depth:(size_t)depth xoffset:(size_t)xoffset yoffset:(size_t)yoffset zoffset:(size_t)zoffset
 {
     (void)glm_ctx;
@@ -28437,11 +28226,6 @@ void mtlTexSubImage(GLMContext glm_ctx, Texture *tex, Buffer *buf, size_t src_of
                                            zoffset:zoffset
                                             reason:"mtlTexSubImageBytes"];
     return uploaded;
-}
-
-bool mtlTexSubImageBytes(GLMContext glm_ctx, Texture *tex, const void *bytes, size_t bytes_size, size_t src_offset, size_t src_pitch, size_t src_image_size, GLuint slice, GLuint level, size_t width, size_t height, size_t depth, size_t xoffset, size_t yoffset, size_t zoffset)
-{
-    return [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlTexSubImageBytes:glm_ctx tex:tex bytes:bytes bytesSize:bytes_size src_offset:src_offset src_pitch:src_pitch src_image_size:src_image_size slice:slice level:level width:width height:height depth:depth xoffset:xoffset yoffset:yoffset zoffset:zoffset];
 }
 
 #pragma mark utility functions for draw commands
@@ -30659,34 +30443,6 @@ typedef struct {
     }
 }
 
-void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
-{
-    // FINAL FAILSAFE: Catch any unhandled exceptions to prevent QEMU crashes
-    @try {
-        // Validate context before bridging
-        if (!glm_ctx || ((uintptr_t)glm_ctx < 0x1000)) {
-            NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid GLM context, aborting operation");
-            return;
-        }
-
-        // Validate the Metal object pointer lower bound only
-        if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < 0x1000)) {
-            NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid Metal object, aborting operation");
-            return;
-        }
-
-        [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawArrays: glm_ctx mode: mode first: first count: count];
-    } @catch (NSException *exception) {
-        NSLog(@"MGL CRITICAL: mtlDrawArrays - Unhandled exception caught: %@", exception);
-        NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
-        NSLog(@"MGL CRITICAL: This is a failsafe to prevent QEMU crashes");
-        // Don't crash, just return gracefully
-    } @catch (id exception) {
-        NSLog(@"MGL CRITICAL: mtlDrawArrays - Unknown exception caught: %@", exception);
-        // Final safety net
-    }
-}
-
 #pragma mark C interface to mtlDrawElements
 -(void) mtlDrawElements: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
@@ -31731,12 +31487,6 @@ void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count)
     }
 }
 
-void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElements: glm_ctx mode: mode count: count type: type indices: indices];
-}
-
 
 #pragma mark C interface to mtlDrawRangeElements
 -(void) mtlDrawRangeElements: (GLMContext) glm_ctx mode:(GLenum) mode start:(GLuint) start end:(GLuint) end count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
@@ -31896,11 +31646,6 @@ void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
 }
 
-void mtlDrawRangeElements(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawRangeElements: glm_ctx mode: mode start: start end: end count: count type: type indices: indices];
-}
-
 
 #pragma mark C interface to mtlDrawArraysInstanced
 -(void) mtlDrawArraysInstanced: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount
@@ -31975,11 +31720,6 @@ void mtlDrawRangeElements(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint 
 
     [_currentRenderEncoder drawPrimitives:primitiveType vertexStart:first vertexCount:count instanceCount:instancecount];
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
-}
-
-void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawArraysInstanced: glm_ctx mode: mode first: first count: count instancecount: instancecount];
 }
 
 
@@ -32144,11 +31884,6 @@ void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsize
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
-void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsInstanced: glm_ctx mode: mode count: count type: type indices: indices instancecount: instancecount];
-}
-
 
 #pragma mark C interface to mtlDrawElementsBaseVertex
 -(void) mtlDrawElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices basevertex:(GLint) basevertex
@@ -32303,11 +32038,6 @@ void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GL
 
     [_currentRenderEncoder drawIndexedPrimitives: primitiveType indexCount:count indexType: drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1 baseVertex:basevertex baseInstance:0];
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
-}
-
-void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsBaseVertex: glm_ctx mode: mode count: count type: type indices: indices basevertex: basevertex];
 }
 
 
@@ -32468,11 +32198,6 @@ void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, G
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
 }
 
-void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode start: start end: end count:count type: type indices: indices basevertex:basevertex];
-}
-
 
 #pragma mark C interface to mtlDrawElementsInstancedBaseVertex
 -(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLuint) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
@@ -32630,11 +32355,6 @@ void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint star
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)count * (uint64_t)MAX(instancecount, 0)];
 }
 
-void mtlDrawElementsInstancedBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex];
-}
-
 #pragma mark C interface to mtlDrawArraysIndirect
 -(void) mtlDrawArraysIndirect: (GLMContext) glm_ctx mode:(GLenum) mode indirect: (const void *) indirect
 {
@@ -32767,11 +32487,6 @@ void mtlDrawElementsInstancedBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, indirect, (unsigned long)(NSUInteger)(uintptr_t)indirect,
                 (unsigned)(glm_ctx ? glm_ctx->state.var.current_program : 0u));
-}
-
-void mtlDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *indirect)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
 }
 
 
@@ -32974,11 +32689,6 @@ void mtlDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *indirect
                 (unsigned)(glm_ctx ? glm_ctx->state.var.current_program : 0u));
 }
 
-void mtlDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const void *indirect)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsIndirect:glm_ctx mode:mode type:type indirect:indirect];
-}
-
 
 #pragma mark C interface to mtlDrawArraysInstancedBaseInstance
 -(void) mtlDrawArraysInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
@@ -33053,11 +32763,6 @@ void mtlDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const
 
     [_currentRenderEncoder drawPrimitives:primitiveType vertexStart:first vertexCount:count instanceCount:instancecount baseInstance:baseinstance];
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
-}
-
-void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode first:first count:count instancecount:instancecount baseinstance:baseinstance];
 }
 
 
@@ -33219,11 +32924,6 @@ void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint f
     //
     [_currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:instancecount baseVertex:0 baseInstance:baseinstance];
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
-}
-
-void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount baseinstance:baseinstance];
 }
 
 
@@ -33388,11 +33088,6 @@ void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsiz
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
-void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex baseinstance:baseinstance];
-}
-
 
 #pragma mark C interface to mtlMultiDrawArrays
 -(void) mtlMultiDrawArrays: (GLMContext)glm_ctx mode:(GLenum) mode first:(const GLint *)first count:(const GLsizei *)count drawcount:(GLsizei) drawcount
@@ -33530,11 +33225,6 @@ void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum m
     if (submittedVertices > 0u) {
         [self recordArrayDrawSubmittedMode:mode vertexCount:submittedVertices];
     }
-}
-
-void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMultiDrawArrays:glm_ctx mode:mode first:first count:count drawcount:drawcount];
 }
 
 
@@ -33712,12 +33402,6 @@ void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, con
     if (submittedIndices > 0u) {
         [self recordElementDrawSubmittedMode:mode indexCount:submittedIndices];
     }
-}
-
-void mtlMultiDrawElements(GLMContext glm_ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount)
-{
-    // Call the Objective-C method using Objective-C syntax
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMultiDrawElements: glm_ctx mode: mode count: count type: type indices: indices drawcount: drawcount];
 }
 
 
@@ -33901,11 +33585,6 @@ void mtlMultiDrawElements(GLMContext glm_ctx, GLenum mode, const GLsizei *count,
     }
 }
 
-void mtlMultiDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMultiDrawElementsBaseVertex: glm_ctx mode: mode count: count type: type indices: indices drawcount: drawcount basevertex:basevertex];
-}
-
 
 -(void) mtlMultiDrawArraysIndirect: (GLMContext)glm_ctx mode:(GLenum) mode indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
 {
@@ -34075,11 +33754,6 @@ void mtlMultiDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, const GLsiz
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
                 (unsigned)(glm_ctx ? glm_ctx->state.var.current_program : 0u));
-}
-
-void mtlMultiDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMultiDrawArraysIndirect:glm_ctx mode:mode indirect:indirect drawcount:drawcount stride:stride];
 }
 
 
@@ -34314,11 +33988,6 @@ void mtlMultiDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *ind
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
                 (unsigned)(glm_ctx ? glm_ctx->state.var.current_program : 0u));
-}
-
-void mtlMultiDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride)
-{
-    [(__bridge id) glm_ctx->mtl_funcs.mtlObj mtlMultiDrawElementsIndirect:glm_ctx mode:mode type:type indirect:indirect drawcount:drawcount stride:stride];
 }
 
 #pragma mark C interface to context functions
