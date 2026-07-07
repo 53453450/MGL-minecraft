@@ -8,10 +8,10 @@
  * NDC z in [-1,1]) and Metal (top-left origin, NDC z in [0,1]).
  *
  * The Y-Flip Authority model records per render-target whether the RT was
- * written by a program whose vertex shader had Y-flip injection.  Sampling
- * consumers query `mglDecideYFlipForSampledRT` to choose between the original
- * texture and a pre-flipped copy, preventing double-flip when both the
- * rendering program and the sampling program inject Y-flip.
+ * written in an orientation that should be sampled from the original Metal
+ * texture.  Sampling consumers query `mglDecideYFlipForSampledRT` to choose
+ * between the original texture and a pre-flipped copy, preventing double-flip
+ * while keeping framebuffer-input blit/post passes on the sampled-copy path.
  *
  * This module is pure specification-compliance machinery: every OpenGL
  * program needs framebuffer/texture origin translation when running on
@@ -58,8 +58,10 @@ bool mglProgramHasExistingFramebufferSampleYFlip(Program *program);
 /* Unified Y-Flip decision for sampling a render-target texture.
  *
  * Authority is stored per-RT in `tex->mtl_render_yflip_authority`, packed as
- * (mtl_render_target_write_version << 1) | render_yflip_injected.  It records
- * whether the RT was written by a program whose VS had Y-flip injection.
+ * (mtl_render_target_write_version << 1) | use_original.  The low bit is only
+ * authoritative for writes whose later GL-visible sampling should use the
+ * original Metal texture; framebuffer-input fullscreen passes must continue to
+ * refresh/use the sampled copy.
  *
  * Decision matrix:
  *   render_yflip | sample_yflip | decision
@@ -69,9 +71,9 @@ bool mglProgramHasExistingFramebufferSampleYFlip(Program *program);
  *   true          | false        | USE_ORIGINAL  (render already flipped)
  *   true          | true         | USE_ORIGINAL_AND_INJECT
  *
- * The key fix: when render_yflip=true and sample_yflip=false (the MC 1.21.8
- * lightmap case — blit_screen.vsh injected, terrain.vsh not), we use the
- * original texture instead of the Y-flipped copy, avoiding double-flip.
+ * The key fix: when render_yflip=true and sample_yflip=false (the Minecraft
+ * lightmap case — procedural fullscreen write, later terrain sample), we use
+ * the original texture instead of the Y-flipped copy, avoiding double-flip.
  *
  * Defensive downgrade: if the authority version does not match the current
  * `mtl_render_target_write_version`, treat as "not injected" so the safe
@@ -80,12 +82,12 @@ bool mglProgramHasExistingFramebufferSampleYFlip(Program *program);
 MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgram);
 
 /* Returns true if the RT write recorded in `tex->mtl_render_yflip_authority`
- * was performed by a program with VS Y-flip injection AND the authority is
- * still current (version matches `mtl_render_target_write_version`).
+ * should be sampled from the original Metal texture AND the authority is still
+ * current (version matches `mtl_render_target_write_version`).
  *
- * Used by RT Sync to skip generating a Y-flipped copy for injected-rendered
- * RTs — sampling consumers will use the original via the decision above. */
-bool mglRTWriteAuthorityIsCurrentAndInjected(Texture *tex);
+ * Used by RT Sync to skip generating a Y-flipped copy for authoritative RTs —
+ * sampling consumers will use the original via the decision above. */
+bool mglRTWriteAuthorityIsCurrentAndUsesOriginal(Texture *tex);
 
 #ifdef __cplusplus
 }

@@ -7,9 +7,10 @@
  * Metal vertex/compute pipelines expose 31 buffer slots (0..30).  MGL reserves
  * the high end of this range for internal use (tessellation, transform
  * feedback, gl_FragCoord fixup, cull-distance emulation, SPIRV-Cross runtime
- * sizing).  GL user buffer bindings (UBO/SSBO/atomic-counter) MUST NOT land in
- * the reserved range — `mglBufferSlotIsReservedForStage` is the conflict-detection
- * gate used by `applyMSLResourceBindings`.
+ * sizing).  A low vertex-stage slot is also reserved for fixed-function point
+ * size emulation.  GL user buffer bindings (UBO/SSBO/atomic-counter) MUST NOT
+ * land in the reserved range — `mglBufferSlotIsReservedForStage` is the
+ * conflict-detection gate used by `applyMSLResourceBindings`.
  *
  * IMPORTANT — cross-stage slot reuse:
  * Several slots are reused across disjoint pipeline stages (e.g. slot 28 is
@@ -19,7 +20,8 @@
  * per-slot comments for reuse notes.
  *
  * Adding a new reserved slot:
- *   1. Pick the lowest free slot in [25, 30] (31 is reserved for TCS stage_in).
+ *   1. Pick the lowest free slot in [25, 30] for high internal slots, or a
+ *      documented low slot if the feature must not collide with vertex attrs.
  *   2. Add an entry here with a doc comment + reuse notes.
  *   3. Update `mglBufferSlotIsReservedForStage` if the slot is stage-specific.
  *   4. Add a conflict check in `applyMSLResourceBindings` if user buffers could
@@ -41,11 +43,11 @@ extern "C" {
 #define MGL_BUFFER_SIZE_BUFFER_INDEX 25u
 
 typedef enum {
-    /* ---- Slots shared across the TCS/TES compute path ---- */
+    /* Fixed-function point size parameter for vertex shaders.  Vertex attribute
+     * buffers start at slot 16, so this does not collide with VAO streams. */
+    kMGLPointSizeBufferIndex      = 15,
 
-    /* TCS patch-vertex input buffer (device <type> *_mgl_tcs_in_buffer).
-     * TCS compute kernel only. */
-    kMGLBufferSlot_TCSStageIn       = 25,
+    /* ---- Slots shared across the TCS/TES compute path ---- */
 
     /* Tessellation factor output buffer.  TCS writes, tessellator reads.
      * TCS/TES compute path only. */
@@ -68,10 +70,10 @@ typedef enum {
      * kMGLFragCoordParamsBufferIndex in FS — disjoint stages, no conflict. */
     kMGLBufferSlot_TESGlIn          = 30,
 
-    /* TCS [[stage_in]] replacement buffer — Metal compute kernels do not
-     * support [[stage_in]], so SPIRV-Cross's stage_in is rewritten to
-     * buffer(31).  TCS compute kernel only. */
-    kMGLBufferSlot_TCSStageInRepl   = 31,
+    /* TCS [[stage_in]] replacement buffer.  TCS compute kernel only.
+     * Keep this below 25 so it cannot collide with SPIRV-Cross's
+     * spvBufferSizeConstants at slot 25 or tessellation helper slots 26-30. */
+    kMGLBufferSlot_TCSStageInRepl   = 24,
 
     /* ---- Slots reused by VS/FS draw path (NOT TCS/TES compute) ---- */
 
@@ -91,12 +93,11 @@ typedef enum {
     /* ---- Vertex attribute slots ---- */
 
     /* Vertex attribute buffers start at slot 16 and grow upward.
-     * Slots 0..15 are reserved for plain uniform buffers and low-index
-     * resource bindings. */
+     * Slots 0..14 are available for plain uniform buffers and low-index
+     * resource bindings; slot 15 is reserved for point-size emulation. */
     kMGLVertexAttribBufferBase      = 16,
 
-    /* Metal vertex buffer layout indices are 0..30 (count = 31).  Index 31
-     * is invalid for vertex layout but used by TCS compute stage_in. */
+    /* Metal vertex buffer layout indices are 0..30 (count = 31). */
     kMGLMaxMetalVertexBufferIndex  = 30,
     kMGLMaxMetalVertexBufferCount  = 31,
 } MGLReservedBufferSlot;
@@ -125,7 +126,7 @@ GLboolean mglBufferSlotIsReserved(GLuint slot);
  * PatchInfo=28, IndirectParams=29, TESGlIn=30).  Call this from
  * `applyMSLResourceBindings` when `pptr` has TCS/TES stages attached to
  * detect UBO/SSBO bindings that would silently collide with tessellation
- * reserved buffers.  Slot 31 is always reserved (see mglBufferSlotIsReserved). */
+ * reserved buffers. */
 GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot);
 
 /* Returns GL_TRUE if `slot` is reserved for a program whose vertex shader

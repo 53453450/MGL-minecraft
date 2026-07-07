@@ -23,9 +23,14 @@
 
 GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
 {
-    /* Slot 31 — TCS stage_in replacement, TCS compute kernel only. */
-    if (slot == 31u) {
-        return (stage == MGL_STAGE_TESS_CONTROL) ? GL_TRUE : GL_FALSE;
+    /* Fixed-function point size emulation parameter, vertex path only. */
+    if (slot == kMGLPointSizeBufferIndex) {
+        return (stage == MGL_STAGE_VERTEX || stage < 0) ? GL_TRUE : GL_FALSE;
+    }
+
+    /* TCS stage_in replacement, TCS compute kernel only. */
+    if (slot == kMGLBufferSlot_TCSStageInRepl) {
+        return (stage == MGL_STAGE_TESS_CONTROL || stage < 0) ? GL_TRUE : GL_FALSE;
     }
 
     /* No other slot is *always* reserved regardless of stage.  Slots 26-30
@@ -39,13 +44,6 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
 
 GLboolean mglBufferSlotIsReserved(GLuint slot)
 {
-    /* Slot 31 is always reserved (TCS stage_in replacement buffer).  All
-     * TCS/TES programs use it, and a user buffer binding there would
-     * silently corrupt tessellation input. */
-    if (slot == 31u) {
-        return GL_TRUE;
-    }
-
     /* Slots 26-30 are reserved *when* the program uses tessellation or the
      * VS/FS emulation paths, but a program that uses neither could legally
      * bind user buffers there.  We do NOT mark them universally reserved
@@ -53,7 +51,8 @@ GLboolean mglBufferSlotIsReserved(GLuint slot)
      *
      * Callers that know whether tessellation/cull-distance/FragCoord-fixup
      * is active should use the specific mglBufferSlotIsReservedFor* helpers
-     * below for accurate per-path detection. */
+     * below for accurate per-path detection.  The stage-specific point-size
+     * and TCS stage-in slots are handled by mglBufferSlotIsReservedForStage. */
     return GL_FALSE;
 }
 
@@ -62,8 +61,8 @@ GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot)
     /* TCS/TES compute dispatch path reserves slots 26-30 for tessellation
      * factors, per-patch output, patch info, indirect params, and TES gl_in.
      * A UBO/SSBO bound at any of these slots in a tessellation program would
-     * silently corrupt tessellation data.  Slot 31 is covered by the
-     * universal mglBufferSlotIsReserved check. */
+     * silently corrupt tessellation data.  The TCS stage-in replacement slot
+     * is stage-specific and covered by mglBufferSlotIsReservedForStage. */
     switch (slot) {
         case 26u:  /* TessFactor */
         case 27u:  /* PatchOutput */
@@ -100,6 +99,10 @@ GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot)
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
+        case 15:
+            return "kMGLPointSizeBufferIndex (fixed-function point size)";
+        case 24:
+            return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement)";
         case 25:
             return "MGL_BUFFER_SIZE_BUFFER_INDEX (SPIRV-Cross runtime-sized SSBO sizing)";
         case 26:
@@ -112,8 +115,6 @@ const char *mglBufferSlotReservedName(GLuint slot)
             return "kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex (TCS/TES compute OR VS cull-distance)";
         case 30:
             return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex (TES gl_in OR FS gl_FragCoord fixup)";
-        case 31:
-            return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement)";
         default:
             return NULL;
     }

@@ -357,13 +357,13 @@ typedef struct Texture_t {
     GLuint  mtl_gl_sampled_levels;
     GLuint  mtl_gl_sampled_write_version;
     GLuint  mtl_render_target_write_version;
-    /* Y-Flip Authority: packed (mtl_render_target_write_version << 1) | render_yflip_injected.
+    /* Y-Flip Authority: packed (mtl_render_target_write_version << 1) | use_original.
      * Set synchronously with mtl_render_target_write_version in
      * mglMarkTextureLevelRenderTargetWritten.  Low bit = 1 means the RT was
-     * written by a program whose VS had Y-flip injected (so the Metal texture
-     * already holds GL-bottom-origin data and must NOT be re-flipped by
-     * RT_SAMPLE_COPY).  Sampling consumers consult this via
-     * mglDecideYFlipForSampledRT to pick original vs Y-flipped copy. */
+     * written in an orientation that should be sampled from the original Metal
+     * texture, not from the Y-flipped RT_SAMPLE_COPY.  This covers VS
+     * framebuffer-yflip writes; framebuffer-input blit/post passes do not set
+     * this bit. */
     GLuint  mtl_render_yflip_authority;
     GLboolean metal_data_authoritative; // set when Metal texture data is more recent than CPU data (e.g. after copyImageSubData blit)
     Buffer  *texture_buffer;

@@ -47,30 +47,30 @@ MGLYFlipDecision mglDecideYFlipForSampledRT(Texture *tex, Program *samplingProgr
     GLuint rt_ver = tex->mtl_render_target_write_version;
     GLuint auth_packed = tex->mtl_render_yflip_authority;
     GLuint auth_ver = auth_packed >> 1;
-    bool render_yflip_injected = (auth_packed & 1u) != 0u;
+    bool render_uses_original = (auth_packed & 1u) != 0u;
 
     /* Authority version mismatch: defensively downgrade to "not injected",
      * which will use the Y-flipped copy (the safe pre-fix behavior). */
     if (auth_ver != rt_ver) {
-        render_yflip_injected = false;
+        render_uses_original = false;
     }
 
     bool sample_yflip_injected = samplingProgram &&
         samplingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE;
 
-    if (render_yflip_injected && !sample_yflip_injected) {
+    if (render_uses_original && !sample_yflip_injected) {
         return MGL_YFLIP_USE_ORIGINAL;
     }
-    if (!render_yflip_injected && sample_yflip_injected) {
+    if (!render_uses_original && sample_yflip_injected) {
         return MGL_YFLIP_USE_ORIGINAL_AND_INJECT;
     }
-    if (render_yflip_injected && sample_yflip_injected) {
+    if (render_uses_original && sample_yflip_injected) {
         return MGL_YFLIP_USE_ORIGINAL_AND_INJECT;
     }
     return MGL_YFLIP_USE_SAMPLED_COPY;
 }
 
-bool mglRTWriteAuthorityIsCurrentAndInjected(Texture *tex)
+bool mglRTWriteAuthorityIsCurrentAndUsesOriginal(Texture *tex)
 {
     if (!tex || !tex->is_render_target) {
         return false;
@@ -78,7 +78,7 @@ bool mglRTWriteAuthorityIsCurrentAndInjected(Texture *tex)
 
     GLuint auth_packed = tex->mtl_render_yflip_authority;
     GLuint auth_ver = auth_packed >> 1;
-    bool render_yflip_injected = (auth_packed & 1u) != 0u;
+    bool render_uses_original = (auth_packed & 1u) != 0u;
 
-    return (auth_ver == tex->mtl_render_target_write_version) && render_yflip_injected;
+    return (auth_ver == tex->mtl_render_target_write_version) && render_uses_original;
 }

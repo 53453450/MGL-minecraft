@@ -75,6 +75,7 @@
 #import "mgl_draw_encode.h"
 #import "mgl_msl_compiler.h"
 #import "mgl_metal_ref.h"
+#import "mgl_buffer_slots.h"
 
 /* Metal.framework (imported below) provides its own MTLPixelFormat definition,
  * so skip the local enum in pixel_utils.h to avoid a redefinition conflict. */
@@ -277,6 +278,41 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
     return obj;
 }
 
+static NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPoint)
+{
+    if (!msl || !entryPoint || entryPoint[0] == '\0') {
+        return NSMakeRange(NSNotFound, 0);
+    }
+
+    NSString *entryName = [NSString stringWithUTF8String:entryPoint];
+    if (!entryName) {
+        return NSMakeRange(NSNotFound, 0);
+    }
+
+    NSString *needle = [entryName stringByAppendingString:@"("];
+    NSRange entryRange = [msl rangeOfString:needle];
+    if (entryRange.location == NSNotFound) {
+        return NSMakeRange(NSNotFound, 0);
+    }
+
+    NSUInteger openParen = entryRange.location + entryRange.length - 1u;
+    NSUInteger length = [msl length];
+    NSInteger depth = 0;
+    for (NSUInteger idx = openParen; idx < length; idx++) {
+        unichar ch = [msl characterAtIndex:idx];
+        if (ch == '(') {
+            depth++;
+        } else if (ch == ')') {
+            depth--;
+            if (depth == 0) {
+                return NSMakeRange(idx, 1);
+            }
+        }
+    }
+
+    return NSMakeRange(NSNotFound, 0);
+}
+
 // Debug switch: temporarily disable shared-event synchronization path to isolate GPU timeout sources.
 static const BOOL kMGLDisableSharedEventSync = YES;
 // Leave verbose bind tracing off by default; per-draw logging can stall the render thread.
@@ -303,18 +339,16 @@ static const BOOL kMGLUseDedicatedTextureUploadCommandBuffer = NO;
 // NOTE: This is the Metal buffer index where vertex attrib buffers start, NOT the
 // GL binding count.  Metal only has 31 vertex buffer slots (0..30), so this must
 // stay below 31 regardless of MAX_BINDABLE_BUFFERS (which tracks GL state only).
-static const NSUInteger kMGLVertexAttribBufferBase = 16;
-// Metal vertex buffer layout indices are 0..30 (count=31).
-// Guard all vertex-layout/binding paths against using index 31.
-static const NSUInteger kMGLMaxMetalVertexBufferCount = 31;
-static const NSUInteger kMGLMaxMetalVertexBufferIndex = 30;
-static const NSUInteger kMGLFragCoordParamsBufferIndex = 30;
+// kMGLVertexAttribBufferBase = 16, kMGLMaxMetalVertexBufferCount = 31,
+// kMGLMaxMetalVertexBufferIndex = 30 come from mgl_buffer_slots.h.
+//
+// Slot indices for point-size params and TCS stage-in have different names
+// in the renderer than in the header; #define bridges them.  Identically-named
+// constants (FragCoordParams, CullDistance*) resolve to the header's enum
+// values automatically.
+#define kMGLPointSizeParamBufferIndex     kMGLPointSizeBufferIndex          // = 15
+#define kMGLTCSStageInReplBufferIndex     kMGLBufferSlot_TCSStageInRepl    // = 24
 static const char *kMGLFragCoordParamsMSLName = "_mglFragCoordParams";
-// Cull distance emulation: vertex buffer slot for sibling-vertex cull data,
-// and params slot for the MGLCullDistanceParams constant. These must match
-// the [[buffer(N)]] indices injected into the vertex shader MSL.
-static const NSUInteger kMGLCullDistanceParamsBufferIndex = 28;
-static const NSUInteger kMGLCullDistanceVertexBufferIndex = 29;
 // Metal validation requires bound stage buffers to satisfy argument byte length.
 // Keep a conservative minimum for low-index base/resource slots.
 static const NSUInteger kMGLMinimumStageBindingSize = 256;
@@ -5407,6 +5441,19 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         }
     }
 
+    if (activeProgram &&
+        activeProgram->spirv[_VERTEX_SHADER].msl_str &&
+        strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "_mgl_point_size_params")) {
+        float pointSizeParams[2] = {
+            ctx && ctx->state.var.point_size > 0.0f ? ctx->state.var.point_size : 1.0f,
+            ctx && ctx->state.caps.program_point_size ? 1.0f : 0.0f
+        };
+        [_currentRenderEncoder setVertexBytes:pointSizeParams
+                                      length:sizeof(pointSizeParams)
+                                      atIndex:kMGLPointSizeParamBufferIndex];
+        anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
+    }
+
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(vbindCall)) {
         NSUInteger boundSlots = 0;
         NSUInteger reservedSlots = 0;
@@ -8493,15 +8540,20 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
     if (target == GL_TEXTURE_RECTANGLE)
     {
-        if ((tex_param->wrap_s == GL_CLAMP_TO_EDGE) &&
-            (tex_param->wrap_t == GL_CLAMP_TO_EDGE) &&
-            (tex_param->wrap_r == GL_CLAMP_TO_EDGE))
+        samplerDescriptor.normalizedCoordinates = false;
+        if ((tex_param->wrap_s != GL_CLAMP_TO_EDGE) ||
+            (tex_param->wrap_t != GL_CLAMP_TO_EDGE) ||
+            (tex_param->wrap_r != GL_CLAMP_TO_EDGE))
         {
-            samplerDescriptor.normalizedCoordinates = false;
-        }
-        else
-        {
-            DEBUG_PRINT("Non-normalized coordinates should only be used with 1D and 2D textures with the ClampToEdge wrap mode, otherwise the results of sampling are undefined.");
+            static uint64_t s_rectWrapClampWarningCount = 0;
+            uint64_t hit = ++s_rectWrapClampWarningCount;
+            if (hit <= 16ull || (hit % 256ull) == 0ull) {
+                NSLog(@"MGL SAMPLER WARNING: GL_TEXTURE_RECTANGLE requires unnormalized coordinates; forcing ClampToEdge sampler address modes for Metal compatibility hit=%llu",
+                      (unsigned long long)hit);
+            }
+            samplerDescriptor.sAddressMode = MTLSamplerAddressModeClampToEdge;
+            samplerDescriptor.tAddressMode = MTLSamplerAddressModeClampToEdge;
+            samplerDescriptor.rAddressMode = MTLSamplerAddressModeClampToEdge;
         }
     }
 
@@ -13227,6 +13279,29 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     return tex;
 }
 
+static bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *name)
+{
+    if (!program || !name) {
+        return false;
+    }
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        for (int resType = 0; resType < _MAX_SPIRV_RES; resType++) {
+            SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+            for (GLuint i = 0; resources->list && i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (res->name &&
+                    strcmp(res->name, name) == 0 &&
+                    mglRendererResourceLooksSamplerLike(res, resType)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
 {
     Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
@@ -13242,15 +13317,23 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
     Texture *tex = [self framebufferAttachmentTexture:attachment];
     mglMarkTextureLevelRenderTargetWritten(tex, attachment->level);
 
-    /* Update Y-Flip Authority: if the current rendering program had VS
-     * Y-flip injection, the RT now holds GL-bottom-origin data and must
-     * NOT be re-flipped by RT_SAMPLE_COPY.  Set the low bit of authority
-     * to record this.  The version was already bumped by
-     * mglMarkTextureLevelRenderTargetWritten above. */
+    /* Update original-sampling authority: if the current rendering program had
+     * VS framebuffer Y-flip injection, the RT already holds GL-visible
+     * orientation, so RT_SAMPLE_COPY must not flip it again.  Exclude only true
+     * framebuffer input passes (InSampler); ordinary mesh/item shaders can
+     * sample Sampler0 while still producing an authoritative RT.
+     *
+     * Do not infer this from scissored atlas writes. Minecraft 1.21.11's GUI
+     * item atlas still samples with GL texture-origin semantics, so it needs the
+     * refreshed Y-flipped sampled copy. */
     {
         Program *renderingProgram = mglResolveProgramFromState(ctx);
-        if (renderingProgram &&
-            renderingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE) {
+        BOOL framebufferYFlipWrite =
+            renderingProgram &&
+            renderingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE &&
+            !mglRendererProgramHasSampledResourceNamed(renderingProgram, "InSampler");
+
+        if (tex && framebufferYFlipWrite) {
             tex->mtl_render_yflip_authority |= 1u;
         }
     }
@@ -13325,6 +13408,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
         return;
     }
 
+    bool markedAnyAttachment = false;
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
     for (GLsizei slot = 0; slot < drawBufferCount; ++slot) {
         GLuint attachmentIndex = 0u;
@@ -13332,6 +13416,37 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                                                   mglMetalDrawBufferAt(ctx, (GLuint)slot),
                                                   &attachmentIndex)) {
             [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
+            markedAnyAttachment = true;
+        }
+    }
+
+    if (markedAnyAttachment || !_renderPassDescriptor) {
+        return;
+    }
+
+    /*
+     * Minecraft 1.21.11's GUI item-atlas path is routed through the new render
+     * abstraction and can reach this point with a valid Metal color attachment
+     * even when the GL draw-buffer snapshot failed to resolve.  Use the active
+     * render-pass descriptor as the source of truth so the atlas RT receives a
+     * write version and its GL-origin sampled copy can be refreshed at pass end.
+     */
+    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+            continue;
+        }
+        Texture *tex = [self framebufferAttachmentTexture:&fbo->color_attachments[attachmentIndex]];
+        id<MTLTexture> mtlTex = (tex && tex->mtl_data)
+            ? (__bridge id<MTLTexture>)(tex->mtl_data)
+            : nil;
+        if (!mtlTex) {
+            continue;
+        }
+        for (GLuint colorSlot = 0u; colorSlot < MAX_COLOR_ATTACHMENTS; colorSlot++) {
+            if (_renderPassDescriptor.colorAttachments[colorSlot].texture == mtlTex) {
+                [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
+                break;
+            }
         }
     }
 }
@@ -14545,41 +14660,41 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                         NSRange afterInclude = NSMakeRange(includeRange.location + includeRange.length, 0);
                         mslNS = [mslNS stringByReplacingCharactersInRange:afterInclude withString:structDef];
                     }
-                    /* Add vertex_id and buffer params to the entry signature.
-                     * SPIRV-Cross generates entries like "vertex_N_main(...)". */
-                    NSString *stageInPattern = @"[[stage_in]])";
-                    NSRange stageInRange = [mslNS rangeOfString:stageInPattern];
-                    if (stageInRange.location != NSNotFound) {
-                        NSString *replacement = @"[[stage_in]], uint mgl_vid [[vertex_id]], "
-                                                "device const float* mgl_cull_buf [[buffer(29)]], "
-                                                "constant MGLCullDistanceParams* mgl_cull_params [[buffer(28)]])";
-                        mslNS = [mslNS stringByReplacingCharactersInRange:stageInRange
-                                                               withString:replacement];
+                    BOOL cullParamsInjected = NO;
+                    NSRange closeParenRange =
+                        mglRendererFindMSLEntryParameterClose(mslNS, shader->entry_point);
+                    if (closeParenRange.location != NSNotFound) {
+                        NSString *cullParams = @", uint mgl_vid [[vertex_id]], "
+                                                 "device const float* mgl_cull_buf [[buffer(29)]], "
+                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(28)]])";
+                        mslNS = [mslNS stringByReplacingCharactersInRange:closeParenRange
+                                                               withString:cullParams];
+                        cullParamsInjected = YES;
                     }
                     /* Inject the cull check before "return out;". */
                     NSString *cullCheck = @"\n    /* MGL cull distance emulation: if all vertices in this primitive "
-                                           "have a negative value for any single cull distance entry, move "
-                                           "the vertex off-screen to cull the entire primitive. For points "
-                                           "(prim_vertex_count==1) this degenerates to checking the single "
-                                           "vertex's own cull distance values. */\n"
-                                           "    {\n"
-                                           "        uint mgl_base = mgl_vid - (mgl_vid % mgl_cull_params->prim_vertex_count);\n"
-                                           "        bool mgl_should_cull = false;\n"
-                                           "        for (uint mgl_j = 0u; mgl_j < mgl_cull_params->culldist_size && !mgl_should_cull; mgl_j++) {\n"
-                                           "            bool mgl_all_neg = true;\n"
-                                           "            for (uint mgl_i = 0u; mgl_i < mgl_cull_params->prim_vertex_count; mgl_i++) {\n"
-                                           "                uint mgl_other = mgl_base + mgl_i;\n"
-                                           "                float mgl_d = mgl_cull_buf[mgl_other * (mgl_cull_params->vertex_stride / 4u) "
-                                           "+ (mgl_cull_params->culldist_offset / 4u) + mgl_j];\n"
-                                           "                if (mgl_d >= 0.0) { mgl_all_neg = false; break; }\n"
-                                           "            }\n"
-                                           "            if (mgl_all_neg) { mgl_should_cull = true; }\n"
-                                           "        }\n"
-                                           "        if (mgl_should_cull) {\n"
-                                           "            out.gl_Position = float4(2.0, 2.0, 2.0, 1.0);\n"
-                                           "        }\n"
-                                           "    }\n"
-                                           "    return out;";
+                                            "have a negative value for any single cull distance entry, move "
+                                            "the vertex off-screen to cull the entire primitive. For points "
+                                            "(prim_vertex_count==1) this degenerates to checking the single "
+                                            "vertex's own cull distance values. */\n"
+                                            "    {\n"
+                                            "        uint mgl_base = mgl_vid - (mgl_vid % mgl_cull_params->prim_vertex_count);\n"
+                                            "        bool mgl_should_cull = false;\n"
+                                            "        for (uint mgl_j = 0u; mgl_j < mgl_cull_params->culldist_size && !mgl_should_cull; mgl_j++) {\n"
+                                            "            bool mgl_all_neg = true;\n"
+                                            "            for (uint mgl_i = 0u; mgl_i < mgl_cull_params->prim_vertex_count; mgl_i++) {\n"
+                                            "                uint mgl_other = mgl_base + mgl_i;\n"
+                                            "                float mgl_d = mgl_cull_buf[mgl_other * (mgl_cull_params->vertex_stride / 4u) "
+                                            "+ (mgl_cull_params->culldist_offset / 4u) + mgl_j];\n"
+                                            "                if (mgl_d >= 0.0) { mgl_all_neg = false; break; }\n"
+                                            "            }\n"
+                                            "            if (mgl_all_neg) { mgl_should_cull = true; }\n"
+                                            "        }\n"
+                                            "        if (mgl_should_cull) {\n"
+                                            "            out.gl_Position = float4(2.0, 2.0, 2.0, 1.0);\n"
+                                            "        }\n"
+                                            "    }\n"
+                                            "    return out;";
                     /* Replace the last "return out;" occurrence. SPIRV-Cross
                      * vertex shaders always end with this.  Use NSBackwardsSearch
                      * to find the last occurrence (the entry function's return),
@@ -14587,8 +14702,8 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx)
                      * mglInjectMSLPointSizeBuiltin may have inserted
                      * "out.mgl_injected_point_size = 1.0; " before "return out;". */
                     NSRange returnRange = [mslNS rangeOfString:@"return out;"
-                                                        options:NSBackwardsSearch];
-                    if (returnRange.location != NSNotFound) {
+                                                       options:NSBackwardsSearch];
+                    if (cullParamsInjected && returnRange.location != NSNotFound) {
                         mslNS = [mslNS stringByReplacingCharactersInRange:returnRange withString:cullCheck];
                         compileMSL = [mslNS UTF8String];
                         if (getenv("MGL_DUMP_MSL_POST_PACK")) {
@@ -18277,7 +18392,10 @@ create_new_command_buffer:
                                                drawBuffers:(const GLenum *)drawBuffers
                                                     reason:(const char *)reason
 {
-    if (!ctx || !fbo || drawCount <= 0 || !drawBuffers) {
+    (void)drawCount;
+    (void)drawBuffers;
+
+    if (!ctx || !fbo) {
         return;
     }
 
@@ -18289,6 +18407,12 @@ create_new_command_buffer:
      * shader in a subsequent draw, which we can't know here — but we CAN skip
      * textures that were never written (rtVer==0) or never flagged as RT.
      *
+     * Iterate the actual FBO color attachments rather than the draw-buffer
+     * snapshot.  MC 1.21.11's render abstraction creates transient FBOs such
+     * as the GUI item atlas where the GL draw-buffer state can be incomplete
+     * by the time the Metal encoder ends, but the attachment itself is still
+     * the texture that was rendered and will be sampled immediately.
+     *
      * NOTE: do NOT skip non-zero attachment levels here.  MC 1.21.11's
      * terrain atlas is a mipmapped RT whose mip 1-4 are written by separate
      * FBOs (one per mip level).  Skipping them left the Y-flip copy stale
@@ -18297,13 +18421,8 @@ create_new_command_buffer:
      * updateGLSampledRenderTargetCopyForTexture handles non-zero levels
      * correctly. */
     bool anySampledRT = false;
-    for (GLsizei slot = 0; slot < drawCount; slot++) {
-        GLuint attachmentIndex = 0u;
-        if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
-                                                   drawBuffers[slot],
-                                                   &attachmentIndex) ||
-            attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
-            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
             continue;
         }
         FBOAttachment *attachment = &fbo->color_attachments[attachmentIndex];
@@ -18318,13 +18437,8 @@ create_new_command_buffer:
         return;
     }
 
-    for (GLsizei slot = 0; slot < drawCount; slot++) {
-        GLuint attachmentIndex = 0u;
-        if (!mglMetalResolveFboDrawAttachmentIndex(ctx,
-                                                   drawBuffers[slot],
-                                                   &attachmentIndex) ||
-            attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
-            ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
+    for (GLuint attachmentIndex = 0u; attachmentIndex < MAX_COLOR_ATTACHMENTS; attachmentIndex++) {
+        if (((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
             continue;
         }
 
@@ -18345,7 +18459,7 @@ create_new_command_buffer:
          * data.  No Y-flipped copy is needed — sampling consumers will use
          * the original via mglDecideYFlipForSampledRT.  Release any stale copy
          * to save memory and prevent double-flip. */
-        if (mglRTWriteAuthorityIsCurrentAndInjected(tex)) {
+        if (mglRTWriteAuthorityIsCurrentAndUsesOriginal(tex)) {
             if (tex->mtl_gl_sampled_data) {
                 [self releaseGLSampledRenderTargetCopyForTexture:tex];
                 if (mglTraceLogIsEnabled()) {
@@ -28871,6 +28985,37 @@ typedef struct {
         [computeCommandEncoder setBuffer:buffer offset:bindOffset atIndex:metalBindingIndex];
     }
 
+    Program *stageProgram = mglResolveProgramForStageFromState(ctx, stage);
+    if (stageProgram && stageProgram->spirv[stage].needs_buffer_size_buffer)
+    {
+        uint32_t sizeConstants[31];
+        memset(sizeConstants, 0, sizeof(sizeConstants));
+
+        for (GLuint i = 0; i < stageBufferMap.count; i++)
+        {
+            BufferMap *map = &stageBufferMap.buffers[i];
+            if (!map->buf)
+                continue;
+            NSUInteger metalSlot = map->has_metal_binding
+                ? (NSUInteger)map->metal_binding_index
+                : (NSUInteger)map->buffer_base_index;
+            if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
+                continue;
+            GLsizeiptr visibleSize = map->size > 0 ? map->size : (map->buf->size - map->offset);
+            if (visibleSize < 0) visibleSize = 0;
+            sizeConstants[metalSlot] = (uint32_t)visibleSize;
+        }
+
+        id<MTLBuffer> sizeBuffer = [_device newBufferWithBytes:sizeConstants
+                                                        length:sizeof(sizeConstants)
+                                                       options:MTLResourceStorageModeShared];
+        if (sizeBuffer) {
+            [computeCommandEncoder setBuffer:sizeBuffer
+                                      offset:0
+                                     atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+        }
+    }
+
     return true;
 }
 
@@ -29150,6 +29295,38 @@ typedef struct {
                                                        options:MTLResourceStorageModeShared];
     memset(tessFactorBuf.contents, 0, tessFactorSize);
     [computeEncoder setBuffer:tessFactorBuf offset:0 atIndex:26];
+
+    if (tcsMsl && strstr(tcsMsl, "_mgl_tcs_in_buffer[")) {
+        NSLog(@"MGL TESS WARNING: TCS stage_in vertex input is not emulated yet; skipping TCS dispatch for program %u",
+              tcsProgram ? (unsigned)tcsProgram->name : 0u);
+        [computeEncoder endEncoding];
+        return false;
+    }
+
+    if (tcsMsl && strstr(tcsMsl, "_mgl_tcs_in_buffer")) {
+        NSUInteger tcsInStride = mglComputeMSLStructSizeBySuffix(tcsMsl, "_in", 3);
+        if (tcsInStride == 0u) {
+            tcsInStride = 256u;
+        }
+        NSUInteger tcsInVertices = (NSUInteger)patchCount * (NSUInteger)patchVertices;
+        if (tcsInVertices < (NSUInteger)vertexCount) {
+            tcsInVertices = (NSUInteger)vertexCount;
+        }
+        if (tcsInVertices == 0u) {
+            tcsInVertices = 1u;
+        }
+        if (tcsInStride <= NSUIntegerMax / tcsInVertices) {
+            NSUInteger tcsInSize = tcsInStride * tcsInVertices;
+            id<MTLBuffer> tcsStageInFallback = [_device newBufferWithLength:tcsInSize
+                                                                     options:MTLResourceStorageModeShared];
+            if (tcsStageInFallback) {
+                memset(tcsStageInFallback.contents, 0, tcsInSize);
+                [computeEncoder setBuffer:tcsStageInFallback
+                                  offset:0
+                                  atIndex:kMGLTCSStageInReplBufferIndex];
+            }
+        }
+    }
 
     /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
@@ -29547,7 +29724,10 @@ typedef struct {
         if (tcsProgram->dirty_bits) {
             [self bindMTLProgram:tcsProgram];
         }
-        [self dispatchTessControlShader:drawCtx program:tcsProgram first:first count:count];
+        if (![self dispatchTessControlShader:drawCtx program:tcsProgram first:first count:count]) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
     }
 
     if (tesProgram) {

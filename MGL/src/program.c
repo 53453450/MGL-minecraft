@@ -2988,6 +2988,37 @@ static GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
 }
 
 static void replace_all_substr(char **pstr, const char *from, const char *to);
+static const char *mglFindMSLEntryParameterOpen(const char *msl);
+static const char *mglFindMSLEntryParameterClose(const char *msl);
+
+static GLboolean mglMSLBufferSlotConflicts(Program *pptr, int stage, GLuint slot)
+{
+    GLboolean slot_conflicts = mglBufferSlotIsReserved(slot);
+
+    if (!slot_conflicts && mglBufferSlotIsReservedForStage(slot, stage)) {
+        slot_conflicts = GL_TRUE;
+    }
+    if (!slot_conflicts &&
+        (pptr->shader_slots[_TESS_CONTROL_SHADER] ||
+         pptr->shader_slots[_TESS_EVALUATION_SHADER]) &&
+        mglBufferSlotIsReservedForTessellation(slot)) {
+        slot_conflicts = GL_TRUE;
+    }
+    if (!slot_conflicts &&
+        pptr->spirv[_VERTEX_SHADER].msl_str &&
+        strstr(pptr->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance") &&
+        mglBufferSlotIsReservedForCullDistance(slot)) {
+        slot_conflicts = GL_TRUE;
+    }
+    if (!slot_conflicts &&
+        pptr->spirv[_FRAGMENT_SHADER].msl_str &&
+        strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, "_mglFragCoordParams") &&
+        mglBufferSlotIsReservedForFragCoordFixup(slot)) {
+        slot_conflicts = GL_TRUE;
+    }
+
+    return slot_conflicts;
+}
 
 static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
 {
@@ -3064,26 +3095,8 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
             }
 
             {
-                GLboolean slot_conflicts = mglBufferSlotIsReserved(metal_index);
-
-                if (!slot_conflicts &&
-                    (pptr->shader_slots[_TESS_CONTROL_SHADER] ||
-                     pptr->shader_slots[_TESS_EVALUATION_SHADER]) &&
-                    mglBufferSlotIsReservedForTessellation(metal_index)) {
-                    slot_conflicts = GL_TRUE;
-                }
-                if (!slot_conflicts &&
-                    pptr->spirv[_VERTEX_SHADER].msl_str &&
-                    strstr(pptr->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance") &&
-                    mglBufferSlotIsReservedForCullDistance(metal_index)) {
-                    slot_conflicts = GL_TRUE;
-                }
-                if (!slot_conflicts &&
-                    pptr->spirv[_FRAGMENT_SHADER].msl_str &&
-                    strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, "_mglFragCoordParams") &&
-                    mglBufferSlotIsReservedForFragCoordFixup(metal_index)) {
-                    slot_conflicts = GL_TRUE;
-                }
+                GLboolean slot_conflicts =
+                    mglMSLBufferSlotConflicts(pptr, stage, metal_index);
 
                 if (slot_conflicts) {
                     /*
@@ -3109,7 +3122,8 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                     GLuint free_slot = 32;
                     if (map_entry) {
                         for (GLuint s = 0; s < 25; s++) {
-                            if (!used_slots[s]) {
+                            if (!used_slots[s] &&
+                                !mglMSLBufferSlotConflicts(pptr, stage, s)) {
                                 free_slot = s;
                                 break;
                             }
@@ -4215,8 +4229,64 @@ static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
     }
 }
 
-/* Inject [[point_size]] output into vertex-producing shaders that don't
- * already declare it.
+static GLboolean mglFindMSLIdentifierBefore(const char *start,
+                                            const char *pos,
+                                            char *out,
+                                            size_t out_size)
+{
+    if (!start || !pos || !out || out_size == 0) {
+        return GL_FALSE;
+    }
+
+    const char *p = pos;
+    while (p > start && isspace((unsigned char)p[-1])) {
+        p--;
+    }
+    const char *name_end = p;
+    while (p > start &&
+           (isalnum((unsigned char)p[-1]) || p[-1] == '_')) {
+        p--;
+    }
+
+    size_t len = (size_t)(name_end - p);
+    if (len == 0 || len >= out_size) {
+        return GL_FALSE;
+    }
+
+    memcpy(out, p, len);
+    out[len] = '\0';
+    return GL_TRUE;
+}
+
+static GLboolean mglInjectMSLPointSizeParams(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr || strstr(*msl_ptr, "_mgl_point_size_params")) {
+        return GL_TRUE;
+    }
+
+    const char *param_open = mglFindMSLEntryParameterOpen(*msl_ptr);
+    const char *param_close = mglFindMSLEntryParameterClose(*msl_ptr);
+    if (!param_open || !param_close || param_open >= param_close) {
+        return GL_FALSE;
+    }
+
+    GLboolean has_existing_params = GL_FALSE;
+    for (const char *p = param_open + 1; p < param_close; p++) {
+        if (!isspace((unsigned char)*p)) {
+            has_existing_params = GL_TRUE;
+            break;
+        }
+    }
+
+    char param[128];
+    snprintf(param, sizeof(param),
+             "%sconstant float2& _mgl_point_size_params [[buffer(%u)]]",
+             has_existing_params ? ", " : "",
+             (unsigned)kMGLPointSizeBufferIndex);
+    return mglInsertStringAt(msl_ptr, param_close, param) ? GL_TRUE : GL_FALSE;
+}
+
+/* Inject or override [[point_size]] output for vertex-producing shaders.
  *
  * Metal requires a [[point_size]] output for point primitives
  * (MTLPrimitiveTypePoint) to rasterize with a defined, nonzero size.
@@ -4225,10 +4295,11 @@ static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
  * struct.  This function post-processes the MSL to add:
  *   1. A `float mgl_injected_point_size [[point_size]];` field to the
  *      vertex output struct (right after the [[position]] field).
- *   2. An `out.mgl_injected_point_size = 1.0;` assignment before every
- *      `return out;` in the entry function.
+ *   2. An assignment before every `return out;` in the entry function.
  *
- * The default of 1.0 matches OpenGL's default point size. */
+ * Vertex shaders read the current GL point-size state from a tiny internal
+ * buffer.  If the shader already declares gl_PointSize, fixed-function point
+ * size still overrides it when GL_PROGRAM_POINT_SIZE is disabled. */
 static void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
 {
     if (!msl_ptr || !*msl_ptr) {
@@ -4242,10 +4313,9 @@ static void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
         return;
     }
 
-    /* Skip if [[point_size]] is already present. */
-    if (strstr(*msl_ptr, "[[point_size]]")) {
-        return;
-    }
+    GLboolean has_point_size = strstr(*msl_ptr, "[[point_size]]") != NULL;
+    GLboolean dynamic_vertex_point_size = (stage == _VERTEX_SHADER);
+    char point_size_name[128] = "mgl_injected_point_size";
 
     /* Find the [[position]] qualifier in the output struct. */
     const char *pos_qualifier = strstr(*msl_ptr, "[[position]]");
@@ -4253,32 +4323,63 @@ static void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
         return;
     }
 
-    /* Find the end of the line containing [[position]] (the terminating ';'). */
-    const char *stmt_end = strchr(pos_qualifier, ';');
-    if (!stmt_end) {
+    if (has_point_size) {
+        const char *ps_qualifier = strstr(*msl_ptr, "[[point_size]]");
+        if (!mglFindMSLIdentifierBefore(*msl_ptr,
+                                        ps_qualifier,
+                                        point_size_name,
+                                        sizeof(point_size_name))) {
+            return;
+        }
+        if (!dynamic_vertex_point_size) {
+            return;
+        }
+    } else {
+        /* Find the end of the line containing [[position]] (the terminating ';'). */
+        const char *stmt_end = strchr(pos_qualifier, ';');
+        if (!stmt_end) {
+            return;
+        }
+
+        /* Insert the point_size field right after the position field. */
+        static const char point_size_field[] = "\n    float mgl_injected_point_size [[point_size]];";
+        if (!mglInsertStringAt(msl_ptr, stmt_end + 1, point_size_field)) {
+            return;
+        }
+    }
+
+    if (dynamic_vertex_point_size &&
+        !mglInjectMSLPointSizeParams(msl_ptr)) {
         return;
     }
 
-    /* Insert the point_size field right after the position field. */
-    static const char point_size_field[] = "\n    float mgl_injected_point_size [[point_size]];";
-    if (!mglInsertStringAt(msl_ptr, stmt_end + 1, point_size_field)) {
-        return;
-    }
-
-    /* Inject `out.mgl_injected_point_size = 1.0;` before every `return out;`.
-     * SPIRV-Cross consistently names the output variable `out` and uses
+    /* SPIRV-Cross consistently names the output variable `out` and uses
      * `return out;` as the return statement. */
     const char return_pattern[] = "return out;";
     size_t return_len = strlen(return_pattern);
+    size_t cursor_offset = 0;
     const char *cursor = *msl_ptr;
     while ((cursor = strstr(cursor, return_pattern)) != NULL) {
-        /* Insert before the return statement. */
-        static const char point_size_assign[] = "out.mgl_injected_point_size = 1.0; ";
+        cursor_offset = (size_t)(cursor - *msl_ptr);
+        char point_size_assign[256];
+        if (dynamic_vertex_point_size && has_point_size) {
+            snprintf(point_size_assign, sizeof(point_size_assign),
+                     "if (_mgl_point_size_params.y == 0.0) { out.%s = _mgl_point_size_params.x; } ",
+                     point_size_name);
+        } else if (dynamic_vertex_point_size) {
+            snprintf(point_size_assign, sizeof(point_size_assign),
+                     "out.%s = _mgl_point_size_params.x; ",
+                     point_size_name);
+        } else {
+            snprintf(point_size_assign, sizeof(point_size_assign),
+                     "out.%s = 1.0; ",
+                     point_size_name);
+        }
         if (!mglInsertStringAt(msl_ptr, cursor, point_size_assign)) {
             break;
         }
         /* Move past the inserted text + the return pattern for the next search. */
-        cursor += strlen(point_size_assign) + return_len;
+        cursor = *msl_ptr + cursor_offset + strlen(point_size_assign) + return_len;
     }
 }
 
@@ -4408,12 +4509,12 @@ static void mglFixMSLImage2DRectImageSize(char **msl_ptr)
  * descriptors.  Replace:
  *   <type> <name> [[stage_in]]
  * with:
- *   device <type> *_mgl_tcs_in_buffer [[buffer(25)]]
+ *   device <type> *_mgl_tcs_in_buffer [[buffer(kMGLBufferSlot_TCSStageInRepl)]]
  * and inject at body start:
  *   <type> <name> = _mgl_tcs_in_buffer[gl_PrimitiveID * spvIndirectParams[0] + gl_InvocationID];
  * Also strips [[attribute(N)]] from struct members (invalid in device buffers).
- * Buffer 25 is used because TCS already uses 26 (tessFactor), 27 (patchOut),
- * 28 (spvOut), 29 (indirectParams), and 30 is reserved for TES gl_in. */
+ * The replacement slot is kept below SPIRV-Cross's runtime-sized SSBO size
+ * buffer (25) and the tessellation helper slots (26-30). */
 static void mglFixMSLTcsStageIn(char **msl_ptr)
 {
     if (!msl_ptr || !*msl_ptr) {
@@ -4462,14 +4563,15 @@ static void mglFixMSLTcsStageIn(char **msl_ptr)
     memcpy(param_name, name_start, name_len);
     param_name[name_len] = '\0';
 
-    /* Replace "<type> <name> [[stage_in]]" with
-     * "device <type> *_mgl_tcs_in_buffer [[buffer(25)]]" */
+    /* Replace "<type> <name> [[stage_in]]" with a device buffer parameter. */
     const char *replacement_start = type_start;
     size_t old_param_len = (size_t)(pos + strlen(stage_in_attr) - replacement_start);
 
     char new_param[512];
     snprintf(new_param, sizeof(new_param),
-             "device %s *_mgl_tcs_in_buffer [[buffer(25)]]", param_type);
+             "device %s *_mgl_tcs_in_buffer [[buffer(%u)]]",
+             param_type,
+             (unsigned)kMGLBufferSlot_TCSStageInRepl);
     size_t new_param_len = strlen(new_param);
 
     size_t before_len = (size_t)(replacement_start - *msl_ptr);
@@ -4522,10 +4624,6 @@ static void mglFixMSLTcsStageIn(char **msl_ptr)
         }
     }
 }
-
-/* Forward declaration: used by mglFixMSLTesAsComputeKernel (Step 4c) and
- * defined below. */
-static const char *mglFindMSLEntryParameterClose(const char *msl);
 
 /* Ensure _mgl_patch_id3 is available in the TES compute kernel.
  *
@@ -5628,10 +5726,9 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
     }
 }
 
-/* Find the closing ')' of the MSL entry-function parameter list for any
- * shader stage (kernel/vertex/fragment), not just compute kernels.  Returns
- * a pointer to the ')' in the source, or NULL if no entry function is found. */
-static const char *mglFindMSLEntryParameterClose(const char *msl)
+/* Find the opening '(' of the MSL entry-function parameter list for any
+ * shader stage (kernel/vertex/fragment). */
+static const char *mglFindMSLEntryParameterOpen(const char *msl)
 {
     if (!msl) {
         return NULL;
@@ -5667,25 +5764,18 @@ static const char *mglFindMSLEntryParameterClose(const char *msl)
     if (!entry) {
         /* Fall back to the legacy compute-only search (kernel void <name>). */
         const char *kernel = strstr(msl, "kernel void ");
-        const char *open = kernel ? strchr(kernel, '(') : NULL;
-        if (!open) {
-            return NULL;
-        }
-        int depth = 0;
-        for (const char *p = open; *p; p++) {
-            if (*p == '(') {
-                depth++;
-            } else if (*p == ')') {
-                depth--;
-                if (depth == 0) {
-                    return p;
-                }
-            }
-        }
-        return NULL;
+        return kernel ? strchr(kernel, '(') : NULL;
     }
 
-    const char *open = strchr(entry, '(');
+    return strchr(entry, '(');
+}
+
+/* Find the closing ')' of the MSL entry-function parameter list for any
+ * shader stage (kernel/vertex/fragment), not just compute kernels.  Returns
+ * a pointer to the ')' in the source, or NULL if no entry function is found. */
+static const char *mglFindMSLEntryParameterClose(const char *msl)
+{
+    const char *open = mglFindMSLEntryParameterOpen(msl);
     if (!open) {
         return NULL;
     }
@@ -7213,7 +7303,7 @@ static GLboolean mglPatchFixUnknownTextureType(MSLPatchContext *ctx, char **msl_
 {
     /* SPIRV-Cross can emit this placeholder for sampler2DRect. Metal has no
      * rectangle texture object; MGL stores GL_TEXTURE_RECTANGLE as a 2D Metal
-     * texture and the CTS rectangle samples here use normalized coordinates. */
+     * texture and binds a non-normalized Metal sampler for rectangle targets. */
     replace_all_substr(msl_ptr, "unknown_texture_type<", "texture2d<");
     (void)ctx;
     return GL_TRUE;
@@ -7354,7 +7444,7 @@ static GLboolean mglPatchTcsStageInFix(MSLPatchContext *ctx, char **msl_ptr)
 {
     /* TCS is generated by SPIRV-Cross as a compute kernel, but it has a
      * [[stage_in]] parameter for vertex input which Metal compute pipelines
-     * don't support.  Replace it with a device buffer [[buffer(31)]]. */
+     * don't support.  Replace it with a device buffer. */
     if (ctx->stage == _TESS_CONTROL_SHADER) {
         mglFixMSLTcsStageIn(msl_ptr);
     }
