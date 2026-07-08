@@ -1175,15 +1175,15 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
         if (!ptr)
             continue;
 
-        if (call_id <= 32u || (call_id % 128u) == 0u)
+        if (mglTraceLogIsEnabled() &&
+            (call_id <= 32u || (call_id % 128u) == 0u))
         {
-            fprintf(stderr,
-                    "MGL TRACE DeleteBuffers call=%llu name=%u ptr=%p tableCount=%zu tableCap=%zu\n",
-                    (unsigned long long)call_id,
-                    buffer,
-                    (void *)ptr,
-                    STATE(buffer_table).count,
-                    STATE(buffer_table).size);
+            mglTraceLogExternal("MGL TRACE DeleteBuffers call=%llu name=%u ptr=%p tableCount=%zu tableCap=%zu",
+                                (unsigned long long)call_id,
+                                buffer,
+                                (void *)ptr,
+                                STATE(buffer_table).count,
+                                STATE(buffer_table).size);
         }
 
         if ((uintptr_t)ptr < 0x10000u || ptr->name != buffer)
@@ -1767,7 +1767,8 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
         return;
     }
 
-    bool trace = mglShouldTraceBufferMutation(call, target, size);
+    bool trace = mglTraceLogIsEnabled() &&
+                 mglShouldTraceBufferMutation(call, target, size);
     char src_preview[64];
     src_preview[0] = '\0';
     uint64_t src_hash = 0ull;
@@ -1776,18 +1777,17 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
         src_hash = mglTraceHashBytes(data, (size_t)size);
     }
     if (trace) {
-        fprintf(stderr,
-                "MGL TRACE BufferData.begin call=%" PRIu64 " target=0x%x buffer=%u size=%lld usage=0x%x data=%p srcHash=0x%016" PRIx64 " srcHead=%s oldSize=%lld dirty=0x%x\n",
-                call,
-                target,
-                ptr->name,
-                (long long)size,
-                usage,
-                data,
-                src_hash,
-                (data && size > 0) ? src_preview : "-",
-                (long long)ptr->size,
-                ptr->data.dirty_bits);
+        mglTraceLogExternal("MGL TRACE BufferData.begin call=%" PRIu64 " target=0x%x buffer=%u size=%lld usage=0x%x data=%p srcHash=0x%016" PRIx64 " srcHead=%s oldSize=%lld dirty=0x%x",
+                            call,
+                            target,
+                            ptr->name,
+                            (long long)size,
+                            usage,
+                            data,
+                            src_hash,
+                            (data && size > 0) ? src_preview : "-",
+                            (long long)ptr->size,
+                            ptr->data.dirty_bits);
     }
 
     // buffer was created via buffer storage call for immutable storage
@@ -1818,17 +1818,16 @@ void mglBufferData(GLMContext ctx, GLenum target, GLsizeiptr size, const void *d
             dst_hash = mglTraceHashBytes(dst_data, (size_t)size);
         }
 
-        fprintf(stderr,
-                "MGL TRACE BufferData.end call=%" PRIu64 " target=0x%x buffer=%u size=%lld vmSize=%llu dataPtr=%p dirty=0x%x dstHash=0x%016" PRIx64 " dstHead=%s\n",
-                call,
-                target,
-                ptr->name,
-                (long long)ptr->size,
-                (unsigned long long)ptr->data.buffer_size,
-                (void *)(uintptr_t)ptr->data.buffer_data,
-                ptr->data.dirty_bits,
-                dst_hash,
-                (dst_data && size > 0) ? dst_preview : "-");
+        mglTraceLogExternal("MGL TRACE BufferData.end call=%" PRIu64 " target=0x%x buffer=%u size=%lld vmSize=%llu dataPtr=%p dirty=0x%x dstHash=0x%016" PRIx64 " dstHead=%s",
+                            call,
+                            target,
+                            ptr->name,
+                            (long long)ptr->size,
+                            (unsigned long long)ptr->data.buffer_size,
+                            (void *)(uintptr_t)ptr->data.buffer_data,
+                            ptr->data.dirty_bits,
+                            dst_hash,
+                            (dst_data && size > 0) ? dst_preview : "-");
     }
  }
 
@@ -1965,7 +1964,8 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
     {
-        bool trace = mglShouldTraceBufferMutation(call, target, size);
+        bool trace = mglTraceLogIsEnabled() &&
+                     mglShouldTraceBufferMutation(call, target, size);
         uint64_t src_hash = 0ull;
         uint64_t dst_before_hash = 0ull;
         char src_preview[64];
@@ -1997,18 +1997,17 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
             const void *dst_before = (const void *)((uintptr_t)ptr->data.buffer_data + (uintptr_t)offset);
             dst_before_hash = mglTraceHashBytes(dst_before, (size_t)size);
             mglTraceFormatBytes(dst_before, (size_t)size, dst_before_preview, sizeof(dst_before_preview));
-            fprintf(stderr,
-                    "MGL TRACE BufferSubData.begin call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s dstBeforeHash=0x%016" PRIx64 " dstBeforeHead=%s dirty=0x%x\n",
-                    call,
-                    target,
-                    ptr->name,
-                    (long long)offset,
-                    (long long)size,
-                    src_hash,
-                    src_preview,
-                    dst_before_hash,
-                    dst_before_preview,
-                    ptr->data.dirty_bits);
+            mglTraceLogExternal("MGL TRACE BufferSubData.begin call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s dstBeforeHash=0x%016" PRIx64 " dstBeforeHead=%s dirty=0x%x",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                src_hash,
+                                src_preview,
+                                dst_before_hash,
+                                dst_before_preview,
+                                ptr->data.dirty_bits);
         }
         
         memcpy((char*)ptr->data.buffer_data + offset, data, size);
@@ -2028,36 +2027,35 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
             dst_after_preview[0] = '\0';
             mglTraceFormatBytes(dst_after, (size_t)size, dst_after_preview, sizeof(dst_after_preview));
 
-            fprintf(stderr,
-                    "MGL TRACE BufferSubData.end call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld dstAfterHash=0x%016" PRIx64 " dstAfterHead=%s dirty=0x%x stateDirty=0x%x\n",
-                    call,
-                    target,
-                    ptr->name,
-                    (long long)offset,
-                    (long long)size,
-                    dst_after_hash,
-                    dst_after_preview,
-                    ptr->data.dirty_bits,
-                    ctx->state.dirty_bits);
+            mglTraceLogExternal("MGL TRACE BufferSubData.end call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld dstAfterHash=0x%016" PRIx64 " dstAfterHead=%s dirty=0x%x stateDirty=0x%x",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                dst_after_hash,
+                                dst_after_preview,
+                                ptr->data.dirty_bits,
+                                ctx->state.dirty_bits);
         }
     }
     else
     {
-        if (mglShouldTraceBufferMutation(call, target, size)) {
+        if (mglTraceLogIsEnabled() &&
+            mglShouldTraceBufferMutation(call, target, size)) {
             char src_preview[64];
             src_preview[0] = '\0';
             uint64_t src_hash = src_hash_for_meta;
             mglTraceFormatBytes(data, (size_t)size, src_preview, sizeof(src_preview));
-            fprintf(stderr,
-                    "MGL TRACE BufferSubData.mtl call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s mtl=%p\n",
-                    call,
-                    target,
-                    ptr->name,
-                    (long long)offset,
-                    (long long)size,
-                    src_hash,
-                    src_preview,
-                    ptr->data.mtl_data);
+            mglTraceLogExternal("MGL TRACE BufferSubData.mtl call=%" PRIu64 " target=0x%x buffer=%u off=%lld size=%lld srcHash=0x%016" PRIx64 " srcHead=%s mtl=%p",
+                                call,
+                                target,
+                                ptr->name,
+                                (long long)offset,
+                                (long long)size,
+                                src_hash,
+                                src_preview,
+                                ptr->data.mtl_data);
         }
         if (ctx->mtl_funcs.mtlBufferSubData)
         {

@@ -27,6 +27,7 @@
 #include "mgl_safety.h"
 #include "mgl_metal_ref.h"
 #include "mgl_frame_activity.h"
+#include "mgl_trace_log.h"
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
@@ -211,6 +212,55 @@ static uint64_t mglHashBytes64(const void *data, size_t size, uint64_t seed)
 static inline bool mglRangesOverlap(uint64_t a0, uint64_t a1, uint64_t b0, uint64_t b1)
 {
     return a0 < b1 && b0 < a1;
+}
+
+static uint32_t mglEnvUInt32Clamped(const char *name,
+                                    uint32_t defaultValue,
+                                    uint32_t minValue,
+                                    uint32_t maxValue)
+{
+    const char *env = name ? getenv(name) : NULL;
+    if (!env || env[0] == '\0') {
+        return defaultValue;
+    }
+
+    char *end = NULL;
+    unsigned long parsed = strtoul(env, &end, 10);
+    if (end == env || parsed == 0ul) {
+        return defaultValue;
+    }
+
+    if (parsed < (unsigned long)minValue) {
+        return minValue;
+    }
+    if (parsed > (unsigned long)maxValue) {
+        return maxValue;
+    }
+    return (uint32_t)parsed;
+}
+
+static uint32_t mglRuntimeMaxDrawsPerBatch(void)
+{
+    static uint32_t s_value = 0u;
+    if (s_value == 0u) {
+        s_value = mglEnvUInt32Clamped("MGL_BATCH_MAX_DRAWS",
+                                      MGL_MAX_DRAWS_PER_BATCH,
+                                      1u,
+                                      MGL_MAX_DRAWS_PER_BATCH);
+    }
+    return s_value;
+}
+
+static uint32_t mglRuntimeMaxBatchCount(void)
+{
+    static uint32_t s_value = 0u;
+    if (s_value == 0u) {
+        s_value = mglEnvUInt32Clamped("MGL_BATCH_MAX_COUNT",
+                                      MGL_MAX_BATCHES,
+                                      1u,
+                                      MGL_MAX_BATCHES);
+    }
+    return s_value;
 }
 
 static void mglNormalizeMutationRange(int64_t offset, int64_t size, uint64_t *start, uint64_t *end)
@@ -430,6 +480,7 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return;
+    if (cb->texture_read_count == 0 && !cb->texture_read_overflow) return;
     if (cb->texture_read_overflow) {
         mglFlushCommandBuffer(ctx);
         return;
@@ -462,14 +513,14 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
         if (texture && mglPendingDrawsReadTexture(ctx, texture)) {
             static uint64_t s_framebufferWriteHazardFlushCount = 0;
             uint64_t hit = ++s_framebufferWriteHazardFlushCount;
-            if (hit <= 64ull || (hit % 512ull) == 0ull) {
-                fprintf(stderr,
-                        "MGL TRACE pending framebuffer write hazard flush hit=%llu tex=%u attachment=%u batches=%u commands=%u\n",
-                        (unsigned long long)hit,
-                        texture ? texture->name : 0u,
-                        (unsigned)attachmentIndex,
-                        ctx->draw_command_buffer.batch_count,
-                        ctx->draw_command_buffer.total_commands);
+            if (mglTraceLogIsEnabled() &&
+                (hit <= 64ull || (hit % 512ull) == 0ull)) {
+                mglTraceLogExternal("MGL TRACE pending framebuffer write hazard flush hit=%llu tex=%u attachment=%u batches=%u commands=%u",
+                                    (unsigned long long)hit,
+                                    texture ? texture->name : 0u,
+                                    (unsigned)attachmentIndex,
+                                    ctx->draw_command_buffer.batch_count,
+                                    ctx->draw_command_buffer.total_commands);
             }
             mglFlushCommandBuffer(ctx);
             return;
@@ -488,14 +539,14 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
         if (texture && mglPendingDrawsReadTexture(ctx, texture)) {
             static uint64_t s_framebufferDepthStencilWriteHazardFlushCount = 0;
             uint64_t hit = ++s_framebufferDepthStencilWriteHazardFlushCount;
-            if (hit <= 64ull || (hit % 512ull) == 0ull) {
-                fprintf(stderr,
-                        "MGL TRACE pending framebuffer %s write hazard flush hit=%llu tex=%u batches=%u commands=%u\n",
-                        depthStencilAttachments[i].name,
-                        (unsigned long long)hit,
-                        texture ? texture->name : 0u,
-                        ctx->draw_command_buffer.batch_count,
-                        ctx->draw_command_buffer.total_commands);
+            if (mglTraceLogIsEnabled() &&
+                (hit <= 64ull || (hit % 512ull) == 0ull)) {
+                mglTraceLogExternal("MGL TRACE pending framebuffer %s write hazard flush hit=%llu tex=%u batches=%u commands=%u",
+                                    depthStencilAttachments[i].name,
+                                    (unsigned long long)hit,
+                                    texture ? texture->name : 0u,
+                                    ctx->draw_command_buffer.batch_count,
+                                    ctx->draw_command_buffer.total_commands);
             }
             mglFlushCommandBuffer(ctx);
             return;
@@ -517,6 +568,7 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
+    if (cb->buffer_read_range_count == 0 && !cb->buffer_read_range_overflow) return false;
     if (cb->buffer_read_range_overflow) return true;
 
     uint64_t start = 0;
@@ -546,6 +598,7 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
+    if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return false;
     if (cb->texture_write_overflow) return true;
 
     for (uint32_t i = 0; i < cb->texture_write_count; i++) {
@@ -570,6 +623,7 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
+    if (cb->texture_read_count == 0 && !cb->texture_read_overflow) return false;
     if (cb->texture_read_overflow) return true;
 
     for (uint32_t i = 0; i < cb->texture_read_count; i++) {
@@ -691,18 +745,27 @@ void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
  */
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
 {
+    if (!ctx || !texture || !ctx->draw_defer_enabled) return;
+
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    if (cb->batch_count == 0 || cb->total_commands == 0) return;
+    if (cb->texture_read_count == 0 && cb->texture_write_count == 0 &&
+        !cb->texture_read_overflow && !cb->texture_write_overflow) {
+        return;
+    }
+
     if (mglPendingDrawsReadTexture(ctx, texture) ||
         mglPendingDrawsWriteTexture(ctx, texture)) {
         static uint64_t s_textureWriteHazardFlushCount = 0;
         uint64_t hit = ++s_textureWriteHazardFlushCount;
-        if (hit <= 64ull || (hit % 512ull) == 0ull) {
+        if (mglTraceLogIsEnabled() &&
+            (hit <= 64ull || (hit % 512ull) == 0ull)) {
             Texture *tex = (Texture *)texture;
-            fprintf(stderr,
-                    "MGL TRACE pending texture write hazard flush hit=%llu tex=%u batches=%u commands=%u\n",
-                    (unsigned long long)hit,
-                    tex ? tex->name : 0u,
-                    ctx ? ctx->draw_command_buffer.batch_count : 0u,
-                    ctx ? ctx->draw_command_buffer.total_commands : 0u);
+            mglTraceLogExternal("MGL TRACE pending texture write hazard flush hit=%llu tex=%u batches=%u commands=%u",
+                                (unsigned long long)hit,
+                                tex ? tex->name : 0u,
+                                ctx ? ctx->draw_command_buffer.batch_count : 0u,
+                                ctx ? ctx->draw_command_buffer.total_commands : 0u);
         }
         mglFlushCommandBuffer(ctx);
     }
@@ -721,6 +784,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return;
+    if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return;
     if (cb->texture_write_overflow) {
         mglFlushCommandBuffer(ctx);
         return;
@@ -2090,6 +2154,8 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     mglFlushPendingDrawsBeforeFramebufferTextureWrites(ctx);
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    uint32_t maxDrawsPerBatch = mglRuntimeMaxDrawsPerBatch();
+    uint32_t maxBatchCount = mglRuntimeMaxBatchCount();
     bool cmd_uses_elements =
         (cmd->type != MGL_CMD_DRAW_ARRAYS &&
          cmd->type != MGL_CMD_DRAW_ARRAYS_INSTANCED &&
@@ -2131,18 +2197,18 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             last->uses_elements == cmd_uses_elements &&
             last->stream_merged == can_stream_merge &&
             (!can_stream_merge || last->stream_layout_hash == streamCandidate.layout_hash) &&
-            last->command_count < MGL_MAX_DRAWS_PER_BATCH) {
+            last->command_count < maxDrawsPerBatch) {
             batch = last;
         } else if (!keys_match) {
             MGL_PERF_INC(g_mglMergeRejectStateDiffersSinceSwap);
-        } else if (last->command_count >= MGL_MAX_DRAWS_PER_BATCH) {
+        } else if (last->command_count >= maxDrawsPerBatch) {
             MGL_PERF_INC(g_mglMergeRejectAppendFailedSinceSwap);
         }
     }
     if (!batch) {
-        if (cb->batch_count >= MGL_MAX_BATCHES) {
+        if (cb->batch_count >= maxBatchCount) {
             mglFlushCommandBuffer(ctx);
-            if (cb->batch_count >= MGL_MAX_BATCHES) {
+            if (cb->batch_count >= maxBatchCount) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: batch buffer full after flush\n");
                 return;
             }
@@ -2192,9 +2258,9 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             can_stream_merge = false;
             batch = NULL;
             if (!batch) {
-                if (cb->batch_count >= MGL_MAX_BATCHES) {
+                if (cb->batch_count >= maxBatchCount) {
                     mglFlushCommandBuffer(ctx);
-                    if (cb->batch_count >= MGL_MAX_BATCHES) {
+                    if (cb->batch_count >= maxBatchCount) {
                         fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback batch buffer full after flush\n");
                         return;
                     }

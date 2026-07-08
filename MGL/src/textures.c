@@ -900,6 +900,10 @@ static bool mglShouldTraceTextureUpload(Texture *tex,
         return true;
     }
 
+    if (!mglTraceLogIsEnabled()) {
+        return false;
+    }
+
     if (required_bytes >= (1024u * 1024u)) {
         return true;
     }
@@ -4727,7 +4731,7 @@ void mglGenTextures(GLMContext ctx, GLsizei n, GLuint *textures)
     {
         GLuint name = getNewName(&STATE(texture_table));
         *textures++ = name;
-        if (MGL_VERBOSE_TEXTURE_BIND_LOGS || call_id <= 32ull || (call_id % 4096ull) == 0ull) {
+        if (MGL_VERBOSE_TEXTURE_BIND_LOGS) {
             fprintf(stderr,
                     "MGL TRACE GenTextures call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu\n",
                     (unsigned long long)call_id,
@@ -4735,6 +4739,14 @@ void mglGenTextures(GLMContext ctx, GLsizei n, GLuint *textures)
                     STATE(texture_table).current_name,
                     STATE(texture_table).count,
                     STATE(texture_table).size);
+        } else if (mglTraceLogIsEnabled() &&
+                   (call_id <= 32ull || (call_id % 4096ull) == 0ull)) {
+            mglTraceLogExternal("MGL TRACE GenTextures call=%llu generated=%u currentName=%u tableCount=%zu tableCap=%zu",
+                                (unsigned long long)call_id,
+                                name,
+                                STATE(texture_table).current_name,
+                                STATE(texture_table).count,
+                                STATE(texture_table).size);
         }
 
         // TEX_OBJ_RES_NAME has special name.. skip it
@@ -4847,8 +4859,12 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
 
     Texture *old_typed_ptr = STATE(texture_units[active_texture].textures[index]);
     Texture *old_active_ptr = STATE(active_textures[active_texture]);
-    if (old_typed_ptr != ptr || (ptr && old_active_ptr != ptr) ||
-        (ptr && mglPendingDrawsWriteTexture(ctx, ptr))) {
+    bool pending_write = ptr && mglPendingDrawsWriteTexture(ctx, ptr);
+    bool binding_changed = (old_typed_ptr != ptr) || (ptr && old_active_ptr != ptr);
+    if (!binding_changed && !pending_write) {
+        return;
+    }
+    if (binding_changed || pending_write) {
         mglFlushPendingDraws(ctx);
     }
 
@@ -5249,6 +5265,10 @@ void mglActiveTexture(GLMContext ctx, GLenum texture)
         return;
     }
 
+    if (STATE(active_texture) == unit) {
+        return;
+    }
+
     STATE(active_texture) = unit;
     ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
     mglTraceTextureUnitState(ctx, "ActiveTexture", unit, 0, 0, STATE(active_textures[unit]));
@@ -5281,6 +5301,7 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
 
     old_active_texture = STATE(active_texture);
 
+    GLboolean any_changed = GL_FALSE;
     for (int i=0; i < count; i++)
     {
         GLuint texture;
@@ -5320,8 +5341,12 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
 
             Texture *old_typed_ptr = STATE(texture_units[unit].textures[index]);
             Texture *old_active_ptr = STATE(active_textures[unit]);
-            if (old_typed_ptr != ptr || old_active_ptr != ptr ||
-                mglPendingDrawsWriteTexture(ctx, ptr)) {
+            bool pending_write = mglPendingDrawsWriteTexture(ctx, ptr);
+            bool binding_changed = (old_typed_ptr != ptr) || (old_active_ptr != ptr);
+            if (!binding_changed && !pending_write) {
+                continue;
+            }
+            if (binding_changed || pending_write) {
                 mglFlushPendingDraws(ctx);
             }
 
@@ -5330,6 +5355,7 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
             mglRecordLastSampled2DTexture(ctx, unit, ptr);
             mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures", unit, ptr->target, texture, ptr);
+            any_changed = GL_TRUE;
         }
         else
         {
@@ -5345,6 +5371,8 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
             }
             if (had_binding) {
                 mglFlushPendingDraws(ctx);
+            } else {
+                continue;
             }
             for(GLuint index=0; index<_MAX_TEXTURE_TYPES; index++)
             {
@@ -5353,11 +5381,14 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
             STATE(active_textures[unit]) = NULL;
             mglUpdateTextureUnitActiveMask(ctx, unit);
             mglTraceTextureUnitState(ctx, "BindTextures.unbind", unit, 0, 0, NULL);
+            any_changed = GL_TRUE;
         }
     }
 
     STATE(active_texture) = old_active_texture;
-    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    if (any_changed) {
+        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    }
 }
 
 void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
@@ -5415,8 +5446,12 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
 
     Texture *old_typed_ptr = STATE(texture_units[unit].textures[index]);
     Texture *old_active_ptr = STATE(active_textures[unit]);
-    if (old_typed_ptr != ptr || old_active_ptr != ptr ||
-        mglPendingDrawsWriteTexture(ctx, ptr)) {
+    bool pending_write = mglPendingDrawsWriteTexture(ctx, ptr);
+    bool binding_changed = (old_typed_ptr != ptr) || (old_active_ptr != ptr);
+    if (!binding_changed && !pending_write) {
+        return;
+    }
+    if (binding_changed || pending_write) {
         mglFlushPendingDraws(ctx);
     }
 
@@ -5586,13 +5621,12 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         level_count = 1024u;
     }
 
-    fprintf(stderr,
-            "MGL TRACE invalidateTexture tex=%u target=0x%x index=%u levels=%u mtl=%p\n",
-            tex->name,
-            tex->target,
-            tex->index,
-            level_count,
-            tex->mtl_data);
+    mglTraceLogExternal("MGL TRACE invalidateTexture tex=%u target=0x%x index=%u levels=%u mtl=%p",
+                        tex->name,
+                        tex->target,
+                        tex->index,
+                        level_count,
+                        tex->mtl_data);
 
     mglClearLastSampled2DTextureIfMatches(ctx, tex);
 
@@ -8228,8 +8262,9 @@ void mglTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset,
     Buffer *unpack_buf = STATE(buffers[_PIXEL_UNPACK_BUFFER]);
     GLuint unpack_name = unpack_buf ? unpack_buf->name : 0u;
     bool trace_call = MGL_VERBOSE_TEXTURE_UPLOAD_LOGS ||
-                      unpack_name != 0u ||
-                      (width >= 512 && height >= 512);
+                      (mglTraceLogIsEnabled() &&
+                       (unpack_name != 0u ||
+                        (width >= 512 && height >= 512)));
 
     if (trace_call) {
         fprintf(stderr,
@@ -8282,7 +8317,7 @@ void mglTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoffset,
         if (tex_index < _MAX_TEXTURE_TYPES) {
             bound_tex = STATE(texture_units[active_unit].textures[tex_index]);
         }
-        if (bound_tex && bound_tex->name == 13u) {
+        if (mglTraceLogIsEnabled() && bound_tex && bound_tex->name == 13u) {
             trace_call = true;
         }
 

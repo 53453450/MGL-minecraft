@@ -198,6 +198,10 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
         ptr = NULL;
     }
 
+    if (ctx->state.texture_samplers[unit] == ptr) {
+        return;
+    }
+
     mglTraceLogExternal("BIND_SAMPLER unit=%u sampler=%u resolved=%p minFilter=0x%x magFilter=0x%x wrapS=0x%x wrapT=0x%x wrapR=0x%x minLod=%.3f maxLod=%.3f maxLevel=%d aniso=%.1f compareMode=0x%x compareFunc=0x%x",
                         (unsigned)unit,
                         (unsigned)sampler,

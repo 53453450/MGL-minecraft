@@ -2321,6 +2321,8 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       label:(NSString *)label
                                       error:(NSError **)error;
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
+                                             offset:(NSUInteger *)offsetOut;
 - (BOOL)shouldSkipGPUOperations;
 - (void)recordGPUError;
 - (void)recordGPUSuccess;
@@ -2512,6 +2514,9 @@ typedef struct {
     // each pass a new command buffer is created
     id<MTLCommandBuffer> _currentCommandBuffer;
     SyncList  *_currentCommandBufferSyncList;
+    id<MTLBuffer> _mdiArgsScratchBuffer;
+    NSUInteger _mdiArgsScratchCapacity;
+    NSUInteger _mdiArgsScratchOffset;
 
     id<MTLRenderCommandEncoder> _currentRenderEncoder;
 #if MGL_HAS_MTL4_COMPILER
@@ -7284,9 +7289,11 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
     if (cpuUploadRequired)
     {
-        NSLog(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
-        NSLog(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
-              tex->target, tex->internalformat, tex->num_levels, upload_level_count);
+        if (kMGLDiagnosticStateLogs) {
+            MGLTraceNSLog(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
+            MGLTraceNSLog(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
+                          tex->target, tex->internalformat, tex->num_levels, upload_level_count);
+        }
 
         MTLRegion region;
 
@@ -8680,7 +8687,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     {
         static uint64_t s_mipDiagLogs = 0;
         uint64_t diagHit = ++s_mipDiagLogs;
-        if (diagHit <= 128ull || (diagHit % 512ull) == 0ull) {
+        if (kMGLDiagnosticStateLogs &&
+            (diagHit <= 128ull || (diagHit % 512ull) == 0ull)) {
             NSUInteger mtlMipCount = texture.mipmapLevelCount;
             MTLPixelFormat mtlFmt = texture.pixelFormat;
             MTLStorageMode mtlStorage = texture.storageMode;
@@ -8707,21 +8715,21 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     (unsigned)tl->width, (unsigned)tl->ever_written,
                     (unsigned)tl->has_initialized_data];
             }
-            NSLog(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
-                  @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
-                  @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
-                  @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
-                  @"levels=%@ hit=%llu",
-                  (unsigned)tex->name, (unsigned)tex->target,
-                  (unsigned)tex->width, (unsigned)tex->height,
-                  (unsigned)tex->internalformat,
-                  (unsigned)tex->num_levels, (unsigned)tex->mipmap_levels,
-                  (unsigned)effective_mipmap_levels, (unsigned long)mtlMipCount,
-                  (unsigned long)mtlFmt, (long)mtlStorage, (int)(tex->mipmapped ? 1 : 0),
-                  (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
-                  (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
-                  (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
-                  levelSummary, (unsigned long long)diagHit);
+            MGLTraceNSLog(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
+                          @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
+                          @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
+                          @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
+                          @"levels=%@ hit=%llu",
+                          (unsigned)tex->name, (unsigned)tex->target,
+                          (unsigned)tex->width, (unsigned)tex->height,
+                          (unsigned)tex->internalformat,
+                          (unsigned)tex->num_levels, (unsigned)tex->mipmap_levels,
+                          (unsigned)effective_mipmap_levels, (unsigned long)mtlMipCount,
+                          (unsigned long)mtlFmt, (long)mtlStorage, (int)(tex->mipmapped ? 1 : 0),
+                          (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
+                          (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
+                          (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
+                          levelSummary, (unsigned long long)diagHit);
         }
     }
 
@@ -9132,25 +9140,26 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     {
         static uint64_t s_samplerDiagLogs = 0;
         uint64_t diagHit = ++s_samplerDiagLogs;
-        if (diagHit <= 64ull || (diagHit % 256ull) == 0ull) {
-            NSLog(@"MGL SAMPLER_DIAG minFilter=0x%x magFilter=0x%x mipFilter=%lu "
-                  @"minLod=%f maxLod=%f lodMinClamp=%f lodMaxClamp=%f "
-                  @"wrapS=0x%x wrapT=0x%x maxAniso=%f aniso=%d "
-                  @"compareMode=0x%x compareFunc=0x%x hit=%llu",
-                  (unsigned)tex_param->min_filter,
-                  (unsigned)tex_param->mag_filter,
-                  (unsigned long)samplerDescriptor.mipFilter,
-                  tex_param->min_lod,
-                  tex_param->max_lod,
-                  samplerDescriptor.lodMinClamp,
-                  samplerDescriptor.lodMaxClamp,
-                  (unsigned)tex_param->wrap_s,
-                  (unsigned)tex_param->wrap_t,
-                  tex_param->max_anisotropy,
-                  (int)samplerDescriptor.maxAnisotropy,
-                  (unsigned)tex_param->compare_mode,
-                  (unsigned)tex_param->compare_func,
-                  (unsigned long long)diagHit);
+        if (kMGLDiagnosticStateLogs &&
+            (diagHit <= 64ull || (diagHit % 256ull) == 0ull)) {
+            MGLTraceNSLog(@"MGL SAMPLER_DIAG minFilter=0x%x magFilter=0x%x mipFilter=%lu "
+                          @"minLod=%f maxLod=%f lodMinClamp=%f lodMaxClamp=%f "
+                          @"wrapS=0x%x wrapT=0x%x maxAniso=%f aniso=%d "
+                          @"compareMode=0x%x compareFunc=0x%x hit=%llu",
+                          (unsigned)tex_param->min_filter,
+                          (unsigned)tex_param->mag_filter,
+                          (unsigned long)samplerDescriptor.mipFilter,
+                          tex_param->min_lod,
+                          tex_param->max_lod,
+                          samplerDescriptor.lodMinClamp,
+                          samplerDescriptor.lodMaxClamp,
+                          (unsigned)tex_param->wrap_s,
+                          (unsigned)tex_param->wrap_t,
+                          tex_param->max_anisotropy,
+                          (int)samplerDescriptor.maxAnisotropy,
+                          (unsigned)tex_param->compare_mode,
+                          (unsigned)tex_param->compare_func,
+                          (unsigned long long)diagHit);
         }
     }
 
@@ -14552,7 +14561,9 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
                 }
             }
         } else {
-            NSLog(@"MGL SUCCESS: Primary texture created successfully");
+            if (kMGLDiagnosticStateLogs) {
+                MGLTraceNSLog(@"MGL SUCCESS: Primary texture created successfully");
+            }
         }
 
     }
@@ -15792,23 +15803,24 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
     uint64_t call = ++s_sizeSyncCall;
     BOOL sizeChanged = (s_lastPixelWidth != pixelWidth || s_lastPixelHeight != pixelHeight);
 
-    if (sizeChanged || call <= 8ull || ((call % 120ull) == 0ull)) {
+    if (kMGLDiagnosticStateLogs &&
+        (sizeChanged || call <= 8ull || ((call % 120ull) == 0ull))) {
         NSWindow *window = _view ? [_view window] : nil;
         NSRect windowFrame = window ? [window frame] : NSZeroRect;
-        NSLog(@"MGL SIZE sync reason=%s call=%llu viewBounds=%.1fx%.1f backing=%.1fx%.1f scale=%.3f drawable=%lux%lu old=%.0fx%.0f window=%.1fx%.1f",
-              reason ? reason : "unknown",
-              (unsigned long long)call,
-              bounds.size.width,
-              bounds.size.height,
-              backingBounds.size.width,
-              backingBounds.size.height,
-              scale,
-              (unsigned long)pixelWidth,
-              (unsigned long)pixelHeight,
-              oldDrawableSize.width,
-              oldDrawableSize.height,
-              windowFrame.size.width,
-              windowFrame.size.height);
+        MGLTraceNSLog(@"MGL SIZE sync reason=%s call=%llu viewBounds=%.1fx%.1f backing=%.1fx%.1f scale=%.3f drawable=%lux%lu old=%.0fx%.0f window=%.1fx%.1f",
+                      reason ? reason : "unknown",
+                      (unsigned long long)call,
+                      bounds.size.width,
+                      bounds.size.height,
+                      backingBounds.size.width,
+                      backingBounds.size.height,
+                      scale,
+                      (unsigned long)pixelWidth,
+                      (unsigned long)pixelHeight,
+                      oldDrawableSize.width,
+                      oldDrawableSize.height,
+                      windowFrame.size.width,
+                      windowFrame.size.height);
     }
 
     s_lastPixelWidth = pixelWidth;
@@ -16368,16 +16380,16 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 
             BOOL viewportWasClamped = (vx != rawVx || vy != rawVy || vw != rawVw || vh != rawVh);
             BOOL viewportOriginConverted = (metalVy != vy);
-            if (traceEncoderState || viewportWasClamped) {
-                NSLog(@"MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
-                      (unsigned long)passWidth, (unsigned long)passHeight,
-                      ctx->state.var.clip_origin,
-                      rawVx, rawVy, rawVw, rawVh,
-                      vx, vy, vw, vh,
-                      vx, metalVy, vw, vh);
+            if (traceEncoderState) {
+                MGLTraceNSLog(@"MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
+                              (unsigned long)passWidth, (unsigned long)passHeight,
+                              ctx->state.var.clip_origin,
+                              rawVx, rawVy, rawVw, rawVh,
+                              vx, vy, vw, vh,
+                              vx, metalVy, vw, vh);
             }
 
-            if (viewportWasClamped || viewportOriginConverted) {
+            if (kMGLDiagnosticStateLogs && (viewportWasClamped || viewportOriginConverted)) {
                 static uint64_t s_viewportClampDetailCount = 0;
                 uint64_t clampHit = ++s_viewportClampDetailCount;
                 BOOL logClampDetail = (clampHit <= 80ull || (clampHit % 120ull) == 0ull);
@@ -16392,28 +16404,28 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                     id<MTLTexture> rpDepth = _renderPassDescriptor.depthAttachment.texture;
                     id<MTLTexture> drawableTexture = (_drawable ? _drawable.texture : nil);
 
-                    NSLog(@"MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
-                          "rpColor0=%p(%lux%lu) rpDepth=%p(%lux%lu) drawable=%p(%lux%lu) raw=(%.3f,%.3f,%.3f,%.3f) "
-                          "resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
-                          (unsigned long long)clampHit,
-                          debugFbo,
-                          debugFboValid ? 1 : 0,
-                          (debugFboValid ? debugFbo->name : 0),
-                          ctx->state.draw_buffer,
-                          (unsigned long)passWidth,
-                          (unsigned long)passHeight,
-                          rpColor0,
-                          (unsigned long)(rpColor0 ? rpColor0.width : 0),
-                          (unsigned long)(rpColor0 ? rpColor0.height : 0),
-                          rpDepth,
-                          (unsigned long)(rpDepth ? rpDepth.width : 0),
-                          (unsigned long)(rpDepth ? rpDepth.height : 0),
-                          drawableTexture,
-                          (unsigned long)(drawableTexture ? drawableTexture.width : 0),
-                          (unsigned long)(drawableTexture ? drawableTexture.height : 0),
-                          rawVx, rawVy, rawVw, rawVh,
-                          vx, vy, vw, vh,
-                          vx, metalVy, vw, vh);
+                    MGLTraceNSLog(@"MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
+                                  "rpColor0=%p(%lux%lu) rpDepth=%p(%lux%lu) drawable=%p(%lux%lu) raw=(%.3f,%.3f,%.3f,%.3f) "
+                                  "resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
+                                  (unsigned long long)clampHit,
+                                  debugFbo,
+                                  debugFboValid ? 1 : 0,
+                                  (debugFboValid ? debugFbo->name : 0),
+                                  ctx->state.draw_buffer,
+                                  (unsigned long)passWidth,
+                                  (unsigned long)passHeight,
+                                  rpColor0,
+                                  (unsigned long)(rpColor0 ? rpColor0.width : 0),
+                                  (unsigned long)(rpColor0 ? rpColor0.height : 0),
+                                  rpDepth,
+                                  (unsigned long)(rpDepth ? rpDepth.width : 0),
+                                  (unsigned long)(rpDepth ? rpDepth.height : 0),
+                                  drawableTexture,
+                                  (unsigned long)(drawableTexture ? drawableTexture.width : 0),
+                                  (unsigned long)(drawableTexture ? drawableTexture.height : 0),
+                                  rawVx, rawVy, rawVw, rawVh,
+                                  vx, vy, vw, vh,
+                                  vx, metalVy, vw, vh);
 
                     if (debugFboValid) {
                         for (int attIndex = 0; attIndex < MAX_COLOR_ATTACHMENTS; attIndex++) {
@@ -16437,25 +16449,25 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                                 : nil;
                             id<MTLTexture> rpAttachment = _renderPassDescriptor.colorAttachments[attIndex].texture;
 
-                            NSLog(@"MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
-                                  "texName=%u texTarget=0x%x texSize=%ux%ux%u mtl=%p(%lux%lu) rpTex=%p(%lux%lu)",
-                                  attIndex,
-                                  attachment->texture,
-                                  attachment->textarget,
-                                  attachment->level,
-                                  attachment->layer,
-                                  attachmentTexture,
-                                  attachmentTexture ? attachmentTexture->name : 0,
-                                  attachmentTexture ? attachmentTexture->target : 0,
-                                  attachmentTexture ? attachmentTexture->width : 0,
-                                  attachmentTexture ? attachmentTexture->height : 0,
-                                  attachmentTexture ? attachmentTexture->depth : 0,
-                                  attachmentMtl,
-                                  (unsigned long)(attachmentMtl ? attachmentMtl.width : 0),
-                                  (unsigned long)(attachmentMtl ? attachmentMtl.height : 0),
-                                  rpAttachment,
-                                  (unsigned long)(rpAttachment ? rpAttachment.width : 0),
-                                  (unsigned long)(rpAttachment ? rpAttachment.height : 0));
+                            MGLTraceNSLog(@"MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
+                                          "texName=%u texTarget=0x%x texSize=%ux%ux%u mtl=%p(%lux%lu) rpTex=%p(%lux%lu)",
+                                          attIndex,
+                                          attachment->texture,
+                                          attachment->textarget,
+                                          attachment->level,
+                                          attachment->layer,
+                                          attachmentTexture,
+                                          attachmentTexture ? attachmentTexture->name : 0,
+                                          attachmentTexture ? attachmentTexture->target : 0,
+                                          attachmentTexture ? attachmentTexture->width : 0,
+                                          attachmentTexture ? attachmentTexture->height : 0,
+                                          attachmentTexture ? attachmentTexture->depth : 0,
+                                          attachmentMtl,
+                                          (unsigned long)(attachmentMtl ? attachmentMtl.width : 0),
+                                          (unsigned long)(attachmentMtl ? attachmentMtl.height : 0),
+                                          rpAttachment,
+                                          (unsigned long)(rpAttachment ? rpAttachment.width : 0),
+                                          (unsigned long)(rpAttachment ? rpAttachment.height : 0));
                         }
                     }
                 }
@@ -16897,12 +16909,12 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                 if (depth_texture) {
                     static uint64_t s_defaultDepthCreateCount = 0;
                     uint64_t hit = ++s_defaultDepthCreateCount;
-                    if (hit <= 8) {
-                        NSLog(@"MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
-                              (unsigned long)depthFormat,
-                              (unsigned long)depth_texture.width,
-                              (unsigned long)depth_texture.height,
-                              mgl_drawbuffer);
+                    if (kMGLDiagnosticStateLogs && hit <= 8) {
+                        MGLTraceNSLog(@"MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
+                                      (unsigned long)depthFormat,
+                                      (unsigned long)depth_texture.width,
+                                      (unsigned long)depth_texture.height,
+                                      mgl_drawbuffer);
                     }
                 }
             }
@@ -17125,10 +17137,10 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
             static uint64_t s_defaultFboLoadLogCount = 0;
             uint64_t hit = ++s_defaultFboLoadLogCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                NSLog(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
-                      (unsigned long long)hit,
-                      ctx->state.draw_buffer,
-                      fbo ? (unsigned)fbo->name : 0u);
+                MGLTraceNSLog(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
+                              (unsigned long long)hit,
+                              ctx->state.draw_buffer,
+                              fbo ? (unsigned)fbo->name : 0u);
             }
         }
 
@@ -17811,10 +17823,16 @@ create_new_command_buffer:
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Successfully created new Metal command buffer (AGX validated)");
         }
+        _mdiArgsScratchBuffer = nil;
+        _mdiArgsScratchCapacity = 0;
+        _mdiArgsScratchOffset = 0;
     } @catch (NSException *exception) {
         NSLog(@"MGL AGX ERROR: Exception creating command buffer: %@", exception);
         [self recordGPUError];
         _currentCommandBuffer = NULL;
+        _mdiArgsScratchBuffer = nil;
+        _mdiArgsScratchCapacity = 0;
+        _mdiArgsScratchOffset = 0;
 
         // AGX DRIVER COMPATIBILITY: Force reset on exception to clear driver state
         [self resetMetalState];
@@ -17912,7 +17930,9 @@ create_new_command_buffer:
 - (bool)ensureWritableCommandBufferLocked:(const char *)reason
 {
     if (!_currentCommandBuffer) {
-        NSLog(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
+        if (kMGLDiagnosticStateLogs) {
+            MGLTraceNSLog(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
+        }
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
             return false;
@@ -18355,15 +18375,16 @@ create_new_command_buffer:
             if (availableBytes < bytesPerImage * copyDepth) {
                 static uint64_t s_shortBackingLogs = 0;
                 uint64_t hit = ++s_shortBackingLogs;
-                if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                    NSLog(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%lu need=%lu reason=%s hit=%llu",
-                          (unsigned)tex->name,
-                          (unsigned)level,
-                          face,
-                          (unsigned long)availableBytes,
-                          (unsigned long)(bytesPerImage * copyDepth),
-                          reason ? reason : "(null)",
-                          (unsigned long long)hit);
+                if (kMGLDiagnosticStateLogs &&
+                    (hit <= 32ull || (hit % 512ull) == 0ull)) {
+                    MGLTraceNSLog(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%lu need=%lu reason=%s hit=%llu",
+                                  (unsigned)tex->name,
+                                  (unsigned)level,
+                                  face,
+                                  (unsigned long)availableBytes,
+                                  (unsigned long)(bytesPerImage * copyDepth),
+                                  reason ? reason : "(null)",
+                                  (unsigned long long)hit);
                 }
                 failedAny = true;
                 continue;
@@ -18426,16 +18447,17 @@ create_new_command_buffer:
 
     static uint64_t s_refreshLogs = 0;
     uint64_t hit = ++s_refreshLogs;
-    if (uploadedAny || hit <= 32ull || (hit % 512ull) == 0ull) {
-        NSLog(@"MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
-              (unsigned)tex->name,
-              texture,
-              uploadedAny ? 1 : 0,
-              failedAny ? 1 : 0,
-              (unsigned)tex->dirty_bits,
-              (unsigned)levelCount,
-              reason ? reason : "(null)",
-              (unsigned long long)hit);
+    if (kMGLDiagnosticStateLogs &&
+        (uploadedAny || hit <= 32ull || (hit % 512ull) == 0ull)) {
+        MGLTraceNSLog(@"MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      texture,
+                      uploadedAny ? 1 : 0,
+                      failedAny ? 1 : 0,
+                      (unsigned)tex->dirty_bits,
+                      (unsigned)levelCount,
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
     }
 
     if (uploadedAny && !failedAny) {
@@ -20018,8 +20040,8 @@ create_new_command_buffer:
                 static uint64_t s_deferredMapCount = 0;
                 s_deferredMapCount++;
                 if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
-                    NSLog(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
-                          (unsigned long long)s_deferredMapCount);
+                    MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
+                                  (unsigned long long)s_deferredMapCount);
                 }
             } else {
                 // programs are now compiled before execution, we shouldn't get here
@@ -20690,8 +20712,8 @@ create_new_command_buffer:
         static uint64_t nil_pipeline_count = 0;
         nil_pipeline_count++;
         if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
-            NSLog(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
-                  (unsigned long long)nil_pipeline_count);
+            MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
+                          (unsigned long long)nil_pipeline_count);
         }
         // Force rebuild on next state processing pass.
         ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
@@ -22810,6 +22832,7 @@ stencil_format_ok:;
                 [self issueStreamMergedBatch:batch context:glm_ctx];
             } else {
                 useMDI =
+                    !mglEnvFlagEnabled("MGL_DISABLE_MDI") &&
                     batch->mdi_compatible &&
                     batch->command_count >= MGL_MDI_MIN_BATCH_SIZE &&
                     !mglPolygonModePointForDrawMode(glm_ctx, firstCmd->mode);
@@ -22962,42 +22985,28 @@ stencil_format_ok:;
 
     MGLDrawCommand *firstCmd = &batch->commands[0];
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
-    id<MTLBuffer> indirectArgsBuffer = [_device newBufferWithLength:sizeof(MTLDrawIndexedPrimitivesIndirectArguments)
-                                                             options:MTLResourceStorageModeShared];
-    if (!indirectArgsBuffer) {
+
+    if (mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
         [self traceReplayCommand:batch
                          command:firstCmd
                          context:glm_ctx
                          flushId:_traceReplayFlushId
                       batchIndex:_traceReplayBatchIndex
                     commandIndex:0
-                           phase:"SUBMIT"
-                          reason:"stream_direct_args_alloc_failed"];
-        [_currentRenderEncoder drawIndexedPrimitives:primType
-                                          indexCount:(NSUInteger)batch->stream_index_count
-                                           indexType:MTLIndexTypeUInt32
-                                         indexBuffer:mtlIndexBuffer
-                                   indexBufferOffset:0
-                                       instanceCount:1
-                                          baseVertex:0
-                                        baseInstance:firstCmd->baseInstance];
+                           phase:"FALLBACK"
+                          reason:"stream_mdi_disabled"];
+        [self issueDirectBatch:batch context:glm_ctx];
         return;
     }
 
-    MTLDrawIndexedPrimitivesIndirectArguments *args =
-        (MTLDrawIndexedPrimitivesIndirectArguments *)indirectArgsBuffer.contents;
-    args->indexCount = (uint32_t)batch->stream_index_count;
-    args->instanceCount = 1u;
-    args->indexStart = 0u;
-    args->baseVertex = 0;
-    args->baseInstance = firstCmd->baseInstance;
-
     [_currentRenderEncoder drawIndexedPrimitives:primType
+                                      indexCount:(NSUInteger)batch->stream_index_count
                                        indexType:MTLIndexTypeUInt32
                                      indexBuffer:mtlIndexBuffer
                                indexBufferOffset:0
-                                  indirectBuffer:indirectArgsBuffer
-                            indirectBufferOffset:0];
+                                   instanceCount:1
+                                      baseVertex:0
+                                    baseInstance:firstCmd->baseInstance];
     [self traceReplayCommand:batch
                      command:firstCmd
                      context:glm_ctx
@@ -23005,7 +23014,7 @@ stencil_format_ok:;
                   batchIndex:_traceReplayBatchIndex
                 commandIndex:0
                        phase:"SUBMIT"
-                      reason:"stream_indirect"];
+                      reason:"stream_direct_merged"];
 }
 
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -23206,9 +23215,61 @@ stencil_format_ok:;
     return NO;
 }
 
+- (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
+                                             offset:(NSUInteger *)offsetOut
+{
+    if (offsetOut) {
+        *offsetOut = 0;
+    }
+    if (!_device || !_currentCommandBuffer || length == 0) {
+        return nil;
+    }
+
+    const NSUInteger alignment = 256u;
+    NSUInteger alignedOffset = (_mdiArgsScratchOffset + (alignment - 1u)) & ~(alignment - 1u);
+    if (alignedOffset < _mdiArgsScratchOffset ||
+        length > (NSUIntegerMax - alignedOffset)) {
+        return nil;
+    }
+
+    NSUInteger requiredBytes = alignedOffset + length;
+    if (!_mdiArgsScratchBuffer || requiredBytes > _mdiArgsScratchCapacity) {
+        NSUInteger newCapacity = _mdiArgsScratchCapacity ? (_mdiArgsScratchCapacity * 2u) : (64u * 1024u);
+        if (newCapacity < length) {
+            newCapacity = length;
+        }
+        if (newCapacity < requiredBytes) {
+            newCapacity = requiredBytes;
+        }
+        if (newCapacity < _mdiArgsScratchCapacity) {
+            return nil;
+        }
+
+        id<MTLBuffer> newBuffer = [_device newBufferWithLength:newCapacity
+                                                       options:MTLResourceStorageModeShared];
+        if (!newBuffer) {
+            return nil;
+        }
+        _mdiArgsScratchBuffer = newBuffer;
+        _mdiArgsScratchCapacity = newCapacity;
+        alignedOffset = 0;
+        requiredBytes = length;
+    }
+
+    _mdiArgsScratchOffset = requiredBytes;
+    if (offsetOut) {
+        *offsetOut = alignedOffset;
+    }
+    return _mdiArgsScratchBuffer;
+}
+
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
     if (!batch || batch->command_count == 0) {
+        return;
+    }
+    if (mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
+        [self issueDirectBatch:batch context:glm_ctx];
         return;
     }
     if (batch->key.primitive_type == 0xFFu) {
@@ -23231,10 +23292,24 @@ stencil_format_ok:;
     bool indexed = batch->uses_elements;
     size_t argSize = indexed ? sizeof(MTLDrawIndexedPrimitivesIndirectArguments)
                              : sizeof(MTLDrawPrimitivesIndirectArguments);
-    size_t neededBytes = argSize * batch->command_count;
+    if (batch->command_count > (UINT32_MAX / argSize)) {
+        [self traceReplayCommand:batch
+                         command:&batch->commands[0]
+                         context:glm_ctx
+                         flushId:_traceReplayFlushId
+                      batchIndex:_traceReplayBatchIndex
+                    commandIndex:0
+                           phase:"FALLBACK"
+                          reason:"mdi_args_overflow"];
+        [self issueDirectBatch:batch context:glm_ctx];
+        return;
+    }
+    NSUInteger neededBytes = (NSUInteger)argSize * (NSUInteger)batch->command_count;
 
-    id<MTLBuffer> indirectArgsBuffer = [_device newBufferWithLength:neededBytes
-                                                            options:MTLResourceStorageModeShared];
+    NSUInteger indirectArgsOffset = 0;
+    id<MTLBuffer> indirectArgsBuffer =
+        [self mdiArgumentScratchBufferWithLength:neededBytes
+                                          offset:&indirectArgsOffset];
     if (!indirectArgsBuffer) {
         if (batch->command_count > 0) {
             [self traceReplayCommand:batch
@@ -23256,7 +23331,7 @@ stencil_format_ok:;
         GLenum glIdxType = batch->commands[0].indexType;
 
         MTLDrawIndexedPrimitivesIndirectArguments *args =
-            (MTLDrawIndexedPrimitivesIndirectArguments *)indirectArgsBuffer.contents;
+            (MTLDrawIndexedPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
         for (uint32_t i = 0; i < batch->command_count; i++) {
             MGLDrawCommand *cmd = &batch->commands[i];
             if (cmd->indexType != glIdxType) {
@@ -23319,9 +23394,9 @@ stencil_format_ok:;
             [_currentRenderEncoder drawIndexedPrimitives:primType
                                                indexType:drawIndexType
                                              indexBuffer:drawIndexBuffer
-                                       indexBufferOffset:drawIndexOffset
+                                          indexBufferOffset:drawIndexOffset
                                           indirectBuffer:indirectArgsBuffer
-                                    indirectBufferOffset:i * argSize];
+                                    indirectBufferOffset:indirectArgsOffset + (i * argSize)];
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
@@ -23333,7 +23408,7 @@ stencil_format_ok:;
         }
     } else {
         MTLDrawPrimitivesIndirectArguments *args =
-            (MTLDrawPrimitivesIndirectArguments *)indirectArgsBuffer.contents;
+            (MTLDrawPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
         for (uint32_t i = 0; i < batch->command_count; i++) {
             MGLDrawCommand *cmd = &batch->commands[i];
             args[i].vertexCount = (uint32_t)cmd->count;
@@ -23345,7 +23420,7 @@ stencil_format_ok:;
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [_currentRenderEncoder drawPrimitives:primType
                                    indirectBuffer:indirectArgsBuffer
-                             indirectBufferOffset:i * argSize];
+                             indirectBufferOffset:indirectArgsOffset + (i * argSize)];
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
                              context:glm_ctx
@@ -35273,6 +35348,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         if (!_currentCommandBuffer) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
+        _mdiArgsScratchBuffer = nil;
+        _mdiArgsScratchCapacity = 0;
+        _mdiArgsScratchOffset = 0;
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception creating initial Metal command buffer: %@", exception);
     }
@@ -35601,6 +35679,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             }
             _currentCommandBuffer = nil;
         }
+        _mdiArgsScratchBuffer = nil;
+        _mdiArgsScratchCapacity = 0;
+        _mdiArgsScratchOffset = 0;
 
         if (_currentRenderEncoder) {
             [_currentRenderEncoder endEncoding];

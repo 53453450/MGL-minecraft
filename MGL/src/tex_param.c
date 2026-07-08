@@ -19,6 +19,7 @@
  */
 
 #include "glm_context.h"
+#include "mgl_trace_log.h"
 #include "pixel_utils.h"
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,27 @@
 extern GLuint textureIndexFromTarget(GLMContext ctx, GLenum target);
 extern Texture *currentTexture(GLMContext ctx, GLuint index);
 Texture *getTex(GLMContext ctx, GLuint name, GLenum target);
+
+static bool mglDisableFineTextureParamFlush(void)
+{
+    static int s_value = -1;
+    if (s_value < 0)
+    {
+        const char *env = getenv("MGL_DISABLE_FINE_TEXTURE_PARAM_FLUSH");
+        s_value = (env && env[0] != '\0' && strcmp(env, "0") != 0) ? 1 : 0;
+    }
+    return s_value != 0;
+}
+
+static void mglFlushPendingDrawsForTextureParameterChange(GLMContext ctx, Texture *tex)
+{
+    if (mglDisableFineTextureParamFlush())
+    {
+        mglFlushPendingDraws(ctx);
+        return;
+    }
+    mglFlushPendingDrawsForTexture(ctx, tex);
+}
 
 static bool mglTextureParameterAffectsTextureDescriptor(GLenum pname)
 {
@@ -647,12 +669,12 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
                     {
                         static uint64_t s_minFilterLogs = 0;
                         uint64_t hit = ++s_minFilterLogs;
-                        if (hit <= 64ull || (hit % 256ull) == 0ull) {
-                            fprintf(stderr,
-                                "MGL TEXPARAM_DIAG minFilter old=0x%x new=0x%x hit=%llu\n",
-                                (unsigned)tex_params->min_filter,
-                                (unsigned)*param,
-                                (unsigned long long)hit);
+                        if (mglTraceLogIsEnabled() &&
+                            (hit <= 64ull || (hit % 256ull) == 0ull)) {
+                            mglTraceLogExternal("MGL TEXPARAM_DIAG minFilter old=0x%x new=0x%x hit=%llu",
+                                                (unsigned)tex_params->min_filter,
+                                                (unsigned)*param,
+                                                (unsigned long long)hit);
                         }
                     }
                     tex_params->min_filter = *param;
@@ -1020,7 +1042,7 @@ void mglTexParameterf(GLMContext ctx, GLenum target, GLenum pname, GLfloat param
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setParam(ctx, &tex->params, pname, 0, param))
     {
@@ -1042,7 +1064,7 @@ void mglTexParameterfv(GLMContext ctx, GLenum target, GLenum pname, const GLfloa
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
    // more than one param... try setTexParamsf
     if (setTexParamsf(ctx, &tex->params, pname, params))
@@ -1068,7 +1090,7 @@ void mglTexParameteri(GLMContext ctx, GLenum target, GLenum pname, GLint param)
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setParam(ctx, &tex->params, pname, param, fparam))
     {
@@ -1092,7 +1114,7 @@ void mglTexParameteriv(GLMContext ctx, GLenum target, GLenum pname, const GLint 
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     // more than one param... try setTexParamsi
     if (setTexParamsi(ctx, &tex->params, pname, params))
@@ -1122,7 +1144,7 @@ void mglTexParameterIiv(GLMContext ctx, GLenum target, GLenum pname, const GLint
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
@@ -1160,7 +1182,7 @@ void mglTexParameterIuiv(GLMContext ctx, GLenum target, GLenum pname, const GLui
     Texture *tex = mglCurrentTextureForParameter(ctx, target);
     if (!tex)
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {
@@ -1195,7 +1217,7 @@ void mglTextureParameterf(GLMContext ctx, GLuint texture, GLenum pname, GLfloat 
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)param))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if(setParam(ctx, &tex->params, pname, 0, param))
     {
@@ -1220,7 +1242,7 @@ void mglTextureParameterfv(GLMContext ctx, GLuint texture, GLenum pname, const G
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)param[0]))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if(setTexParamsf(ctx, &tex->params, pname, param))
     {
@@ -1250,7 +1272,7 @@ void mglTextureParameteri(GLMContext ctx, GLuint texture, GLenum pname, GLint pa
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, param))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if(setParam(ctx, &tex->params, pname, param, 0.0f))
     {
@@ -1275,7 +1297,7 @@ void mglTextureParameteriv(GLMContext ctx, GLuint texture, GLenum pname, const G
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, param[0]))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if(setTexParamsi(ctx, &tex->params, pname, param))
     {
@@ -1311,7 +1333,7 @@ void mglTextureParameterIiv(GLMContext ctx, GLuint texture, GLenum pname, const 
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, params[0]))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setTexParamsIiv(ctx, &tex->params, pname, params))
     {
@@ -1352,7 +1374,7 @@ void mglTextureParameterIuiv(GLMContext ctx, GLuint texture, GLenum pname, const
 
     if (!mglTextureParameterValidateNamedTarget(ctx, tex, pname, (GLint)params[0]))
         return;
-    mglFlushPendingDraws(ctx);
+    mglFlushPendingDrawsForTextureParameterChange(ctx, tex);
 
     if (setTexParamsIuiv(ctx, &tex->params, pname, params))
     {
