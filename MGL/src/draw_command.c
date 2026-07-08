@@ -26,6 +26,7 @@
 #include "draw_command.h"
 #include "mgl_safety.h"
 #include "mgl_metal_ref.h"
+#include "mgl_frame_activity.h"
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
@@ -1698,7 +1699,10 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     if (cmd->mode != GL_TRIANGLES || cmd->count <= 0) return false;
     if (cmd->instanceCount != 1 || cmd->baseInstance != 0) return false;
     if (ctx->state.var.polygon_mode != GL_FILL) return false;
-    if (mglCurrentProgramUsesStreamMergeUnsafeBuiltin(ctx)) return false;
+    if (mglCurrentProgramUsesStreamMergeUnsafeBuiltin(ctx)) {
+        MGL_PERF_INC(g_mglMergeRejectUnsafeBuiltinSinceSwap);
+        return false;
+    }
 
     uint64_t restart = 0;
     if (mglCommandPrimitiveRestartIndex(ctx, cmd->indexType, &restart)) {
@@ -1797,21 +1801,25 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         }
         if (!sExclusionsDisabled) {
             const MGLStreamMergeExcludedLayout *excluded = NULL;
-            if (mglVAOMatchesExcludedLayout(vao, attribMask, vertexStride, &excluded) &&
-                mglStreamMergeExclusionStateOK(ctx, excluded, vertexBuffer)) {
-                static bool sDebugLog = false;
-                static bool sDebugChecked = false;
-                if (!sDebugChecked) {
-                    sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
-                    sDebugChecked = true;
+            if (mglVAOMatchesExcludedLayout(vao, attribMask, vertexStride, &excluded)) {
+                if (mglStreamMergeExclusionStateOK(ctx, excluded, vertexBuffer)) {
+                    static bool sDebugLog = false;
+                    static bool sDebugChecked = false;
+                    if (!sDebugChecked) {
+                        sDebugLog = (getenv("MGL_DEBUG_STREAM_MERGE") != NULL);
+                        sDebugChecked = true;
+                    }
+                    if (sDebugLog && excluded) {
+                        fprintf(stderr,
+                                "MGL DEBUG: stream-merge excluded layout '%s' "
+                                "(stride=%zu attribMask=0x%x)\n",
+                                excluded->name, vertexStride, attribMask);
+                    }
+                    MGL_PERF_INC(g_mglMergeRejectExcludedLayoutSinceSwap);
+                    return false;
+                } else {
+                    MGL_PERF_INC(g_mglMergeRejectBufferHazardSinceSwap);
                 }
-                if (sDebugLog && excluded) {
-                    fprintf(stderr,
-                            "MGL DEBUG: stream-merge excluded layout '%s' "
-                            "(stride=%zu attribMask=0x%x)\n",
-                            excluded->name, vertexStride, attribMask);
-                }
-                return false;
             }
         }
     }
@@ -2119,12 +2127,17 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     MGLDrawBatch *batch = NULL;
     if (can_reuse_batch && cb->batch_count > 0) {
         MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
-        if (mglStateKeysEqual(&last->key, &key) &&
+        bool keys_match = mglStateKeysEqual(&last->key, &key);
+        if (keys_match &&
             last->uses_elements == cmd_uses_elements &&
             last->stream_merged == can_stream_merge &&
             (!can_stream_merge || last->stream_layout_hash == streamCandidate.layout_hash) &&
             last->command_count < MGL_MAX_DRAWS_PER_BATCH) {
             batch = last;
+        } else if (!keys_match) {
+            MGL_PERF_INC(g_mglMergeRejectStateDiffersSinceSwap);
+        } else if (last->command_count >= MGL_MAX_DRAWS_PER_BATCH) {
+            MGL_PERF_INC(g_mglMergeRejectAppendFailedSinceSwap);
         }
     }
     if (!batch) {
@@ -2168,6 +2181,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     MGLDrawCommand stored_cmd = *cmd;
     if (can_stream_merge) {
         if (!mglAppendStreamMergedData(batch, &streamCandidate, cmd, &stored_cmd)) {
+            MGL_PERF_INC(g_mglMergeRejectAppendFailedSinceSwap);
             fprintf(stderr, "MGL Warning: stream merged append failed; falling back to normal deferred draw\n");
             if (batch->command_count == 0 &&
                 cb->batch_count > 0 &&

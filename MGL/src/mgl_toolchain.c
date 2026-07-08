@@ -40,6 +40,11 @@ static int mgl_set_error(char **out_error, const char *msg) {
         return 1;
     }
     *out_error = strdup(msg);
+    if (!*out_error) {
+        /* strdup OOM: leave *out_error NULL.  Callers treat a NULL out_error
+         * as "no error message" which is acceptable degradation — the failure
+         * is still signalled by the non-zero return value. */
+    }
     return 1;
 }
 

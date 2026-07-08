@@ -7,8 +7,10 @@
  */
 
 #import "mgl_msl_compiler.h"
+#import "mgl_frame_activity.h"
 
 #include <string.h>
+#include <mach/mach_time.h>
 
 /* mglEnvFlagEnabled is defined in MGLRenderer.m; declare it extern here so
  * the MTL4 compiler fast-path gate can query MGL_DISABLE_MTL4_COMPILER. */
@@ -62,7 +64,19 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
             descriptor.options = options;
             descriptor.name = label;
 
-            id<MTLLibrary> library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
+            id<MTLLibrary> library = nil;
+            if (mglPerfSummaryEnabled()) {
+                uint64_t compile_start = mach_absolute_time();
+                library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
+                uint64_t compile_end = mach_absolute_time();
+                mach_timebase_info_data_t tb;
+                mach_timebase_info(&tb);
+                double elapsed = (double)(compile_end - compile_start) * tb.numer / tb.denom / 1e9;
+                MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
+                MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
+            } else {
+                library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
+            }
             if (library) {
                 return library;
             }
@@ -79,6 +93,18 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
         }
     }
 #endif
+
+    if (mglPerfSummaryEnabled()) {
+        uint64_t compile_start = mach_absolute_time();
+        id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:error];
+        uint64_t compile_end = mach_absolute_time();
+        mach_timebase_info_data_t tb;
+        mach_timebase_info(&tb);
+        double elapsed = (double)(compile_end - compile_start) * tb.numer / tb.denom / 1e9;
+        MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
+        MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
+        return library;
+    }
 
     return [device newLibraryWithSource:source options:options error:error];
 }

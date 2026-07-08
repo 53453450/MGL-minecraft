@@ -55,9 +55,12 @@ typedef struct MGLIRPatchContext {
     int stage;
     spvc_compiler compiler;
 
-    /* Cached path-detection flags, populated by ir_reflect_active_builtins.
-     * Cached once so later passes (and the unified conflict predicate) do
-     * not re-scan reflection/source on every call. */
+    /* Cached path-detection flags, populated by ir_reflect_active_builtins
+     * (pass 1) and consumed by irBufferSlotConflictsForContext, which reads
+     * these ctx-> fields directly.  irBufferSlotConflictsForContext is called
+     * by ir_reserve_internal_slots and ir_pre_map_buffer_bindings, so caching
+     * the flags here avoids re-scanning reflection/GLSL source on every
+     * conflict check. */
     GLboolean has_tessellation;      /* TCS and/or TES attached. */
     GLboolean vs_uses_cull_distance; /* VS declares gl_CullDistance / mgl_CullDistance. */
     GLboolean fs_uses_frag_coord;    /* FS uses gl_FragCoord (triggers _mglFragCoordParams injection). */
@@ -66,6 +69,15 @@ typedef struct MGLIRPatchContext {
      * Bit N set means slot N is reserved by MGL for this program/stage and
      * must not be assigned to a user buffer. */
     GLuint reserved_slot_mask;
+
+    /* Cached SPIRV-Cross shader-resources snapshot, created once in
+     * mglRunIRPostprocessPipeline and reused by ir_fix_std140_array_strides
+     * to avoid a redundant spvc_compiler_create_shader_resources call.
+     * NULL if the snapshot creation failed — passes treat NULL as "no
+     * resources" and degrade gracefully.  This snapshot is taken BEFORE
+     * any destructive decoration edits; passes must query decoration
+     * values live on the compiler rather than trusting the snapshot. */
+    spvc_resources resources;
 
     /* Counters for diagnostics. */
     int remapped_count;

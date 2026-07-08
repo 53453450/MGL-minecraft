@@ -63,7 +63,16 @@ typedef enum {
     kMGLBufferSlot_PatchInfo        = 28,
 
     /* Indirect draw parameter buffer (vertexCount, instanceCount, ...).
-     * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS. */
+     * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS.
+     *
+     * In the TES compute kernel path, slot 29 is ALSO reused as the
+     * `_mgl_xfb_out` transform-feedback output buffer: the MSL is injected by
+     * mglFixMSLTesAsComputeKernel and the buffer is bound by
+     * dispatchTessEvaluationShader.  This is safe because TCS and TES run in
+     * separate compute encoders — the TCS dispatch never sees the TES XFB
+     * binding, and the TES dispatch's XFB use never overlaps the TCS indirect
+     * params use.  Both uses are confined to the TCS/TES compute path and do
+     * not collide with the VS cull-distance reuse of slot 29 (disjoint path). */
     kMGLBufferSlot_IndirectParams   = 29,
 
     /* TES gl_in buffer (TCS output vertices).  Reused as

@@ -46,6 +46,9 @@ typedef struct {
 
 static MGLUBOBindingEntry s_ubo_binding_entries[MGL_MAX_UBO_BINDINGS];
 static int s_ubo_binding_count = 0;
+/* Single-threaded access only — MGL assumes one GL context per thread.
+ * If multi-threaded access is ever needed, add a module-level
+ * os_unfair_lock around all reads and writes. */
 
 static int mgl_is_identifier_char(int c);
 
@@ -72,6 +75,17 @@ static int mgl_get_or_assign_ubo_binding(const char *block_name)
     }
 
     s_ubo_binding_entries[s_ubo_binding_count].name = strdup(block_name);
+    if (!s_ubo_binding_entries[s_ubo_binding_count].name) {
+        /* strdup OOM: fall back to a deterministic hash-based binding so the
+         * program still links.  The entry slot is left unused (count not
+         * incremented) so a later retry can fill it. */
+        unsigned hash = 2166136261u;
+        for (const char *p = block_name; *p; p++) {
+            hash ^= (unsigned char)*p;
+            hash *= 16777619u;
+        }
+        return (int)(hash % 256u);
+    }
     s_ubo_binding_entries[s_ubo_binding_count].binding = s_ubo_binding_count;
     s_ubo_binding_count++;
     return s_ubo_binding_entries[s_ubo_binding_count - 1].binding;
@@ -1467,6 +1481,9 @@ Shader *newShader(GLMContext ctx, GLenum type, GLuint shader)
 
     snprintf(shader_type_name, sizeof(shader_type_name), "%s_%d", getShaderTypeStr(ptr->glm_type), shader);
     ptr->mtl_shader_type_name = strdup(shader_type_name);
+    /* If strdup fails (OOM), ptr->mtl_shader_type_name stays NULL.  This is
+     * safe: the field is only ever passed to free() in the shader teardown
+     * path and is never dereferenced, so a NULL value is a harmless no-op. */
 
     return ptr;
 }
@@ -1668,6 +1685,10 @@ void mglShaderSource(GLMContext ctx, GLuint shader, GLsizei count, const GLchar 
         ERROR_CHECK_RETURN(string, GL_INVALID_VALUE);
 
         src = strdup(*string);
+        if (!src) {
+            mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+            return;
+        }
         len = strlen(src);
 
         ERROR_CHECK_RETURN(len, GL_INVALID_VALUE);
@@ -1701,7 +1722,11 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
 
         // Set error state for the shader - only set log message
         if (!ptr->log) {
-            ptr->log = strdup("GLSL shader creation failed - insufficient memory or unsupported shader type");
+            char *msg = strdup("GLSL shader creation failed - insufficient memory or unsupported shader type");
+            if (msg) {
+                ptr->log = msg;
+            }
+            /* If strdup also fails, ptr->log stays NULL — callers tolerate it. */
         }
         return;
     }
@@ -1771,7 +1796,11 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
                     info_log_safe,
                     debug_log_safe);
         } else {
-            ptr->log = strdup("glslang_shader_preprocess failed and log allocation failed");
+            char *fallback = strdup("glslang_shader_preprocess failed and log allocation failed");
+            if (fallback) {
+                ptr->log = fallback;
+            }
+            /* If strdup also fails, ptr->log stays NULL — callers must tolerate that. */
         }
 
         return;
@@ -1814,7 +1843,11 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
                     info_log_safe,
                     debug_log_safe);
         } else {
-            ptr->log = strdup("glslang_shader_parse failed and log allocation failed");
+            char *fallback = strdup("glslang_shader_parse failed and log allocation failed");
+            if (fallback) {
+                ptr->log = fallback;
+            }
+            /* If strdup also fails, ptr->log stays NULL — callers must tolerate that. */
         }
 
         return;

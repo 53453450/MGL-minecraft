@@ -185,6 +185,11 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     int err;
 
     if (!ctx) {
+        /* OOM: no GLMContext exists yet, so ctx->error_func cannot be called.
+         * The caller (likely the GL entry-point dispatcher or auto-init path)
+         * has no context to dispatch an error into — surface the failure via
+         * the trace log and return NULL so the caller can degrade gracefully. */
+        mglTraceLogExternal("MGL OOM: malloc(sizeof(GLMContextRec)) failed in createGLMContext");
         return NULL;
     }
 

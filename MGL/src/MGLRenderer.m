@@ -1311,15 +1311,15 @@ static void mglLogDrawWithoutSwapWatchdog(const char *kind,
                                           id<MTLRenderCommandEncoder> renderEncoder,
                                           MTLRenderPassDescriptor *renderPassDescriptor)
 {
-    uint64_t drawArrays = g_mglDrawArraysSinceSwap;
-    uint64_t drawElements = g_mglDrawElementsSinceSwap;
+    uint64_t drawArrays = MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap);
+    uint64_t drawElements = MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap);
     uint64_t totalDraws = drawArrays + drawElements;
     if (totalDraws < 16384ull || (totalDraws % 16384ull) != 0ull) {
         return;
     }
 
     double now = mglNowSeconds();
-    double lastSwap = g_mglLastSwapSeconds;
+    double lastSwap = MGL_FRAME_LOAD(g_mglLastSwapSeconds);
     double lastSwapAgeMs = (lastSwap > 0.0) ? ((now - lastSwap) * 1000.0) : -1.0;
     if (lastSwapAgeMs >= 0.0 && lastSwapAgeMs < 250.0) {
         return;
@@ -1338,7 +1338,7 @@ static void mglLogDrawWithoutSwapWatchdog(const char *kind,
           (unsigned long long)totalDraws,
           (unsigned long long)drawArrays,
           (unsigned long long)drawElements,
-          (unsigned long long)g_mglSwapCallCount,
+          (unsigned long long)MGL_FRAME_LOAD(g_mglSwapCallCount),
           lastSwapAgeMs,
           (unsigned)(ctx ? ctx->state.program_name : 0u),
           (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
@@ -2341,6 +2341,11 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (bool)newRenderEncoderLocked;
 - (void)flushCommandBufferLocked:(bool)finish;
 - (bool)processGLStateLocked:(bool)draw_command;
+- (void)invalidateLastBoundState;
+- (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index;
+- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index;
+- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index;
 - (void)mtlDrawArraysLocked:(GLMContext)ctx mode:(GLenum)mode first:(GLint)first count:(GLsizei)count;
 - (void)mtlDrawElementsLocked:(GLMContext)glm_ctx mode:(GLenum)mode count:(GLsizei)count type:(GLenum)type indices:(const void *)indices;
 - (void)mtlSwapBuffersLocked:(GLMContext)glm_ctx;
@@ -2374,10 +2379,38 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     os_unfair_lock_unlock(lock);
 }
 
-#define METAL_LOCK()   [_metalStateLock lock]
-#define METAL_UNLOCK() [_metalStateLock unlock]
+/* Lock timing: measure wait (acquisition) and hold time for METAL_LOCK.
+ * Uses _metalLockHoldStart ivar to pass timestamp from LOCK to UNLOCK.
+ * Overhead is two mglNowSeconds() calls per lock/unlock pair (~20ns each). */
+#define METAL_LOCK()   do { \
+    if (mglPerfSummaryEnabled()) { \
+        double _mlw = mglNowSeconds(); \
+        [_metalStateLock lock]; \
+        double _mln = mglNowSeconds(); \
+        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, _mln - _mlw); \
+        _metalLockHoldStart = _mln; \
+    } else { \
+        [_metalStateLock lock]; \
+    } \
+} while (0)
+#define METAL_UNLOCK() do { \
+    if (mglPerfSummaryEnabled()) { \
+        MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, mglNowSeconds() - _metalLockHoldStart); \
+    } \
+    [_metalStateLock unlock]; \
+} while (0)
 #define SYNC_LOCK()    do { mglMetalLock(&_syncListLock); } while (0)
 #define SYNC_UNLOCK()  do { mglMetalUnlock(&_syncListLock); } while (0)
+
+/* Last-bound state cache for render encoder dedup.
+ * Avoids redundant setVertexBuffer/setFragmentBuffer/setRenderPipelineState
+ * calls when the resource and offset haven't changed. */
+typedef struct {
+    id<MTLBuffer> __strong buffer;
+    NSUInteger offset;
+} MGLLastBoundBuffer;
+
+#define kMGLMaxBufferSlots 31
 
 // Main class performing the rendering
 @implementation MGLRenderer
@@ -2405,6 +2438,7 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     // The Locked pattern (public wrapper + *Locked impl) is retained for
     // structural clarity but no longer relies on non-reentrancy.
     NSRecursiveLock *_metalStateLock;
+    double _metalLockHoldStart;     /* timestamp for METAL_LOCK/METAL_UNLOCK timing */
     os_unfair_lock _syncListLock;   // independent lock for _currentCommandBufferSyncList
 
     // AGX GPU Error Tracking - Prevent command queue from entering error state
@@ -2504,6 +2538,18 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     id<MTLEvent> _currentEvent;
     GLsizei _currentSyncName;
     BOOL _isCommittingCommandBuffer;
+
+    /* Last-bound state for render encoder dedup */
+    MGLLastBoundBuffer _lastBoundVertexBuffers[kMGLMaxBufferSlots];
+    MGLLastBoundBuffer _lastBoundFragmentBuffers[kMGLMaxBufferSlots];
+    id<MTLRenderPipelineState> _lastPipelineState;
+    id<MTLDepthStencilState> _lastDepthStencilState;
+    MTLCullMode _lastCullMode;
+    MTLWinding _lastFrontFacingWinding;
+    float _lastDepthBias;
+    float _lastDepthBiasClamp;
+    float _lastDepthSlopeScale;
+    BOOL _lastBoundValid;  /* NO after encoder recreation, YES after first bind */
 }
 
 MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
@@ -5074,6 +5120,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         if (!ptr) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has invalid/NULL buffer pointer, skipping", i);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5081,6 +5129,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has negative offset=%lld, skipping",
                   i, (long long)offset);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5088,6 +5138,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             NSLog(@"MGL WARNING: Vertex buffer %u has invalid size=%lld, skipping",
                   ptr->name, (long long)ptr->size);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5097,12 +5149,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         if (!ptr->data.mtl_data) {
             NSLog(@"MGL WARNING: Vertex buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
         if ((uintptr_t)ptr->data.mtl_data < 0x10000u) {
             NSLog(@"MGL VBIND skip base slot %d buffer=%u: suspicious mtl_data pointer=%p",
                   i, ptr->name, ptr->data.mtl_data);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5110,6 +5166,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         if (!buffer) {
             NSLog(@"MGL WARNING: Vertex buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5119,6 +5177,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             NSLog(@"MGL VBIND skip base slot %d buffer=%u: offset=%lu length=%lu",
                   i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
             [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5185,6 +5245,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                             [_currentRenderEncoder setVertexBytes:paddedBytes
                                                            length:paddedLen
                                                           atIndex:bindingIndex];
+                            [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
         if (kMGLVerboseBindLogs) {
             NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=%lu available=%lu source=base-padded-bytes(min=%lu reflected=%lu copy=%lu range=%lld)",
                   (unsigned long)bindingIndex,
@@ -5216,9 +5277,18 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                                                  options:MTLResourceStorageModeShared];
                 }
                 if (minimumBindingBuffer) {
-                    [_currentRenderEncoder setVertexBuffer:minimumBindingBuffer
-                                                    offset:0
-                                                   atIndex:bindingIndex];
+                    if (!_lastBoundValid ||
+                        _lastBoundVertexBuffers[bindingIndex].buffer != minimumBindingBuffer ||
+                        _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                        [_currentRenderEncoder setVertexBuffer:minimumBindingBuffer
+                                                        offset:0
+                                                       atIndex:bindingIndex];
+                        _lastBoundVertexBuffers[bindingIndex].buffer = minimumBindingBuffer;
+                        _lastBoundVertexBuffers[bindingIndex].offset = 0;
+                        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+                    } else {
+                        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+                    }
                     if (kMGLVerboseBindLogs) {
                         NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=0 available=%lu source=base-min-fallback(min=%lu reflected=%lu)",
                               (unsigned long)bindingIndex,
@@ -5248,12 +5318,22 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             [_currentRenderEncoder setVertexBytes:(const void *)(uintptr_t)ptr->data.buffer_data
                                             length:(NSUInteger)ptr->size
                                            atIndex:bindingIndex];
+            [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
             anyBindingPresent[bindingIndex] = true;
             ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
             continue;
         }
 
-        [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
+        if (!_lastBoundValid ||
+            _lastBoundVertexBuffers[bindingIndex].buffer != buffer ||
+            _lastBoundVertexBuffers[bindingIndex].offset != (NSUInteger)offset) {
+            [_currentRenderEncoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = buffer;
+            _lastBoundVertexBuffers[bindingIndex].offset = (NSUInteger)offset;
+            MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+        } else {
+            MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+        }
         Program *bindProgram = activeProgram;
         if (mglProgramNeedsBindingTrace(bindProgram)) {
             static uint64_t s_focusedVertexBufferBindLogs = 0;
@@ -5358,9 +5438,18 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
                 continue;
             }
-            [_currentRenderEncoder setVertexBuffer:currentAttribBuffer
-                                            offset:0
-                                           atIndex:bindingIndex];
+            if (!_lastBoundValid ||
+                _lastBoundVertexBuffers[bindingIndex].buffer != currentAttribBuffer ||
+                _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                [_currentRenderEncoder setVertexBuffer:currentAttribBuffer
+                                                offset:0
+                                               atIndex:bindingIndex];
+                _lastBoundVertexBuffers[bindingIndex].buffer = currentAttribBuffer;
+                _lastBoundVertexBuffers[bindingIndex].offset = 0;
+                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+            }
             anyBindingPresent[bindingIndex] = true;
             static uint64_t s_traceFileCurrentAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
@@ -5521,7 +5610,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                       attribBuffer->name);
                 continue;
             }
-            [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+            if (!_lastBoundValid ||
+                _lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
+                _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+                _lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
+                _lastBoundVertexBuffers[bindingIndex].offset = 0;
+                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+            }
             anyBindingPresent[bindingIndex] = true;
             continue;
         }
@@ -5540,7 +5638,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                       attribBuffer->name);
                 continue;
             }
-            [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+            if (!_lastBoundValid ||
+                _lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
+                _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+                _lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
+                _lastBoundVertexBuffers[bindingIndex].offset = 0;
+                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+            }
             anyBindingPresent[bindingIndex] = true;
             continue;
         }
@@ -5561,7 +5668,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                       (int)integerConvDstIsInt);
                 continue;
             }
-            [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+            if (!_lastBoundValid ||
+                _lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
+                _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                [_currentRenderEncoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+                _lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
+                _lastBoundVertexBuffers[bindingIndex].offset = 0;
+                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+            }
             anyBindingPresent[bindingIndex] = true;
             continue;
         }
@@ -5600,7 +5716,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         /* Bind the VBO at offset 0. Per-attribute offsets are expressed via
          * the vertex descriptor's attribute offset field (set in
          * generateVertexDescriptor), which is relative to this buffer base. */
-	    [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
+	    if (!_lastBoundValid ||
+	        _lastBoundVertexBuffers[bindingIndex].buffer != attribMetalBuffer ||
+	        _lastBoundVertexBuffers[bindingIndex].offset != 0) {
+	        [_currentRenderEncoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
+	        _lastBoundVertexBuffers[bindingIndex].buffer = attribMetalBuffer;
+	        _lastBoundVertexBuffers[bindingIndex].offset = 0;
+	        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+	    } else {
+	        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+	    }
 	    anyBindingPresent[bindingIndex] = true;
             static uint64_t s_traceFileVertexAttribBindLogs = 0;
             if (mglProgramNeedsTraceLog(activeProgram) &&
@@ -5689,9 +5814,19 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     continue;
                 }
                 if (!anyBindingPresent[(NSUInteger)metalBinding] && fallbackBindingBuffer) {
-                    [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:(NSUInteger)metalBinding];
+                    NSUInteger _slot = (NSUInteger)metalBinding;
+                    if (!_lastBoundValid ||
+                        _lastBoundVertexBuffers[_slot].buffer != fallbackBindingBuffer ||
+                        _lastBoundVertexBuffers[_slot].offset != 0) {
+                        [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
+                        _lastBoundVertexBuffers[_slot].buffer = fallbackBindingBuffer;
+                        _lastBoundVertexBuffers[_slot].offset = 0;
+                        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+                    } else {
+                        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+                    }
                     baseBindingPresent[clientBinding] = true;
-                    anyBindingPresent[(NSUInteger)metalBinding] = true;
+                    anyBindingPresent[_slot] = true;
                 }
             }
         }
@@ -5703,7 +5838,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     if (kMGLEnableVertexAllSlotFallback && fallbackBindingBuffer) {
         for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
-                [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:s];
+                if (!_lastBoundValid ||
+                    _lastBoundVertexBuffers[s].buffer != fallbackBindingBuffer ||
+                    _lastBoundVertexBuffers[s].offset != 0) {
+                    [_currentRenderEncoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:s];
+                    _lastBoundVertexBuffers[s].buffer = fallbackBindingBuffer;
+                    _lastBoundVertexBuffers[s].offset = 0;
+                    MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+                } else {
+                    MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+                }
                 anyBindingPresent[s] = true;
             }
         }
@@ -5727,6 +5871,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         [_currentRenderEncoder setVertexBytes:pointSizeParams
                                       length:sizeof(pointSizeParams)
                                       atIndex:kMGLPointSizeParamBufferIndex];
+        [self invalidateLastBoundVertexBufferAtIndex:kMGLPointSizeParamBufferIndex];
         anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
     }
 
@@ -5756,6 +5901,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
               (mglNowSeconds() - vbindStartSeconds) * 1000.0);
     }
 
+    /* Mark the dedup cache as valid for the current encoder so subsequent
+     * binds can be skipped when the resource and offset are unchanged. */
+    _lastBoundValid = YES;
     return true;
 }
 
@@ -5845,6 +5993,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             NSLog(@"MGL FBIND skip slot=%u: invalid/NULL candidate=%p", i, map->buf);
             map->buf = NULL;
             [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5852,6 +6002,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: negative offset=%lld",
                   i, ptr->name, (long long)offset);
             [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
             continue;
         }
 
@@ -5869,6 +6021,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
                     [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+                    _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+                    _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                     continue;
                 }
 
@@ -5878,12 +6034,17 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: offset=%lu bufferSize=%lu",
                           ptr->name, i, (unsigned long)bindOffset, (unsigned long)bufferSize);
                     [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+                    _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+                    _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                     continue;
                 }
 
                 size_t bindLength = bufferSize - bindOffset;
                 const uint8_t *bindPtr = ((const uint8_t *)ptr->data.buffer_data) + bindOffset;
                 [_currentRenderEncoder setFragmentBytes:bindPtr length:bindLength atIndex:bindingIndex];
+                [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                 if (kMGLVerboseBindLogs) {
                     NSLog(@"MGL FBIND ok(slot=%lu) setFragmentBytes buffer=%u len=%lu offset=%lu",
                           (unsigned long)bindingIndex,
@@ -5897,6 +6058,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: suspicious mtl_data pointer=%p",
                           ptr->name, i, ptr->data.mtl_data);
                     [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+                    _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+                    _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                     continue;
                 }
                 id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
@@ -5907,10 +6072,23 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: offset=%lu length=%lu",
                               ptr->name, i, (unsigned long)bindOffset, (unsigned long)metalLen);
                         [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+                    _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+                    _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                         continue;
                     }
 
-                    [_currentRenderEncoder setFragmentBuffer:fallbackBuffer offset:offset atIndex:bindingIndex];
+                    if (!_lastBoundValid ||
+                        _lastBoundFragmentBuffers[bindingIndex].buffer != fallbackBuffer ||
+                        _lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
+                        [_currentRenderEncoder setFragmentBuffer:fallbackBuffer offset:offset atIndex:bindingIndex];
+                        _lastBoundFragmentBuffers[bindingIndex].buffer = fallbackBuffer;
+                        _lastBoundFragmentBuffers[bindingIndex].offset = (NSUInteger)offset;
+                        MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+                    } else {
+                        MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
+                    }
                     if (kMGLVerboseBindLogs) {
                         NSLog(@"MGL FBIND ok(slot=%lu) setFragmentBuffer buffer=%u mtl=%p len=%lu offset=%lu",
                               (unsigned long)bindingIndex,
@@ -5923,6 +6101,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 }
             } else {
                 [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
             }
             
             // clear buffer data dirty bits
@@ -5936,12 +6116,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             if (!ptr->data.mtl_data) {
                 NSLog(@"MGL WARNING: Fragment buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
                 [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                 continue;
             }
             if ((uintptr_t)ptr->data.mtl_data < 0x100000000ULL) {
                 NSLog(@"MGL FBIND skip slot=%u buffer=%u: suspicious mtl_data pointer=%p",
                       i, ptr->name, ptr->data.mtl_data);
                 [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                 continue;
             }
             
@@ -5949,6 +6133,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             if (!buffer) {
                 NSLog(@"MGL WARNING: Fragment buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
                 [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                 continue;
             }
 
@@ -5958,6 +6144,8 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 NSLog(@"MGL FBIND skip slot=%u buffer=%u: offset=%lu length=%lu",
                       i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
                 [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
+            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                 continue;
             }
 
@@ -6019,6 +6207,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                 [_currentRenderEncoder setFragmentBytes:paddedBytes
                                                                  length:paddedLen
                                                                 atIndex:bindingIndex];
+                                [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                                 if (kMGLVerboseBindLogs) {
                                     NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=%lu available=%lu source=base-padded-bytes(min=%lu reflected=%lu copy=%lu range=%lld)",
                                           (unsigned long)bindingIndex,
@@ -6050,9 +6239,18 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                                                                      options:MTLResourceStorageModeShared];
                     }
                     if (minimumBindingBuffer) {
-                        [_currentRenderEncoder setFragmentBuffer:minimumBindingBuffer
-                                                          offset:0
-                                                         atIndex:bindingIndex];
+                        if (!_lastBoundValid ||
+                            _lastBoundFragmentBuffers[bindingIndex].buffer != minimumBindingBuffer ||
+                            _lastBoundFragmentBuffers[bindingIndex].offset != 0) {
+                            [_currentRenderEncoder setFragmentBuffer:minimumBindingBuffer
+                                                              offset:0
+                                                             atIndex:bindingIndex];
+                            _lastBoundFragmentBuffers[bindingIndex].buffer = minimumBindingBuffer;
+                            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                            MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+                        } else {
+                            MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
+                        }
                         if (kMGLVerboseBindLogs) {
                             NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=0 available=%lu source=base-min-fallback(min=%lu reflected=%lu)",
                                   (unsigned long)bindingIndex,
@@ -6082,6 +6280,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 [_currentRenderEncoder setFragmentBytes:(const void *)(uintptr_t)ptr->data.buffer_data
                                                   length:(NSUInteger)ptr->size
                                                  atIndex:bindingIndex];
+                [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                 if (kMGLVerboseBindLogs) {
                     NSLog(@"MGL FBIND uniform-constant setFragmentBytes slot=%lu buffer=%u len=%lu (plain uniform snapshot)",
                           (unsigned long)bindingIndex,
@@ -6093,7 +6292,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 continue;
             }
 
-            [_currentRenderEncoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
+            if (!_lastBoundValid ||
+                _lastBoundFragmentBuffers[bindingIndex].buffer != buffer ||
+                _lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
+                [_currentRenderEncoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
+                _lastBoundFragmentBuffers[bindingIndex].buffer = buffer;
+                _lastBoundFragmentBuffers[bindingIndex].offset = (NSUInteger)offset;
+                MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
+            }
             Program *bindProgram = activeProgram;
             if (mglProgramNeedsBindingTrace(bindProgram)) {
                 static uint64_t s_focusedFragmentBufferBindLogs = 0;
@@ -6184,9 +6392,19 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     continue;
                 }
                 if (!anyBindingPresent[(NSUInteger)metalBinding] && fallbackBindingBuffer) {
-                    [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:(NSUInteger)metalBinding];
+                    NSUInteger _slot = (NSUInteger)metalBinding;
+                    if (!_lastBoundValid ||
+                        _lastBoundFragmentBuffers[_slot].buffer != fallbackBindingBuffer ||
+                        _lastBoundFragmentBuffers[_slot].offset != 0) {
+                        [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
+                        _lastBoundFragmentBuffers[_slot].buffer = fallbackBindingBuffer;
+                        _lastBoundFragmentBuffers[_slot].offset = 0;
+                        MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+                    } else {
+                        MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
+                    }
                     baseBindingPresent[clientBinding] = true;
-                    anyBindingPresent[(NSUInteger)metalBinding] = true;
+                    anyBindingPresent[_slot] = true;
                 }
             }
         }
@@ -6195,7 +6413,16 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     if (fallbackBindingBuffer) {
         for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
-                [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:s];
+                if (!_lastBoundValid ||
+                    _lastBoundFragmentBuffers[s].buffer != fallbackBindingBuffer ||
+                    _lastBoundFragmentBuffers[s].offset != 0) {
+                    [_currentRenderEncoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:s];
+                    _lastBoundFragmentBuffers[s].buffer = fallbackBindingBuffer;
+                    _lastBoundFragmentBuffers[s].offset = 0;
+                    MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+                } else {
+                    MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
+                }
                 anyBindingPresent[s] = true;
             }
         }
@@ -6220,6 +6447,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
               (mglNowSeconds() - fbindStartSeconds) * 1000.0);
     }
 
+    /* Mark the dedup cache as valid for the current encoder so subsequent
+     * binds can be skipped when the resource and offset are unchanged. */
+    _lastBoundValid = YES;
     return true;
 }
 
@@ -13710,23 +13940,25 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
 
 - (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount
 {
-    g_mglLastDrawArraysSeconds = mglNowSeconds();
-    g_mglLastDrawArraysProgram = mglCurrentRenderProgramKey(ctx);
-    g_mglLastDrawArraysMode = mode;
-    g_mglLastDrawArraysCount = (vertexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)vertexCount;
-    g_mglDrawArraysSinceSwap++;
-    g_mglDrawArrayVerticesSinceSwap += vertexCount;
+    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawArraysProgram, mglCurrentRenderProgramKey(ctx));
+    MGL_FRAME_STORE(g_mglLastDrawArraysMode, mode);
+    MGL_FRAME_STORE(g_mglLastDrawArraysCount,
+                    (vertexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)vertexCount);
+    MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
+    MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap, vertexCount);
     [self markCurrentFramebufferDrawAttachmentsWritten];
 }
 
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount
 {
-    g_mglLastDrawElementsSeconds = mglNowSeconds();
-    g_mglLastDrawElementsProgram = mglCurrentRenderProgramKey(ctx);
-    g_mglLastDrawElementsMode = mode;
-    g_mglLastDrawElementsCount = (indexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)indexCount;
-    g_mglDrawElementsSinceSwap++;
-    g_mglDrawElementIndicesSinceSwap += indexCount;
+    MGL_FRAME_STORE(g_mglLastDrawElementsSeconds, mglNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawElementsProgram, mglCurrentRenderProgramKey(ctx));
+    MGL_FRAME_STORE(g_mglLastDrawElementsMode, mode);
+    MGL_FRAME_STORE(g_mglLastDrawElementsCount,
+                    (indexCount > (uint64_t)INT_MAX) ? INT_MAX : (GLsizei)indexCount);
+    MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
+    MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap, indexCount);
     [self markCurrentFramebufferDrawAttachmentsWritten];
 }
 
@@ -14296,6 +14528,8 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
 
     @try {
         [_currentRenderEncoder setRenderPipelineState:_pipelineState];
+        _lastPipelineState = _pipelineState;
+        MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %@",
               exception.reason);
@@ -15134,9 +15368,11 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                     NSRange closeParenRange =
                         mglRendererFindMSLEntryParameterClose(mslNS, shader->entry_point);
                     if (closeParenRange.location != NSNotFound) {
-                        NSString *cullParams = @", uint mgl_vid [[vertex_id]], "
-                                                 "device const float* mgl_cull_buf [[buffer(29)]], "
-                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(28)]])";
+                        NSString *cullParams = [NSString stringWithFormat:@", uint mgl_vid [[vertex_id]], "
+                                                 "device const float* mgl_cull_buf [[buffer(%d)]], "
+                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(%d)]])",
+                                                 kMGLCullDistanceVertexBufferIndex,
+                                                 kMGLCullDistanceParamsBufferIndex];
                         mslNS = [mslNS stringByReplacingCharactersInRange:closeParenRange
                                                                withString:cullParams];
                         cullParamsInjected = YES;
@@ -15655,7 +15891,10 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         id <MTLDepthStencilState> dsState = [_device
                                   newDepthStencilStateWithDescriptor:dsDesc];
 
-        [_currentRenderEncoder setDepthStencilState: dsState];
+        if (!_lastBoundValid || _lastDepthStencilState != dsState) {
+            [_currentRenderEncoder setDepthStencilState: dsState];
+            _lastDepthStencilState = dsState;
+        }
         if (useStencilState) {
             [_currentRenderEncoder setStencilFrontReferenceValue:(uint32_t)ctx->state.var.stencil_ref
                                               backReferenceValue:(uint32_t)ctx->state.var.stencil_back_ref];
@@ -15670,7 +15909,10 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         id <MTLDepthStencilState> disabledDSState = [_device
                                       newDepthStencilStateWithDescriptor:disabledDSDesc];
         if (disabledDSState) {
-            [_currentRenderEncoder setDepthStencilState:disabledDSState];
+            if (!_lastBoundValid || _lastDepthStencilState != disabledDSState) {
+                [_currentRenderEncoder setDepthStencilState:disabledDSState];
+                _lastDepthStencilState = disabledDSState;
+            }
         }
     }
 
@@ -16081,17 +16323,31 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                 cull_mode = MTLCullModeNone;
         }
 
-        [_currentRenderEncoder setCullMode:cull_mode];
-        [_currentRenderEncoder setFrontFacingWinding:
+        if (!_lastBoundValid || _lastCullMode != cull_mode) {
+            [_currentRenderEncoder setCullMode:cull_mode];
+            _lastCullMode = cull_mode;
+        }
+        MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(ctx->state.var.front_face),
-                                     ctx->state.var.clip_origin == GL_UPPER_LEFT)];
+                                     ctx->state.var.clip_origin == GL_UPPER_LEFT);
+        if (!_lastBoundValid || _lastFrontFacingWinding != _winding) {
+            [_currentRenderEncoder setFrontFacingWinding:_winding];
+            _lastFrontFacingWinding = _winding;
+        }
     }
     else
     {
-        [_currentRenderEncoder setCullMode:MTLCullModeNone];
-        [_currentRenderEncoder setFrontFacingWinding:
+        if (!_lastBoundValid || _lastCullMode != MTLCullModeNone) {
+            [_currentRenderEncoder setCullMode:MTLCullModeNone];
+            _lastCullMode = MTLCullModeNone;
+        }
+        MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(ctx->state.var.front_face),
-                                     ctx->state.var.clip_origin == GL_UPPER_LEFT)];
+                                     ctx->state.var.clip_origin == GL_UPPER_LEFT);
+        if (!_lastBoundValid || _lastFrontFacingWinding != _winding) {
+            [_currentRenderEncoder setFrontFacingWinding:_winding];
+            _lastFrontFacingWinding = _winding;
+        }
 
         if (ctx->state.caps.cull_face && defaultFramebufferSampledPass) {
             static uint64_t s_defaultSampledCullBypassCount = 0;
@@ -16132,13 +16388,28 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         ctx->state.caps.polygon_offset_line ||
         ctx->state.caps.polygon_offset_point)
     {
-        [_currentRenderEncoder setDepthBias:ctx->state.var.polygon_offset_units
-                                 slopeScale:ctx->state.var.polygon_offset_factor
-                                      clamp:0.0f];
+        float _bias = ctx->state.var.polygon_offset_units;
+        float _slope = ctx->state.var.polygon_offset_factor;
+        float _clamp = 0.0f;
+        if (!_lastBoundValid || _lastDepthBias != _bias ||
+            _lastDepthBiasClamp != _clamp || _lastDepthSlopeScale != _slope) {
+            [_currentRenderEncoder setDepthBias:_bias
+                                     slopeScale:_slope
+                                          clamp:_clamp];
+            _lastDepthBias = _bias;
+            _lastDepthBiasClamp = _clamp;
+            _lastDepthSlopeScale = _slope;
+        }
     }
     else
     {
-        [_currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+        if (!_lastBoundValid || _lastDepthBias != 0.0f ||
+            _lastDepthBiasClamp != 0.0f || _lastDepthSlopeScale != 0.0f) {
+            [_currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+            _lastDepthBias = 0.0f;
+            _lastDepthBiasClamp = 0.0f;
+            _lastDepthSlopeScale = 0.0f;
+        }
     }
 
     MTLTriangleFillMode triangleFillMode = MTLTriangleFillModeFill;
@@ -16167,6 +16438,12 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 {
     // I can't remember why this is here...
     @autoreleasepool {
+    /* Invalidate last-bound render encoder state — the new encoder must
+     * re-issue all binds rather than skipping them via the dedup fast path.
+     * Called here (in addition to endRenderEncodingLocked) so the cache is
+     * also cleared on code paths that bypass endRenderEncodingLocked. */
+    [self invalidateLastBoundState];
+
     static uint64_t s_newRenderEncoderCallCount = 0;
     uint64_t renderEncoderCall = ++s_newRenderEncoderCallCount;
     bool traceRenderEncoder = mglShouldTraceCall(renderEncoderCall) ||
@@ -18956,6 +19233,10 @@ create_new_command_buffer:
 
 - (void) endRenderEncodingLocked
 {
+    /* Invalidate last-bound render encoder state — the next encoder must
+     * re-issue all binds rather than skipping them via the dedup fast path. */
+    [self invalidateLastBoundState];
+
     if (_currentRenderEncoder)
     {
         Framebuffer *endedFramebuffer = _renderPassFramebuffer;
@@ -19138,6 +19419,63 @@ create_new_command_buffer:
 #pragma mark processGLState for resolving opengl state into metal state
 #pragma mark ------------------------------------------------------------------------------------------
 
+/* Invalidate all last-bound render encoder state. Called whenever the
+ * encoder is recreated or ended so the next bind is not incorrectly skipped
+ * by the dedup fast path. */
+- (void)invalidateLastBoundState
+{
+    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
+        _lastBoundVertexBuffers[i].buffer = nil;
+        _lastBoundVertexBuffers[i].offset = 0;
+        _lastBoundFragmentBuffers[i].buffer = nil;
+        _lastBoundFragmentBuffers[i].offset = 0;
+    }
+    _lastPipelineState = nil;
+    _lastDepthStencilState = nil;
+    _lastCullMode = MTLCullModeNone;
+    _lastFrontFacingWinding = MTLWindingClockwise;
+    _lastDepthBias = 0;
+    _lastDepthBiasClamp = 0;
+    _lastDepthSlopeScale = 0;
+    _lastBoundValid = NO;
+}
+
+- (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) {
+        return;
+    }
+    _lastBoundVertexBuffers[index].buffer = buffer;
+    _lastBoundVertexBuffers[index].offset = offset;
+}
+
+- (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) {
+        return;
+    }
+    _lastBoundFragmentBuffers[index].buffer = buffer;
+    _lastBoundFragmentBuffers[index].offset = offset;
+}
+
+- (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) {
+        return;
+    }
+    _lastBoundVertexBuffers[index].buffer = nil;
+    _lastBoundVertexBuffers[index].offset = (NSUInteger)-1;
+}
+
+- (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) {
+        return;
+    }
+    _lastBoundFragmentBuffers[index].buffer = nil;
+    _lastBoundFragmentBuffers[index].offset = (NSUInteger)-1;
+}
+
 - (bool) processGLState: (bool) draw_command
 {
     METAL_LOCK();
@@ -19191,7 +19529,7 @@ create_new_command_buffer:
          * previous draw cannot disable culling while DIRTY_VAO/FBO is handled.
          */
         _currentDrawUsesRTSampledCopy = NO;
-        g_mglProcessDrawCallsSinceSwap++;
+        MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
     }
 
     uintptr_t earlyCtxAddr = (uintptr_t)ctx;
@@ -19517,6 +19855,10 @@ create_new_command_buffer:
         // new pipeline / vertex / renderbuffer and pipelinestate descriptor, should probably make this a single dirty bit
         if (ctx->state.dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
         {
+            /* Force a rebind of the pipeline state on the next setRenderPipelineState
+             * call. Dirty program/VAO/FBO/render-state may rebuild or reuse the
+             * pipeline, but the encoder still needs the binding re-issued. */
+            _lastPipelineState = nil;
             static CFTimeInterval s_pipelineRetryAfter = 0.0;
             static CFTimeInterval s_interfaceMismatchRetryAfter = 0.0;
             static GLuint s_interfaceMismatchProgramName = 0;
@@ -19659,7 +20001,8 @@ create_new_command_buffer:
 	                id<MTLRenderPipelineState> cachedPipeline = [_pipelineStateCache objectForKey:pipelineCacheKey];
 	                if (cachedPipeline) {
 	                    static uint64_t s_pipelineCacheHitCount = 0;
-	                    s_pipelineCacheHitCount++;
+                    s_pipelineCacheHitCount++;
+                    MGL_PERF_INC(g_mglPipelineCacheHitsSinceSwap);
 	                    if (kMGLVerbosePipelineLogs &&
                             (s_pipelineCacheHitCount <= 128ull || (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
 	                        NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%@",
@@ -19695,7 +20038,8 @@ create_new_command_buffer:
 
 	            // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
 	            if (!pipelineResolvedFromCache) {
-	            NSError *error;
+            MGL_PERF_INC(g_mglPipelineCacheMissesSinceSwap);
+            NSError *error;
 	            id<MTLRenderPipelineState> previousPipelineState = _pipelineState;
 	            bool pipelineReusedPrevious = false;
 
@@ -19984,8 +20328,19 @@ create_new_command_buffer:
 	                }
 
 	                if (_pipelineStateCache) {
+	                    /* LRU eviction: remove the oldest 25% of cached entries instead
+	                     * of clearing the whole cache. NSMutableDictionary preserves
+	                     * insertion order, so the first keys are the oldest inserts.
+	                     * This is an approximation of true LRU — a real access-ordered
+	                     * LRU would require rebuilding the dictionary on each hit,
+	                     * which is too expensive for this hot path. */
 	                    if (_pipelineStateCache.count >= 256) {
-	                        [_pipelineStateCache removeAllObjects];
+                        NSArray *keys = _pipelineStateCache.allKeys;
+                        NSUInteger evictCount = keys.count / 4;  /* evict 25% */
+                        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, evictCount);
+                        for (NSUInteger i = 0; i < evictCount; i++) {
+                            [_pipelineStateCache removeObjectForKey:keys[i]];
+                        }
 	                    }
                         if (pipelineCacheKey) {
 	                        [_pipelineStateCache setObject:_pipelineState forKey:pipelineCacheKey];
@@ -20238,7 +20593,13 @@ depth_format_ok:;
 stencil_format_ok:;
 
     @try {
-        [_currentRenderEncoder setRenderPipelineState:_pipelineState];
+        if (!_lastBoundValid || _lastPipelineState != _pipelineState) {
+            [_currentRenderEncoder setRenderPipelineState:_pipelineState];
+            _lastPipelineState = _pipelineState;
+            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+        } else {
+            MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
         // Force pipeline/state retranslation on next draw instead of crashing this frame.
@@ -20296,6 +20657,7 @@ stencil_format_ok:;
         [_currentRenderEncoder setFragmentBytes:&fragCoordParams
                                          length:sizeof(fragCoordParams)
                                         atIndex:kMGLFragCoordParamsBufferIndex];
+        [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
     if (draw_command &&
@@ -20362,6 +20724,10 @@ stencil_format_ok:;
                                                   options:MTLResourceStorageModeShared];
         if (s_vertexSizeBuffer) {
             [_currentRenderEncoder setVertexBuffer:s_vertexSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            [self recordLastBoundVertexBuffer:s_vertexSizeBuffer
+                                       offset:0
+                                      atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         }
     }
 
@@ -20391,6 +20757,10 @@ stencil_format_ok:;
                                                     options:MTLResourceStorageModeShared];
         if (s_fragmentSizeBuffer) {
             [_currentRenderEncoder setFragmentBuffer:s_fragmentSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            [self recordLastBoundFragmentBuffer:s_fragmentSizeBuffer
+                                         offset:0
+                                        atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
         }
     }
 
@@ -22128,6 +22498,7 @@ stencil_format_ok:;
                                   reason:"processGLState"];
             }
             skippedCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
             continue;
         }
         [self traceReplayBatch:batch context:glm_ctx flushId:flushHit batchIndex:b phase:"READY"];
@@ -22144,6 +22515,7 @@ stencil_format_ok:;
                                   reason:"empty_rasterization"];
             }
             skippedCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
             continue;
         }
         if ([self currentDrawModeIsFullyCulled:firstCmd->mode]) {
@@ -22159,6 +22531,7 @@ stencil_format_ok:;
                                   reason:"front_and_back_culled"];
             }
             skippedCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
             continue;
         }
         [self applyPolygonOffsetForDrawMode:firstCmd->mode];
@@ -22167,6 +22540,8 @@ stencil_format_ok:;
         if (batch->stream_merged) {
             streamMergedBatchCount++;
             streamMergedCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
+            MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap, batch->command_count);
             [self traceReplayBatch:batch context:glm_ctx flushId:flushHit batchIndex:b phase:"ISSUE_STREAM"];
             [self issueStreamMergedBatch:batch context:glm_ctx];
         } else {
@@ -22182,11 +22557,15 @@ stencil_format_ok:;
         if (!batch->stream_merged && useMDI) {
             mdiBatchCount++;
             mdiCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglBatchesMDISinceSwap);
+            MGL_PERF_ADD(g_mglDrawMDISinceSwap, batch->command_count);
             [self traceReplayBatch:batch context:glm_ctx flushId:flushHit batchIndex:b phase:"ISSUE_MDI"];
             [self issueMDIBatch:batch context:glm_ctx];
         } else if (!batch->stream_merged) {
             directBatchCount++;
             directCommandCount += batch->command_count;
+            MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
+            MGL_PERF_ADD(g_mglDrawDirectSinceSwap, batch->command_count);
             [self traceReplayBatch:batch context:glm_ctx flushId:flushHit batchIndex:b phase:"ISSUE_DIRECT"];
             [self issueDirectBatch:batch context:glm_ctx];
         }
@@ -22197,8 +22576,9 @@ stencil_format_ok:;
                 case MGL_CMD_DRAW_ARRAYS:
                 case MGL_CMD_DRAW_ARRAYS_INSTANCED:
                 case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                    g_mglDrawArraysSinceSwap++;
-                    g_mglDrawArrayVerticesSinceSwap += (uint64_t)(cmd->count > 0 ? cmd->count : 0);
+                    MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
+                    MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap,
+                                  (uint64_t)(cmd->count > 0 ? cmd->count : 0));
                     break;
                 case MGL_CMD_DRAW_ELEMENTS:
                 case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
@@ -22206,8 +22586,9 @@ stencil_format_ok:;
                 case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
                 case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
                 case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-                    g_mglDrawElementsSinceSwap++;
-                    g_mglDrawElementIndicesSinceSwap += (uint64_t)(cmd->count > 0 ? cmd->count : 0);
+                    MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
+                    MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap,
+                                  (uint64_t)(cmd->count > 0 ? cmd->count : 0));
                     break;
             }
         }
@@ -22216,7 +22597,7 @@ stencil_format_ok:;
     _traceReplayFlushId = 0;
     _traceReplayBatchIndex = 0;
 
-    g_mglLastDrawArraysSeconds = mglNowSeconds();
+    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
     if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
         MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
@@ -23345,14 +23726,14 @@ stencil_format_ok:;
     uint64_t swapCall = ++s_swapCallCount;
     double swapStartSeconds = mglNowSeconds();
     bool traceSwap = mglShouldTraceCall(swapCall);
-    g_mglSwapCallCount = swapCall;
-    g_mglLastSwapSeconds = swapStartSeconds;
+    MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
+    MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
         mglTraceLog("SWAP_RENDERER_ENTRY call=%llu drawArraysSinceSwap=%llu drawElementsSinceSwap=%llu processDrawCallsSinceSwap=%llu",
                     (unsigned long long)swapCall,
-                    (unsigned long long)g_mglDrawArraysSinceSwap,
-                    (unsigned long long)g_mglDrawElementsSinceSwap,
-                    (unsigned long long)g_mglProcessDrawCallsSinceSwap);
+                    (unsigned long long)MGL_FRAME_LOAD(g_mglDrawArraysSinceSwap),
+                    (unsigned long long)MGL_FRAME_LOAD(g_mglDrawElementsSinceSwap),
+                    (unsigned long long)MGL_FRAME_LOAD(g_mglProcessDrawCallsSinceSwap));
     }
     mglLogLoopHeartbeat("swap.loop",
                         swapCall,
@@ -23425,16 +23806,16 @@ stencil_format_ok:;
         MGLSwapDrawCounters frameCounters = mglSnapshotSwapDrawCounters();
         mglResetSwapDrawCounters();
 
-        uint64_t lastDrawArraysCall = g_mglLastDrawArraysCall;
-        uint64_t lastDrawElementsCall = g_mglLastDrawElementsCall;
-        double lastDrawArraysSeconds = g_mglLastDrawArraysSeconds;
-        double lastDrawElementsSeconds = g_mglLastDrawElementsSeconds;
-        GLuint lastDrawArraysProgram = g_mglLastDrawArraysProgram;
-        GLuint lastDrawArraysMode = g_mglLastDrawArraysMode;
-        GLsizei lastDrawArraysCount = g_mglLastDrawArraysCount;
-        GLuint lastDrawElementsProgram = g_mglLastDrawElementsProgram;
-        GLuint lastDrawElementsMode = g_mglLastDrawElementsMode;
-        GLsizei lastDrawElementsCount = g_mglLastDrawElementsCount;
+        uint64_t lastDrawArraysCall = MGL_FRAME_LOAD(g_mglLastDrawArraysCall);
+        uint64_t lastDrawElementsCall = MGL_FRAME_LOAD(g_mglLastDrawElementsCall);
+        double lastDrawArraysSeconds = MGL_FRAME_LOAD(g_mglLastDrawArraysSeconds);
+        double lastDrawElementsSeconds = MGL_FRAME_LOAD(g_mglLastDrawElementsSeconds);
+        GLuint lastDrawArraysProgram = MGL_FRAME_LOAD(g_mglLastDrawArraysProgram);
+        GLuint lastDrawArraysMode = MGL_FRAME_LOAD(g_mglLastDrawArraysMode);
+        GLsizei lastDrawArraysCount = MGL_FRAME_LOAD(g_mglLastDrawArraysCount);
+        GLuint lastDrawElementsProgram = MGL_FRAME_LOAD(g_mglLastDrawElementsProgram);
+        GLuint lastDrawElementsMode = MGL_FRAME_LOAD(g_mglLastDrawElementsMode);
+        GLsizei lastDrawElementsCount = MGL_FRAME_LOAD(g_mglLastDrawElementsCount);
         double drawArraysAgeMs = (lastDrawArraysSeconds > 0.0)
             ? ((swapStartSeconds - lastDrawArraysSeconds) * 1000.0)
             : -1.0;
@@ -23972,6 +24353,22 @@ stencil_format_ok:;
     {
         NSLog(@"MGL INFO: mtlSwapBuffers skipped present because draw_buffer is GL_NONE");
     }
+
+    /* Perf summary: snapshot + reset per-frame counters at the swap boundary.
+     * Runs on every normal exit path (present + GL_NONE skip).  Early-return
+     * error paths intentionally skip this so their counters roll into the
+     * next successful frame.  Uses mglNowSeconds() (CFAbsoluteTimeGetCurrent)
+     * for consistency with swapElapsedMs above. */
+    if (mglPerfSummaryEnabled()) {
+        double now = mglNowSeconds();
+        static _Atomic double s_last_swap_time = 0.0;
+        double interval = 0.0;
+        double prev = atomic_load_explicit(&s_last_swap_time, memory_order_relaxed);
+        if (prev > 0.0) interval = (now - prev) * 1000.0;
+        atomic_store_explicit(&s_last_swap_time, now, memory_order_relaxed);
+        mglPrintPerfSummary(interval);
+        mglResetPerfCounters();
+    }
 }
 
 #pragma mark C interface to mtlClearBuffer
@@ -24499,7 +24896,7 @@ stencil_format_ok:;
 }
 
 #pragma mark C interface to mtlFlushMappedBufferRange
--(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset length:(size_t) length
+-(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
 {
     id<MTLBuffer> mtl_buffer;
 
@@ -24552,7 +24949,7 @@ stencil_format_ok:;
     }
 
     if (offset > mtl_buffer.length || length > (mtl_buffer.length - offset)) {
-        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange out of range buffer=%u off=%zu len=%zu mtlLen=%lu",
+        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange out of range buffer=%u off=%ld len=%ld mtlLen=%lu",
               buf->name,
               offset,
               length,
@@ -29053,11 +29450,26 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
 
     if (enableDepthBias) {
-        [_currentRenderEncoder setDepthBias:ctx->state.var.polygon_offset_units
-                                 slopeScale:ctx->state.var.polygon_offset_factor
-                                      clamp:0.0f];
+        float _bias = ctx->state.var.polygon_offset_units;
+        float _slope = ctx->state.var.polygon_offset_factor;
+        float _clamp = 0.0f;
+        if (!_lastBoundValid || _lastDepthBias != _bias ||
+            _lastDepthBiasClamp != _clamp || _lastDepthSlopeScale != _slope) {
+            [_currentRenderEncoder setDepthBias:_bias
+                                     slopeScale:_slope
+                                          clamp:_clamp];
+            _lastDepthBias = _bias;
+            _lastDepthBiasClamp = _clamp;
+            _lastDepthSlopeScale = _slope;
+        }
     } else {
-        [_currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+        if (!_lastBoundValid || _lastDepthBias != 0.0f ||
+            _lastDepthBiasClamp != 0.0f || _lastDepthSlopeScale != 0.0f) {
+            [_currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
+            _lastDepthBias = 0.0f;
+            _lastDepthBiasClamp = 0.0f;
+            _lastDepthSlopeScale = 0.0f;
+        }
     }
 }
 
@@ -29214,9 +29626,14 @@ typedef struct {
     [_currentRenderEncoder setVertexBuffer:cullMtlBuffer
                                     offset:0
                                    atIndex:kMGLCullDistanceVertexBufferIndex];
+    [self recordLastBoundVertexBuffer:cullMtlBuffer
+                               offset:0
+                              atIndex:kMGLCullDistanceVertexBufferIndex];
+    MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
     [_currentRenderEncoder setVertexBytes:&params
                                     length:sizeof(params)
                                    atIndex:kMGLCullDistanceParamsBufferIndex];
+    [self invalidateLastBoundVertexBufferAtIndex:kMGLCullDistanceParamsBufferIndex];
 }
 
 #pragma mark Tessellation dispatch
@@ -30312,7 +30729,7 @@ typedef struct {
 
     if ([self processGLStateLocked: true] == false) {
         process_state_fail_count++;
-        g_mglDrawArraysSkippedSinceSwap++;
+        MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
         if (process_state_fail_count <= 8 || (process_state_fail_count % 1000) == 0) {
             NSLog(@"MGL ERROR: mtlDrawArrays - processGLState failed, aborting (occurrence=%llu)",
                   (unsigned long long)process_state_fail_count);
@@ -30444,6 +30861,8 @@ typedef struct {
 
         @try {
             [_currentRenderEncoder setRenderPipelineState:_pipelineState];
+            _lastPipelineState = _pipelineState;
+            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays - setRenderPipelineState failed after recovery: %@", exception);
             if (traceLogDraw) {
@@ -30460,7 +30879,7 @@ typedef struct {
                                         first:first
                                         count:count
                                      drawCall:drawCall]) {
-        g_mglDrawArraysSkippedSinceSwap++;
+        MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
         if (traceLogDraw) {
             mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=vertex_validation",
                         (unsigned long long)drawCall,
@@ -30482,7 +30901,7 @@ typedef struct {
                                         1u,
                                         0u,
                                         "drawArrays")) {
-            g_mglDrawArraysSkippedSinceSwap++;
+            MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=polygon_point_encode",
                             (unsigned long long)drawCall,
@@ -30508,7 +30927,7 @@ typedef struct {
             NSLog(@"MGL WARNING: drawArrays triangle fan emulation failed count=%d first=%d",
                   (int)count,
                   (int)first);
-            g_mglDrawArraysSkippedSinceSwap++;
+            MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=triangle_fan_emulation_failed",
                             (unsigned long long)drawCall,
@@ -30554,7 +30973,7 @@ typedef struct {
             NSLog(@"MGL WARNING: drawArrays line loop emulation failed count=%d first=%d",
                   (int)count,
                   (int)first);
-            g_mglDrawArraysSkippedSinceSwap++;
+            MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=line_loop_emulation_failed",
                             (unsigned long long)drawCall,
@@ -30590,7 +31009,7 @@ typedef struct {
                                  0u,
                                  mglPolygonModeLineForDrawMode(ctx, mode),
                                  "drawArrays")) {
-            g_mglDrawArraysSkippedSinceSwap++;
+            MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ARRAYS_SKIP call=%llu program=%u reason=quad_emulation_failed",
                             (unsigned long long)drawCall,
@@ -30654,7 +31073,7 @@ typedef struct {
                     _pipelineState);
     }
 
-    g_mglLastDrawArraysCall = drawCall;
+    MGL_FRAME_STORE(g_mglLastDrawArraysCall, drawCall);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0)];
     mglLogDrawWithoutSwapWatchdog("arrays",
                                   drawCall,
@@ -30745,7 +31164,7 @@ typedef struct {
 
     if ([self processGLStateLocked: true] == false) {
         s_drawElementsProcessStateFailCount++;
-        g_mglDrawElementsSkippedSinceSwap++;
+        MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
         if (traceDraw || s_drawElementsProcessStateFailCount <= 16 || (s_drawElementsProcessStateFailCount % 500) == 0) {
             MGLTraceNSLog(@"MGL TRACE drawElements.skip.processGLState call=%llu failCount=%llu",
                   (unsigned long long)drawCall,
@@ -30934,7 +31353,7 @@ typedef struct {
               gl_element_buffer->name,
               (unsigned long)indexBuffer.length,
               (unsigned)activeProgramName);
-        g_mglDrawElementsSkippedSinceSwap++;
+        MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
         if (traceLogDraw) {
             mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=unaligned_index_offset ebo=%u offset=%lu stride=%lu",
                         (unsigned long long)drawCall,
@@ -31514,7 +31933,7 @@ typedef struct {
                                                    0u,
                                                    "drawElements");
         if (restartResult == MGLPrimitiveRestartEncodeFailed) {
-            g_mglDrawElementsSkippedSinceSwap++;
+            MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
             if (traceLogDraw) {
                 mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=primitive_restart_encode_failed",
                             (unsigned long long)drawCall,
@@ -31540,7 +31959,7 @@ typedef struct {
                                               0,
                                               0u,
                                               "drawElements")) {
-                g_mglDrawElementsSkippedSinceSwap++;
+                MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
                 if (traceLogDraw) {
                     mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=polygon_point_encode",
                                 (unsigned long long)drawCall,
@@ -31572,7 +31991,7 @@ typedef struct {
                       (int)count,
                       (unsigned long)indexOffset,
                       fanSource);
-                g_mglDrawElementsSkippedSinceSwap++;
+                MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
                 if (traceLogDraw) {
                     mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=triangle_fan_emulation_failed ebo=%u",
                                 (unsigned long long)drawCall,
@@ -31612,7 +32031,7 @@ typedef struct {
                       (int)count,
                       (unsigned long)indexOffset,
                       loopSource);
-                g_mglDrawElementsSkippedSinceSwap++;
+                MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
                 if (traceLogDraw) {
                     mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=line_loop_emulation_failed ebo=%u",
                                 (unsigned long long)drawCall,
@@ -31641,7 +32060,7 @@ typedef struct {
                                        0u,
                                        mglPolygonModeLineForDrawMode(ctx, mode),
                                        "drawElements")) {
-                g_mglDrawElementsSkippedSinceSwap++;
+                MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
                 if (traceLogDraw) {
                     mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=quad_emulation_failed ebo=%u",
                                 (unsigned long long)drawCall,
@@ -31660,7 +32079,7 @@ typedef struct {
                                                                           &drawIndexOffset,
                                                                           &drawIndexType);
             if (!drawIndexBuffer) {
-                g_mglDrawElementsSkippedSinceSwap++;
+                MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
                 if (traceLogDraw) {
                     mglTraceLog("DRAW_ELEMENTS_SKIP call=%llu program=%u reason=prepared_index_buffer_failed ebo=%u",
                                 (unsigned long long)drawCall,
@@ -31699,7 +32118,7 @@ typedef struct {
                     _pipelineState);
     }
 
-    g_mglLastDrawElementsCall = drawCall;
+    MGL_FRAME_STORE(g_mglLastDrawElementsCall, drawCall);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
     mglLogDrawWithoutSwapWatchdog("elements",
                                   drawCall,
@@ -32445,7 +32864,7 @@ typedef struct {
 
 
 #pragma mark C interface to mtlDrawElementsInstancedBaseVertex
--(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLuint) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
+-(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLsizei) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
 {
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
@@ -34381,6 +34800,11 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
     //[w.contentView addSubview:view];
     [w setContentView:view];
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
+    // Ownership: the returned pointer is NON-OWNING (borrowed).
+    // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
+    // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
+    // The caller must NOT CFRelease/free the returned pointer, and must keep
+    // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
 }
 
@@ -34396,6 +34820,11 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
     [view setWantsLayer:YES];
 
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
+    // Ownership: the returned pointer is NON-OWNING (borrowed).
+    // The renderer's lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which is
+    // retained via CFBridgingRetain in bindObjFuncsToGLMContext.
+    // The caller must NOT CFRelease/free the returned pointer, and must keep
+    // glm_ctx alive while using the returned pointer.
     return  (__bridge void *)(renderer);
 }
 
@@ -34430,6 +34859,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0;
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
+    /* Initialize last-bound render encoder dedup state to a clean slate.
+     * _lastBoundValid starts NO so the first bind on the first encoder is
+     * never incorrectly skipped. */
+    [self invalidateLastBoundState];
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
 
     [self bindObjFuncsToGLMContext: glm_ctx];
@@ -34441,6 +34874,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _device = MTLCreateSystemDefaultDevice();
     if (!_device) {
         NSLog(@"MGL ERROR: Metal device not found - this is required for Apple Silicon");
+        // Intentional early return on critical Metal initialization failure.
+        // The renderer is left in a PARTIALLY INITIALIZED state:
+        //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
+        //        fields (_consecutiveGPUErrors/_lastGPUErrorTime/
+        //        _gpuErrorRecoveryMode), _pipeline*Format/_pipelineProgramName,
+        //        _pipelineStateCache, and glm_ctx->mtl_funcs (bound via
+        //        bindObjFuncsToGLMContext, with mtlObj retained).
+        //   NIL: _device, _commandQueue, _view.
+        // Continuing is pointless without a Metal device — every subsequent
+        // operation depends on it.
         return; // Exit early rather than continuing with nil device
     }
 
@@ -34473,6 +34916,15 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
+        // Intentional early return on critical Metal initialization failure.
+        // The renderer is left in a PARTIALLY INITIALIZED state:
+        //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
+        //        fields, _pipeline*Format/_pipelineProgramName,
+        //        _pipelineStateCache, glm_ctx->mtl_funcs (bound, mtlObj
+        //        retained), _device, MTL4 compiler (if available), _capability.
+        //   NIL: _commandQueue, _view.
+        // Continuing is pointless without a command queue — no encoding or
+        // submission is possible.
         return;
     }
 
@@ -34653,6 +35105,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
         // End any active rendering
         [self endRenderEncoding];
+
+        /* Drop strong references held by the last-bound dedup cache before
+         * releasing the underlying Metal resources below. */
+        [self invalidateLastBoundState];
 
         // Cleanup command buffer and encoder
         if (_currentCommandBuffer) {
