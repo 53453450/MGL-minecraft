@@ -184,6 +184,10 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     GLMContext save = _ctx;
     int err;
 
+    if (!ctx) {
+        return NULL;
+    }
+
     bzero((void *)ctx, sizeof(GLMContextRec));
 
     _ctx = ctx;

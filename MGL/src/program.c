@@ -36,6 +36,7 @@
 #include "buffers.h"
 #include "mgl_safety.h"
 #include "mgl_buffer_slots.h"
+#include "mgl_ir_postprocess.h"
 #include "msl_patch_pipeline.h"
 #include "mgl_metal_ref.h"
 
@@ -2993,31 +2994,11 @@ static const char *mglFindMSLEntryParameterClose(const char *msl);
 
 static GLboolean mglMSLBufferSlotConflicts(Program *pptr, int stage, GLuint slot)
 {
-    GLboolean slot_conflicts = mglBufferSlotIsReserved(slot);
-
-    if (!slot_conflicts && mglBufferSlotIsReservedForStage(slot, stage)) {
-        slot_conflicts = GL_TRUE;
-    }
-    if (!slot_conflicts &&
-        (pptr->shader_slots[_TESS_CONTROL_SHADER] ||
-         pptr->shader_slots[_TESS_EVALUATION_SHADER]) &&
-        mglBufferSlotIsReservedForTessellation(slot)) {
-        slot_conflicts = GL_TRUE;
-    }
-    if (!slot_conflicts &&
-        pptr->spirv[_VERTEX_SHADER].msl_str &&
-        strstr(pptr->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance") &&
-        mglBufferSlotIsReservedForCullDistance(slot)) {
-        slot_conflicts = GL_TRUE;
-    }
-    if (!slot_conflicts &&
-        pptr->spirv[_FRAGMENT_SHADER].msl_str &&
-        strstr(pptr->spirv[_FRAGMENT_SHADER].msl_str, "_mglFragCoordParams") &&
-        mglBufferSlotIsReservedForFragCoordFixup(slot)) {
-        slot_conflicts = GL_TRUE;
-    }
-
-    return slot_conflicts;
+    /* Delegates to the unified predicate in mgl_ir_postprocess.  This keeps
+     * the IR pre-mapping path (before spvc_compiler_compile) and the MSL
+     * string fallback (applyMSLResourceBindings, after compile) using the
+     * exact same conflict definition so they cannot drift. */
+    return mglBufferSlotConflictsForProgram(pptr, stage, slot);
 }
 
 static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
@@ -3075,10 +3056,10 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
         SPVC_RESOURCE_TYPE_PUSH_CONSTANT
     };
 
-    GLboolean used_slots[32] = {0};
+    GLboolean used_slots[kMGLMaxMetalVertexBufferCount] = {0};
     for (size_t k = 0; k < binding_map.count; k++) {
         if (binding_map.entries[k].kind == MGL_MSL_BINDING_BUFFER &&
-            binding_map.entries[k].index < 32) {
+            binding_map.entries[k].index < kMGLMaxMetalVertexBufferCount) {
             used_slots[binding_map.entries[k].index] = GL_TRUE;
         }
     }
@@ -3105,7 +3086,25 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                      * this specific parameter's [[buffer(N)]] attribute
                      * without touching any MGL-internal buffer that may
                      * share the same slot.
-                     */
+                     *
+                     * MGL_ASSERT_NO_MSL_BINDING_REWRITE: when the IR
+                     * postprocess pipeline is expected to have handled all
+                     * conflicts, reaching this string-level fallback is a
+                     * loud failure so the IR path can be fixed.  In normal
+                     * operation this branch should be rare (IR pre-mapping
+                     * already moved the buffer to a safe slot). */
+                    if (mglAssertNoMSLBindingRewriteEnabled()) {
+                        fprintf(stderr,
+                                "MGL ASSERT: string-level buffer binding "
+                                "rewrite required after IR pre-map: program=%u "
+                                "stage=%d %s buffer '%s' at slot %u\n",
+                                pptr->name, stage,
+                                res_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER ? "UBO" :
+                                res_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ? "SSBO" :
+                                res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER ? "atomic" : "buffer",
+                                res->name ? res->name : "(null)",
+                                (unsigned)metal_index);
+                    }
                     const MGLMSLBindingEntry *map_entry = NULL;
                     for (size_t k = 0; k < binding_map.count; k++) {
                         if (binding_map.entries[k].kind == MGL_MSL_BINDING_BUFFER &&
@@ -3119,9 +3118,12 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                         }
                     }
 
-                    GLuint free_slot = 32;
+                    GLuint free_slot = kMGLMaxMetalVertexBufferCount;
                     if (map_entry) {
-                        for (GLuint s = 0; s < 25; s++) {
+                        const GLuint free_limit =
+                            (stage == _VERTEX_SHADER) ? (GLuint)kMGLPointSizeBufferIndex
+                                                      : (GLuint)MGL_BUFFER_SIZE_BUFFER_INDEX;
+                        for (GLuint s = 0; s < free_limit; s++) {
                             if (!used_slots[s] &&
                                 !mglMSLBufferSlotConflicts(pptr, stage, s)) {
                                 free_slot = s;
@@ -3129,7 +3131,7 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                             }
                         }
 
-                        if (free_slot < 32) {
+                        if (free_slot < kMGLMaxMetalVertexBufferCount) {
                             char *old_decl = strndup(map_entry->segment,
                                                      map_entry->segment_len);
                             if (old_decl) {
@@ -3166,7 +3168,7 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                                         for (size_t k = 0; k < binding_map.count; k++) {
                                             if (binding_map.entries[k].kind ==
                                                     MGL_MSL_BINDING_BUFFER &&
-                                                binding_map.entries[k].index < 32) {
+                                                binding_map.entries[k].index < kMGLMaxMetalVertexBufferCount) {
                                                 used_slots[
                                                     binding_map.entries[k].index] = GL_TRUE;
                                             }
@@ -3212,9 +3214,11 @@ static void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                                 res->name,
                                 (unsigned)metal_index,
                                 reserved_name ? reserved_name : "?",
-                                free_slot < 32
+                                free_slot < kMGLMaxMetalVertexBufferCount
                                     ? "parameter declaration not found in MSL"
-                                    : "no free slot available in [0,24]");
+                                    : (stage == _VERTEX_SHADER
+                                           ? "no free slot available in [0,14]"
+                                           : "no free slot available in [0,24]"));
                     }
                 }
             }
@@ -3971,9 +3975,32 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
 
     src_len = strlen(src);
     if (to_len >= from_len) {
-        new_len = src_len + count * (to_len - from_len);
+        size_t diff = to_len - from_len;
+        if (diff != 0 && count > (SIZE_MAX - src_len) / diff) {
+            fprintf(stderr,
+                    "MGL MSL PATCH FAIL: replace_all_substr('%s'->'%s') "
+                    "size overflow; original MSL preserved\n",
+                    from, to);
+            return;
+        }
+        new_len = src_len + count * diff;
     } else {
-        new_len = src_len - count * (from_len - to_len);
+        size_t diff = from_len - to_len;
+        if (diff != 0 && count > src_len / diff) {
+            fprintf(stderr,
+                    "MGL MSL PATCH FAIL: replace_all_substr('%s'->'%s') "
+                    "size underflow; original MSL preserved\n",
+                    from, to);
+            return;
+        }
+        new_len = src_len - count * diff;
+    }
+    if (new_len == SIZE_MAX) {
+        fprintf(stderr,
+                "MGL MSL PATCH FAIL: replace_all_substr('%s'->'%s') "
+                "allocation size overflow; original MSL preserved\n",
+                from, to);
+        return;
     }
     out = (char *)malloc(new_len + 1);
     if (!out) {
@@ -4914,6 +4941,47 @@ static void mglEnsurePatchId3Param(char **msl_ptr)
     *msl_ptr = nm;
 }
 
+static void mglFixMSLTessCullDistanceOutputs(char **msl_ptr)
+{
+    if (!msl_ptr || !*msl_ptr || !strstr(*msl_ptr, "gl_CullDistance")) {
+        return;
+    }
+
+    for (unsigned i = 0; i < 16u; i++) {
+        char from[64];
+        char to[64];
+        snprintf(from, sizeof(from), "out.gl_CullDistance[%u]", i);
+        snprintf(to, sizeof(to), "out.gl_CullDistance_%u", i);
+        replace_all_substr(msl_ptr, from, to);
+    }
+
+    char *pos = *msl_ptr;
+    while ((pos = strstr(pos, "_RESERVED_IDENTIFIER_FIXUP_gl_CullDistance")) != NULL) {
+        char *line_start = pos;
+        while (line_start > *msl_ptr && line_start[-1] != '\n') {
+            line_start--;
+        }
+        char *line_end = strchr(pos, '\n');
+        if (!line_end) {
+            line_end = pos + strlen(pos);
+        } else {
+            line_end++;
+        }
+
+        size_t before = (size_t)(line_start - *msl_ptr);
+        size_t remove_len = (size_t)(line_end - line_start);
+        char *new_msl = (char *)malloc(strlen(*msl_ptr) - remove_len + 1);
+        if (!new_msl) {
+            return;
+        }
+        memcpy(new_msl, *msl_ptr, before);
+        strcpy(new_msl + before, line_end);
+        free(*msl_ptr);
+        *msl_ptr = new_msl;
+        pos = *msl_ptr + before;
+    }
+}
+
 static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
 {
     if (!msl_ptr || !*msl_ptr) {
@@ -5746,6 +5814,8 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
             }
         }
     }
+
+    mglFixMSLTessCullDistanceOutputs(msl_ptr);
 }
 
 /* Find the opening '(' of the MSL entry-function parameter list for any
@@ -7156,71 +7226,6 @@ static void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, i
     }
 }
 
-/* Compute the std140 ArrayStride for a single array element of the given
- * numeric base type.  Returns 0 for non-numeric types (no fixup applies).
- *
- * std140 rules:
- *   - Non-matrix (cols <= 1): every vector rounds up to vec4 alignment (16).
- *   - Matrix: ArrayStride = num_vectors * 16, where num_vectors is
- *     vecsize for RowMajor (rows stored contiguously) and cols otherwise. */
-static unsigned compute_std140_stride(spvc_basetype bt, unsigned vecsize,
-                                      unsigned cols, spvc_bool row_major)
-{
-    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
-        bt != SPVC_BASETYPE_UINT32)
-        return 0;
-    if (cols <= 1)
-        return 16;
-    unsigned num_vectors = row_major ? vecsize : cols;
-    return num_vectors * 16;
-}
-
-/* Compute the std430 ArrayStride for a single array element of the given
- * numeric base type.  Returns 0 for non-numeric types.
- *
- * std430 rules:
- *   - Non-matrix: scalar=4, vec2=8, vec3=16 (rounds up to 16), vec4=16.
- *   - Matrix: per-vector stride uses the same rule based on the stored
- *     vector's component count; ArrayStride = num_vectors * matrix_stride. */
-static unsigned compute_std430_stride(spvc_basetype bt, unsigned vecsize,
-                                      unsigned cols, spvc_bool row_major)
-{
-    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
-        bt != SPVC_BASETYPE_UINT32)
-        return 0;
-    if (cols <= 1)
-    {
-        unsigned natural = vecsize * 4;
-        unsigned align = (vecsize >= 3) ? 16 : natural;
-        return (natural + align - 1) / align * align;
-    }
-    unsigned vector_components = row_major ? cols : vecsize;
-    unsigned num_vectors = row_major ? vecsize : cols;
-    unsigned natural = vector_components * 4;
-    unsigned align = (vector_components >= 3) ? 16 : natural;
-    unsigned matrix_stride = (natural + align - 1) / align * align;
-    return num_vectors * matrix_stride;
-}
-
-/* Returns true if the given numeric type is affected by the glslang std140
- * ArrayStride bug.  The bug emits the natural (std430) stride instead of the
- * std140 rounded stride for:
- *   - int/uint vec2 arrays (float vec2 is NOT affected)
- *   - matrices whose stored vector has 2 components (any base type)
- * For affected types the buggy std140 stride equals the std430 stride, making
- * the two layouts indistinguishable from the stride alone. */
-static GLboolean is_glslang_bug_affected(spvc_basetype bt, unsigned vecsize,
-                                         unsigned cols, spvc_bool row_major)
-{
-    if (bt != SPVC_BASETYPE_FP32 && bt != SPVC_BASETYPE_INT32 &&
-        bt != SPVC_BASETYPE_UINT32)
-        return GL_FALSE;
-    if (cols <= 1)
-        return (bt != SPVC_BASETYPE_FP32 && vecsize == 2) ? GL_TRUE : GL_FALSE;
-    unsigned vector_components = row_major ? cols : vecsize;
-    return (vector_components == 2) ? GL_TRUE : GL_FALSE;
-}
-
 /* === MSL Patch Pipeline wrappers ===
  *
  * Each wrapper matches the MSLPatchFn signature and adapts one step of the
@@ -7428,6 +7433,8 @@ static GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_
     return GL_TRUE;
 }
 
+static GLboolean mglProgramHasPassthroughGeometryShader(Program *ptr);
+
 static GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr)
 {
     Program *ptr = ctx->program;
@@ -7437,7 +7444,9 @@ static GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl
      * the GS is skipped at bind time — but injecting [[point_size]] into
      * the VS would cause GL_POINTS draws to rasterize even though the
      * (skipped) geometry shader is supposed to re-emit the vertices. */
-    if (!(stage == _VERTEX_SHADER && ptr->shader_slots[_GEOMETRY_SHADER])) {
+    if (!(stage == _VERTEX_SHADER &&
+          ptr->shader_slots[_GEOMETRY_SHADER] &&
+          !mglProgramHasPassthroughGeometryShader(ptr))) {
         mglInjectMSLPointSizeBuiltin(stage, msl_ptr);
     }
     return GL_TRUE;
@@ -7448,6 +7457,23 @@ static GLboolean mglPatchFixImage2DRectImageSize(MSLPatchContext *ctx, char **ms
     mglFixMSLImage2DRectImageSize(msl_ptr);
     (void)ctx;
     return GL_TRUE;
+}
+
+static GLboolean mglProgramHasPassthroughGeometryShader(Program *ptr)
+{
+    const char *src = (ptr && ptr->shader_slots[_GEOMETRY_SHADER])
+        ? ptr->shader_slots[_GEOMETRY_SHADER]->src
+        : NULL;
+    if (!src) {
+        return GL_FALSE;
+    }
+
+    return strstr(src, "EmitVertex()") &&
+           strstr(src, "EndPrimitive()") &&
+           strstr(src, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
+           !strstr(src, "gl_PrimitiveID") &&
+           !strstr(src, "gl_Layer") &&
+           !strstr(src, "gl_ViewportIndex");
 }
 
 static GLboolean mglPatchTesAsComputeKernel(MSLPatchContext *ctx, char **msl_ptr)
@@ -8535,208 +8561,9 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
     }
 
-    /* Workaround for glslang bug: in std140 SSBO blocks, arrays of 2-component
-     * vectors (vec2, ivec2, uvec2) and matrices with 2-component rows/columns
-     * get ArrayStride computed with vec2 natural size (8) instead of std140
-     * rounded size (16).  This affects:
-     *   - int/uint vec2 direct arrays (float vec2 is correct)
-     *   - All matrices with vec2 components (float, int, uint)
-     *
-     * This causes SPIRV-Cross to generate wrong .length() calculations
-     * (dividing by the wrong stride) and incorrect data access patterns.
-     *
-     * Detection: glslang puts BufferBlock on ALL SSBOs (even std430), so we
-     * can't use it to distinguish layouts.  Instead, we use a shader-level
-     * two-pass approach:
-     *   Pass 1: Scan for "definite std140" indicators — members whose stride
-     *           matches the correct std140 value AND differs from std430.
-     *           Examples: float vec2 stride 16, mat2 stride 32, etc.
-     *   Pass 2: If the shader has any definite std140 indicator, fix all
-     *           members whose stride doesn't match the correct std140 value.
-     *
-     * Note: ArrayStride is a type-level decoration (OpDecorate on the array
-     * type), not a member-level decoration.  We use
-     * spvc_compiler_type_struct_member_array_stride to read it and
-     * spvc_compiler_set_decoration on the member's type ID to set it.
-     * RowMajor IS a member-level decoration (OpMemberDecorate). */
-    {
-        const spvc_reflected_resource *ssbo_list = NULL;
-        size_t ssbo_count = 0;
-        spvc_resources_get_resource_list_for_type(resources,
-                                                   SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-                                                   &ssbo_list, &ssbo_count);
-
-        /* Pass 1: Check if the shader has any "definite std140" indicator. */
-        GLboolean shader_has_std140 = GL_FALSE;
-        for (size_t si = 0; si < ssbo_count && !shader_has_std140; si++)
-        {
-            spvc_type struct_type = spvc_compiler_get_type_handle(compiler_msl,
-                ssbo_list[si].type_id);
-            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-                struct_type = spvc_compiler_get_type_handle(compiler_msl,
-                    ssbo_list[si].base_type_id);
-            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-                continue;
-
-            unsigned num_members = spvc_type_get_num_member_types(struct_type);
-            for (unsigned mi = 0; mi < num_members; mi++)
-            {
-                spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl,
-                    spvc_type_get_member_type(struct_type, mi));
-                if (!member_type)
-                    continue;
-                if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                    continue;
-
-                spvc_basetype bt = spvc_type_get_basetype(member_type);
-                unsigned vecsize = spvc_type_get_vector_size(member_type);
-                unsigned cols = spvc_type_get_columns(member_type);
-
-                unsigned stride = 0;
-                if (spvc_compiler_type_struct_member_array_stride(
-                        compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
-                    continue;
-
-                spvc_bool row_major = spvc_compiler_has_member_decoration(
-                    compiler_msl, ssbo_list[si].base_type_id, mi,
-                    SpvDecorationRowMajor);
-
-                unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-                unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
-
-                /* "Definite std140" = actual stride matches the correct std140
-                 * value AND differs from std430.  Bug-affected types are
-                 * never used as indicators here because their buggy std140
-                 * stride equals std430, so a matching stride is ambiguous. */
-                if (std140_stride > 0 && std430_stride > 0 &&
-                    std140_stride != std430_stride &&
-                    stride == std140_stride)
-                {
-                    shader_has_std140 = GL_TRUE;
-                    break;
-                }
-            }
-        }
-
-        /* Pass 2: Fix strides in std140 blocks. */
-        if (shader_has_std140)
-        {
-            for (size_t si = 0; si < ssbo_count; si++)
-            {
-                spvc_type_id struct_id = ssbo_list[si].type_id;
-                spvc_type struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_id);
-                if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-                {
-                    struct_id = ssbo_list[si].base_type_id;
-                    struct_type = spvc_compiler_get_type_handle(compiler_msl, struct_id);
-                }
-                if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-                    continue;
-
-                /* Skip blocks that are definitely std430 (have a member whose
-                 * stride matches std430 and differs from std140).  This catches
-                 * the Output buffer and any explicitly std430 blocks. */
-                GLboolean block_is_std430 = GL_FALSE;
-                unsigned num_members = spvc_type_get_num_member_types(struct_type);
-                for (unsigned mi = 0; mi < num_members; mi++)
-                {
-                    spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl,
-                        spvc_type_get_member_type(struct_type, mi));
-                    if (!member_type)
-                        continue;
-                    if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                        continue;
-
-                    spvc_basetype bt = spvc_type_get_basetype(member_type);
-                    unsigned vecsize = spvc_type_get_vector_size(member_type);
-                    unsigned cols = spvc_type_get_columns(member_type);
-
-                    unsigned stride = 0;
-                    if (spvc_compiler_type_struct_member_array_stride(
-                            compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
-                        continue;
-
-                    spvc_bool row_major = spvc_compiler_has_member_decoration(
-                        compiler_msl, ssbo_list[si].base_type_id, mi,
-                        SpvDecorationRowMajor);
-
-                    /* Bug-affected types have buggy std140 stride == std430
-                     * stride, so they cannot distinguish the two layouts.
-                     * Skip them when looking for std430 indicators. */
-                    if (is_glslang_bug_affected(bt, vecsize, cols, row_major))
-                        continue;
-
-                    unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-                    unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
-
-                    /* "Definite std430" = actual matches std430 AND differs from std140. */
-                    if (std140_stride > 0 && std430_stride > 0 &&
-                        std140_stride != std430_stride &&
-                        stride == std430_stride)
-                    {
-                        block_is_std430 = GL_TRUE;
-                        break;
-                    }
-                }
-
-                if (block_is_std430)
-                    continue;
-
-                /* Fix any member whose stride doesn't match the correct std140 value. */
-                for (unsigned mi = 0; mi < num_members; mi++)
-                {
-                    spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
-                    if (!member_type_id)
-                        continue;
-
-                    spvc_type member_type = spvc_compiler_get_type_handle(compiler_msl, member_type_id);
-                    if (!member_type)
-                        continue;
-                    if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                        continue;
-
-                    spvc_basetype bt = spvc_type_get_basetype(member_type);
-                    unsigned vecsize = spvc_type_get_vector_size(member_type);
-                    unsigned cols = spvc_type_get_columns(member_type);
-
-                    unsigned stride = 0;
-                    if (spvc_compiler_type_struct_member_array_stride(
-                            compiler_msl, struct_type, mi, &stride) != SPVC_SUCCESS)
-                        continue;
-
-                    spvc_bool row_major = spvc_compiler_has_member_decoration(
-                        compiler_msl, ssbo_list[si].base_type_id, mi,
-                        SpvDecorationRowMajor);
-
-                    /* Only fix members affected by the glslang bug.  Other
-                     * members in std140 blocks already have correct strides,
-                     * and fixing them could harm undetected std430 blocks. */
-                    if (!is_glslang_bug_affected(bt, vecsize, cols, row_major))
-                        continue;
-
-                    /* Matrices with 2-component stored vectors are also
-                     * bug-affected, but correcting their stride causes
-                     * SPIRV-Cross to fail with "cannot represent in MSL"
-                     * because MSL cannot express std140's vec4-padding of
-                     * 2-component matrix vectors.  Skip them — these tests
-                     * remain failing, same as the baseline. */
-                    if (cols > 1)
-                        continue;
-
-                    unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-                    if (std140_stride == 0)
-                        continue;
-
-                    if (stride != std140_stride)
-                    {
-                        spvc_compiler_set_decoration(compiler_msl, member_type_id,
-                                                     SpvDecorationArrayStride,
-                                                     std140_stride);
-                    }
-                }
-            }
-        }
-    }
+    /* Note: std140 ArrayStride repair for SSBO members is now handled by
+     * the ir_fix_std140_array_strides pass in mgl_ir_postprocess.c, which
+     * runs as part of mglRunIRPostprocessPipeline before spvc_compiler_compile. */
 
     /* Reflect built-in variables (gl_VertexID, gl_InstanceID, gl_FragDepth,
      * gl_SampleMask, gl_Position, etc.) so they appear as active PROGRAM_INPUT /
@@ -8877,6 +8704,19 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         }
     }
 
+    /* IR postprocess pipeline (Phase 5B-2).  Runs after all reflection is
+     * complete (spirv_resources_list, builtins) and BEFORE spvc_compiler_compile.
+     * Remaps any user buffer whose GL binding lands on an MGL-reserved Metal
+     * buffer slot to a free slot in [0, 24] via spvc_compiler_set_decoration,
+     * so the compiled MSL already has correct [[buffer(N)]] — no string-level
+     * replacement needed in applyMSLResourceBindings for these cases.
+     *
+     * Gated by env vars:
+     *   MGL_DISABLE_IR_REMAP=1 — bypass, force legacy string-level fallback.
+     *   MGL_DEBUG_IR_REMAP=1    — log every binding decision.
+     * See mgl_ir_postprocess.h for the full pass list and ordering. */
+    mglRunIRPostprocessPipeline(ctx, ptr, stage, compiler_msl);
+
     if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
         const char *last_error = spvc_context_get_last_error_string(context);
         fprintf(stderr,
@@ -8914,6 +8754,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             mslPipelineAddStep(&pipeline, "fix_image2drect_imagesize", mglPatchFixImage2DRectImageSize);
             mslPipelineAddStep(&pipeline, "tes_as_compute_kernel", mglPatchTesAsComputeKernel);
             mslPipelineAddStep(&pipeline, "tcs_stage_in_fix", mglPatchTcsStageInFix);
+            mslPipelineAddStep(&pipeline, "apply_resource_bindings_final", mglPatchApplyResourceBindings);
 
             mslPipelineRun(&pipeline);
             str_ret = mslPipelineTakeResult(&pipeline);

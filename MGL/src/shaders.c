@@ -805,6 +805,30 @@ static void mgl_downgrade_derivative_control_intrinsics(char *src)
     mgl_replace_glsl_identifier_with_shorter(src, "fwidthCoarse", "fwidth");
 }
 
+static void mgl_replace_identifier(char *src, size_t src_capacity,
+                                   const char *needle, const char *replacement);
+
+static void mgl_replace_cull_distance_limits(GLMContext ctx, char *src, size_t src_capacity)
+{
+    if (!ctx || !src || src_capacity == 0) {
+        return;
+    }
+
+    char value[32];
+    if (ctx->state.var.max_cull_distances > 0 &&
+        strstr(src, "gl_MaxCullDistances")) {
+        snprintf(value, sizeof(value), "%u", ctx->state.var.max_cull_distances);
+        mgl_replace_identifier(src, src_capacity, "gl_MaxCullDistances", value);
+    }
+    if (ctx->state.var.max_combined_clip_and_cull_distances > 0 &&
+        strstr(src, "gl_MaxCombinedClipAndCullDistances")) {
+        snprintf(value, sizeof(value), "%u",
+                 ctx->state.var.max_combined_clip_and_cull_distances);
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_MaxCombinedClipAndCullDistances", value);
+    }
+}
+
 /* In-place replacement of an identifier with another (possibly longer) name.
  * Whole-word match; skips member access (foo.bar) so built-in block members
  * are left alone. Grows the buffer in place if replacement is longer. */
@@ -1312,6 +1336,7 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
             mgl_ensure_420pack_extension(modified_src, modified_src_size);
         }
         mgl_downgrade_derivative_control_intrinsics(modified_src);
+        mgl_replace_cull_distance_limits(ctx, modified_src, modified_src_size);
 
         /* GL_ARB_cull_distance is commented out in glslang's Versions.h,
          * so it is not recognized.  It is core in GLSL 4.50, so strip the
@@ -1724,25 +1749,30 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
         fprintf(stderr, "MGL SHADER ERROR: Debug log:\n%s\n", debug_log ? debug_log : "(null)");
 
         size_t len;
+        const char *preprocessed_log = preprocessed ? preprocessed : "";
+        const char *info_log_safe = info_log ? info_log : "";
+        const char *debug_log_safe = debug_log ? debug_log : "";
 
         len = 1024;
-        len += strlen(glslang_shader_get_preprocessed_code(glsl_shader));
-        len += strlen(glslang_shader_get_info_log(glsl_shader));
-        len += strlen(glslang_shader_get_info_debug_log(glsl_shader));
+        len += strlen(preprocessed_log);
+        len += strlen(info_log_safe);
+        len += strlen(debug_log_safe);
 
         ptr->log = (char *)malloc(len);
-
-        ptr->log[0] = 0;
-
-        snprintf(ptr->log, len,
-                "glslang_shader_preprocess failed err: %d\n"
-                "glslang_shader_get_preprocessed_code:\n%s\n"
-                "glslang_shader_get_info_log:%s\n"
-                "glslang_shader_get_info_debug_log:\n%s\n",
-                err,
-                glslang_shader_get_preprocessed_code(glsl_shader),
-                glslang_shader_get_info_log(glsl_shader),
-                glslang_shader_get_info_debug_log(glsl_shader));
+        if (ptr->log) {
+            ptr->log[0] = 0;
+            snprintf(ptr->log, len,
+                    "glslang_shader_preprocess failed err: %d\n"
+                    "glslang_shader_get_preprocessed_code:\n%s\n"
+                    "glslang_shader_get_info_log:%s\n"
+                    "glslang_shader_get_info_debug_log:\n%s\n",
+                    err,
+                    preprocessed_log,
+                    info_log_safe,
+                    debug_log_safe);
+        } else {
+            ptr->log = strdup("glslang_shader_preprocess failed and log allocation failed");
+        }
 
         return;
     }
@@ -1762,25 +1792,30 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
         fprintf(stderr, "MGL SHADER ERROR: Debug log:\n%s\n", debug_log ? debug_log : "(null)");
 
         size_t len;
+        const char *preprocessed_log = preprocessed ? preprocessed : "";
+        const char *info_log_safe = info_log ? info_log : "";
+        const char *debug_log_safe = debug_log ? debug_log : "";
 
         len = 1024;
-        len += strlen(glslang_shader_get_preprocessed_code(glsl_shader));
-        len += strlen(glslang_shader_get_info_log(glsl_shader));
-        len += strlen(glslang_shader_get_info_debug_log(glsl_shader));
+        len += strlen(preprocessed_log);
+        len += strlen(info_log_safe);
+        len += strlen(debug_log_safe);
 
         ptr->log = (char *)malloc(len);
-
-        ptr->log[0] = 0;
-
-        snprintf(ptr->log, len,
-                "glslang_shader_preprocess failed err: %d\n"
-                "glslang_shader_get_preprocessed_code:\n%s\n"
-                "glslang_shader_get_info_log:%s\n"
-                "glslang_shader_get_info_debug_log:\n%s\n",
-                err,
-                glslang_shader_get_preprocessed_code(glsl_shader),
-                glslang_shader_get_info_log(glsl_shader),
-                glslang_shader_get_info_debug_log(glsl_shader));
+        if (ptr->log) {
+            ptr->log[0] = 0;
+            snprintf(ptr->log, len,
+                    "glslang_shader_parse failed err: %d\n"
+                    "glslang_shader_get_preprocessed_code:\n%s\n"
+                    "glslang_shader_get_info_log:%s\n"
+                    "glslang_shader_get_info_debug_log:\n%s\n",
+                    err,
+                    preprocessed_log,
+                    info_log_safe,
+                    debug_log_safe);
+        } else {
+            ptr->log = strdup("glslang_shader_parse failed and log allocation failed");
+        }
 
         return;
     }
