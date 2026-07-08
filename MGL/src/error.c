@@ -20,6 +20,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include <string.h>
 
@@ -63,6 +64,19 @@ static int mgl_is_ignorable_texture_error(const char *func, GLenum error)
 {
     if (!func || error != GL_INVALID_OPERATION)
         return 0;
+
+    /* MGL_STRICT_TEXTURE_ERRORS=1 disables the compatibility error-swallowing
+     * so developers can surface real texture bugs during CTS / debugging.
+     * Cached once on first call (consistent with the rest of MGL's env-var
+     * caching pattern; GL context is single-threaded). */
+    static int strict_mode = -1;
+    if (strict_mode < 0) {
+        const char *env = getenv("MGL_STRICT_TEXTURE_ERRORS");
+        strict_mode = (env && atoi(env) > 0) ? 1 : 0;
+    }
+    if (strict_mode) {
+        return 0;
+    }
 
     /* Public texture-buffer entry points have required error semantics. */
     if (strcmp(func, "mglTextureBuffer") == 0 ||

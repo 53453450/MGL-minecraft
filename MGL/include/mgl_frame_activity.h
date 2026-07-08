@@ -108,6 +108,8 @@ extern _Atomic double   g_mglLockWaitTimeSinceSwap;   /* time waiting to acquire
 extern _Atomic double   g_mglLockHoldTimeSinceSwap;   /* time holding lock */
 
 int mglPerfSummaryEnabled(void);
+int mglPerfLockTimingEnabled(void);
+uint64_t mglPerfSummaryInterval(void);
 
 #define MGL_FRAME_LOAD(var) \
     atomic_load_explicit(&(var), memory_order_relaxed)

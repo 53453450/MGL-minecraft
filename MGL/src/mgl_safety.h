@@ -34,7 +34,12 @@ extern "C" {
 
 static inline bool mglObjectPointerLooksPlausible(const void *ptr)
 {
-    return ptr != NULL && (uintptr_t)ptr >= 0x100000000ULL;
+    /* Reject NULL and low-page addresses (catches common corruption patterns
+     * like small integers being treated as pointers).  The previous 4 GB
+     * lower bound rejected valid pointers on some macOS address layouts;
+     * use 0x1000 (consistent with kMGLMinValidPointer in mgl_metal_bridge.m)
+     * and rely on mglPointerRangeIsReadable for rigorous validation. */
+    return ptr != NULL && (uintptr_t)ptr >= 0x1000;
 }
 
 static inline bool mglPointerRangeIsReadable(const void *ptr, size_t size)
@@ -142,15 +147,8 @@ static inline bool mglPointerRangeIsReadable(const void *ptr, size_t size)
         \
         uintptr_t ptr_val = (uintptr_t)(ptr); \
         \
-        /* Check for known corrupted pointer patterns */ \
-        if (ptr_val == 0x10 || ptr_val == 0x30 || ptr_val == 0x1000 || ptr_val == 0x10000) { \
-            fprintf(stderr, "MGL BUFFER CRITICAL ERROR: %s - Known corrupted buffer pointer 0x%lx at %s:%d\n", \
-                    (function_name), ptr_val, __FILE__, __LINE__); \
-            return GL_INVALID_OPERATION; \
-        } \
-        \
         /* Check for obviously invalid pointer values */ \
-        if (ptr_val < 0x1000 || (ptr_val & 0xF) != 0) { \
+        if (ptr_val < 0x1000 || (ptr_val & 0x3) != 0) { \
             fprintf(stderr, "MGL BUFFER ERROR: %s - Invalid buffer pointer %p at %s:%d\n", \
                     (function_name), (ptr), __FILE__, __LINE__); \
             return GL_INVALID_OPERATION; \
@@ -173,15 +171,8 @@ static inline bool mglPointerRangeIsReadable(const void *ptr, size_t size)
         \
         uintptr_t ptr_val = (uintptr_t)(ptr); \
         \
-        /* Check for known corrupted pointer patterns */ \
-        if (ptr_val == 0x10 || ptr_val == 0x30 || ptr_val == 0x1000 || ptr_val == 0x10000) { \
-            fprintf(stderr, "MGL BUFFER CRITICAL ERROR: %s - Known corrupted buffer pointer 0x%lx at %s:%d\n", \
-                    (function_name), ptr_val, __FILE__, __LINE__); \
-            return; \
-        } \
-        \
         /* Check for obviously invalid pointer values */ \
-        if (ptr_val < 0x1000 || (ptr_val & 0xF) != 0) { \
+        if (ptr_val < 0x1000 || (ptr_val & 0x3) != 0) { \
             fprintf(stderr, "MGL BUFFER ERROR: %s - Invalid buffer pointer %p at %s:%d\n", \
                     (function_name), (ptr), __FILE__, __LINE__); \
             return; \

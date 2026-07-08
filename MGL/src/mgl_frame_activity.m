@@ -17,19 +17,51 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
-/* MGL_PERF_SUMMARY env-var cache.
- * Non-atomic read/write — consistent with MGL's single-threaded-per-context
- * assumption.  If multi-threaded shader compilation is ever supported, guard
- * with dispatch_once or atomic. */
-static int g_perf_summary_enabled = -1;
+/* Env-var caches can be queried from render and shader-compile paths. */
+static _Atomic int g_perf_summary_enabled = -1;
+static _Atomic int g_perf_lock_timing_enabled = -1;
+static _Atomic uint64_t g_perf_summary_interval = 0;
+static const uint64_t kMGLDefaultPerfSummaryInterval = 60ull;
+static const uint64_t kMGLMinSafePerfSummaryInterval = 30ull;
 
 int mglPerfSummaryEnabled(void)
 {
-    if (g_perf_summary_enabled < 0) {
+    int cached = atomic_load_explicit(&g_perf_summary_enabled, memory_order_acquire);
+    if (cached < 0) {
         const char *env = getenv("MGL_PERF_SUMMARY");
-        g_perf_summary_enabled = (env && atoi(env) > 0) ? 1 : 0;
+        cached = (env && atoi(env) > 0) ? 1 : 0;
+        atomic_store_explicit(&g_perf_summary_enabled, cached, memory_order_release);
     }
-    return g_perf_summary_enabled != 0;
+    return cached != 0;
+}
+
+int mglPerfLockTimingEnabled(void)
+{
+    int cached = atomic_load_explicit(&g_perf_lock_timing_enabled, memory_order_acquire);
+    if (cached < 0) {
+        const char *env = getenv("MGL_PERF_LOCK_TIMING");
+        cached = (env && atoi(env) > 0) ? 1 : 0;
+        atomic_store_explicit(&g_perf_lock_timing_enabled, cached, memory_order_release);
+    }
+    return cached != 0;
+}
+
+uint64_t mglPerfSummaryInterval(void)
+{
+    uint64_t cached = atomic_load_explicit(&g_perf_summary_interval, memory_order_acquire);
+    if (cached == 0) {
+        const char *env = getenv("MGL_PERF_SUMMARY_EVERY");
+        long parsed = env ? strtol(env, NULL, 10) : 0;
+        cached = parsed > 0 ? (uint64_t)parsed : kMGLDefaultPerfSummaryInterval;
+        if (cached < kMGLMinSafePerfSummaryInterval) {
+            const char *unsafeEveryFrame = getenv("MGL_PERF_SUMMARY_UNSAFE_EVERY_FRAME");
+            BOOL allowUnsafeEveryFrame =
+                unsafeEveryFrame && atoi(unsafeEveryFrame) > 0;
+            cached = allowUnsafeEveryFrame ? cached : kMGLMinSafePerfSummaryInterval;
+        }
+        atomic_store_explicit(&g_perf_summary_interval, cached, memory_order_release);
+    }
+    return cached;
 }
 
 /* === Last draw-call metadata === */
@@ -93,6 +125,12 @@ _Atomic double   g_mglLockHoldTimeSinceSwap   = 0.0;
 void mglPrintPerfSummary(double frame_interval_ms)
 {
     if (!mglPerfSummaryEnabled()) return;
+    static _Atomic uint64_t s_perf_summary_print_count = 0;
+    uint64_t hit = atomic_fetch_add_explicit(&s_perf_summary_print_count, 1, memory_order_relaxed) + 1;
+    uint64_t interval = mglPerfSummaryInterval();
+    if (interval > 1 && (hit % interval) != 0) {
+        return;
+    }
 
     MGLPerfCounters c = mglSnapshotPerfCounters();
 

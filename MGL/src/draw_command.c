@@ -1048,9 +1048,9 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     out->primitive_type = mglModeToPrimitiveType(mode);
     out->caps_flags = mglComputeCapsFlags(ctx);
     out->texture_hash = mglComputeTextureHash(ctx);
+    out->vertex_layout_hash = mglComputeVertexArrayStateHash(ctx, uses_elements);
     out->render_state_hash = mglComputeRenderStateHash(ctx) ^
                              mglComputeDrawBufferBindingHash(ctx) ^
-                             mglComputeVertexArrayStateHash(ctx, uses_elements) ^
                              mglRotateLeft64((uint64_t)mode, 21);
 }
 
@@ -2112,15 +2112,14 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     /* Find matching batch (check last first for spatial locality).
      *
      * Batch matching uses memcmp on the full MGLStateKey struct (via
-     * mglStateKeysEqual).  The key contains two hash fields —
-     * texture_hash and render_state_hash — that summarize texture
-     * bindings and render state (blend/depth/stencil/etc.) into 64-bit
-     * values.  A hash collision would cause two different states to be
-     * falsely merged into one batch, resulting in the second draw using
-     * the first draw's render state during replay.
+     * mglStateKeysEqual).  The key contains hash fields for texture
+     * bindings, render state (blend/depth/stencil/etc.), and vertex layout.
+     * A hash collision would cause two different states to be falsely merged
+     * into one batch, resulting in the second draw using the first draw's
+     * render or vertex state during replay.
      *
-     * Collision probability: for N=64 batches, P(collision) ≈ N²/2^65
-     * ≈ 2^-53, which is negligible.  The hash incorporates pointer
+     * Collision probability: for N=128 batches, P(collision) ≈ N²/2^65
+     * ≈ 2^-51, which is negligible.  The hash incorporates pointer
      * addresses (for textures) and ~50 state fields (for render state),
      * making intentional collision infeasible.  If correctness is ever
      * questioned, enable MGL_DEBUG_STREAM_MERGE to log batch merges. */

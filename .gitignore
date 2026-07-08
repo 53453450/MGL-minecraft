@@ -16,3 +16,4 @@ external/glslang/
 *.dylib
 /.claude
 /docs
+/.workbuddy

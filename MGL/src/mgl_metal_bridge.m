@@ -140,10 +140,12 @@ void mtlReleaseSync(GLMContext glm_ctx, Sync *sync) {
 void mtlFlushDrawBuffer(GLMContext glm_ctx) {
     id<MGLMetalBridgeTarget> target = mglBridgeTarget(glm_ctx, __func__);
     if (!target) return;
-    @try {
-        [target flushDrawBuffer:glm_ctx];
-    } @catch (NSException *e) {
-        NSLog(@"MGL ERROR: mtlFlushDrawBuffer exception: %@", e);
+    @autoreleasepool {
+        @try {
+            [target flushDrawBuffer:glm_ctx];
+        } @catch (NSException *e) {
+            NSLog(@"MGL ERROR: mtlFlushDrawBuffer exception: %@", e);
+        }
     }
 }
 
@@ -153,7 +155,9 @@ void mtlFlush(GLMContext glm_ctx, bool finish) {
     if (!target) {
         return;
     }
-    [target mtlFlush:glm_ctx finish:finish];
+    @autoreleasepool {
+        [target mtlFlush:glm_ctx finish:finish];
+    }
 }
 
 void mtlSwapBuffers(GLMContext glm_ctx) {
@@ -383,22 +387,24 @@ GLuint64 mtlEndSampleQuery(GLMContext glm_ctx) {
 #pragma mark - Draw
 
 void mtlDrawArrays(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count) {
-    @try {
-        /* Fix #21: use the named sentinel instead of a magic 0x1000 literal.
-         * (This function already had inline NULL guards, so Fix #4 does not
-         * add a separate mglBridgeTarget() guard here.) */
-        if (!glm_ctx || ((uintptr_t)glm_ctx < kMGLMinValidPointer)) {
-            NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid GLM context, aborting operation");
-            return;
+    @autoreleasepool {
+        @try {
+            /* Fix #21: use the named sentinel instead of a magic 0x1000 literal.
+             * (This function already had inline NULL guards, so Fix #4 does not
+             * add a separate mglBridgeTarget() guard here.) */
+            if (!glm_ctx || ((uintptr_t)glm_ctx < kMGLMinValidPointer)) {
+                NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid GLM context, aborting operation");
+                return;
+            }
+            if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < kMGLMinValidPointer)) {
+                NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid Metal object, aborting operation");
+                return;
+            }
+            [mglBridgeTarget(glm_ctx, __func__) mtlDrawArrays: glm_ctx mode: mode first: first count: count];
+        } @catch (NSException *exception) {
+            NSLog(@"MGL CRITICAL: mtlDrawArrays - Unhandled exception caught: %@", exception);
+            NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
         }
-        if (!glm_ctx->mtl_funcs.mtlObj || ((uintptr_t)glm_ctx->mtl_funcs.mtlObj < kMGLMinValidPointer)) {
-            NSLog(@"MGL CRITICAL: mtlDrawArrays - Invalid Metal object, aborting operation");
-            return;
-        }
-        [mglBridgeTarget(glm_ctx, __func__) mtlDrawArrays: glm_ctx mode: mode first: first count: count];
-    } @catch (NSException *exception) {
-        NSLog(@"MGL CRITICAL: mtlDrawArrays - Unhandled exception caught: %@", exception);
-        NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
     }
     /* Fix #19: removed the broad `@catch (id exception)` block that was
      * swallowing non-NSException objects; the NSException handler above is
@@ -411,7 +417,9 @@ void mtlDrawElements(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type
     if (!target) {
         return;
     }
-    [target mtlDrawElements: glm_ctx mode: mode count: count type: type indices: indices];
+    @autoreleasepool {
+        [target mtlDrawElements: glm_ctx mode: mode count: count type: type indices: indices];
+    }
 }
 
 void mtlDrawRangeElements(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices) {
@@ -420,7 +428,9 @@ void mtlDrawRangeElements(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint 
     if (!target) {
         return;
     }
-    [target mtlDrawRangeElements: glm_ctx mode: mode start: start end: end count: count type: type indices: indices];
+    @autoreleasepool {
+        [target mtlDrawRangeElements: glm_ctx mode: mode start: start end: end count: count type: type indices: indices];
+    }
 }
 
 void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount) {
@@ -429,7 +439,9 @@ void mtlDrawArraysInstanced(GLMContext glm_ctx, GLenum mode, GLint first, GLsize
     if (!target) {
         return;
     }
-    [target mtlDrawArraysInstanced: glm_ctx mode: mode first: first count: count instancecount: instancecount];
+    @autoreleasepool {
+        [target mtlDrawArraysInstanced: glm_ctx mode: mode first: first count: count instancecount: instancecount];
+    }
 }
 
 void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount) {
@@ -438,7 +450,9 @@ void mtlDrawElementsInstanced(GLMContext glm_ctx, GLenum mode, GLsizei count, GL
     if (!target) {
         return;
     }
-    [target mtlDrawElementsInstanced: glm_ctx mode: mode count: count type: type indices: indices instancecount: instancecount];
+    @autoreleasepool {
+        [target mtlDrawElementsInstanced: glm_ctx mode: mode count: count type: type indices: indices instancecount: instancecount];
+    }
 }
 
 void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) {
@@ -447,7 +461,9 @@ void mtlDrawElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, G
     if (!target) {
         return;
     }
-    [target mtlDrawElementsBaseVertex: glm_ctx mode: mode count: count type: type indices: indices basevertex: basevertex];
+    @autoreleasepool {
+        [target mtlDrawElementsBaseVertex: glm_ctx mode: mode count: count type: type indices: indices basevertex: basevertex];
+    }
 }
 
 void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex) {
@@ -456,7 +472,9 @@ void mtlDrawRangeElementsBaseVertex(GLMContext glm_ctx, GLenum mode, GLuint star
     if (!target) {
         return;
     }
-    [target mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode start: start end: end count:count type: type indices: indices basevertex:basevertex];
+    @autoreleasepool {
+        [target mtlDrawRangeElementsBaseVertex:glm_ctx mode:mode start: start end: end count:count type: type indices: indices basevertex:basevertex];
+    }
 }
 
 void mtlDrawElementsInstancedBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex) {
@@ -465,7 +483,9 @@ void mtlDrawElementsInstancedBaseVertex(GLMContext glm_ctx, GLenum mode, GLsizei
     if (!target) {
         return;
     }
-    [target mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex];
+    @autoreleasepool {
+        [target mtlDrawElementsInstancedBaseVertex:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex];
+    }
 }
 
 void mtlDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *indirect) {
@@ -474,7 +494,9 @@ void mtlDrawArraysIndirect(GLMContext glm_ctx, GLenum mode, const void *indirect
     if (!target) {
         return;
     }
-    [target mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
+    @autoreleasepool {
+        [target mtlDrawArraysIndirect:glm_ctx mode:mode indirect:indirect];
+    }
 }
 
 void mtlDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const void *indirect) {
@@ -483,7 +505,9 @@ void mtlDrawElementsIndirect(GLMContext glm_ctx, GLenum mode, GLenum type, const
     if (!target) {
         return;
     }
-    [target mtlDrawElementsIndirect:glm_ctx mode:mode type:type indirect:indirect];
+    @autoreleasepool {
+        [target mtlDrawElementsIndirect:glm_ctx mode:mode type:type indirect:indirect];
+    }
 }
 
 void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance) {
@@ -492,7 +516,9 @@ void mtlDrawArraysInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLint f
     if (!target) {
         return;
     }
-    [target mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode first:first count:count instancecount:instancecount baseinstance:baseinstance];
+    @autoreleasepool {
+        [target mtlDrawArraysInstancedBaseInstance:glm_ctx mode:mode first:first count:count instancecount:instancecount baseinstance:baseinstance];
+    }
 }
 
 void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance) {
@@ -501,7 +527,9 @@ void mtlDrawElementsInstancedBaseInstance(GLMContext glm_ctx, GLenum mode, GLsiz
     if (!target) {
         return;
     }
-    [target mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount baseinstance:baseinstance];
+    @autoreleasepool {
+        [target mtlDrawElementsInstancedBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount baseinstance:baseinstance];
+    }
 }
 
 void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance) {
@@ -510,7 +538,9 @@ void mtlDrawElementsInstancedBaseVertexBaseInstance(GLMContext glm_ctx, GLenum m
     if (!target) {
         return;
     }
-    [target mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex baseinstance:baseinstance];
+    @autoreleasepool {
+        [target mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx mode:mode count:count type:type indices:indices instancecount:instancecount basevertex:basevertex baseinstance:baseinstance];
+    }
 }
 
 void mtlMultiDrawArrays(GLMContext glm_ctx, GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount) {

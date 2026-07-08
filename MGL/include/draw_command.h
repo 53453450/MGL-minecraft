@@ -32,8 +32,8 @@ extern "C" {
 struct GLMContextRec_t;
 typedef struct GLMContextRec_t *GLMContext;
 
-#define MGL_MAX_DRAWS_PER_BATCH   1024
-#define MGL_MAX_BATCHES           64
+#define MGL_MAX_DRAWS_PER_BATCH   4096
+#define MGL_MAX_BATCHES           128
 #define MGL_MDI_MIN_BATCH_SIZE    2
 #define MGL_MAX_PENDING_BUFFER_RANGES 4096
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
@@ -78,6 +78,7 @@ typedef struct {
     uint16_t caps_flags;
     uint64_t texture_hash;
     uint64_t render_state_hash;
+    uint64_t vertex_layout_hash;
 } MGLStateKey;
 
 typedef struct {

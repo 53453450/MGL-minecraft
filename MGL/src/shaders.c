@@ -1222,8 +1222,15 @@ glslang_stage_t getGLSLStage(GLuint type)
     return 0;
 }
 
-void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t *input)
+void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t *input, char **out_modified_src)
 {
+    /* out_modified_src receives the heap-allocated mutable source copy (if
+     * one was created) so the caller can free it after glslang is done with
+     * input->code.  NULL means input->code points at the caller's src buffer
+     * and no extra free is needed. */
+    if (out_modified_src) {
+        *out_modified_src = NULL;
+    }
     input->language = GLSLANG_SOURCE_GLSL;
     input->stage = getGLSLStage(type);
     input->client = GLSLANG_CLIENT_OPENGL;
@@ -1294,15 +1301,14 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         input->client_version = GLSLANG_TARGET_OPENGL_450;
     }
 
-    /* Build a mutable source copy for compatibility rewrites. */
-    static char *modified_src = NULL;
-    static size_t modified_src_size = 0;
+    /* Build a mutable source copy for compatibility rewrites.
+     * Allocated as a local — the caller frees it via out_modified_src once
+     * glslang no longer needs input->code. */
+    char *modified_src = NULL;
+    size_t modified_src_size = 0;
     size_t src_len = strlen(src);
-    if (src_len + 2048 > modified_src_size) {
-        modified_src_size = src_len + 2048;
-        free(modified_src);
-        modified_src = (char *)malloc(modified_src_size);
-    }
+    modified_src_size = src_len + 2048;
+    modified_src = (char *)malloc(modified_src_size);
 
     if (!modified_src) {
         fprintf(stderr, "[MGL] ERROR: Failed to allocate modified_src\n");
@@ -1446,6 +1452,9 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         }
 
         input->code = modified_src;
+        if (out_modified_src) {
+            *out_modified_src = modified_src;
+        }
     }
 
     input->default_version = glsl_version;
@@ -1712,7 +1721,8 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
 
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
-    initGLSLInput(ctx, ptr->type, ptr->src, &glsl_input);
+    char *modified_src = NULL;  /* freed on every exit path */
+    initGLSLInput(ctx, ptr->type, ptr->src, &glsl_input, &modified_src);
 
     glsl_shader = glslang_shader_create(&glsl_input);
     if (glsl_shader == NULL)
@@ -1728,9 +1738,9 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
             }
             /* If strdup also fails, ptr->log stays NULL — callers tolerate it. */
         }
+        free(modified_src);
         return;
     }
-
     if (ptr->log)
     {
         free(ptr->log);
@@ -1803,6 +1813,7 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
             /* If strdup also fails, ptr->log stays NULL — callers must tolerate that. */
         }
 
+        free(modified_src);
         return;
     }
 
@@ -1850,6 +1861,7 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
             /* If strdup also fails, ptr->log stays NULL — callers must tolerate that. */
         }
 
+        free(modified_src);
         return;
     }
 
@@ -1858,6 +1870,7 @@ void mglCompileShader(GLMContext ctx, GLuint shader)
     }
 
     ptr->compiled_glsl_shader = glsl_shader;
+    free(modified_src);
 }
 
 void mglGetShaderiv(GLMContext ctx, GLuint shader, GLenum pname, GLint *params)

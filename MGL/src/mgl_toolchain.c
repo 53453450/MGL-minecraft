@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <dispatch/dispatch.h>
 
 #if defined(__has_include)
 #if __has_include(<glslang_c_interface.h>) && __has_include(<glslang_c_shader_types.h>)
@@ -69,8 +70,15 @@ static glslang_stage_t mgl_stage_to_glslang(mgl_toolchain_stage stage) {
 
 static void mgl_init_input(glslang_input_t *input,
                            mgl_toolchain_stage stage,
-                           const char *src) {
-    fprintf(stderr, "[MGL DEBUG] mgl_init_input called, src first 50 chars: %.50s\n", src);
+                           const char *src,
+                           char **out_modified_src) {
+    /* out_modified_src receives the heap-allocated mutable source copy (if
+     * one was created) so the caller can free it after glslang is done with
+     * input->code.  NULL means input->code points at the caller's src buffer
+     * and no extra free is needed. */
+    if (out_modified_src) {
+        *out_modified_src = NULL;
+    }
     memset(input, 0, sizeof(*input));
     input->language = GLSLANG_SOURCE_GLSL;
     input->stage = mgl_stage_to_glslang(stage);
@@ -103,18 +111,15 @@ static void mgl_init_input(glslang_input_t *input,
                 original_version, glsl_version);
     }
 
-    /* For GLSL < 330, we need to replace the #version directive in source
-     * Allocate a mutable copy to modify
-     */
-    static char *modified_src = NULL;
-    static size_t modified_src_size = 0;
+    /* For GLSL < 330, we need to replace the #version directive in source.
+     * Allocate a mutable local copy — the caller frees it via
+     * out_modified_src once glslang no longer needs input->code. */
+    char *modified_src = NULL;
+    size_t modified_src_size = 0;
 
     size_t src_len = strlen(src);
-    if (src_len + 100 > modified_src_size) {
-        modified_src_size = src_len + 100;
-        free(modified_src);
-        modified_src = (char *)malloc(modified_src_size);
-    }
+    modified_src_size = src_len + 100;
+    modified_src = (char *)malloc(modified_src_size);
 
     if (modified_src) {
         strcpy(modified_src, src);
@@ -143,6 +148,9 @@ static void mgl_init_input(glslang_input_t *input,
             }
         }
         input->code = modified_src;
+        if (out_modified_src) {
+            *out_modified_src = modified_src;
+        }
     } else {
         /* Fallback: use original source */
         fprintf(stderr, "[MGL] WARNING: Failed to allocate modified_src, using original\n");
@@ -190,17 +198,21 @@ int mgl_toolchain_glsl_to_msl(
     memcpy(src, glsl_source, glsl_len);
     src[glsl_len] = '\0';
 
-    static int glslang_ready = 0;
-    if (!glslang_ready) {
+    /* Thread-safe one-shot initialization — dispatch_once guarantees
+     * glslang_initialize_process() runs exactly once even if multiple
+     * threads enter mgl_toolchain_glsl_to_msl concurrently. */
+    static dispatch_once_t glslang_once;
+    dispatch_once(&glslang_once, ^{
         glslang_initialize_process();
-        glslang_ready = 1;
-    }
+    });
 
     glslang_input_t input;
-    mgl_init_input(&input, stage, src);
+    char *modified_src = NULL;  /* freed alongside src on every exit path */
+    mgl_init_input(&input, stage, src, &modified_src);
 
     glslang_shader_t *shader = glslang_shader_create(&input);
     if (!shader) {
+        free(modified_src);
         free(src);
         return mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: glslang_shader_create failed");
     }
@@ -213,6 +225,9 @@ int mgl_toolchain_glsl_to_msl(
         // CRITICAL SECURITY FIX: Prevent integer overflow in error message allocation
         if (info_len > SIZE_MAX - dbg_len - 64) {
             mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: Error message allocation would overflow");
+            glslang_shader_delete(shader);
+            free(modified_src);
+            free(src);
             return 1;
         }
 
@@ -232,6 +247,7 @@ int mgl_toolchain_glsl_to_msl(
             mgl_set_error(out_error, "glslang preprocess failed");
         }
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -244,6 +260,9 @@ int mgl_toolchain_glsl_to_msl(
         // CRITICAL SECURITY FIX: Prevent integer overflow in error message allocation
         if (info_len > SIZE_MAX - dbg_len - 64) {
             mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: Error message allocation would overflow");
+            glslang_shader_delete(shader);
+            free(modified_src);
+            free(src);
             return 1;
         }
 
@@ -263,6 +282,7 @@ int mgl_toolchain_glsl_to_msl(
             mgl_set_error(out_error, "glslang parse failed");
         }
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -278,6 +298,10 @@ int mgl_toolchain_glsl_to_msl(
         // CRITICAL SECURITY FIX: Prevent integer overflow in error message allocation
         if (info_len > SIZE_MAX - dbg_len - 64) {
             mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: Error message allocation would overflow");
+            glslang_program_delete(program);
+            glslang_shader_delete(shader);
+            free(modified_src);
+            free(src);
             return 1;
         }
 
@@ -298,6 +322,7 @@ int mgl_toolchain_glsl_to_msl(
         }
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -308,6 +333,7 @@ int mgl_toolchain_glsl_to_msl(
         mgl_set_error(out_error, "glslang SPIR-V generation produced empty module");
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -317,6 +343,7 @@ int mgl_toolchain_glsl_to_msl(
         mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: SPIR-V word count would cause allocation overflow");
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -327,6 +354,7 @@ int mgl_toolchain_glsl_to_msl(
         mgl_set_error(out_error, "mgl_toolchain_glsl_to_msl: OOM allocating SPIR-V buffer");
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -344,6 +372,7 @@ int mgl_toolchain_glsl_to_msl(
         free(words);
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -354,6 +383,7 @@ int mgl_toolchain_glsl_to_msl(
         free(words);
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -364,6 +394,7 @@ int mgl_toolchain_glsl_to_msl(
         free(words);
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -385,6 +416,7 @@ int mgl_toolchain_glsl_to_msl(
         free(words);
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -396,6 +428,7 @@ int mgl_toolchain_glsl_to_msl(
         free(words);
         glslang_program_delete(program);
         glslang_shader_delete(shader);
+        free(modified_src);
         free(src);
         return 1;
     }
@@ -408,6 +441,7 @@ int mgl_toolchain_glsl_to_msl(
     free(words);
     glslang_program_delete(program);
     glslang_shader_delete(shader);
+    free(modified_src);
     free(src);
     return 0;
 }
