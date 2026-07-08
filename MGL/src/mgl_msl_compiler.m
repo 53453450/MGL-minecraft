@@ -12,6 +12,7 @@
 #include <string.h>
 #include <stdatomic.h>
 #include <mach/mach_time.h>
+#include <objc/runtime.h>
 
 /* mglEnvFlagEnabled is defined in MGLRenderer.m; declare it extern here so
  * the MTL4 compiler fast-path gate can query MGL_DISABLE_MTL4_COMPILER. */
@@ -54,6 +55,35 @@ static NSString *mglMSLCompileCacheKey(id<MTLDevice> device,
     [key appendString:@"options=nil\n"];
     [key appendString:source];
     return key;
+}
+
+static NSMutableDictionary<NSString *, id<MTLFunction>> *mglFunctionCacheForLibrary(id<MTLLibrary> library)
+{
+    static const char kMGLFunctionCacheAssociationKey = 0;
+    if (!library) {
+        return nil;
+    }
+
+    @synchronized (library) {
+        NSMutableDictionary<NSString *, id<MTLFunction>> *cache =
+            objc_getAssociatedObject(library, &kMGLFunctionCacheAssociationKey);
+        if (!cache) {
+            cache = [[NSMutableDictionary alloc] initWithCapacity:4];
+            objc_setAssociatedObject(library,
+                                     &kMGLFunctionCacheAssociationKey,
+                                     cache,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return cache;
+    }
+}
+
+static NSString *mglFunctionCacheKey(NSString *entryName, BOOL needsR32UI)
+{
+    if (!entryName) {
+        return nil;
+    }
+    return [NSString stringWithFormat:@"%@:%@", needsR32UI ? @"r32ui" : @"plain", entryName];
 }
 
 static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
@@ -184,7 +214,19 @@ id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,
     BOOL needsR32UI = (source &&
                        strstr(source, "spvLinearTextureAlignmentOverride") &&
                        strstr(source, "[[function_constant(65535)]]"));
+    NSString *cacheKey = mglFunctionCacheKey(entryName, needsR32UI);
+    NSMutableDictionary<NSString *, id<MTLFunction>> *functionCache =
+        mglFunctionCacheForLibrary(library);
+    if (cacheKey && functionCache) {
+        @synchronized (library) {
+            id<MTLFunction> cachedFunction = functionCache[cacheKey];
+            if (cachedFunction) {
+                return cachedFunction;
+            }
+        }
+    }
 
+    id<MTLFunction> function = nil;
     if (needsR32UI) {
         MTLFunctionConstantValues *values = [[MTLFunctionConstantValues alloc] init];
 
@@ -192,16 +234,22 @@ id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,
         [values setConstantValue:&alignment type:MTLDataTypeUInt atIndex:65535];
 
         __autoreleasing NSError *error = nil;
-        id<MTLFunction> function = [library newFunctionWithName:entryName
-                                                 constantValues:values
-                                                          error:&error];
+        function = [library newFunctionWithName:entryName
+                                 constantValues:values
+                                          error:&error];
         if (!function) {
             NSLog(@"MGL ERROR: Failed to specialize %@ with function constants: %@",
                   label ?: entryName,
                   error.localizedDescription ?: error);
         }
-        return function;
+    } else {
+        function = [library newFunctionWithName:entryName];
     }
 
-    return [library newFunctionWithName:entryName];
+    if (function && cacheKey && functionCache) {
+        @synchronized (library) {
+            functionCache[cacheKey] = function;
+        }
+    }
+    return function;
 }
