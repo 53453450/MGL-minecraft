@@ -40,6 +40,10 @@ static int mgl_set_error(char **out_error, const char *msg) {
         return 1;
     }
     *out_error = strdup(msg);
+    if (!*out_error) {
+        /* OOM — cannot allocate error string; leave *out_error NULL.
+         * Caller still observes failure via the returned status code. */
+    }
     return 1;
 }
 

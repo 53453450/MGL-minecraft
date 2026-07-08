@@ -185,6 +185,11 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     int err;
 
     if (!ctx) {
+        /* OOM — cannot create context.  No GLMContext exists yet, so the
+         * per-context error state (GL_OUT_OF_MEMORY via error_func) cannot
+         * be set; return NULL to signal allocation failure to the caller,
+         * matching the GL spec's context-creation failure contract. */
+        mglTraceLogExternal("MGL: createGLMContext: malloc(GLMContextRec) failed (OOM)\n");
         return NULL;
     }
 
