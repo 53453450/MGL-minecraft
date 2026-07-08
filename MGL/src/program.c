@@ -10337,6 +10337,17 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     static GLuint s_last_unlinked_program = 0;
     static unsigned int s_unlinked_program_hits = 0;
 
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->state.program_name == program &&
+        ctx->state.var.current_program == program &&
+        ((program == 0u && ctx->state.program == NULL) ||
+         (program != 0u && ctx->state.program != NULL))) {
+        return;
+    }
+
     if (program)
     {
         pptr = findProgram(ctx, program);

@@ -77,10 +77,24 @@ static void mgl_auto_init(void) {
 
 /* Lazy-initialize MGL context on first GL API call if auto-init didn't run */
 void mgl_lazy_init(void) {
-    // If `_ctx` ever gets corrupted (e.g. memory stomp), avoid dereferencing it.
-    if (_ctx != NULL && !mglPointerRangeIsReadable(_ctx, sizeof(*_ctx))) {
-        fprintf(stderr, "MGL ERROR: current context pointer looks corrupted (%p); reinitializing\n", (void *)_ctx);
-        _ctx = NULL;
+    if (_ctx != NULL) {
+        static int s_validate_current_context = -1;
+        if (s_validate_current_context < 0) {
+            const char *env = getenv("MGL_VALIDATE_CURRENT_CONTEXT");
+            s_validate_current_context =
+                (env && env[0] != '\0' && strcmp(env, "0") != 0) ? 1 : 0;
+        }
+        if (!s_validate_current_context) {
+            return;
+        }
+
+        // If `_ctx` ever gets corrupted (e.g. memory stomp), avoid dereferencing it.
+        if (!mglPointerRangeIsReadable(_ctx, sizeof(*_ctx))) {
+            fprintf(stderr, "MGL ERROR: current context pointer looks corrupted (%p); reinitializing\n", (void *)_ctx);
+            _ctx = NULL;
+        } else {
+            return;
+        }
     }
 
     if (_ctx == NULL) {
