@@ -63,17 +63,7 @@ typedef enum {
     kMGLBufferSlot_PatchInfo        = 28,
 
     /* Indirect draw parameter buffer (vertexCount, instanceCount, ...).
-     * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS.
-     *
-     * Dual usage in TES compute kernel: slot 29 is ALSO reused as the
-     * `_mgl_xfb_out` transform-feedback output buffer in the TES compute path
-     * when the program has transform-feedback varyings (GL_INTERLEAVED_ATTRIBS).
-     * The `_mgl_xfb_out [[buffer(29)]]` parameter is injected by
-     * `mglFixMSLTesAsComputeKernel` (program.c) and the XFB buffer is bound by
-     * `dispatchTessEvaluationShader` (MGLRenderer.m).  This is safe because
-     * TCS and TES run as separate compute encoders — the TCS indirect-params
-     * buffer is no longer needed once TES dispatch begins, so the slot can be
-     * repurposed for XFB output in the TES encoder. */
+     * TCS/TES compute dispatch path.  Reused as kMGLCullDistanceVertex in VS. */
     kMGLBufferSlot_IndirectParams   = 29,
 
     /* TES gl_in buffer (TCS output vertices).  Reused as
@@ -118,13 +108,12 @@ typedef enum {
  * `stage` is a _MAX_SHADER_TYPES index (see glm_context.h).  Pass -1 to check
  * against all stages conservatively.
  *
- * NOTE: the conservative any-stage helper mglBufferSlotIsReserved() treats
- * slot 25 (MGL_BUFFER_SIZE_BUFFER_INDEX) as reserved because the renderer
- * binds SPIRV-Cross's runtime-sized SSBO size buffer there whenever
- * `spirv[stage].needs_buffer_size_buffer` is true.  Stage/path-aware callers
- * that can prove the size-buffer path is inactive may choose a narrower
- * policy, but the shared remap/fallback code must keep user buffers away
- * from slot 25 to avoid collisions in shaders that need size constants. */
+ * NOTE: slot 25 (MGL_BUFFER_SIZE_BUFFER_INDEX) is NOT considered reserved
+ * here — SPIRV-Cross manages its own binding and it is intentionally
+ * assignable to user SSBOs that need runtime-sized array sizing.  The
+ * renderer binds the size buffer at slot 25 only when
+ * `spirv[stage].needs_buffer_size_buffer` is true, and SPIRV-Cross's own
+ * decoration logic avoids collisions with user bindings. */
 GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage);
 
 /* Returns GL_TRUE if `slot` is reserved in ANY stage (conservative check

@@ -28,14 +28,11 @@
 
 /* === Env var gates (evaluated once and cached) ===
  *
- * Thread-safety: these caches use non-atomic int reads/writes, consistent
- * with MGL's single-threaded-per-context assumption (the GL context itself
- * is not thread-safe, and shader compilation happens on the context thread).
- * The first read of each flag performs an unsynchronized getenv()+store; a
- * concurrent reader could observe a stale -1 or a torn write in theory, but
- * this cannot occur under the current single-threaded-per-context model.
- * If MGL ever supports multi-threaded shader compilation, these need atomic
- * guards (e.g. stdatomic / OSAtomic) or dispatch_once for one-shot init. */
+ * Thread-safety: these caches use non-atomic int reads/writes.  This is
+ * consistent with the rest of the MGL codebase, which assumes a single-
+ * threaded GL context (the GL context itself is not thread-safe, and
+ * shader compilation happens on the context thread).  If MGL ever supports
+ * multi-threaded shader compilation, these need atomic guards. */
 
 static int g_ir_remap_debug = -1;
 static int g_ir_remap_disabled = -1;
@@ -162,10 +159,6 @@ GLboolean mglBufferSlotConflictsForProgram(Program *pptr, int stage, GLuint slot
     if (!pptr) {
         return GL_FALSE;
     }
-    /* Fix #8: Metal vertex/compute pipelines expose 31 buffer slots (0..30),
-     * so slot 31 (kMGLMaxMetalVertexBufferCount) and above are out of range
-     * and always conflict.  The threshold is >= 31 (not >= 32) because slot
-     * 31 is already invalid. */
     if (slot >= kMGLMaxMetalVertexBufferCount) {
         return GL_TRUE;
     }
@@ -255,18 +248,7 @@ static GLboolean is_glslang_bug_affected(spvc_basetype bt, unsigned vecsize,
 }
 
 /* Pass 1: Reflect active builtins and cache path-detection flags.
- * No IR mutation — pure reflection/state read.
- *
- * Fix #9: these cached flags are NOT dead — they are consumed by
- * irBufferSlotConflictsForContext (which reads ctx->has_tessellation,
- * ctx->vs_uses_cull_distance, ctx->fs_uses_frag_coord directly instead of
- * re-computing them).  irBufferSlotConflictsForContext is in turn called by
- * the downstream passes ir_reserve_internal_slots (pass 2) and
- * ir_pre_map_buffer_bindings (pass 3), so the cache is read on every conflict
- * check rather than re-scanning reflection/GLSL source each time.  The public
- * mglBufferSlotConflictsForProgram (used by the MSL string fallback, which has
- * no MGLIRPatchContext) still re-computes via mglVSUsesCullDistance etc.
- * because it lacks a cache — that is expected, not dead code. */
+ * No IR mutation — pure reflection/state read. */
 static GLboolean ir_reflect_active_builtins(MGLIRPatchContext *ctx)
 {
     ctx->has_tessellation = mglProgramHasTessellation(ctx->program);
@@ -336,87 +318,11 @@ static GLboolean ir_reserve_internal_slots(MGLIRPatchContext *ctx)
     return GL_TRUE;
 }
 
-/* Keep in sync with program.c's synthetic sampler location namespace. */
-#define MGL_IR_SYNTHETIC_SAMPLER_LOCATION_BASE 0x4000
-
-static GLboolean irUniformNameLooksSamplerLike(const char *name)
-{
-    if (!name || !*name) {
-        return GL_FALSE;
-    }
-    return (strstr(name, "Sampler") != NULL ||
-            strcmp(name, "CloudFaces") == 0) ? GL_TRUE : GL_FALSE;
-}
-
-static GLboolean irGLTypeLooksSamplerLike(GLuint gl_type)
-{
-    switch (gl_type) {
-        case GL_SAMPLER_1D:
-        case GL_SAMPLER_2D:
-        case GL_SAMPLER_3D:
-        case GL_SAMPLER_CUBE:
-        case GL_SAMPLER_1D_SHADOW:
-        case GL_SAMPLER_2D_SHADOW:
-        case GL_SAMPLER_2D_RECT:
-        case GL_SAMPLER_2D_RECT_SHADOW:
-        case GL_SAMPLER_1D_ARRAY:
-        case GL_SAMPLER_2D_ARRAY:
-        case GL_SAMPLER_1D_ARRAY_SHADOW:
-        case GL_SAMPLER_2D_ARRAY_SHADOW:
-        case GL_SAMPLER_CUBE_SHADOW:
-        case GL_SAMPLER_BUFFER:
-        case GL_INT_SAMPLER_1D:
-        case GL_INT_SAMPLER_2D:
-        case GL_INT_SAMPLER_3D:
-        case GL_INT_SAMPLER_CUBE:
-        case GL_INT_SAMPLER_2D_RECT:
-        case GL_INT_SAMPLER_1D_ARRAY:
-        case GL_INT_SAMPLER_2D_ARRAY:
-        case GL_INT_SAMPLER_BUFFER:
-        case GL_UNSIGNED_INT_SAMPLER_1D:
-        case GL_UNSIGNED_INT_SAMPLER_2D:
-        case GL_UNSIGNED_INT_SAMPLER_3D:
-        case GL_UNSIGNED_INT_SAMPLER_CUBE:
-        case GL_UNSIGNED_INT_SAMPLER_2D_RECT:
-        case GL_UNSIGNED_INT_SAMPLER_1D_ARRAY:
-        case GL_UNSIGNED_INT_SAMPLER_2D_ARRAY:
-        case GL_UNSIGNED_INT_SAMPLER_BUFFER:
-        case GL_SAMPLER_2D_MULTISAMPLE:
-        case GL_INT_SAMPLER_2D_MULTISAMPLE:
-        case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE:
-        case GL_SAMPLER_2D_MULTISAMPLE_ARRAY:
-        case GL_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
-        case GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE_ARRAY:
-        case GL_SAMPLER_CUBE_MAP_ARRAY:
-        case GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW:
-        case GL_INT_SAMPLER_CUBE_MAP_ARRAY:
-        case GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY:
-            return GL_TRUE;
-        default:
-            return GL_FALSE;
-    }
-}
-
-static GLboolean irUniformConstantLooksSamplerLike(const SpirvResource *res)
-{
-    if (!res) {
-        return GL_FALSE;
-    }
-    return (res->image_dim != 0u ||
-            res->uniform_location >= MGL_IR_SYNTHETIC_SAMPLER_LOCATION_BASE ||
-            irUniformNameLooksSamplerLike(res->name) ||
-            irGLTypeLooksSamplerLike(res->gl_type)) ? GL_TRUE : GL_FALSE;
-}
-
 /* Helper: classify a resource as buffer-backed (eligible for IR remap).
- *
- * Fix #5: UNIFORM_CONSTANT is only buffer-backed when it is not sampler-like.
- * Image/sampler UNIFORM_CONSTANT entries occupy texture/sampler slots, not
- * [[buffer(N)]] slots, so remapping them as buffers would corrupt binding
- * assignment.  Mirror program.c's sampler detection where possible:
- * image_dim, synthetic sampler locations, Minecraft sampler naming, and the
- * reflected GL sampler type (the IR resource cache no longer carries the
- * original SPIRV-Cross basetype). */
+ * Plain UNIFORM_CONSTANT resources are intentionally excluded here.  With
+ * MSL argument buffers disabled, SPIRV-Cross emits many non-sampler uniforms
+ * as ordinary MSL parameters that do not occupy [[buffer(N)]] slots.  Treating
+ * those as buffer-backed makes slot 0 look falsely occupied. */
 static GLboolean irResourceIsBufferBacked(SpirvResource *res, int res_type)
 {
     if (!res) return GL_FALSE;
@@ -426,8 +332,6 @@ static GLboolean irResourceIsBufferBacked(SpirvResource *res, int res_type)
         case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
         case SPVC_RESOURCE_TYPE_PUSH_CONSTANT:
             return GL_TRUE;
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-            return irUniformConstantLooksSamplerLike(res) ? GL_FALSE : GL_TRUE;
         default:
             return GL_FALSE;
     }
@@ -441,15 +345,11 @@ static GLboolean ir_pre_map_buffer_bindings(MGLIRPatchContext *ctx)
     int stage = ctx->stage;
     spvc_compiler compiler = ctx->compiler;
 
-    /* Fix #5: UNIFORM_CONSTANT is included so non-sampler-like uniforms get
-     * remapped off reserved slots; sampler/image entries are filtered out by
-     * irResourceIsBufferBacked and keep their texture/sampler namespace. */
     const int buffer_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
         SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
         SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
-        SPVC_RESOURCE_TYPE_PUSH_CONSTANT,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT
+        SPVC_RESOURCE_TYPE_PUSH_CONSTANT
     };
 
     /* Build used-slot map.  This includes:
@@ -510,19 +410,12 @@ static GLboolean ir_pre_map_buffer_bindings(MGLIRPatchContext *ctx)
                 continue; /* no conflict — nothing to do */
             }
 
-            /* Find a free slot in the low user-buffer range.
-             *
-             * Fix #7: vertex shaders must stop before slot 16
-             * (kMGLVertexAttribBufferBase) so vertex-stage UBOs are never
-             * assigned to vertex attribute slots 16-24, which Metal uses for
-             * vertex buffer bindings.  Slot 15 (kMGLPointSizeBufferIndex,
-             * point-size emulation) is still excluded for VS — it is reserved
-             * via mglBufferSlotIsReservedForStage, so used_slots[15] is set
-             * by the reserved_slot_mask and skipped by the search below.
-             * Non-vertex stages can use 0..24; 25 is SPIRV-Cross's
-             * runtime-sized SSBO size buffer. */
+            /* Find a free slot in the low user-buffer range.  Vertex shaders
+             * must stop before slot 15: 15 is point-size, and 16..30 are
+             * vertex attribute buffers.  Non-vertex stages can use 0..24;
+             * 25 is SPIRV-Cross's runtime-sized SSBO size buffer. */
             const GLuint free_limit =
-                (stage == _VERTEX_SHADER) ? (GLuint)kMGLVertexAttribBufferBase
+                (stage == _VERTEX_SHADER) ? (GLuint)kMGLPointSizeBufferIndex
                                           : (GLuint)MGL_BUFFER_SIZE_BUFFER_INDEX;
             GLuint free_slot = kMGLMaxMetalVertexBufferCount;
             for (GLuint s = 0; s < free_limit; s++) {
@@ -602,15 +495,11 @@ static GLboolean ir_validate_binding_uniqueness(MGLIRPatchContext *ctx)
     Program *pptr = ctx->program;
     int stage = ctx->stage;
 
-    /* Fix #5: keep this list in sync with ir_pre_map_buffer_bindings —
-     * UNIFORM_CONSTANT is included so non-image/sampler entries are validated;
-     * image/sampler-backed entries are filtered by irResourceIsBufferBacked. */
     const int buffer_resource_types[] = {
         SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
         SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
         SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
-        SPVC_RESOURCE_TYPE_PUSH_CONSTANT,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT
+        SPVC_RESOURCE_TYPE_PUSH_CONSTANT
     };
 
     /* Track which resource name occupies each slot. */
@@ -670,45 +559,15 @@ static GLboolean ir_validate_binding_uniqueness(MGLIRPatchContext *ctx)
  * ArrayStride is a type-level decoration (OpDecorate on the array type), so
  * we use spvc_compiler_set_decoration on the member's type ID.
  *
- * Heuristic detection limitations (this is NOT definitive):
- *   The std140/std430 classification is inferred from stride values rather
- *   than read from a layout qualifier, because SPIR-V does not record which
- *   std140 vs std430 rule a storage block was declared with.  The detector
- *   works by scanning SSBO members for a "definite std140" indicator: a
- *   member whose actual stride equals the std140 value AND differs from the
- *   std430 value.  Bug-affected types are excluded as indicators because
- *   their buggy std140 stride coincidentally equals std430, making them
- *   ambiguous.
- *
- *   Ambiguous cases that MAY be misclassified:
- *     - Blocks where every array member is a bug-affected type provide no
- *       definite indicator at all, so a std140 block can be missed entirely.
- *     - Blocks whose only non-bug-affected members happen to use strides
- *       that match both layouts (e.g. vec4 arrays, where std140 == std430)
- *       cannot disambiguate the layout.
- *     - A std430 block that contains no definite std430 indicator member
- *       may be treated as std140 and have its bug-affected members "fixed"
- *       unnecessarily.
- *
- *   Misclassification of non-bug-affected types is harmless because Pass 2
- *   only rewrites strides on glslang-bug-affected members (int/uint vec2
- *   arrays and 2-component matrices); correctly-laid-out members are left
- *   untouched.  The only risk is a bug-affected member in a misclassified
- *   std430 block receiving an unwanted std140 stride, which is the same
- *   trade-off chosen to repair the far more common genuine std140 case.
- *
  * Destructive IR edit — calls spvc_compiler_set_decoration. */
 static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
 {
     spvc_compiler compiler = ctx->compiler;
     Program *pptr = ctx->program;
 
-    /* Use the resources snapshot cached on the context by
-     * mglRunIRPostprocessPipeline.  NULL means reflection failed at
-     * pipeline start — treat as "no resources" and return GL_TRUE so a
-     * reflection failure does not block compilation. */
-    spvc_resources resources = ctx->resources;
-    if (!resources) {
+    spvc_resources resources = NULL;
+    if (spvc_compiler_create_shader_resources(compiler, &resources) != SPVC_SUCCESS ||
+        !resources) {
         return GL_TRUE; /* no resources — nothing to fix */
     }
 
@@ -928,21 +787,6 @@ GLboolean mglRunIRPostprocessPipeline(GLMContext ctx, Program *pptr, int stage,
     ictx.program = pptr;
     ictx.stage = stage;
     ictx.compiler = compiler;
-
-    /* Create the shader-resources snapshot once and cache it on the
-     * context for all passes.  ir_fix_std140_array_strides (pass 5) is the
-     * only pass that needs it today; caching avoids a redundant
-     * spvc_compiler_create_shader_resources call per pipeline run.  On
-     * failure we leave ictx.resources NULL — passes treat NULL as "no
-     * resources" and return GL_TRUE, so a reflection failure here does not
-     * block compilation.  (Note: this snapshot is taken before any
-     * destructive decoration edits; passes must query decoration values
-     * live on the compiler rather than trusting the snapshot.) */
-    spvc_resources cached_resources = NULL;
-    if (spvc_compiler_create_shader_resources(compiler, &cached_resources) != SPVC_SUCCESS) {
-        cached_resources = NULL;
-    }
-    ictx.resources = cached_resources;
 
     /* MGL_DISABLE_IR_REMAP gates ONLY the binding pre-mapping pass (pass 3).
      * The std140 ArrayStride fix (pass 5) runs unconditionally because it

@@ -15134,14 +15134,9 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                     NSRange closeParenRange =
                         mglRendererFindMSLEntryParameterClose(mslNS, shader->entry_point);
                     if (closeParenRange.location != NSNotFound) {
-                        /* kMGLCullDistanceVertexBufferIndex = 29,
-                         * kMGLCullDistanceParamsBufferIndex = 28 (mgl_buffer_slots.h). */
-                        NSString *cullParams = [NSString stringWithFormat:
-                                                 @", uint mgl_vid [[vertex_id]], "
-                                                 "device const float* mgl_cull_buf [[buffer(%u)]], "
-                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(%u)]])",
-                                                 (unsigned)kMGLCullDistanceVertexBufferIndex,
-                                                 (unsigned)kMGLCullDistanceParamsBufferIndex];
+                        NSString *cullParams = @", uint mgl_vid [[vertex_id]], "
+                                                 "device const float* mgl_cull_buf [[buffer(29)]], "
+                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(28)]])";
                         mslNS = [mslNS stringByReplacingCharactersInRange:closeParenRange
                                                                withString:cullParams];
                         cullParamsInjected = YES;
@@ -24504,7 +24499,7 @@ stencil_format_ok:;
 }
 
 #pragma mark C interface to mtlFlushMappedBufferRange
--(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
+-(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset length:(size_t) length
 {
     id<MTLBuffer> mtl_buffer;
 
@@ -24557,7 +24552,7 @@ stencil_format_ok:;
     }
 
     if (offset > mtl_buffer.length || length > (mtl_buffer.length - offset)) {
-        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange out of range buffer=%u off=%ld len=%ld mtlLen=%lu",
+        NSLog(@"MGL ERROR: mtlFlushMappedBufferRange out of range buffer=%u off=%zu len=%zu mtlLen=%lu",
               buf->name,
               offset,
               length,
@@ -32450,7 +32445,7 @@ typedef struct {
 
 
 #pragma mark C interface to mtlDrawElementsInstancedBaseVertex
--(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLsizei) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
+-(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLuint) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
 {
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
@@ -34386,11 +34381,6 @@ void* CppCreateMGLRendererFromContextAndBindToWindow (void *glm_ctx, void *windo
     //[w.contentView addSubview:view];
     [w setContentView:view];
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
-    // Ownership: The returned pointer is NON-OWNING (borrowed). The renderer's
-    // lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which retains it via
-    // CFBridgingRetain in bindObjFuncsToGLMContext. The caller must NOT
-    // CFRelease/free the returned pointer, and must keep glm_ctx alive for as
-    // long as it uses the returned pointer.
     return  (__bridge void *)(renderer);
 }
 
@@ -34406,11 +34396,6 @@ void* CppCreateMGLRendererHeadless (void *glm_ctx)
     [view setWantsLayer:YES];
 
     [renderer createMGLRendererAndBindToContext: glm_ctx view: view];
-    // Ownership: The returned pointer is NON-OWNING (borrowed). The renderer's
-    // lifetime is tied to glm_ctx->mtl_funcs.mtlObj, which retains it via
-    // CFBridgingRetain in bindObjFuncsToGLMContext. The caller must NOT
-    // CFRelease/free the returned pointer, and must keep glm_ctx alive for as
-    // long as it uses the returned pointer.
     return  (__bridge void *)(renderer);
 }
 
@@ -34456,14 +34441,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _device = MTLCreateSystemDefaultDevice();
     if (!_device) {
         NSLog(@"MGL ERROR: Metal device not found - this is required for Apple Silicon");
-        // Intentional early return on critical Metal initialization failure.
-        // The renderer is left in a PARTIALLY INITIALIZED state:
-        //   - bindObjFuncsToGLMContext has run (glm_ctx function table is bound)
-        //   - _device, _commandQueue, _layer, _view are all still nil
-        // Without a Metal device there is no usable render path, so the
-        // partial state is acceptable — the caller cannot render anyway.
-        // Note: _view assignment below is also skipped, but `view` was
-        // already retained by the caller; this does not leak.
         return; // Exit early rather than continuing with nil device
     }
 
@@ -34496,11 +34473,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
-        // Intentional early return on critical Metal initialization failure.
-        // _device is set but _commandQueue, _layer and _view are still nil,
-        // so the renderer is PARTIALLY INITIALIZED and cannot submit work.
-        // As with the no-device case above, continuing is pointless without
-        // a command queue; the partial state is acceptable.
         return;
     }
 

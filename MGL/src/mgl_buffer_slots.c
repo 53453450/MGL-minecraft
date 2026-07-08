@@ -44,32 +44,15 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
 
 GLboolean mglBufferSlotIsReserved(GLuint slot)
 {
-    /* Conservative "any stage" check: return GL_TRUE for all MGL-reserved
-     * high buffer slots (25-30).  This is the union of:
-     *   25 — MGL_BUFFER_SIZE_BUFFER_INDEX (SPIRV-Cross runtime-sized SSBO
-     *        sizing; renderer binds a size buffer here).
-     *   26 — kMGLBufferSlot_TessFactor (TCS/TES compute path).
-     *   27 — kMGLBufferSlot_PatchOutput (TCS/TES compute path).
-     *   28 — kMGLBufferSlot_PatchInfo / kMGLCullDistanceParamsBufferIndex.
-     *   29 — kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex.
-     *   30 — kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex.
+    /* Slots 26-30 are reserved *when* the program uses tessellation or the
+     * VS/FS emulation paths, but a program that uses neither could legally
+     * bind user buffers there.  We do NOT mark them universally reserved
+     * to avoid false positives on simple programs.
      *
-     * Previously this function unconditionally returned GL_FALSE (dead code),
-     * so callers that relied on the conservative check got no protection.
-     * Callers that know the active path/stage may still use the path-aware
-     * variants (ForTessellation/ForCullDistance/ForFragCoordFixup) or
-     * mglBufferSlotIsReservedForStage for precise per-path detection; this
-     * conservative check is a superset that guarantees user buffers
-     * (UBO/SSBO) never land in the MGL-reserved range.
-     *
-     * Slot 31+ is out of Metal's valid buffer-slot range (0..30) and is
-     * caught earlier by callers via `slot >= kMGLMaxMetalVertexBufferCount`.
-     * Low stage-specific slots (15 = point size, 24 = TCS stage-in) are
-     * handled by mglBufferSlotIsReservedForStage, not here. */
-    if (slot >= MGL_BUFFER_SIZE_BUFFER_INDEX &&
-        slot <= kMGLMaxMetalVertexBufferIndex) {
-        return GL_TRUE;
-    }
+     * Callers that know whether tessellation/cull-distance/FragCoord-fixup
+     * is active should use the specific mglBufferSlotIsReservedFor* helpers
+     * below for accurate per-path detection.  The stage-specific point-size
+     * and TCS stage-in slots are handled by mglBufferSlotIsReservedForStage. */
     return GL_FALSE;
 }
 

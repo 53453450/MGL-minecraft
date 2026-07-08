@@ -168,9 +168,6 @@ typedef struct QueryObject_t {
 	GLuint64 result;
 } QueryObject;
 
-/* Single-threaded access only — MGL assumes one GL context per thread.
- * If multi-threaded access is ever needed, add a module-level
- * os_unfair_lock around all reads and writes. */
 static HashTable s_query_table;
 static GLboolean s_query_table_initialized = GL_FALSE;
 static GLuint s_active_query_by_target[18];

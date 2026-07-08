@@ -10,20 +10,13 @@
  * swap path snapshots + resets the per-frame counters and logs the last
  * draw-call metadata when a frame produced no work.
  *
- * All 19 globals are `_Atomic` because they are read from background
+ * All 19 globals are `volatile` because they are read from background
  * watchdog threads and written from the render thread.  They are exposed as
  * `extern` (not wrapped in getters) so hot-path write sites in MGLRenderer.m
  * incur no function-call overhead — the values are updated on every draw
- * call, dozens of times per frame.  `volatile` only prevents compiler
- * reordering; `_Atomic` additionally guarantees CPU-level atomicity, which
- * is what cross-thread read/write of these counters actually requires.
- * Translation units that update these globals with the native `_Atomic`
- * operators (e.g. `counter++`, `counter = value`) also get atomic semantics
- * (sequential consistency by default); the inline helpers below use explicit
- * relaxed ordering since these are best-effort statistics.
+ * call, dozens of times per frame.
  *
- * Dependencies: glcorearb.h (GLuint / GLsizei) + stdint.h (uint64_t)
- * + stdatomic.h (_Atomic / atomic_* operations).
+ * Dependencies: glcorearb.h (GLuint / GLsizei) + stdint.h (uint64_t).
  */
 
 #ifndef MGL_FRAME_ACTIVITY_H
@@ -32,7 +25,6 @@
 #include "glcorearb.h"
 
 #include <stdint.h>
-#include <stdatomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,40 +32,37 @@ extern "C" {
 
 /* === Last draw-call metadata (written by draw path, read by swap path) === */
 
-extern _Atomic uint64_t g_mglLastDrawArraysCall;
-extern _Atomic double   g_mglLastDrawArraysSeconds;
-extern _Atomic uint64_t g_mglLastDrawElementsCall;
-extern _Atomic double   g_mglLastDrawElementsSeconds;
-extern _Atomic GLuint   g_mglLastDrawArraysProgram;
-extern _Atomic GLuint   g_mglLastDrawArraysMode;
-extern _Atomic GLsizei  g_mglLastDrawArraysCount;
-extern _Atomic GLuint   g_mglLastDrawElementsProgram;
-extern _Atomic GLuint   g_mglLastDrawElementsMode;
-extern _Atomic GLsizei  g_mglLastDrawElementsCount;
+extern volatile uint64_t g_mglLastDrawArraysCall;
+extern volatile double   g_mglLastDrawArraysSeconds;
+extern volatile uint64_t g_mglLastDrawElementsCall;
+extern volatile double   g_mglLastDrawElementsSeconds;
+extern volatile GLuint   g_mglLastDrawArraysProgram;
+extern volatile GLuint   g_mglLastDrawArraysMode;
+extern volatile GLsizei  g_mglLastDrawArraysCount;
+extern volatile GLuint   g_mglLastDrawElementsProgram;
+extern volatile GLuint   g_mglLastDrawElementsMode;
+extern volatile GLsizei  g_mglLastDrawElementsCount;
 
 /* === Per-frame counters (reset to 0 by swap path after snapshot) === */
 
-extern _Atomic uint64_t g_mglDrawArraysSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementsSinceSwap;
-extern _Atomic uint64_t g_mglDrawArrayVerticesSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementIndicesSinceSwap;
-extern _Atomic uint64_t g_mglDrawArraysSkippedSinceSwap;
-extern _Atomic uint64_t g_mglDrawElementsSkippedSinceSwap;
-extern _Atomic uint64_t g_mglProcessDrawCallsSinceSwap;
+extern volatile uint64_t g_mglDrawArraysSinceSwap;
+extern volatile uint64_t g_mglDrawElementsSinceSwap;
+extern volatile uint64_t g_mglDrawArrayVerticesSinceSwap;
+extern volatile uint64_t g_mglDrawElementIndicesSinceSwap;
+extern volatile uint64_t g_mglDrawArraysSkippedSinceSwap;
+extern volatile uint64_t g_mglDrawElementsSkippedSinceSwap;
+extern volatile uint64_t g_mglProcessDrawCallsSinceSwap;
 
 /* === Swap path metadata === */
 
-extern _Atomic uint64_t g_mglSwapCallCount;
-extern _Atomic double   g_mglLastSwapSeconds;
+extern volatile uint64_t g_mglSwapCallCount;
+extern volatile double   g_mglLastSwapSeconds;
 
 /* === Snapshot / reset helpers (inline — called once per swap) ===
  *
  * Snapshot reads the 7 per-frame counters into a struct; reset zeroes them.
  * Kept inline so the swap path can avoid a function call on the hot frame
- * boundary.  Each individual load/store is atomic (relaxed ordering); however
- * the snapshot as a whole is NOT a consistent point-in-time view because the
- * render thread may update counters between individual reads.  This is
- * acceptable for frame-activity statistics where approximate values suffice. */
+ * boundary. */
 
 typedef struct MGLSwapDrawCounters {
     uint64_t draw_arrays;
@@ -88,25 +77,25 @@ typedef struct MGLSwapDrawCounters {
 static inline MGLSwapDrawCounters mglSnapshotSwapDrawCounters(void)
 {
     MGLSwapDrawCounters counters;
-    counters.draw_arrays            = atomic_load_explicit(&g_mglDrawArraysSinceSwap,          memory_order_relaxed);
-    counters.draw_elements          = atomic_load_explicit(&g_mglDrawElementsSinceSwap,        memory_order_relaxed);
-    counters.array_vertices         = atomic_load_explicit(&g_mglDrawArrayVerticesSinceSwap,   memory_order_relaxed);
-    counters.element_indices        = atomic_load_explicit(&g_mglDrawElementIndicesSinceSwap,  memory_order_relaxed);
-    counters.draw_arrays_skipped    = atomic_load_explicit(&g_mglDrawArraysSkippedSinceSwap,   memory_order_relaxed);
-    counters.draw_elements_skipped  = atomic_load_explicit(&g_mglDrawElementsSkippedSinceSwap, memory_order_relaxed);
-    counters.process_draw_calls     = atomic_load_explicit(&g_mglProcessDrawCallsSinceSwap,    memory_order_relaxed);
+    counters.draw_arrays            = g_mglDrawArraysSinceSwap;
+    counters.draw_elements          = g_mglDrawElementsSinceSwap;
+    counters.array_vertices         = g_mglDrawArrayVerticesSinceSwap;
+    counters.element_indices        = g_mglDrawElementIndicesSinceSwap;
+    counters.draw_arrays_skipped    = g_mglDrawArraysSkippedSinceSwap;
+    counters.draw_elements_skipped  = g_mglDrawElementsSkippedSinceSwap;
+    counters.process_draw_calls     = g_mglProcessDrawCallsSinceSwap;
     return counters;
 }
 
 static inline void mglResetSwapDrawCounters(void)
 {
-    atomic_store_explicit(&g_mglDrawArraysSinceSwap,          0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglDrawElementsSinceSwap,        0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglDrawArrayVerticesSinceSwap,   0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglDrawElementIndicesSinceSwap,  0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglDrawArraysSkippedSinceSwap,   0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglDrawElementsSkippedSinceSwap, 0, memory_order_relaxed);
-    atomic_store_explicit(&g_mglProcessDrawCallsSinceSwap,    0, memory_order_relaxed);
+    g_mglDrawArraysSinceSwap           = 0;
+    g_mglDrawElementsSinceSwap         = 0;
+    g_mglDrawArrayVerticesSinceSwap    = 0;
+    g_mglDrawElementIndicesSinceSwap   = 0;
+    g_mglDrawArraysSkippedSinceSwap    = 0;
+    g_mglDrawElementsSkippedSinceSwap  = 0;
+    g_mglProcessDrawCallsSinceSwap     = 0;
 }
 
 #ifdef __cplusplus

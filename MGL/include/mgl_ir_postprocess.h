@@ -55,22 +55,6 @@ typedef struct MGLIRPatchContext {
     int stage;
     spvc_compiler compiler;
 
-    /* Cached shader-resources snapshot, created once at the start of
-     * mglRunIRPostprocessPipeline and shared by all passes.  Currently
-     * consumed by ir_fix_std140_array_strides (pass 5) to enumerate SSBOs.
-     * NULL if spvc_compiler_create_shader_resources failed at pipeline
-     * start — passes must treat NULL as "no resources" and return early.
-     *
-     * CAUTION: this snapshot reflects decorations as they were at pipeline
-     * start.  Passes that mutate decorations (ir_pre_map_buffer_bindings,
-     * ir_fix_std140_array_strides) do not invalidate this pointer, but the
-     * reflected resource lists it exposes (binding/stride values obtained
-     * via spvc_resources_get_resource_list_for_type) may go stale after a
-     * destructive edit.  Passes that need a decoration value MUST query it
-     * live on the compiler (spvc_compiler_get_decoration /
-     * spvc_compiler_has_decoration) rather than trusting the snapshot. */
-    spvc_resources resources;
-
     /* Cached path-detection flags, populated by ir_reflect_active_builtins.
      * Cached once so later passes (and the unified conflict predicate) do
      * not re-scan reflection/source on every call. */

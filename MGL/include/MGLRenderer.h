@@ -24,14 +24,13 @@
 #ifdef __OBJC__
 
 #import <Appkit/Appkit.h>
-#import "mgl_metal_bridge.h"
 
 #ifndef __GLM_CONTEXT_
 #define __GLM_CONTEXT_
 typedef struct GLMContextRec_t *GLMContext;
 #endif
 
-@interface MGLRenderer : NSObject <MGLMetalBridgeTarget>
+@interface MGLRenderer : NSObject
 {
 
 }

@@ -3974,21 +3974,6 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
     }
 
     src_len = strlen(src);
-    /* Overflow guards: verify all length/offset arithmetic is non-negative
-     * and does not wrap before any malloc/memcpy.  Without these, size_t
-     * subtraction could wrap to a huge value and cause a heap overflow. */
-    /* match_len > old_len: a match longer than the source is impossible
-     * (count would already be 0), but guard explicitly to prevent any
-     * downstream arithmetic on invalid offsets. */
-    if (from_len > src_len) {
-        return;
-    }
-    /* Defensive: strstr finds non-overlapping matches, so count*from_len
-     * must fit within src_len.  Verify this invariant (overflow-safe via
-     * division) to catch any logic error before computing new_len. */
-    if (count > src_len / from_len) {
-        return;
-    }
     if (to_len >= from_len) {
         size_t diff = to_len - from_len;
         if (diff != 0 && count > (SIZE_MAX - src_len) / diff) {
@@ -4010,7 +3995,6 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
         }
         new_len = src_len - count * diff;
     }
-    /* new_len == SIZE_MAX would make new_len + 1 wrap to 0 in malloc. */
     if (new_len == SIZE_MAX) {
         fprintf(stderr,
                 "MGL MSL PATCH FAIL: replace_all_substr('%s'->'%s') "
@@ -4040,14 +4024,6 @@ static void replace_all_substr(char **pstr, const char *from, const char *to)
         if (!match) {
             strcpy(dst, pos);
             break;
-        }
-        /* Defensive: strstr guarantees match >= pos, so the pointer
-         * subtraction below cannot go negative.  Guard explicitly to
-         * avoid an invalid range / heap overflow if that invariant ever
-         * breaks — abort the copy and preserve the original string. */
-        if (match < pos) {
-            free(out);
-            return;
         }
         chunk_len = (size_t)(match - pos);
         memcpy(dst, pos, chunk_len);
@@ -4252,13 +4228,9 @@ static GLboolean mglInsertStringAt(char **pstr, const char *position, const char
 static void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
 {
     static const char position_parameter[] = "float4 gl_FragCoord [[position]]";
-    /* kMGLFragCoordParamsBufferIndex = 30 — built via snprintf so the slot
-     * constant stays in sync with mgl_buffer_slots.h. */
-    char injected_parameter[128];
-    snprintf(injected_parameter, sizeof(injected_parameter),
-             "constant float4& %s [[buffer(%u)]], ",
-             MGL_FRAG_COORD_PARAMS_MSL_NAME,
-             (unsigned)kMGLFragCoordParamsBufferIndex);
+    static const char injected_parameter[] =
+        "constant float4& " MGL_FRAG_COORD_PARAMS_MSL_NAME
+        " [[buffer(30)]], ";
     static const char injected_body[] =
         "\n    if (" MGL_FRAG_COORD_PARAMS_MSL_NAME ".y > 0.5) "
         "gl_FragCoord.y = " MGL_FRAG_COORD_PARAMS_MSL_NAME ".x - gl_FragCoord.y;";
@@ -5266,7 +5238,7 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
      * where <patchInType> contains a `patch_control_point<inner_type> gl_in;`
      * member.  Both `[[stage_in]]` and `patch_control_point<>` are illegal in
      * compute kernels, so we replace the parameter with:
-     *   device <inner_type> *gl_in [[buffer(30)]]   (kMGLBufferSlot_TESGlIn)
+     *   device <inner_type> *gl_in [[buffer(30)]]
      * and rewrite body references `<paramName>.gl_in` → `gl_in`. */
     {
         const char *stage_in_attr = "[[stage_in]]";
@@ -5342,7 +5314,6 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
                                  *   "<type> <name> [[stage_in]]"
                                  * with:
                                  *   "device <inner_type> *gl_in [[buffer(30)]], device <type> *<name> [[buffer(27)]]"
-                                 *   (buffer 30 = kMGLBufferSlot_TESGlIn, buffer 27 = kMGLBufferSlot_PatchOutput)
                                  * We keep <name> (e.g. patchIn) as a device buffer so per-patch
                                  * data (tc_patch_data etc.) is still accessible.  The per-vertex
                                  * data (gl_in) is split out to its own buffer(30). */
@@ -5351,10 +5322,8 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
 
                                 char new_param[768];
                                 snprintf(new_param, sizeof(new_param),
-                                         "device %s *gl_in [[buffer(%u)]], device %s *%s [[buffer(%u)]]",
-                                         inner_type, (unsigned)kMGLBufferSlot_TESGlIn,
-                                         param_type, param_name,
-                                         (unsigned)kMGLBufferSlot_PatchOutput);
+                                         "device %s *gl_in [[buffer(30)]], device %s *%s [[buffer(27)]]",
+                                         inner_type, param_type, param_name);
                                 size_t new_param_len = strlen(new_param);
 
                                 size_t before_len = (size_t)(replacement_start - *msl_ptr);
@@ -5490,18 +5459,13 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
             }
 
             /* Add the _mgl_patch_vertices_in parameter if not already present. */
-            /* Search string literal must match injected literal below
-             * (kMGLBufferSlot_PatchInfo = 28). */
             if (strstr(*msl_ptr, "_mgl_patch_info [[buffer(28)]]") == NULL) {
                 const char *close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
                 if (close_paren != NULL) {
                     /* Find the opening '(' to check if params are empty. */
                     const char *kernel_kw = strstr(*msl_ptr, "kernel void ");
                     const char *open_paren = kernel_kw ? strchr(kernel_kw, '(') : NULL;
-                    char inject[128];
-                    snprintf(inject, sizeof(inject),
-                             "constant uint2& _mgl_patch_info [[buffer(%u)]]",
-                             (unsigned)kMGLBufferSlot_PatchInfo);
+                    const char *inject = "constant uint2& _mgl_patch_info [[buffer(28)]]";
                     size_t inject_len = strlen(inject);
                     const char *prefix = ", ";
                     size_t prefix_len = strlen(prefix);
@@ -5581,16 +5545,11 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
 
         /* Ensure _mgl_patch_info param exists (added by Step 4c only when
          * gl_in.size() is present).  Step 5b uses _mgl_patch_info.y for
-         * per-patch gl_in indexing, so we must add it if not already there.
-         * Search string literal must match injected literal below
-         * (kMGLBufferSlot_PatchInfo = 28). */
+         * per-patch gl_in indexing, so we must add it if not already there. */
         if (strstr(*msl_ptr, "_mgl_patch_info [[buffer(28)]]") == NULL) {
             const char *cp = mglFindMSLEntryParameterClose(*msl_ptr);
             if (cp != NULL) {
-                char inj[128];
-                snprintf(inj, sizeof(inj),
-                         "constant uint2& _mgl_patch_info [[buffer(%u)]]",
-                         (unsigned)kMGLBufferSlot_PatchInfo);
+                const char *inj = "constant uint2& _mgl_patch_info [[buffer(28)]]";
                 size_t inj_len = strlen(inj);
                 const char *pfx = ", ";
                 size_t pfx_len = strlen(pfx);
@@ -5642,9 +5601,7 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
      * render pipeline (which would normally capture XFB output).
      *
      * We inject:
-     *   1. A "device char* _mgl_xfb_out [[buffer(29)]]" parameter
-     *      (slot 29 = kMGLBufferSlot_IndirectParams, reused as XFB out in TES
-     *      compute path — see mgl_buffer_slots.h).
+     *   1. A "device char* _mgl_xfb_out [[buffer(29)]]" parameter.
      *   2. Before the final "return;" of the kernel, write each XFB-captured
      *      field of the "out" struct to the XFB buffer at the correct offset.
      *
@@ -5672,15 +5629,11 @@ static void mglFixMSLTesAsComputeKernel(Program *program, char **msl_ptr)
         }
 
         if (has_xfb) {
-            /* Inject the XFB output buffer parameter [[buffer(29)]]
-             * (kMGLBufferSlot_IndirectParams, reused as XFB out in TES). */
+            /* Inject the XFB output buffer parameter [[buffer(29)]]. */
             if (strstr(*msl_ptr, "_mgl_xfb_out [[buffer(29)]]") == NULL) {
                 const char *close_paren = mglFindMSLEntryParameterClose(*msl_ptr);
                 if (close_paren != NULL) {
-                    char inject[128];
-                    snprintf(inject, sizeof(inject),
-                             "device char* _mgl_xfb_out [[buffer(%u)]]",
-                             (unsigned)kMGLBufferSlot_IndirectParams);
+                    const char *inject = "device char* _mgl_xfb_out [[buffer(29)]]";
                     size_t inject_len = strlen(inject);
                     const char *prefix = ", ";
                     size_t prefix_len = strlen(prefix);
@@ -7313,26 +7266,9 @@ static GLboolean mglPatchRemoveRestrict(MSLPatchContext *ctx, char **msl_ptr)
 
 static GLboolean mglPatchFixSamplerShadowing(MSLPatchContext *ctx, char **msl_ptr)
 {
-    /* Pass 2 of the sampler-shadowing rename (MSL string level, AFTER
-     * spvc_compiler_compile).  Some generated MSL uses `sampler` as an
-     * identifier, which collides with Metal's `sampler` type in function
-     * signatures. Normalize these generated helper names to keep
-     * compilation valid.
-     *
-     * Responsibility split with the IR-level rename (pass 1) performed in
-     * parseSPIRVShaderToMetal before compilation:
-     *   Pass 1 (IR level, before compile) renames user-declared GLSL
-     *   uniforms literally named "sampler" to "mgl_sampler_tex" via
-     *   spvc_compiler_set_name, so SPIRV-Cross emits the safe name in the
-     *   generated MSL.  That pass only sees entries in the SPIR-V resource
-     *   lists, so it cannot reach compiler-generated parameter names.
-     *   Pass 2 — THIS function (MSL string level, after compile) — rewrites
-     *   the `sampler` identifiers that SPIRV-Cross itself synthesized as
-     *   texture-function parameter names (e.g. for sampled-image
-     *   conversions) which were never user resources and so escaped pass 1.
-     * Both passes are required; removing either reintroduces
-     * "must use 'struct' tag to refer to type 'sampler'" MSL compile
-     * errors.  See the companion comment in parseSPIRVShaderToMetal. */
+    /* Some generated MSL uses `sampler` as an identifier, which collides
+     * with Metal's `sampler` type in function signatures. Normalize these
+     * generated helper names to keep compilation valid. */
     char *str_ret = *msl_ptr;
     static const char *sampler_shadowing_texture_types[] = {
         "texture1d<float>", "texture1d<int>", "texture1d<uint>",
@@ -7491,29 +7427,8 @@ static GLboolean mglPatchInjectAtomicCounterArgs(MSLPatchContext *ctx, char **ms
 static GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_ptr)
 {
     /* Mutates both the program state (binding slots) and the MSL string
-     * (remaps any user buffers that land on MGL-reserved slots).
-     *
-     * Always returns GL_TRUE — this is intentional, not a bug.  The MSL
-     * patch pipeline checks each step's return value and can roll back on
-     * GL_FALSE, but rolling back resource-binding remap would leave the
-     * program's binding state inconsistent with the generated MSL string,
-     * which is strictly worse than the best-effort result produced here.
-     *
-     * applyMSLResourceBindings is best-effort by design and has no failure
-     * mode that should trigger a rollback:
-     *   - The binding map (MGLMSLBindingMap) is stack-allocated with a
-     *     fixed 512-entry capacity; mglBuildMSLBindingMap cannot fail to
-     *     allocate.  Excess entries are simply dropped.
-     *   - The only heap allocations (strndup/malloc in the buffer-conflict
-     *     remap path) are each NULL-checked and skipped on failure, leaving
-     *     the conflicting binding in place rather than aborting.
-     *   - Unresolvable binding conflicts log a warning and leave the
-     *     resource on its current slot; the shader still compiles.
-     *
-     * Returning GL_FALSE would discard the partial remapping work already
-     * written into both the Program struct and the MSL string, so GL_TRUE
-     * is the correct value even when individual sub-operations are skipped.
-     */
+     * (remaps any user buffers that land on MGL-reserved slots).  Returns
+     * GL_TRUE so the pipeline does not roll back. */
     applyMSLResourceBindings(ctx->program, ctx->stage, msl_ptr);
     return GL_TRUE;
 }
@@ -7797,13 +7712,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     // set the entry point for metal
     ptr->shader_slots[stage]->entry_point = strdup(entry_point);
     ptr->spirv[stage].entry_point = strdup(entry_point);
-    /* strdup can fail on OOM; guard against NULL entry points that would
-     * crash later code dereferencing them. */
-    if (!ptr->shader_slots[stage]->entry_point ||
-        !ptr->spirv[stage].entry_point) {
-        spvc_context_destroy(context);
-        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
-    }
 
     // compute shader
     if (stage == _COMPUTE_SHADER)
@@ -7992,12 +7900,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             ptr->spirv_resources_list[stage][res_type].list[i].base_type_id = list[i].base_type_id;
             ptr->spirv_resources_list[stage][res_type].list[i].type_id = list[i].type_id;
             ptr->spirv_resources_list[stage][res_type].list[i].name = strdup(list[i].name);
-            /* strdup can fail on OOM; abort reflection to avoid a NULL
-             * resource name crashing later binding lookups. */
-            if (!ptr->spirv_resources_list[stage][res_type].list[i].name) {
-                spvc_context_destroy(context);
-                ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
-            }
             ptr->spirv_resources_list[stage][res_type].list[i].set = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationDescriptorSet);
             ptr->spirv_resources_list[stage][res_type].list[i].gl_binding = spvc_compiler_get_decoration(compiler_msl, list[i].id, SpvDecorationBinding);
             ptr->spirv_resources_list[stage][res_type].list[i].ubo_array_size = 1;
@@ -8296,12 +8198,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                         dst->base_type_id = res->base_type_id;
                         dst->type_id = struct_type_id;
                         dst->name = strdup(name_buf);
-                        /* strdup can fail on OOM; guard against a NULL
-                         * name crashing later resource binding lookups. */
-                        if (!dst->name) {
-                            spvc_context_destroy(context);
-                            ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
-                        }
                         dst->gl_type = mglGLTypeFromSPVCType(member_type);
                         dst->gl_array_size = mglGLArraySizeFromSPVCType(member_type);
                         dst->is_array = (member_type &&
@@ -8643,27 +8539,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
      * "must use 'struct' tag to refer to type 'sampler' in this scope".
      * This happens AFTER reflection data is collected, so MGL stores the
      * original GLSL name for glGetUniformLocation queries, but BEFORE MSL
-     * compilation so the generated Metal source uses the safe name.
-     *
-     * Responsibility split (sampler rename is done in TWO places):
-     *   Pass 1 — THIS block (IR level, before spvc_compiler_compile):
-     *     renames the SPIR-V resource named exactly "sampler" to
-     *     "mgl_sampler_tex" via spvc_compiler_set_name.  This catches the
-     *     common case of a GLSL `uniform sampler2D sampler;`-style uniform
-     *     whose declared name shadows the Metal `sampler` type.  The
-     *     rename is recorded in the IR so SPIRV-Cross emits the safe name
-     *     in the generated MSL.
-     *   Pass 2 — mglPatchFixSamplerShadowing (MSL string level, after
-     *     compile, runs in the MSL patch pipeline): rewrites `sampler`
-     *     identifiers that SPIRV-Cross itself generated as function
-     *     parameter names (e.g. `texture2d<float, access::sample> sampler`)
-     *     which were NOT user-declared resources and therefore were not
-     *     reachable by the IR-level set_name above.  Without pass 2 these
-     *     generated parameters still collide with the Metal `sampler` type.
-     *   Both passes are required: pass 1 handles user-declared names in the
-     *   SPIR-V resource lists, pass 2 handles compiler-generated parameter
-     *   names in the MSL text.  Removing either causes MSL compile
-     *   regressions, so do not collapse them into one. */
+     * compilation so the generated Metal source uses the safe name. */
     {
         const spvc_reflected_resource *rename_list = NULL;
         size_t rename_count = 0;
@@ -8800,12 +8676,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
                     dst->base_type_id = builtin_list[bi].resource.base_type_id;
                     dst->type_id = builtin_list[bi].resource.type_id;
                     dst->name = strdup(name);
-                    /* strdup can fail on OOM; guard against a NULL
-                     * builtin name crashing later resource lookups. */
-                    if (!dst->name) {
-                        spvc_context_destroy(context);
-                        ERROR_RETURN_VALUE(GL_OUT_OF_MEMORY, NULL);
-                    }
                     dst->gl_type = gl_type;
                     dst->gl_array_size = 1;
                     dst->is_array = is_array_builtin;
@@ -8844,18 +8714,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
      * Gated by env vars:
      *   MGL_DISABLE_IR_REMAP=1 — bypass, force legacy string-level fallback.
      *   MGL_DEBUG_IR_REMAP=1    — log every binding decision.
-     * See mgl_ir_postprocess.h for the full pass list and ordering.
-     *
-     * STALE SNAPSHOT NOTE: the `resources` snapshot created above via
-     * spvc_compiler_create_shader_resources reflects decorations as they
-     * were BEFORE this pipeline ran.  The IR pipeline may mutate
-     * decorations (e.g. ir_pre_map_buffer_bindings and
-     * ir_fix_std140_array_strides call spvc_compiler_set_decoration), so
-     * `resources` is now stale and MUST NOT be consulted to read bindings,
-     * strides, or any other decoration past this point.  Any future code
-     * that needs decoration values after the pipeline must use live queries
-     * such as spvc_compiler_get_decoration / spvc_compiler_has_decoration
-     * on the compiler instead of relying on the `resources` snapshot. */
+     * See mgl_ir_postprocess.h for the full pass list and ordering. */
     mglRunIRPostprocessPipeline(ctx, ptr, stage, compiler_msl);
 
     if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
@@ -8890,21 +8749,11 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             mslPipelineAddStep(&pipeline, "fragcoord_origin_fix", mglPatchFragCoordOriginFix);
             mslPipelineAddStep(&pipeline, "fix_plain_struct_pointer_array", mglPatchFixPlainStructPointerArray);
             mslPipelineAddStep(&pipeline, "inject_atomic_counter_args", mglPatchInjectAtomicCounterArgs);
-            /* Injection steps that add [[buffer(N)]] declarations for
-             * point_size, TES compute-kernel lowering, and TCS stage_in
-             * replacement.  These must run BEFORE apply_resource_bindings so
-             * the binding map it builds reflects every [[buffer(N)]] that
-             * will exist in the final MSL. */
+            mslPipelineAddStep(&pipeline, "apply_resource_bindings", mglPatchApplyResourceBindings);
             mslPipelineAddStep(&pipeline, "inject_point_size_builtin", mglPatchInjectPointSizeBuiltin);
             mslPipelineAddStep(&pipeline, "fix_image2drect_imagesize", mglPatchFixImage2DRectImageSize);
             mslPipelineAddStep(&pipeline, "tes_as_compute_kernel", mglPatchTesAsComputeKernel);
             mslPipelineAddStep(&pipeline, "tcs_stage_in_fix", mglPatchTcsStageInFix);
-            /* Binding-dependent steps must run after injection steps so the
-             * binding map reflects all [[buffer(N)]] declarations.  Running
-             * apply_resource_bindings earlier would leave the binding map
-             * stale w.r.t. buffers the injection steps add, causing wrong
-             * slot assignment / conflicts. */
-            mslPipelineAddStep(&pipeline, "apply_resource_bindings", mglPatchApplyResourceBindings);
             mslPipelineAddStep(&pipeline, "apply_resource_bindings_final", mglPatchApplyResourceBindings);
 
             mslPipelineRun(&pipeline);
