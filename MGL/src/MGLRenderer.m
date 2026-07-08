@@ -2352,6 +2352,9 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (void)setFragmentTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index;
 - (void)setVertexSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index;
 - (void)setFragmentSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index;
+- (void)setViewportIfNeeded:(MTLViewport)viewport;
+- (void)setScissorRectIfNeeded:(MTLScissorRect)rect;
+- (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode;
 - (id<MTLTexture>)freshGLSampledRenderTargetCopyForSampling:(Texture *)tex
                                                      source:(id<MTLTexture>)source
                                                       stage:(const char *)stage
@@ -2575,8 +2578,11 @@ typedef struct {
     id<MTLSamplerState> _lastBoundFragmentSamplers[TEXTURE_UNITS];
     id<MTLRenderPipelineState> _lastPipelineState;
     id<MTLDepthStencilState> _lastDepthStencilState;
+    MTLViewport _lastViewport;
+    MTLScissorRect _lastScissorRect;
     MTLCullMode _lastCullMode;
     MTLWinding _lastFrontFacingWinding;
+    MTLTriangleFillMode _lastTriangleFillMode;
     float _lastDepthBias;
     float _lastDepthBiasClamp;
     float _lastDepthSlopeScale;
@@ -16260,7 +16266,7 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
             rect.y = (NSUInteger)metalSy;
             rect.width = (NSUInteger)sw;
             rect.height = (NSUInteger)sh;
-            [_currentRenderEncoder setScissorRect:rect];
+            [self setScissorRectIfNeeded:rect];
 
             GLdouble rawVx = (GLdouble)ctx->state.viewport[0];
             GLdouble rawVy = (GLdouble)ctx->state.viewport[1];
@@ -16473,15 +16479,15 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                 }
             }
 
-            [_currentRenderEncoder setViewport:(MTLViewport){vx, metalVy, vw, vh,
-                                                ctx->state.var.depth_range[0], ctx->state.var.depth_range[1]}];
+            [self setViewportIfNeeded:(MTLViewport){vx, metalVy, vw, vh,
+                                       ctx->state.var.depth_range[0], ctx->state.var.depth_range[1]}];
         } else {
             if (traceEncoderState) {
                 NSLog(@"MGL WARNING: updateCurrentRenderEncoder could not resolve pass size; using raw GL viewport");
             }
-            [_currentRenderEncoder setViewport:(MTLViewport){ctx->state.viewport[0], ctx->state.viewport[1],
-                                                ctx->state.viewport[2], ctx->state.viewport[3],
-                                                ctx->state.var.depth_range[0], ctx->state.var.depth_range[1]}];
+            [self setViewportIfNeeded:(MTLViewport){ctx->state.viewport[0], ctx->state.viewport[1],
+                                       ctx->state.viewport[2], ctx->state.viewport[3],
+                                       ctx->state.var.depth_range[0], ctx->state.var.depth_range[1]}];
         }
     }
 
@@ -16609,7 +16615,7 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         mglLogRenderStateRepair("polygon_mode", ctx->state.var.polygon_mode, GL_FILL);
         ctx->state.var.polygon_mode = GL_FILL;
     }
-    [_currentRenderEncoder setTriangleFillMode:triangleFillMode];
+    [self setTriangleFillModeIfNeeded:triangleFillMode];
 }
 
 - (bool) newRenderEncoder
@@ -19643,8 +19649,11 @@ create_new_command_buffer:
     }
     _lastPipelineState = nil;
     _lastDepthStencilState = nil;
+    _lastViewport = (MTLViewport){0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+    _lastScissorRect = (MTLScissorRect){0, 0, 0, 0};
     _lastCullMode = MTLCullModeNone;
     _lastFrontFacingWinding = MTLWindingClockwise;
+    _lastTriangleFillMode = MTLTriangleFillModeFill;
     _lastDepthBias = 0;
     _lastDepthBiasClamp = 0;
     _lastDepthSlopeScale = 0;
@@ -19728,6 +19737,49 @@ create_new_command_buffer:
     if (!_lastBoundValid || _lastBoundFragmentSamplers[index] != sampler) {
         [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:index];
         _lastBoundFragmentSamplers[index] = sampler;
+    }
+}
+
+- (void)setViewportIfNeeded:(MTLViewport)viewport
+{
+    if (!_currentRenderEncoder) {
+        return;
+    }
+    if (!_lastBoundValid ||
+        _lastViewport.originX != viewport.originX ||
+        _lastViewport.originY != viewport.originY ||
+        _lastViewport.width != viewport.width ||
+        _lastViewport.height != viewport.height ||
+        _lastViewport.znear != viewport.znear ||
+        _lastViewport.zfar != viewport.zfar) {
+        [_currentRenderEncoder setViewport:viewport];
+        _lastViewport = viewport;
+    }
+}
+
+- (void)setScissorRectIfNeeded:(MTLScissorRect)rect
+{
+    if (!_currentRenderEncoder) {
+        return;
+    }
+    if (!_lastBoundValid ||
+        _lastScissorRect.x != rect.x ||
+        _lastScissorRect.y != rect.y ||
+        _lastScissorRect.width != rect.width ||
+        _lastScissorRect.height != rect.height) {
+        [_currentRenderEncoder setScissorRect:rect];
+        _lastScissorRect = rect;
+    }
+}
+
+- (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
+{
+    if (!_currentRenderEncoder) {
+        return;
+    }
+    if (!_lastBoundValid || _lastTriangleFillMode != mode) {
+        [_currentRenderEncoder setTriangleFillMode:mode];
+        _lastTriangleFillMode = mode;
     }
 }
 
@@ -29786,7 +29838,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
             ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
         }
     }
-    [_currentRenderEncoder setTriangleFillMode:triangleFillMode];
+    [self setTriangleFillModeIfNeeded:triangleFillMode];
 
     BOOL enableDepthBias = NO;
 
