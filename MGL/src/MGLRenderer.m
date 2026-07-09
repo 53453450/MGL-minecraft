@@ -2322,6 +2322,7 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       error:(NSError **)error;
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
+- (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError;
@@ -20152,8 +20153,347 @@ create_new_command_buffer:
         }
 
         // new pipeline / vertex / renderbuffer and pipelinestate descriptor, should probably make this a single dirty bit
+        // Pipeline Sync 域 (Stage 3.3):程序/VAO/FBO/alpha/render-state 变化时
+        // 重建或复用 PSO。逻辑整体搬到 syncPipelineStateWithDeferredBufferMap:,
+        // 这里只保留派发;deferredBufferMap 作值参传入(块后不再读取)。
         if (ctx->state.dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
         {
+            RETURN_FALSE_ON_FAILURE([self syncPipelineStateWithDeferredBufferMap:deferredBufferMapForPipelineBuild]);
+        }
+
+        //if (ctx->state.dirty_bits)
+        //    logDirtyBits(ctx);
+
+        // Unconditionally clear all dirty bits after processing.
+        // All relevant state has been applied to Metal encoders above; any
+        // remaining bits (e.g. DIRTY_DRAWABLE set at init, or bits accumulated
+        // via |= in the defer path without DIRTY_ALL_BIT) are stale and would
+        // cause false-positive rebinds on the next draw.
+        ctx->state.dirty_bits = 0;
+    }
+    else // if (ctx->state.dirty_bits)
+    {
+        // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
+        // like a uniform or buffer sub data call
+        
+        if( [self checkForDirtyBufferData: &ctx->state.vertex_buffer_map_list])
+        {
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.vertex_buffer_map_list]);
+
+            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
+        }
+        
+        if( [self checkForDirtyBufferData: &ctx->state.fragment_buffer_map_list])
+        {
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
+
+            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+        }
+    }
+
+    // Ensure a render encoder exists for draw commands.
+    if (!_currentRenderEncoder) {
+        static uint64_t s_nilEncoderRecoveryCount = 0;
+        uint64_t nilHit = ++s_nilEncoderRecoveryCount;
+        NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
+              (unsigned long long)nilHit);
+        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
+            mglLogRenderPassLifecycle("nil-encoder-before-recovery",
+                                      nilHit,
+                                      ctx,
+                                      _currentCommandBuffer,
+                                      _currentRenderEncoder,
+                                      _renderPassDescriptor,
+                                      _drawable,
+                                      _renderPassFramebuffer,
+                                      _renderPassFramebufferName,
+                                      _renderPassDrawBuffer,
+                                      _renderPassDrawBufferCount);
+        }
+        RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
+            mglLogRenderPassLifecycle("nil-encoder-after-recovery",
+                                      nilHit,
+                                      ctx,
+                                      _currentCommandBuffer,
+                                      _currentRenderEncoder,
+                                      _renderPassDescriptor,
+                                      _drawable,
+                                      _renderPassFramebuffer,
+                                      _renderPassFramebufferName,
+                                      _renderPassDrawBuffer,
+                                      _renderPassDrawBufferCount);
+        }
+    }
+
+    if (draw_command) {
+        RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
+        [self updateCurrentRenderEncoder];
+    }
+
+    if (draw_command && kMGLVerbosePipelineLogs) {
+        static uint64_t s_drawPipelineLookupCount = 0;
+        s_drawPipelineLookupCount++;
+        if (s_drawPipelineLookupCount <= 256ull || (s_drawPipelineLookupCount % 1000ull) == 0ull) {
+            Program *lookupProgram = mglResolveProgramFromState(ctx);
+            Program *lookupVertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+            Program *lookupFragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+            GLuint lookupProgramName = mglCurrentRenderProgramKey(ctx);
+            Framebuffer *lookupFBO = ctx->state.framebuffer;
+            GLuint lookupFBOName = lookupFBO ? lookupFBO->name : 0;
+            fprintf(stderr, "MGL Draw current program key=%u mono=%p vs=%u fs=%u\n",
+                    (unsigned)lookupProgramName,
+                    (void *)lookupProgram,
+                    lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
+                    lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u);
+            NSLog(@"MGL DRAW pipeline lookup result=%p key=%u vs=%u fs=%u vao=%p fbo=%u",
+                  _pipelineState,
+                  (unsigned)lookupProgramName,
+                  lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
+                  lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u,
+                  ctx->state.vao,
+                  (unsigned)lookupFBOName);
+        }
+    }
+
+    if (!_pipelineState) {
+        static uint64_t nil_pipeline_count = 0;
+        nil_pipeline_count++;
+        if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
+            MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
+                          (unsigned long long)nil_pipeline_count);
+        }
+        // Force rebuild on next state processing pass.
+        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.nil_pipeline",
+                                ctx,
+                                _currentCommandBuffer,
+                                _currentRenderEncoder,
+                                _renderPassDescriptor,
+                                _drawable);
+        }
+        return false;
+    }
+
+    // Guard against invalid render pass state before binding pipeline.
+    // Metal debug validation can abort the process if the encoder/render pass is incompatible.
+    if (!_renderPassDescriptor) {
+        NSLog(@"MGL ERROR: processGLState - renderPassDescriptor is nil before pipeline bind");
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.nil_rpd",
+                                ctx,
+                                _currentCommandBuffer,
+                                _currentRenderEncoder,
+                                _renderPassDescriptor,
+                                _drawable);
+        }
+        return false;
+    }
+    BOOL passHasAnyAttachment = NO;
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        id<MTLTexture> colorAttachment = _renderPassDescriptor.colorAttachments[i].texture;
+        if (colorAttachment) {
+            passHasAnyAttachment = YES;
+            if ((colorAttachment.usage & MTLTextureUsageRenderTarget) == 0) {
+                NSLog(@"MGL WARNING: processGLState - color attachment %d missing RenderTarget usage (usage=0x%lx); skipping draw",
+                      i,
+                      (unsigned long)colorAttachment.usage);
+                if (traceProcess) {
+                    mglLogStateSnapshot("processGLState.fail.color_usage",
+                                        ctx,
+                                        _currentCommandBuffer,
+                                        _currentRenderEncoder,
+                                        _renderPassDescriptor,
+                                        _drawable);
+                }
+                return false;
+            }
+        }
+    }
+    if (_renderPassDescriptor.depthAttachment.texture ||
+        _renderPassDescriptor.stencilAttachment.texture) {
+        passHasAnyAttachment = YES;
+    }
+
+    if (!passHasAnyAttachment) {
+        NSLog(@"MGL WARNING: processGLState - render pass has no attachments, skipping draw to avoid Metal assert");
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.no_attachments",
+                                ctx,
+                                _currentCommandBuffer,
+                                _currentRenderEncoder,
+                                _renderPassDescriptor,
+                                _drawable);
+        }
+        return false;
+    }
+
+    MTLPixelFormat currentColor0Format = MTLPixelFormatInvalid;
+    MTLPixelFormat currentDepthFormat = MTLPixelFormatInvalid;
+    MTLPixelFormat currentStencilFormat = MTLPixelFormatInvalid;
+
+    id<MTLTexture> rpColor0 = _renderPassDescriptor.colorAttachments[0].texture;
+    id<MTLTexture> rpDepth = _renderPassDescriptor.depthAttachment.texture;
+    id<MTLTexture> rpStencil = _renderPassDescriptor.stencilAttachment.texture;
+    if (rpColor0) {
+        currentColor0Format = rpColor0.pixelFormat;
+    }
+    if (rpDepth) {
+        currentDepthFormat = rpDepth.pixelFormat;
+    }
+    if (rpStencil) {
+        currentStencilFormat = rpStencil.pixelFormat;
+    }
+
+    // IMPORTANT:
+    // Never mutate depth/stencil attachments here to "fit" an existing pipeline.
+    // The active Metal render encoder was already created with a render-pass descriptor,
+    // and changing attachments after encoder creation does not make that encoder compatible.
+    // We must instead reject mismatched pipeline/pass combinations and rebuild safely.
+
+    if (_pipelineColor0Format != MTLPixelFormatInvalid &&
+        currentColor0Format != MTLPixelFormatInvalid &&
+        _pipelineColor0Format != currentColor0Format) {
+        static uint64_t s_colorFormatMismatchCount = 0;
+        s_colorFormatMismatchCount++;
+	        if (s_colorFormatMismatchCount <= 16 || (s_colorFormatMismatchCount % 250) == 0) {
+	            NSLog(@"MGL WARNING: Pipeline/pass color format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
+	                  (unsigned long)_pipelineColor0Format, (unsigned long)currentColor0Format);
+	        }
+	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass color format mismatch"];
+	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        return false;
+	    }
+
+    if (_pipelineDepthFormat != currentDepthFormat) {
+        BOOL pipelineHasDepth = (_pipelineDepthFormat != MTLPixelFormatInvalid);
+        BOOL passHasDepth = (currentDepthFormat != MTLPixelFormatInvalid);
+        if (!pipelineHasDepth && !passHasDepth) {
+            goto depth_format_ok;
+	        }
+	        NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
+	              (unsigned long)_pipelineDepthFormat, (unsigned long)currentDepthFormat);
+	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
+	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        return false;
+	    }
+depth_format_ok:;
+
+    if (_pipelineStencilFormat != currentStencilFormat) {
+        BOOL pipelineHasStencil = (_pipelineStencilFormat != MTLPixelFormatInvalid);
+        BOOL passHasStencil = (currentStencilFormat != MTLPixelFormatInvalid);
+        if (!pipelineHasStencil && !passHasStencil) {
+            goto stencil_format_ok;
+	        }
+	        NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
+	              (unsigned long)_pipelineStencilFormat, (unsigned long)currentStencilFormat);
+	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
+	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        return false;
+	    }
+stencil_format_ok:;
+
+    @try {
+        if (!_lastBoundValid || _lastPipelineState != _pipelineState) {
+            [_currentRenderEncoder setRenderPipelineState:_pipelineState];
+            _lastPipelineState = _pipelineState;
+            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+        } else {
+            MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
+        // Force pipeline/state retranslation on next draw instead of crashing this frame.
+        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        if (traceProcess) {
+            mglLogStateSnapshot("processGLState.fail.set_pipeline",
+                                ctx,
+                                _currentCommandBuffer,
+                                _currentRenderEncoder,
+                                _renderPassDescriptor,
+                                _drawable);
+        }
+        return false;
+    }
+
+    // Stability-first rebinding pass:
+    // Command buffer rotation / encoder recreation can drop previously latched bindings.
+    // Rebind required resources before every draw to avoid Metal validation aborts.
+    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.vertex_buffer_map_list]);
+    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.fragment_buffer_map_list]);
+    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
+    if (![self bindTexturesToCurrentRenderEncoder]) {
+        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
+        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder]);
+    }
+
+    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
+    if (fragmentMSL && strstr(fragmentMSL, kMGLFragCoordParamsMSLName)) {
+        NSUInteger passHeight = _renderPassDescriptor ? _renderPassDescriptor.renderTargetHeight : 0;
+        if (passHeight == 0 && _renderPassDescriptor) {
+            for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
+                id<MTLTexture> color = _renderPassDescriptor.colorAttachments[i].texture;
+                passHeight = color ? color.height : 0;
+            }
+            if (passHeight == 0 && _renderPassDescriptor.depthAttachment.texture) {
+                passHeight = _renderPassDescriptor.depthAttachment.texture.height;
+            }
+            if (passHeight == 0 && _renderPassDescriptor.stencilAttachment.texture) {
+                passHeight = _renderPassDescriptor.stencilAttachment.texture.height;
+            }
+        }
+
+        vector_float4 fragCoordParams = {
+            (float)passHeight,
+            ctx->state.var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
+            0.0f,
+            0.0f
+        };
+        [_currentRenderEncoder setFragmentBytes:&fragCoordParams
+                                         length:sizeof(fragCoordParams)
+                                        atIndex:kMGLFragCoordParamsBufferIndex];
+        [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
+    }
+
+    if (draw_command &&
+        mglFragmentTextureTraceBindingsUseRTSampledCopy(_fragmentTextureTraceBindings, TEXTURE_UNITS)) {
+        _currentDrawUsesRTSampledCopy = YES;
+        [self updateCurrentRenderEncoder];
+    }
+
+    double processElapsedMs = (mglNowSeconds() - processStartSeconds) * 1000.0;
+    if (traceProcess) {
+        MGLTraceNSLog(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.3fms",
+              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
+        mglLogStateSnapshot("processGLState.exit.ok",
+                            ctx,
+                            _currentCommandBuffer,
+                            _currentRenderEncoder,
+                            _renderPassDescriptor,
+                            _drawable);
+    } else if (processElapsedMs >= 25.0) {
+        MGLTraceNSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
+              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
+    }
+    return true;
+}
+
+/*
+ * Pipeline Sync 域 (Stage 3.3)。从 processGLStateLocked 原样搬出的 PSO 构建/
+ * 复用逻辑:生成 pipeline+vertex descriptor、查/建 PSO 缓存、interface-mismatch
+ * 断路器、失败回退链。仅操作 Metal pipeline 状态,状态经 ctx 读取(与搬出前一致)。
+ * deferredBufferMap 由调用方传入(nil pipeline 时延后的 buffer 映射标志)。
+ * 返回 false 表示本次 draw 应跳过(与原内联 return false 语义等价)。
+ */
+- (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild
+{
             /* Force a rebind of the pipeline state on the next setRenderPipelineState
              * call. Dirty program/VAO/FBO/render-state may rebuild or reuse the
              * pipeline, but the encoder still needs the binding re-issued. */
@@ -20655,329 +20995,7 @@ create_new_command_buffer:
 
 	            ctx->state.dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
 	            }
-        }
 
-        //if (ctx->state.dirty_bits)
-        //    logDirtyBits(ctx);
-
-        // Unconditionally clear all dirty bits after processing.
-        // All relevant state has been applied to Metal encoders above; any
-        // remaining bits (e.g. DIRTY_DRAWABLE set at init, or bits accumulated
-        // via |= in the defer path without DIRTY_ALL_BIT) are stale and would
-        // cause false-positive rebinds on the next draw.
-        ctx->state.dirty_bits = 0;
-    }
-    else // if (ctx->state.dirty_bits)
-    {
-        // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
-        // like a uniform or buffer sub data call
-        
-        if( [self checkForDirtyBufferData: &ctx->state.vertex_buffer_map_list])
-        {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.vertex_buffer_map_list]);
-
-            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
-        }
-        
-        if( [self checkForDirtyBufferData: &ctx->state.fragment_buffer_map_list])
-        {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
-
-            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
-        }
-    }
-
-    // Ensure a render encoder exists for draw commands.
-    if (!_currentRenderEncoder) {
-        static uint64_t s_nilEncoderRecoveryCount = 0;
-        uint64_t nilHit = ++s_nilEncoderRecoveryCount;
-        NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
-              (unsigned long long)nilHit);
-        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
-            mglLogRenderPassLifecycle("nil-encoder-before-recovery",
-                                      nilHit,
-                                      ctx,
-                                      _currentCommandBuffer,
-                                      _currentRenderEncoder,
-                                      _renderPassDescriptor,
-                                      _drawable,
-                                      _renderPassFramebuffer,
-                                      _renderPassFramebufferName,
-                                      _renderPassDrawBuffer,
-                                      _renderPassDrawBufferCount);
-        }
-        RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
-        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
-            mglLogRenderPassLifecycle("nil-encoder-after-recovery",
-                                      nilHit,
-                                      ctx,
-                                      _currentCommandBuffer,
-                                      _currentRenderEncoder,
-                                      _renderPassDescriptor,
-                                      _drawable,
-                                      _renderPassFramebuffer,
-                                      _renderPassFramebufferName,
-                                      _renderPassDrawBuffer,
-                                      _renderPassDrawBufferCount);
-        }
-    }
-
-    if (draw_command) {
-        RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
-        [self updateCurrentRenderEncoder];
-    }
-
-    if (draw_command && kMGLVerbosePipelineLogs) {
-        static uint64_t s_drawPipelineLookupCount = 0;
-        s_drawPipelineLookupCount++;
-        if (s_drawPipelineLookupCount <= 256ull || (s_drawPipelineLookupCount % 1000ull) == 0ull) {
-            Program *lookupProgram = mglResolveProgramFromState(ctx);
-            Program *lookupVertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-            Program *lookupFragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-            GLuint lookupProgramName = mglCurrentRenderProgramKey(ctx);
-            Framebuffer *lookupFBO = ctx->state.framebuffer;
-            GLuint lookupFBOName = lookupFBO ? lookupFBO->name : 0;
-            fprintf(stderr, "MGL Draw current program key=%u mono=%p vs=%u fs=%u\n",
-                    (unsigned)lookupProgramName,
-                    (void *)lookupProgram,
-                    lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
-                    lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u);
-            NSLog(@"MGL DRAW pipeline lookup result=%p key=%u vs=%u fs=%u vao=%p fbo=%u",
-                  _pipelineState,
-                  (unsigned)lookupProgramName,
-                  lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
-                  lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u,
-                  ctx->state.vao,
-                  (unsigned)lookupFBOName);
-        }
-    }
-
-    if (!_pipelineState) {
-        static uint64_t nil_pipeline_count = 0;
-        nil_pipeline_count++;
-        if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
-            MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
-                          (unsigned long long)nil_pipeline_count);
-        }
-        // Force rebuild on next state processing pass.
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.nil_pipeline",
-                                ctx,
-                                _currentCommandBuffer,
-                                _currentRenderEncoder,
-                                _renderPassDescriptor,
-                                _drawable);
-        }
-        return false;
-    }
-
-    // Guard against invalid render pass state before binding pipeline.
-    // Metal debug validation can abort the process if the encoder/render pass is incompatible.
-    if (!_renderPassDescriptor) {
-        NSLog(@"MGL ERROR: processGLState - renderPassDescriptor is nil before pipeline bind");
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.nil_rpd",
-                                ctx,
-                                _currentCommandBuffer,
-                                _currentRenderEncoder,
-                                _renderPassDescriptor,
-                                _drawable);
-        }
-        return false;
-    }
-    BOOL passHasAnyAttachment = NO;
-    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        id<MTLTexture> colorAttachment = _renderPassDescriptor.colorAttachments[i].texture;
-        if (colorAttachment) {
-            passHasAnyAttachment = YES;
-            if ((colorAttachment.usage & MTLTextureUsageRenderTarget) == 0) {
-                NSLog(@"MGL WARNING: processGLState - color attachment %d missing RenderTarget usage (usage=0x%lx); skipping draw",
-                      i,
-                      (unsigned long)colorAttachment.usage);
-                if (traceProcess) {
-                    mglLogStateSnapshot("processGLState.fail.color_usage",
-                                        ctx,
-                                        _currentCommandBuffer,
-                                        _currentRenderEncoder,
-                                        _renderPassDescriptor,
-                                        _drawable);
-                }
-                return false;
-            }
-        }
-    }
-    if (_renderPassDescriptor.depthAttachment.texture ||
-        _renderPassDescriptor.stencilAttachment.texture) {
-        passHasAnyAttachment = YES;
-    }
-
-    if (!passHasAnyAttachment) {
-        NSLog(@"MGL WARNING: processGLState - render pass has no attachments, skipping draw to avoid Metal assert");
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.no_attachments",
-                                ctx,
-                                _currentCommandBuffer,
-                                _currentRenderEncoder,
-                                _renderPassDescriptor,
-                                _drawable);
-        }
-        return false;
-    }
-
-    MTLPixelFormat currentColor0Format = MTLPixelFormatInvalid;
-    MTLPixelFormat currentDepthFormat = MTLPixelFormatInvalid;
-    MTLPixelFormat currentStencilFormat = MTLPixelFormatInvalid;
-
-    id<MTLTexture> rpColor0 = _renderPassDescriptor.colorAttachments[0].texture;
-    id<MTLTexture> rpDepth = _renderPassDescriptor.depthAttachment.texture;
-    id<MTLTexture> rpStencil = _renderPassDescriptor.stencilAttachment.texture;
-    if (rpColor0) {
-        currentColor0Format = rpColor0.pixelFormat;
-    }
-    if (rpDepth) {
-        currentDepthFormat = rpDepth.pixelFormat;
-    }
-    if (rpStencil) {
-        currentStencilFormat = rpStencil.pixelFormat;
-    }
-
-    // IMPORTANT:
-    // Never mutate depth/stencil attachments here to "fit" an existing pipeline.
-    // The active Metal render encoder was already created with a render-pass descriptor,
-    // and changing attachments after encoder creation does not make that encoder compatible.
-    // We must instead reject mismatched pipeline/pass combinations and rebuild safely.
-
-    if (_pipelineColor0Format != MTLPixelFormatInvalid &&
-        currentColor0Format != MTLPixelFormatInvalid &&
-        _pipelineColor0Format != currentColor0Format) {
-        static uint64_t s_colorFormatMismatchCount = 0;
-        s_colorFormatMismatchCount++;
-	        if (s_colorFormatMismatchCount <= 16 || (s_colorFormatMismatchCount % 250) == 0) {
-	            NSLog(@"MGL WARNING: Pipeline/pass color format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	                  (unsigned long)_pipelineColor0Format, (unsigned long)currentColor0Format);
-	        }
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass color format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-
-    if (_pipelineDepthFormat != currentDepthFormat) {
-        BOOL pipelineHasDepth = (_pipelineDepthFormat != MTLPixelFormatInvalid);
-        BOOL passHasDepth = (currentDepthFormat != MTLPixelFormatInvalid);
-        if (!pipelineHasDepth && !passHasDepth) {
-            goto depth_format_ok;
-	        }
-	        NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	              (unsigned long)_pipelineDepthFormat, (unsigned long)currentDepthFormat);
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-depth_format_ok:;
-
-    if (_pipelineStencilFormat != currentStencilFormat) {
-        BOOL pipelineHasStencil = (_pipelineStencilFormat != MTLPixelFormatInvalid);
-        BOOL passHasStencil = (currentStencilFormat != MTLPixelFormatInvalid);
-        if (!pipelineHasStencil && !passHasStencil) {
-            goto stencil_format_ok;
-	        }
-	        NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	              (unsigned long)_pipelineStencilFormat, (unsigned long)currentStencilFormat);
-	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
-	        return false;
-	    }
-stencil_format_ok:;
-
-    @try {
-        if (!_lastBoundValid || _lastPipelineState != _pipelineState) {
-            [_currentRenderEncoder setRenderPipelineState:_pipelineState];
-            _lastPipelineState = _pipelineState;
-            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
-        } else {
-            MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
-        }
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
-        // Force pipeline/state retranslation on next draw instead of crashing this frame.
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
-        if (traceProcess) {
-            mglLogStateSnapshot("processGLState.fail.set_pipeline",
-                                ctx,
-                                _currentCommandBuffer,
-                                _currentRenderEncoder,
-                                _renderPassDescriptor,
-                                _drawable);
-        }
-        return false;
-    }
-
-    // Stability-first rebinding pass:
-    // Command buffer rotation / encoder recreation can drop previously latched bindings.
-    // Rebind required resources before every draw to avoid Metal validation aborts.
-    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.vertex_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.fragment_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
-    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    if (![self bindTexturesToCurrentRenderEncoder]) {
-        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder]);
-    }
-
-    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
-    if (fragmentMSL && strstr(fragmentMSL, kMGLFragCoordParamsMSLName)) {
-        NSUInteger passHeight = _renderPassDescriptor ? _renderPassDescriptor.renderTargetHeight : 0;
-        if (passHeight == 0 && _renderPassDescriptor) {
-            for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
-                id<MTLTexture> color = _renderPassDescriptor.colorAttachments[i].texture;
-                passHeight = color ? color.height : 0;
-            }
-            if (passHeight == 0 && _renderPassDescriptor.depthAttachment.texture) {
-                passHeight = _renderPassDescriptor.depthAttachment.texture.height;
-            }
-            if (passHeight == 0 && _renderPassDescriptor.stencilAttachment.texture) {
-                passHeight = _renderPassDescriptor.stencilAttachment.texture.height;
-            }
-        }
-
-        vector_float4 fragCoordParams = {
-            (float)passHeight,
-            ctx->state.var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
-            0.0f,
-            0.0f
-        };
-        [_currentRenderEncoder setFragmentBytes:&fragCoordParams
-                                         length:sizeof(fragCoordParams)
-                                        atIndex:kMGLFragCoordParamsBufferIndex];
-        [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
-    }
-
-    if (draw_command &&
-        mglFragmentTextureTraceBindingsUseRTSampledCopy(_fragmentTextureTraceBindings, TEXTURE_UNITS)) {
-        _currentDrawUsesRTSampledCopy = YES;
-        [self updateCurrentRenderEncoder];
-    }
-
-    double processElapsedMs = (mglNowSeconds() - processStartSeconds) * 1000.0;
-    if (traceProcess) {
-        MGLTraceNSLog(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.3fms",
-              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
-        mglLogStateSnapshot("processGLState.exit.ok",
-                            ctx,
-                            _currentCommandBuffer,
-                            _currentRenderEncoder,
-                            _renderPassDescriptor,
-                            _drawable);
-    } else if (processElapsedMs >= 25.0) {
-        MGLTraceNSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
-              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
-    }
     return true;
 }
 
