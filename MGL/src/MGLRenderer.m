@@ -2321,6 +2321,9 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       label:(NSString *)label
                                       error:(NSError **)error;
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
+                              context:(GLMContext)glm_ctx
+                          replayError:(GLenum *)replayError;
 - (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
                         context:(GLMContext)glm_ctx
                         flushId:(uint64_t)flushId
@@ -22938,6 +22941,40 @@ stencil_format_ok:;
     }
 }
 
+- (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
+                              context:(GLMContext)glm_ctx
+                          replayError:(GLenum *)replayError
+{
+    if (!(glm_ctx->state.dirty_bits & DIRTY_FBO))
+        return YES;
+
+    Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "prepareRenderPass.dirtyFBO");
+    BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
+
+    if (_currentRenderEncoder && !framebufferBindingDirty &&
+        [self currentRenderPassMatchesCurrentFramebuffer])
+        return YES;
+
+    if (framebuffer && framebufferBindingDirty) {
+        if (![self bindFramebufferAttachmentTextures]) {
+            if (glm_ctx->state.error != GL_NO_ERROR)
+                *replayError = glm_ctx->state.error;
+            return NO;
+        }
+        framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "prepareRenderPass.dirtyFBO.afterBind");
+        if (framebuffer)
+            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+    }
+
+    [self endRenderEncodingLocked];
+    if (![self newRenderEncoderLocked]) {
+        if (glm_ctx->state.error != GL_NO_ERROR)
+            *replayError = glm_ctx->state.error;
+        return NO;
+    }
+    return YES;
+}
+
 - (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
                         context:(GLMContext)glm_ctx
                         flushId:(uint64_t)flushId
@@ -22949,6 +22986,20 @@ stencil_format_ok:;
     _traceReplayBatchIndex = batchIndex;
     [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                 batchIndex:batchIndex phase:"RESTORE"];
+
+    if (![self prepareRenderPassIfFBOChanged:batch context:glm_ctx replayError:replayError]) {
+        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                    batchIndex:batchIndex phase:"SKIP_FBO_ROTATION"];
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            [self traceReplayCommand:batch command:&batch->commands[i]
+                             context:glm_ctx flushId:flushId
+                          batchIndex:batchIndex commandIndex:i
+                               phase:"SKIP" reason:"fbo_rotation"];
+        }
+        *skippedCommands += batch->command_count;
+        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        return NO;
+    }
 
     if ([self processGLState:true] == false) {
         if (glm_ctx->state.error != GL_NO_ERROR) {
