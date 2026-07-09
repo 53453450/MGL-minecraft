@@ -2029,7 +2029,6 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->stream_merged = true;
     batch->stream_layout_hash = candidate->layout_hash;
     batch->stream_vertex_stride = candidate->vertex_stride;
-    batch->scheduled_path = MGL_BATCH_PATH_STREAM_MERGE;
     batch->mdi_compatible = true;
     mglRetainBatchProgramReferences(ctx, batch);
     return true;
@@ -2259,9 +2258,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         memset(batch, 0, sizeof(*batch));
         batch->key = key;
         batch->uses_elements = cmd_uses_elements;
-        batch->scheduled_path = can_stream_merge
-            ? MGL_BATCH_PATH_STREAM_MERGE
-            : MGL_BATCH_PATH_DIRECT;
         batch->mdi_compatible = mglBatchIsMDICompatible(batch, cmd);
 
         if (can_stream_merge) {
@@ -2272,7 +2268,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
                 can_stream_merge = false;
             }
         }
@@ -2316,7 +2311,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
-                batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
                 if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);

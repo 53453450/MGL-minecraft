@@ -66,7 +66,10 @@ typedef struct {
 
 typedef enum {
     MGL_BATCH_PATH_DIRECT = 0,
+    MGL_BATCH_PATH_MDI,
     MGL_BATCH_PATH_STREAM_MERGE,
+    MGL_BATCH_PATH_ICB,
+    MGL_BATCH_PATH_COUNT,
 } MGLBatchPath;
 
 typedef struct {
@@ -104,7 +107,6 @@ typedef struct {
     size_t          stream_index_count;
     size_t          stream_vertex_stride;
     uint64_t        stream_layout_hash;
-    MGLBatchPath    scheduled_path;
     bool            mdi_compatible;
     bool            uses_elements;
     bool            stream_merged;

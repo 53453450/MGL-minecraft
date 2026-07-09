@@ -2321,7 +2321,13 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       label:(NSString *)label
                                       error:(NSError **)error;
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (void)issueDirectScheduledBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
+                        context:(GLMContext)glm_ctx
+                        flushId:(uint64_t)flushId
+                     batchIndex:(uint32_t)batchIndex
+                    replayError:(GLenum *)replayError
+                skippedCommands:(uint32_t *)skippedCommands;
+- (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
@@ -22735,6 +22741,8 @@ stencil_format_ok:;
                        cb->total_commands >= 128ull);
     uint32_t mdiBatchCount = 0;
     uint32_t mdiCommandCount = 0;
+    uint32_t icbBatchCount = 0;
+    uint32_t icbCommandCount = 0;
     uint32_t directBatchCount = 0;
     uint32_t directCommandCount = 0;
     uint32_t streamMergedBatchCount = 0;
@@ -22752,175 +22760,67 @@ stencil_format_ok:;
             if (batch->command_count == 0)
                 continue;
 
-            if (batch->state_snapshot) {
-                memcpy(&glm_ctx->state, batch->state_snapshot,
-                       sizeof(glm_ctx->state));
-                /* The snapshot shallow-copies the 10 embedded HashTables in
-                 * GLMState.  Each HashTable owns a dynamically allocated
-                 * keys/states array that may have been reallocated since the
-                 * snapshot was taken, making the snapshot's copies stale
-                 * (use-after-free risk).  Preserve the live HashTables from
-                 * savedState so lookups during replay remain valid. */
-                glm_ctx->state.vao_table = savedState.vao_table;
-                glm_ctx->state.buffer_table = savedState.buffer_table;
-                glm_ctx->state.texture_table = savedState.texture_table;
-                glm_ctx->state.shader_table = savedState.shader_table;
-                glm_ctx->state.program_table = savedState.program_table;
-                glm_ctx->state.program_pipeline_table =
-                    savedState.program_pipeline_table;
-                glm_ctx->state.transform_feedback_table =
-                    savedState.transform_feedback_table;
-                glm_ctx->state.renderbuffer_table =
-                    savedState.renderbuffer_table;
-                glm_ctx->state.framebuffer_table = savedState.framebuffer_table;
-                glm_ctx->state.sampler_table = savedState.sampler_table;
-                mglRestoreProgramPipelinePair(
-                    glm_ctx, glm_ctx->state.program_name,
-                    glm_ctx->state.var.program_pipeline_binding);
-            } else {
-                [self restoreStateFromKey:&batch->key context:glm_ctx];
-            }
-            glm_ctx->state.dirty_bits = 0;
-            GLuint replayDirtyBits =
-                (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
-                 DIRTY_TEX_BINDING | DIRTY_TEX | DIRTY_TEX_PARAM |
-                 DIRTY_SAMPLER | DIRTY_ALPHA_STATE | DIRTY_BUFFER |
-                 DIRTY_BUFFER_BASE_STATE);
-            Framebuffer *replayFBO = glm_ctx->state.framebuffer;
-            if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
-                (_currentRenderEncoder &&
-                 ![self currentRenderPassMatchesCurrentFramebuffer])) {
-                replayDirtyBits |= DIRTY_FBO;
-            }
-            glm_ctx->state.dirty_bits |= replayDirtyBits;
+            [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
 
-            MGLDrawCommand *firstCmd = &batch->commands[0];
-            _traceReplayFlushId = flushHit;
-            _traceReplayBatchIndex = b;
-            [self traceReplayBatch:batch
-                           context:glm_ctx
-                           flushId:flushHit
-                        batchIndex:b
-                             phase:"RESTORE"];
-            if ([self processGLState:true] == false) {
-                if (glm_ctx->state.error != GL_NO_ERROR) {
-                replayError = glm_ctx->state.error;
-                }
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"SKIP_PROCESS_STATE"];
-                for (uint32_t i = 0; i < batch->command_count; i++) {
-                [self traceReplayCommand:batch
-                                 command:&batch->commands[i]
-                                 context:glm_ctx
-                                 flushId:flushHit
-                              batchIndex:b
-                            commandIndex:i
-                                   phase:"SKIP"
-                                  reason:"processGLState"];
-                }
-                skippedCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+            if (![self checkBatchShouldExecute:batch
+                                       context:glm_ctx
+                                       flushId:flushHit
+                                    batchIndex:b
+                                   replayError:&replayError
+                               skippedCommands:&skippedCommandCount]) {
                 continue;
             }
-            [self traceReplayBatch:batch
-                           context:glm_ctx
-                           flushId:flushHit
-                        batchIndex:b
-                             phase:"READY"];
-            if ([self currentDrawRasterizationIsEmpty]) {
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"SKIP_EMPTY_RASTER"];
-                for (uint32_t i = 0; i < batch->command_count; i++) {
-                [self traceReplayCommand:batch
-                                 command:&batch->commands[i]
-                                 context:glm_ctx
-                                 flushId:flushHit
-                              batchIndex:b
-                            commandIndex:i
-                                   phase:"SKIP"
-                                  reason:"empty_rasterization"];
-                }
-                skippedCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
-                continue;
-            }
-            if ([self currentDrawModeIsFullyCulled:firstCmd->mode]) {
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"SKIP_FULLY_CULLED"];
-                for (uint32_t i = 0; i < batch->command_count; i++) {
-                [self traceReplayCommand:batch
-                                 command:&batch->commands[i]
-                                 context:glm_ctx
-                                 flushId:flushHit
-                              batchIndex:b
-                            commandIndex:i
-                                   phase:"SKIP"
-                                  reason:"front_and_back_culled"];
-                }
-                skippedCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
-                continue;
-            }
-            [self applyPolygonOffsetForDrawMode:firstCmd->mode];
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
-            if (scheduledPath == MGL_BATCH_PATH_STREAM_MERGE) {
-                streamMergedBatchCount++;
-                streamMergedCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
-                MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap,
-                             batch->command_count);
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"ISSUE_STREAM_MERGE"];
-                [self issueStreamMergedBatch:batch context:glm_ctx];
-            } else {
-                directBatchCount++;
-                directCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
-                MGL_PERF_ADD(g_mglDrawDirectSinceSwap, batch->command_count);
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"ISSUE_DIRECT"];
-                [self issueDirectScheduledBatch:batch context:glm_ctx];
+            switch (scheduledPath) {
+                case MGL_BATCH_PATH_STREAM_MERGE:
+                    streamMergedBatchCount++;
+                    streamMergedCommandCount += batch->command_count;
+                    MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
+                    MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap,
+                                 batch->command_count);
+                    [self traceReplayBatch:batch
+                                   context:glm_ctx
+                                   flushId:flushHit
+                                batchIndex:b
+                                     phase:"ISSUE_STREAM_MERGE"];
+                    [self issueStreamMergedBatch:batch context:glm_ctx];
+                    break;
+                case MGL_BATCH_PATH_MDI:
+                    mdiBatchCount++;
+                    mdiCommandCount += batch->command_count;
+                    [self traceReplayBatch:batch
+                                   context:glm_ctx
+                                   flushId:flushHit
+                                batchIndex:b
+                                     phase:"ISSUE_MDI"];
+                    [self issueMDIBatch:batch context:glm_ctx];
+                    break;
+                case MGL_BATCH_PATH_ICB:
+                    icbBatchCount++;
+                    icbCommandCount += batch->command_count;
+                    [self traceReplayBatch:batch
+                                   context:glm_ctx
+                                   flushId:flushHit
+                                batchIndex:b
+                                     phase:"ISSUE_ICB"];
+                    [self issueIndirectCommandBufferBatch:batch context:glm_ctx];
+                    break;
+                default:
+                    directBatchCount++;
+                    directCommandCount += batch->command_count;
+                    MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
+                    MGL_PERF_ADD(g_mglDrawDirectSinceSwap, batch->command_count);
+                    [self traceReplayBatch:batch
+                                   context:glm_ctx
+                                   flushId:flushHit
+                                batchIndex:b
+                                     phase:"ISSUE_DIRECT"];
+                    [self issueDirectBatch:batch context:glm_ctx];
+                    break;
             }
 
-            for (uint32_t i = 0; i < batch->command_count; i++) {
-                MGLDrawCommand *cmd = &batch->commands[i];
-                switch (cmd->type) {
-                case MGL_CMD_DRAW_ARRAYS:
-                case MGL_CMD_DRAW_ARRAYS_INSTANCED:
-                case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
-                MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
-                MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap,
-                              (uint64_t)(cmd->count > 0 ? cmd->count : 0));
-                break;
-                case MGL_CMD_DRAW_ELEMENTS:
-                case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
-                case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
-                case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
-                case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
-                case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
-                MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
-                MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap,
-                              (uint64_t)(cmd->count > 0 ? cmd->count : 0));
-                break;
-                }
-            }
-            [self markCurrentFramebufferDrawAttachmentsWritten];
+            [self recordBatchCommandStats:batch context:glm_ctx];
         }
     }
     _traceReplayFlushId = 0;
@@ -22928,56 +22828,209 @@ stencil_format_ok:;
 
     MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
     if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
-        MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
+        MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
               cb->batch_count, cb->total_commands,
               cb->array_cmd_count, cb->element_cmd_count,
               streamMergedBatchCount, streamMergedCommandCount,
               mdiBatchCount, mdiCommandCount,
+              icbBatchCount, icbCommandCount,
               directBatchCount, directCommandCount,
               skippedCommandCount);
     }
-    mglResetCommandBufferForContext(glm_ctx, cb);
-    memcpy(&glm_ctx->state, &savedState, sizeof(glm_ctx->state));
+    [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
+                            savedError:savedError replayError:replayError];
+}
+
+- (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+{
+    if (!batch || batch->command_count == 0) {
+        return MGL_BATCH_PATH_DIRECT;
+    }
+
+    if (batch->stream_merged) {
+        return MGL_BATCH_PATH_STREAM_MERGE;
+    }
+
+    if (mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") &&
+        !mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH") &&
+        batch->key.primitive_type != 0xFFu) {
+        if (@available(macOS 10.14, *)) {
+            return MGL_BATCH_PATH_ICB;
+        }
+    }
+
+    if (!mglEnvFlagEnabled("MGL_DISABLE_MDI") &&
+        batch->mdi_compatible &&
+        batch->command_count >= MGL_MDI_MIN_BATCH_SIZE &&
+        !mglPolygonModePointForDrawMode(glm_ctx, batch->commands[0].mode)) {
+        bool primitiveRestart = false;
+        if (batch->uses_elements) {
+            uint32_t dummy;
+            primitiveRestart = mglPrimitiveRestartIndexForType(glm_ctx,
+                                                               batch->commands[0].indexType,
+                                                               &dummy);
+        }
+        if (!primitiveRestart) {
+            return MGL_BATCH_PATH_MDI;
+        }
+    }
+
+    return MGL_BATCH_PATH_DIRECT;
+}
+
+- (void)restoreStateForBatch:(MGLDrawBatch *)batch
+                     context:(GLMContext)glm_ctx
+                  savedState:(const GLMState *)savedState
+{
+    if (batch->state_snapshot) {
+        memcpy(&glm_ctx->state, batch->state_snapshot, sizeof(glm_ctx->state));
+        /* The snapshot shallow-copies the 10 embedded HashTables in GLMState.
+         * Each HashTable owns a dynamically-allocated keys/states array that
+         * may have been reallocated since the snapshot was taken, making the
+         * snapshot's copies stale (use-after-free risk).  Preserve the live
+         * HashTables from savedState so lookups during replay remain valid. */
+        glm_ctx->state.vao_table                 = savedState->vao_table;
+        glm_ctx->state.buffer_table              = savedState->buffer_table;
+        glm_ctx->state.texture_table             = savedState->texture_table;
+        glm_ctx->state.shader_table              = savedState->shader_table;
+        glm_ctx->state.program_table             = savedState->program_table;
+        glm_ctx->state.program_pipeline_table    = savedState->program_pipeline_table;
+        glm_ctx->state.transform_feedback_table  = savedState->transform_feedback_table;
+        glm_ctx->state.renderbuffer_table        = savedState->renderbuffer_table;
+        glm_ctx->state.framebuffer_table         = savedState->framebuffer_table;
+        glm_ctx->state.sampler_table             = savedState->sampler_table;
+        mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->state.program_name,
+                                     glm_ctx->state.var.program_pipeline_binding);
+    } else {
+        [self restoreStateFromKey:&batch->key context:glm_ctx];
+    }
+    glm_ctx->state.dirty_bits = 0;
+    GLuint replayDirtyBits =
+        (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
+         DIRTY_TEX_BINDING | DIRTY_TEX | DIRTY_TEX_PARAM |
+         DIRTY_SAMPLER | DIRTY_ALPHA_STATE | DIRTY_BUFFER |
+         DIRTY_BUFFER_BASE_STATE);
+    Framebuffer *replayFBO = glm_ctx->state.framebuffer;
+    if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
+        (_currentRenderEncoder &&
+         ![self currentRenderPassMatchesCurrentFramebuffer])) {
+        replayDirtyBits |= DIRTY_FBO;
+    }
+    glm_ctx->state.dirty_bits |= replayDirtyBits;
+}
+
+- (void)teardownBatchReplayForContext:(GLMContext)glm_ctx
+                           savedState:(const GLMState *)savedState
+                           savedError:(GLenum)savedError
+                          replayError:(GLenum)replayError
+{
+    mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
+    memcpy(&glm_ctx->state, savedState, sizeof(glm_ctx->state));
     /* Replay has fully applied all pending state to Metal encoders.
      * Clear dirty bits so the next defer-path draw starts clean instead of
      * inheriting the stale DIRTY_ALL from savedState. */
     glm_ctx->state.dirty_bits = 0;
-    mglRestoreProgramPipelinePair(glm_ctx,
-                                  glm_ctx->state.program_name,
+    mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->state.program_name,
                                   glm_ctx->state.var.program_pipeline_binding);
     if (savedError == GL_NO_ERROR && replayError != GL_NO_ERROR) {
         glm_ctx->state.error = replayError;
     }
 }
 
-- (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+- (BOOL)checkBatchShouldExecute:(MGLDrawBatch *)batch
+                        context:(GLMContext)glm_ctx
+                        flushId:(uint64_t)flushId
+                     batchIndex:(uint32_t)batchIndex
+                    replayError:(GLenum *)replayError
+                skippedCommands:(uint32_t *)skippedCommands
 {
-    (void)glm_ctx;
-    if (!batch || batch->command_count == 0) {
-        return MGL_BATCH_PATH_DIRECT;
+    _traceReplayFlushId  = flushId;
+    _traceReplayBatchIndex = batchIndex;
+    [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                batchIndex:batchIndex phase:"RESTORE"];
+
+    if ([self processGLState:true] == false) {
+        if (glm_ctx->state.error != GL_NO_ERROR) {
+            *replayError = glm_ctx->state.error;
+        }
+        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                    batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"];
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            [self traceReplayCommand:batch command:&batch->commands[i]
+                             context:glm_ctx flushId:flushId
+                          batchIndex:batchIndex commandIndex:i
+                               phase:"SKIP" reason:"processGLState"];
+        }
+        *skippedCommands += batch->command_count;
+        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        return NO;
     }
 
-    if (batch->stream_merged) {
-        batch->scheduled_path = MGL_BATCH_PATH_STREAM_MERGE;
-        return MGL_BATCH_PATH_STREAM_MERGE;
+    [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                batchIndex:batchIndex phase:"READY"];
+
+    if ([self currentDrawRasterizationIsEmpty]) {
+        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                    batchIndex:batchIndex phase:"SKIP_EMPTY_RASTER"];
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            [self traceReplayCommand:batch command:&batch->commands[i]
+                             context:glm_ctx flushId:flushId
+                          batchIndex:batchIndex commandIndex:i
+                               phase:"SKIP" reason:"empty_rasterization"];
+        }
+        *skippedCommands += batch->command_count;
+        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        return NO;
     }
 
-    batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
-    return MGL_BATCH_PATH_DIRECT;
+    GLenum mode = batch->commands[0].mode;
+    if ([self currentDrawModeIsFullyCulled:mode]) {
+        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                    batchIndex:batchIndex phase:"SKIP_FULLY_CULLED"];
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            [self traceReplayCommand:batch command:&batch->commands[i]
+                             context:glm_ctx flushId:flushId
+                          batchIndex:batchIndex commandIndex:i
+                               phase:"SKIP" reason:"front_and_back_culled"];
+        }
+        *skippedCommands += batch->command_count;
+        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        return NO;
+    }
+
+    [self applyPolygonOffsetForDrawMode:mode];
+    return YES;
 }
 
-- (void)issueDirectScheduledBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+- (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
-    if (!batch || batch->command_count == 0) {
-        return;
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        MGLDrawCommand *cmd = &batch->commands[i];
+        switch (cmd->type) {
+        case MGL_CMD_DRAW_ARRAYS:
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+            MGL_FRAME_INC(g_mglDrawArraysSinceSwap);
+            MGL_FRAME_ADD(g_mglDrawArrayVerticesSinceSwap,
+                          (uint64_t)(cmd->count > 0 ? cmd->count : 0));
+            break;
+        case MGL_CMD_DRAW_ELEMENTS:
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+            MGL_FRAME_INC(g_mglDrawElementsSinceSwap);
+            MGL_FRAME_ADD(g_mglDrawElementIndicesSinceSwap,
+                          (uint64_t)(cmd->count > 0 ? cmd->count : 0));
+            break;
+        default:
+            break;
+        }
     }
-
-    if ([self issueIndirectCommandBufferBatch:batch context:glm_ctx]) {
-        return;
-    }
-
-    [self issueDirectBatch:batch context:glm_ctx];
+    [self markCurrentFramebufferDrawAttachmentsWritten];
+    (void)glm_ctx;
 }
 
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
