@@ -2321,6 +2321,7 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       label:(NSString *)label
                                       error:(NSError **)error;
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError;
@@ -20031,31 +20032,10 @@ create_new_command_buffer:
         // FBO binding/attachment changes alter the Metal render pass itself. They must
         // be handled even when no generic DIRTY_STATE bit is present; otherwise the
         // current render encoder can keep drawing into an old attachment while GL state
-        // already points at a different FBO.
+        // already points at a different FBO. RenderPass Sync domain (Stage 3.2).
         if (ctx->state.dirty_bits & DIRTY_FBO)
         {
-            Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyFBO");
-            BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-            if (_currentRenderEncoder &&
-                !framebufferBindingDirty &&
-                [self currentRenderPassMatchesCurrentFramebuffer]) {
-                ctx->state.dirty_bits &= ~DIRTY_FBO;
-            } else {
-                if (framebuffer)
-                {
-                    if (framebufferBindingDirty)
-                    {
-                        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
-                        framebuffer = mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyFBO.afterBind");
-                        if (framebuffer) {
-                            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-                        }
-                    }
-                }
-
-                [self endRenderEncodingLocked];
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
-            }
+            RETURN_FALSE_ON_FAILURE([self syncRenderPassStateForContext:ctx]);
         }
 
         // dirty state covers all rendering attachments and general state
@@ -22941,6 +22921,40 @@ stencil_format_ok:;
     }
 }
 
+/*
+ * RenderPass Sync domain (Stage 3.2).
+ *
+ * Maps a DIRTY_FBO transition onto the Metal render pass: if the current
+ * encoder already targets the bound framebuffer nothing changes (dirty bit
+ * cleared); otherwise attachment textures are (re)bound and the encoder is
+ * rotated. Callers gate on DIRTY_FBO before invoking. This is the single
+ * owner of FBO-driven encoder rotation — processGLState no longer inlines it.
+ */
+- (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx
+{
+    Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO");
+    BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
+    if (_currentRenderEncoder &&
+        !framebufferBindingDirty &&
+        [self currentRenderPassMatchesCurrentFramebuffer]) {
+        glm_ctx->state.dirty_bits &= ~DIRTY_FBO;
+        return true;
+    }
+
+    if (framebuffer && framebufferBindingDirty)
+    {
+        RETURN_FALSE_ON_FAILURE([self bindFramebufferAttachmentTextures]);
+        framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "processGLState.dirtyFBO.afterBind");
+        if (framebuffer) {
+            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
+        }
+    }
+
+    [self endRenderEncodingLocked];
+    RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+    return true;
+}
+
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError
@@ -22948,26 +22962,10 @@ stencil_format_ok:;
     if (!(glm_ctx->state.dirty_bits & DIRTY_FBO))
         return YES;
 
-    Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "prepareRenderPass.dirtyFBO");
-    BOOL framebufferBindingDirty = framebuffer && (framebuffer->dirty_bits & DIRTY_FBO_BINDING);
-
-    if (_currentRenderEncoder && !framebufferBindingDirty &&
-        [self currentRenderPassMatchesCurrentFramebuffer])
-        return YES;
-
-    if (framebuffer && framebufferBindingDirty) {
-        if (![self bindFramebufferAttachmentTextures]) {
-            if (glm_ctx->state.error != GL_NO_ERROR)
-                *replayError = glm_ctx->state.error;
-            return NO;
-        }
-        framebuffer = mglRendererGetValidatedFramebuffer(glm_ctx, "prepareRenderPass.dirtyFBO.afterBind");
-        if (framebuffer)
-            framebuffer->dirty_bits &= ~DIRTY_FBO_BINDING;
-    }
-
-    [self endRenderEncodingLocked];
-    if (![self newRenderEncoderLocked]) {
+    /* Orchestrator-driven FBO rotation (Stage 3.1) delegates to the shared
+     * RenderPass Sync unit (Stage 3.2), surfacing any GL error as replayError
+     * so the batch is skipped rather than drawn against a stale pass. */
+    if (![self syncRenderPassStateForContext:glm_ctx]) {
         if (glm_ctx->state.error != GL_NO_ERROR)
             *replayError = glm_ctx->state.error;
         return NO;
