@@ -1475,6 +1475,7 @@ typedef struct {
     Buffer      *index_buffer;
     const uint8_t *index_bytes;
     size_t       index_size;
+    bool         uses_elements;
     size_t       vertex_bytes;
     size_t       vertex_source_offset;
     size_t       vertex_stride;
@@ -1698,10 +1699,7 @@ static bool mglStreamMergeExclusionStateOK(GLMContext ctx,
     if (strcmp(layout->name, "weather_particle") == 0) {
         if (!ctx || !vertexBuffer) return false;
         if (vertexBuffer->usage != GL_DYNAMIC_DRAW) return false;
-        if (vertexBuffer->size <= 0 ||
-            vertexBuffer->size > (GLsizeiptr)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
-            return false;
-        }
+        if (vertexBuffer->size <= 0) return false;
         bool blendEnabled = (ctx->state.caps.blend == GL_TRUE);
         if (!blendEnabled) {
             GLuint maxDrawBuffers = ctx->state.var.max_draw_buffers;
@@ -1759,7 +1757,16 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
                                            bool uses_elements,
                                            MGLStreamMergeCandidate *out)
 {
-    if (!ctx || !cmd || !out || !uses_elements) return false;
+    if (!ctx || !cmd || !out) return false;
+    {
+        static bool sStreamMergeDisabled = false;
+        static bool sStreamMergeDisableChecked = false;
+        if (!sStreamMergeDisableChecked) {
+            sStreamMergeDisabled = (getenv("MGL_DISABLE_STREAM_MERGE") != NULL);
+            sStreamMergeDisableChecked = true;
+        }
+        if (sStreamMergeDisabled) return false;
+    }
     if (cmd->mode != GL_TRIANGLES || cmd->count <= 0) return false;
     if (cmd->instanceCount != 1 || cmd->baseInstance != 0) return false;
     if (ctx->state.var.polygon_mode != GL_FILL) return false;
@@ -1768,29 +1775,38 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
         return false;
     }
 
-    uint64_t restart = 0;
-    if (mglCommandPrimitiveRestartIndex(ctx, cmd->indexType, &restart)) {
-        return false;
-    }
-
     VertexArray *vao = ctx->state.vao;
     Buffer *indexBuffer = (Buffer *)cmd->elementBuffer;
-    size_t indexSize = mglCommandIndexSize(cmd->indexType);
-    if (!vao || !indexBuffer || indexBuffer->mapped ||
-        !indexBuffer->data.buffer_data || indexSize == 0u) {
-        return false;
-    }
-    if (cmd->indexBufferOffset > (GLuint)indexBuffer->size) {
-        return false;
-    }
-    if ((uint64_t)cmd->count > UINT64_MAX / (uint64_t)indexSize) {
-        return false;
-    }
-
-    uint64_t indexBytes = (uint64_t)cmd->count * (uint64_t)indexSize;
+    size_t indexSize = uses_elements ? mglCommandIndexSize(cmd->indexType) : 0u;
     uint64_t indexOffset = (uint64_t)cmd->indexBufferOffset;
-    if (indexBytes > UINT64_MAX - indexOffset ||
-        indexOffset + indexBytes > (uint64_t)indexBuffer->size) {
+    const uint8_t *indices = NULL;
+    if (!vao) {
+        return false;
+    }
+    if (uses_elements) {
+        uint64_t restart = 0;
+        if (mglCommandPrimitiveRestartIndex(ctx, cmd->indexType, &restart)) {
+            return false;
+        }
+        if (!indexBuffer || indexBuffer->mapped ||
+            !indexBuffer->data.buffer_data || indexSize == 0u) {
+            return false;
+        }
+        if (cmd->indexBufferOffset > (GLuint)indexBuffer->size) {
+            return false;
+        }
+        if ((uint64_t)cmd->count > UINT64_MAX / (uint64_t)indexSize) {
+            return false;
+        }
+
+        uint64_t indexBytes = (uint64_t)cmd->count * (uint64_t)indexSize;
+        if (indexBytes > UINT64_MAX - indexOffset ||
+            indexOffset + indexBytes > (uint64_t)indexBuffer->size) {
+            return false;
+        }
+        indices = (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
+    } else if (cmd->first < 0 ||
+               (uint64_t)cmd->first > UINT64_MAX - ((uint64_t)cmd->count - 1u)) {
         return false;
     }
 
@@ -1845,12 +1861,21 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
 
     if (!vertexBuffer || vertexBuffer->mapped ||
         attribMask == 0u || !vertexBuffer->data.buffer_data ||
-        vertexBuffer->size <= 0 || vertexBuffer->size > (GLsizeiptr)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
+        vertexBuffer->size <= 0) {
         return false;
     }
     if (bindingOffset < 0 || vertexStride == 0u ||
         ((size_t)bindingOffset % vertexStride) != 0u ||
         ((size_t)vertexBuffer->size % vertexStride) != 0u) {
+        return false;
+    }
+    /* Check the draw's actual vertex data footprint, not the source buffer
+     * size.  Large buffers (e.g., Minecraft's GUI vertex buffer) are fine as
+     * long as the per-draw referenced vertices fit within the transient
+     * batch budget.  The 4MB batch limit (checked later in append) prevents
+     * unbounded transient buffer growth. */
+    if (vertexStride > 0 &&
+        (uint64_t)cmd->count * (uint64_t)vertexStride > (uint64_t)MGL_STREAM_MERGE_MAX_SOURCE_BYTES) {
         return false;
     }
     /* Exclude known-incompatible vertex layouts from stream merging.
@@ -1890,14 +1915,16 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
 
     uint64_t minSourceIndex = UINT64_MAX;
     uint64_t maxSourceIndex = 0u;
-    const uint8_t *indices = (const uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexOffset;
     for (GLsizei i = 0; i < cmd->count; i++) {
-        uint64_t rawIndex = 0;
-        if (!mglCommandReadIndexValue(indices, cmd->indexType, i, &rawIndex)) {
+        uint64_t rawIndex = (uint64_t)cmd->first + (uint64_t)i;
+        if (uses_elements &&
+            !mglCommandReadIndexValue(indices, cmd->indexType, i, &rawIndex)) {
             return false;
         }
 
-        int64_t sourceIndex = (int64_t)rawIndex + (int64_t)cmd->baseVertex;
+        int64_t sourceIndex = uses_elements
+            ? (int64_t)rawIndex + (int64_t)cmd->baseVertex
+            : (int64_t)rawIndex;
         if (sourceIndex < 0) return false;
         uint64_t sourceIndexU = (uint64_t)sourceIndex;
         if (sourceIndexU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
@@ -1938,6 +1965,7 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     out->index_buffer = indexBuffer;
     out->index_bytes = indices;
     out->index_size = indexSize;
+    out->uses_elements = uses_elements;
     out->vertex_bytes = sourceBytes;
     out->vertex_source_offset = (size_t)sourceStart;
     out->vertex_stride = vertexStride;
@@ -2001,7 +2029,8 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->stream_merged = true;
     batch->stream_layout_hash = candidate->layout_hash;
     batch->stream_vertex_stride = candidate->vertex_stride;
-    batch->mdi_compatible = false;
+    batch->scheduled_path = MGL_BATCH_PATH_STREAM_MERGE;
+    batch->mdi_compatible = true;
     mglRetainBatchProgramReferences(ctx, batch);
     return true;
 }
@@ -2038,11 +2067,14 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
     size_t newIndexBytes = indexWriteOffset + indexBytesToAppend;
 
     for (GLsizei i = 0; i < srcCmd->count; i++) {
-        uint64_t rawIndex = 0;
-        if (!mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex)) {
+        uint64_t rawIndex = (uint64_t)srcCmd->first + (uint64_t)i;
+        if (candidate->uses_elements &&
+            !mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex)) {
             return false;
         }
-        int64_t sourceIndex = (int64_t)rawIndex + (int64_t)srcCmd->baseVertex;
+        int64_t sourceIndex = candidate->uses_elements
+            ? (int64_t)rawIndex + (int64_t)srcCmd->baseVertex
+            : (int64_t)rawIndex;
         if (sourceIndex < 0) return false;
         uint64_t sourceIndexU = (uint64_t)sourceIndex;
         if (sourceIndexU < candidate->source_first_index) return false;
@@ -2066,9 +2098,13 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
 
     uint32_t *indexDst = (uint32_t *)((uint8_t *)(uintptr_t)indexBuffer->data.buffer_data + indexWriteOffset);
     for (GLsizei i = 0; i < srcCmd->count; i++) {
-        uint64_t rawIndex = 0;
-        (void)mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex);
-        int64_t sourceIndex = (int64_t)rawIndex + (int64_t)srcCmd->baseVertex;
+        uint64_t rawIndex = (uint64_t)srcCmd->first + (uint64_t)i;
+        if (candidate->uses_elements) {
+            (void)mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex);
+        }
+        int64_t sourceIndex = candidate->uses_elements
+            ? (int64_t)rawIndex + (int64_t)srcCmd->baseVertex
+            : (int64_t)rawIndex;
         indexDst[i] = (uint32_t)(vertexBase +
                                  ((uint64_t)sourceIndex - candidate->source_first_index));
     }
@@ -2146,10 +2182,14 @@ static void mglTrackPendingDrawBufferReads(GLMContext ctx,
     mglTrackPendingBaseBufferReads(ctx);
 }
 
-void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
+void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
 {
     if (!ctx || !cmd) return;
 
+    /* DrawCommand Recorder: keep the GL entry points shallow and capture a
+     * validated draw into the deferred command buffer.  The Batch Builder and
+     * Batch Queue stages below decide whether the command joins a direct batch
+     * or a stream-merge batch. */
     mglFlushPendingDrawsForActiveTextures(ctx);
     mglFlushPendingDrawsBeforeFramebufferTextureWrites(ctx);
 
@@ -2168,12 +2208,14 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     bool can_stream_merge =
         mglPrepareStreamMergeCandidate(ctx, cmd, cmd_uses_elements, &streamCandidate);
     /*
-     * A normal deferred batch replays one captured GL state with many Metal
-     * draws. That is only correct after stream-merge has copied all varying
-     * vertex/index data into transient buffers. Otherwise per-draw VAO, UBO
-     * range, texture, or render-state changes must keep their own snapshot.
+     * Batch reuse is decoupled from stream-merge.  When keys match, non-
+     * stream-merged draws can share a batch — each draw keeps its own
+     * MGLDrawCommand (first/count/baseVertex) but reuses the shared
+     * state_snapshot.  Hazard detection (mglFlushPendingDrawsForBuffer/
+     * VertexArray/Texture) flushes the batch before any state change that
+     * would invalidate the snapshot, so reuse is safe.
      */
-    bool can_reuse_batch = can_stream_merge;
+    bool can_reuse_batch = true;
 
     /* Find matching batch (check last first for spatial locality).
      *
@@ -2216,8 +2258,11 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         batch = &cb->batches[cb->batch_count];
         memset(batch, 0, sizeof(*batch));
         batch->key = key;
-        batch->mdi_compatible = can_stream_merge;
         batch->uses_elements = cmd_uses_elements;
+        batch->scheduled_path = can_stream_merge
+            ? MGL_BATCH_PATH_STREAM_MERGE
+            : MGL_BATCH_PATH_DIRECT;
+        batch->mdi_compatible = mglBatchIsMDICompatible(batch, cmd);
 
         if (can_stream_merge) {
             if (!mglInitializeStreamMergedBatch(ctx, batch, &streamCandidate)) {
@@ -2227,6 +2272,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
+                batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
                 can_stream_merge = false;
             }
         }
@@ -2270,6 +2316,7 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
+                batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
                 if (!mglInitializeBatchStateSnapshot(ctx, batch)) {
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);
@@ -2282,26 +2329,36 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
     }
 
-    /* Resize command array */
-    MGLDrawCommand *new_cmds = (MGLDrawCommand *)realloc(batch->commands,
-        (batch->command_count + 1) * sizeof(MGLDrawCommand));
-    if (!new_cmds) {
-        fprintf(stderr, "MGL Error: mglAppendDrawCommand: realloc failed\n");
-        if (batch->command_count == 0 &&
-            cb->batch_count > 0 &&
-            batch == &cb->batches[cb->batch_count - 1]) {
-            mglReleaseBatch(ctx, batch);
-            memset(batch, 0, sizeof(*batch));
-            cb->batch_count--;
+    if (batch->command_count >= batch->command_capacity) {
+        uint32_t newCapacity = batch->command_capacity ? batch->command_capacity * 2u : 64u;
+        if (newCapacity < batch->command_capacity || newCapacity > maxDrawsPerBatch) {
+            newCapacity = maxDrawsPerBatch;
         }
-        return;
+        if (newCapacity <= batch->command_count) {
+            fprintf(stderr, "MGL Error: mglAppendDrawCommand: command capacity exhausted\n");
+            return;
+        }
+        MGLDrawCommand *new_cmds = (MGLDrawCommand *)realloc(batch->commands,
+            (size_t)newCapacity * sizeof(MGLDrawCommand));
+        if (!new_cmds) {
+            fprintf(stderr, "MGL Error: mglAppendDrawCommand: realloc failed\n");
+            if (batch->command_count == 0 &&
+                cb->batch_count > 0 &&
+                batch == &cb->batches[cb->batch_count - 1]) {
+                mglReleaseBatch(ctx, batch);
+                memset(batch, 0, sizeof(*batch));
+                cb->batch_count--;
+            }
+            return;
+        }
+        batch->commands = new_cmds;
+        batch->command_capacity = newCapacity;
     }
-    batch->commands = new_cmds;
     batch->commands[batch->command_count] = stored_cmd;
     batch->command_count++;
     cb->total_commands++;
 
-    if (!can_stream_merge || !mglBatchIsMDICompatible(batch, &stored_cmd)) {
+    if (!mglBatchIsMDICompatible(batch, &stored_cmd)) {
         batch->mdi_compatible = false;
     }
 
@@ -2318,6 +2375,11 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     }
     mglTrackPendingSampledTextureReads(ctx);
     mglTrackPendingFramebufferTextureWrites(ctx);
+}
+
+void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
+{
+    mglRecordDrawCommand(ctx, cmd);
 }
 
 /*

@@ -64,6 +64,11 @@ typedef struct {
     void    *elementBuffer;
 } MGLDrawCommand;
 
+typedef enum {
+    MGL_BATCH_PATH_DIRECT = 0,
+    MGL_BATCH_PATH_STREAM_MERGE,
+} MGLBatchPath;
+
 typedef struct {
     uint32_t program_name;
     uint32_t program_pipeline_name;
@@ -84,6 +89,7 @@ typedef struct {
 typedef struct {
     MGLStateKey     key;
     uint32_t        command_count;
+    uint32_t        command_capacity;
     MGLDrawCommand *commands;
     void           *state_snapshot;
     void           *vao_snapshot;
@@ -98,6 +104,7 @@ typedef struct {
     size_t          stream_index_count;
     size_t          stream_vertex_stride;
     uint64_t        stream_layout_hash;
+    MGLBatchPath    scheduled_path;
     bool            mdi_compatible;
     bool            uses_elements;
     bool            stream_merged;
@@ -128,11 +135,13 @@ typedef struct {
     bool         texture_read_overflow;
 } MGLCommandBuffer;
 
+/* GL API -> DrawCommand Recorder -> DrawCommandBuffer. */
 void mglInitCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBuffer(MGLCommandBuffer *cb);
 void mglResetCommandBufferForContext(GLMContext ctx, MGLCommandBuffer *cb);
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out);
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b);
+void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd);
 void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd);
 void mglFlushCommandBuffer(GLMContext ctx);
 void mglFlushPendingDraws(GLMContext ctx);

@@ -2320,6 +2320,9 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                     options:(MTLCompileOptions *)options
                                       label:(NSString *)label
                                       error:(NSError **)error;
+- (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (void)issueDirectScheduledBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut;
@@ -22869,8 +22872,8 @@ stencil_format_ok:;
             }
             [self applyPolygonOffsetForDrawMode:firstCmd->mode];
 
-            bool useMDI = false;
-            if (batch->stream_merged) {
+            MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
+            if (scheduledPath == MGL_BATCH_PATH_STREAM_MERGE) {
                 streamMergedBatchCount++;
                 streamMergedCommandCount += batch->command_count;
                 MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
@@ -22880,33 +22883,9 @@ stencil_format_ok:;
                                context:glm_ctx
                                flushId:flushHit
                             batchIndex:b
-                                 phase:"ISSUE_STREAM"];
+                                 phase:"ISSUE_STREAM_MERGE"];
                 [self issueStreamMergedBatch:batch context:glm_ctx];
             } else {
-                useMDI =
-                    !mglEnvFlagEnabled("MGL_DISABLE_MDI") &&
-                    batch->mdi_compatible &&
-                    batch->command_count >= MGL_MDI_MIN_BATCH_SIZE &&
-                    !mglPolygonModePointForDrawMode(glm_ctx, firstCmd->mode);
-                if (useMDI && batch->uses_elements &&
-                    mglPrimitiveRestartIndexForType(
-                        glm_ctx, firstCmd->indexType, NULL)) {
-                useMDI = false;
-                }
-            }
-
-            if (!batch->stream_merged && useMDI) {
-                mdiBatchCount++;
-                mdiCommandCount += batch->command_count;
-                MGL_PERF_INC(g_mglBatchesMDISinceSwap);
-                MGL_PERF_ADD(g_mglDrawMDISinceSwap, batch->command_count);
-                [self traceReplayBatch:batch
-                               context:glm_ctx
-                               flushId:flushHit
-                            batchIndex:b
-                                 phase:"ISSUE_MDI"];
-                [self issueMDIBatch:batch context:glm_ctx];
-            } else if (!batch->stream_merged) {
                 directBatchCount++;
                 directCommandCount += batch->command_count;
                 MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
@@ -22916,7 +22895,7 @@ stencil_format_ok:;
                                flushId:flushHit
                             batchIndex:b
                                  phase:"ISSUE_DIRECT"];
-                [self issueDirectBatch:batch context:glm_ctx];
+                [self issueDirectScheduledBatch:batch context:glm_ctx];
             }
 
             for (uint32_t i = 0; i < batch->command_count; i++) {
@@ -22972,6 +22951,35 @@ stencil_format_ok:;
     }
 }
 
+- (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+{
+    (void)glm_ctx;
+    if (!batch || batch->command_count == 0) {
+        return MGL_BATCH_PATH_DIRECT;
+    }
+
+    if (batch->stream_merged) {
+        batch->scheduled_path = MGL_BATCH_PATH_STREAM_MERGE;
+        return MGL_BATCH_PATH_STREAM_MERGE;
+    }
+
+    batch->scheduled_path = MGL_BATCH_PATH_DIRECT;
+    return MGL_BATCH_PATH_DIRECT;
+}
+
+- (void)issueDirectScheduledBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+{
+    if (!batch || batch->command_count == 0) {
+        return;
+    }
+
+    if ([self issueIndirectCommandBufferBatch:batch context:glm_ctx]) {
+        return;
+    }
+
+    [self issueDirectBatch:batch context:glm_ctx];
+}
+
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
     if (!batch || !batch->stream_merged || batch->stream_index_count == 0) {
@@ -23001,6 +23009,22 @@ stencil_format_ok:;
         }
         [self issueDirectBatch:batch context:glm_ctx];
         return;
+    }
+
+    if (!mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
+        if (batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_traceReplayFlushId
+                          batchIndex:_traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"ISSUE"
+                              reason:"stream_merge_to_mdi"];
+        }
+        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx]) {
+            return;
+        }
     }
 
     Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
@@ -23038,19 +23062,6 @@ stencil_format_ok:;
     MGLDrawCommand *firstCmd = &batch->commands[0];
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
 
-    if (mglEnvFlagEnabled("MGL_DISABLE_MDI")) {
-        [self traceReplayCommand:batch
-                         command:firstCmd
-                         context:glm_ctx
-                         flushId:_traceReplayFlushId
-                      batchIndex:_traceReplayBatchIndex
-                    commandIndex:0
-                           phase:"FALLBACK"
-                          reason:"stream_mdi_disabled"];
-        [self issueDirectBatch:batch context:glm_ctx];
-        return;
-    }
-
     [_currentRenderEncoder drawIndexedPrimitives:primType
                                       indexCount:(NSUInteger)batch->stream_index_count
                                        indexType:MTLIndexTypeUInt32
@@ -23067,6 +23078,114 @@ stencil_format_ok:;
                 commandIndex:0
                        phase:"SUBMIT"
                       reason:"stream_direct_merged"];
+}
+
+- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+{
+    if (!batch || !batch->stream_merged || batch->command_count == 0 ||
+        batch->stream_index_count == 0 || !_currentRenderEncoder) {
+        return NO;
+    }
+    if (mglEnvFlagEnabled("MGL_DISABLE_MDI") ||
+        batch->key.primitive_type == 0xFFu) {
+        return NO;
+    }
+
+    Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
+    if (!indexBuffer || ![self processBuffer:indexBuffer]) {
+        if (batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_traceReplayFlushId
+                          batchIndex:_traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:"stream_mdi_index_buffer"];
+        }
+        return NO;
+    }
+
+    id<MTLBuffer> mtlIndexBuffer = (__bridge id<MTLBuffer>)(indexBuffer->data.mtl_data);
+    if (!mtlIndexBuffer) {
+        if (batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_traceReplayFlushId
+                          batchIndex:_traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:"stream_mdi_no_mtl_index"];
+        }
+        return NO;
+    }
+
+    size_t argSize = sizeof(MTLDrawIndexedPrimitivesIndirectArguments);
+    if (batch->command_count > (UINT32_MAX / argSize)) {
+        if (batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_traceReplayFlushId
+                          batchIndex:_traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:"stream_mdi_args_overflow"];
+        }
+        return NO;
+    }
+
+    NSUInteger neededBytes = (NSUInteger)argSize * (NSUInteger)batch->command_count;
+    NSUInteger indirectArgsOffset = 0;
+    id<MTLBuffer> indirectArgsBuffer =
+        [self mdiArgumentScratchBufferWithLength:neededBytes
+                                          offset:&indirectArgsOffset];
+    if (!indirectArgsBuffer) {
+        if (batch->command_count > 0) {
+            [self traceReplayCommand:batch
+                             command:&batch->commands[0]
+                             context:glm_ctx
+                             flushId:_traceReplayFlushId
+                          batchIndex:_traceReplayBatchIndex
+                        commandIndex:0
+                               phase:"FALLBACK"
+                              reason:"stream_mdi_args_alloc"];
+        }
+        return NO;
+    }
+
+    MTLDrawIndexedPrimitivesIndirectArguments *args =
+        (MTLDrawIndexedPrimitivesIndirectArguments *)((uint8_t *)indirectArgsBuffer.contents + indirectArgsOffset);
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        MGLDrawCommand *cmd = &batch->commands[i];
+        args[i].indexCount = (uint32_t)cmd->count;
+        args[i].instanceCount = (uint32_t)(cmd->instanceCount > 0 ? cmd->instanceCount : 1);
+        args[i].indexStart = 0u;
+        args[i].baseVertex = 0;
+        args[i].baseInstance = cmd->baseInstance;
+    }
+
+    MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        MGLDrawCommand *cmd = &batch->commands[i];
+        [_currentRenderEncoder drawIndexedPrimitives:primType
+                                           indexType:MTLIndexTypeUInt32
+                                         indexBuffer:mtlIndexBuffer
+                                   indexBufferOffset:(NSUInteger)cmd->indexBufferOffset
+                                      indirectBuffer:indirectArgsBuffer
+                                indirectBufferOffset:indirectArgsOffset + (i * argSize)];
+        [self traceReplayCommand:batch
+                         command:cmd
+                         context:glm_ctx
+                         flushId:_traceReplayFlushId
+                      batchIndex:_traceReplayBatchIndex
+                    commandIndex:i
+                           phase:"SUBMIT"
+                          reason:"stream_mdi_indexed"];
+    }
+
+    return YES;
 }
 
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -23334,10 +23453,6 @@ stencil_format_ok:;
                            phase:"FALLBACK"
                           reason:"mdi_unsupported_primitive"];
         [self issueDirectBatch:batch context:glm_ctx];
-        return;
-    }
-
-    if ([self issueIndirectCommandBufferBatch:batch context:glm_ctx]) {
         return;
     }
 

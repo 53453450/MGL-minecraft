@@ -1048,6 +1048,8 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx);
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
 
+#ifndef MGL_CONTEXT_ENUMS_DEFINED
+#define MGL_CONTEXT_ENUMS_DEFINED
 enum {
     MGL_PIXEL_FORMAT,
     MGL_PIXEL_TYPE,
@@ -1057,6 +1059,7 @@ enum {
     MGL_STENCIL_TYPE,
     MGL_CONTEXT_FLAGS
 };
+#endif /* MGL_CONTEXT_ENUMS_DEFINED */
 
 #ifdef __cplusplus
 extern "C" {

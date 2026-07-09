@@ -401,6 +401,29 @@ bench-system: benchmark/mgl_benchmark.c
 		-o $(build_dir)/mgl_benchmark_system
 	@echo "✅ System OpenGL benchmark built: $(build_dir)/mgl_benchmark_system"
 
-.PHONY: default test dbg lib clean insall-pkgdeps test-make bench bench-system
+# Draw-pipeline regression suite (Stage 0.1 of RENDERER_EVOLUTION_TODO.md).
+# Non-interactive, headless, FBO-offscreen. Covers array/element/instanced/
+# multidraw/indirect + FBO switch + XFB + conditional render. Produces TGA
+# snapshots compared against MGL_Golden_Images/Reg_*.tga.
+test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+		-I./external/glfw/include \
+		-I./external/glslang/glslang/Include \
+		-I./external/SPIRV-Cross \
+		-I./external/SPIRV-Tools/include \
+		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
+		-DMGL_GL_CORE -DENABLE_OPT=0 \
+		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
+		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-isysroot $(SDK_ROOT) \
+		test_regression/main.c \
+		-L$(build_dir) -lmgl -lglfw -lc++ \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $(build_dir)/test_regression
+	@echo "✅ Regression suite built: $(build_dir)/test_regression"
+
+.PHONY: default test dbg lib clean insall-pkgdeps test-make bench bench-system test-regression
 
 -include $(deps)

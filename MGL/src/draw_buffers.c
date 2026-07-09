@@ -1445,446 +1445,329 @@ bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
 }
 
 
-void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
+/* ================================================================== */
+/* Stage 1 — Unified Draw Frontend: mglDrawDispatch                  */
+/* ================================================================== */
+/* All "normal" draw entries (arrays / elements / instanced /         */
+/* basevertex / baseinstance / range) funnel through this single     */
+/* function.  Indirect and multidraw entries are NOT unified (see     */
+/* docs/stage1_entry_step_matrix.md §B).                              */
+/*                                                                    */
+/* Design rules (from RENDERER_EVOLUTION_TODO.md core principles):   */
+/*  - Pure C, no Metal calls (core principle 1)                       */
+/*  - Behaviour aligns with the original mglDrawArrays reference     */
+/*    (conditional check BEFORE program validation, per GL spec)      */
+
+/* True for element-indexed draw command types. */
+static inline bool mglCmdIsIndexed(MGLDrawCommandType t)
 {
-    if (!check_draw_modes(mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
+    return t == MGL_CMD_DRAW_ELEMENTS                       ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED             ||
+           t == MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX           ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE         ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+}
 
-    // ERROR_CHECK_RETURN(first >= 0, GL_INVALID_VALUE);
-    if (first < 0) {
-        fprintf(stderr, "MGL Error: mglDrawArrays: first < 0 (%d)\n", first);
-        ERROR_RETURN(GL_INVALID_VALUE);
+/* True for instanced draw command types (instanceCount > 1 expected). */
+static inline bool mglCmdIsInstanced(MGLDrawCommandType t)
+{
+    return t == MGL_CMD_DRAW_ARRAYS_INSTANCED                        ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED                      ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX          ||
+           t == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE          ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE        ||
+           t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+}
+
+/* The 8-step unified draw frontend (Stage 1.1 steps S1-S11 + S14/S15). */
+static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
+{
+    const bool indexed   = mglCmdIsIndexed(cmd->type);
+    const bool instanced = mglCmdIsInstanced(cmd->type);
+
+    /* S1: mode validation */
+    if (!check_draw_modes(cmd->mode)) {
+        ERROR_RETURN(GL_INVALID_ENUM);
+        return;
     }
 
-    // ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    if (count < 0) {
-        fprintf(stderr, "MGL Error: mglDrawArrays: count < 0 (%d)\n", count);
+    /* S2: parameter validation */
+    if (!indexed) {
+        if (cmd->first < 0) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+    }
+    if (cmd->count < 0) {
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
+    }
+    if (cmd->count == 0) return;
+    if (instanced) {
+        if (cmd->instanceCount < 0) {
+            ERROR_RETURN(GL_INVALID_VALUE);
+            return;
+        }
+        if (cmd->instanceCount == 0) return;
     }
 
-    if (count == 0) { return; }
+    /* S3+S4: element-specific validation (indexed only) */
+    if (indexed) {
+        if (!check_element_type(cmd->indexType)) {
+            ERROR_RETURN(GL_INVALID_ENUM);
+            return;
+        }
+        if (should_skip_indexed_draw_no_element_buffer(ctx, "mglDrawDispatch")) {
+            return;
+        }
+    }
 
-    if(validate_vao(ctx, false) == false)
-    {
-        fprintf(stderr, "MGL Error: mglDrawArrays: validate_vao failed\n");
+    /* S5: VAO validation */
+    if (!validate_vao(ctx, indexed)) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
+    /* S6: conditional render check (BEFORE program — matches mglDrawArrays
+     * reference; per GL spec, conditional skip should short-circuit). */
     if (mglShouldSkipConditionalRender(ctx))
         return;
 
+    /* S7: program validation */
     if (!validate_program(ctx)) {
-        fprintf(stderr, "MGL Error: mglDrawArrays: validate_program failed\n");
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
 
+    /* S8: active query draw recording */
     mglRecordActiveSampleQueryDraw(ctx);
 
-    if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, 1, 0))
-        return;
+    /* S9: CPU transform feedback capture */
+    if (!indexed) {
+        if (mglTryCPUTransformFeedbackCapture(ctx, cmd->mode, cmd->first,
+                                               cmd->count, cmd->instanceCount,
+                                               cmd->baseInstance))
+            return;
+    } else {
+        if (mglTryCPUTransformFeedbackCaptureElements(ctx, cmd->mode, cmd->count,
+                                                       cmd->indexType,
+                                                       (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                       cmd->instanceCount,
+                                                       cmd->baseVertex,
+                                                       cmd->baseInstance))
+            return;
+    }
 
-    /* TODO(gpu-xfb): when a real GPU capture path is wired (SPIRV-Cross
-     * MSL_CAPTURE_OUTPUT_TO_BUFFER variant stored in
-     * spirv[_VERTEX_SHADER].msl_str_capture), dispatch a rasterization-
-     * disabled render pipeline that writes VS outputs to the XFB buffer
-     * here, for programs that are NOT passthrough-capturable on the CPU.
-     * See mglCompileMSLCaptureVariant in program.c. */
-
+    /* S10: color shadow invalidation (always called — no-op when no
+     * rgb10a2_shadow textures exist; fixes omission in 7/11 old entries). */
     mglInvalidateColorShadowsForDraw(ctx);
 
-    /* GL_PATCHES: bypass deferred batch and go directly to mtlDrawArrays,
-     * which dispatches TCS/TES as Metal compute kernels.  This is needed
-     * regardless of GL_RASTERIZER_DISCARD since the render pipeline cannot
-     * handle tessellation stages. */
-    if (mode == GL_PATCHES) {
-        ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
+    /* S11: GL_PATCHES bypasses deferred (tessellation compute kernel path).
+     * Only applies to non-instanced arrays (matches original mglDrawArrays). */
+    if (cmd->type == MGL_CMD_DRAW_ARRAYS && cmd->mode == GL_PATCHES) {
+        ctx->mtl_funcs.mtlDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
         return;
     }
 
+    /* S14: deferred path — record command for batch replay */
     if (ctx->draw_defer_enabled) {
-        mglTraceLogExternal("DRAW_ARRAYS_FRONTEND mode=0x%x first=%d count=%d program=%u vao=%p defer=1 dirty=0x%x",
-                            (unsigned)mode,
-                            (int)first,
-                            (int)count,
-                            (unsigned)(ctx->state.program ? ctx->state.program->name : ctx->state.program_name),
-                            ctx->state.vao,
-                            (unsigned)ctx->state.dirty_bits);
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ARRAYS;
-        cmd.mode = mode;
-        cmd.first = first;
-        cmd.count = count;
-        cmd.instanceCount = 1;
-        mglAppendDrawCommand(ctx, &cmd);
+        mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
+                            "inst=%d bv=%d bi=%u program=%u defer=1",
+                            (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,
+                            (int)cmd->count, (int)cmd->instanceCount, (int)cmd->baseVertex,
+                            (unsigned)cmd->baseInstance,
+                            (unsigned)mglTraceDrawProgram(ctx));
+        mglRecordDrawCommand(ctx, cmd);
         return;
     }
 
-    mglTraceLogExternal("DRAW_ARRAYS_FRONTEND mode=0x%x first=%d count=%d program=%u vao=%p defer=0 dirty=0x%x",
-                        (unsigned)mode,
-                        (int)first,
-                        (int)count,
-                        (unsigned)(ctx->state.program ? ctx->state.program->name : ctx->state.program_name),
-                        ctx->state.vao,
-                        (unsigned)ctx->state.dirty_bits);
-    if (getenv("MGL_CULL_DBG")) fprintf(stderr, "MGL_CULL_DBG: calling mtlDrawArrays\n");
-    ctx->mtl_funcs.mtlDrawArrays(ctx, mode, first, count);
+    /* S15: immediate path — dispatch to Metal bridge */
+    mglTraceLogExternal("DRAW_DISPATCH_FRONTEND type=%u mode=0x%x first=%d count=%d "
+                        "inst=%d bv=%d bi=%u program=%u defer=0",
+                        (unsigned)cmd->type, (unsigned)cmd->mode, (int)cmd->first,
+                        (int)cmd->count, (int)cmd->instanceCount, (int)cmd->baseVertex,
+                        (unsigned)cmd->baseInstance,
+                        (unsigned)mglTraceDrawProgram(ctx));
+    if (getenv("MGL_CULL_DBG")) fprintf(stderr, "MGL_CULL_DBG: mglDrawDispatch immediate\n");
+
+    switch (cmd->type) {
+        case MGL_CMD_DRAW_ARRAYS:
+            ctx->mtl_funcs.mtlDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS:
+            ctx->mtl_funcs.mtlDrawElements(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                           (const void *)(uintptr_t)cmd->indexBufferOffset);
+            break;
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+            ctx->mtl_funcs.mtlDrawArraysInstanced(ctx, cmd->mode, cmd->first, cmd->count,
+                                                  cmd->instanceCount);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+            ctx->mtl_funcs.mtlDrawElementsInstanced(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                    cmd->instanceCount);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+            /* DrawRangeElementsBaseVertex also lands here (start/end ignored
+             * by Metal backend — verified at MGLRenderer.m:32670). */
+            ctx->mtl_funcs.mtlDrawElementsBaseVertex(ctx, cmd->mode, cmd->count, cmd->indexType,
+                                                     (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                     cmd->baseVertex);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+            ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(ctx, cmd->mode, cmd->count,
+                                                              cmd->indexType,
+                                                              (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                              cmd->instanceCount,
+                                                              cmd->baseVertex);
+            break;
+        case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+            ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(ctx, cmd->mode, cmd->first,
+                                                              cmd->count, cmd->instanceCount,
+                                                              cmd->baseInstance);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+            ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(ctx, cmd->mode, cmd->count,
+                                                                cmd->indexType,
+                                                                (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                                cmd->instanceCount,
+                                                                cmd->baseInstance);
+            break;
+        case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+            ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(ctx, cmd->mode, cmd->count,
+                                                                          cmd->indexType,
+                                                                          (const void *)(uintptr_t)cmd->indexBufferOffset,
+                                                                          cmd->instanceCount,
+                                                                          cmd->baseVertex,
+                                                                          cmd->baseInstance);
+            break;
+        default:
+            /* Unreachable — indirect/multidraw types never enter dispatch. */
+            fprintf(stderr, "MGL Error: mglDrawDispatch unknown type %u\n",
+                    (unsigned)cmd->type);
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            break;
+    }
+}
+
+
+void mglDrawArrays(GLMContext ctx, GLenum mode, GLint first, GLsizei count)
+{
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = 1;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElements(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices)
 {
-    if (!check_draw_modes(mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    // ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    if (count < 0) {
-        fprintf(stderr, "MGL Error: mglDrawElements: count < 0 (%d)\n", count);
-        ERROR_RETURN(GL_INVALID_VALUE);
-    }
-
-    if (count == 0) { return; }
-
-    if (!check_element_type(type)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  /*instancecount=*/1,
-                                                  /*basevertex=*/0,
-                                                  /*baseinstance=*/0))
-        return;
-
-    mglInvalidateColorShadowsForDraw(ctx);
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = 1;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElements(ctx, mode, count, type, indices);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawRangeElements(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices)
 {
-    if (!check_draw_modes(mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
+    /* Range-specific validation (start/end not stored in MGLDrawCommand;
+     * Metal backend ignores them — verified at MGLRenderer.m:32670). */
+    if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
-    ERROR_CHECK_RETURN(end >= start, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-
-    if (count == 0) { return; }
-
-    if (!check_element_type(type)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  /*instancecount=*/1,
-                                                  /*basevertex=*/0,
-                                                  /*baseinstance=*/0))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = 1;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawRangeElements(ctx, mode, start, end, count, type, indices);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawArraysInstanced(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount)
 {
-    if (!check_draw_modes(mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    // ERROR_CHECK_RETURN(first >= 0, GL_INVALID_VALUE);
-    if (first < 0) {
-        fprintf(stderr, "MGL Error: mglDrawArraysInstanced: first < 0 (%d)\n", first);
-        ERROR_RETURN(GL_INVALID_VALUE);
-    }
-
-    // ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    if (count < 0) {
-        fprintf(stderr, "MGL Error: mglDrawArraysInstanced: count < 0 (%d)\n", count);
-        ERROR_RETURN(GL_INVALID_VALUE);
-    }
-
-    if (count == 0) { return; }
-
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-
-    if (instancecount == 0) { return; }
-
-    if(validate_vao(ctx, false) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, instancecount, 0))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ARRAYS_INSTANCED;
-        cmd.mode = mode;
-        cmd.first = first;
-        cmd.count = count;
-        cmd.instanceCount = instancecount;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawArraysInstanced(ctx, mode, first, count, instancecount);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS_INSTANCED;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = instancecount;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElementsInstanced(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount)
 {
-    if (!check_draw_modes(mode)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-
-    if (count == 0) { return; }
-
-    if (!check_element_type(type)) { ERROR_RETURN(GL_INVALID_ENUM); return; }
-
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-
-    if (instancecount == 0) { return; }
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    if (!validate_program(ctx)) { ERROR_RETURN(GL_INVALID_OPERATION); return; }
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  instancecount,
-                                                  /*basevertex=*/0,
-                                                  /*baseinstance=*/0))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = instancecount;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElementsInstanced(ctx, mode, count, type, indices, instancecount);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElementsBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    if (count == 0) return;
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  /*instancecount=*/1,
-                                                  basevertex,
-                                                  /*baseinstance=*/0))
-        return;
-
-    mglInvalidateColorShadowsForDraw(ctx);
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.baseVertex = basevertex;
-        cmd.instanceCount = 1;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElementsBaseVertex(ctx, mode, count, type, indices, basevertex);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.baseVertex        = basevertex;
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawRangeElementsBaseVertex(GLMContext ctx, GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
+    /* Range-specific validation (start/end ignored by Metal backend). */
+    if (end < start) { ERROR_RETURN(GL_INVALID_VALUE); return; }
 
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    if (count == 0) return;
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(end >= start, GL_INVALID_VALUE);
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  /*instancecount=*/1,
-                                                  basevertex,
-                                                  /*baseinstance=*/0))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.baseVertex = basevertex;
-        cmd.instanceCount = 1;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawRangeElementsBaseVertex(ctx, mode, start, end, count, type, indices, basevertex);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.baseVertex        = basevertex;
+    cmd.instanceCount     = 1;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElementsInstancedBaseVertex(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex)
 {
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-    if (count == 0 || instancecount == 0) return;
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  instancecount,
-                                                  basevertex,
-                                                  /*baseinstance=*/0))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = instancecount;
-        cmd.baseVertex = basevertex;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(ctx, mode, count, type, indices, instancecount, basevertex);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseVertex        = basevertex;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
@@ -1998,143 +1881,46 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
 
 void mglDrawArraysInstancedBaseInstance(GLMContext ctx, GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance)
 {
-    ERROR_CHECK_RETURN(first >= 0, GL_INVALID_VALUE);
-
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-    if (count == 0 || instancecount == 0) return;
-
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    if(validate_vao(ctx, false) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCapture(ctx, mode, first, count, instancecount, baseinstance))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE;
-        cmd.mode = mode;
-        cmd.first = first;
-        cmd.count = count;
-        cmd.instanceCount = instancecount;
-        cmd.baseInstance = baseinstance;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(ctx, mode, first, count, instancecount, baseinstance);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type          = MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE;
+    cmd.mode          = mode;
+    cmd.first         = first;
+    cmd.count         = count;
+    cmd.instanceCount = instancecount;
+    cmd.baseInstance  = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElementsInstancedBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance)
 {
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-    if (count == 0 || instancecount == 0) return;
-
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  instancecount,
-                                                  /*basevertex=*/0,
-                                                  baseinstance))
-        return;
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = instancecount;
-        cmd.baseInstance = baseinstance;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(ctx, mode, count, type, indices, instancecount, baseinstance);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseInstance      = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglDrawElementsInstancedBaseVertexBaseInstance(GLMContext ctx, GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance)
 {
-    ERROR_CHECK_RETURN(count >= 0, GL_INVALID_VALUE);
-    ERROR_CHECK_RETURN(instancecount >= 0, GL_INVALID_VALUE);
-    if (count == 0 || instancecount == 0) return;
-
-    ERROR_CHECK_RETURN(check_draw_modes(mode), GL_INVALID_ENUM);
-
-    ERROR_CHECK_RETURN(check_element_type(type), GL_INVALID_ENUM);
-
-    if (should_skip_indexed_draw_no_element_buffer(ctx, __func__)) {
-        return;
-    }
-
-    if(validate_vao(ctx, true) == false)
-    {
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
-    }
-
-    ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
-
-    if (mglSkipOrRecordConditionalDraw(ctx))
-        return;
-
-    if (mglTryCPUTransformFeedbackCaptureElements(ctx, mode, count, type, indices,
-                                                  instancecount,
-                                                  basevertex,
-                                                  baseinstance))
-        return;
-
-    mglInvalidateColorShadowsForDraw(ctx);
-
-    if (ctx->draw_defer_enabled) {
-        MGLDrawCommand cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
-        cmd.mode = mode;
-        cmd.count = count;
-        cmd.indexType = type;
-        cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
-        cmd.elementBuffer = mglCurrentElementBuffer(ctx, __func__);
-        cmd.instanceCount = instancecount;
-        cmd.baseVertex = basevertex;
-        cmd.baseInstance = baseinstance;
-        mglAppendDrawCommand(ctx, &cmd);
-        return;
-    }
-
-    ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(ctx, mode, count, type, indices, instancecount, basevertex, baseinstance);
+    MGLDrawCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type              = MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
+    cmd.mode              = mode;
+    cmd.count             = count;
+    cmd.indexType         = type;
+    cmd.indexBufferOffset = (GLuint)(uintptr_t)indices;
+    cmd.elementBuffer     = mglCurrentElementBuffer(ctx, __func__);
+    cmd.instanceCount     = instancecount;
+    cmd.baseVertex        = basevertex;
+    cmd.baseInstance      = baseinstance;
+    mglDrawDispatch(ctx, &cmd);
 }
 
 void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const GLsizei *count, GLsizei drawcount)
@@ -2169,7 +1955,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
             cmd.first = first[i];
             cmd.count = count[i];
             cmd.instanceCount = 1;
-            mglAppendDrawCommand(ctx, &cmd);
+            mglRecordDrawCommand(ctx, &cmd);
         }
         return;
     }
@@ -2219,7 +2005,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
             cmd.indexBufferOffset = (GLuint)(uintptr_t)indices[i];
             cmd.elementBuffer = elementBuffer;
             cmd.instanceCount = 1;
-            mglAppendDrawCommand(ctx, &cmd);
+            mglRecordDrawCommand(ctx, &cmd);
         }
         return;
     }
@@ -2270,7 +2056,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
             cmd.elementBuffer = elementBuffer;
             cmd.baseVertex = basevertex[i];
             cmd.instanceCount = 1;
-            mglAppendDrawCommand(ctx, &cmd);
+            mglRecordDrawCommand(ctx, &cmd);
         }
         return;
     }
