@@ -16643,6 +16643,8 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 
 - (bool) newRenderEncoderLocked
 {
+    /* Stage 4 instrumentation: count every render encoder (re)creation. */
+    MGL_PERF_INC(g_mglEncoderCreationsSinceSwap);
     // I can't remember why this is here...
     @autoreleasepool {
     /* Invalidate last-bound render encoder state — the new encoder must
@@ -22981,6 +22983,11 @@ stencil_format_ok:;
         }
     }
 
+    /* Stage 4 instrumentation: an FBO change forced a real encoder rotation
+     * (the "already matches" fast path above returned early without counting).
+     * newRenderEncoderLocked also bumps g_mglEncoderCreationsSinceSwap, so
+     * fboRot <= new always holds; new-minus-fboRot is non-FBO creation. */
+    MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
     [self endRenderEncodingLocked];
     RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
     return true;

@@ -96,6 +96,10 @@ extern _Atomic uint64_t g_mglSetVertexBufferSkipsSinceSwap;
 extern _Atomic uint64_t g_mglSetFragmentBufferSkipsSinceSwap;
 extern _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap;
 
+/* Render encoder lifecycle (Stage 4 — RenderPass Manager instrumentation) */
+extern _Atomic uint64_t g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
+extern _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
+
 /* Batch merge rejection reasons */
 extern _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap;
@@ -195,6 +199,9 @@ typedef struct MGLPerfCounters {
     uint64_t set_vertex_buffer_skips;
     uint64_t set_fragment_buffer_skips;
     uint64_t set_render_pipeline_state_skips;
+    /* Render encoder lifecycle */
+    uint64_t encoder_creations;
+    uint64_t encoder_fbo_rotations;
     /* Merge rejections */
     uint64_t merge_reject_state_differs;
     uint64_t merge_reject_buffer_hazard;
@@ -227,6 +234,8 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.set_vertex_buffer_skips    = MGL_FRAME_LOAD(g_mglSetVertexBufferSkipsSinceSwap);
     c.set_fragment_buffer_skips  = MGL_FRAME_LOAD(g_mglSetFragmentBufferSkipsSinceSwap);
     c.set_render_pipeline_state_skips = MGL_FRAME_LOAD(g_mglSetRenderPipelineStateSkipsSinceSwap);
+    c.encoder_creations     = MGL_FRAME_LOAD(g_mglEncoderCreationsSinceSwap);
+    c.encoder_fbo_rotations = MGL_FRAME_LOAD(g_mglEncoderFBORotationsSinceSwap);
     c.merge_reject_state_differs   = MGL_FRAME_LOAD(g_mglMergeRejectStateDiffersSinceSwap);
     c.merge_reject_buffer_hazard   = MGL_FRAME_LOAD(g_mglMergeRejectBufferHazardSinceSwap);
     c.merge_reject_unsafe_builtin  = MGL_FRAME_LOAD(g_mglMergeRejectUnsafeBuiltinSinceSwap);
@@ -257,6 +266,8 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglSetVertexBufferSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSetFragmentBufferSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSetRenderPipelineStateSkipsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglEncoderCreationsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglEncoderFBORotationsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectStateDiffersSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectBufferHazardSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectUnsafeBuiltinSinceSwap, 0);
