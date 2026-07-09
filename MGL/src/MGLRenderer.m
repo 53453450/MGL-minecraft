@@ -2323,6 +2323,7 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
 - (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
+- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx;
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError;
@@ -20417,21 +20418,9 @@ stencil_format_ok:;
         return false;
     }
 
-    // Stability-first rebinding pass:
-    // Command buffer rotation / encoder recreation can drop previously latched bindings.
-    // Rebind required resources before every draw to avoid Metal validation aborts.
-    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.vertex_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&ctx->state.fragment_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
-    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    if (![self bindTexturesToCurrentRenderEncoder]) {
-        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder]);
-    }
+    // Resource Sync 域 (Stage 3.4):draw 前的稳定性重绑定。逻辑搬到
+    // syncResourceBindingsForContext:,这里只保留派发。
+    RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx]);
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
@@ -20481,6 +20470,30 @@ stencil_format_ok:;
     } else if (processElapsedMs >= 25.0) {
         MGLTraceNSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
               (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
+    }
+    return true;
+}
+
+/*
+ * Resource Sync 域 (Stage 3.4)。draw 前的"稳定性重绑定":command buffer 轮转 /
+ * encoder 重建会丢失已锁存的绑定,故每次 draw 前重新映射并绑定 vertex/fragment
+ * buffer、buffer-size 常量、active textures 与 sampled textures。仅操作 Metal
+ * encoder 绑定,状态经 glm_ctx 读取(与搬出前一致)。返回 false 表示本次 draw
+ * 应跳过(与原内联 return false 语义等价)。
+ */
+- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
+{
+    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&glm_ctx->state.vertex_buffer_map_list]);
+    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&glm_ctx->state.fragment_buffer_map_list]);
+    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+    RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
+    if (![self bindTexturesToCurrentRenderEncoder]) {
+        RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
+        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder]);
     }
     return true;
 }
