@@ -940,6 +940,56 @@ static const char *VS_DEPTH =
  * testing from the uniform-layout confound seen in test_depth_test. */
 static GLuint make_fbo_depth_tex(int w, int h, GLuint *out_tex, GLuint *out_depth);
 
+/* Shared cross-stage uniform diagnostic: the SAME uniform name (u_tint) is
+ * declared in BOTH vertex and fragment. A shared uniform must resolve to ONE
+ * GL location and ONE plain_uniform_buffers slot, so writing it once feeds
+ * both stages. If pass 1 hands the two stages different locations, the vertex
+ * and fragment read different data. Render: vertex nudges X by u_tint.x,
+ * fragment colors by u_tint -> a single teal-ish triangle offset right.
+ * Gate: guards that a same-named cross-stage uniform stays on ONE location /
+ * plain_uniform_buffers slot (the sameName branch of the location fix). */
+static int test_shared_uniform(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "uniform vec4 u_tint;\n"
+        "void main(){ gl_Position=vec4(a_pos*0.5 + vec2(u_tint.x,0.0),0.0,1.0); }\n",
+        "#version 330 core\n"
+        "uniform vec4 u_tint;\n"
+        "out vec4 f; void main(){ f=vec4(0.0,u_tint.g,u_tint.b,1.0); }\n");
+    if (!prog) return 2;
+    glUseProgram(prog);
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    /* x=0.4 shifts right; g=1,b=1 -> teal fragment. One write, both stages. */
+    glUniform4f(glGetUniformLocation(prog, "u_tint"), 0.4f, 1.0f, 1.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
 /* Cross-stage uniform-location collision gate. The vertex shader (VS_DEPTH)
  * has u_offset/u_scale/u_depth; the fragment shader (FS_SOLID) has u_color.
  * SPIR-V numbers default-block uniforms per stage, so u_offset (vertex) and
@@ -1366,6 +1416,7 @@ static const TestCase TESTS[] = {
     { "depth_test",           test_depth_probe },
     { "stencil",              test_stencil_probe },
     { "uniform_alias",        test_uniform_alias },
+    { "shared_uniform",       test_shared_uniform },
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
