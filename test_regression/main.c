@@ -935,12 +935,175 @@ static const char *VS_DEPTH =
     "uniform float u_depth;\n"
     "void main() { gl_Position = vec4(a_pos * u_scale + u_offset, u_depth, 1.0); }\n";
 
+/* Minimal depth-occlusion probe with NO per-draw uniforms: two programs each
+ * hardcode gl_Position.z and frag color, same XY geometry. Isolates depth
+ * testing from the uniform-layout confound seen in test_depth_test. */
+static GLuint make_fbo_depth_tex(int w, int h, GLuint *out_tex, GLuint *out_depth);
+
+/* Uniform-aliasing probe: same program, u_offset set ONCE to a fixed value,
+ * two draws differing only by a later-declared scalar uniform (u_depth). If
+ * uniform packing/versioning is correct, BOTH triangles land at the same XY
+ * (the fixed offset). If setting u_depth corrupts u_offset, the second
+ * triangle shifts. No depth test (isolates uniform state only). */
 __attribute__((unused))
-static int test_depth_test(unsigned char *pixels, const char *out_path)
+static int test_uniform_alias(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
     GLuint fbo, tex;
     fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    GLuint prog = link_program(VS_DEPTH, FS_SOLID);   /* vec2 u_offset; float u_scale; float u_depth */
+    if (!prog) return 2;
+    glUseProgram(prog);
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    /* Fix offset + scale ONCE. */
+    glUniform2f(glGetUniformLocation(prog, "u_offset"), 0.0f, 0.0f);
+    glUniform1f(glGetUniformLocation(prog, "u_scale"), 0.4f);
+
+    /* Draw 1: red, u_depth=0.0 */
+    glUniform1f(glGetUniformLocation(prog, "u_depth"), 0.0f);
+    glUniform4f(glGetUniformLocation(prog, "u_color"), 1.0f, 0.0f, 0.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    /* Draw 2: green, ONLY u_depth changes (0.0 -> 0.9). Offset untouched.
+     * Must land on top of the red triangle (same XY). */
+    glUniform1f(glGetUniformLocation(prog, "u_depth"), 0.9f);
+    glUniform4f(glGetUniformLocation(prog, "u_color"), 0.0f, 1.0f, 0.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
+__attribute__((unused))
+static int test_depth_probe(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex, dtex;
+    fbo = make_fbo_depth_tex(REG_W, REG_H, &tex, &dtex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    /* Far red at z=0.6 */
+    GLuint progFar = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "void main(){ gl_Position=vec4(a_pos*0.7,0.6,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n");
+    /* Near green at z=-0.2 */
+    GLuint progNear = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "void main(){ gl_Position=vec4(a_pos*0.7,-0.2,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n");
+    if (!progFar || !progNear) return 2;
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LESS);
+
+    /* Draw far red first, then near green. With working depth, green wins
+     * the (identical) overlap. Without depth, green wins anyway (drawn last),
+     * so to distinguish we ALSO draw a far blue LAST: */
+    glUseProgram(progFar);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glUseProgram(progNear);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    /* Far blue drawn LAST at z=0.9: must be occluded by near green if depth
+     * works; if depth is off, blue (last) overwrites everything. */
+    GLuint progFarLast = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "void main(){ gl_Position=vec4(a_pos*0.7,0.9,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n");
+    if (!progFarLast) return 3;
+    glUseProgram(progFarLast);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glDisable(GL_DEPTH_TEST);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(progFar);
+    glDeleteProgram(progNear);
+    glDeleteProgram(progFarLast);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &dtex);
+    return 0;
+}
+
+/* FBO with color texture + DEPTH texture (matches Minecraft's glFramebufferTexture2D
+ * depth usage, unlike make_fbo which uses a depth renderbuffer). */
+static GLuint make_fbo_depth_tex(int w, int h, GLuint *out_tex, GLuint *out_depth)
+{
+    GLuint fbo, tex, dtex;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+
+    glGenTextures(1, &dtex);
+    glBindTexture(GL_TEXTURE_2D, dtex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, w, h, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, dtex, 0);
+
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "  [depth-tex FBO incomplete: 0x%x]\n", st);
+        return 0;
+    }
+    if (out_tex) *out_tex = tex;
+    if (out_depth) *out_depth = dtex;
+    return fbo;
+}
+
+__attribute__((unused))
+static int test_depth_test(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex, dtex;
+    fbo = make_fbo_depth_tex(REG_W, REG_H, &tex, &dtex);
     if (!fbo) return 1;
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     clear_color(0.1f, 0.1f, 0.1f);
@@ -987,6 +1150,7 @@ static int test_depth_test(unsigned char *pixels, const char *out_path)
     glDeleteProgram(prog);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
+    glDeleteTextures(1, &dtex);
     return 0;
 }
 
@@ -1101,11 +1265,19 @@ static const TestCase TESTS[] = {
     { "conditional_render",   test_conditional_render },
     { "program_switch",       test_program_switch },
     { "blend",                test_blend },
-    /* depth_test / stencil authored but not registered: on known-good 3.2
-     * they expose non-occluding depth and a non-masking stencil in the
-     * headless FBO path (see scripts/grid_sample.py output). Their goldens
-     * would bless likely-buggy output, so they are held out of the gate
-     * until the headless depth/stencil behavior is triaged separately. */
+    { "depth_test",           test_depth_probe },
+    /* depth_test uses test_depth_probe: hardcoded per-program z, NO per-draw
+     * uniforms. Verified correct — near occludes far, last-drawn far triangle
+     * is depth-rejected.
+     *
+     * NOT registered (kept as __attribute__((unused)) diagnostics):
+     *  - test_depth_test / test_stencil: original versions used the
+     *    same-program-multi-draw-with-changing-uniforms pattern, which trips a
+     *    SEPARATE deferred-uniform bug (see test_uniform_alias) unrelated to
+     *    depth/stencil. Rewrite them probe-style before registering.
+     *  - test_uniform_alias: minimal repro of that uniform bug — two draws,
+     *    same program, only a scalar uniform changes between them, yet the
+     *    triangles land at different XY. Left in-source for later triage. */
 };
 static const int NUM_TESTS = (int)(sizeof(TESTS) / sizeof(TESTS[0]));
 
