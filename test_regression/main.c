@@ -1065,6 +1065,102 @@ static int test_depth_probe(unsigned char *pixels, const char *out_path)
     return 0;
 }
 
+/* ---- Stencil probe (probe style: NO per-draw uniforms) ----
+ * Pass 1: small triangle (scale baked into progMask), stencil ALWAYS->REPLACE
+ * ref=1, colorMask off — writes the stencil mask only.
+ * Pass 2: full-size green quad (scale baked into progFill), stencil EQUAL 1 —
+ * only passes inside the mask triangle. Result: green clipped to the triangle.
+ * Two separate programs, each with hardcoded scale/color, so no same-program
+ * multi-draw uniform changes (avoids the deferred-uniform bug). */
+static int test_stencil_probe(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo = 0, tex = 0, rbo = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, REG_W, REG_H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+
+    glGenRenderbuffers(1, &rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, REG_W, REG_H);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) return 1;
+
+    glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+    glClearStencil(0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+
+    /* progMask: small white triangle (scale 0.5 baked in) */
+    GLuint progMask = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "void main(){ gl_Position=vec4(a_pos*0.5,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(1.0,1.0,1.0,1.0); }\n");
+    /* progFill: full-size green quad (scale 1.0 baked in) */
+    GLuint progFill = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 a_pos;\n"
+        "void main(){ gl_Position=vec4(a_pos,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n");
+    if (!progMask || !progFill) return 2;
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo_t = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    GLuint vbo_q = make_vbo(QUAD_VERTS, sizeof(QUAD_VERTS));
+    GLuint ibo;
+    glGenBuffers(1, &ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(QUAD_INDICES), QUAD_INDICES, GL_STATIC_DRAW);
+
+    glEnable(GL_STENCIL_TEST);
+
+    /* Pass 1: write stencil=1 in the small triangle, color off. */
+    glStencilFunc(GL_ALWAYS, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    glStencilMask(0xFF);
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glUseProgram(progMask);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_t);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    /* Pass 2: green quad only where stencil==1. */
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilFunc(GL_EQUAL, 1, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+    glStencilMask(0x00);
+    glUseProgram(progFill);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_q);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ibo);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_SHORT, 0);
+
+    glDisable(GL_STENCIL_TEST);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo_t);
+    glDeleteBuffers(1, &vbo_q);
+    glDeleteBuffers(1, &ibo);
+    glDeleteProgram(progMask);
+    glDeleteProgram(progFill);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    glDeleteRenderbuffers(1, &rbo);
+    return 0;
+}
+
 /* FBO with color texture + DEPTH texture (matches Minecraft's glFramebufferTexture2D
  * depth usage, unlike make_fbo which uses a depth renderbuffer). */
 static GLuint make_fbo_depth_tex(int w, int h, GLuint *out_tex, GLuint *out_depth)
@@ -1266,15 +1362,17 @@ static const TestCase TESTS[] = {
     { "program_switch",       test_program_switch },
     { "blend",                test_blend },
     { "depth_test",           test_depth_probe },
-    /* depth_test uses test_depth_probe: hardcoded per-program z, NO per-draw
-     * uniforms. Verified correct — near occludes far, last-drawn far triangle
-     * is depth-rejected.
+    { "stencil",              test_stencil_probe },
+    /* depth_test/stencil use probe-style fns (test_depth_probe /
+     * test_stencil_probe): hardcoded per-program values, NO per-draw uniforms.
+     * Both verified correct — depth: near occludes far, last-drawn far triangle
+     * depth-rejected; stencil: green clipped to the mask triangle.
      *
      * NOT registered (kept as __attribute__((unused)) diagnostics):
      *  - test_depth_test / test_stencil: original versions used the
      *    same-program-multi-draw-with-changing-uniforms pattern, which trips a
      *    SEPARATE deferred-uniform bug (see test_uniform_alias) unrelated to
-     *    depth/stencil. Rewrite them probe-style before registering.
+     *    depth/stencil.
      *  - test_uniform_alias: minimal repro of that uniform bug — two draws,
      *    same program, only a scalar uniform changes between them, yet the
      *    triangles land at different XY. Left in-source for later triage. */
