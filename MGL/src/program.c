@@ -2614,6 +2614,17 @@ static void mglAssignPlainUniformLocations(Program *program)
     }
 
     bool used[MAX_BINDABLE_BUFFERS] = {false};
+    /* Track which uniform NAME claimed each location. GL uses a single uniform
+     * location namespace across the whole linked program, but SPIR-V numbers
+     * default-block uniforms per stage (each stage from 0). Honoring a
+     * per-stage location directly (as this pass used to) let a fragment-stage
+     * uniform collide with a different vertex-stage uniform on the same
+     * location, so both indexed the same plain_uniform_buffers[loc] slot and
+     * clobbered each other. Record the claimant name so we can tell a genuine
+     * cross-stage SHARED uniform (same name — keep the shared location) apart
+     * from an accidental collision (different name — defer to pass 2, which
+     * assigns a free location). */
+    const char *used_by[MAX_BINDABLE_BUFFERS] = {NULL};
 
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         SpirvResourceList *resources =
@@ -2625,14 +2636,34 @@ static void mglAssignPlainUniformLocations(Program *program)
             }
 
             if (res->location != 0xffffffffu &&
-                       res->location < 1024u) {
-                res->uniform_location = (GLint)res->location;
-                if (res->uniform_location < MAX_BINDABLE_BUFFERS) {
-                    used[res->uniform_location] = true;
+                       res->location < 1024u &&
+                       res->location < MAX_BINDABLE_BUFFERS) {
+                GLint candidate = (GLint)res->location;
+                bool sameName = used_by[candidate] && res->name &&
+                                strcmp(used_by[candidate], res->name) == 0;
+                if (!used[candidate] || sameName) {
+                    /* Free slot, or the same uniform shared across stages. */
+                    res->uniform_location = candidate;
+                    used[candidate] = true;
+                    if (res->name) {
+                        used_by[candidate] = res->name;
+                    }
+                } else {
+                    /* Collision with a different uniform in another stage:
+                     * leave uniform_location = -1 so pass 2 relocates it to a
+                     * free slot instead of aliasing this one. */
+                    res->uniform_location = -1;
                 }
+            } else if (res->location != 0xffffffffu && res->location < 1024u) {
+                /* location >= MAX_BINDABLE_BUFFERS: cannot index used[]; keep
+                 * prior behavior of honoring it verbatim. */
+                res->uniform_location = (GLint)res->location;
             } else if (res->uniform_location >= 0 &&
                        res->uniform_location < MAX_BINDABLE_BUFFERS) {
                 used[res->uniform_location] = true;
+                if (res->name) {
+                    used_by[res->uniform_location] = res->name;
+                }
             }
         }
     }

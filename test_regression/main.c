@@ -940,12 +940,14 @@ static const char *VS_DEPTH =
  * testing from the uniform-layout confound seen in test_depth_test. */
 static GLuint make_fbo_depth_tex(int w, int h, GLuint *out_tex, GLuint *out_depth);
 
-/* Uniform-aliasing probe: same program, u_offset set ONCE to a fixed value,
- * two draws differing only by a later-declared scalar uniform (u_depth). If
- * uniform packing/versioning is correct, BOTH triangles land at the same XY
- * (the fixed offset). If setting u_depth corrupts u_offset, the second
- * triangle shifts. No depth test (isolates uniform state only). */
-__attribute__((unused))
+/* Cross-stage uniform-location collision gate. The vertex shader (VS_DEPTH)
+ * has u_offset/u_scale/u_depth; the fragment shader (FS_SOLID) has u_color.
+ * SPIR-V numbers default-block uniforms per stage, so u_offset (vertex) and
+ * u_color (fragment) both reflect location 0. Before the link-time fix they
+ * shared plain_uniform_buffers[0], so writing u_color clobbered u_offset and
+ * the two triangles landed at different XY. Correct behavior: u_offset stays
+ * (0,0) for both draws, so the two triangles fully overlap at center — draw 2
+ * (green) covers draw 1 (red). Golden must show green-only at center, no red. */
 static int test_uniform_alias(unsigned char *pixels, const char *out_path)
 {
     (void)out_path;
@@ -1363,19 +1365,17 @@ static const TestCase TESTS[] = {
     { "blend",                test_blend },
     { "depth_test",           test_depth_probe },
     { "stencil",              test_stencil_probe },
+    { "uniform_alias",        test_uniform_alias },
     /* depth_test/stencil use probe-style fns (test_depth_probe /
-     * test_stencil_probe): hardcoded per-program values, NO per-draw uniforms.
-     * Both verified correct — depth: near occludes far, last-drawn far triangle
-     * depth-rejected; stencil: green clipped to the mask triangle.
+     * test_stencil_probe): hardcoded per-program values.
+     * uniform_alias gates the cross-stage uniform-location fix (program.c
+     * mglAssignPlainUniformLocations): a vertex and a fragment uniform must
+     * not share a location / plain_uniform_buffers slot.
      *
      * NOT registered (kept as __attribute__((unused)) diagnostics):
      *  - test_depth_test / test_stencil: original versions used the
-     *    same-program-multi-draw-with-changing-uniforms pattern, which trips a
-     *    SEPARATE deferred-uniform bug (see test_uniform_alias) unrelated to
-     *    depth/stencil.
-     *  - test_uniform_alias: minimal repro of that uniform bug — two draws,
-     *    same program, only a scalar uniform changes between them, yet the
-     *    triangles land at different XY. Left in-source for later triage. */
+     *    same-program-multi-draw-with-changing-uniforms pattern; superseded by
+     *    the probe versions above. Kept for reference. */
 };
 static const int NUM_TESTS = (int)(sizeof(TESTS) / sizeof(TESTS[0]));
 
