@@ -19929,8 +19929,13 @@ create_new_command_buffer:
 
 /* Check whether parallel encode is enabled via environment variable.
  * When enabled, flushDrawBuffer will attempt to use MTLParallelRenderCommandEncoder
- * for parallel groups with ≥2 batches.  Disabled by default until the
- * processGLStateLocked parameterization (Step 3-4) is complete. */
+ * for parallel groups with ≥2 batches.  Disabled by default.
+ *
+ * Stage 5.3 Step 4: the parallel encoder path is validated in headless FBO
+ * mode (regression tests).  In windowed mode with sampled render targets,
+ * endRenderEncodingLocked triggers Y-flip copy encoders that conflict with
+ * parallel encoder creation on the AGX driver.  A future Step 5 will handle
+ * sampled RT deferral to enable parallel encoding in windowed mode. */
 - (BOOL)parallelEncodeEnabled
 {
     static BOOL s_checked = NO;
@@ -19985,6 +19990,12 @@ create_new_command_buffer:
      * Safe in sequential mode; in parallel mode each worker will need its
      * own GLMContext copy (Step 4). */
     [self restoreStateForBatch:batch context:glm_ctx savedState:savedState];
+
+    /* Parallel group batches share the same FBO — clear DIRTY_FBO and
+     * DIRTY_STATE to prevent checkBatchShouldExecute from triggering
+     * rotateRenderEncoderForCurrentFramebufferLocked or newRenderEncoderLocked,
+     * which would destroy the parallel sub-encoder and assert. */
+    glm_ctx->state.dirty_bits &= ~(DIRTY_FBO | DIRTY_STATE);
 
     /* checkBatchShouldExecute calls processGLStateLocked which syncs GL state
      * to _currentRenderEncoder + dedup ivars.  It also handles FBO rotation
@@ -23188,15 +23199,21 @@ stencil_format_ok:;
             if (batch->command_count == 0)
                 continue;
 
-            /* Stage 5.3: Parallel encode path (sequential simulation).
+            /* Stage 5.3 Step 4: Parallel encode via MTLParallelRenderCommandEncoder.
              *
              * When MGL_PARALLEL_ENCODE=1 and the current batch starts a
-             * parallel group with ≥2 members, process the first 2 batches
-             * with dedup isolation.  Each batch starts from the same
-             * pre-group dedup baseline and invalidates its dedup cache
-             * (simulating independent sub-encoders).  The draws are still
-             * issued sequentially on the same encoder — Step 4 will replace
-             * this with MTLParallelRenderCommandEncoder sub-encoders. */
+             * parallel group with ≥2 members, create a parallel render
+             * encoder with 2 sub-encoders.  Each sub-encoder gets its own
+             * batch, encoded sequentially on the calling thread (Step 4
+             * validates the parallel encoder API and execution order;
+             * multi-threaded dispatch is a future enhancement).
+             *
+             * Sub-encoder execution order = creation order (Apple docs),
+             * which matches GL submission order: batch[b] before batch[b+1].
+             *
+             * The current render encoder must be ended first because the
+             * parallel encoder needs a fresh render pass start (load/store
+             * actions are owned by the parallel encoder, not sub-encoders). */
             if (useParallelEncode) {
                 int groupIdx = -1;
                 for (uint32_t g = 0; g < parallelGroupCount; g++) {
@@ -23210,10 +23227,144 @@ stencil_format_ok:;
                     cb->batches[b + 1].command_count > 0) {
                     MGLDrawBatch *batch1 = &cb->batches[b + 1];
 
+                    /* Save the current render pass descriptor before ending
+                     * the encoder — the parallel encoder reuses it. */
+                    MTLRenderPassDescriptor *parallelDesc = _renderPassDescriptor;
+                    id<MTLRenderCommandEncoder> savedEncoder = _currentRenderEncoder;
+
+                    /* End the current encoder to start a parallel pass.
+                     * The parallel encoder owns the load/store actions. */
+                    [self endRenderEncodingLocked];
+
+                    /* endRenderEncodingLocked may trigger
+                     * updateGLSampledCopiesForEndedRenderPassFramebuffer which
+                     * creates transient render/blit encoders internally for
+                     * Y-flip copies.  Those are endEncoding'd before returning,
+                     * but Metal's AGX driver still asserts "command encoder
+                     * is already encoding" if we create a parallel encoder
+                     * on the same command buffer.  If a render encoder was
+                     * re-created, fallback to sequential. */
+                    if (_currentRenderEncoder != nil) {
+                        if (traceFlush) {
+                            MGLTraceNSLog(@"MGL TRACE parallelEncode SKIP "
+                                          "batch[%u] — encoder restored after endRender",
+                                          b);
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+
+                    /* Save dedup state before entering parallel mode. */
                     MGLWorkerContext preGroupState;
                     [self saveDedupStateToWorker:&preGroupState];
 
-                    /* Worker 0: process batch[b] with dedup isolation. */
+                    /* Check if the command buffer is clean enough for a
+                     * parallel encoder.  The AGX driver asserts if any
+                     * encoder (including transient blit/copy encoders from
+                     * sampled-copy updates) was active on this command buffer.
+                     * We can't query this directly, so we check a heuristic:
+                     * if endRenderEncodingLocked created any transient
+                     * encoders (indicated by _currentRenderEncoder being
+                     * non-nil or _renderPassDescriptor being replaced),
+                     * fallback to sequential.
+                     *
+                     * For now, only proceed if the command buffer has no
+                     * active render encoder AND the descriptor is still
+                     * valid.  This covers the headless FBO path (regression
+                     * tests) where no sampled-copy updates occur. */
+                    if (_currentRenderEncoder != nil ||
+                        _renderPassDescriptor == nil) {
+                        [self loadDedupStateFromWorker:&preGroupState];
+                        if (![self newRenderEncoderLocked]) {
+                            continue;
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+
+                    /* Create the parallel render command encoder.
+                     *
+                     * On AGX, parallelRenderCommandEncoder's sub-encoder
+                     * creation internally calls renderCommandEncoderWithDescriptor:,
+                     * which asserts if any encoder was active on the command
+                     * buffer — even if it was endEncoding'd.  endRenderEncodingLocked
+                     * triggers updateGLSampledCopiesForEndedRenderPassFramebuffer
+                     * which creates transient render encoders for Y-flip copies.
+                     * Those are endEncoding'd, but the AGX driver still considers
+                     * the command buffer "dirty".
+                     *
+                     * Workaround: commit the current command buffer and create
+                     * a fresh one before starting the parallel pass.  This
+                     * ensures the parallel encoder starts on a clean command
+                     * buffer with no prior encoder history.
+                     *
+                     * We cannot use flushCommandBufferLocked: because it calls
+                     * flushDrawBuffer: (recursive).  Instead, directly end any
+                     * active encoder, commit, and create a new command buffer. */
+                    [self endRenderEncodingLocked];
+                    if (_currentCommandBuffer) {
+                        [self commitCommandBufferWithAGXRecovery:_currentCommandBuffer];
+                        _currentCommandBuffer = nil;
+                    }
+                    if (![self newCommandBufferLocked]) {
+                        NSLog(@"MGL WARNING: newCommandBuffer failed before parallel encode, "
+                              "falling back to sequential for batches %u-%u", b, b + 1);
+                        [self loadDedupStateFromWorker:&preGroupState];
+                        if (![self newRenderEncoderLocked]) {
+                            continue;
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+
+                    id<MTLParallelRenderCommandEncoder> parallelEncoder =
+                        [_currentCommandBuffer parallelRenderCommandEncoderWithDescriptor:parallelDesc];
+                    if (!parallelEncoder) {
+                        NSLog(@"MGL WARNING: parallelRenderCommandEncoder failed, "
+                              "falling back to sequential for batches %u-%u", b, b + 1);
+                        [self loadDedupStateFromWorker:&preGroupState];
+                        if (![self newRenderEncoderLocked]) {
+                            continue;
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+                    parallelEncoder.label = @"MGL Parallel Render Encoder";
+
+                    /* Sub-encoder 0 for batch[b] (executes first). */
+                    id<MTLRenderCommandEncoder> subEncoder0 =
+                        [parallelEncoder renderCommandEncoder];
+                    if (!subEncoder0) {
+                        NSLog(@"MGL WARNING: sub-encoder 0 creation failed");
+                        [parallelEncoder endEncoding];
+                        [self loadDedupStateFromWorker:&preGroupState];
+                        if (![self newRenderEncoderLocked]) {
+                            continue;
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+                    subEncoder0.label = @"MGL Sub-encoder 0";
+
+                    /* Sub-encoder 1 for batch[b+1] (executes second). */
+                    id<MTLRenderCommandEncoder> subEncoder1 =
+                        [parallelEncoder renderCommandEncoder];
+                    if (!subEncoder1) {
+                        NSLog(@"MGL WARNING: sub-encoder 1 creation failed");
+                        [subEncoder0 endEncoding];
+                        [parallelEncoder endEncoding];
+                        [self loadDedupStateFromWorker:&preGroupState];
+                        if (![self newRenderEncoderLocked]) {
+                            continue;
+                        }
+                        [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+                        goto sequentialBatch;
+                    }
+                    subEncoder1.label = @"MGL Sub-encoder 1";
+
+                    /* --- Worker 0: encode batch[b] onto subEncoder0 --- */
+                    MGL_PERF_INC(g_mglParallelEncodeEligibleBatchesSinceSwap);
+                    _currentRenderEncoder = subEncoder0;
                     MGLWorkerContext worker0 = preGroupState;
                     BOOL exec0 = NO;
                     MGLBatchPath path0 =
@@ -23224,6 +23375,8 @@ stencil_format_ok:;
                                                batchIndex:b
                                                savedState:&savedState
                                                  executed:&exec0];
+                    [subEncoder0 endEncoding];
+
                     if (exec0) {
                         switch (path0) {
                             case MGL_BATCH_PATH_STREAM_MERGE:
@@ -23251,10 +23404,8 @@ stencil_format_ok:;
                         }
                     }
 
-                    /* Worker 1: process batch[b+1] independently — starts
-                     * from the same pre-group baseline, not worker0's
-                     * post-state.  This simulates two sub-encoders that
-                     * each start fresh. */
+                    /* --- Worker 1: encode batch[b+1] onto subEncoder1 --- */
+                    _currentRenderEncoder = subEncoder1;
                     MGLWorkerContext worker1 = preGroupState;
                     BOOL exec1 = NO;
                     MGLBatchPath path1 =
@@ -23265,6 +23416,8 @@ stencil_format_ok:;
                                                batchIndex:b + 1
                                                savedState:&savedState
                                                  executed:&exec1];
+                    [subEncoder1 endEncoding];
+
                     if (exec1) {
                         switch (path1) {
                             case MGL_BATCH_PATH_STREAM_MERGE:
@@ -23292,10 +23445,16 @@ stencil_format_ok:;
                         }
                     }
 
-                    /* The encoder now has batch[b+1]'s state bound (it was
-                     * the last encoded).  Restore worker1's post-state so
-                     * the dedup ivars reflect what's actually on the encoder. */
+                    /* End the parallel encoder — this finalizes the pass
+                     * and triggers load/store actions. */
+                    [parallelEncoder endEncoding];
+
+                    /* Restore dedup state from worker1 (last encoded batch).
+                     * The encoder is now ended, so invalidate to force
+                     * re-bind on the next sequential batch. */
                     [self loadDedupStateFromWorker:&worker1];
+                    [self invalidateLastBoundState];
+                    _currentRenderEncoder = nil;
 
                     if (traceFlush) {
                         MGLTraceNSLog(@"MGL TRACE parallelEncode "
@@ -23310,6 +23469,7 @@ stencil_format_ok:;
                 }
             }
 
+        sequentialBatch:
             [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
 
             if (![self checkBatchShouldExecute:batch
