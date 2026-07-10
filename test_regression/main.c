@@ -36,7 +36,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 16
+#define MAX_TESTS 18
 
 /* ------------------------------------------------------------------ */
 /* TGA writer (uncompressed BGRA-top-left, 3 or 4 channel)            */
@@ -276,6 +276,21 @@ static GLuint make_vbo(const void *data, size_t sz)
     glBindBuffer(GL_ARRAY_BUFFER, b);
     glBufferData(GL_ARRAY_BUFFER, sz, data, GL_STATIC_DRAW);
     return b;
+}
+
+/* Bind a pos2-only VAO (location 0, vec2) from `verts`. Caller owns *out_vao
+ * and *out_vbo and must glDelete them. Used by the Stage 4.2 DontCare tests. */
+static void make_pos2_vao(const void *verts, size_t sz, GLuint *out_vao, GLuint *out_vbo)
+{
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sz);
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    if (out_vao) *out_vao = vao;
+    if (out_vbo) *out_vbo = vbo;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1432,13 +1447,8 @@ static int test_multipass_resume(unsigned char *pixels, const char *out_path)
         "out vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n");
     if (!progRedLeft || !progGreenRight || !progBlue) return 2;
 
-    GLuint vao;
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    GLuint vao, vbo;
+    make_pos2_vao(TRI_VERTS, sizeof(TRI_VERTS), &vao, &vbo);
 
     /* Pass 1: A cleared once, red-left drawn. */
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
@@ -1507,13 +1517,8 @@ static int test_dontcare_fullscreen(unsigned char *pixels, const char *out_path)
         -1.0f,-1.0f,  1.0f,-1.0f,  1.0f, 1.0f,
         -1.0f,-1.0f,  1.0f, 1.0f, -1.0f, 1.0f,
     };
-    GLuint vao;
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    GLuint vbo = make_vbo(FULL, sizeof(FULL));
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    GLuint vao, vbo;
+    make_pos2_vao(FULL, sizeof(FULL), &vao, &vbo);
 
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glFinish();
@@ -1524,6 +1529,132 @@ static int test_dontcare_fullscreen(unsigned char *pixels, const char *out_path)
     glDeleteProgram(prog);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
+    return 0;
+}
+
+/* ---- Multi-batch same-FBO (Stage 5.1 parallel-group scaffold) ----
+ * One FBO, three DIFFERENT programs (hardcoded colors), three non-overlapping
+ * triangles. Different programs -> different state keys -> three separate
+ * batches in one flush, all targeting the same FBO (same MTLRenderPassDescriptor).
+ * This is the "parallel group" candidate Stage 5 would encode concurrently.
+ * Gate: all three triangles must render (proves batch grouping + same-FBO
+ * continuity hold across the deferred replay loop). */
+static int test_multibatch_same_fbo(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* Three programs differ only by baked color + X offset -> distinct keys. */
+    GLuint pR = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.3 + vec2(-0.55,0.0),0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n");
+    GLuint pG = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.3 + vec2(0.0,0.0),0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n");
+    GLuint pB = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.3 + vec2(0.55,0.0),0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n");
+    if (!pR || !pG || !pB) return 2;
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glUseProgram(pR); glDrawArrays(GL_TRIANGLES, 0, 3);
+    glUseProgram(pG); glDrawArrays(GL_TRIANGLES, 0, 3);
+    glUseProgram(pB); glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(pR); glDeleteProgram(pG); glDeleteProgram(pB);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
+/* ---- Read-after-write hazard (Stage 5 safety net) ----
+ * Render a red quad to FBO A's color texture T, then bind FBO B and draw a
+ * fullscreen quad sampling T. The second draw READS a texture the first draw
+ * WROTE within the same flush — the Hazard Tracker must flush A's batch before
+ * B's so B samples the freshly-rendered red, not stale contents. This is the
+ * exact render-to-texture-then-sample pattern (shadow map / post-process) that
+ * parallel command recording must preserve. Gate: FBO B must be solid red. */
+static int test_render_to_texture_sample(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fboA, texT;
+    fboA = make_fbo(REG_W, REG_H, &texT);
+    if (!fboA) return 1;
+
+    /* FBO B: default-configured separate color target. */
+    GLuint fboB, texB;
+    fboB = make_fbo(REG_W, REG_H, &texB);
+    if (!fboB) return 1;
+
+    /* Pass 1: draw a fullscreen RED quad to FBO A (writes texture T). */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+    GLuint progFill = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n");
+    if (!progFill) return 2;
+    static const float FULL[] = {
+        -1.0f,-1.0f, 1.0f,-1.0f, 1.0f,1.0f,
+        -1.0f,-1.0f, 1.0f,1.0f, -1.0f,1.0f,
+    };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(FULL, sizeof(FULL));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glUseProgram(progFill);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+
+    /* Pass 2: FBO B samples T (just written) and draws it fullscreen.
+     * The Hazard Tracker must flush A before B so the sample sees red. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboB);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glViewport(0, 0, REG_W, REG_H);
+    GLuint progSample = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "out vec2 v_uv;\n"
+        "void main(){ v_uv=p*0.5+0.5; gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\nin vec2 v_uv;\nuniform sampler2D u_tex;\n"
+        "out vec4 f; void main(){ f=texture(u_tex, v_uv); }\n");
+    if (!progSample) return 3;
+    glUseProgram(progSample);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texT);
+    glUniform1i(glGetUniformLocation(progSample, "u_tex"), 0);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(progFill); glDeleteProgram(progSample);
+    glDeleteFramebuffers(1, &fboA); glDeleteFramebuffers(1, &fboB);
+    glDeleteTextures(1, &texT); glDeleteTextures(1, &texB);
     return 0;
 }
 
@@ -1553,6 +1684,8 @@ static const TestCase TESTS[] = {
     { "shared_uniform",       test_shared_uniform },
     { "multipass_resume",     test_multipass_resume },
     { "dontcare_fullscreen",  test_dontcare_fullscreen },
+    { "multibatch_same_fbo",  test_multibatch_same_fbo },
+    { "rtt_sample",           test_render_to_texture_sample },
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
