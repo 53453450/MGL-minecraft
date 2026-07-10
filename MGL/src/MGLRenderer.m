@@ -2416,6 +2416,13 @@ typedef struct {
 - (void)saveDedupStateToWorker:(MGLWorkerContext *)worker;
 - (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker;
 - (BOOL)parallelEncodeEnabled;
+- (MGLBatchPath)encodeBatchForParallelWorker:(MGLWorkerContext *)worker
+                                       batch:(MGLDrawBatch *)batch
+                                     context:(GLMContext)glm_ctx
+                                     flushId:(uint64_t)flushId
+                                  batchIndex:(uint32_t)batchIndex
+                                  savedState:(const GLMState *)savedState
+                                    executed:(BOOL *)executedOut;
 
 // Phase 3 Thread Safety: *Locked variants (private, no lock — called from public wrappers)
 - (void)endRenderEncodingLocked;
@@ -19936,6 +19943,109 @@ create_new_command_buffer:
     return s_enabled;
 }
 
+/* Encode a single batch onto the encoder referenced by the worker context.
+ *
+ * This method implements the per-worker batch processing that will eventually
+ * run on background threads via MTLParallelRenderCommandEncoder sub-encoders.
+ * Currently called sequentially from flushDrawBuffer to verify that each
+ * batch can set up its full state independently (no reliance on the previous
+ * batch's dedup cache).
+ *
+ * The dedup swap sequence is:
+ *   1. loadDedupStateFromWorker: install the worker's pre-batch dedup state
+ *   2. invalidateLastBoundState: clear dedup (sub-encoder is fresh)
+ *   3. restoreStateForBatch: copy batch's GL state snapshot into GLMContext
+ *   4. checkBatchShouldExecute: runs processGLStateLocked (syncs to encoder)
+ *   5. scheduleDrawBatch + issue: encode the draw
+ *   6. saveDedupStateToWorker: capture post-batch dedup state
+ *
+ * Returns the scheduled MGLBatchPath (or MGL_BATCH_PATH_DIRECT if skipped).
+ * *executedOut is set to NO if the batch was skipped/failed. */
+- (MGLBatchPath)encodeBatchForParallelWorker:(MGLWorkerContext *)worker
+                                       batch:(MGLDrawBatch *)batch
+                                     context:(GLMContext)glm_ctx
+                                     flushId:(uint64_t)flushId
+                                  batchIndex:(uint32_t)batchIndex
+                                  savedState:(const GLMState *)savedState
+                                    executed:(BOOL *)executedOut
+{
+    if (executedOut) *executedOut = NO;
+
+    /* Install worker's dedup state (simulates the worker's encoder having
+     * certain state already bound from a previous batch on the same worker). */
+    [self loadDedupStateFromWorker:worker];
+
+    /* Invalidate dedup — the sub-encoder is fresh and has nothing bound.
+     * This forces processGLStateLocked to re-issue all binds.  In sequential
+     * mode this causes redundant Metal calls but produces identical output;
+     * in parallel mode (Step 4) each sub-encoder genuinely starts empty. */
+    [self invalidateLastBoundState];
+
+    /* Restore GL state from the batch's snapshot into the shared GLMContext.
+     * Safe in sequential mode; in parallel mode each worker will need its
+     * own GLMContext copy (Step 4). */
+    [self restoreStateForBatch:batch context:glm_ctx savedState:savedState];
+
+    /* checkBatchShouldExecute calls processGLStateLocked which syncs GL state
+     * to _currentRenderEncoder + dedup ivars.  It also handles FBO rotation
+     * and rasterization-empty culling. */
+    GLenum replayError = GL_NO_ERROR;
+    uint32_t skippedCommands = 0;
+    if (![self checkBatchShouldExecute:batch
+                               context:glm_ctx
+                               flushId:flushId
+                            batchIndex:batchIndex
+                           replayError:&replayError
+                       skippedCommands:&skippedCommands]) {
+        [self saveDedupStateToWorker:worker];
+        return MGL_BATCH_PATH_DIRECT;
+    }
+
+    MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
+    switch (scheduledPath) {
+        case MGL_BATCH_PATH_STREAM_MERGE:
+            [self traceReplayBatch:batch
+                           context:glm_ctx
+                           flushId:flushId
+                        batchIndex:batchIndex
+                             phase:"PARALLEL_ISSUE_STREAM_MERGE"];
+            [self issueStreamMergedBatch:batch context:glm_ctx];
+            break;
+        case MGL_BATCH_PATH_MDI:
+            [self traceReplayBatch:batch
+                           context:glm_ctx
+                           flushId:flushId
+                        batchIndex:batchIndex
+                             phase:"PARALLEL_ISSUE_MDI"];
+            [self issueMDIBatch:batch context:glm_ctx];
+            break;
+        case MGL_BATCH_PATH_ICB:
+            [self traceReplayBatch:batch
+                           context:glm_ctx
+                           flushId:flushId
+                        batchIndex:batchIndex
+                             phase:"PARALLEL_ISSUE_ICB"];
+            [self issueIndirectCommandBufferBatch:batch context:glm_ctx];
+            break;
+        default:
+            [self traceReplayBatch:batch
+                           context:glm_ctx
+                           flushId:flushId
+                        batchIndex:batchIndex
+                             phase:"PARALLEL_ISSUE_DIRECT"];
+            [self issueDirectBatch:batch context:glm_ctx];
+            break;
+    }
+
+    [self recordBatchCommandStats:batch context:glm_ctx];
+
+    /* Capture post-batch dedup state back to the worker. */
+    [self saveDedupStateToWorker:worker];
+
+    if (executedOut) *executedOut = YES;
+    return scheduledPath;
+}
+
 - (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
     if (index >= kMGLMaxBufferSlots) {
@@ -23077,6 +23187,128 @@ stencil_format_ok:;
             MGLDrawBatch *batch = &cb->batches[b];
             if (batch->command_count == 0)
                 continue;
+
+            /* Stage 5.3: Parallel encode path (sequential simulation).
+             *
+             * When MGL_PARALLEL_ENCODE=1 and the current batch starts a
+             * parallel group with ≥2 members, process the first 2 batches
+             * with dedup isolation.  Each batch starts from the same
+             * pre-group dedup baseline and invalidates its dedup cache
+             * (simulating independent sub-encoders).  The draws are still
+             * issued sequentially on the same encoder — Step 4 will replace
+             * this with MTLParallelRenderCommandEncoder sub-encoders. */
+            if (useParallelEncode) {
+                int groupIdx = -1;
+                for (uint32_t g = 0; g < parallelGroupCount; g++) {
+                    if (parallelGroups[g].start_batch == b &&
+                        parallelGroups[g].batch_count >= 2) {
+                        groupIdx = (int)g;
+                        break;
+                    }
+                }
+                if (groupIdx >= 0 && b + 1 < cb->batch_count &&
+                    cb->batches[b + 1].command_count > 0) {
+                    MGLDrawBatch *batch1 = &cb->batches[b + 1];
+
+                    MGLWorkerContext preGroupState;
+                    [self saveDedupStateToWorker:&preGroupState];
+
+                    /* Worker 0: process batch[b] with dedup isolation. */
+                    MGLWorkerContext worker0 = preGroupState;
+                    BOOL exec0 = NO;
+                    MGLBatchPath path0 =
+                        [self encodeBatchForParallelWorker:&worker0
+                                                    batch:batch
+                                                  context:glm_ctx
+                                                  flushId:flushHit
+                                               batchIndex:b
+                                               savedState:&savedState
+                                                 executed:&exec0];
+                    if (exec0) {
+                        switch (path0) {
+                            case MGL_BATCH_PATH_STREAM_MERGE:
+                                streamMergedBatchCount++;
+                                streamMergedCommandCount += batch->command_count;
+                                MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
+                                MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap,
+                                             batch->command_count);
+                                break;
+                            case MGL_BATCH_PATH_MDI:
+                                mdiBatchCount++;
+                                mdiCommandCount += batch->command_count;
+                                break;
+                            case MGL_BATCH_PATH_ICB:
+                                icbBatchCount++;
+                                icbCommandCount += batch->command_count;
+                                break;
+                            default:
+                                directBatchCount++;
+                                directCommandCount += batch->command_count;
+                                MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
+                                MGL_PERF_ADD(g_mglDrawDirectSinceSwap,
+                                             batch->command_count);
+                                break;
+                        }
+                    }
+
+                    /* Worker 1: process batch[b+1] independently — starts
+                     * from the same pre-group baseline, not worker0's
+                     * post-state.  This simulates two sub-encoders that
+                     * each start fresh. */
+                    MGLWorkerContext worker1 = preGroupState;
+                    BOOL exec1 = NO;
+                    MGLBatchPath path1 =
+                        [self encodeBatchForParallelWorker:&worker1
+                                                    batch:batch1
+                                                  context:glm_ctx
+                                                  flushId:flushHit
+                                               batchIndex:b + 1
+                                               savedState:&savedState
+                                                 executed:&exec1];
+                    if (exec1) {
+                        switch (path1) {
+                            case MGL_BATCH_PATH_STREAM_MERGE:
+                                streamMergedBatchCount++;
+                                streamMergedCommandCount += batch1->command_count;
+                                MGL_PERF_INC(g_mglBatchesStreamMergedSinceSwap);
+                                MGL_PERF_ADD(g_mglDrawStreamMergedSinceSwap,
+                                             batch1->command_count);
+                                break;
+                            case MGL_BATCH_PATH_MDI:
+                                mdiBatchCount++;
+                                mdiCommandCount += batch1->command_count;
+                                break;
+                            case MGL_BATCH_PATH_ICB:
+                                icbBatchCount++;
+                                icbCommandCount += batch1->command_count;
+                                break;
+                            default:
+                                directBatchCount++;
+                                directCommandCount += batch1->command_count;
+                                MGL_PERF_INC(g_mglBatchesDirectSinceSwap);
+                                MGL_PERF_ADD(g_mglDrawDirectSinceSwap,
+                                             batch1->command_count);
+                                break;
+                        }
+                    }
+
+                    /* The encoder now has batch[b+1]'s state bound (it was
+                     * the last encoded).  Restore worker1's post-state so
+                     * the dedup ivars reflect what's actually on the encoder. */
+                    [self loadDedupStateFromWorker:&worker1];
+
+                    if (traceFlush) {
+                        MGLTraceNSLog(@"MGL TRACE parallelEncode "
+                                      "batch[%u]+batch[%u] exec0=%d path0=%d "
+                                      "exec1=%d path1=%d",
+                                      b, b + 1, exec0, (int)path0,
+                                      exec1, (int)path1);
+                    }
+
+                    b++; /* Skip batch[b+1] — already processed. */
+                    continue;
+                }
+            }
 
             [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
 
