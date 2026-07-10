@@ -2317,6 +2317,65 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     return -1;
 }
 
+/* Last-bound state cache for render encoder dedup.
+ * Avoids redundant setVertexBuffer/setFragmentBuffer/setRenderPipelineState
+ * calls when the resource and offset haven't changed. */
+typedef struct {
+    id<MTLBuffer> __strong buffer;
+    NSUInteger offset;
+} MGLLastBoundBuffer;
+
+#define kMGLMaxBufferSlots 31
+
+/* Per-worker context for parallel command recording (Stage 5.3).
+ *
+ * Each worker thread encodes draws onto its own MTLRenderCommandEncoder
+ * obtained from a shared MTLParallelRenderCommandEncoder.  The dedup
+ * state (last-bound buffers/textures/pipeline/etc.) must be per-worker
+ * to prevent one worker's bindings from causing another to skip a
+ * needed bind.
+ *
+ * During sequential replay (the current default), the renderer's ivars
+ * are used directly.  When parallel recording is enabled, a small array
+ * of MGLWorkerContext is created and the issue/state-apply methods read
+ * from the active worker instead of from shared ivars. */
+typedef struct {
+    id<MTLRenderCommandEncoder> encoder;
+
+    /* Dedup state — mirrors the corresponding MGLRenderer ivars. */
+    MGLLastBoundBuffer lastBoundVertexBuffers[kMGLMaxBufferSlots];
+    MGLLastBoundBuffer lastBoundFragmentBuffers[kMGLMaxBufferSlots];
+    id<MTLTexture> lastBoundVertexTextures[TEXTURE_UNITS];
+    id<MTLTexture> lastBoundFragmentTextures[TEXTURE_UNITS];
+    id<MTLSamplerState> lastBoundVertexSamplers[TEXTURE_UNITS];
+    id<MTLSamplerState> lastBoundFragmentSamplers[TEXTURE_UNITS];
+    id<MTLRenderPipelineState> lastPipelineState;
+    id<MTLDepthStencilState> lastDepthStencilState;
+    MTLViewport lastViewport;
+    MTLScissorRect lastScissorRect;
+    MTLCullMode lastCullMode;
+    MTLWinding lastFrontFacingWinding;
+    MTLTriangleFillMode lastTriangleFillMode;
+    float lastDepthBias;
+    float lastDepthBiasClamp;
+    float lastDepthSlopeScale;
+    BOOL lastBoundValid;
+
+    /* Per-worker pipeline state (points into the shared _pipelineStateCache). */
+    id<MTLRenderPipelineState> pipelineState;
+    MTLPixelFormat pipelineColor0Format;
+    MTLPixelFormat pipelineDepthFormat;
+    MTLPixelFormat pipelineStencilFormat;
+    GLuint pipelineProgramName;
+
+    /* Per-worker MDI scratch offset (shares the renderer's buffer). */
+    NSUInteger mdiArgsScratchOffset;
+
+    /* Per-worker trace. */
+    uint64_t traceReplayFlushId;
+    uint32_t traceReplayBatchIndex;
+} MGLWorkerContext;
+
 @interface MGLRenderer ()
 - (void)initializeMTL4CompilerIfAvailable;
 - (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
@@ -2352,6 +2411,11 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (void)resetMetalState;
 - (BOOL)validateMetalObjects;
 - (void)cleanupCommandBuffer;
+
+// Stage 5.3: Parallel command recording infrastructure
+- (void)saveDedupStateToWorker:(MGLWorkerContext *)worker;
+- (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker;
+- (BOOL)parallelEncodeEnabled;
 
 // Phase 3 Thread Safety: *Locked variants (private, no lock — called from public wrappers)
 - (void)endRenderEncodingLocked;
@@ -2448,16 +2512,6 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 } while (0)
 #define SYNC_LOCK()    do { mglMetalLock(&_syncListLock); } while (0)
 #define SYNC_UNLOCK()  do { mglMetalUnlock(&_syncListLock); } while (0)
-
-/* Last-bound state cache for render encoder dedup.
- * Avoids redundant setVertexBuffer/setFragmentBuffer/setRenderPipelineState
- * calls when the resource and offset haven't changed. */
-typedef struct {
-    id<MTLBuffer> __strong buffer;
-    NSUInteger offset;
-} MGLLastBoundBuffer;
-
-#define kMGLMaxBufferSlots 31
 
 // Main class performing the rendering
 @implementation MGLRenderer
@@ -19777,6 +19831,111 @@ create_new_command_buffer:
     _lastBoundValid = NO;
 }
 
+#pragma mark - Stage 5.3: Parallel Command Recording Infrastructure
+
+/* Save the renderer's dedup ivars into a worker context.
+ * Called before dispatching batch encode to a background thread so the
+ * worker starts with the current dedup state (e.g. pipeline already bound
+ * by a previous batch in the same render pass). */
+- (void)saveDedupStateToWorker:(MGLWorkerContext *)worker
+{
+    if (!worker) return;
+
+    worker->encoder = _currentRenderEncoder;
+
+    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
+        worker->lastBoundVertexBuffers[i] = _lastBoundVertexBuffers[i];
+        worker->lastBoundFragmentBuffers[i] = _lastBoundFragmentBuffers[i];
+    }
+    for (int i = 0; i < TEXTURE_UNITS; i++) {
+        worker->lastBoundVertexTextures[i] = _lastBoundVertexTextures[i];
+        worker->lastBoundFragmentTextures[i] = _lastBoundFragmentTextures[i];
+        worker->lastBoundVertexSamplers[i] = _lastBoundVertexSamplers[i];
+        worker->lastBoundFragmentSamplers[i] = _lastBoundFragmentSamplers[i];
+    }
+    worker->lastPipelineState = _lastPipelineState;
+    worker->lastDepthStencilState = _lastDepthStencilState;
+    worker->lastViewport = _lastViewport;
+    worker->lastScissorRect = _lastScissorRect;
+    worker->lastCullMode = _lastCullMode;
+    worker->lastFrontFacingWinding = _lastFrontFacingWinding;
+    worker->lastTriangleFillMode = _lastTriangleFillMode;
+    worker->lastDepthBias = _lastDepthBias;
+    worker->lastDepthBiasClamp = _lastDepthBiasClamp;
+    worker->lastDepthSlopeScale = _lastDepthSlopeScale;
+    worker->lastBoundValid = _lastBoundValid;
+
+    worker->pipelineState = _pipelineState;
+    worker->pipelineColor0Format = _pipelineColor0Format;
+    worker->pipelineDepthFormat = _pipelineDepthFormat;
+    worker->pipelineStencilFormat = _pipelineStencilFormat;
+    worker->pipelineProgramName = _pipelineProgramName;
+
+    worker->mdiArgsScratchOffset = _mdiArgsScratchOffset;
+
+    worker->traceReplayFlushId = _traceReplayFlushId;
+    worker->traceReplayBatchIndex = _traceReplayBatchIndex;
+}
+
+/* Load dedup state back from a worker context into the renderer's ivars.
+ * Called after the background thread finishes encoding to restore the
+ * dedup state to reflect what the worker bound. */
+- (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker
+{
+    if (!worker) return;
+
+    _currentRenderEncoder = worker->encoder;
+
+    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
+        _lastBoundVertexBuffers[i] = worker->lastBoundVertexBuffers[i];
+        _lastBoundFragmentBuffers[i] = worker->lastBoundFragmentBuffers[i];
+    }
+    for (int i = 0; i < TEXTURE_UNITS; i++) {
+        _lastBoundVertexTextures[i] = worker->lastBoundVertexTextures[i];
+        _lastBoundFragmentTextures[i] = worker->lastBoundFragmentTextures[i];
+        _lastBoundVertexSamplers[i] = worker->lastBoundVertexSamplers[i];
+        _lastBoundFragmentSamplers[i] = worker->lastBoundFragmentSamplers[i];
+    }
+    _lastPipelineState = worker->lastPipelineState;
+    _lastDepthStencilState = worker->lastDepthStencilState;
+    _lastViewport = worker->lastViewport;
+    _lastScissorRect = worker->lastScissorRect;
+    _lastCullMode = worker->lastCullMode;
+    _lastFrontFacingWinding = worker->lastFrontFacingWinding;
+    _lastTriangleFillMode = worker->lastTriangleFillMode;
+    _lastDepthBias = worker->lastDepthBias;
+    _lastDepthBiasClamp = worker->lastDepthBiasClamp;
+    _lastDepthSlopeScale = worker->lastDepthSlopeScale;
+    _lastBoundValid = worker->lastBoundValid;
+
+    _pipelineState = worker->pipelineState;
+    _pipelineColor0Format = worker->pipelineColor0Format;
+    _pipelineDepthFormat = worker->pipelineDepthFormat;
+    _pipelineStencilFormat = worker->pipelineStencilFormat;
+    _pipelineProgramName = worker->pipelineProgramName;
+
+    _mdiArgsScratchOffset = worker->mdiArgsScratchOffset;
+
+    _traceReplayFlushId = worker->traceReplayFlushId;
+    _traceReplayBatchIndex = worker->traceReplayBatchIndex;
+}
+
+/* Check whether parallel encode is enabled via environment variable.
+ * When enabled, flushDrawBuffer will attempt to use MTLParallelRenderCommandEncoder
+ * for parallel groups with ≥2 batches.  Disabled by default until the
+ * processGLStateLocked parameterization (Step 3-4) is complete. */
+- (BOOL)parallelEncodeEnabled
+{
+    static BOOL s_checked = NO;
+    static BOOL s_enabled = NO;
+    if (!s_checked) {
+        const char *env = getenv("MGL_PARALLEL_ENCODE");
+        s_enabled = (env && env[0] == '1');
+        s_checked = YES;
+    }
+    return s_enabled;
+}
+
 - (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
     if (index >= kMGLMaxBufferSlots) {
@@ -22892,6 +23051,25 @@ stencil_format_ok:;
         if (largestParallelGroup > MGL_FRAME_LOAD(g_mglLargestParallelGroupSinceSwap)) {
             MGL_FRAME_STORE(g_mglLargestParallelGroupSinceSwap, largestParallelGroup);
         }
+        /* Stage 5.3: count batches in groups with ≥2 members — these are
+         * parallel-encode candidates.  When MGL_PARALLEL_ENCODE=1 and the
+         * processGLStateLocked parameterization is complete, these batches
+         * will be encoded on separate sub-encoders. */
+        uint32_t eligibleBatches = 0u;
+        for (uint32_t g = 0u; g < parallelGroupCount; g++) {
+            if (parallelGroups[g].batch_count >= 2u) {
+                eligibleBatches += parallelGroups[g].batch_count;
+            }
+        }
+        if (eligibleBatches > 0u) {
+            MGL_PERF_ADD(g_mglParallelEncodeEligibleBatchesSinceSwap, eligibleBatches);
+        }
+    }
+
+    BOOL useParallelEncode = [self parallelEncodeEnabled] && (largestParallelGroup >= 2u);
+    if (useParallelEncode && traceFlush) {
+        MGLTraceNSLog(@"MGL TRACE parallelEncode ENABLED groups=%u eligibleBatches=%u",
+                      parallelGroupCount, largestParallelGroup);
     }
 
     for (uint32_t b = 0; b < cb->batch_count; b++) {
