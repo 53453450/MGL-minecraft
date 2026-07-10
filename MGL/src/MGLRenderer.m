@@ -633,7 +633,10 @@ static Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
               (unsigned)pipeline->name,
               mglShaderStageName(stage),
               stageProgram);
+        /* Drop the dangling slot reference (retain was taken in
+         * mglUseProgramStages) to avoid leaking the program object. */
         pipeline->stage_programs[stage] = NULL;
+        mglReleaseProgramReference(ctx, stageProgram);
         return NULL;
     }
 

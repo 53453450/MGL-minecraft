@@ -3513,6 +3513,17 @@ GLuint mglCreateProgram(GLMContext ctx)
 
 void mglFreeProgram(GLMContext ctx, Program *ptr)
 {
+    /* Diagnostic: detect use-after-free via hash table — if the program
+     * is still in the hash table when we free it, a later findProgram()
+     * will return a dangling pointer.  This should never happen; all
+     * callers must deleteHashElement() before mglFreeProgram(). */
+    if (ctx && ptr && mglHashTableContainsData(&STATE(program_table), ptr)) {
+        fprintf(stderr,
+                "MGL BUG: mglFreeProgram name=%u ptr=%p is STILL in hash table — "
+                "will cause dangling pointer (refcount=%d delete_status=%d)\n",
+                ptr->name, (void *)ptr, ptr->refcount, ptr->delete_status);
+    }
+
     /* linked_glsl_program is a non-NULL linked-state marker (set to
      * (glslang_program_t*)ptr on successful link), NOT a real glslang
      * program.  The real glslang_program_t is deleted at the end of
@@ -10383,6 +10394,35 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     {
         pptr = findProgram(ctx, program);
 
+        if (!pptr) {
+            fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL findProgram=NULL table_count=%zu table_size=%zu\n",
+                    program, STATE(program_table).count, STATE(program_table).size);
+        } else if (!mglObjectPointerLooksPlausible(pptr)) {
+            fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL looksPlausible pptr=%p\n",
+                    program, (void*)pptr);
+        } else if (!mglHashTableContainsData(&STATE(program_table), pptr)) {
+            fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL containsData pptr=%p table_count=%zu\n",
+                    program, (void*)pptr, STATE(program_table).count);
+        } else if (!mglPointerRangeIsReadable(pptr, sizeof(*pptr))) {
+            /* Get vm_region_64 details to distinguish ASan mprotect from
+             * true use-after-free (munmap).  Do NOT dereference pptr — it
+             * may point to freed/poisoned memory. */
+            vm_address_t raddr = (vm_address_t)pptr;
+            vm_size_t rsize = 0;
+            vm_region_basic_info_data_64_t rinfo;
+            mach_msg_type_number_t rcount = VM_REGION_BASIC_INFO_COUNT_64;
+            mach_port_t robj = MACH_PORT_NULL;
+            kern_return_t rkr = vm_region_64(mach_task_self(), &raddr, &rsize,
+                                             VM_REGION_BASIC_INFO_64,
+                                             (vm_region_info_t)&rinfo, &rcount, &robj);
+            if (robj != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), robj);
+            fprintf(stderr, "MGL DIAG mglUseProgram program=%u FAIL notReadable pptr=%p size=%zu "
+                    "kr=%d region_addr=0x%lx region_size=%lu prot=%u max_prot=%u\n",
+                    program, (void*)pptr, sizeof(*pptr),
+                    rkr, (unsigned long)raddr, (unsigned long)rsize,
+                    rinfo.protection, rinfo.max_protection);
+        }
+
         if (!pptr ||
             !mglObjectPointerLooksPlausible(pptr) ||
             !mglHashTableContainsData(&STATE(program_table), pptr) ||
@@ -10886,6 +10926,17 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
             STATE(dirty_bits) |= DIRTY_PROGRAM;
         }
         
+        /* Release every retained stage program reference before freeing
+         * the pipeline struct (matches the per-slot retain in
+         * mglUseProgramStages). */
+        for (int s = 0; s < _MAX_SHADER_TYPES; s++)
+        {
+            Program *stage_prog = ptr->stage_programs[s];
+            ptr->stage_programs[s] = NULL;
+            if (stage_prog)
+                mglReleaseProgramReference(ctx, stage_prog);
+        }
+
         // Remove from hash table and free
         deleteHashElement(&STATE(program_pipeline_table), pipelines[i]);
         free(ptr);
@@ -10930,20 +10981,35 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
         }
     }
     
-    // Attach program to specified stages
+    /* Attach program to specified stages.  Each stage slot owns an
+     * independent reference: retain the new program BEFORE releasing the
+     * old one so re-attaching a program that is already in a slot (or is
+     * the only reference keeping it alive) does not free it mid-op. */
+#define MGL_REPLACE_STAGE_SLOT(slot)                                         \
+    do {                                                                     \
+        Program *_old = pipe_ptr->stage_programs[(slot)];                    \
+        if (prog_ptr)                                                        \
+            mglRetainProgramReference(ctx, prog_ptr);                        \
+        pipe_ptr->stage_programs[(slot)] = prog_ptr;                         \
+        if (_old)                                                            \
+            mglReleaseProgramReference(ctx, _old);                           \
+    } while (0)
+
     if (stages & GL_VERTEX_SHADER_BIT)
-        pipe_ptr->stage_programs[_VERTEX_SHADER] = prog_ptr;
+        MGL_REPLACE_STAGE_SLOT(_VERTEX_SHADER);
     if (stages & GL_FRAGMENT_SHADER_BIT)
-        pipe_ptr->stage_programs[_FRAGMENT_SHADER] = prog_ptr;
+        MGL_REPLACE_STAGE_SLOT(_FRAGMENT_SHADER);
     if (stages & GL_GEOMETRY_SHADER_BIT)
-        pipe_ptr->stage_programs[_GEOMETRY_SHADER] = prog_ptr;
+        MGL_REPLACE_STAGE_SLOT(_GEOMETRY_SHADER);
     if (stages & GL_TESS_CONTROL_SHADER_BIT)
-        pipe_ptr->stage_programs[_TESS_CONTROL_SHADER] = prog_ptr;
+        MGL_REPLACE_STAGE_SLOT(_TESS_CONTROL_SHADER);
     if (stages & GL_TESS_EVALUATION_SHADER_BIT)
-        pipe_ptr->stage_programs[_TESS_EVALUATION_SHADER] = prog_ptr;
+        MGL_REPLACE_STAGE_SLOT(_TESS_EVALUATION_SHADER);
     if (stages & GL_COMPUTE_SHADER_BIT)
-        pipe_ptr->stage_programs[_COMPUTE_SHADER] = prog_ptr;
-        
+        MGL_REPLACE_STAGE_SLOT(_COMPUTE_SHADER);
+
+#undef MGL_REPLACE_STAGE_SLOT
+
     pipe_ptr->validated = GL_FALSE;
     STATE(dirty_bits) |= DIRTY_PROGRAM;
 }
