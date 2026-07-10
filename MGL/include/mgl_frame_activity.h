@@ -100,6 +100,11 @@ extern _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap;
 extern _Atomic uint64_t g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
 extern _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
 
+/* Parallel-group planning (Stage 5.1) */
+extern _Atomic uint64_t g_mglParallelGroupsSinceSwap;          /* groups computed per swap */
+extern _Atomic uint64_t g_mglParallelGroupBatchesSinceSwap;     /* batches inside groups */
+extern _Atomic uint64_t g_mglLargestParallelGroupSinceSwap;     /* largest group batch count */
+
 /* Batch merge rejection reasons */
 extern _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap;
@@ -202,6 +207,10 @@ typedef struct MGLPerfCounters {
     /* Render encoder lifecycle */
     uint64_t encoder_creations;
     uint64_t encoder_fbo_rotations;
+    /* Parallel-group planning */
+    uint64_t parallel_groups;
+    uint64_t parallel_group_batches;
+    uint64_t largest_parallel_group;
     /* Merge rejections */
     uint64_t merge_reject_state_differs;
     uint64_t merge_reject_buffer_hazard;
@@ -236,6 +245,9 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.set_render_pipeline_state_skips = MGL_FRAME_LOAD(g_mglSetRenderPipelineStateSkipsSinceSwap);
     c.encoder_creations     = MGL_FRAME_LOAD(g_mglEncoderCreationsSinceSwap);
     c.encoder_fbo_rotations = MGL_FRAME_LOAD(g_mglEncoderFBORotationsSinceSwap);
+    c.parallel_groups          = MGL_FRAME_LOAD(g_mglParallelGroupsSinceSwap);
+    c.parallel_group_batches   = MGL_FRAME_LOAD(g_mglParallelGroupBatchesSinceSwap);
+    c.largest_parallel_group   = MGL_FRAME_LOAD(g_mglLargestParallelGroupSinceSwap);
     c.merge_reject_state_differs   = MGL_FRAME_LOAD(g_mglMergeRejectStateDiffersSinceSwap);
     c.merge_reject_buffer_hazard   = MGL_FRAME_LOAD(g_mglMergeRejectBufferHazardSinceSwap);
     c.merge_reject_unsafe_builtin  = MGL_FRAME_LOAD(g_mglMergeRejectUnsafeBuiltinSinceSwap);
@@ -268,6 +280,9 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglSetRenderPipelineStateSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglEncoderCreationsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglEncoderFBORotationsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglParallelGroupsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglParallelGroupBatchesSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglLargestParallelGroupSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectStateDiffersSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectBufferHazardSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectUnsafeBuiltinSinceSwap, 0);

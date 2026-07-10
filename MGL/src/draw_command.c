@@ -2441,3 +2441,71 @@ bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
             return true;
     }
 }
+
+/*
+ * mglComputeParallelGroups — Stage 5.1 parallel-group planning.
+ *
+ * Walks cb->batches in order and groups consecutive, non-empty batches that
+ * share key.fbo_name. The Hazard Tracker splits read-after-write hazards into
+ * separate flushes, so within one command buffer two batches sharing an FBO
+ * have no inter-batch resource dependency and are candidate members of one
+ * parallel group.
+ *
+ * This is a pure data pass over the command buffer — no ctx, no Metal, no
+ * side effects (core principle 3). The renderer is free to ignore the groups
+ * and replay sequentially; parallelization is a later Stage 5.3 decision.
+ *
+ * Returns the number of groups written to out_groups (<= max_groups).
+ */
+uint32_t mglComputeParallelGroups(const MGLCommandBuffer *cb,
+                                   MGLParallelGroup *out_groups,
+                                   uint32_t max_groups)
+{
+    if (!cb || !out_groups || max_groups == 0) {
+        return 0u;
+    }
+
+    uint32_t group_count = 0u;
+    uint32_t run_start = 0u;
+    uint32_t fbo_name = 0u;
+    bool have_run = false;
+
+    for (uint32_t b = 0u; b < cb->batch_count; b++) {
+        const MGLDrawBatch *batch = &cb->batches[b];
+        if (batch->command_count == 0u) {
+            /* Empty batches are not replayed — terminate any active run so it
+             * doesn't span a gap that won't be drawn. */
+            if (have_run && group_count < max_groups) {
+                out_groups[group_count].start_batch = run_start;
+                out_groups[group_count].batch_count = b - run_start;
+                group_count++;
+            }
+            have_run = false;
+            continue;
+        }
+
+        if (!have_run) {
+            run_start = b;
+            fbo_name = batch->key.fbo_name;
+            have_run = true;
+        } else if (batch->key.fbo_name != fbo_name) {
+            /* FBO changed: close the current run and start a new one. */
+            if (group_count < max_groups) {
+                out_groups[group_count].start_batch = run_start;
+                out_groups[group_count].batch_count = b - run_start;
+                group_count++;
+            }
+            run_start = b;
+            fbo_name = batch->key.fbo_name;
+        }
+        /* else: same FBO as the run — extend it implicitly. */
+    }
+
+    if (have_run && group_count < max_groups) {
+        out_groups[group_count].start_batch = run_start;
+        out_groups[group_count].batch_count = cb->batch_count - run_start;
+        group_count++;
+    }
+
+    return group_count;
+}

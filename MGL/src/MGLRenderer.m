@@ -22867,6 +22867,30 @@ stencil_format_ok:;
     GLenum savedError = savedState.error;
     GLenum replayError = GL_NO_ERROR;
 
+    /* Stage 5.1: compute parallel groups (runs of consecutive, non-empty
+     * batches sharing the same FBO). The replay loop still runs sequentially;
+     * this only instruments the grouping so it can be observed in
+     * MGL_PERF_SUMMARY. A later Stage 5.3 will actually parallelize within
+     * these groups. Groups are pure metadata over the command buffer. */
+    MGLParallelGroup parallelGroups[MGL_MAX_PARALLEL_GROUPS];
+    uint32_t parallelGroupCount = mglComputeParallelGroups(cb, parallelGroups,
+                                                            MGL_MAX_PARALLEL_GROUPS);
+    uint32_t parallelGroupBatches = 0u;
+    uint32_t largestParallelGroup = 0u;
+    for (uint32_t g = 0u; g < parallelGroupCount; g++) {
+        parallelGroupBatches += parallelGroups[g].batch_count;
+        if (parallelGroups[g].batch_count > largestParallelGroup) {
+            largestParallelGroup = parallelGroups[g].batch_count;
+        }
+    }
+    if (parallelGroupCount > 0u) {
+        MGL_PERF_ADD(g_mglParallelGroupsSinceSwap, parallelGroupCount);
+        MGL_PERF_ADD(g_mglParallelGroupBatchesSinceSwap, parallelGroupBatches);
+        if (largestParallelGroup > MGL_FRAME_LOAD(g_mglLargestParallelGroupSinceSwap)) {
+            MGL_FRAME_STORE(g_mglLargestParallelGroupSinceSwap, largestParallelGroup);
+        }
+    }
+
     for (uint32_t b = 0; b < cb->batch_count; b++) {
         @autoreleasepool {
             MGLDrawBatch *batch = &cb->batches[b];
