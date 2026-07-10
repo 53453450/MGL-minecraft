@@ -98,6 +98,87 @@ static int files_equal(const char *a, const char *b)
 }
 
 /* ------------------------------------------------------------------ */
+/* GL state reset (Stage 5.3 prerequisite — context isolation)        */
+/* ------------------------------------------------------------------ */
+
+/* Number of texture units to unbind in resetGLState.  The suite never
+ * exceeds unit 0, but we sweep a few extra for robustness against future
+ * tests and to catch residual binds from prior test failures. */
+#define REG_RESET_TEXTURE_UNITS 4
+
+/* Reset all mutable GL state to a known-clean baseline so each test starts
+ * from the same conditions regardless of what the previous test (or a
+ * previous failed early-return) left bound / enabled.
+ *
+ * This is the core of the context-isolation fix: without it, a prior test's
+ * residual bound program / enabled cap / texture binding leaks into the next
+ * test's first draw, and under ASan pressure the leaked state causes
+ * nondeterministic processGLStateLocked paths → flaky golden mismatches.
+ *
+ * Every call here uses GL name 0 (unbind / default) — no dependency on any
+ * object still existing. */
+static void resetGLState(void)
+{
+    /* --- Bind targets to 0 (unbind everything) --- */
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, 0);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+    /* Indexed UBO / TF / SSBO binding 0 — clear residual indexed binds
+     * that glBindBuffer(0) does not touch. */
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, 0);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, 0);
+
+    /* --- Disable all mutable caps --- */
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_RASTERIZER_DISCARD);
+
+    /* --- Depth state defaults --- */
+    glDepthFunc(GL_LESS);
+    glDepthMask(GL_TRUE);
+
+    /* --- Color / stencil mask defaults --- */
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glStencilMask(0xFF);
+
+    /* --- Blend / stencil func defaults --- */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glStencilFunc(GL_ALWAYS, 0, 0xFF);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+
+    /* --- Texture units: unbind all, set active to 0 --- */
+    for (int i = REG_RESET_TEXTURE_UNITS - 1; i >= 0; i--) {
+        glActiveTexture(GL_TEXTURE0 + i);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        glBindSampler(i, 0);
+    }
+    glActiveTexture(GL_TEXTURE0);
+
+    /* --- Viewport / scissor defaults --- */
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+
+    /* --- Pixel store defaults --- */
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+    glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+}
+
+/* ------------------------------------------------------------------ */
 /* GL helpers                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1767,12 +1848,25 @@ int main(int argc, char **argv)
         fflush(stderr);
 
         memset(pixels, 0, REG_W * REG_H * 4);
-        GLenum pre_err = glGetError();
-        (void)pre_err;
+
+        /* Reset all GL state to a clean baseline so this test starts
+         * independent of the previous test's residual binds / caps.
+         * (Stage 5.3 prerequisite — context isolation.) */
+        resetGLState();
+
+        /* Drain any lingering GL errors from resetGLState or prior cleanup. */
+        while (glGetError() != GL_NO_ERROR) { /* drain */ }
 
         int rc = t->fn(pixels, out_path);
 
-        /* drain any lingering GL errors for cleanliness */
+        /* Safety-net glFinish: ensures all GPU work from this test is
+         * complete before the next test starts.  Most tests already call
+         * glFinish before glReadPixels, but a test that returns early
+         * (rc != 0) may leave pending GPU work. */
+        glFinish();
+
+        /* drain any lingering GL errors for cleanliness (always runs,
+         * even on early-return failure) */
         GLenum e;
         while ((e = glGetError()) != GL_NO_ERROR) {
             /* only warn; some drivers leave harmless errors */

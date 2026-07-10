@@ -55,32 +55,42 @@ static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
         return GL_FALSE;
     }
 
-    vm_address_t address = (vm_address_t)start;
-    vm_size_t regionSize = 0;
-    vm_region_basic_info_data_64_t info;
-    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-    mach_port_t objectName = MACH_PORT_NULL;
-    kern_return_t kr = vm_region_64(mach_task_self(),
-                                    &address,
-                                    &regionSize,
-                                    VM_REGION_BASIC_INFO_64,
-                                    (vm_region_info_t)&info,
-                                    &count,
-                                    &objectName);
-    if (objectName != MACH_PORT_NULL) {
-        mach_port_deallocate(mach_task_self(), objectName);
-    }
-    if (kr != KERN_SUCCESS || start < (uintptr_t)address) {
-        return GL_FALSE;
-    }
-
     uintptr_t end = start + size;
-    uintptr_t regionEnd = (uintptr_t)address + (uintptr_t)regionSize;
-    if (regionEnd < (uintptr_t)address || end > regionEnd) {
-        return GL_FALSE;
+
+    /* A single allocation may span multiple VM regions (e.g. ASan's
+     * 256 KB region boundaries).  Iterate over every region that
+     * intersects [start, end) and require VM_PROT_READ on each. */
+    uintptr_t cursor = start;
+    while (cursor < end) {
+        vm_address_t address = (vm_address_t)cursor;
+        vm_size_t regionSize = 0;
+        vm_region_basic_info_data_64_t info;
+        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+        mach_port_t objectName = MACH_PORT_NULL;
+        kern_return_t kr = vm_region_64(mach_task_self(),
+                                        &address,
+                                        &regionSize,
+                                        VM_REGION_BASIC_INFO_64,
+                                        (vm_region_info_t)&info,
+                                        &count,
+                                        &objectName);
+        if (objectName != MACH_PORT_NULL) {
+            mach_port_deallocate(mach_task_self(), objectName);
+        }
+        if (kr != KERN_SUCCESS || (uintptr_t)address > cursor) {
+            return GL_FALSE;
+        }
+        if ((info.protection & VM_PROT_READ) == 0) {
+            return GL_FALSE;
+        }
+        uintptr_t regionEnd = (uintptr_t)address + (uintptr_t)regionSize;
+        if (regionEnd <= (uintptr_t)address) {
+            return GL_FALSE;
+        }
+        cursor = regionEnd;
     }
 
-    return (info.protection & VM_PROT_READ) ? GL_TRUE : GL_FALSE;
+    return GL_TRUE;
 }
 
 static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
