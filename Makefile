@@ -1,4 +1,4 @@
-#-include config.mk
+-include config.mk
 
 SHELL := /bin/bash
 
@@ -407,6 +407,7 @@ bench-system: benchmark/mgl_benchmark.c
 # snapshots compared against MGL_Golden_Images/Reg_*.tga.
 test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+		$(CFLAGS) \
 		-I./external/glfw/include \
 		-I./external/glslang/glslang/Include \
 		-I./external/SPIRV-Cross \
@@ -418,6 +419,7 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-isysroot $(SDK_ROOT) \
 		test_regression/main.c \
 		-L$(build_dir) -lmgl -lglfw -lc++ \
+		$(LIBS) \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \

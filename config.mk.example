@@ -1,0 +1,21 @@
+# config.mk — local build overlay (gitignored).
+#
+# Uncomment the SAN block to build libmgl + test_regression host with ASan +
+# UBSan. BOTH must be instrumented (single-sided dylib-only instrumentation
+# crashes when the host dlopens it — see Makefile:35-37 historical note).
+#
+# Usage:
+#   cp config.mk.example config.mk   # edit to enable
+#   make clean && make lib && make test-regression
+#   ASAN_OPTIONS=detect_leaks=0:abort_on_error=0:allow_user_segv_handler=1 \
+#     DYLD_LIBRARY_PATH=build:$(brew --prefix glfw)/lib build/test_regression
+#
+# (gitignored — copy to config.mk; config.mk.example is the tracked template)
+
+SAN_CFLAGS  := -fsanitize=address,undefined -fno-omit-frame-pointer -gfull -O1
+SAN_LDFLAGS := -fsanitize=address,undefined
+
+# Append to the Makefile's own CFLAGS / LIBS so every compile + link gets it.
+CFLAGS += $(SAN_CFLAGS)
+CXXFLAGS += $(SAN_CFLAGS)
+LIBS += $(SAN_LDFLAGS)
