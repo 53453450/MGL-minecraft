@@ -2322,6 +2322,7 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                                       error:(NSError **)error;
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
+- (bool)rotateRenderEncoderForCurrentFramebufferLocked;
 - (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx;
 - (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
@@ -10014,10 +10015,15 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         return sampledCopy;
     }
 
-    if ([self currentRenderPassUsesTexture:source] ||
-        mglTextureIsAttachmentOfFramebuffer(_renderPassFramebuffer, tex)) {
+    BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_renderPassFramebuffer, tex);
+
+    if ([self currentRenderPassUsesTexture:source] && !isFbAttachment) {
+        /* The texture is used by the current render pass in a non-attachment
+         * role (e.g. bound to another sampler).  We cannot safely end and
+         * restore the pass in this case because the texture might be written
+         * by the pass itself. */
         if (mglTraceLogIsEnabled()) {
-            mglTraceLog("RT_SAMPLE_COPY_REPAIR_SKIP stage=%s program=%u binding=%u unit=%u tex=%u label=\"%s\" reason=current-pass-attachment writeVer=%u rtVer=%u",
+            mglTraceLog("RT_SAMPLE_COPY_REPAIR_SKIP stage=%s program=%u binding=%u unit=%u tex=%u label=\"%s\" reason=current-pass-uses-texture writeVer=%u rtVer=%u",
                         stage ? stage : "",
                         (unsigned)programName,
                         (unsigned)binding,
@@ -10028,6 +10034,26 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                         (unsigned)tex->mtl_render_target_write_version);
         }
         return nil;
+    }
+
+    /* If the texture is a color/depth attachment of the current framebuffer,
+     * we CAN still repair: end the render pass (storeAction=Store preserves
+     * the content), blit a copy, then restore the render pass with
+     * loadAction=Load.  Previously this case returned nil, causing shaders
+     * that sample from the FBO color attachment (e.g. Forge EarlyDisplay)
+     * to read stale or undefined data — manifesting as missing UI elements. */
+    if (isFbAttachment) {
+        if (mglTraceLogIsEnabled()) {
+            mglTraceLog("RT_SAMPLE_COPY_REPAIR_ATTEMPT stage=%s program=%u binding=%u unit=%u tex=%u label=\"%s\" reason=fb-attachment writeVer=%u rtVer=%u",
+                        stage ? stage : "",
+                        (unsigned)programName,
+                        (unsigned)binding,
+                        (unsigned)unit,
+                        (unsigned)tex->name,
+                        mglTraceTextureLabel(tex),
+                        (unsigned)tex->mtl_gl_sampled_write_version,
+                        (unsigned)tex->mtl_render_target_write_version);
+        }
     }
 
     BOOL hadRenderEncoder = (_currentRenderEncoder != nil);
@@ -17091,6 +17117,11 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
     GLbitfield fboStencilClearMaskBefore = fbo ? fbo->stencil.clear_bitmask : 0u;
     if (fbo) {
         GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
+        /* Stage 4.2: read the DontCare flag once per pass so the feature-off
+         * (default) path skips both the per-attachment stamp write and the
+         * shouldUse call entirely — avoiding per-attachment getenv and a
+         * cache-line write on the common no-DontCare path. */
+        BOOL dontCareLoadEnabled = mglEnvFlagEnabled("MGL_ENABLE_DONTCARE_LOAD");
         for (int i = 0; i < drawBufferCount; ++i) {
             GLuint attachmentIndex = 0u;
             GLuint colorSlot = mglMetalColorSlotForDrawBuffer(ctx, (GLuint)i);
@@ -17119,7 +17150,7 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
              * not mistaken for a first use (which would wrongly DontCare and
              * discard the cleared+drawn content). */
             BOOL colorFirstUseThisFrame = NO;
-            if (attachmentTextureForClear) {
+            if (dontCareLoadEnabled && attachmentTextureForClear) {
                 colorFirstUseThisFrame =
                     (attachmentTextureForClear->mtl_rt_frame_generation != _dontCareFrameGeneration);
                 attachmentTextureForClear->mtl_rt_frame_generation = _dontCareFrameGeneration;
@@ -17166,7 +17197,8 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                 
                 fboColorClearCount++;
                 fboColorClearMask |= (GLbitfield)(1u << attachmentIndex);
-            } else if ([self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
+            } else if (dontCareLoadEnabled &&
+                       [self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
                                                     firstUseThisFrame:colorFirstUseThisFrame]) {
                 /* Stage 4.2: first render-target use this frame, no clear, no
                  * blend — prior tile contents are dead, skip the load. */
@@ -23052,6 +23084,29 @@ stencil_format_ok:;
      * (the "already matches" fast path above returned early without counting).
      * newRenderEncoderLocked also bumps g_mglEncoderCreationsSinceSwap, so
      * fboRot <= new always holds; new-minus-fboRot is non-FBO creation. */
+    /* Stage 4.3: encoder open/close is owned by the RenderPass Manager
+     * facade (rotateRenderEncoderForCurrentFramebufferLocked), not by this
+     * Sync unit directly. The Sync layer only decides that a rotation is
+     * needed and delegates the lifecycle transition. */
+    RETURN_FALSE_ON_FAILURE([self rotateRenderEncoderForCurrentFramebufferLocked]);
+    return true;
+}
+
+/*
+ * Stage 4.3 — RenderPass Manager facade: single owner of the FBO-driven
+ * encoder rotation (the primary open/close transition). Ends the current
+ * render encoder and opens a fresh one against the now-bound framebuffer's
+ * render-pass descriptor. Called by the RenderPass Sync unit
+ * (syncRenderPassStateForContext:) when currentRenderPassMatchesCurrentFramebuffer
+ * is false; the "already matches" fast path returns without rotating. The
+ * recovery/nil-encoder paths elsewhere (processGLStateLocked, texture upload,
+ * blit) still call newRenderEncoderLocked directly and are documented as
+ * out-of-scope for this facade — they are safety nets, not the primary
+ * lifecycle transition, and lifting them is deferred until a future pass
+ * proves the facade is sufficient under Minecraft workloads.
+ */
+- (bool)rotateRenderEncoderForCurrentFramebufferLocked
+{
     MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
     [self endRenderEncodingLocked];
     RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
