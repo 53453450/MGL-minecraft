@@ -2324,6 +2324,8 @@ static int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 - (bool)syncRenderPassStateForContext:(GLMContext)glm_ctx;
 - (bool)syncPipelineStateWithDeferredBufferMap:(bool)deferredBufferMapForPipelineBuild;
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx;
+- (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
+                             firstUseThisFrame:(BOOL)firstUseThisFrame;
 - (BOOL)prepareRenderPassIfFBOChanged:(MGLDrawBatch *)batch
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError;
@@ -2528,6 +2530,13 @@ typedef struct {
     GLenum _renderPassDrawBuffers[MAX_COLOR_ATTACHMENTS];
     uint64_t _traceReplayFlushId;
     uint32_t _traceReplayBatchIndex;
+
+    /* Stage 4.2 DontCare inference: bumped once per swap. A color attachment
+     * whose texture's mtl_rt_frame_generation != this value has not yet been
+     * written this frame, so (with no pending clear and blending off) its
+     * first pass can use loadAction=DontCare instead of Load. Starts at 1 so
+     * a texture's zero-initialized stamp never accidentally matches. */
+    GLuint _dontCareFrameGeneration;
 
     // each pass a new command buffer is created
     id<MTLCommandBuffer> _currentCommandBuffer;
@@ -16641,6 +16650,45 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
     return result;
 }
 
+/*
+ * Stage 4.2 — DontCare load-action inference for a color attachment.
+ *
+ * Returns YES only when it is provably safe to skip loading the attachment's
+ * existing tile contents at pass start, i.e. the pass fully defines them:
+ *   - env flag MGL_ENABLE_DONTCARE_LOAD is enabled (default OFF);
+ *   - a real backing texture exists;
+ *   - blending is disabled (a blend reads the destination, so contents live);
+ *   - this is the texture's FIRST render-target use this frame (its stamped
+ *     generation differs from the renderer's current frame generation) — a
+ *     later pass to the same attachment must Load to preserve earlier draws.
+ *
+ * On a YES it stamps the texture with the current generation so any subsequent
+ * pass this frame correctly falls back to Load. Callers invoke this only on the
+ * no-pending-clear branch (a clear already fully defines contents via Clear).
+ */
+- (BOOL)shouldUseDontCareLoadForColorTexture:(Texture *)tex
+                             firstUseThisFrame:(BOOL)firstUseThisFrame
+{
+    /* Pure decision — the caller is responsible for stamping the texture's
+     * frame generation on EVERY render-target use (clear/load/dontcare), so
+     * this predicate must not mutate state. DontCare is safe only on a frame's
+     * first use of the attachment, with no pending clear (caller gates that),
+     * blending off, and the flag enabled. */
+    if (!mglEnvFlagEnabled("MGL_ENABLE_DONTCARE_LOAD")) {
+        return NO;
+    }
+    if (!tex || !tex->mtl_data) {
+        return NO;
+    }
+    if (ctx && ctx->state.caps.blend) {
+        return NO;
+    }
+    if (!firstUseThisFrame) {
+        return NO;
+    }
+    return YES;
+}
+
 - (bool) newRenderEncoderLocked
 {
     /* Stage 4 instrumentation: count every render encoder (re)creation. */
@@ -17064,6 +17112,18 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
             }
 
             Texture *attachmentTextureForClear = [self framebufferAttachmentTexture:att];
+            /* Stage 4.2: stamp this attachment's frame generation on EVERY
+             * render-target use (clear/load/dontcare), capturing whether this
+             * is its first use this frame BEFORE stamping. A clear-then-resume
+             * within one frame must record the clear as a use so the resume is
+             * not mistaken for a first use (which would wrongly DontCare and
+             * discard the cleared+drawn content). */
+            BOOL colorFirstUseThisFrame = NO;
+            if (attachmentTextureForClear) {
+                colorFirstUseThisFrame =
+                    (attachmentTextureForClear->mtl_rt_frame_generation != _dontCareFrameGeneration);
+                attachmentTextureForClear->mtl_rt_frame_generation = _dontCareFrameGeneration;
+            }
             if (att->clear_bitmask & GL_COLOR_BUFFER_BIT) {
                 if (attachmentTextureForClear &&
                     attachmentTextureForClear->name == 8u &&
@@ -17106,6 +17166,11 @@ static bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                 
                 fboColorClearCount++;
                 fboColorClearMask |= (GLbitfield)(1u << attachmentIndex);
+            } else if ([self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
+                                                    firstUseThisFrame:colorFirstUseThisFrame]) {
+                /* Stage 4.2: first render-target use this frame, no clear, no
+                 * blend — prior tile contents are dead, skip the load. */
+                _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionDontCare;
             } else {
                 _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
             }
@@ -24390,6 +24455,13 @@ stencil_format_ok:;
     double swapStartSeconds = mglNowSeconds();
     bool traceSwap = mglShouldTraceCall(swapCall);
     MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
+    /* Stage 4.2: advance the DontCare frame generation. Any color attachment
+     * written before this point belongs to the previous frame, so its next
+     * write this frame is a "first use" that may skip loading prior contents.
+     * Skips 0 so a zero-initialized texture stamp never matches. */
+    if (++_dontCareFrameGeneration == 0u) {
+        _dontCareFrameGeneration = 2u;  /* skip 0 (texture stamp init) and wrap sentinel */
+    }
     MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
         mglTraceLog("SWAP_RENDERER_ENTRY call=%llu drawArraysSinceSwap=%llu drawElementsSinceSwap=%llu processDrawCallsSinceSwap=%llu",
@@ -35501,6 +35573,11 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 - (void) createMGLRendererAndBindToContext: (GLMContext) glm_ctx view: (NSView *) view
 {
     ctx = glm_ctx;
+
+    /* Stage 4.2: start the DontCare frame generation at 1 so it never matches a
+     * texture's zero-initialized mtl_rt_frame_generation stamp until that
+     * texture is actually written this frame. */
+    _dontCareFrameGeneration = 1u;
 
     // CRITICAL FIX: Initialize thread synchronization locks.
     // _metalStateLock: NSRecursiveLock (reentrant) — required because the

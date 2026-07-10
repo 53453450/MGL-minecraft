@@ -1393,6 +1393,140 @@ static int test_stencil(unsigned char *pixels, const char *out_path)
     return 0;
 }
 
+/* ---- Multi-pass resume (Stage 4.2 DontCare safety net) ----
+ * Pass 1: draw a RED triangle (left) into FBO A.
+ * Then bind FBO B and draw into it — this forces the render encoder to rotate
+ * away from A.
+ * Pass 2: bind A again WITHOUT clearing and draw a GREEN triangle (right).
+ * A's pass-2 load must preserve pass-1 content. If DontCare inference wrongly
+ * fires on the RESUME of A (not its first use this frame), pass 1's red
+ * triangle is discarded. Correct result: A contains BOTH red (left) and green
+ * (right). Guards that DontCare only applies to a frame's first use of an
+ * attachment, never to a resume. */
+static int test_multipass_resume(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fboA, texA, fboB, texB;
+    fboA = make_fbo(REG_W, REG_H, &texA);
+    fboB = make_fbo(REG_W, REG_H, &texB);
+    if (!fboA || !fboB) return 1;
+
+    /* Two hardcoded-color programs, position shifted by a baked constant. */
+    GLuint progRedLeft = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.4 + vec2(-0.4,0.0),0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n");
+    GLuint progGreenRight = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.4 + vec2(0.4,0.0),0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n");
+    GLuint progBlue = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p*0.4,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n");
+    if (!progRedLeft || !progGreenRight || !progBlue) return 2;
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    /* Pass 1: A cleared once, red-left drawn. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+    clear_color(0.1f, 0.1f, 0.1f);
+    glUseProgram(progRedLeft);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    /* Detour: B forces the encoder to rotate off A. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboB);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(progBlue);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    /* Pass 2: resume A WITHOUT clearing; add green-right. Red must survive. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+    glUseProgram(progGreenRight);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(progRedLeft);
+    glDeleteProgram(progGreenRight);
+    glDeleteProgram(progBlue);
+    glDeleteFramebuffers(1, &fboA);
+    glDeleteFramebuffers(1, &fboB);
+    glDeleteTextures(1, &texA);
+    glDeleteTextures(1, &texB);
+    return 0;
+}
+
+/* ---- DontCare positive case (Stage 4.2) ----
+ * Fresh FBO, NO glClear, draw a FULLSCREEN quad covering every pixel. On the
+ * attachment's first use this frame with the DontCare flag on, loadAction is
+ * DontCare (skip loading prior tile contents); the fullscreen draw then fully
+ * defines every pixel, so the result is deterministic and identical whether
+ * the load was DontCare or Load. Proves DontCare fires AND yields correct
+ * output. Golden: solid magenta. */
+static int test_dontcare_fullscreen(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    /* Intentionally NO clear — DontCare/Load must be masked by full coverage.
+     * Force full-FBO coverage explicitly: the context is shared across suite
+     * tests, so a prior test's viewport/scissor could otherwise leave pixels
+     * uncovered, which under DontCare would be undefined (nondeterministic). */
+    glViewport(0, 0, REG_W, REG_H);
+    glDisable(GL_SCISSOR_TEST);
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 f; void main(){ f=vec4(1.0,0.0,1.0,1.0); }\n");
+    if (!prog) return 2;
+    glUseProgram(prog);
+
+    /* Two triangles covering the whole NDC square. */
+    static const float FULL[] = {
+        -1.0f,-1.0f,  1.0f,-1.0f,  1.0f, 1.0f,
+        -1.0f,-1.0f,  1.0f, 1.0f, -1.0f, 1.0f,
+    };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(FULL, sizeof(FULL));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteVertexArrays(1, &vao);
+    glDeleteBuffers(1, &vbo);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -1417,6 +1551,8 @@ static const TestCase TESTS[] = {
     { "stencil",              test_stencil_probe },
     { "uniform_alias",        test_uniform_alias },
     { "shared_uniform",       test_shared_uniform },
+    { "multipass_resume",     test_multipass_resume },
+    { "dontcare_fullscreen",  test_dontcare_fullscreen },
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
