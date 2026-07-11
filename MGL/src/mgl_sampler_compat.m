@@ -191,3 +191,102 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
 
     return NULL;
 }
+
+/* Resolves the GL texture unit that `res` (in `stage` of `program`) samples,
+ * mirroring MGLRenderer -textureUnitForSampledResource:metalBinding:stage:
+ * but operating purely on the Program struct.  Returns the resolved unit
+ * (0-based), or -1 if the resource is not sampler-like. */
+static GLint mglResolveSamplerResourceUnit(Program *program,
+                                           SpirvResource *res,
+                                           int stage,
+                                           int resType)
+{
+    if (!program || !res) return -1;
+    if (!mglRendererResourceLooksSamplerLike(res, resType)) return -1;
+
+    /* 1. Per-resource explicit assignment (glUniform1i). */
+    if (res->sampler_unit_explicit &&
+        res->sampler_unit >= 0 &&
+        res->sampler_unit < (GLint)TEXTURE_UNITS) {
+        return res->sampler_unit;
+    }
+
+    GLuint metalBinding = res->binding;
+    if (metalBinding >= TEXTURE_UNITS) {
+        return (GLint)metalBinding;
+    }
+
+    bool stageValid = (stage >= 0 && stage < _MAX_SHADER_TYPES);
+    bool stageExplicit = stageValid
+        ? (program->sampler_units_explicit_by_stage[stage][metalBinding] == GL_TRUE)
+        : false;
+    bool globalExplicit = (program->sampler_units_explicit[metalBinding] == GL_TRUE);
+
+    /* 2. Stage array explicit. */
+    GLint unit = stageValid
+        ? program->sampler_units_by_stage[stage][metalBinding]
+        : program->sampler_units[metalBinding];
+    if (stageExplicit && unit >= 0 && unit < (GLint)TEXTURE_UNITS) {
+        return unit;
+    }
+
+    /* 3. Global array explicit. */
+    unit = program->sampler_units[metalBinding];
+    if (globalExplicit && unit >= 0 && unit < (GLint)TEXTURE_UNITS) {
+        return unit;
+    }
+
+    /* 4. Default unit (stage then global fallback). */
+    GLint defaultUnit = stageValid
+        ? program->sampler_units_by_stage[stage][metalBinding]
+        : program->sampler_units[metalBinding];
+    if (defaultUnit < 0 || defaultUnit >= (GLint)TEXTURE_UNITS) {
+        defaultUnit = program->sampler_units[metalBinding];
+    }
+
+    /* 5. Per-resource non-explicit (set by reflection, not glUniform1i). */
+    if (!res->sampler_unit_explicit &&
+        res->sampler_unit >= 0 &&
+        res->sampler_unit < (GLint)TEXTURE_UNITS) {
+        return res->sampler_unit;
+    }
+
+    if (defaultUnit >= 0 && defaultUnit < (GLint)TEXTURE_UNITS) {
+        return defaultUnit;
+    }
+
+    /* 6. OpenGL default is unit 0. */
+    return 0;
+}
+
+bool mglProgramSamplesTextureUnit(Program *program, GLuint unit)
+{
+    if (!program) return false;
+
+    static const int samplerResourceTypes[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+    };
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
+            int resType = samplerResourceTypes[rt];
+            if (resType < 0 || resType >= _MAX_SPIRV_RES) continue;
+            SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+            for (GLuint i = 0; resources->list && i < resources->count; i++) {
+                GLint resolved = mglResolveSamplerResourceUnit(program,
+                                                               &resources->list[i],
+                                                               stage,
+                                                               resType);
+                if (resolved >= 0 && (GLuint)resolved == unit) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}

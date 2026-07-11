@@ -4588,7 +4588,9 @@ create_new_command_buffer:
 
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
-    if (_currentCommandBuffer && _currentRenderEncoder == NULL) {
+    // Stage 5.3 Step 5: skip this in parallel-encode mode — the caller owns
+    // the command buffer and sub-encoder lifecycle.
+    if (!_parallelEncodeActive && _currentCommandBuffer && _currentRenderEncoder == NULL) {
         MTLCommandBufferStatus preStatus = _currentCommandBuffer.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld)", (long)preStatus);
@@ -4626,7 +4628,9 @@ create_new_command_buffer:
     RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command]);
 
     // Ensure a render encoder exists for draw commands.
-    if (!_currentRenderEncoder) {
+    // Stage 5.3 Step 5: skip nil-encoder recovery in parallel-encode mode —
+    // the sub-encoder is managed by encodeBatchForParallelWorker.
+    if (!_parallelEncodeActive && !_currentRenderEncoder) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
         NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
@@ -4661,7 +4665,13 @@ create_new_command_buffer:
     }
 
     if (draw_command) {
-        RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
+        /* Stage 5.3 Step 5: skip FBO-mismatch rebuild in parallel-encode
+         * mode — encodeBatchForParallelWorker already syncs
+         * _renderPassFramebuffer* ivars and clears DIRTY_FBO, so a mismatch
+         * here would be a false positive that destroys the sub-encoder. */
+        if (!_parallelEncodeActive) {
+            RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
+        }
         [self updateCurrentRenderEncoder];
     }
 

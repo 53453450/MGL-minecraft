@@ -86,6 +86,19 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      int stage,
                                                      GLuint metalBinding);
 
+/* Returns true if `program` has any sampler-like resource (across all stages
+ * and the 5 sampler-like resource types) whose resolved GL texture unit
+ * equals `unit`.  Resolution mirrors MGLRenderer
+ * -textureUnitForSampledResource:metalBinding:stage: (per-resource
+ * sampler_unit -> stage array -> global array -> default 0).
+ *
+ * Used by the WAR hazard tracker to avoid false-positive flushes when a
+ * texture is bound to a unit the program never samples (e.g. an FBO color
+ * attachment texture left bound after glTexImage2D).
+ *
+ * Returns false if `program` is NULL or has no sampler-like resources. */
+bool mglProgramSamplesTextureUnit(Program *program, GLuint unit);
+
 #ifdef __cplusplus
 }
 #endif

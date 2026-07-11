@@ -27,6 +27,7 @@
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
+#include "mgl_sampler_compat.h"
 
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
@@ -401,6 +402,11 @@ static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
     cb->texture_read_objects[cb->texture_read_count++] = texture;
 }
 
+/* Forward declaration: defined below, used by the program-aware hazard
+ * guards in both mglTrackPendingSampledTextureReads and
+ * mglFlushPendingDrawsForActiveTextures. */
+static bool mglStateSamplesTextureUnit(GLMContext ctx, GLuint unit);
+
 static void mglTrackPendingSampledTextureReads(GLMContext ctx)
 {
     if (!ctx) return;
@@ -413,6 +419,16 @@ static void mglTrackPendingSampledTextureReads(GLMContext ctx)
             bits &= bits - 1;
             int unit = (w * 32) + bit;
             if (unit >= TEXTURE_UNITS) {
+                continue;
+            }
+
+            /* Program-aware guard: only track textures as "read" on units
+             * the current program actually samples.  Without this, a texture
+             * left bound on an unsampled unit (e.g. FBO color attachment
+             * after glTexImage2D) would be falsely tracked as read, causing
+             * mglFlushPendingDrawsBeforeFramebufferTextureWrites to flush
+             * on the next draw. */
+            if (!mglStateSamplesTextureUnit(ctx, (GLuint)unit)) {
                 continue;
             }
 
@@ -772,10 +788,51 @@ void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
 }
 
 /*
+ * mglStateSamplesTextureUnit — 当前活跃 program 是否实际采样纹理单元 unit
+ *
+ * 遍历当前 monolithic program 或 pipeline 各 stage program，调用
+ * mglProgramSamplesTextureUnit 判断是否有 sampler 资源解析到该 unit。
+ * 无 program 且无 pipeline 时退化为保守返回 true（保留旧刷新行为）。
+ */
+static bool mglStateSamplesTextureUnit(GLMContext ctx, GLuint unit)
+{
+    if (!ctx) return true;
+
+    Program *program = ctx->state.program;
+    if (program && mglProgramSamplesTextureUnit(program, unit)) {
+        return true;
+    }
+
+    /* Pipeline with separate stage programs. */
+    if (!program && ctx->state.program_pipeline) {
+        ProgramPipeline *pipeline = ctx->state.program_pipeline;
+        bool hasAnyStage = false;
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            Program *stageProg = pipeline->stage_programs[stage];
+            if (!stageProg) continue;
+            hasAnyStage = true;
+            if (mglProgramSamplesTextureUnit(stageProg, unit)) {
+                return true;
+            }
+        }
+        /* Pipeline has stage programs but none sample this unit -> safe.
+         * Empty pipeline -> conservative. */
+        return !hasAnyStage;
+    }
+
+    /* No program and no pipeline: conservative. */
+    if (!program) return true;
+
+    return false;
+}
+
+/*
  * mglFlushPendingDrawsForActiveTextures — 活跃纹理单元写后读危害刷新
  *
  * 触发条件：待处理 draw 写入了当前任何活跃纹理单元所绑定的 texture 时 flush；每次 draw 前调用。
  * 保证语义：防止写后读（WAR）危害——前序 draw 写入了某 texture，而当前 draw 又将其作为采样器读取。
+ * 程序感知：仅当当前 program 实际采样该 unit 时才 flush，避免 FBO 颜色附件纹理残留绑定
+ *           导致的误报刷新（false-positive hazard）。
  * 溢出退化：当 texture_write_overflow 置位时退化为无条件全刷新。
  */
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
@@ -798,6 +855,14 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
             bits &= bits - 1;
             int unit = (w * 32) + bit;
             if (unit >= TEXTURE_UNITS) {
+                continue;
+            }
+
+            /* Program-aware guard: skip units the current program/pipeline
+             * never samples.  This eliminates false-positive WAR flushes
+             * where a texture (e.g. FBO color attachment left bound after
+             * glTexImage2D) sits on a unit no sampler reads. */
+            if (!mglStateSamplesTextureUnit(ctx, (GLuint)unit)) {
                 continue;
             }
 

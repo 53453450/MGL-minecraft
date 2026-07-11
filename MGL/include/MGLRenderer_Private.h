@@ -217,6 +217,12 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     NSUInteger _mdiArgsScratchCapacity;
     NSUInteger _mdiArgsScratchOffset;
     id<MTLRenderCommandEncoder> _currentRenderEncoder;
+    /* Stage 5.3 Step 5: When YES, processGLStateLocked skips encoder
+     * reconstruction paths (nil-encoder recovery, command-buffer rotation,
+     * FBO-mismatch rebuild) because the caller (encodeBatchForParallelWorker)
+     * owns the sub-encoder lifecycle.  This prevents the parallel sub-encoder
+     * from being destroyed mid-encode. */
+    BOOL _parallelEncodeActive;
 #if MGL_HAS_MTL4_COMPILER
     id<MTL4Compiler> _mtl4Compiler;
 #endif
