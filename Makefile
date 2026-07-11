@@ -52,6 +52,7 @@ CFLAGS += -I$(glslang_include_path)
 
 CFLAGS += -IMGL/include
 CFLAGS += -IMGL/include/GL # "glcorearb.h"
+CFLAGS += -IMGL/src        # "mgl_safety.h" lives in MGL/src/, used by MGLRenderer_Private.h
 CFLAGS += -IMGL/SPIRV/SPIRV-Cross
 CFLAGS += -DENABLE_OPT=0 -DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 -DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1
 
