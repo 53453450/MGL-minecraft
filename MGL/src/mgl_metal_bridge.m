@@ -97,6 +97,15 @@ void mtlDeleteMTLObj(GLMContext glm_ctx, void *obj) {
     [target mtlDeleteMTLObj: glm_ctx buffer: obj];
 }
 
+/* Release and clear Metal data owned by a transient GL buffer. */
+void mtlReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer) {
+    if (!buffer) return;
+    if (buffer->data.mtl_data) {
+        mtlDeleteMTLObj(glm_ctx, buffer->data.mtl_data);
+        buffer->data.mtl_data = NULL;
+    }
+}
+
 #pragma mark - Sync
 
 void mtlGetSync(GLMContext glm_ctx, Sync *sync) {

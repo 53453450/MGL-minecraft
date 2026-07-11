@@ -25,7 +25,6 @@
 #include "glm_context.h"
 #include "draw_command.h"
 #include "mgl_safety.h"
-#include "mgl_metal_ref.h"
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
 
@@ -39,7 +38,8 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
 {
     if (!buffer) return;
 
-    mglSafeReleaseMetalObj((void **)&buffer->data.mtl_data);
+    if (ctx && ctx->mtl_funcs.release_buffer_metal_data)
+        ctx->mtl_funcs.release_buffer_metal_data(ctx, buffer);
     if (buffer->data.buffer_data) {
         free((void *)(uintptr_t)buffer->data.buffer_data);
         buffer->data.buffer_data = 0;
@@ -2002,6 +2002,10 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     Buffer *indexBuffer = (Buffer *)batch->stream_index_buffer;
 
     vao->transient_batch_vao = GL_TRUE;
+    /* vao_snapshot is a shallow copy of the live VAO — do NOT release the
+     * Metal object through a callback; the live VAO still owns it.  Only
+     * nullify the pointer so batch replay doesn't reference the live VAO's
+     * Metal data. */
     vao->mtl_data = NULL;
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     vao->element_array.buffer = indexBuffer;

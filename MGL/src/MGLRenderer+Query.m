@@ -2,6 +2,7 @@
 // Occlusion query and GPU timer query methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#import "MGLRenderer+Query_Private.h"
 
 @implementation MGLRenderer (Query)
 #pragma mark Metal visibility result (GL occlusion query)

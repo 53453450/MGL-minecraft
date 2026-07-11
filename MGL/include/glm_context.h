@@ -95,6 +95,10 @@ struct GLMMetalFuncs {
 
     void (*mtlDeleteMTLObj)(GLMContext glm_ctx, void *obj);
 
+    /* Release and clear the Metal object stored in a transient Buffer's
+     * mtl_data slot without exposing Metal ownership to the GL layer. */
+    void (*release_buffer_metal_data)(GLMContext glm_ctx, Buffer *buffer);
+
     void (*mtlGetSync)(GLMContext glm_ctx, Sync *sync);
     void (*mtlWaitForSync)(GLMContext glm_ctx, Sync *sync);
     /* Non-blocking status query: returns GL_SIGNALED (CB completed or no CB) or

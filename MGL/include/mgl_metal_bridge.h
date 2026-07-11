@@ -112,6 +112,7 @@ void mtlBindBuffer(GLMContext glm_ctx, Buffer *ptr);
 void mtlBindTexture(GLMContext glm_ctx, Texture *ptr);
 void mtlBindProgram(GLMContext glm_ctx, Program *ptr);
 void mtlDeleteMTLObj(GLMContext glm_ctx, void *obj);
+void mtlReleaseBufferMetalData(GLMContext glm_ctx, Buffer *buffer);
 
 /* Sync */
 void mtlGetSync(GLMContext glm_ctx, Sync *sync);

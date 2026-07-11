@@ -2171,6 +2171,57 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 // The Locked pattern (public wrapper + *Locked impl) is retained for
 // structural clarity but no longer relies on non-reentrancy.
 
+// Forward declarations for private helpers extracted from
+// createMTLTextureFromGLTexture:, mapGLBuffersToMTLBufferMap:stage:, and
+// mtlSwapBuffersLocked:.  These are only called within this file.
+@interface MGLRenderer ()
+// createMTLTextureFromGLTexture: helpers
+- (id<MTLTexture>)createMTLTexelBufferTexture:(Texture *)tex;
+- (BOOL)checkTextureCompleteness:(Texture *)tex
+                          texType:(MTLTextureType)tex_type
+                         numFaces:(uint)num_faces
+             effectiveMipmapLevels:(GLuint *)outEffectiveMipmapLevels
+                 storageMipmapped:(BOOL *)outStorageMipmapped;
+- (void)uploadDirty3DTextureLevels:(Texture *)tex
+                             metal:(id<MTLTexture>)texture
+                       pixelFormat:(MTLPixelFormat)pixelFormat
+                          numFaces:(uint)num_faces
+                  uploadLevelCount:(GLuint)upload_level_count
+                            texType:(MTLTextureType)tex_type
+                texture1DBackedBy2D:(BOOL)texture1DBackedBy2D;
+- (void)uploadDirtyArrayTextureLevels:(Texture *)tex
+                                metal:(id<MTLTexture>)texture
+                          pixelFormat:(MTLPixelFormat)pixelFormat
+                             numFaces:(uint)num_faces
+                     uploadLevelCount:(GLuint)upload_level_count
+                               texType:(MTLTextureType)tex_type
+                   texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
+             texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray;
+- (void)uploadDirty2DTextureLevels:(Texture *)tex
+                             metal:(id<MTLTexture>)texture
+                       pixelFormat:(MTLPixelFormat)pixelFormat
+                          numFaces:(uint)num_faces
+                  uploadLevelCount:(GLuint)upload_level_count
+                texture1DBackedBy2D:(BOOL)texture1DBackedBy2D;
+- (void)logMTLTextureMipDiagnostics:(Texture *)tex
+                              metal:(id<MTLTexture>)texture
+               effectiveMipLevels:(GLuint)effective_mipmap_levels;
+// mapGLBuffersToMTLBufferMap:stage: helpers
+- (bool)mapShaderBufferResourcesToBufferMap:(BufferMapList *)buffer_map stage:(int)stage;
+- (bool)mapVertexAttributeBuffersToBufferMap:(BufferMapList *)buffer_map
+                                         vao:(VertexArray *)vao
+                            stageInputCount:(int)count
+                                       stage:(int)stage;
+// mtlSwapBuffersLocked: helpers
+- (void)copyRenderPassColorToDrawableIfNeeded:(id<MTLTexture>)rpColor0
+                              drawableTexture:(id<MTLTexture>)drawableTexture
+                                      swapCall:(uint64_t)swapCall
+                                    traceSwap:(bool)traceSwap;
+- (void)scheduleSwapTextureSampleDiagnostics:(id<MTLTexture>)rpColor0
+                             drawableTexture:(id<MTLTexture>)drawableTexture
+                                     swapCall:(uint64_t)swapCall;
+@end
+
 // Main class performing the rendering
 @implementation MGLRenderer
 
@@ -3428,7 +3479,51 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     // init mapped buffer count
     buffer_map->count = 0;
 
-    // bind uniforms, shader storage and atomics to buffer map
+    if (![self mapShaderBufferResourcesToBufferMap:buffer_map stage:stage]) {
+        return false;
+    }
+
+    // bind vao attribs to buffers (attribs can share the same buffer)
+    if (stage == _VERTEX_SHADER)
+    {
+        int count = [self getProgramBindingCount: stage type: SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
+        if (![self mapVertexAttributeBuffersToBufferMap:buffer_map vao:vao stageInputCount:count stage:stage]) {
+            return false;
+        }
+    }
+    else if (stage == _COMPUTE_SHADER)
+    {
+    }
+
+    if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
+        MGLTraceNSLog(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
+              stage,
+              (unsigned long long)mapCall,
+              buffer_map ? buffer_map->count : 0);
+    }
+
+    return true;
+}
+
+- (bool)mapShaderBufferResourcesToBufferMap:(BufferMapList *)buffer_map stage:(int)stage
+{
+    int count;
+    struct {
+        int spvc_type;
+        int gl_buffer_type;
+        const char *name;
+    } mapped_types[4] = {
+        {SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, _UNIFORM_BUFFER, "Uniform Buffer"},
+        {SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, _UNIFORM_CONSTANT, "Uniform Constant"},
+        {SPVC_RESOURCE_TYPE_STORAGE_BUFFER, _SHADER_STORAGE_BUFFER, "Shader Storage Buffer"},
+        {SPVC_RESOURCE_TYPE_ATOMIC_COUNTER, _ATOMIC_COUNTER_BUFFER, "Atomic Counter Buffer"}
+    };
+#if DEBUG_MAPPED_TYPES
+    const char *stages[] = {"VERTEX_SHADER", "TESS_CONTROL_SHADER", "TESS_EVALUATION_SHADER",
+        "GEOMETRY_SHADER", "FRAGMENT_SHADER", "COMPUTE_SHADER"};
+#endif
+
     for(int type=0; type<4; type++)
     {
         int spvc_type;
@@ -3866,131 +3961,135 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             }
         }
     }
-    
-    // bind vao attribs to buffers (attribs can share the same buffer)
-    if (stage == _VERTEX_SHADER)
+
+    return true;
+}
+
+- (bool)mapVertexAttributeBuffersToBufferMap:(BufferMapList *)buffer_map
+                                         vao:(VertexArray *)vao
+                            stageInputCount:(int)count
+                                       stage:(int)stage
+{
+    int vao_buffer_start;
+    int mapped_buffers = 0;
+    GLuint next_vertex_binding_index = (GLuint)kMGLVertexAttribBufferBase;
+    Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+
+    mapped_buffers = 0;
+
+    if (!vao) {
+        if (count > 0) {
+            NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage inputs=%d but VAO is invalid/null, skipping attrib mapping",
+                  count);
+        }
+        return true;
+    }
+
+    if (kMGLVertexAttribBufferBase >= kMGLMaxMetalVertexBufferCount) {
+        NSLog(@"MGL ERROR: invalid vertex attrib base index=%lu (max valid=%lu)",
+              (unsigned long)kMGLVertexAttribBufferBase,
+              (unsigned long)kMGLMaxMetalVertexBufferIndex);
+        return false;
+    }
+
+    // vao buffers start after the uniforms and shader buffers
+    vao_buffer_start = buffer_map->count;
+    // CRITICAL SECURITY FIX: Check against actual map capacity.
+    if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+        NSLog(@"MGL SECURITY ERROR: buffer_map count %d exceeds MAX_MAPPED_BUFFERS %d",
+              buffer_map->count, MAX_MAPPED_BUFFERS);
+        return false;
+    }
+    buffer_map->buffers[vao_buffer_start].attribute_mask = 0;
+    buffer_map->buffers[vao_buffer_start].buffer_base_index = (GLuint)kMGLVertexAttribBufferBase;
+    buffer_map->buffers[vao_buffer_start].resource_type = 0;
+    buffer_map->buffers[vao_buffer_start].resource_index = 0;
+    buffer_map->buffers[vao_buffer_start].metal_binding_index = 0;
+    buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
+    buffer_map->buffers[vao_buffer_start].buf = NULL;
+    buffer_map->buffers[vao_buffer_start].offset = 0;
+    buffer_map->buffers[vao_buffer_start].size = 0;
+
+    // create attribute map
+    //
+    // we need to cache this mapping, its called on each draw command
+    //
+    bool vaoHasExplicitAttribs = (vao->enabled_attribs != 0u);
+    for(int att=0;att<MAX_ATTRIBS; att++)
     {
-        int vao_buffer_start;
-        GLuint next_vertex_binding_index = (GLuint)kMGLVertexAttribBufferBase;
-        VertexArray *vao = mglRendererGetValidatedVAO(ctx, "mapGLBuffersToMTLBufferMap");
-        Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-
-        count = [self getProgramBindingCount: stage type: SPVC_RESOURCE_TYPE_STAGE_INPUT];
-        mapped_buffers = 0;
-
-        if (!vao) {
-            if (count > 0) {
-                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: stage inputs=%d but VAO is invalid/null, skipping attrib mapping",
-                      count);
-            }
-            return true;
-        }
-
-        if (kMGLVertexAttribBufferBase >= kMGLMaxMetalVertexBufferCount) {
-            NSLog(@"MGL ERROR: invalid vertex attrib base index=%lu (max valid=%lu)",
-                  (unsigned long)kMGLVertexAttribBufferBase,
-                  (unsigned long)kMGLMaxMetalVertexBufferIndex);
-            return false;
-        }
-
-        // vao buffers start after the uniforms and shader buffers
-        vao_buffer_start = buffer_map->count;
-        // CRITICAL SECURITY FIX: Check against actual map capacity.
-        if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
-            NSLog(@"MGL SECURITY ERROR: buffer_map count %d exceeds MAX_MAPPED_BUFFERS %d",
-                  buffer_map->count, MAX_MAPPED_BUFFERS);
-            return false;
-        }
-        buffer_map->buffers[vao_buffer_start].attribute_mask = 0;
-        buffer_map->buffers[vao_buffer_start].buffer_base_index = (GLuint)kMGLVertexAttribBufferBase;
-        buffer_map->buffers[vao_buffer_start].resource_type = 0;
-        buffer_map->buffers[vao_buffer_start].resource_index = 0;
-        buffer_map->buffers[vao_buffer_start].metal_binding_index = 0;
-        buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
-        buffer_map->buffers[vao_buffer_start].buf = NULL;
-        buffer_map->buffers[vao_buffer_start].offset = 0;
-        buffer_map->buffers[vao_buffer_start].size = 0;
-
-        // create attribute map
-        //
-        // we need to cache this mapping, its called on each draw command
-        //
-        bool vaoHasExplicitAttribs = (vao->enabled_attribs != 0u);
-        for(int att=0;att<MAX_ATTRIBS; att++)
+        if (vaoHasExplicitAttribs && !(vao->enabled_attribs & (0x1 << att)))
         {
-            if (vaoHasExplicitAttribs && !(vao->enabled_attribs & (0x1 << att)))
-            {
-                if ((vao->enabled_attribs >> (att+1)) == 0)
+            if ((vao->enabled_attribs >> (att+1)) == 0)
+                break;
+            continue;
+        }
+        {
+            if (!mglRendererProgramUsesVertexAttrib(activeProgram, (GLuint)att)) {
+                if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
                     break;
                 continue;
             }
+
+            MGLResolvedVertexAttribBinding resolved = {0};
+            if (!mglRendererResolveVertexAttribBinding(ctx,
+                                                       vao,
+                                                       (GLuint)att,
+                                                       "mapGLBuffersToMTLBufferMap",
+                                                       &resolved)) {
+                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: enabled attrib %d has invalid/NULL buffer, skipping attrib",
+                      att);
+                continue;
+            }
+            Buffer *gl_buffer = resolved.buffer;
+
+            Buffer *map_buffer = NULL;
+
+            // check start for map... then check
+            map_buffer = buffer_map->buffers[vao_buffer_start].buf;
+
+            // empty slot map it here, only works on first buffer..
+            if (map_buffer == NULL)
             {
-                if (!mglRendererProgramUsesVertexAttrib(activeProgram, (GLuint)att)) {
-                    if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
-                        break;
+                if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
+                    NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), skipping attrib %d",
+                          next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
                     continue;
                 }
-
-                MGLResolvedVertexAttribBinding resolved = {0};
-                if (!mglRendererResolveVertexAttribBinding(ctx,
-                                                           vao,
-                                                           (GLuint)att,
-                                                           "mapGLBuffersToMTLBufferMap",
-                                                           &resolved)) {
-                    NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap: enabled attrib %d has invalid/NULL buffer, skipping attrib",
-                          att);
+                // map the buffer object to a metal vertex index
+                if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                    NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
+                          buffer_map->count, MAX_MAPPED_BUFFERS, att);
                     continue;
                 }
-                Buffer *gl_buffer = resolved.buffer;
+                buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
+                buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
+                buffer_map->buffers[vao_buffer_start].buffer_base_index = next_vertex_binding_index++;
+                buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
+                buffer_map->buffers[vao_buffer_start].offset = resolved.binding_offset;
+                buffer_map->buffers[vao_buffer_start].size = 0;
+                buffer_map->count++;
 
-                Buffer *map_buffer = NULL;
+                mapped_buffers++;
+            }
+            else
+            {
+                bool found_buffer = false;
 
-                // check start for map... then check
-                map_buffer = buffer_map->buffers[vao_buffer_start].buf;
-
-                // empty slot map it here, only works on first buffer..
-                if (map_buffer == NULL)
+                // find vao attrib with same buffer
+                for (int map=vao_buffer_start;
+                     (found_buffer == false) && map<buffer_map->count;
+                     map++)
                 {
-                    if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
-                        NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), skipping attrib %d",
-                              next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
+                    map_buffer = buffer_map->buffers[map].buf;
+                    if (!map_buffer) {
                         continue;
                     }
-                    // map the buffer object to a metal vertex index
-                    if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
-                        NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), skipping attrib %d",
-                              buffer_map->count, MAX_MAPPED_BUFFERS, att);
-                        continue;
-                    }
-                    buffer_map->buffers[vao_buffer_start].attribute_mask |= (0x1 << att);
-                    buffer_map->buffers[vao_buffer_start].buf = gl_buffer;
-                    buffer_map->buffers[vao_buffer_start].buffer_base_index = next_vertex_binding_index++;
-                    buffer_map->buffers[vao_buffer_start].has_metal_binding = GL_FALSE;
-                    buffer_map->buffers[vao_buffer_start].offset = resolved.binding_offset;
-                    buffer_map->buffers[vao_buffer_start].size = 0;
-                    buffer_map->count++;
 
-                    mapped_buffers++;
-                }
-                else
-                {
-                    bool found_buffer = false;
-
-                    // find vao attrib with same buffer
-                    for (int map=vao_buffer_start;
-                         (found_buffer == false) && map<buffer_map->count;
-                         map++)
-                    {
-                        map_buffer = buffer_map->buffers[map].buf;
-                        if (!map_buffer) {
-                            continue;
-                        }
-
-                        // we need to check name and target, not pointers..
-                        // FIX ME: I think we don't need a target as all attribs should be an array_buffer
-                        // Offset is intentionally NOT compared: attributes sharing the same
-                        // VBO/stride/divisor are grouped into one Metal buffer slot, with
-                        // per-attribute offsets expressed via the vertex descriptor.
+                    // we need to check name and target, not pointers..
+                    // FIX ME: I think we don't need a target as all attribs should be an array_buffer
+                    // Offset is intentionally NOT compared: attributes sharing the same
+                    // VBO/stride/divisor are grouped into one Metal buffer slot, with
+                    // per-attribute offsets expressed via the vertex descriptor.
 	                        if ((map_buffer->name == gl_buffer->name) &&
 	                            (map_buffer->target == gl_buffer->target))
 	                        {
@@ -4021,61 +4120,50 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 	                                break;
 	                            }
 	                        }
-                    }
+                }
 
-                    if (found_buffer == false)
-                    {
-                        if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
-                            NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), cannot append attrib %d",
-                                  next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
-                            continue;
-                        }
-                        // map the next buffer object to a metal vertex index
-                        if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
-                            NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
-                                  buffer_map->count, MAX_MAPPED_BUFFERS, att);
-                            continue;
-                        }
-                        buffer_map->buffers[buffer_map->count].attribute_mask = (0x1 << att);
-                        buffer_map->buffers[buffer_map->count].buffer_base_index = next_vertex_binding_index++;
-                        buffer_map->buffers[buffer_map->count].resource_type = 0;
-                        buffer_map->buffers[buffer_map->count].resource_index = 0;
-                        buffer_map->buffers[buffer_map->count].metal_binding_index = 0;
-                        buffer_map->buffers[buffer_map->count].has_metal_binding = GL_FALSE;
-                        buffer_map->buffers[buffer_map->count].buf = gl_buffer;
-                        buffer_map->buffers[buffer_map->count].offset = resolved.binding_offset;
-                        buffer_map->buffers[buffer_map->count].size = 0;
-                        buffer_map->count++;
-
-                        mapped_buffers++;
+                if (found_buffer == false)
+                {
+                    if (next_vertex_binding_index >= kMGLMaxMetalVertexBufferCount) {
+                        NSLog(@"MGL WARNING: vertex binding index overflow (next=%u maxValid=%lu), cannot append attrib %d",
+                              next_vertex_binding_index, (unsigned long)kMGLMaxMetalVertexBufferIndex, att);
+                        continue;
                     }
+                    // map the next buffer object to a metal vertex index
+                    if (buffer_map->count >= MAX_MAPPED_BUFFERS) {
+                        NSLog(@"MGL WARNING: vertex buffer map is full (count=%u max=%u), cannot append attrib %d",
+                              buffer_map->count, MAX_MAPPED_BUFFERS, att);
+                        continue;
+                    }
+                    buffer_map->buffers[buffer_map->count].attribute_mask = (0x1 << att);
+                    buffer_map->buffers[buffer_map->count].buffer_base_index = next_vertex_binding_index++;
+                    buffer_map->buffers[buffer_map->count].resource_type = 0;
+                    buffer_map->buffers[buffer_map->count].resource_index = 0;
+                    buffer_map->buffers[buffer_map->count].metal_binding_index = 0;
+                    buffer_map->buffers[buffer_map->count].has_metal_binding = GL_FALSE;
+                    buffer_map->buffers[buffer_map->count].buf = gl_buffer;
+                    buffer_map->buffers[buffer_map->count].offset = resolved.binding_offset;
+                    buffer_map->buffers[buffer_map->count].size = 0;
+                    buffer_map->count++;
+
+                    mapped_buffers++;
                 }
             }
-
-            if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
-                break;
         }
 
-        if (mapped_buffers != count) {
-            static unsigned long long s_map_mismatch_hits = 0;
-            s_map_mismatch_hits++;
-            if ((s_map_mismatch_hits % 64ull) == 1ull) {
-                Buffer *drawIndexBuffer = vao->element_array.buffer;
-                void *indexBufferMetal = drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
-                NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (pipeline=%p mapped=%u expected=%u stage=%d hit=%llu indexBuffer=%p vao=%p)",
-                      _pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
-            }
-        }
-    }
-    else if (stage == _COMPUTE_SHADER)
-    {
+        if (vaoHasExplicitAttribs && (vao->enabled_attribs >> (att+1)) == 0)
+            break;
     }
 
-    if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        MGLTraceNSLog(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
-              stage,
-              (unsigned long long)mapCall,
-              buffer_map ? buffer_map->count : 0);
+    if (mapped_buffers != count) {
+        static unsigned long long s_map_mismatch_hits = 0;
+        s_map_mismatch_hits++;
+        if ((s_map_mismatch_hits % 64ull) == 1ull) {
+            Buffer *drawIndexBuffer = vao->element_array.buffer;
+            void *indexBufferMetal = drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
+            NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (pipeline=%p mapped=%u expected=%u stage=%d hit=%llu indexBuffer=%p vao=%p)",
+                  _pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
+        }
     }
 
     return true;
@@ -4469,270 +4557,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (tex->target == GL_TEXTURE_BUFFER) {
-        Buffer *sourceBuffer = tex->texture_buffer;
-        if (!sourceBuffer || tex->texture_buffer_size <= 0) {
-            NSLog(@"MGL TEXBUFFER ERROR: tex=%u has no attached buffer/size buffer=%p size=%lld",
-                  tex->name,
-                  sourceBuffer,
-                  (long long)tex->texture_buffer_size);
-            return nil;
-        }
-
-        if (tex->texture_buffer_offset < 0 ||
-            tex->texture_buffer_offset > sourceBuffer->size ||
-            tex->texture_buffer_size > sourceBuffer->size - tex->texture_buffer_offset) {
-            NSLog(@"MGL TEXBUFFER ERROR: invalid range tex=%u buffer=%u off=%lld size=%lld bufferSize=%lld",
-                  tex->name,
-                  sourceBuffer->name,
-                  (long long)tex->texture_buffer_offset,
-                  (long long)tex->texture_buffer_size,
-                  (long long)sourceBuffer->size);
-            return nil;
-        }
-
-        NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
-        if (bytesPerTexel == 0) {
-            NSLog(@"MGL TEXBUFFER ERROR: unsupported internal format 0x%x tex=%u buffer=%u",
-                  tex->internalformat,
-                  tex->name,
-                  sourceBuffer->name);
-            return nil;
-        }
-
-        NSUInteger texelCount = (NSUInteger)tex->texture_buffer_size / bytesPerTexel;
-        if (texelCount == 0) {
-            NSLog(@"MGL TEXBUFFER ERROR: zero texel count tex=%u buffer=%u size=%lld bpt=%lu",
-                  tex->name,
-                  sourceBuffer->name,
-                  (long long)tex->texture_buffer_size,
-                  (unsigned long)bytesPerTexel);
-            return nil;
-        }
-
-        MTLPixelFormat bufferPixelFormat = (tex->internalformat == GL_RGBA8)
-            ? MTLPixelFormatRGBA8Uint
-            : mtlPixelFormatForGLTex(tex);
-        if (bufferPixelFormat == MTLPixelFormatInvalid || bufferPixelFormat == 0) {
-            NSLog(@"MGL TEXBUFFER ERROR: invalid Metal format for tex=%u internal=0x%x",
-                  tex->name,
-                  tex->internalformat);
-            return nil;
-        }
-
-        if (![self processBuffer:sourceBuffer]) {
-            NSLog(@"MGL TEXBUFFER ERROR: failed to process source buffer tex=%u buffer=%u",
-                  tex->name,
-                  sourceBuffer->name);
-            return nil;
-        }
-
-        const uint8_t *sourceBytes = NULL;
-        if (sourceBuffer->data.buffer_data) {
-            sourceBytes = ((const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data) + (size_t)tex->texture_buffer_offset;
-        } else if (sourceBuffer->data.mtl_data) {
-            id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
-            if (mtlBuffer && mtlBuffer.contents) {
-                sourceBytes = ((const uint8_t *)mtlBuffer.contents) + (size_t)tex->texture_buffer_offset;
-            }
-        }
-
-        if (!sourceBytes) {
-            NSLog(@"MGL TEXBUFFER ERROR: no readable backing for tex=%u buffer=%u cpu=%p mtl=%p",
-                  tex->name,
-                  sourceBuffer->name,
-                  (void *)(uintptr_t)sourceBuffer->data.buffer_data,
-                  sourceBuffer->data.mtl_data);
-            return nil;
-        }
-
-        // SPIRV-Cross currently emits Minecraft's CloudFaces texel buffer as a
-        // texture2d<int>. Keep GL lookup semantics as GL_TEXTURE_BUFFER, but
-        // create a Metal 2D backing so the generated MSL argument type matches.
-        // A texel buffer can be much wider than Metal's max 2D texture width,
-        // so pack it into rows instead of creating texelCount x 1.
-        /*
-         * SPIRV-Cross lowers GL texture buffers to 2D Metal textures and emits
-         * spvTexelBufferCoord(tc) using its MSL texel_buffer_texture_width
-         * option. Keep this packing width in lockstep with program.c.
-         */
-        static const NSUInteger kMGLTexelBufferTextureWidth = 4096u;
-        NSUInteger max2DSize = (NSUInteger)MIN((GLuint)kMGLTexelBufferTextureWidth,
-                                               ctx ? ctx->state.var.max_texture_size : (GLuint)kMGLTexelBufferTextureWidth);
-        if (max2DSize == 0 || max2DSize > kMGLTexelBufferTextureWidth) {
-            max2DSize = kMGLTexelBufferTextureWidth;
-        }
-
-        NSUInteger texWidth = MIN(texelCount, max2DSize);
-        NSUInteger texHeight = (texelCount + texWidth - 1) / texWidth;
-        if (texHeight == 0 || texHeight > max2DSize) {
-            NSLog(@"MGL TEXBUFFER ERROR: texel buffer too large for 2D fallback tex=%u buffer=%u texels=%lu packed=%lux%lu max=%lu",
-                  tex->name,
-                  sourceBuffer->name,
-                  (unsigned long)texelCount,
-                  (unsigned long)texWidth,
-                  (unsigned long)texHeight,
-                  (unsigned long)max2DSize);
-            return nil;
-        }
-
-        NSUInteger bytesPerRow = texWidth * bytesPerTexel;
-        NSUInteger packedBytes = bytesPerRow * texHeight;
-        NSMutableData *packedData = nil;
-        const uint8_t *uploadBytes = sourceBytes;
-
-        /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats.
-         * GL_RGB32* (12 bytes/texel) maps to Metal RGBA32* (16 bytes/texel).
-         * Expand each texel by inserting a default alpha before uploading. */
-        NSMutableData *expandedData = nil;
-        if (mglTextureNeedsChannelExpansion(tex->internalformat, bufferPixelFormat)) {
-            NSUInteger srcCompBytes = 0;
-            NSUInteger dstCompBytes = 0;
-            uint64_t alphaDefault = 0;
-            switch (bufferPixelFormat) {
-                case MTLPixelFormatRGBA16Unorm:
-                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
-                case MTLPixelFormatRGBA16Snorm:
-                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
-                case MTLPixelFormatRGBA16Float:
-                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
-                case MTLPixelFormatRGBA16Sint:
-                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-                case MTLPixelFormatRGBA16Uint:
-                    srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
-                case MTLPixelFormatRGBA32Float:
-                    srcCompBytes = 4; dstCompBytes = 4;
-                    { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
-                    break;
-                case MTLPixelFormatRGBA32Sint:
-                    srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-                case MTLPixelFormatRGBA32Uint:
-                    srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
-                default:
-                    break;
-            }
-            if (srcCompBytes > 0) {
-                NSUInteger srcPixelBytes = srcCompBytes * 3;
-                NSUInteger dstPixelBytes = dstCompBytes * 4;
-                NSUInteger expandedBytesPerRow = texWidth * dstPixelBytes;
-                NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;
-                expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
-                if (expandedData && expandedData.mutableBytes) {
-                    const uint8_t *src = sourceBytes;
-                    uint8_t *dst = (uint8_t *)expandedData.mutableBytes;
-                    for (NSUInteger row = 0; row < texHeight; row++) {
-                        for (NSUInteger col = 0; col < texWidth; col++) {
-                            NSUInteger srcTexelIdx = row * texWidth + col;
-                            if (srcTexelIdx >= texelCount) {
-                                memset(dst + (row * expandedBytesPerRow + col * dstPixelBytes),
-                                       0, dstPixelBytes);
-                                continue;
-                            }
-                            const uint8_t *srcPixel = src + srcTexelIdx * srcPixelBytes;
-                            uint8_t *dstPixel = dst + row * expandedBytesPerRow + col * dstPixelBytes;
-                            memcpy(dstPixel, srcPixel, srcPixelBytes);
-                            memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
-                        }
-                    }
-                    uploadBytes = (const uint8_t *)expandedData.bytes;
-                    bytesPerRow = expandedBytesPerRow;
-                    packedBytes = expandedPackedBytes;
-                }
-            }
-        }
-
-        if (texHeight > 1 && !expandedData) {
-            packedData = [NSMutableData dataWithLength:packedBytes];
-            if (!packedData || !packedData.mutableBytes) {
-                NSLog(@"MGL TEXBUFFER ERROR: failed allocating packed data tex=%u buffer=%u bytes=%lu",
-                      tex->name,
-                      sourceBuffer->name,
-                      (unsigned long)packedBytes);
-                return nil;
-            }
-
-            memcpy(packedData.mutableBytes, sourceBytes, (size_t)tex->texture_buffer_size);
-            uploadBytes = (const uint8_t *)packedData.bytes;
-        }
-
-        uint64_t sourceHash = mglTraceHashBytes(sourceBytes, (size_t)tex->texture_buffer_size);
-        uint64_t uploadHash = mglTraceHashBytes(uploadBytes, packedBytes);
-        char sourceHead[64];
-        char uploadHead[64];
-        sourceHead[0] = '\0';
-        uploadHead[0] = '\0';
-        mglTraceFormatBytes(sourceBytes, (size_t)MIN((NSUInteger)tex->texture_buffer_size, (NSUInteger)64), sourceHead, sizeof(sourceHead));
-        mglTraceFormatBytes(uploadBytes, (size_t)MIN(packedBytes, (NSUInteger)64), uploadHead, sizeof(uploadHead));
-
-        MTLTextureDescriptor *bufferDesc =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:bufferPixelFormat
-                                                               width:texWidth
-                                                              height:texHeight
-                                                           mipmapped:NO];
-        bufferDesc.usage = MTLTextureUsageShaderRead;
-        bufferDesc.storageMode = MTLStorageModeShared;
-
-        id<MTLTexture> bufferTexture = nil;
-        @try {
-            bufferTexture = [_device newTextureWithDescriptor:bufferDesc];
-            if (bufferTexture) {
-                [bufferTexture replaceRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
-                                  mipmapLevel:0
-                                    withBytes:uploadBytes
-                                  bytesPerRow:bytesPerRow];
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"MGL TEXBUFFER ERROR: failed creating/uploading tex=%u buffer=%u exception=%@",
-                  tex->name,
-                  sourceBuffer->name,
-                  exception);
-            return nil;
-        }
-
-        if (!bufferTexture) {
-            NSLog(@"MGL TEXBUFFER ERROR: Metal texture creation returned nil tex=%u buffer=%u format=%lu texels=%lu",
-                  tex->name,
-                  sourceBuffer->name,
-                  (unsigned long)bufferPixelFormat,
-                  (unsigned long)texelCount);
-            return nil;
-        }
-
-        tex->dirty_bits = 0;
-        sourceBuffer->data.dirty_bits = 0;
-
-        NSMutableData *readbackData = [NSMutableData dataWithLength:packedBytes];
-        uint64_t readbackHash = 0ull;
-        char readbackHead[64];
-        readbackHead[0] = '\0';
-        if (readbackData.mutableBytes) {
-            [bufferTexture getBytes:readbackData.mutableBytes
-                        bytesPerRow:bytesPerRow
-                         fromRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
-                        mipmapLevel:0];
-            readbackHash = mglTraceHashBytes(readbackData.bytes, packedBytes);
-            mglTraceFormatBytes(readbackData.bytes, (size_t)MIN(packedBytes, (NSUInteger)64), readbackHead, sizeof(readbackHead));
-        }
-
-        NSLog(@"MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x mtlFormat=%lu texels=%lu packed=%lux%lu rowBytes=%lu bytes=%lld offset=%lld as=texture2d sourceHash=0x%016llx uploadHash=0x%016llx readbackHash=0x%016llx sourceHead=%s uploadHead=%s readbackHead=%s",
-              tex->name,
-              sourceBuffer->name,
-              tex->internalformat,
-              (unsigned long)bufferPixelFormat,
-              (unsigned long)texelCount,
-              (unsigned long)texWidth,
-              (unsigned long)texHeight,
-              (unsigned long)bytesPerRow,
-              (long long)tex->texture_buffer_size,
-              (long long)tex->texture_buffer_offset,
-              (unsigned long long)sourceHash,
-              (unsigned long long)uploadHash,
-              (unsigned long long)readbackHash,
-              sourceHead,
-              uploadHead,
-              readbackHead);
-
-        [self recordGPUSuccess];
-        return bufferTexture;
+        return [self createMTLTexelBufferTexture:tex];
     }
 
     NSUInteger width, height, depth;
@@ -4812,128 +4637,13 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             return nil;
     }
 
-    // verify completeness of texture when used
-    /* Texture storage is independent from GL_TEXTURE_MAX_LEVEL.  Minecraft
-     * uses BASE/MAX_LEVEL to express temporary GpuTextureView mip windows; if
-     * those sampler parameters shrink the Metal texture allocation, later
-     * full-atlas sampling loses the higher mip levels and distant terrain
-     * reads empty/incorrect data.  Apply BASE/MAX only to completeness checks
-     * and sampled Metal views, not to the underlying storage level count. */
-    effective_mipmap_levels = tex->mipmap_levels;
-
-    /* For CUBE_MAP_ARRAY, glTexImage3D stores all layer data in faces[0] with
-     * depth = 6 * num_cubes.  Faces 1-5 are never populated by createTextureLevel,
-     * so only check face 0 for completeness.  The upload code also reads from
-     * face 0 and distributes slices to Metal array layers. */
-    uint completeness_check_faces = (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? 1 : num_faces;
-
-    storageMipmapped = (tex->mipmap_levels > 1u) &&
-        (tex->num_levels > 1u || tex->is_render_target);
-
-    if (tex->num_levels > 1)
-    {
-        // mipmapped texture
-        if (effective_mipmap_levels == 0) {
-            effective_mipmap_levels = tex->num_levels;
-        }
-
-        if (!tex->is_render_target && tex->num_levels < effective_mipmap_levels)
-        {
-            static uint64_t s_mipmap_count_mismatch_logs = 0;
-            if (++s_mipmap_count_mismatch_logs <= 32 || (s_mipmap_count_mismatch_logs % 512) == 0) {
-                NSLog(@"MGL TEXTURE MIP COMPAT: tex=%u target=0x%x size=%ux%u num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u immutable=%u isRT=%u; capping Metal mip count to uploaded levels hit=%llu",
-                      tex->name,
-                      tex->target,
-                      tex->width,
-                      tex->height,
-                      tex->num_levels,
-                      tex->mipmap_levels,
-                      effective_mipmap_levels,
-                      tex->params.base_level,
-                      tex->params.max_level,
-                      tex->immutable_storage,
-                      tex->is_render_target,
-                      (unsigned long long)s_mipmap_count_mismatch_logs);
-            }
-            effective_mipmap_levels = tex->num_levels;
-        }
-
-        /* GL texture completeness only requires levels in
-         * [base_level, min(max_level, mipmap_levels-1)] to be complete.
-         * Levels below base_level may be uninitialised and must NOT cause
-         * the texture to be rejected.  Minecraft 1.21.11 sets base_level>0
-         * on mipmap texture views (GlCommandEncoder.java). */
-        GLuint check_start = tex->params.base_level;
-        GLuint check_end = (tex->params.max_level == 1000u)
-            ? (tex->mipmap_levels > 0u ? tex->mipmap_levels - 1u : 0u)
-            : tex->params.max_level;
-        if (check_end >= tex->mipmap_levels)
-            check_end = (tex->mipmap_levels > 0u) ? tex->mipmap_levels - 1u : 0u;
-        if (check_end < check_start)
-            check_end = check_start;
-
-        for(int face=0; face<completeness_check_faces; face++)
-        {
-            for (GLuint i=check_start; i<=check_end; i++)
-            {
-                // incomplete texture
-                if (tex->faces[face].levels[i].complete == false) {
-                    static uint64_t s_incomplete_mip_logs = 0;
-                    if (++s_incomplete_mip_logs <= 32 || (s_incomplete_mip_logs % 512) == 0) {
-                        NSLog(@"MGL TEXTURE INCOMPLETE: tex=%u target=0x%x face=%d level=%u incomplete num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u check=[%u,%u] hit=%llu",
-                              tex->name,
-                              tex->target,
-                              face,
-                              i,
-                              tex->num_levels,
-                              tex->mipmap_levels,
-                              effective_mipmap_levels,
-                              tex->params.base_level,
-                              tex->params.max_level,
-                              check_start,
-                              check_end,
-                              (unsigned long long)s_incomplete_mip_logs);
-                    }
-                    return NULL;
-                }
-            }
-        }
-
-        tex->mipmapped = true;
-    }
-    else if (tex->num_levels == 1)
-    {
-        if (!storageMipmapped) {
-            effective_mipmap_levels = 1;
-        }
-        // single level texture
-        // incomplete texture
-        for(int face=0; face<completeness_check_faces; face++)
-        {
-            if (tex->faces[face].levels[0].complete == false)
-            {
-                static uint64_t s_incomplete_base_logs = 0;
-                if (++s_incomplete_base_logs <= 32 || (s_incomplete_base_logs % 512) == 0) {
-                    NSLog(@"MGL TEXTURE INCOMPLETE: tex=%u target=0x%x face=%d base incomplete size=%ux%u hit=%llu",
-                          tex->name,
-                          tex->target,
-                          face,
-                          tex->width,
-                          tex->height,
-                          (unsigned long long)s_incomplete_base_logs);
-                }
-                return NULL;
-            }
-        }
-    }
-    else
-    {
-        NSLog(@"MGL TEXTURE ERROR: texture %u has no complete levels for Metal creation target=0x%x",
-              tex->name,
-              tex->target);
+    if (![self checkTextureCompleteness:tex
+                               texType:tex_type
+                              numFaces:num_faces
+                  effectiveMipmapLevels:&effective_mipmap_levels
+                      storageMipmapped:&storageMipmapped]) {
         return nil;
     }
-    tex->complete = true;
 
     // PROPER FIX: Get original texture format and validate for AGX compatibility
     pixelFormat = mtlPixelFormatForGLTex(tex);
@@ -5185,1077 +4895,35 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     BOOL cpuUploadRequired =
         ((tex->dirty_bits & DIRTY_TEXTURE_DATA) != 0) && hasUploadableCPUData;
     BOOL cpuUploadVerified = !cpuUploadRequired;
+    BOOL allLevelsUploaded = YES;
 
     if (cpuUploadRequired)
     {
-        if (kMGLDiagnosticStateLogs) {
-            MGLTraceNSLog(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
-            MGLTraceNSLog(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
-                          tex->target, tex->internalformat, tex->num_levels, upload_level_count);
-        }
-
-        MTLRegion region;
-
-        for(int face=0; face<num_faces; face++)
-        {
-            for (int level=0; level<upload_level_count; level++)
-            {
-                TextureLevel *uploadLevel = &tex->faces[face].levels[level];
-                if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
-                    static uint64_t s_skipStaleUploadLogs = 0;
-                    uint64_t hit = ++s_skipStaleUploadLogs;
-                    if (hit <= 64ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL TEXTURE SKIP stale CPU upload tex=%u face=%d level=%d source=%u ever=%u init=%u hit=%llu",
-                              (unsigned)tex->name,
-                              face,
-                              level,
-                              uploadLevel ? (unsigned)uploadLevel->last_init_source : 0u,
-                              uploadLevel ? (unsigned)uploadLevel->ever_written : 0u,
-                              uploadLevel ? (unsigned)uploadLevel->has_initialized_data : 0u,
-                              (unsigned long long)hit);
-                    }
-                    continue;
-                }
-
-                width = tex->faces[face].levels[level].width;
-                height = tex->faces[face].levels[level].height;
-                depth = tex->faces[face].levels[level].depth;
-
-                if (texture1DBackedBy2D)
-                    region = MTLRegionMake2D(0,0,width,1);
-                else if (depth > 1)
-                    region = MTLRegionMake3D(0,0,0,width,height,depth);
-                else if (height > 1)
-                    region = MTLRegionMake2D(0,0,width,height);
-                else
-                    region = MTLRegionMake1D(0,width);
-
-                NSUInteger bytesPerRow;
-                NSUInteger bytesPerImage;
-                bool hasExplicitDataSize = false;
-
-                if (tex_type == MTLTextureType3D)
-                {
-                    // ogl considers an image a "row".. metal must be different
-                    bytesPerRow = tex->faces[face].levels[level].pitch;
-                    if (bytesPerRow == 0) {
-                        NSLog(@"MGL WARNING: Invalid 3D bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
-                        continue;
-                    }
-
-                    NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
-                    if (uploadRows == 0 || bytesPerRow > (NSUIntegerMax / uploadRows)) {
-                        NSLog(@"MGL WARNING: Invalid 3D bytesPerImage overflow (tex=%d face=%d level=%d rows=%lu bpr=%lu)",
-                              tex->name,
-                              face,
-                              level,
-                              (unsigned long)uploadRows,
-                              (unsigned long)bytesPerRow);
-                        continue;
-                    }
-                    bytesPerImage = bytesPerRow * uploadRows;
-
-                    // NUCLEAR OPTION: Disable all texture uploads temporarily to isolate the crash source
-                    if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
-                        // PROPER FIX: Dynamic memory alignment based on GPU characteristics
-                        void *srcData = (void *)tex->faces[face].levels[level].data;
-                        uintptr_t addr = (uintptr_t)srcData;
-
-                        /* RGBA8 expansion for 3D textures: when the CPU data is
-                         * stored in a packed format (e.g. RGBA4 = 2 bytes/pixel)
-                         * but Metal stores it as RGBA8 (4 bytes/pixel), expand
-                         * each slice before uploading.  Without this, the 2-byte
-                         * CPU data is uploaded directly to a 4-byte Metal texture,
-                         * causing garbled readback via mtlGetTexImage/ReadPixels. */
-                        uint8_t *expanded3DUploadData = NULL;
-                        if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                            NSUInteger expandedBytesPerRow = 0;
-                            NSUInteger expandedBytesPerImagePerSlice = 0;
-                            NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
-                            NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
-
-                            uint8_t *firstSlice = mglCreateRGBA8ExpandedUpload(tex,
-                                                                               (const uint8_t *)srcData,
-                                                                               width,
-                                                                               texHeight,
-                                                                               bytesPerRow,
-                                                                               &expandedBytesPerRow,
-                                                                               &expandedBytesPerImagePerSlice);
-                            if (firstSlice) {
-                                NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
-                                if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
-                                    expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
-                                    if (expanded3DUploadData) {
-                                        memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
-                                        for (NSUInteger z = 1; z < texDepth; z++) {
-                                            const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
-                                            uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
-                                            NSUInteger dummyRow = 0, dummyImage = 0;
-                                            uint8_t *sliceExpanded = mglCreateRGBA8ExpandedUpload(tex,
-                                                                                                 sliceSrc,
-                                                                                                 width,
-                                                                                                 texHeight,
-                                                                                                 bytesPerRow,
-                                                                                                 &dummyRow,
-                                                                                                 &dummyImage);
-                                            if (sliceExpanded) {
-                                                memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
-                                                free(sliceExpanded);
-                                            } else {
-                                                memset(sliceDst, 0, expandedBytesPerImagePerSlice);
-                                            }
-                                        }
-                                        srcData = expanded3DUploadData;
-                                        bytesPerRow = expandedBytesPerRow;
-                                        bytesPerImage = expandedBytesPerImagePerSlice;
-                                        addr = (uintptr_t)srcData;
-                                    }
-                                }
-                                free(firstSlice);
-                            }
-                        } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                            /* GL_RGB16 / GL_RGB32 family (6/12 bytes/pixel CPU) maps to
-                             * Metal RGBA16 / RGBA32 family (8/16 bytes/pixel).  Expand each
-                             * slice before uploading; otherwise 6/12-byte CPU rows are
-                             * uploaded to 8/16-byte Metal textures, shifting pixels and
-                             * producing stripes.  Mirrors the RGBA8 3D block above. */
-                            NSUInteger expandedBytesPerRow = 0;
-                            NSUInteger expandedBytesPerImagePerSlice = 0;
-                            NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
-                            NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
-
-                            uint8_t *firstSlice = mglCreateChannelExpandedUpload(tex,
-                                                                                  pixelFormat,
-                                                                                  (const uint8_t *)srcData,
-                                                                                  width,
-                                                                                  texHeight,
-                                                                                  bytesPerRow,
-                                                                                  &expandedBytesPerRow,
-                                                                                  &expandedBytesPerImagePerSlice);
-                            if (firstSlice) {
-                                NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
-                                if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
-                                    expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
-                                    if (expanded3DUploadData) {
-                                        memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
-                                        for (NSUInteger z = 1; z < texDepth; z++) {
-                                            const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
-                                            uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
-                                            NSUInteger dummyRow = 0, dummyImage = 0;
-                                            uint8_t *sliceExpanded = mglCreateChannelExpandedUpload(tex,
-                                                                                                     pixelFormat,
-                                                                                                     sliceSrc,
-                                                                                                     width,
-                                                                                                     texHeight,
-                                                                                                     bytesPerRow,
-                                                                                                     &dummyRow,
-                                                                                                     &dummyImage);
-                                            if (sliceExpanded) {
-                                                memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
-                                                free(sliceExpanded);
-                                            } else {
-                                                memset(sliceDst, 0, expandedBytesPerImagePerSlice);
-                                            }
-                                        }
-                                        srcData = expanded3DUploadData;
-                                        bytesPerRow = expandedBytesPerRow;
-                                        bytesPerImage = expandedBytesPerImagePerSlice;
-                                        addr = (uintptr_t)srcData;
-                                    }
-                                }
-                                free(firstSlice);
-                            }
-                        }
-
-                        // Determine optimal alignment based on pixel format and GPU capabilities
-                        NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                        NSUInteger alignedBytesPerRow = bytesPerRow;
-                        if (alignedBytesPerRow % alignment != 0) {
-                            alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-                        }
-
-                        NSUInteger addrAlignment = MGLCapabilityTextureAlignment(&_capability);
-                        if (addr % addrAlignment != 0 || alignedBytesPerRow != bytesPerRow) {
-                            // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy row by row
-                            NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
-                            if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
-                                NSLog(@"MGL WARNING: Rejecting aligned 3D upload row overflow (tex=%d level=%d rows=%lu bpr=%lu)",
-                                      tex->name,
-                                      level,
-                                      (unsigned long)alignedUploadRows,
-                                      (unsigned long)alignedBytesPerRow);
-                                continue;
-                            }
-                            NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
-                            NSUInteger alignedDepth = MAX((NSUInteger)depth, 1UL);
-                            if (alignedBytesPerImage > (NSUIntegerMax / alignedDepth)) {
-                                NSLog(@"MGL WARNING: Rejecting aligned 3D upload size overflow (tex=%d level=%d bpi=%lu depth=%lu)",
-                                      tex->name,
-                                      level,
-                                      (unsigned long)alignedBytesPerImage,
-                                      (unsigned long)alignedDepth);
-                                continue;
-                            }
-                            NSUInteger alignedSize = alignedBytesPerImage * alignedDepth;
-                            if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
-                                NSLog(@"MGL WARNING: Rejecting aligned 3D upload staging size=%lu (tex=%d level=%d)",
-                                      (unsigned long)alignedSize, tex->name, level);
-                                continue;
-                            }
-                            void *alignedData = aligned_alloc(alignment, alignedSize);
-
-                            if (alignedData) {
-                                memset(alignedData, 0, alignedSize);
-                                // Copy data row by row to handle bytesPerRow alignment
-                                NSUInteger srcRowSize = bytesPerRow;
-                                NSUInteger dstRowSize = alignedBytesPerRow;
-                                NSUInteger texUploadRows = alignedUploadRows;
-                                NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
-                                uint8_t *srcPtr = (uint8_t *)srcData;
-                                uint8_t *dstPtr = (uint8_t *)alignedData;
-
-                                for (NSUInteger z = 0; z < texDepth; z++) {
-                                    for (NSUInteger row = 0; row < texUploadRows; row++) {
-                                        NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
-                                        NSUInteger dstOffset = z * alignedBytesPerImage + row * dstRowSize;
-                                        NSUInteger srcOffset = z * bytesPerImage + row * srcRowSize;
-                                        memcpy(dstPtr + dstOffset, srcPtr + srcOffset, copySize);
-                                        // Clear padding to zero
-                                        if (dstRowSize > copySize) {
-                                            memset(dstPtr + dstOffset + copySize, 0, dstRowSize - copySize);
-                                        }
-                                    }
-                                }
-
-                                // CRITICAL SECURITY FIX: Validate alignedData before passing to Metal API
-                                if (!alignedData) {
-                                    NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
-                                    continue;
-                                }
-                                if (alignedBytesPerRow == 0) {
-                                    NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
-                                    continue;
-                                }
-                                @try {
-                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                           texName:tex->name
-                                                                         texTarget:tex->target
-                                                                             bytes:alignedData
-                                                                       bytesPerRow:alignedBytesPerRow
-                                                                     bytesPerImage:alignedBytesPerImage
-                                                                             width:width
-                                                                            height:height
-                                                                             depth:depth
-                                                                             level:level
-                                                                             slice:0];
-                                    if (!uploaded) {
-                                        NSLog(@"MGL WARNING: 3D aligned blit upload failed (level %d, face %d)", level, face);
-                                    }
-                                } @catch (NSException *exception) {
-                                    NSLog(@"MGL ERROR: Failed to upload aligned 3D texture data (level %d, face %d): %@", level, face, exception);
-                                }
-                                free(alignedData);
-                            } else {
-                                NSLog(@"MGL ERROR: Failed to allocate aligned memory for 3D texture upload");
-                            }
-                        } else {
-                            // Data and bytesPerRow are already aligned
-                            // CRITICAL SECURITY FIX: Validate srcData and parameters before passing to Metal API
-                            if (!srcData) {
-                                NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
-                                continue;
-                            }
-                            if (bytesPerRow == 0) {
-                                NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
-                                continue;
-                            }
-                            if (bytesPerImage == 0) {
-                                NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
-                                continue;
-                            }
-                            @try {
-                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                       texName:tex->name
-                                                                     texTarget:tex->target
-                                                                         bytes:srcData
-                                                                   bytesPerRow:bytesPerRow
-                                                                 bytesPerImage:bytesPerImage
-                                                                         width:width
-                                                                        height:height
-                                                                         depth:depth
-                                                                         level:level
-                                                                         slice:0];
-                                if (!uploaded) {
-                                    NSLog(@"MGL WARNING: 3D direct blit upload failed (level %d, face %d)", level, face);
-                                }
-                            } @catch (NSException *exception) {
-                                NSLog(@"MGL ERROR: Failed to upload 3D texture data (level %d, face %d): %@", level, face, exception);
-                            }
-                        }
-                        free(expanded3DUploadData);
-                    } else {
-                        NSLog(@"MGL WARNING: Skipping 3D texture upload due to invalid data or parameters");
-                    }
-                }
-                else
-                {
-                    bytesPerRow = tex->faces[face].levels[level].pitch;
-                    if (bytesPerRow == 0) {
-                        NSLog(@"MGL WARNING: Invalid bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
-                        continue;
-                    }
-
-                    bytesPerImage = tex->faces[face].levels[level].data_size;
-                    hasExplicitDataSize = (bytesPerImage > 0);
-                    if (bytesPerImage == 0) {
-                        // Some depth / render-target textures may report data_size==0.
-                        // Fall back to pitch * logical height to avoid hard aborts.
-                        NSUInteger fallbackHeight = (height > 0) ? (NSUInteger)height : 1;
-                        bytesPerImage = bytesPerRow * fallbackHeight;
-                        NSLog(@"MGL WARNING: data_size was 0, using fallback bytesPerImage=%lu (tex=%d face=%d level=%d)",
-                              (unsigned long)bytesPerImage, tex->name, face, level);
-                    }
-                    if (bytesPerImage == 0) {
-                        NSLog(@"MGL WARNING: Invalid bytesPerImage (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
-                        continue;
-                    }
-
-                    if (is_array)
-                    {
-                        GLuint num_layers;
-                        size_t offset;
-                        GLubyte *tex_data;
-                        BOOL arraySliceIs1D;
-                        NSUInteger uploadSliceHeight;
-                        NSUInteger backingBytes;
-                        NSUInteger logicalBytesPerImage;
-
-                        num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
-                            ? tex->faces[face].levels[level].height
-                            : tex->faces[face].levels[level].depth;
-                        if (num_layers == 0) {
-                            NSLog(@"MGL WARNING: Array texture has 0 layers, skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
-                            continue;
-                        }
-
-                        arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
-                        uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)height, 1UL);
-                        backingBytes = bytesPerImage;
-                        NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
-                        if (uploadSliceRows == 0 || bytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
-                            NSLog(@"MGL WARNING: Array texture invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
-                                  tex->name,
-                                  face,
-                                  level,
-                                  (unsigned long)bytesPerRow,
-                                  (unsigned long)uploadSliceRows);
-                            continue;
-                        }
-                        logicalBytesPerImage = bytesPerRow * uploadSliceRows;
-                        if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
-                            NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
-                            if (dividedLayerBytes >= logicalBytesPerImage) {
-                                logicalBytesPerImage = dividedLayerBytes;
-                            }
-                        }
-                        NSUInteger requiredArrayBytes = 0;
-                        NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
-                        if (logicalBytesPerImage == 0 ||
-                            logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
-                            backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
-                            NSLog(@"MGL WARNING: Array texture backing too small for logical slices tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
-                                  tex->name,
-                                  face,
-                                  level,
-                                  (unsigned long)backingBytes,
-                                  (unsigned long)logicalBytesPerImage,
-                                  num_layers);
-                            continue;
-                        }
-                        bytesPerImage = logicalBytesPerImage;
-
-                        if (!arraySliceIs1D) // 2D array/cube-array: each Metal slice is a full 2D image.
-                            region = MTLRegionMake2D(0,0,width,height);
-                        else if (height >= 1) // 1d array
-                            region = MTLRegionMake2D(0,0,width,1);
-                        else { // ?
-                            NSLog(@"MGL TEXTURE ERROR: invalid array texture height=%lu for tex=%u face=%d level=%d",
-                                  (unsigned long)height,
-                                  tex->name,
-                                  face,
-                                  level);
-                            return nil;
-                        }
-
-                        for(int layer=0; layer<num_layers; layer++)
-                        {
-                            offset = bytesPerImage * layer;
-
-                            tex_data = (GLubyte *)tex->faces[face].levels[level].data;
-                            tex_data += offset;
-
-                            // NUCLEAR OPTION: Disable all texture uploads temporarily to isolate the crash source
-                            if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
-                                // Ensure memory is aligned for AGX compression (256-byte requirement)
-                                void *srcData = (void *)tex_data;
-                                void *expandedUploadData = NULL;
-                                uintptr_t addr = (uintptr_t)srcData;
-
-                                /* Expand CPU data to Metal texel layout BEFORE alignment/upload.
-                                 * RGB8-family maps to RGBA8 (mglCreateRGBA8ExpandedUpload) or
-                                 * RGB16 / RGB32 family maps to RGBA16 / RGBA32 family
-                                 * (mglCreateChannelExpandedUpload).  Mutually exclusive.
-                                 * Without this, N-byte CPU rows upload to 4/8/16-byte Metal
-                                 * textures (pixel shift / stripes). */
-                                NSUInteger effectiveBytesPerRow = bytesPerRow;
-                                NSUInteger effectiveBytesPerImage = bytesPerImage;
-                                if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                                    NSUInteger expandedBytesPerRow = 0;
-                                    NSUInteger expandedBytesPerImage = 0;
-                                    expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                                       (const uint8_t *)srcData,
-                                                                                       width,
-                                                                                       uploadSliceHeight,
-                                                                                       bytesPerRow,
-                                                                                       &expandedBytesPerRow,
-                                                                                       &expandedBytesPerImage);
-                                    if (expandedUploadData) {
-                                        srcData = expandedUploadData;
-                                        effectiveBytesPerRow = expandedBytesPerRow;
-                                        effectiveBytesPerImage = expandedBytesPerImage;
-                                        addr = (uintptr_t)srcData;
-                                    }
-                                } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                                    NSUInteger expandedBytesPerRow = 0;
-                                    NSUInteger expandedBytesPerImage = 0;
-                                    expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                                         pixelFormat,
-                                                                                         (const uint8_t *)srcData,
-                                                                                         width,
-                                                                                         uploadSliceHeight,
-                                                                                         bytesPerRow,
-                                                                                         &expandedBytesPerRow,
-                                                                                         &expandedBytesPerImage);
-                                    if (expandedUploadData) {
-                                        srcData = expandedUploadData;
-                                        effectiveBytesPerRow = expandedBytesPerRow;
-                                        effectiveBytesPerImage = expandedBytesPerImage;
-                                        addr = (uintptr_t)srcData;
-                                    }
-                                }
-
-                                // Use dynamic alignment based on pixel format
-                                NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                                NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
-                                if (alignedBytesPerRow % alignment != 0) {
-                                    alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-                                }
-
-                                if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
-                                    // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy
-                                    NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
-                                    if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
-                                        NSLog(@"MGL WARNING: Rejecting aligned array upload row layout bpr=%lu rows=%lu (tex=%d level=%d layer=%d)",
-                                              (unsigned long)alignedBytesPerRow,
-                                              (unsigned long)alignedUploadRows,
-                                              tex->name,
-                                              level,
-                                              layer);
-                                        free(expandedUploadData);
-                                        continue;
-                                    }
-                                    NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
-                                    NSUInteger alignedSize = alignedBytesPerImage;
-                                    if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
-                                        NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
-                                              (unsigned long)alignedSize, tex->name, level, layer);
-                                        free(expandedUploadData);
-                                        continue;
-                                    }
-                                    void *alignedData = aligned_alloc(alignment, alignedSize);
-
-                                    if (alignedData) {
-                                        memset(alignedData, 0, alignedSize);
-                                        // Copy data with row alignment
-                                        NSUInteger srcRowSize = effectiveBytesPerRow;
-                                        NSUInteger dstRowSize = alignedBytesPerRow;
-                                        uint8_t *srcPtr = (uint8_t *)srcData;
-                                        uint8_t *dstPtr = (uint8_t *)alignedData;
-
-                                        for (NSUInteger row = 0; row < alignedUploadRows; row++) {
-                                            NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
-                                            memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
-                                            // Clear padding to zero
-                                            if (dstRowSize > copySize) {
-                                                memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
-                                            }
-                                        }
-
-                                        // CRITICAL SECURITY FIX: Validate alignedData before passing to Metal API
-                                        if (!alignedData) {
-                                            NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                            continue;
-                                        }
-                                        if (alignedBytesPerRow == 0) {
-                                            NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                            continue;
-                                        }
-                                        if (bytesPerImage == 0) {
-                                            NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                            continue;
-                                        }
-                                        @try {
-                                            if (hasExplicitDataSize) {
-                                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                                       texName:tex->name
-                                                                                     texTarget:tex->target
-                                                                                         bytes:alignedData
-                                                                                   bytesPerRow:alignedBytesPerRow
-                                                                                 bytesPerImage:alignedBytesPerImage
-                                                                                         width:width
-                                                                                        height:uploadSliceHeight
-                                                                                         depth:1
-                                                                                         level:level
-                                                                                         slice:layer];
-                                                if (!uploaded) {
-                                                    NSLog(@"MGL WARNING: Array texture blit upload failed (level %d, layer %d)", level, layer);
-                                                }
-                                            } else {
-                                                NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
-                                            }
-                                        } @catch (NSException *exception) {
-                                            NSLog(@"MGL ERROR: Failed to upload aligned array texture data (level %d, layer %d): %@", level, layer, exception);
-                                        }
-                                        free(alignedData);
-                                    } else {
-                                        NSLog(@"MGL ERROR: Failed to allocate aligned memory for array texture upload (level %d, layer %d)", level, layer);
-                                    }
-                                } else {
-                                    // Data and bytesPerRow are already aligned
-                                    // CRITICAL SECURITY FIX: Validate srcData before passing to Metal API
-                                    if (!srcData) {
-                                        NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                        free(expandedUploadData);
-                                        continue;
-                                    }
-                                    if (effectiveBytesPerRow == 0) {
-                                        NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                        free(expandedUploadData);
-                                        continue;
-                                    }
-                                    if (effectiveBytesPerImage == 0) {
-                                        NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
-                                        free(expandedUploadData);
-                                        continue;
-                                    }
-                                    if (hasExplicitDataSize) {
-                                        BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                               texName:tex->name
-                                                                             texTarget:tex->target
-                                                                                 bytes:srcData
-                                                                           bytesPerRow:effectiveBytesPerRow
-                                                                         bytesPerImage:effectiveBytesPerImage
-                                                                                 width:width
-                                                                                height:uploadSliceHeight
-                                                                                 depth:1
-                                                                                 level:level
-                                                                                 slice:layer];
-                                        if (!uploaded) {
-                                            NSLog(@"MGL WARNING: Array texture direct blit upload failed (level %d, layer %d)", level, layer);
-                                        }
-                                    } else {
-                                        NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
-                                    }
-                                }
-                                free(expandedUploadData);
-                            } else {
-                                NSLog(@"MGL WARNING: Skipping array texture upload due to invalid data or parameters");
-                            }
-                        }
-                    }
-                    else
-                    {
-                        DEBUG_PRINT("tex id data update %d\n", tex->name);
-
-                        // PROPER FIX: Enable 2D texture uploads with AGX safety and alignment
-                        if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
-                            // Ensure memory is aligned for AGX compression (256-byte requirement)
-                            void *srcData = (void *)tex->faces[face].levels[level].data;
-                            void *swizzledUploadData = NULL;
-                            void *expandedUploadData = NULL;
-                            uintptr_t addr = (uintptr_t)srcData;
-                            if (level == 0 && face == 0 && mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
-                                NSUInteger swizzledBytesPerRow = 0;
-                                NSUInteger swizzledBytesPerImage = 0;
-                                swizzledUploadData = mglCreateSingleChannelSwizzledUpload(tex,
-                                                                                          (const uint8_t *)srcData,
-                                                                                          width,
-                                                                                          MAX((NSUInteger)height, 1UL),
-                                                                                          bytesPerRow,
-                                                                                          &swizzledBytesPerRow,
-                                                                                          &swizzledBytesPerImage);
-                                if (swizzledUploadData) {
-                                    srcData = swizzledUploadData;
-                                    bytesPerRow = swizzledBytesPerRow;
-                                    bytesPerImage = swizzledBytesPerImage;
-                                    addr = (uintptr_t)srcData;
-                                    if (mglTraceLogIsEnabled()) {
-                                        const uint8_t *swz = (const uint8_t *)swizzledUploadData;
-                                        mglTraceLog("TEXTURE_SWIZZLE_UPLOAD_R8 tex=%u target=0x%x swzR=0x%x size=%lux%lu bpr=%lu first=%u",
-                                                    (unsigned)tex->name,
-                                                    (unsigned)tex->target,
-                                                    (unsigned)tex->params.swizzle_r,
-                                                    (unsigned long)width,
-                                                    (unsigned long)MAX((NSUInteger)height, 1UL),
-                                                    (unsigned long)bytesPerRow,
-                                                    swz[0]);
-                                    }
-                                }
-                            }
-                            if (!swizzledUploadData &&
-                                mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                                NSUInteger expandedBytesPerRow = 0;
-                                NSUInteger expandedBytesPerImage = 0;
-                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                                   (const uint8_t *)srcData,
-                                                                                   width,
-                                                                                   MAX((NSUInteger)height, 1UL),
-                                                                                   bytesPerRow,
-                                                                                   &expandedBytesPerRow,
-                                                                                   &expandedBytesPerImage);
-                                if (expandedUploadData) {
-                                    srcData = expandedUploadData;
-                                    bytesPerRow = expandedBytesPerRow;
-                                    bytesPerImage = expandedBytesPerImage;
-                                    addr = (uintptr_t)srcData;
-                                }
-                            } else if (!swizzledUploadData &&
-                                       mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                                NSUInteger expandedBytesPerRow = 0;
-                                NSUInteger expandedBytesPerImage = 0;
-                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                                     pixelFormat,
-                                                                                     (const uint8_t *)srcData,
-                                                                                     width,
-                                                                                     MAX((NSUInteger)height, 1UL),
-                                                                                     bytesPerRow,
-                                                                                     &expandedBytesPerRow,
-                                                                                     &expandedBytesPerImage);
-                                if (expandedUploadData) {
-                                    srcData = expandedUploadData;
-                                    bytesPerRow = expandedBytesPerRow;
-                                    bytesPerImage = expandedBytesPerImage;
-                                    addr = (uintptr_t)srcData;
-                                }
-                            }
-
-                            // Use dynamic alignment based on pixel format
-                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                            NSUInteger alignedBytesPerRow = bytesPerRow;
-                            if (alignedBytesPerRow % alignment != 0) {
-                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-                            }
-
-                            if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
-                                // Data is not aligned OR bytesPerRow needs alignment - allocate aligned buffer and copy
-                                NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
-                                NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, texHeight);
-                                if (uploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / uploadRows)) {
-                                    NSLog(@"MGL WARNING: Rejecting aligned 2D upload row layout bpr=%lu rows=%lu (tex=%d level=%d face=%d)",
-                                          (unsigned long)alignedBytesPerRow,
-                                          (unsigned long)uploadRows,
-                                          tex->name,
-                                          level,
-                                          face);
-                                    free(swizzledUploadData);
-                                    free(expandedUploadData);
-                                    continue;
-                                }
-                                NSUInteger alignedBytesPerImage = alignedBytesPerRow * uploadRows;
-                                NSUInteger alignedSize = alignedBytesPerImage;
-                                if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
-                                    NSLog(@"MGL WARNING: Rejecting aligned 2D upload staging size=%lu (tex=%d level=%d face=%d)",
-                                          (unsigned long)alignedSize, tex->name, level, face);
-                                    free(swizzledUploadData);
-                                    free(expandedUploadData);
-                                    continue;
-                                }
-                                void *alignedData = aligned_alloc(alignment, alignedSize);
-
-                                if (alignedData) {
-                                    memset(alignedData, 0, alignedSize);
-                                    // Copy data row by row to handle bytesPerRow alignment
-                                    NSUInteger srcRowSize = bytesPerRow;
-                                    NSUInteger dstRowSize = alignedBytesPerRow;
-                                    uint8_t *srcPtr = (uint8_t *)srcData;
-                                    uint8_t *dstPtr = (uint8_t *)alignedData;
-
-                                    for (NSUInteger row = 0; row < uploadRows; row++) {
-                                        NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
-                                        memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
-                                        // Clear padding to zero
-                                        if (dstRowSize > copySize) {
-                                            memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
-                                        }
-                                    }
-
-                                    // CRITICAL SECURITY FIX: Validate alignedData and parameters before passing to Metal API
-                                    if (!alignedData) {
-                                        NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                        free(alignedData);
-                                        continue;
-                                    }
-                                    if (alignedBytesPerRow == 0) {
-                                        NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                        free(alignedData);
-                                        continue;
-                                    }
-                                    if (bytesPerImage == 0) {
-                                        NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                        free(alignedData);
-                                        continue;
-                                    }
-                                    if (hasExplicitDataSize) {
-                                        BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                               texName:tex->name
-                                                                             texTarget:tex->target
-                                                                                 bytes:alignedData
-                                                                           bytesPerRow:alignedBytesPerRow
-                                                                         bytesPerImage:alignedBytesPerImage
-                                                                                 width:width
-                                                                                height:height
-                                                                                 depth:1
-                                                                                 level:level
-                                                                                 slice:face];
-                                        if (!uploaded) {
-                                            NSLog(@"MGL WARNING: Aligned 2D blit upload failed (level %d, face %d)", level, face);
-                                        }
-                                    } else {
-                                        NSLog(@"MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)", level, face);
-                                    }
-                                    free(alignedData);
-                                } else {
-                                    NSLog(@"MGL ERROR: Failed to allocate aligned memory for 2D texture upload (level %d, face %d)", level, face);
-                                }
-                            } else {
-                                // Data and bytesPerRow are already aligned
-                                // CRITICAL SECURITY FIX: Validate srcData before passing to Metal API
-                                if (!srcData) {
-                                    NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                    continue;
-                                }
-                                if (bytesPerRow == 0) {
-                                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                    continue;
-                                }
-                                if (bytesPerImage == 0) {
-                                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
-                                    continue;
-                                }
-                                if (hasExplicitDataSize) {
-                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
-                                                                           texName:tex->name
-                                                                        texTarget:tex->target
-                                                                             bytes:srcData
-                                                                       bytesPerRow:bytesPerRow
-                                                                     bytesPerImage:bytesPerImage
-                                                                             width:width
-                                                                            height:height
-                                                                             depth:1
-                                                                             level:level
-                                                                             slice:face];
-                                    if (!uploaded) {
-                                        NSLog(@"MGL WARNING: 2D direct blit upload failed (level %d, face %d)", level, face);
-                                    }
-                                } else {
-                                    NSLog(@"MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)", level, face);
-                                }
-                            }
-                            free(swizzledUploadData);
-                            free(expandedUploadData);
-                        } else {
-                            NSLog(@"MGL WARNING: Skipping 2D texture upload due to invalid data or parameters");
-                        }
-                    }
-                }
-            }
+        if (![self uploadDirtyCPUTextureData:tex
+                                       metal:texture
+                                 pixelFormat:pixelFormat
+                                   numFaces:num_faces
+                           uploadLevelCount:upload_level_count
+                                    isArray:is_array
+                         texture1DBackedBy2D:texture1DBackedBy2D
+                   texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
+                                    texType:tex_type
+                        outAllLevelsUploaded:&allLevelsUploaded]) {
+            return nil;
         }
     }
     else
     {
         if (hasUploadableCPUData) {
-            NSLog(@"MGL INFO: Re-uploading existing CPU texture data (tex=%d, dims=%lux%lu)",
-                  tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
-
-            for (int face = 0; face < num_faces; face++) {
-                for (int level = 0; level < (int)upload_level_count; level++) {
-                    TextureLevel *uploadLevel = &tex->faces[face].levels[level];
-                    if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
-                        continue;
-                    }
-
-                    NSUInteger lvlWidth  = tex->faces[face].levels[level].width;
-                    NSUInteger lvlHeight = tex->faces[face].levels[level].height;
-                    NSUInteger lvlDepth  = tex->faces[face].levels[level].depth;
-                    NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
-                    if (lvlPitch == 0 || lvlWidth == 0) continue;
-
-                    if (is_array)
-                    {
-                        /* Array texture re-upload: loop over array layers and upload
-                         * each slice independently.  Mirrors the DIRTY_TEXTURE_DATA
-                         * array path (12861-13087).  The old code only uploaded
-                         * slice 0 and passed the entire array's data_size as
-                         * bytesPerImage with depth=num_layers, causing a crash in
-                         * uploadTextureSliceViaBlit's newBufferWithBytes. */
-                        GLuint num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
-                            ? tex->faces[face].levels[level].height
-                            : tex->faces[face].levels[level].depth;
-                        if (num_layers == 0) continue;
-
-                        BOOL arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
-                        NSUInteger uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)lvlHeight, 1UL);
-                        NSUInteger baseBytesPerRow = lvlPitch;
-                        NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
-                        if (uploadSliceRows == 0 || baseBytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
-                            NSLog(@"MGL WARNING: Re-upload array invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
-                                  tex->name,
-                                  face,
-                                  level,
-                                  (unsigned long)baseBytesPerRow,
-                                  (unsigned long)uploadSliceRows);
-                            continue;
-                        }
-                        NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceRows;
-                        NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
-                        if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
-                            NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
-                            if (dividedLayerBytes >= logicalBytesPerImage) {
-                                logicalBytesPerImage = dividedLayerBytes;
-                            }
-                        }
-
-                        NSUInteger requiredArrayBytes = 0;
-                        NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
-                        if (logicalBytesPerImage == 0 ||
-                            logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
-                            backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
-                            NSLog(@"MGL WARNING: Re-upload array backing too small tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
-                                  tex->name, face, level,
-                                  (unsigned long)backingBytes,
-                                  (unsigned long)logicalBytesPerImage,
-                                  num_layers);
-                            continue;
-                        }
-
-                        for (GLuint layer = 0; layer < num_layers; layer++)
-                        {
-                            size_t offset = logicalBytesPerImage * layer;
-                            const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
-                            void *expandedUploadData = NULL;
-                            NSUInteger effectiveBytesPerRow = baseBytesPerRow;
-                            NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
-
-                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                                NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                                  (const uint8_t *)layerSrcData,
-                                                                                  lvlWidth,
-                                                                                  uploadSliceHeight,
-                                                                                  baseBytesPerRow,
-                                                                                  &expandedBPR,
-                                                                                  &expandedBPI);
-                                if (expandedUploadData) {
-                                    layerSrcData = expandedUploadData;
-                                    effectiveBytesPerRow = expandedBPR;
-                                    effectiveBytesPerImage = expandedBPI;
-                                }
-                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                                NSUInteger expandedBPR = 0, expandedBPI = 0;
-                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                                     pixelFormat,
-                                                                                     (const uint8_t *)layerSrcData,
-                                                                                     lvlWidth,
-                                                                                     uploadSliceHeight,
-                                                                                     baseBytesPerRow,
-                                                                                     &expandedBPR,
-                                                                                     &expandedBPI);
-                                if (expandedUploadData) {
-                                    layerSrcData = expandedUploadData;
-                                    effectiveBytesPerRow = expandedBPR;
-                                    effectiveBytesPerImage = expandedBPI;
-                                }
-                            }
-
-                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                            NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
-                            if (alignedBytesPerRow % alignment != 0) {
-                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-                            }
-
-                            uintptr_t addr = (uintptr_t)layerSrcData;
-                            if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
-                                NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
-                                if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
-                                    NSLog(@"MGL WARNING: Re-upload array rejecting aligned row layout bpr=%lu rows=%lu tex=%d face=%d level=%d layer=%u",
-                                          (unsigned long)alignedBytesPerRow,
-                                          (unsigned long)alignedUploadRows,
-                                          tex->name,
-                                          face,
-                                          level,
-                                          layer);
-                                    free(expandedUploadData);
-                                    continue;
-                                }
-                                NSUInteger alignedSize = alignedBytesPerRow * alignedUploadRows;
-                                if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
-                                    void *alignedData = aligned_alloc(alignment, alignedSize);
-                                    if (alignedData) {
-                                        memset(alignedData, 0, alignedSize);
-                                        for (NSUInteger row = 0; row < alignedUploadRows; row++) {
-                                            NSUInteger copySize = MIN(effectiveBytesPerRow, alignedBytesPerRow);
-                                            memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
-                                                   (const uint8_t *)layerSrcData + row * effectiveBytesPerRow, copySize);
-                                        }
-                                        [self uploadTextureSliceViaBlit:texture
-                                                               texName:tex->name
-                                                             texTarget:tex->target
-                                                                 bytes:alignedData
-                                                           bytesPerRow:alignedBytesPerRow
-                                                         bytesPerImage:alignedSize
-                                                                 width:lvlWidth
-                                                                height:lvlHeight
-                                                                 depth:1
-                                                                 level:level
-                                                                 slice:layer];
-                                        free(alignedData);
-                                    }
-                                }
-                            } else {
-                                [self uploadTextureSliceViaBlit:texture
-                                                       texName:tex->name
-                                                     texTarget:tex->target
-                                                         bytes:layerSrcData
-                                                   bytesPerRow:effectiveBytesPerRow
-                                                 bytesPerImage:effectiveBytesPerImage
-                                                         width:lvlWidth
-                                                        height:lvlHeight
-                                                         depth:1
-                                                         level:level
-                                                         slice:layer];
-                            }
-                            free(expandedUploadData);
-                        }
-                    }
-                    else
-                    {
-                    /* Non-array re-upload (2D, 3D, 1D, cube).
-                     * For 3D textures, bytesPerImage must be a single 2D slice
-                     * (bytesPerRow * height), NOT the full volume data_size.
-                     * uploadTextureSliceViaBlit computes bufferSize =
-                     * safeBytesPerImage * copyDepth, so passing the full volume
-                     * as bytesPerImage AND depth would double-count and cause
-                     * newBufferWithBytes to read past the source buffer. */
-                    NSUInteger bytesPerRow = lvlPitch;
-                    NSUInteger fullDataSize = tex->faces[face].levels[level].data_size;
-                    if (fullDataSize == 0) fullDataSize = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
-
-                    BOOL is3DReupload = (tex->target == GL_TEXTURE_3D && lvlDepth > 1);
-                    NSUInteger singleSliceBPI = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
-                    NSUInteger bytesPerImage = is3DReupload ? singleSliceBPI : fullDataSize;
-                    NSUInteger uploadDepth = is3DReupload ? lvlDepth : (lvlDepth > 1 ? lvlDepth : 1);
-
-                    const void *srcData = (const void *)tex->faces[face].levels[level].data;
-                    void *expandedUploadData = NULL;
-                    /* Channel expansion for 2D/non-3D only.  3D expansion would
-                     * require per-slice handling (see DIRTY_TEXTURE_DATA 3D path). */
-                    if (!is3DReupload) {
-                        if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
-                            NSUInteger expandedBytesPerRow = 0;
-                            NSUInteger expandedBytesPerImage = 0;
-                            expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
-                                                                              (const uint8_t *)srcData,
-                                                                              lvlWidth,
-                                                                              MAX((NSUInteger)lvlHeight, 1UL),
-                                                                              bytesPerRow,
-                                                                              &expandedBytesPerRow,
-                                                                              &expandedBytesPerImage);
-                            if (expandedUploadData) {
-                                srcData = expandedUploadData;
-                                bytesPerRow = expandedBytesPerRow;
-                                bytesPerImage = expandedBytesPerImage;
-                            }
-                        } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
-                            NSUInteger expandedBytesPerRow = 0;
-                            NSUInteger expandedBytesPerImage = 0;
-                            expandedUploadData = mglCreateChannelExpandedUpload(tex,
-                                                                                 pixelFormat,
-                                                                                 (const uint8_t *)srcData,
-                                                                                 lvlWidth,
-                                                                                 MAX((NSUInteger)lvlHeight, 1UL),
-                                                                                 bytesPerRow,
-                                                                                 &expandedBytesPerRow,
-                                                                                 &expandedBytesPerImage);
-                            if (expandedUploadData) {
-                                srcData = expandedUploadData;
-                                bytesPerRow = expandedBytesPerRow;
-                                bytesPerImage = expandedBytesPerImage;
-                            }
-                        }
-                    }
-                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
-                    NSUInteger alignedBytesPerRow = bytesPerRow;
-                    if (alignedBytesPerRow % alignment != 0) {
-                        alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
-                    }
-
-                    uintptr_t addr = (uintptr_t)srcData;
-                    if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
-                        NSUInteger rowCount = MAX((NSUInteger)lvlHeight, 1UL);
-                        NSUInteger alignedSliceBPI = alignedBytesPerRow * rowCount;
-                        NSUInteger alignedSize = alignedSliceBPI * uploadDepth;
-                        if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
-                            void *alignedData = aligned_alloc(alignment, alignedSize);
-                            if (alignedData) {
-                                memset(alignedData, 0, alignedSize);
-                                for (NSUInteger z = 0; z < uploadDepth; z++) {
-                                    for (NSUInteger row = 0; row < rowCount; row++) {
-                                        NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
-                                        memcpy((uint8_t *)alignedData + z * alignedSliceBPI + row * alignedBytesPerRow,
-                                               (const uint8_t *)srcData + z * singleSliceBPI + row * bytesPerRow, copySize);
-                                    }
-                                }
-                                [self uploadTextureSliceViaBlit:texture
-                                                       texName:tex->name
-                                                     texTarget:tex->target
-                                                         bytes:alignedData
-                                                   bytesPerRow:alignedBytesPerRow
-                                                 bytesPerImage:alignedSliceBPI
-                                                         width:lvlWidth
-                                                        height:lvlHeight
-                                                         depth:uploadDepth
-                                                         level:level
-                                                         slice:face];
-                                free(alignedData);
-                            }
-                        }
-                    } else {
-                        [self uploadTextureSliceViaBlit:texture
-                                               texName:tex->name
-                                             texTarget:tex->target
-                                                 bytes:srcData
-                                           bytesPerRow:bytesPerRow
-                                         bytesPerImage:bytesPerImage
-                                                 width:lvlWidth
-                                                height:lvlHeight
-                                                 depth:uploadDepth
-                                                 level:level
-                                                 slice:face];
-                    }
-                    free(expandedUploadData);
-                    } /* end else (non-array) */
-                }
-            }
+            [self reUploadExistingCPUTextureData:tex
+                                            metal:texture
+                                      pixelFormat:pixelFormat
+                                        numFaces:num_faces
+                                uploadLevelCount:upload_level_count
+                                          isArray:is_array
+                               texture1DBackedBy2D:texture1DBackedBy2D
+                         texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
+                                             texType:tex_type];
         } else if (tex->is_render_target || mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
             static uint64_t s_skipRenderTargetFillLogs = 0;
             uint64_t hit = ++s_skipRenderTargetFillLogs;
@@ -6267,297 +4935,25 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                       (unsigned long long)hit);
             }
         } else {
-            // No existing data — fill with safe initial contents
-        if (texture.width == 0 || texture.height == 0 || texture.width > 16384 || texture.height > 16384) {
-            NSLog(@"MGL WARNING: Skipping texture fill due to invalid dimensions: %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
-        } else {
-            // Determine pixel format size to create appropriate black data
-            NSUInteger bytesPerPixel = 4; // Default to RGBA
-            switch(texture.pixelFormat) {
-                case MTLPixelFormatR8Unorm:
-                case MTLPixelFormatR8Uint:
-                case MTLPixelFormatR8Sint:
-                    bytesPerPixel = 1;
-                    break;
-                case MTLPixelFormatRG8Unorm:
-                case MTLPixelFormatRG8Uint:
-                case MTLPixelFormatRG8Sint:
-                    bytesPerPixel = 2;
-                    break;
-                case MTLPixelFormatRGBA8Unorm:
-                case MTLPixelFormatRGBA8Uint:
-                case MTLPixelFormatRGBA8Sint:
-                    bytesPerPixel = 4;
-                    break;
-                default:
-                    bytesPerPixel = 4; // Default assumption
-                    break;
-            }
-
-            // Calculate dynamic alignment for Metal textures based on pixel format
-            NSUInteger bytesPerRow = texture.width * bytesPerPixel;
-            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:texture.pixelFormat];
-            if (bytesPerRow % alignment != 0) {
-                bytesPerRow = ((bytesPerRow + alignment - 1) / alignment) * alignment;
-            }
-
-            NSUInteger dataSize = bytesPerRow * texture.height;
-
-            // Validate that dataSize is reasonable (not too large)
-            if (dataSize > 64 * 1024 * 1024) { // 64MB limit per texture level
-                NSLog(@"MGL WARNING: Skipping texture fill due to excessive size: %lu bytes", (unsigned long)dataSize);
-            } else {
-                // Allocate initialization data for texture clear.
-                // aligned_alloc has been unreliable in this environment; calloc is safer here.
-                (void)alignment;
-                void *blackData = calloc(dataSize, 1);
-                if (blackData) {
-                    // CRITICAL SECURITY FIX: Comprehensive validation to prevent Metal driver crashes
-                    // calloc already zero-initializes
-
-                    // Multi-layer validation for all parameters
-                    if (!blackData) {
-                        NSLog(@"MGL SECURITY ERROR: blackData is NULL after memset - CORRUPTION DETECTED");
-                        return texture;
-                    }
-                    if (bytesPerRow == 0) {
-                        NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) for texture fill");
-                        free(blackData);
-                        return texture;
-                    }
-                    if (dataSize == 0) {
-                        NSLog(@"MGL SECURITY ERROR: Invalid dataSize (0) for texture fill");
-                        free(blackData);
-                        return texture;
-                    }
-                    if (!texture) {
-                        NSLog(@"MGL SECURITY ERROR: Metal texture is NULL");
-                        free(blackData);
-                        return texture;
-                    }
-                    if (texture.width == 0 || texture.height == 0) {
-                        NSLog(@"MGL SECURITY ERROR: Invalid texture dimensions %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
-                        free(blackData);
-                        return texture;
-                    }
-
-                    // Additional validation: verify blackData contains expected zeros (anti-corruption check)
-                    uint8_t *bytes = (uint8_t *)blackData;
-                    bool dataCorrupted = false;
-                    for (NSUInteger i = 0; i < MIN(dataSize, 1024); i++) { // Check first 1KB only for performance
-                        if (bytes[i] != 0) {
-                            dataCorrupted = true;
-                            break;
-                        }
-                    }
-                    if (dataCorrupted) {
-                        NSLog(@"MGL SECURITY ERROR: blackData corruption detected - memory safety issue");
-                        free(blackData);
-                        return texture;
-                    }
-
-                    NSLog(@"MGL INFO: All validations passed for texture fill (size=%lu, bytesPerRow=%lu)", (unsigned long)dataSize, (unsigned long)bytesPerRow);
-
-                    // ULTRA-DEFENSIVE: Final validation immediately before Metal API call
-                    // This prevents race conditions and memory corruption between validation and use
-                    if (!blackData) {
-                        NSLog(@"MGL CRITICAL ERROR: blackData became NULL before Metal call - RACE CONDITION DETECTED");
-                        free(blackData);
-                        return texture;
-                    }
-                    if (!texture) {
-                        NSLog(@"MGL CRITICAL ERROR: Metal texture became NULL before Metal call - RACE CONDITION DETECTED");
-                        free(blackData);
-                        return texture;
-                    }
-                    if (bytesPerRow == 0 || dataSize == 0) {
-                        NSLog(@"MGL CRITICAL ERROR: Parameters became invalid before Metal call - RACE CONDITION DETECTED");
-                        free(blackData);
-                        return texture;
-                    }
-
-                    // Additional verification: Check if Metal texture is still valid
-                    if (texture.width == 0 || texture.height == 0) {
-                        NSLog(@"MGL CRITICAL ERROR: Metal texture dimensions became invalid before Metal call");
-                        free(blackData);
-                        return texture;
-                    }
-
-                    // Final integrity check: Verify blackData still contains expected zeros
-                    uint8_t *finalCheck = (uint8_t *)blackData;
-                    bool finalCorruption = false;
-                    for (NSUInteger i = 0; i < MIN(dataSize, 256); i++) { // Check first 256 bytes
-                        if (finalCheck[i] != 0) {
-                            finalCorruption = true;
-                            break;
-                        }
-                    }
-                    if (finalCorruption) {
-                        NSLog(@"MGL CRITICAL ERROR: Memory corruption detected immediately before Metal call");
-                        free(blackData);
-                        return texture;
-                    }
-
-                    NSLog(@"MGL INFO: FIXING: Implementing proper texture filling for Apple Metal compatibility");
-
-                    // PROPER FIX: Use Apple Metal-compatible texture filling approach
-                    // The issue was using incorrect bytesPerRow and region parameters
-                    NSLog(@"MGL INFO: Implementing Metal-compliant texture fill operations");
-
-                    // Use Metal's standard pattern for texture filling.
-                    NSUInteger pixelSize = bytesPerPixel;
-                    NSUInteger properBytesPerRow = width * pixelSize;
-
-                    // Ensure proper alignment for Apple Metal driver
-                    if (properBytesPerRow % 64 != 0) {
-                        properBytesPerRow = ((properBytesPerRow + 63) / 64) * 64;
-                    }
-
-                    // Fill the entire level. A previous 1x1 safety fill left large textures
-                    // mostly uninitialized while their Metal backing existed.
-                    MTLRegion properRegion = MTLRegionMake2D(0, 0, width, height);
-
-                    // Create properly aligned texture data buffer
-                    NSUInteger fillSize = properBytesPerRow * properRegion.size.height;
-                    uint8_t *properData = (uint8_t *)calloc(fillSize, 1);
-
-                    if (properData) {
-                        // Initialize with safe texture data (transparent black with alpha = 0)
-                        for (NSUInteger y = 0; y < properRegion.size.height; y++) {
-                            uint8_t *row = properData + (y * properBytesPerRow);
-                            for (NSUInteger x = 0; x < properRegion.size.width; x++) {
-                                uint8_t *pixel = row + (x * pixelSize);
-                                pixel[0] = 0;  // R
-                                if (pixelSize > 1) pixel[1] = 0;  // G
-                                if (pixelSize > 2) pixel[2] = 0;  // B
-                                if (pixelSize > 3) pixel[3] = 0; // A = transparent for uninitialized color data
-                            }
-                        }
-
-                        @try {
-                            NSLog(@"MGL INFO: Performing Metal-compliant texture fill:");
-                            NSLog(@"  - Region: %dx%d", (int)properRegion.size.width, (int)properRegion.size.height);
-                            NSLog(@"  - bytesPerRow: %lu", (unsigned long)properBytesPerRow);
-                            NSLog(@"  - dataSize: %lu", (unsigned long)fillSize);
-
-                            // ALTERNATIVE APPROACH: Safe texture filling without replaceRegion
-                            NSLog(@"MGL INFO: Using alternative texture filling methods (AGX-safe)");
-
-                            @try {
-                                // ALTERNATIVE 1: Try MTLBuffer-to-texture copy approach
-                                if (properData && dataSize > 0) {
-                                    NSLog(@"MGL INFO: Attempting buffer-based texture fill");
-
-                                    // Create a temporary MTLBuffer with the texture data
-                                    id<MTLBuffer> tempBuffer = [_device newBufferWithBytes:properData
-                                                                                    length:fillSize
-                                                                                   options:MTLResourceStorageModeShared];
-
-                                    if (tempBuffer) {
-                                        NSLog(@"MGL INFO: Created temporary MTLBuffer for texture data");
-
-                                        if ([self shouldSkipGPUOperations]) {
-                                            NSLog(@"MGL AGX: Skipping texture fill during recovery - texture will be empty");
-                                        } else {
-                                            BOOL uploaded = [self copyTextureUploadWithDedicatedCommandBuffer:tempBuffer
-                                                                                                  sourceOffset:0
-                                                                                             sourceBytesPerRow:properBytesPerRow
-                                                                                           sourceBytesPerImage:fillSize
-                                                                                                     sourceSize:MTLSizeMake(properRegion.size.width, properRegion.size.height, 1)
-                                                                                                      toTexture:texture
-                                                                                               destinationSlice:0
-                                                                                               destinationLevel:0
-                                                                                              destinationOrigin:MTLOriginMake(0, 0, 0)
-                                                                                                         reason:"texture_fill_initialization"];
-                                            if (uploaded) {
-                                                NSLog(@"MGL SUCCESS: Texture data copied using dedicated upload command buffer");
-                                                mglMarkTextureLevelMetalFilled(tex, 0, fillSize);
-                                            } else {
-                                                NSLog(@"MGL WARNING: Dedicated texture fill upload failed - texture may remain uninitialized");
-                                            }
-                                        }
-
-                                        // Clean up the temporary buffer
-                                        tempBuffer = nil;
-                                    }
-                                }
-                            } @catch (NSException *exception) {
-                                NSLog(@"MGL WARNING: Buffer-based texture fill failed - trying alternative");
-
-                                // ALTERNATIVE 2: Simple direct color filling for basic cases
-                                if (width <= 512 && height <= 512 && tex->internalformat == GL_RGBA8) {
-                                    NSLog(@"MGL INFO: Attempting simple direct color fill for small RGBA8 texture");
-
-                                    @try {
-                                        // Create a simple pattern that's not magenta
-                                        NSUInteger pixelCount = width * height;
-                                        uint32_t *simpleData = calloc(pixelCount, sizeof(uint32_t));
-
-                                        if (simpleData) {
-                                            // Create a simple gradient pattern instead of magenta
-                                            for (NSUInteger y = 0; y < height; y++) {
-                                                for (NSUInteger x = 0; x < width; x++) {
-                                                    NSUInteger index = y * width + x;
-
-                                                    // Create a simple gradient from blue to green
-                                                    uint8_t r = (uint8_t)(x * 255 / width);
-                                                    uint8_t g = (uint8_t)(y * 255 / height);
-                                                    uint8_t b = 128;
-                                                    uint8_t a = 255;
-
-                                                    simpleData[index] = (a << 24) | (b << 16) | (g << 8) | r;
-                                                }
-                                            }
-
-                                            // Try direct replaceRegion for simple cases
-                                            MTLRegion simpleRegion = MTLRegionMake2D(0, 0, width, height);
-                                            [texture replaceRegion:simpleRegion
-                                                    mipmapLevel:0
-                                                          slice:0
-                                                      withBytes:simpleData
-                                                    bytesPerRow:width * sizeof(uint32_t)
-                                                  bytesPerImage:width * height * sizeof(uint32_t)];
-
-                                            NSLog(@"MGL SUCCESS: Simple direct color fill completed");
-                                            mglMarkTextureLevelMetalFilled(tex, 0, pixelCount * sizeof(uint32_t));
-                                            free(simpleData);
-                                        }
-                                    } @catch (NSException *exception) {
-                                        NSLog(@"MGL WARNING: Simple direct fill also failed: %@", exception.reason);
-                                    }
-                                } else {
-                                    NSLog(@"MGL INFO: Skipping complex texture - would use deferred initialization");
-                                }
-                            }
-                        } @catch (NSException *exception) {
-                            NSLog(@"MGL ERROR: Metal texture fill failed - investigating root cause");
-                            NSLog(@"MGL ERROR: Exception: %@ (Reason: %@)", exception.name, exception.reason);
-                            NSLog(@"MGL INFO: This indicates our parameters are still incompatible with AGX driver");
-                        }
-
-                        free(properData);
-                    } else {
-                        NSLog(@"MGL ERROR: Failed to allocate properly aligned texture data");
-                    }
-                    free(blackData);
-                } else {
-                    NSLog(@"MGL ERROR: Failed to allocate aligned memory for texture fill (%lu bytes)", (unsigned long)dataSize);
-                }
-            }
+            [self fillTextureWithSafeInitialContents:texture
+                                                 tex:tex
+                                         pixelFormat:pixelFormat];
         }
-    } // end hasExistingLevelData else (black fill)
     }
 
     if (cpuUploadRequired && tex->target == GL_TEXTURE_2D && texture.textureType == MTLTextureType2D) {
-        cpuUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex
-                                                                 metal:texture
-                                                                reason:"createMTLTexture.cpuData"];
+        BOOL fullCPUUploadVerified = [self uploadFullCPUTextureDataIntoTexture:tex
+                                                                           metal:texture
+                                                                          reason:"createMTLTexture.cpuData"];
+        cpuUploadVerified = allLevelsUploaded && fullCPUUploadVerified;
     } else if (cpuUploadRequired) {
         /*
          * Non-2D uploads still use the legacy creation path above. The current GUI
          * atlas failure is 2D; avoid changing array/cube semantics in this pass.
+         * If any mip level was skipped (invalid layout, NULL data, etc.) keep
+         * DIRTY_TEXTURE_DATA set so the level gets retried on next bind.
          */
-        cpuUploadVerified = YES;
+        cpuUploadVerified = allLevelsUploaded;
     }
 
     if (cpuUploadRequired && !cpuUploadVerified) {
@@ -6581,61 +4977,469 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         tex->dirty_bits = 0;
     }
 
-    /* Diagnostic: log Metal texture mipmap state and per-level upload summary
-     * to diagnose Minecraft "gray + moiré" texture issues. */
-    {
-        static uint64_t s_mipDiagLogs = 0;
-        uint64_t diagHit = ++s_mipDiagLogs;
-        if (kMGLDiagnosticStateLogs &&
-            (diagHit <= 128ull || (diagHit % 512ull) == 0ull)) {
-            NSUInteger mtlMipCount = texture.mipmapLevelCount;
-            MTLPixelFormat mtlFmt = texture.pixelFormat;
-            MTLStorageMode mtlStorage = texture.storageMode;
-            NSUInteger uploadedLevels = 0;
-            NSUInteger skippedLevels = 0;
-            NSUInteger skippedSourceNone = 0;
-            NSUInteger skippedNoData = 0;
-            NSMutableString *levelSummary = [NSMutableString stringWithCapacity:256];
-            NSUInteger levelsToSummarize = MIN((NSUInteger)tex->num_levels, (NSUInteger)16);
-            for (NSUInteger lvl = 0; lvl < levelsToSummarize; lvl++) {
-                TextureLevel *tl = (tex->faces[0].levels && lvl < tex->num_levels)
-                    ? &tex->faces[0].levels[lvl] : NULL;
-                if (!tl) { [levelSummary appendString:@"-"]; continue; }
-                bool uploadable = mglTextureLevelHasUploadableCPUData(tl);
-                if (uploadable) uploadedLevels++; else skippedLevels++;
-                if (!uploadable) {
-                    if (tl->last_init_source == kTexImageNull || tl->last_init_source == kTexInitNone)
-                        skippedSourceNone++;
-                    if (!tl->has_initialized_data && !tl->ever_written)
-                        skippedNoData++;
-                }
-                [levelSummary appendFormat:@"[%u:s%u:w%u:e%u:i%u]",
-                    (unsigned)lvl, (unsigned)tl->last_init_source,
-                    (unsigned)tl->width, (unsigned)tl->ever_written,
-                    (unsigned)tl->has_initialized_data];
-            }
-            MGLTraceNSLog(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
-                          @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
-                          @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
-                          @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
-                          @"levels=%@ hit=%llu",
-                          (unsigned)tex->name, (unsigned)tex->target,
-                          (unsigned)tex->width, (unsigned)tex->height,
-                          (unsigned)tex->internalformat,
-                          (unsigned)tex->num_levels, (unsigned)tex->mipmap_levels,
-                          (unsigned)effective_mipmap_levels, (unsigned long)mtlMipCount,
-                          (unsigned long)mtlFmt, (long)mtlStorage, (int)(tex->mipmapped ? 1 : 0),
-                          (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
-                          (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
-                          (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
-                          levelSummary, (unsigned long long)diagHit);
-        }
-    }
+    [self logMTLTextureMipDiagnostics:tex metal:texture effectiveMipLevels:effective_mipmap_levels];
 
-    // Record successful texture creation for AGX error tracking
     [self recordGPUSuccess];
 
     return texture;
+}
+
+- (id<MTLTexture>)createMTLTexelBufferTexture:(Texture *)tex
+{
+    Buffer *sourceBuffer = tex->texture_buffer;
+    if (!sourceBuffer || tex->texture_buffer_size <= 0) {
+        NSLog(@"MGL TEXBUFFER ERROR: tex=%u has no attached buffer/size buffer=%p size=%lld",
+              tex->name,
+              sourceBuffer,
+              (long long)tex->texture_buffer_size);
+        return nil;
+    }
+
+    if (tex->texture_buffer_offset < 0 ||
+        tex->texture_buffer_offset > sourceBuffer->size ||
+        tex->texture_buffer_size > sourceBuffer->size - tex->texture_buffer_offset) {
+        NSLog(@"MGL TEXBUFFER ERROR: invalid range tex=%u buffer=%u off=%lld size=%lld bufferSize=%lld",
+              tex->name,
+              sourceBuffer->name,
+              (long long)tex->texture_buffer_offset,
+              (long long)tex->texture_buffer_size,
+              (long long)sourceBuffer->size);
+        return nil;
+    }
+
+    NSUInteger bytesPerTexel = [self bytesPerPixelForFormat:tex->internalformat];
+    if (bytesPerTexel == 0) {
+        NSLog(@"MGL TEXBUFFER ERROR: unsupported internal format 0x%x tex=%u buffer=%u",
+              tex->internalformat,
+              tex->name,
+              sourceBuffer->name);
+        return nil;
+    }
+
+    NSUInteger texelCount = (NSUInteger)tex->texture_buffer_size / bytesPerTexel;
+    if (texelCount == 0) {
+        NSLog(@"MGL TEXBUFFER ERROR: zero texel count tex=%u buffer=%u size=%lld bpt=%lu",
+              tex->name,
+              sourceBuffer->name,
+              (long long)tex->texture_buffer_size,
+              (unsigned long)bytesPerTexel);
+        return nil;
+    }
+
+    MTLPixelFormat bufferPixelFormat = (tex->internalformat == GL_RGBA8)
+        ? MTLPixelFormatRGBA8Uint
+        : mtlPixelFormatForGLTex(tex);
+    if (bufferPixelFormat == MTLPixelFormatInvalid || bufferPixelFormat == 0) {
+        NSLog(@"MGL TEXBUFFER ERROR: invalid Metal format for tex=%u internal=0x%x",
+              tex->name,
+              tex->internalformat);
+        return nil;
+    }
+
+    if (![self processBuffer:sourceBuffer]) {
+        NSLog(@"MGL TEXBUFFER ERROR: failed to process source buffer tex=%u buffer=%u",
+              tex->name,
+              sourceBuffer->name);
+        return nil;
+    }
+
+    const uint8_t *sourceBytes = NULL;
+    if (sourceBuffer->data.buffer_data) {
+        sourceBytes = ((const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data) + (size_t)tex->texture_buffer_offset;
+    } else if (sourceBuffer->data.mtl_data) {
+        id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        if (mtlBuffer && mtlBuffer.contents) {
+            sourceBytes = ((const uint8_t *)mtlBuffer.contents) + (size_t)tex->texture_buffer_offset;
+        }
+    }
+
+    if (!sourceBytes) {
+        NSLog(@"MGL TEXBUFFER ERROR: no readable backing for tex=%u buffer=%u cpu=%p mtl=%p",
+              tex->name,
+              sourceBuffer->name,
+              (void *)(uintptr_t)sourceBuffer->data.buffer_data,
+              sourceBuffer->data.mtl_data);
+        return nil;
+    }
+
+    // SPIRV-Cross currently emits Minecraft's CloudFaces texel buffer as a
+    // texture2d<int>. Keep GL lookup semantics as GL_TEXTURE_BUFFER, but
+    // create a Metal 2D backing so the generated MSL argument type matches.
+    // A texel buffer can be much wider than Metal's max 2D texture width,
+    // so pack it into rows instead of creating texelCount x 1.
+    /*
+     * SPIRV-Cross lowers GL texture buffers to 2D Metal textures and emits
+     * spvTexelBufferCoord(tc) using its MSL texel_buffer_texture_width
+     * option. Keep this packing width in lockstep with program.c.
+     */
+    static const NSUInteger kMGLTexelBufferTextureWidth = 4096u;
+    NSUInteger max2DSize = (NSUInteger)MIN((GLuint)kMGLTexelBufferTextureWidth,
+                                           ctx ? ctx->state.var.max_texture_size : (GLuint)kMGLTexelBufferTextureWidth);
+    if (max2DSize == 0 || max2DSize > kMGLTexelBufferTextureWidth) {
+        max2DSize = kMGLTexelBufferTextureWidth;
+    }
+
+    NSUInteger texWidth = MIN(texelCount, max2DSize);
+    NSUInteger texHeight = (texelCount + texWidth - 1) / texWidth;
+    if (texHeight == 0 || texHeight > max2DSize) {
+        NSLog(@"MGL TEXBUFFER ERROR: texel buffer too large for 2D fallback tex=%u buffer=%u texels=%lu packed=%lux%lu max=%lu",
+              tex->name,
+              sourceBuffer->name,
+              (unsigned long)texelCount,
+              (unsigned long)texWidth,
+              (unsigned long)texHeight,
+              (unsigned long)max2DSize);
+        return nil;
+    }
+
+    NSUInteger bytesPerRow = texWidth * bytesPerTexel;
+    NSUInteger packedBytes = bytesPerRow * texHeight;
+    NSMutableData *packedData = nil;
+    const uint8_t *uploadBytes = sourceBytes;
+
+    /* Channel expansion for 3-channel RGB -> 4-channel RGBA Metal formats.
+     * GL_RGB32* (12 bytes/texel) maps to Metal RGBA32* (16 bytes/texel).
+     * Expand each texel by inserting a default alpha before uploading. */
+    NSMutableData *expandedData = nil;
+    if (mglTextureNeedsChannelExpansion(tex->internalformat, bufferPixelFormat)) {
+        NSUInteger srcCompBytes = 0;
+        NSUInteger dstCompBytes = 0;
+        uint64_t alphaDefault = 0;
+        switch (bufferPixelFormat) {
+            case MTLPixelFormatRGBA16Unorm:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 65535; break;
+            case MTLPixelFormatRGBA16Snorm:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 32767; break;
+            case MTLPixelFormatRGBA16Float:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 0x3C00; break;
+            case MTLPixelFormatRGBA16Sint:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA16Uint:
+                srcCompBytes = 2; dstCompBytes = 2; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA32Float:
+                srcCompBytes = 4; dstCompBytes = 4;
+                { float f = 1.0f; memcpy(&alphaDefault, &f, sizeof(f)); }
+                break;
+            case MTLPixelFormatRGBA32Sint:
+                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+            case MTLPixelFormatRGBA32Uint:
+                srcCompBytes = 4; dstCompBytes = 4; alphaDefault = 1; break;
+            default:
+                break;
+        }
+        if (srcCompBytes > 0) {
+            NSUInteger srcPixelBytes = srcCompBytes * 3;
+            NSUInteger dstPixelBytes = dstCompBytes * 4;
+            NSUInteger expandedBytesPerRow = texWidth * dstPixelBytes;
+            NSUInteger expandedPackedBytes = expandedBytesPerRow * texHeight;
+            expandedData = [NSMutableData dataWithLength:expandedPackedBytes];
+            if (expandedData && expandedData.mutableBytes) {
+                const uint8_t *src = sourceBytes;
+                uint8_t *dst = (uint8_t *)expandedData.mutableBytes;
+                for (NSUInteger row = 0; row < texHeight; row++) {
+                    for (NSUInteger col = 0; col < texWidth; col++) {
+                        NSUInteger srcTexelIdx = row * texWidth + col;
+                        if (srcTexelIdx >= texelCount) {
+                            memset(dst + (row * expandedBytesPerRow + col * dstPixelBytes),
+                                   0, dstPixelBytes);
+                            continue;
+                        }
+                        const uint8_t *srcPixel = src + srcTexelIdx * srcPixelBytes;
+                        uint8_t *dstPixel = dst + row * expandedBytesPerRow + col * dstPixelBytes;
+                        memcpy(dstPixel, srcPixel, srcPixelBytes);
+                        memcpy(dstPixel + srcPixelBytes, &alphaDefault, dstCompBytes);
+                    }
+                }
+                uploadBytes = (const uint8_t *)expandedData.bytes;
+                bytesPerRow = expandedBytesPerRow;
+                packedBytes = expandedPackedBytes;
+            }
+        }
+    }
+
+    if (texHeight > 1 && !expandedData) {
+        packedData = [NSMutableData dataWithLength:packedBytes];
+        if (!packedData || !packedData.mutableBytes) {
+            NSLog(@"MGL TEXBUFFER ERROR: failed allocating packed data tex=%u buffer=%u bytes=%lu",
+                  tex->name,
+                  sourceBuffer->name,
+                  (unsigned long)packedBytes);
+            return nil;
+        }
+
+        memcpy(packedData.mutableBytes, sourceBytes, (size_t)tex->texture_buffer_size);
+        uploadBytes = (const uint8_t *)packedData.bytes;
+    }
+
+    uint64_t sourceHash = mglTraceHashBytes(sourceBytes, (size_t)tex->texture_buffer_size);
+    uint64_t uploadHash = mglTraceHashBytes(uploadBytes, packedBytes);
+    char sourceHead[64];
+    char uploadHead[64];
+    sourceHead[0] = '\0';
+    uploadHead[0] = '\0';
+    mglTraceFormatBytes(sourceBytes, (size_t)MIN((NSUInteger)tex->texture_buffer_size, (NSUInteger)64), sourceHead, sizeof(sourceHead));
+    mglTraceFormatBytes(uploadBytes, (size_t)MIN(packedBytes, (NSUInteger)64), uploadHead, sizeof(uploadHead));
+
+    MTLTextureDescriptor *bufferDesc =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:bufferPixelFormat
+                                                           width:texWidth
+                                                          height:texHeight
+                                                       mipmapped:NO];
+    bufferDesc.usage = MTLTextureUsageShaderRead;
+    bufferDesc.storageMode = MTLStorageModeShared;
+
+    id<MTLTexture> bufferTexture = nil;
+    @try {
+        bufferTexture = [_device newTextureWithDescriptor:bufferDesc];
+        if (bufferTexture) {
+            [bufferTexture replaceRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
+                              mipmapLevel:0
+                                withBytes:uploadBytes
+                              bytesPerRow:bytesPerRow];
+        }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL TEXBUFFER ERROR: failed creating/uploading tex=%u buffer=%u exception=%@",
+              tex->name,
+              sourceBuffer->name,
+              exception);
+        return nil;
+    }
+
+    if (!bufferTexture) {
+        NSLog(@"MGL TEXBUFFER ERROR: Metal texture creation returned nil tex=%u buffer=%u format=%lu texels=%lu",
+              tex->name,
+              sourceBuffer->name,
+              (unsigned long)bufferPixelFormat,
+              (unsigned long)texelCount);
+        return nil;
+    }
+
+    tex->dirty_bits = 0;
+    sourceBuffer->data.dirty_bits = 0;
+
+    NSMutableData *readbackData = [NSMutableData dataWithLength:packedBytes];
+    uint64_t readbackHash = 0ull;
+    char readbackHead[64];
+    readbackHead[0] = '\0';
+    if (readbackData.mutableBytes) {
+        [bufferTexture getBytes:readbackData.mutableBytes
+                    bytesPerRow:bytesPerRow
+                     fromRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
+                    mipmapLevel:0];
+        readbackHash = mglTraceHashBytes(readbackData.bytes, packedBytes);
+        mglTraceFormatBytes(readbackData.bytes, (size_t)MIN(packedBytes, (NSUInteger)64), readbackHead, sizeof(readbackHead));
+    }
+
+    NSLog(@"MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x mtlFormat=%lu texels=%lu packed=%lux%lu rowBytes=%lu bytes=%lld offset=%lld as=texture2d sourceHash=0x%016llx uploadHash=0x%016llx readbackHash=0x%016llx sourceHead=%s uploadHead=%s readbackHead=%s",
+          tex->name,
+          sourceBuffer->name,
+          tex->internalformat,
+          (unsigned long)bufferPixelFormat,
+          (unsigned long)texelCount,
+          (unsigned long)texWidth,
+          (unsigned long)texHeight,
+          (unsigned long)bytesPerRow,
+          (long long)tex->texture_buffer_size,
+          (long long)tex->texture_buffer_offset,
+          (unsigned long long)sourceHash,
+          (unsigned long long)uploadHash,
+          (unsigned long long)readbackHash,
+          sourceHead,
+          uploadHead,
+          readbackHead);
+
+    [self recordGPUSuccess];
+    return bufferTexture;
+}
+
+- (BOOL)checkTextureCompleteness:(Texture *)tex
+                          texType:(MTLTextureType)tex_type
+                         numFaces:(uint)num_faces
+             effectiveMipmapLevels:(GLuint *)outEffectiveMipmapLevels
+                 storageMipmapped:(BOOL *)outStorageMipmapped
+{
+    (void)tex_type;  /* unused: completeness does not depend on Metal texture type */
+    GLuint effective_mipmap_levels = tex->mipmap_levels;
+    BOOL storageMipmapped = NO;
+
+    uint completeness_check_faces = (tex->target == GL_TEXTURE_CUBE_MAP_ARRAY) ? 1 : num_faces;
+
+    /* Texture storage is independent from GL_TEXTURE_MAX_LEVEL.  Minecraft
+     * uses BASE/MAX_LEVEL to express temporary GpuTextureView mip windows; if
+     * those sampler parameters shrink the Metal texture allocation, later
+     * full-atlas sampling loses the higher mip levels and distant terrain
+     * reads empty/incorrect data.  Apply BASE/MAX only to completeness checks
+     * and sampled Metal views, not to the underlying storage level count. */
+
+    /* For CUBE_MAP_ARRAY, glTexImage3D stores all layer data in faces[0] with
+     * depth = 6 * num_cubes.  Faces 1-5 are never populated by createTextureLevel,
+     * so only check face 0 for completeness.  The upload code also reads from
+     * face 0 and distributes slices to Metal array layers. */
+
+    storageMipmapped = (tex->mipmap_levels > 1u) &&
+        (tex->num_levels > 1u || tex->is_render_target);
+
+    if (tex->num_levels > 1)
+    {
+        // mipmapped texture
+        if (effective_mipmap_levels == 0) {
+            effective_mipmap_levels = tex->num_levels;
+        }
+
+        if (!tex->is_render_target && tex->num_levels < effective_mipmap_levels)
+        {
+            static uint64_t s_mipmap_count_mismatch_logs = 0;
+            if (++s_mipmap_count_mismatch_logs <= 32 || (s_mipmap_count_mismatch_logs % 512) == 0) {
+                NSLog(@"MGL TEXTURE MIP COMPAT: tex=%u target=0x%x size=%ux%u num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u immutable=%u isRT=%u; capping Metal mip count to uploaded levels hit=%llu",
+                      tex->name,
+                      tex->target,
+                      tex->width,
+                      tex->height,
+                      tex->num_levels,
+                      tex->mipmap_levels,
+                      effective_mipmap_levels,
+                      tex->params.base_level,
+                      tex->params.max_level,
+                      tex->immutable_storage,
+                      tex->is_render_target,
+                      (unsigned long long)s_mipmap_count_mismatch_logs);
+            }
+            effective_mipmap_levels = tex->num_levels;
+        }
+
+        /* GL texture completeness only requires levels in
+         * [base_level, min(max_level, mipmap_levels-1)] to be complete.
+         * Levels below base_level may be uninitialised and must NOT cause
+         * the texture to be rejected.  Minecraft 1.21.11 sets base_level>0
+         * on mipmap texture views (GlCommandEncoder.java). */
+        GLuint check_start = tex->params.base_level;
+        GLuint check_end = (tex->params.max_level == 1000u)
+            ? (tex->mipmap_levels > 0u ? tex->mipmap_levels - 1u : 0u)
+            : tex->params.max_level;
+        if (check_end >= tex->mipmap_levels)
+            check_end = (tex->mipmap_levels > 0u) ? tex->mipmap_levels - 1u : 0u;
+        if (check_end < check_start)
+            check_end = check_start;
+
+        for(int face=0; face<completeness_check_faces; face++)
+        {
+            for (GLuint i=check_start; i<=check_end; i++)
+            {
+                // incomplete texture
+                if (tex->faces[face].levels[i].complete == false) {
+                    static uint64_t s_incomplete_mip_logs = 0;
+                    if (++s_incomplete_mip_logs <= 32 || (s_incomplete_mip_logs % 512) == 0) {
+                        NSLog(@"MGL TEXTURE INCOMPLETE: tex=%u target=0x%x face=%d level=%u incomplete num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u check=[%u,%u] hit=%llu",
+                              tex->name,
+                              tex->target,
+                              face,
+                              i,
+                              tex->num_levels,
+                              tex->mipmap_levels,
+                              effective_mipmap_levels,
+                              tex->params.base_level,
+                              tex->params.max_level,
+                              check_start,
+                              check_end,
+                              (unsigned long long)s_incomplete_mip_logs);
+                    }
+                    return NO;
+                }
+            }
+        }
+
+        tex->mipmapped = true;
+    }
+    else if (tex->num_levels == 1)
+    {
+        if (!storageMipmapped) {
+            effective_mipmap_levels = 1;
+        }
+        // single level texture
+        // incomplete texture
+        for(int face=0; face<completeness_check_faces; face++)
+        {
+            if (tex->faces[face].levels[0].complete == false)
+            {
+                static uint64_t s_incomplete_base_logs = 0;
+                if (++s_incomplete_base_logs <= 32 || (s_incomplete_base_logs % 512) == 0) {
+                    NSLog(@"MGL TEXTURE INCOMPLETE: tex=%u target=0x%x face=%d base incomplete size=%ux%u hit=%llu",
+                          tex->name,
+                          tex->target,
+                          face,
+                          tex->width,
+                          tex->height,
+                          (unsigned long long)s_incomplete_base_logs);
+                }
+                return NO;
+            }
+        }
+    }
+    else
+    {
+        NSLog(@"MGL TEXTURE ERROR: texture %u has no complete levels for Metal creation target=0x%x",
+              tex->name,
+              tex->target);
+        return NO;
+    }
+
+    tex->complete = true;
+
+    if (outEffectiveMipmapLevels) *outEffectiveMipmapLevels = effective_mipmap_levels;
+    if (outStorageMipmapped) *outStorageMipmapped = storageMipmapped;
+    return YES;
+}
+
+- (void)logMTLTextureMipDiagnostics:(Texture *)tex
+                              metal:(id<MTLTexture>)texture
+               effectiveMipLevels:(GLuint)effective_mipmap_levels
+{
+    static uint64_t s_mipDiagLogs = 0;
+    uint64_t diagHit = ++s_mipDiagLogs;
+    if (kMGLDiagnosticStateLogs &&
+        (diagHit <= 128ull || (diagHit % 512ull) == 0ull)) {
+        NSUInteger mtlMipCount = texture.mipmapLevelCount;
+        MTLPixelFormat mtlFmt = texture.pixelFormat;
+        MTLStorageMode mtlStorage = texture.storageMode;
+        NSUInteger uploadedLevels = 0;
+        NSUInteger skippedLevels = 0;
+        NSUInteger skippedSourceNone = 0;
+        NSUInteger skippedNoData = 0;
+        NSMutableString *levelSummary = [NSMutableString stringWithCapacity:256];
+        NSUInteger levelsToSummarize = MIN((NSUInteger)tex->num_levels, (NSUInteger)16);
+        for (NSUInteger lvl = 0; lvl < levelsToSummarize; lvl++) {
+            TextureLevel *tl = (tex->faces[0].levels && lvl < tex->num_levels)
+                ? &tex->faces[0].levels[lvl] : NULL;
+            if (!tl) { [levelSummary appendString:@"-"]; continue; }
+            bool uploadable = mglTextureLevelHasUploadableCPUData(tl);
+            if (uploadable) uploadedLevels++; else skippedLevels++;
+            if (!uploadable) {
+                if (tl->last_init_source == kTexImageNull || tl->last_init_source == kTexInitNone)
+                    skippedSourceNone++;
+                if (!tl->has_initialized_data && !tl->ever_written)
+                    skippedNoData++;
+            }
+            [levelSummary appendFormat:@"[%u:s%u:w%u:e%u:i%u]",
+                (unsigned)lvl, (unsigned)tl->last_init_source,
+                (unsigned)tl->width, (unsigned)tl->ever_written,
+                (unsigned)tl->has_initialized_data];
+        }
+        MGLTraceNSLog(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
+                      @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
+                      @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
+                      @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
+                      @"levels=%@ hit=%llu",
+                      (unsigned)tex->name, (unsigned)tex->target,
+                      (unsigned)tex->width, (unsigned)tex->height,
+                      (unsigned)tex->internalformat,
+                      (unsigned)tex->num_levels, (unsigned)tex->mipmap_levels,
+                      (unsigned)effective_mipmap_levels, (unsigned long)mtlMipCount,
+                      (unsigned long)mtlFmt, (long)mtlStorage, (int)(tex->mipmapped ? 1 : 0),
+                      (unsigned)tex->params.base_level, (unsigned)tex->params.max_level,
+                      (unsigned long)uploadedLevels, (unsigned long)skippedLevels,
+                      (unsigned long)skippedSourceNone, (unsigned long)skippedNoData,
+                      levelSummary, (unsigned long long)diagHit);
+    }
 }
 
 // AGX-SAFE Fallback texture creation for GPU error recovery scenarios
@@ -9836,329 +8640,11 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
             }
         }
 
-        // Diagnostic + compatibility path:
-        // When swapping the default framebuffer, the active render pass should target the drawable.
-        // If it still points to an offscreen texture, copy that texture into the drawable before present.
         id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
         id<MTLTexture> drawableTexture = _drawable ? _drawable.texture : nil;
-        if (ctx->state.framebuffer == NULL &&
-            !_defaultDrawableWrittenSinceLastSwap &&
-            rpColor0 &&
-            drawableTexture &&
-            rpColor0 != drawableTexture) {
-            BOOL traceCopyToDrawable = traceSwap ||
-                (kMGLSwapPresentDiagnostics &&
-                 (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
-            if (traceCopyToDrawable) {
-                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
-                      (unsigned long long)swapCall,
-                      rpColor0,
-                      (unsigned long)rpColor0.pixelFormat,
-                      (unsigned long)rpColor0.width,
-                      (unsigned long)rpColor0.height,
-                      drawableTexture,
-                      (unsigned long)drawableTexture.pixelFormat,
-                      (unsigned long)drawableTexture.width,
-                      (unsigned long)drawableTexture.height);
-            }
+        [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
 
-            BOOL canShaderCopyToDrawable =
-                (rpColor0.pixelFormat == drawableTexture.pixelFormat ||
-                 (rpColor0.pixelFormat == MTLPixelFormatRGBA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm) ||
-                 (rpColor0.pixelFormat == MTLPixelFormatBGRA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatRGBA8Unorm));
-            if (canShaderCopyToDrawable) {
-                    id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:drawableTexture.pixelFormat];
-                    id<MTLSamplerState> sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
-                    NSUInteger copyWidth = MIN((NSUInteger)rpColor0.width, (NSUInteger)drawableTexture.width);
-                    NSUInteger copyHeight = MIN((NSUInteger)rpColor0.height, (NSUInteger)drawableTexture.height);
-                    if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {
-                        MGLScaledBlitParams params;
-                        params.uvRect = (vector_float4){
-                            0.0f,
-                            0.0f,
-                            rpColor0.width ? ((float)copyWidth / (float)rpColor0.width) : 0.0f,
-                            rpColor0.height ? ((float)copyHeight / (float)rpColor0.height) : 0.0f
-                        };
-                        params.forceOpaqueAlpha = 1.0f;
-                        params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
-
-                        MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
-                        copyPass.colorAttachments[0].texture = drawableTexture;
-                        copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-                        copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-
-                        id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
-                        if (copyEncoder) {
-                            [copyEncoder setRenderPipelineState:pipeline];
-                            [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
-                            [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
-                            [copyEncoder setFragmentTexture:rpColor0 atIndex:0];
-                            [copyEncoder setFragmentSamplerState:sampler atIndex:0];
-                            [copyEncoder setViewport:(MTLViewport){
-                                .originX = 0.0,
-                                .originY = 0.0,
-                                .width = (double)copyWidth,
-                                .height = (double)copyHeight,
-                                .znear = 0.0,
-                                .zfar = 1.0
-                            }];
-                            [copyEncoder setScissorRect:(MTLScissorRect){
-                                .x = 0,
-                                .y = 0,
-                                .width = copyWidth,
-                                .height = copyHeight
-                            }];
-                            [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-                            [copyEncoder endEncoding];
-                        } else {
-                            NSLog(@"MGL WARNING: swap.copyToDrawable failed to create shader copy encoder");
-                        }
-                    } else {
-                        NSLog(@"MGL WARNING: swap.copyToDrawable shader copy unavailable pipeline=%p sampler=%p size=%lux%lu",
-                              pipeline,
-                              sampler,
-                              (unsigned long)copyWidth,
-                              (unsigned long)copyHeight);
-                    }
-            } else {
-                NSLog(@"MGL WARNING: swap.copyToDrawable skipped due to pixel format mismatch src=%lu dst=%lu",
-                      (unsigned long)rpColor0.pixelFormat,
-                      (unsigned long)drawableTexture.pixelFormat);
-            }
-
-            if (traceCopyToDrawable) {
-                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
-            }
-        } else if (ctx->state.framebuffer == NULL &&
-                   _defaultDrawableWrittenSinceLastSwap &&
-                   rpColor0 &&
-                   drawableTexture &&
-                   rpColor0 != drawableTexture) {
-            BOOL traceSkipCopyToDrawable = traceSwap ||
-                (kMGLSwapPresentDiagnostics &&
-                 (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
-            if (traceSkipCopyToDrawable) {
-                MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
-                      (unsigned long long)swapCall,
-                      rpColor0,
-                      drawableTexture);
-            }
-        }
-
-        // Low-frequency dual texture sampling for black-screen diagnostics.
-        // Sample both render-pass color source and drawable target so we can
-        // distinguish "rendered black" from "copy/present black".
-        if (kMGLSwapPresentDiagnostics &&
-            ((swapCall <= 12ull && (swapCall % 3ull) == 0ull) || ((swapCall % 120ull) == 0ull))) {
-            void (^scheduleTextureSample)(id<MTLTexture>, NSString *, NSUInteger, NSUInteger) =
-                ^(id<MTLTexture> sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
-                    if (!sampleTexture) {
-                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
-                              sampleTag,
-                              (unsigned long long)swapCall);
-                        return;
-                    }
-
-                    if (sampleTexture.pixelFormat != MTLPixelFormatBGRA8Unorm &&
-                        sampleTexture.pixelFormat != MTLPixelFormatRGBA8Unorm) {
-                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
-                              sampleTag,
-                              (unsigned long long)swapCall,
-                              (unsigned long)sampleTexture.pixelFormat,
-                              (unsigned long)sampleTexture.width,
-                              (unsigned long)sampleTexture.height);
-                        return;
-                    }
-
-                    NSUInteger sampleWidth = MIN((NSUInteger)sampleTexture.width, 8u);
-                    NSUInteger sampleHeight = MIN((NSUInteger)sampleTexture.height, 8u);
-                    NSUInteger bytesPerPixel = 4u;
-                    NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
-                    NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
-                    if (sampleWidth == 0 || sampleHeight == 0 || sampleBytesPerImage == 0) {
-                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
-                              sampleTag,
-                              (unsigned long long)swapCall,
-                              (unsigned long)sampleTexture.width,
-                              (unsigned long)sampleTexture.height);
-                        return;
-                    }
-
-                    NSUInteger clampedOriginX = originX;
-                    NSUInteger clampedOriginY = originY;
-                    if (clampedOriginX + sampleWidth > (NSUInteger)sampleTexture.width) {
-                        clampedOriginX = ((NSUInteger)sampleTexture.width > sampleWidth)
-                            ? ((NSUInteger)sampleTexture.width - sampleWidth)
-                            : 0u;
-                    }
-                    if (clampedOriginY + sampleHeight > (NSUInteger)sampleTexture.height) {
-                        clampedOriginY = ((NSUInteger)sampleTexture.height > sampleHeight)
-                            ? ((NSUInteger)sampleTexture.height - sampleHeight)
-                            : 0u;
-                    }
-
-                    id<MTLBuffer> sampleBuffer = [_device newBufferWithLength:sampleBytesPerImage
-                                                                       options:MTLResourceStorageModeShared];
-                    if (!sampleBuffer) {
-                        NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(alloc size=%lu)",
-                              sampleTag,
-                              (unsigned long long)swapCall,
-                              (unsigned long)sampleBytesPerImage);
-                        return;
-                    }
-
-                    id<MTLBlitCommandEncoder> sampleEncoder = [_currentCommandBuffer blitCommandEncoder];
-                    if (!sampleEncoder) {
-                        NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(create blit encoder)",
-                              sampleTag,
-                              (unsigned long long)swapCall);
-                        return;
-                    }
-
-                    [sampleEncoder copyFromTexture:sampleTexture
-                                       sourceSlice:0
-                                       sourceLevel:0
-                                      sourceOrigin:MTLOriginMake(clampedOriginX, clampedOriginY, 0)
-                                        sourceSize:MTLSizeMake(sampleWidth, sampleHeight, 1)
-                                          toBuffer:sampleBuffer
-                                 destinationOffset:0
-                            destinationBytesPerRow:sampleBytesPerRow
-                          destinationBytesPerImage:sampleBytesPerImage];
-                    [sampleEncoder endEncoding];
-
-                    uint64_t sampleSwapCall = swapCall;
-                    NSString *sampleTagCopy = [sampleTag copy];
-                    NSUInteger sampleTexWidth = (NSUInteger)sampleTexture.width;
-                    NSUInteger sampleTexHeight = (NSUInteger)sampleTexture.height;
-                    NSUInteger sampleOriginX = clampedOriginX;
-                    NSUInteger sampleOriginY = clampedOriginY;
-                    [sampleBuffer addDebugMarker:@"mgl_swap_sample" range:NSMakeRange(0, sampleBytesPerImage)];
-                    [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
-                        const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
-                        if (!p) {
-                            MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
-                                  sampleTagCopy,
-                                  (unsigned long long)sampleSwapCall,
-                                  mglCommandBufferStatusName(sampleCB.status),
-                                  sampleCB.error);
-                            return;
-                        }
-
-                        uint64_t sum = 0;
-                        NSUInteger nonZero = 0;
-                        for (NSUInteger bi = 0; bi < sampleBytesPerImage; bi++) {
-                            uint8_t v = p[bi];
-                            sum += (uint64_t)v;
-                            if (v != 0) {
-                                nonZero++;
-                            }
-                        }
-
-                        uint32_t firstPixel = 0;
-                        if (sampleBytesPerImage >= sizeof(firstPixel)) {
-                            memcpy(&firstPixel, p, sizeof(firstPixel));
-                        }
-
-                        uint32_t minPixel = UINT32_MAX;
-                        uint32_t maxPixel = 0u;
-                        uint32_t pixelXor = 0u;
-                        NSUInteger diffFromFirst = 0u;
-                        NSUInteger pixelCount = sampleBytesPerImage / sizeof(uint32_t);
-                        for (NSUInteger pi = 0; pi < pixelCount; pi++) {
-                            uint32_t pixel = 0u;
-                            memcpy(&pixel, p + (pi * sizeof(uint32_t)), sizeof(pixel));
-                            if (pixel < minPixel) {
-                                minPixel = pixel;
-                            }
-                            if (pixel > maxPixel) {
-                                maxPixel = pixel;
-                            }
-                            pixelXor ^= pixel;
-                            if (pixel != firstPixel) {
-                                diffFromFirst++;
-                            }
-                        }
-                        BOOL appearsSolid = (pixelCount > 0u && diffFromFirst == 0u);
-
-                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
-                              "nonZero=%lu/%lu sum=%llu firstPixel=0x%08x min=0x%08x max=0x%08x xor=0x%08x diff=%lu solid=%d status=%s error=%@",
-                              sampleTagCopy,
-                              (unsigned long long)sampleSwapCall,
-                              (unsigned long)sampleTexWidth,
-                              (unsigned long)sampleTexHeight,
-                              (unsigned long)sampleOriginX,
-                              (unsigned long)sampleOriginY,
-                              (unsigned long)sampleWidth,
-                              (unsigned long)sampleHeight,
-                              (unsigned long)nonZero,
-                              (unsigned long)sampleBytesPerImage,
-                              (unsigned long long)sum,
-                              firstPixel,
-                              minPixel == UINT32_MAX ? 0u : minPixel,
-                              maxPixel,
-                              pixelXor,
-                              (unsigned long)diffFromFirst,
-                              appearsSolid ? 1 : 0,
-                              mglCommandBufferStatusName(sampleCB.status),
-                              sampleCB.error);
-
-                        if ([sampleTagCopy isEqualToString:@"src.center"]) {
-                            static uint32_t s_lastCenterPixel = 0u;
-                            static uint64_t s_sameCenterPixelRun = 0ull;
-                            if (firstPixel == s_lastCenterPixel) {
-                                s_sameCenterPixelRun++;
-                            } else {
-                                s_lastCenterPixel = firstPixel;
-                                s_sameCenterPixelRun = 1ull;
-                            }
-
-                            if (s_sameCenterPixelRun == 10ull ||
-                                s_sameCenterPixelRun == 30ull ||
-                                (s_sameCenterPixelRun % 120ull) == 0ull) {
-                                MGLTraceNSLog(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
-                                      firstPixel,
-                                      (unsigned long long)s_sameCenterPixelRun,
-                                      appearsSolid ? 1 : 0,
-                                      (unsigned long)diffFromFirst);
-                            }
-                        }
-                    }];
-                };
-
-            scheduleTextureSample(rpColor0, @"src.tl", 0u, 0u);
-            if (rpColor0) {
-                NSUInteger cx = ((NSUInteger)rpColor0.width > 8u) ? (((NSUInteger)rpColor0.width / 2u) - 4u) : 0u;
-                NSUInteger cy = ((NSUInteger)rpColor0.height > 8u) ? (((NSUInteger)rpColor0.height / 2u) - 4u) : 0u;
-                NSUInteger rx = ((NSUInteger)rpColor0.width > 8u) ? ((NSUInteger)rpColor0.width - 8u) : 0u;
-                NSUInteger by = ((NSUInteger)rpColor0.height > 8u) ? ((NSUInteger)rpColor0.height - 8u) : 0u;
-                scheduleTextureSample(rpColor0, @"src.center", cx, cy);
-                scheduleTextureSample(rpColor0, @"src.right", rx, cy);
-                scheduleTextureSample(rpColor0, @"src.bottom", cx, by);
-            }
-            if (drawableTexture != rpColor0) {
-                scheduleTextureSample(drawableTexture, @"dst.tl", 0u, 0u);
-                if (drawableTexture) {
-                    NSUInteger dcx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
-                    NSUInteger dcy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
-                    NSUInteger drx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
-                    NSUInteger dby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
-                    scheduleTextureSample(drawableTexture, @"dst.center", dcx, dcy);
-                    scheduleTextureSample(drawableTexture, @"dst.right", drx, dcy);
-                    scheduleTextureSample(drawableTexture, @"dst.bottom", dcx, dby);
-                }
-            } else {
-                scheduleTextureSample(drawableTexture, @"srcdst.tl", 0u, 0u);
-                if (drawableTexture) {
-                    NSUInteger sx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
-                    NSUInteger sy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
-                    NSUInteger srx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
-                    NSUInteger sby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
-                    scheduleTextureSample(drawableTexture, @"srcdst.center", sx, sy);
-                    scheduleTextureSample(drawableTexture, @"srcdst.right", srx, sy);
-                    scheduleTextureSample(drawableTexture, @"srcdst.bottom", sx, sby);
-                }
-            }
-        }
+        [self scheduleSwapTextureSampleDiagnostics:rpColor0 drawableTexture:drawableTexture swapCall:swapCall];
 
         if (_layer == NULL) {
             NSLog(@"MGL ERROR: Metal layer is NULL, cannot present drawable");
@@ -10292,6 +8778,341 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         mglPrintPerfSummary(interval);
         mglResetPerfCounters();
     }
+}
+
+- (void)copyRenderPassColorToDrawableIfNeeded:(id<MTLTexture>)rpColor0
+                              drawableTexture:(id<MTLTexture>)drawableTexture
+                                      swapCall:(uint64_t)swapCall
+                                    traceSwap:(bool)traceSwap
+{
+    // Diagnostic + compatibility path:
+    // When swapping the default framebuffer, the active render pass should target the drawable.
+    // If it still points to an offscreen texture, copy that texture into the drawable before present.
+    if (ctx->state.framebuffer == NULL &&
+        !_defaultDrawableWrittenSinceLastSwap &&
+        rpColor0 &&
+        drawableTexture &&
+        rpColor0 != drawableTexture) {
+        BOOL traceCopyToDrawable = traceSwap ||
+            (kMGLSwapPresentDiagnostics &&
+             (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
+        if (traceCopyToDrawable) {
+            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
+                  (unsigned long long)swapCall,
+                  rpColor0,
+                  (unsigned long)rpColor0.pixelFormat,
+                  (unsigned long)rpColor0.width,
+                  (unsigned long)rpColor0.height,
+                  drawableTexture,
+                  (unsigned long)drawableTexture.pixelFormat,
+                  (unsigned long)drawableTexture.width,
+                  (unsigned long)drawableTexture.height);
+        }
+
+        BOOL canShaderCopyToDrawable =
+            (rpColor0.pixelFormat == drawableTexture.pixelFormat ||
+             (rpColor0.pixelFormat == MTLPixelFormatRGBA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatBGRA8Unorm) ||
+             (rpColor0.pixelFormat == MTLPixelFormatBGRA8Unorm && drawableTexture.pixelFormat == MTLPixelFormatRGBA8Unorm));
+        if (canShaderCopyToDrawable) {
+                id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:drawableTexture.pixelFormat];
+                id<MTLSamplerState> sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
+                NSUInteger copyWidth = MIN((NSUInteger)rpColor0.width, (NSUInteger)drawableTexture.width);
+                NSUInteger copyHeight = MIN((NSUInteger)rpColor0.height, (NSUInteger)drawableTexture.height);
+                if (pipeline && sampler && copyWidth > 0 && copyHeight > 0) {
+                    MGLScaledBlitParams params;
+                    params.uvRect = (vector_float4){
+                        0.0f,
+                        0.0f,
+                        rpColor0.width ? ((float)copyWidth / (float)rpColor0.width) : 0.0f,
+                        rpColor0.height ? ((float)copyHeight / (float)rpColor0.height) : 0.0f
+                    };
+                    params.forceOpaqueAlpha = 1.0f;
+                    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+                    MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
+                    copyPass.colorAttachments[0].texture = drawableTexture;
+                    copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+                    copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+
+                    id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+                    if (copyEncoder) {
+                        [copyEncoder setRenderPipelineState:pipeline];
+                        [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+                        [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+                        [copyEncoder setFragmentTexture:rpColor0 atIndex:0];
+                        [copyEncoder setFragmentSamplerState:sampler atIndex:0];
+                        [copyEncoder setViewport:(MTLViewport){
+                            .originX = 0.0,
+                            .originY = 0.0,
+                            .width = (double)copyWidth,
+                            .height = (double)copyHeight,
+                            .znear = 0.0,
+                            .zfar = 1.0
+                        }];
+                        [copyEncoder setScissorRect:(MTLScissorRect){
+                            .x = 0,
+                            .y = 0,
+                            .width = copyWidth,
+                            .height = copyHeight
+                        }];
+                        [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+                        [copyEncoder endEncoding];
+                    } else {
+                        NSLog(@"MGL WARNING: swap.copyToDrawable failed to create shader copy encoder");
+                    }
+                } else {
+                    NSLog(@"MGL WARNING: swap.copyToDrawable shader copy unavailable pipeline=%p sampler=%p size=%lux%lu",
+                          pipeline,
+                          sampler,
+                          (unsigned long)copyWidth,
+                          (unsigned long)copyHeight);
+                }
+        } else {
+            NSLog(@"MGL WARNING: swap.copyToDrawable skipped due to pixel format mismatch src=%lu dst=%lu",
+                  (unsigned long)rpColor0.pixelFormat,
+                  (unsigned long)drawableTexture.pixelFormat);
+        }
+
+        if (traceCopyToDrawable) {
+            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
+        }
+    } else if (ctx->state.framebuffer == NULL &&
+               _defaultDrawableWrittenSinceLastSwap &&
+               rpColor0 &&
+               drawableTexture &&
+               rpColor0 != drawableTexture) {
+        BOOL traceSkipCopyToDrawable = traceSwap ||
+            (kMGLSwapPresentDiagnostics &&
+             (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
+        if (traceSkipCopyToDrawable) {
+            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
+                  (unsigned long long)swapCall,
+                  rpColor0,
+                  drawableTexture);
+        }
+    }
+
+}
+
+- (void)scheduleSwapTextureSampleDiagnostics:(id<MTLTexture>)rpColor0
+                             drawableTexture:(id<MTLTexture>)drawableTexture
+                                     swapCall:(uint64_t)swapCall
+{
+    // Low-frequency dual texture sampling for black-screen diagnostics.
+    // Sample both render-pass color source and drawable target so we can
+    // distinguish "rendered black" from "copy/present black".
+    if (kMGLSwapPresentDiagnostics &&
+        ((swapCall <= 12ull && (swapCall % 3ull) == 0ull) || ((swapCall % 120ull) == 0ull))) {
+        void (^scheduleTextureSample)(id<MTLTexture>, NSString *, NSUInteger, NSUInteger) =
+            ^(id<MTLTexture> sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
+                if (!sampleTexture) {
+                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
+                          sampleTag,
+                          (unsigned long long)swapCall);
+                    return;
+                }
+
+                if (sampleTexture.pixelFormat != MTLPixelFormatBGRA8Unorm &&
+                    sampleTexture.pixelFormat != MTLPixelFormatRGBA8Unorm) {
+                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
+                          sampleTag,
+                          (unsigned long long)swapCall,
+                          (unsigned long)sampleTexture.pixelFormat,
+                          (unsigned long)sampleTexture.width,
+                          (unsigned long)sampleTexture.height);
+                    return;
+                }
+
+                NSUInteger sampleWidth = MIN((NSUInteger)sampleTexture.width, 8u);
+                NSUInteger sampleHeight = MIN((NSUInteger)sampleTexture.height, 8u);
+                NSUInteger bytesPerPixel = 4u;
+                NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
+                NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
+                if (sampleWidth == 0 || sampleHeight == 0 || sampleBytesPerImage == 0) {
+                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
+                          sampleTag,
+                          (unsigned long long)swapCall,
+                          (unsigned long)sampleTexture.width,
+                          (unsigned long)sampleTexture.height);
+                    return;
+                }
+
+                NSUInteger clampedOriginX = originX;
+                NSUInteger clampedOriginY = originY;
+                if (clampedOriginX + sampleWidth > (NSUInteger)sampleTexture.width) {
+                    clampedOriginX = ((NSUInteger)sampleTexture.width > sampleWidth)
+                        ? ((NSUInteger)sampleTexture.width - sampleWidth)
+                        : 0u;
+                }
+                if (clampedOriginY + sampleHeight > (NSUInteger)sampleTexture.height) {
+                    clampedOriginY = ((NSUInteger)sampleTexture.height > sampleHeight)
+                        ? ((NSUInteger)sampleTexture.height - sampleHeight)
+                        : 0u;
+                }
+
+                id<MTLBuffer> sampleBuffer = [_device newBufferWithLength:sampleBytesPerImage
+                                                                   options:MTLResourceStorageModeShared];
+                if (!sampleBuffer) {
+                    NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(alloc size=%lu)",
+                          sampleTag,
+                          (unsigned long long)swapCall,
+                          (unsigned long)sampleBytesPerImage);
+                    return;
+                }
+
+                id<MTLBlitCommandEncoder> sampleEncoder = [_currentCommandBuffer blitCommandEncoder];
+                if (!sampleEncoder) {
+                    NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(create blit encoder)",
+                          sampleTag,
+                          (unsigned long long)swapCall);
+                    return;
+                }
+
+                [sampleEncoder copyFromTexture:sampleTexture
+                                   sourceSlice:0
+                                   sourceLevel:0
+                                  sourceOrigin:MTLOriginMake(clampedOriginX, clampedOriginY, 0)
+                                    sourceSize:MTLSizeMake(sampleWidth, sampleHeight, 1)
+                                      toBuffer:sampleBuffer
+                             destinationOffset:0
+                        destinationBytesPerRow:sampleBytesPerRow
+                      destinationBytesPerImage:sampleBytesPerImage];
+                [sampleEncoder endEncoding];
+
+                uint64_t sampleSwapCall = swapCall;
+                NSString *sampleTagCopy = [sampleTag copy];
+                NSUInteger sampleTexWidth = (NSUInteger)sampleTexture.width;
+                NSUInteger sampleTexHeight = (NSUInteger)sampleTexture.height;
+                NSUInteger sampleOriginX = clampedOriginX;
+                NSUInteger sampleOriginY = clampedOriginY;
+                [sampleBuffer addDebugMarker:@"mgl_swap_sample" range:NSMakeRange(0, sampleBytesPerImage)];
+                [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
+                    const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
+                    if (!p) {
+                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
+                              sampleTagCopy,
+                              (unsigned long long)sampleSwapCall,
+                              mglCommandBufferStatusName(sampleCB.status),
+                              sampleCB.error);
+                        return;
+                    }
+
+                    uint64_t sum = 0;
+                    NSUInteger nonZero = 0;
+                    for (NSUInteger bi = 0; bi < sampleBytesPerImage; bi++) {
+                        uint8_t v = p[bi];
+                        sum += (uint64_t)v;
+                        if (v != 0) {
+                            nonZero++;
+                        }
+                    }
+
+                    uint32_t firstPixel = 0;
+                    if (sampleBytesPerImage >= sizeof(firstPixel)) {
+                        memcpy(&firstPixel, p, sizeof(firstPixel));
+                    }
+
+                    uint32_t minPixel = UINT32_MAX;
+                    uint32_t maxPixel = 0u;
+                    uint32_t pixelXor = 0u;
+                    NSUInteger diffFromFirst = 0u;
+                    NSUInteger pixelCount = sampleBytesPerImage / sizeof(uint32_t);
+                    for (NSUInteger pi = 0; pi < pixelCount; pi++) {
+                        uint32_t pixel = 0u;
+                        memcpy(&pixel, p + (pi * sizeof(uint32_t)), sizeof(pixel));
+                        if (pixel < minPixel) {
+                            minPixel = pixel;
+                        }
+                        if (pixel > maxPixel) {
+                            maxPixel = pixel;
+                        }
+                        pixelXor ^= pixel;
+                        if (pixel != firstPixel) {
+                            diffFromFirst++;
+                        }
+                    }
+                    BOOL appearsSolid = (pixelCount > 0u && diffFromFirst == 0u);
+
+                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
+                          "nonZero=%lu/%lu sum=%llu firstPixel=0x%08x min=0x%08x max=0x%08x xor=0x%08x diff=%lu solid=%d status=%s error=%@",
+                          sampleTagCopy,
+                          (unsigned long long)sampleSwapCall,
+                          (unsigned long)sampleTexWidth,
+                          (unsigned long)sampleTexHeight,
+                          (unsigned long)sampleOriginX,
+                          (unsigned long)sampleOriginY,
+                          (unsigned long)sampleWidth,
+                          (unsigned long)sampleHeight,
+                          (unsigned long)nonZero,
+                          (unsigned long)sampleBytesPerImage,
+                          (unsigned long long)sum,
+                          firstPixel,
+                          minPixel == UINT32_MAX ? 0u : minPixel,
+                          maxPixel,
+                          pixelXor,
+                          (unsigned long)diffFromFirst,
+                          appearsSolid ? 1 : 0,
+                          mglCommandBufferStatusName(sampleCB.status),
+                          sampleCB.error);
+
+                    if ([sampleTagCopy isEqualToString:@"src.center"]) {
+                        static uint32_t s_lastCenterPixel = 0u;
+                        static uint64_t s_sameCenterPixelRun = 0ull;
+                        if (firstPixel == s_lastCenterPixel) {
+                            s_sameCenterPixelRun++;
+                        } else {
+                            s_lastCenterPixel = firstPixel;
+                            s_sameCenterPixelRun = 1ull;
+                        }
+
+                        if (s_sameCenterPixelRun == 10ull ||
+                            s_sameCenterPixelRun == 30ull ||
+                            (s_sameCenterPixelRun % 120ull) == 0ull) {
+                            MGLTraceNSLog(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
+                                  firstPixel,
+                                  (unsigned long long)s_sameCenterPixelRun,
+                                  appearsSolid ? 1 : 0,
+                                  (unsigned long)diffFromFirst);
+                        }
+                    }
+                }];
+            };
+
+        scheduleTextureSample(rpColor0, @"src.tl", 0u, 0u);
+        if (rpColor0) {
+            NSUInteger cx = ((NSUInteger)rpColor0.width > 8u) ? (((NSUInteger)rpColor0.width / 2u) - 4u) : 0u;
+            NSUInteger cy = ((NSUInteger)rpColor0.height > 8u) ? (((NSUInteger)rpColor0.height / 2u) - 4u) : 0u;
+            NSUInteger rx = ((NSUInteger)rpColor0.width > 8u) ? ((NSUInteger)rpColor0.width - 8u) : 0u;
+            NSUInteger by = ((NSUInteger)rpColor0.height > 8u) ? ((NSUInteger)rpColor0.height - 8u) : 0u;
+            scheduleTextureSample(rpColor0, @"src.center", cx, cy);
+            scheduleTextureSample(rpColor0, @"src.right", rx, cy);
+            scheduleTextureSample(rpColor0, @"src.bottom", cx, by);
+        }
+        if (drawableTexture != rpColor0) {
+            scheduleTextureSample(drawableTexture, @"dst.tl", 0u, 0u);
+            if (drawableTexture) {
+                NSUInteger dcx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
+                NSUInteger dcy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
+                NSUInteger drx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
+                NSUInteger dby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
+                scheduleTextureSample(drawableTexture, @"dst.center", dcx, dcy);
+                scheduleTextureSample(drawableTexture, @"dst.right", drx, dcy);
+                scheduleTextureSample(drawableTexture, @"dst.bottom", dcx, dby);
+            }
+        } else {
+            scheduleTextureSample(drawableTexture, @"srcdst.tl", 0u, 0u);
+            if (drawableTexture) {
+                NSUInteger sx = ((NSUInteger)drawableTexture.width > 8u) ? (((NSUInteger)drawableTexture.width / 2u) - 4u) : 0u;
+                NSUInteger sy = ((NSUInteger)drawableTexture.height > 8u) ? (((NSUInteger)drawableTexture.height / 2u) - 4u) : 0u;
+                NSUInteger srx = ((NSUInteger)drawableTexture.width > 8u) ? ((NSUInteger)drawableTexture.width - 8u) : 0u;
+                NSUInteger sby = ((NSUInteger)drawableTexture.height > 8u) ? ((NSUInteger)drawableTexture.height - 8u) : 0u;
+                scheduleTextureSample(drawableTexture, @"srcdst.center", sx, sy);
+                scheduleTextureSample(drawableTexture, @"srcdst.right", srx, sy);
+                scheduleTextureSample(drawableTexture, @"srcdst.bottom", sx, sby);
+            }
+        }
+    }
+
 }
 
 #pragma mark C interface to mtlClearBuffer
@@ -12150,6 +10971,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     glm_ctx->mtl_funcs.mtlBindProgram = mtlBindProgram;
 
     glm_ctx->mtl_funcs.mtlDeleteMTLObj = mtlDeleteMTLObj;
+    glm_ctx->mtl_funcs.release_buffer_metal_data = mtlReleaseBufferMetalData;
 
     glm_ctx->mtl_funcs.mtlGetSync = mtlGetSync;
     glm_ctx->mtl_funcs.mtlWaitForSync = mtlWaitForSync;

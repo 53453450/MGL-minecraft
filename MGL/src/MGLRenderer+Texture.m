@@ -2,6 +2,7 @@
 // Texture upload/download Metal path methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
+#import "MGLRenderer+Texture_Private.h"
 
 @implementation MGLRenderer (Texture)
 
@@ -2677,6 +2678,1957 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                                            zoffset:zoffset
                                             reason:"mtlTexSubImageBytes"];
     return uploaded;
+}
+
+
+#pragma mark - Extracted from createMTLTextureFromGLTexture:
+- (void)reUploadExistingCPUTextureData:(Texture *)tex
+                                metal:(id<MTLTexture>)texture
+                          pixelFormat:(MTLPixelFormat)pixelFormat
+                            numFaces:(uint)num_faces
+                    uploadLevelCount:(GLuint)upload_level_count
+                              isArray:(BOOL)is_array
+                   texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
+             texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
+                             texType:(MTLTextureType)tex_type
+{
+    NSLog(@"MGL INFO: Re-uploading existing CPU texture data (tex=%d, dims=%lux%lu)",
+
+          tex->name, (unsigned long)texture.width, (unsigned long)texture.height);
+
+
+    for (int face = 0; face < num_faces; face++) {
+
+        for (int level = 0; level < (int)upload_level_count; level++) {
+
+            TextureLevel *uploadLevel = &tex->faces[face].levels[level];
+
+            if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
+
+                continue;
+
+            }
+
+
+            NSUInteger lvlWidth  = tex->faces[face].levels[level].width;
+
+            NSUInteger lvlHeight = tex->faces[face].levels[level].height;
+
+            NSUInteger lvlDepth  = tex->faces[face].levels[level].depth;
+
+            NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
+
+            if (lvlPitch == 0 || lvlWidth == 0) continue;
+
+
+            if (is_array)
+
+            {
+                [self reUploadExistingCPUTextureDataArrayLevel:tex
+                                                         metal:texture
+                                                   pixelFormat:pixelFormat
+                                                         face:face
+                                                        level:level
+                                  texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
+                                                       texType:tex_type];
+            }
+
+            else
+
+            {
+
+            /* Non-array re-upload (2D, 3D, 1D, cube).
+
+             * For 3D textures, bytesPerImage must be a single 2D slice
+
+             * (bytesPerRow * height), NOT the full volume data_size.
+
+             * uploadTextureSliceViaBlit computes bufferSize =
+
+             * safeBytesPerImage * copyDepth, so passing the full volume
+
+             * as bytesPerImage AND depth would double-count and cause
+
+             * newBufferWithBytes to read past the source buffer. */
+
+            NSUInteger bytesPerRow = lvlPitch;
+
+            NSUInteger fullDataSize = tex->faces[face].levels[level].data_size;
+
+            if (fullDataSize == 0) fullDataSize = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+
+
+            BOOL is3DReupload = (tex->target == GL_TEXTURE_3D && lvlDepth > 1);
+
+            NSUInteger singleSliceBPI = bytesPerRow * MAX((NSUInteger)lvlHeight, 1UL);
+
+            NSUInteger bytesPerImage = is3DReupload ? singleSliceBPI : fullDataSize;
+
+            NSUInteger uploadDepth = is3DReupload ? lvlDepth : (lvlDepth > 1 ? lvlDepth : 1);
+
+
+            const void *srcData = (const void *)tex->faces[face].levels[level].data;
+
+            void *expandedUploadData = NULL;
+
+            /* Channel expansion for 2D/non-3D only.  3D expansion would
+
+             * require per-slice handling (see DIRTY_TEXTURE_DATA 3D path). */
+
+            if (!is3DReupload) {
+
+                if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+
+                    NSUInteger expandedBytesPerRow = 0;
+
+                    NSUInteger expandedBytesPerImage = 0;
+
+                    expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+
+                                                                      (const uint8_t *)srcData,
+
+                                                                      lvlWidth,
+
+                                                                      MAX((NSUInteger)lvlHeight, 1UL),
+
+                                                                      bytesPerRow,
+
+                                                                      &expandedBytesPerRow,
+
+                                                                      &expandedBytesPerImage);
+
+                    if (expandedUploadData) {
+
+                        srcData = expandedUploadData;
+
+                        bytesPerRow = expandedBytesPerRow;
+
+                        bytesPerImage = expandedBytesPerImage;
+
+                    }
+
+                } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+
+                    NSUInteger expandedBytesPerRow = 0;
+
+                    NSUInteger expandedBytesPerImage = 0;
+
+                    expandedUploadData = mglCreateChannelExpandedUpload(tex,
+
+                                                                         pixelFormat,
+
+                                                                         (const uint8_t *)srcData,
+
+                                                                         lvlWidth,
+
+                                                                         MAX((NSUInteger)lvlHeight, 1UL),
+
+                                                                         bytesPerRow,
+
+                                                                         &expandedBytesPerRow,
+
+                                                                         &expandedBytesPerImage);
+
+                    if (expandedUploadData) {
+
+                        srcData = expandedUploadData;
+
+                        bytesPerRow = expandedBytesPerRow;
+
+                        bytesPerImage = expandedBytesPerImage;
+
+                    }
+
+                }
+
+            }
+
+            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+
+            NSUInteger alignedBytesPerRow = bytesPerRow;
+
+            if (alignedBytesPerRow % alignment != 0) {
+
+                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+
+            }
+
+
+            uintptr_t addr = (uintptr_t)srcData;
+
+            if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
+
+                NSUInteger rowCount = MAX((NSUInteger)lvlHeight, 1UL);
+
+                NSUInteger alignedSliceBPI = alignedBytesPerRow * rowCount;
+
+                NSUInteger alignedSize = alignedSliceBPI * uploadDepth;
+
+                if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
+
+                    void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                    if (alignedData) {
+
+                        memset(alignedData, 0, alignedSize);
+
+                        for (NSUInteger z = 0; z < uploadDepth; z++) {
+
+                            for (NSUInteger row = 0; row < rowCount; row++) {
+
+                                NSUInteger copySize = MIN(bytesPerRow, alignedBytesPerRow);
+
+                                memcpy((uint8_t *)alignedData + z * alignedSliceBPI + row * alignedBytesPerRow,
+
+                                       (const uint8_t *)srcData + z * singleSliceBPI + row * bytesPerRow, copySize);
+
+                            }
+
+                        }
+
+                        [self uploadTextureSliceViaBlit:texture
+
+                                               texName:tex->name
+
+                                             texTarget:tex->target
+
+                                                 bytes:alignedData
+
+                                           bytesPerRow:alignedBytesPerRow
+
+                                         bytesPerImage:alignedSliceBPI
+
+                                                 width:lvlWidth
+
+                                                height:lvlHeight
+
+                                                 depth:uploadDepth
+
+                                                 level:level
+
+                                                 slice:face];
+
+                        free(alignedData);
+
+                    }
+
+                }
+
+            } else {
+
+                [self uploadTextureSliceViaBlit:texture
+
+                                       texName:tex->name
+
+                                     texTarget:tex->target
+
+                                         bytes:srcData
+
+                                   bytesPerRow:bytesPerRow
+
+                                 bytesPerImage:bytesPerImage
+
+                                         width:lvlWidth
+
+                                        height:lvlHeight
+
+                                         depth:uploadDepth
+
+                                         level:level
+
+                                         slice:face];
+
+            }
+
+            free(expandedUploadData);
+
+            } /* end else (non-array) */
+
+        }
+
+    }
+
+}
+
+- (void)fillTextureWithSafeInitialContents:(id<MTLTexture>)texture
+                                         tex:(Texture *)tex
+                                 pixelFormat:(MTLPixelFormat)pixelFormat
+{
+        // No existing data — fill with safe initial contents
+
+    if (texture.width == 0 || texture.height == 0 || texture.width > 16384 || texture.height > 16384) {
+
+        NSLog(@"MGL WARNING: Skipping texture fill due to invalid dimensions: %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
+
+    } else {
+
+        // Determine pixel format size to create appropriate black data
+
+        NSUInteger bytesPerPixel = 4; // Default to RGBA
+
+        switch(texture.pixelFormat) {
+
+            case MTLPixelFormatR8Unorm:
+
+            case MTLPixelFormatR8Uint:
+
+            case MTLPixelFormatR8Sint:
+
+                bytesPerPixel = 1;
+
+                break;
+
+            case MTLPixelFormatRG8Unorm:
+
+            case MTLPixelFormatRG8Uint:
+
+            case MTLPixelFormatRG8Sint:
+
+                bytesPerPixel = 2;
+
+                break;
+
+            case MTLPixelFormatRGBA8Unorm:
+
+            case MTLPixelFormatRGBA8Uint:
+
+            case MTLPixelFormatRGBA8Sint:
+
+                bytesPerPixel = 4;
+
+                break;
+
+            default:
+
+                bytesPerPixel = 4; // Default assumption
+
+                break;
+
+        }
+
+
+        // Calculate dynamic alignment for Metal textures based on pixel format
+
+        NSUInteger bytesPerRow = texture.width * bytesPerPixel;
+
+        NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:texture.pixelFormat];
+
+        if (bytesPerRow % alignment != 0) {
+
+            bytesPerRow = ((bytesPerRow + alignment - 1) / alignment) * alignment;
+
+        }
+
+
+        NSUInteger dataSize = bytesPerRow * texture.height;
+
+
+        // Validate that dataSize is reasonable (not too large)
+
+        if (dataSize > 64 * 1024 * 1024) { // 64MB limit per texture level
+
+            NSLog(@"MGL WARNING: Skipping texture fill due to excessive size: %lu bytes", (unsigned long)dataSize);
+
+        } else {
+
+            // Allocate initialization data for texture clear.
+
+            // aligned_alloc has been unreliable in this environment; calloc is safer here.
+
+            (void)alignment;
+
+            void *blackData = calloc(dataSize, 1);
+
+            if (blackData) {
+
+                // CRITICAL SECURITY FIX: Comprehensive validation to prevent Metal driver crashes
+
+                // calloc already zero-initializes
+
+
+                // Multi-layer validation for all parameters
+
+                if (!blackData) {
+
+                    NSLog(@"MGL SECURITY ERROR: blackData is NULL after memset - CORRUPTION DETECTED");
+
+                    return;
+                }
+
+                if (bytesPerRow == 0) {
+
+                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) for texture fill");
+
+                    free(blackData);
+
+                    return;
+                }
+
+                if (dataSize == 0) {
+
+                    NSLog(@"MGL SECURITY ERROR: Invalid dataSize (0) for texture fill");
+
+                    free(blackData);
+
+                    return;
+                }
+
+                if (!texture) {
+
+                    NSLog(@"MGL SECURITY ERROR: Metal texture is NULL");
+
+                    free(blackData);
+
+                    return;
+                }
+
+                if (texture.width == 0 || texture.height == 0) {
+
+                    NSLog(@"MGL SECURITY ERROR: Invalid texture dimensions %lux%lu", (unsigned long)texture.width, (unsigned long)texture.height);
+
+                    free(blackData);
+
+                    return;
+                }
+
+
+                // Additional validation: verify blackData contains expected zeros (anti-corruption check)
+
+                uint8_t *bytes = (uint8_t *)blackData;
+
+                bool dataCorrupted = false;
+
+                for (NSUInteger i = 0; i < MIN(dataSize, 1024); i++) { // Check first 1KB only for performance
+
+                    if (bytes[i] != 0) {
+
+                        dataCorrupted = true;
+
+                        break;
+
+                    }
+
+                }
+
+                if (dataCorrupted) {
+
+                    NSLog(@"MGL SECURITY ERROR: blackData corruption detected - memory safety issue");
+
+                    free(blackData);
+
+                    return;
+                }
+
+
+                NSLog(@"MGL INFO: All validations passed for texture fill (size=%lu, bytesPerRow=%lu)", (unsigned long)dataSize, (unsigned long)bytesPerRow);
+
+
+                // ULTRA-DEFENSIVE: Final validation immediately before Metal API call
+
+                // This prevents race conditions and memory corruption between validation and use
+
+                if (!blackData) {
+
+                    NSLog(@"MGL CRITICAL ERROR: blackData became NULL before Metal call - RACE CONDITION DETECTED");
+
+                    free(blackData);
+
+                    return;
+                }
+
+                if (!texture) {
+
+                    NSLog(@"MGL CRITICAL ERROR: Metal texture became NULL before Metal call - RACE CONDITION DETECTED");
+
+                    free(blackData);
+
+                    return;
+                }
+
+                if (bytesPerRow == 0 || dataSize == 0) {
+
+                    NSLog(@"MGL CRITICAL ERROR: Parameters became invalid before Metal call - RACE CONDITION DETECTED");
+
+                    free(blackData);
+
+                    return;
+                }
+
+
+                // Additional verification: Check if Metal texture is still valid
+
+                if (texture.width == 0 || texture.height == 0) {
+
+                    NSLog(@"MGL CRITICAL ERROR: Metal texture dimensions became invalid before Metal call");
+
+                    free(blackData);
+
+                    return;
+                }
+
+
+                // Final integrity check: Verify blackData still contains expected zeros
+
+                uint8_t *finalCheck = (uint8_t *)blackData;
+
+                bool finalCorruption = false;
+
+                for (NSUInteger i = 0; i < MIN(dataSize, 256); i++) { // Check first 256 bytes
+
+                    if (finalCheck[i] != 0) {
+
+                        finalCorruption = true;
+
+                        break;
+
+                    }
+
+                }
+
+                if (finalCorruption) {
+
+                    NSLog(@"MGL CRITICAL ERROR: Memory corruption detected immediately before Metal call");
+
+                    free(blackData);
+
+                    return;
+                }
+
+
+                NSLog(@"MGL INFO: FIXING: Implementing proper texture filling for Apple Metal compatibility");
+
+
+                // PROPER FIX: Use Apple Metal-compatible texture filling approach
+
+                // The issue was using incorrect bytesPerRow and region parameters
+
+                NSLog(@"MGL INFO: Implementing Metal-compliant texture fill operations");
+
+
+                // Use Metal's standard pattern for texture filling.
+
+                NSUInteger pixelSize = bytesPerPixel;
+
+                NSUInteger properBytesPerRow = texture.width * pixelSize;
+
+
+                // Ensure proper alignment for Apple Metal driver
+
+                if (properBytesPerRow % 64 != 0) {
+
+                    properBytesPerRow = ((properBytesPerRow + 63) / 64) * 64;
+
+                }
+
+
+                // Fill the entire level. A previous 1x1 safety fill left large textures
+
+                // mostly uninitialized while their Metal backing existed.
+
+                MTLRegion properRegion = MTLRegionMake2D(0, 0, texture.width, texture.height);
+
+
+                // Create properly aligned texture data buffer
+
+                NSUInteger fillSize = properBytesPerRow * properRegion.size.height;
+
+                uint8_t *properData = (uint8_t *)calloc(fillSize, 1);
+
+
+                if (properData) {
+
+                    // Initialize with safe texture data (transparent black with alpha = 0)
+
+                    for (NSUInteger y = 0; y < properRegion.size.height; y++) {
+
+                        uint8_t *row = properData + (y * properBytesPerRow);
+
+                        for (NSUInteger x = 0; x < properRegion.size.width; x++) {
+
+                            uint8_t *pixel = row + (x * pixelSize);
+
+                            pixel[0] = 0;  // R
+
+                            if (pixelSize > 1) pixel[1] = 0;  // G
+
+                            if (pixelSize > 2) pixel[2] = 0;  // B
+
+                            if (pixelSize > 3) pixel[3] = 0; // A = transparent for uninitialized color data
+
+                        }
+
+                    }
+
+
+                    @try {
+
+                        NSLog(@"MGL INFO: Performing Metal-compliant texture fill:");
+
+                        NSLog(@"  - Region: %dx%d", (int)properRegion.size.width, (int)properRegion.size.height);
+
+                        NSLog(@"  - bytesPerRow: %lu", (unsigned long)properBytesPerRow);
+
+                        NSLog(@"  - dataSize: %lu", (unsigned long)fillSize);
+
+
+                        // ALTERNATIVE APPROACH: Safe texture filling without replaceRegion
+
+                        NSLog(@"MGL INFO: Using alternative texture filling methods (AGX-safe)");
+
+
+                        @try {
+
+                            // ALTERNATIVE 1: Try MTLBuffer-to-texture copy approach
+
+                            if (properData && dataSize > 0) {
+
+                                NSLog(@"MGL INFO: Attempting buffer-based texture fill");
+
+
+                                // Create a temporary MTLBuffer with the texture data
+
+                                id<MTLBuffer> tempBuffer = [_device newBufferWithBytes:properData
+
+                                                                                length:fillSize
+
+                                                                               options:MTLResourceStorageModeShared];
+
+
+                                if (tempBuffer) {
+
+                                    NSLog(@"MGL INFO: Created temporary MTLBuffer for texture data");
+
+
+                                    if ([self shouldSkipGPUOperations]) {
+
+                                        NSLog(@"MGL AGX: Skipping texture fill during recovery - texture will be empty");
+
+                                    } else {
+
+                                        BOOL uploaded = [self copyTextureUploadWithDedicatedCommandBuffer:tempBuffer
+
+                                                                                              sourceOffset:0
+
+                                                                                         sourceBytesPerRow:properBytesPerRow
+
+                                                                                       sourceBytesPerImage:fillSize
+
+                                                                                                 sourceSize:MTLSizeMake(properRegion.size.width, properRegion.size.height, 1)
+
+                                                                                                  toTexture:texture
+
+                                                                                           destinationSlice:0
+
+                                                                                           destinationLevel:0
+
+                                                                                          destinationOrigin:MTLOriginMake(0, 0, 0)
+
+                                                                                                     reason:"texture_fill_initialization"];
+
+                                        if (uploaded) {
+
+                                            NSLog(@"MGL SUCCESS: Texture data copied using dedicated upload command buffer");
+
+                                            mglMarkTextureLevelMetalFilled(tex, 0, fillSize);
+
+                                        } else {
+
+                                            NSLog(@"MGL WARNING: Dedicated texture fill upload failed - texture may remain uninitialized");
+
+                                        }
+
+                                    }
+
+
+                                    // Clean up the temporary buffer
+
+                                    tempBuffer = nil;
+
+                                }
+
+                            }
+
+                        } @catch (NSException *exception) {
+
+                            NSLog(@"MGL WARNING: Buffer-based texture fill failed - trying alternative");
+
+
+                            // ALTERNATIVE 2: Simple direct color filling for basic cases
+
+                            [self fillSmallRGBA8TextureWithGradient:texture tex:tex];
+
+                        }
+
+                    } @catch (NSException *exception) {
+
+                        NSLog(@"MGL ERROR: Metal texture fill failed - investigating root cause");
+
+                        NSLog(@"MGL ERROR: Exception: %@ (Reason: %@)", exception.name, exception.reason);
+
+                        NSLog(@"MGL INFO: This indicates our parameters are still incompatible with AGX driver");
+
+                    }
+
+
+                    free(properData);
+
+                } else {
+
+                    NSLog(@"MGL ERROR: Failed to allocate properly aligned texture data");
+
+                }
+
+                free(blackData);
+
+            } else {
+
+                NSLog(@"MGL ERROR: Failed to allocate aligned memory for texture fill (%lu bytes)", (unsigned long)dataSize);
+
+            }
+
+        }
+
+    }
+
+}
+
+- (BOOL)uploadDirtyCPUTextureData:(Texture *)tex
+                            metal:(id<MTLTexture>)texture
+                      pixelFormat:(MTLPixelFormat)pixelFormat
+                        numFaces:(uint)num_faces
+                uploadLevelCount:(GLuint)upload_level_count
+                         isArray:(BOOL)is_array
+              texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
+        texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
+                         texType:(MTLTextureType)tex_type
+            outAllLevelsUploaded:(BOOL *)outAllLevelsUploaded
+{
+
+    if (kMGLDiagnosticStateLogs) {
+        MGLTraceNSLog(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
+        MGLTraceNSLog(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
+                      tex->target, tex->internalformat, tex->num_levels, upload_level_count);
+    }
+
+    MTLRegion region;
+    NSUInteger width, height, depth;
+    BOOL anyLevelSkipped = NO;
+
+    for(int face=0; face<num_faces; face++)
+    {
+        for (int level=0; level<upload_level_count; level++)
+        {
+            TextureLevel *uploadLevel = &tex->faces[face].levels[level];
+            if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
+                static uint64_t s_skipStaleUploadLogs = 0;
+                uint64_t hit = ++s_skipStaleUploadLogs;
+                if (hit <= 64ull || (hit % 512ull) == 0ull) {
+                    NSLog(@"MGL TEXTURE SKIP stale CPU upload tex=%u face=%d level=%d source=%u ever=%u init=%u hit=%llu",
+                          (unsigned)tex->name,
+                          face,
+                          level,
+                          uploadLevel ? (unsigned)uploadLevel->last_init_source : 0u,
+                          uploadLevel ? (unsigned)uploadLevel->ever_written : 0u,
+                          uploadLevel ? (unsigned)uploadLevel->has_initialized_data : 0u,
+                          (unsigned long long)hit);
+                }
+                anyLevelSkipped = YES;
+                continue;
+            }
+
+            width = tex->faces[face].levels[level].width;
+            height = tex->faces[face].levels[level].height;
+            depth = tex->faces[face].levels[level].depth;
+
+            if (texture1DBackedBy2D)
+                region = MTLRegionMake2D(0,0,width,1);
+            else if (depth > 1)
+                region = MTLRegionMake3D(0,0,0,width,height,depth);
+            else if (height > 1)
+                region = MTLRegionMake2D(0,0,width,height);
+            else
+                region = MTLRegionMake1D(0,width);
+
+            NSUInteger bytesPerRow;
+            NSUInteger bytesPerImage;
+            bool hasExplicitDataSize = false;
+
+            BOOL levelSkipped = NO;
+
+            if (tex_type == MTLTextureType3D)
+            {
+                if (![self uploadDirtyCPUTextureData3DLevel:tex
+                                                       metal:texture
+                                                 pixelFormat:pixelFormat
+                                                       face:face
+                                                      level:level
+                                                      width:width
+                                                     height:height
+                                                      depth:depth
+                                                 outSkipped:&levelSkipped]) {
+                    return NO;
+                }
+            }
+            else
+            {
+                if (![self uploadDirtyCPUTextureDataNon3DLevel:tex
+                                                          metal:texture
+                                                    pixelFormat:pixelFormat
+                                                          face:face
+                                                         level:level
+                                                         width:width
+                                                        height:height
+                                                         depth:depth
+                                                       isArray:is_array
+                                  texture1DArrayBackedBy2DArray:texture1DArrayBackedBy2DArray
+                                                        texType:tex_type
+                                                     outSkipped:&levelSkipped]) {
+                    return NO;
+                }
+            }
+
+            if (levelSkipped)
+                anyLevelSkipped = YES;
+        }
+    }
+
+    if (outAllLevelsUploaded)
+        *outAllLevelsUploaded = !anyLevelSkipped;
+
+    return YES;
+}
+
+- (void)reUploadExistingCPUTextureDataArrayLevel:(Texture *)tex
+                                          metal:(id<MTLTexture>)texture
+                                    pixelFormat:(MTLPixelFormat)pixelFormat
+                                          face:(int)face
+                                         level:(int)level
+                  texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
+                                       texType:(MTLTextureType)tex_type
+{
+    NSUInteger lvlWidth  = tex->faces[face].levels[level].width;
+    NSUInteger lvlHeight = tex->faces[face].levels[level].height;
+    NSUInteger lvlPitch  = tex->faces[face].levels[level].pitch;
+
+
+                /* Array texture re-upload: loop over array layers and upload
+
+                 * each slice independently.  Mirrors the DIRTY_TEXTURE_DATA
+
+                 * array path (12861-13087).  The old code only uploaded
+
+                 * slice 0 and passed the entire array's data_size as
+
+                 * bytesPerImage with depth=num_layers, causing a crash in
+
+                 * uploadTextureSliceViaBlit's newBufferWithBytes. */
+
+                GLuint num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
+
+                    ? tex->faces[face].levels[level].height
+
+                    : tex->faces[face].levels[level].depth;
+
+                if (num_layers == 0) return;
+
+
+                BOOL arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
+
+                NSUInteger uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)lvlHeight, 1UL);
+
+                NSUInteger baseBytesPerRow = lvlPitch;
+
+                NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+
+                if (uploadSliceRows == 0 || baseBytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
+
+                    NSLog(@"MGL WARNING: Re-upload array invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
+
+                          tex->name,
+
+                          face,
+
+                          level,
+
+                          (unsigned long)baseBytesPerRow,
+
+                          (unsigned long)uploadSliceRows);
+
+                    return;
+
+                }
+
+                NSUInteger logicalBytesPerImage = baseBytesPerRow * uploadSliceRows;
+
+                NSUInteger backingBytes = tex->faces[face].levels[level].data_size;
+
+                if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
+
+                    NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
+
+                    if (dividedLayerBytes >= logicalBytesPerImage) {
+
+                        logicalBytesPerImage = dividedLayerBytes;
+
+                    }
+
+                }
+
+
+                NSUInteger requiredArrayBytes = 0;
+
+                NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
+
+                if (logicalBytesPerImage == 0 ||
+
+                    logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
+
+                    backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
+
+                    NSLog(@"MGL WARNING: Re-upload array backing too small tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
+
+                          tex->name, face, level,
+
+                          (unsigned long)backingBytes,
+
+                          (unsigned long)logicalBytesPerImage,
+
+                          num_layers);
+
+                    return;
+
+                }
+
+
+                for (GLuint layer = 0; layer < num_layers; layer++)
+
+                {
+
+                    size_t offset = logicalBytesPerImage * layer;
+
+                    const void *layerSrcData = (const uint8_t *)tex->faces[face].levels[level].data + offset;
+
+                    void *expandedUploadData = NULL;
+
+                    NSUInteger effectiveBytesPerRow = baseBytesPerRow;
+
+                    NSUInteger effectiveBytesPerImage = logicalBytesPerImage;
+
+
+                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+
+                        NSUInteger expandedBPR = 0, expandedBPI = 0;
+
+                        expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+
+                                                                          (const uint8_t *)layerSrcData,
+
+                                                                          lvlWidth,
+
+                                                                          uploadSliceHeight,
+
+                                                                          baseBytesPerRow,
+
+                                                                          &expandedBPR,
+
+                                                                          &expandedBPI);
+
+                        if (expandedUploadData) {
+
+                            layerSrcData = expandedUploadData;
+
+                            effectiveBytesPerRow = expandedBPR;
+
+                            effectiveBytesPerImage = expandedBPI;
+
+                        }
+
+                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+
+                        NSUInteger expandedBPR = 0, expandedBPI = 0;
+
+                        expandedUploadData = mglCreateChannelExpandedUpload(tex,
+
+                                                                             pixelFormat,
+
+                                                                             (const uint8_t *)layerSrcData,
+
+                                                                             lvlWidth,
+
+                                                                             uploadSliceHeight,
+
+                                                                             baseBytesPerRow,
+
+                                                                             &expandedBPR,
+
+                                                                             &expandedBPI);
+
+                        if (expandedUploadData) {
+
+                            layerSrcData = expandedUploadData;
+
+                            effectiveBytesPerRow = expandedBPR;
+
+                            effectiveBytesPerImage = expandedBPI;
+
+                        }
+
+                    }
+
+
+                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+
+                    NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
+
+                    if (alignedBytesPerRow % alignment != 0) {
+
+                        alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+
+                    }
+
+
+                    uintptr_t addr = (uintptr_t)layerSrcData;
+
+                    if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
+
+                        NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+
+                        if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+
+                            NSLog(@"MGL WARNING: Re-upload array rejecting aligned row layout bpr=%lu rows=%lu tex=%d face=%d level=%d layer=%u",
+
+                                  (unsigned long)alignedBytesPerRow,
+
+                                  (unsigned long)alignedUploadRows,
+
+                                  tex->name,
+
+                                  face,
+
+                                  level,
+
+                                  layer);
+
+                            free(expandedUploadData);
+
+                            continue;
+
+                        }
+
+                        NSUInteger alignedSize = alignedBytesPerRow * alignedUploadRows;
+
+                        if (alignedSize > 0 && alignedSize <= (512 * 1024 * 1024)) {
+
+                            void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                            if (alignedData) {
+
+                                memset(alignedData, 0, alignedSize);
+
+                                for (NSUInteger row = 0; row < alignedUploadRows; row++) {
+
+                                    NSUInteger copySize = MIN(effectiveBytesPerRow, alignedBytesPerRow);
+
+                                    memcpy((uint8_t *)alignedData + row * alignedBytesPerRow,
+
+                                           (const uint8_t *)layerSrcData + row * effectiveBytesPerRow, copySize);
+
+                                }
+
+                                [self uploadTextureSliceViaBlit:texture
+
+                                                       texName:tex->name
+
+                                                     texTarget:tex->target
+
+                                                         bytes:alignedData
+
+                                                   bytesPerRow:alignedBytesPerRow
+
+                                                 bytesPerImage:alignedSize
+
+                                                         width:lvlWidth
+
+                                                        height:lvlHeight
+
+                                                         depth:1
+
+                                                         level:level
+
+                                                         slice:layer];
+
+                                free(alignedData);
+
+                            }
+
+                        }
+
+                    } else {
+
+                        [self uploadTextureSliceViaBlit:texture
+
+                                               texName:tex->name
+
+                                             texTarget:tex->target
+
+                                                 bytes:layerSrcData
+
+                                           bytesPerRow:effectiveBytesPerRow
+
+                                         bytesPerImage:effectiveBytesPerImage
+
+                                                 width:lvlWidth
+
+                                                height:lvlHeight
+
+                                                 depth:1
+
+                                                 level:level
+
+                                                 slice:layer];
+
+                    }
+
+                    free(expandedUploadData);
+
+                }
+
+}
+
+- (void)fillSmallRGBA8TextureWithGradient:(id<MTLTexture>)texture tex:(Texture *)tex
+{
+                            if (texture.width <= 512 && texture.height <= 512 && tex->internalformat == GL_RGBA8) {
+
+                                NSLog(@"MGL INFO: Attempting simple direct color fill for small RGBA8 texture");
+
+
+                                @try {
+
+                                    // Create a simple pattern that's not magenta
+
+                                    NSUInteger pixelCount = texture.width * texture.height;
+
+                                    uint32_t *simpleData = calloc(pixelCount, sizeof(uint32_t));
+
+
+                                    if (simpleData) {
+
+                                        // Create a simple gradient pattern instead of magenta
+
+                                        for (NSUInteger y = 0; y < texture.height; y++) {
+
+                                            for (NSUInteger x = 0; x < texture.width; x++) {
+
+                                                NSUInteger index = y * texture.width + x;
+
+
+                                                // Create a simple gradient from blue to green
+
+                                                uint8_t r = (uint8_t)(x * 255 / texture.width);
+
+                                                uint8_t g = (uint8_t)(y * 255 / texture.height);
+
+                                                uint8_t b = 128;
+
+                                                uint8_t a = 255;
+
+
+                                                simpleData[index] = (a << 24) | (b << 16) | (g << 8) | r;
+
+                                            }
+
+                                        }
+
+
+                                        // Try direct replaceRegion for simple cases
+
+                                        MTLRegion simpleRegion = MTLRegionMake2D(0, 0, texture.width, texture.height);
+
+                                        [texture replaceRegion:simpleRegion
+
+                                                mipmapLevel:0
+
+                                                      slice:0
+
+                                                  withBytes:simpleData
+
+                                                bytesPerRow:texture.width * sizeof(uint32_t)
+
+                                              bytesPerImage:texture.width * texture.height * sizeof(uint32_t)];
+
+
+                                        NSLog(@"MGL SUCCESS: Simple direct color fill completed");
+
+                                        mglMarkTextureLevelMetalFilled(tex, 0, pixelCount * sizeof(uint32_t));
+
+                                        free(simpleData);
+
+                                    }
+
+                                } @catch (NSException *exception) {
+
+                                    NSLog(@"MGL WARNING: Simple direct fill also failed: %@", exception.reason);
+
+                                }
+
+                            } else {
+
+                                NSLog(@"MGL INFO: Skipping complex texture - would use deferred initialization");
+
+                            }
+}
+
+- (BOOL)uploadDirtyCPUTextureData3DLevel:(Texture *)tex
+                                    metal:(id<MTLTexture>)texture
+                              pixelFormat:(MTLPixelFormat)pixelFormat
+                                       face:(int)face
+                                      level:(int)level
+                                      width:(NSUInteger)width
+                                     height:(NSUInteger)height
+                                      depth:(NSUInteger)depth
+                                 outSkipped:(BOOL *)outSkipped
+{
+    NSUInteger bytesPerRow;
+    NSUInteger bytesPerImage;
+
+                bytesPerRow = tex->faces[face].levels[level].pitch;
+                if (bytesPerRow == 0) {
+                    NSLog(@"MGL WARNING: Invalid 3D bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
+                    if (outSkipped) *outSkipped = YES;
+                    return YES;
+                }
+
+                NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
+                if (uploadRows == 0 || bytesPerRow > (NSUIntegerMax / uploadRows)) {
+                    NSLog(@"MGL WARNING: Invalid 3D bytesPerImage overflow (tex=%d face=%d level=%d rows=%lu bpr=%lu)",
+                          tex->name,
+                          face,
+                          level,
+                          (unsigned long)uploadRows,
+                          (unsigned long)bytesPerRow);
+                    if (outSkipped) *outSkipped = YES;
+                    return YES;
+                }
+                bytesPerImage = bytesPerRow * uploadRows;
+
+                if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
+                    void *srcData = (void *)tex->faces[face].levels[level].data;
+                    uintptr_t addr = (uintptr_t)srcData;
+
+                    uint8_t *expanded3DUploadData = NULL;
+                    if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                        NSUInteger expandedBytesPerRow = 0;
+                        NSUInteger expandedBytesPerImagePerSlice = 0;
+                        NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                        NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+
+                        uint8_t *firstSlice = mglCreateRGBA8ExpandedUpload(tex,
+                                                                           (const uint8_t *)srcData,
+                                                                           width,
+                                                                           texHeight,
+                                                                           bytesPerRow,
+                                                                           &expandedBytesPerRow,
+                                                                           &expandedBytesPerImagePerSlice);
+                        if (firstSlice) {
+                            NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                            if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                if (expanded3DUploadData) {
+                                    memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                    for (NSUInteger z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                        uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                        NSUInteger dummyRow = 0, dummyImage = 0;
+                                        uint8_t *sliceExpanded = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                             sliceSrc,
+                                                                                             width,
+                                                                                             texHeight,
+                                                                                             bytesPerRow,
+                                                                                             &dummyRow,
+                                                                                             &dummyImage);
+                                        if (sliceExpanded) {
+                                            memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                            free(sliceExpanded);
+                                        } else {
+                                            memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                        }
+                                    }
+                                    srcData = expanded3DUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImagePerSlice;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                        NSUInteger expandedBytesPerRow = 0;
+                        NSUInteger expandedBytesPerImagePerSlice = 0;
+                        NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                        NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+
+                        uint8_t *firstSlice = mglCreateChannelExpandedUpload(tex,
+                                                                              pixelFormat,
+                                                                              (const uint8_t *)srcData,
+                                                                              width,
+                                                                              texHeight,
+                                                                              bytesPerRow,
+                                                                              &expandedBytesPerRow,
+                                                                              &expandedBytesPerImagePerSlice);
+                        if (firstSlice) {
+                            NSUInteger totalExpandedSize = expandedBytesPerImagePerSlice * texDepth;
+                            if (totalExpandedSize > 0 && totalExpandedSize <= (512 * 1024 * 1024)) {
+                                expanded3DUploadData = (uint8_t *)malloc(totalExpandedSize);
+                                if (expanded3DUploadData) {
+                                    memcpy(expanded3DUploadData, firstSlice, expandedBytesPerImagePerSlice);
+                                    for (NSUInteger z = 1; z < texDepth; z++) {
+                                        const uint8_t *sliceSrc = (const uint8_t *)srcData + z * bytesPerImage;
+                                        uint8_t *sliceDst = expanded3DUploadData + z * expandedBytesPerImagePerSlice;
+                                        NSUInteger dummyRow = 0, dummyImage = 0;
+                                        uint8_t *sliceExpanded = mglCreateChannelExpandedUpload(tex,
+                                                                                                 pixelFormat,
+                                                                                                 sliceSrc,
+                                                                                                 width,
+                                                                                                 texHeight,
+                                                                                                 bytesPerRow,
+                                                                                                 &dummyRow,
+                                                                                                 &dummyImage);
+                                        if (sliceExpanded) {
+                                            memcpy(sliceDst, sliceExpanded, expandedBytesPerImagePerSlice);
+                                            free(sliceExpanded);
+                                        } else {
+                                            memset(sliceDst, 0, expandedBytesPerImagePerSlice);
+                                        }
+                                    }
+                                    srcData = expanded3DUploadData;
+                                    bytesPerRow = expandedBytesPerRow;
+                                    bytesPerImage = expandedBytesPerImagePerSlice;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+                            free(firstSlice);
+                        }
+                    }
+
+                    NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                    NSUInteger alignedBytesPerRow = bytesPerRow;
+                    if (alignedBytesPerRow % alignment != 0) {
+                        alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                    }
+
+                    NSUInteger addrAlignment = MGLCapabilityTextureAlignment(&_capability);
+                    if (addr % addrAlignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                        NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, MAX((NSUInteger)height, 1UL));
+                        if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+                            NSLog(@"MGL WARNING: Rejecting aligned 3D upload row overflow (tex=%d level=%d rows=%lu bpr=%lu)",
+                                  tex->name,
+                                  level,
+                                  (unsigned long)alignedUploadRows,
+                                  (unsigned long)alignedBytesPerRow);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
+                        NSUInteger alignedDepth = MAX((NSUInteger)depth, 1UL);
+                        if (alignedBytesPerImage > (NSUIntegerMax / alignedDepth)) {
+                            NSLog(@"MGL WARNING: Rejecting aligned 3D upload size overflow (tex=%d level=%d bpi=%lu depth=%lu)",
+                                  tex->name,
+                                  level,
+                                  (unsigned long)alignedBytesPerImage,
+                                  (unsigned long)alignedDepth);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        NSUInteger alignedSize = alignedBytesPerImage * alignedDepth;
+                        if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                            NSLog(@"MGL WARNING: Rejecting aligned 3D upload staging size=%lu (tex=%d level=%d)",
+                                  (unsigned long)alignedSize, tex->name, level);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                        if (alignedData) {
+                            memset(alignedData, 0, alignedSize);
+                            NSUInteger srcRowSize = bytesPerRow;
+                            NSUInteger dstRowSize = alignedBytesPerRow;
+                            NSUInteger texUploadRows = alignedUploadRows;
+                            NSUInteger texDepth = MAX((NSUInteger)depth, 1UL);
+                            uint8_t *srcPtr = (uint8_t *)srcData;
+                            uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                            for (NSUInteger z = 0; z < texDepth; z++) {
+                                for (NSUInteger row = 0; row < texUploadRows; row++) {
+                                    NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                    NSUInteger dstOffset = z * alignedBytesPerImage + row * dstRowSize;
+                                    NSUInteger srcOffset = z * bytesPerImage + row * srcRowSize;
+                                    memcpy(dstPtr + dstOffset, srcPtr + srcOffset, copySize);
+                                    if (dstRowSize > copySize) {
+                                        memset(dstPtr + dstOffset + copySize, 0, dstRowSize - copySize);
+                                    }
+                                }
+                            }
+
+                            if (!alignedData) {
+                                NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            if (alignedBytesPerRow == 0) {
+                                NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            @try {
+                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                       texName:tex->name
+                                                                     texTarget:tex->target
+                                                                         bytes:alignedData
+                                                                   bytesPerRow:alignedBytesPerRow
+                                                                 bytesPerImage:alignedBytesPerImage
+                                                                         width:width
+                                                                        height:height
+                                                                         depth:depth
+                                                                         level:level
+                                                                         slice:0];
+                                if (!uploaded) {
+                                    NSLog(@"MGL WARNING: 3D aligned blit upload failed (level %d, face %d)", level, face);
+                                }
+                            } @catch (NSException *exception) {
+                                NSLog(@"MGL ERROR: Failed to upload aligned 3D texture data (level %d, face %d): %@", level, face, exception);
+                            }
+                            free(alignedData);
+                        } else {
+                            NSLog(@"MGL ERROR: Failed to allocate aligned memory for 3D texture upload");
+                        }
+                    } else {
+                        if (!srcData) {
+                            NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        if (bytesPerRow == 0) {
+                            NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        if (bytesPerImage == 0) {
+                            NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d) - SKIPPING to prevent crash", level);
+                            if (outSkipped) *outSkipped = YES;
+                            return YES;
+                        }
+                        @try {
+                            BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                   texName:tex->name
+                                                                 texTarget:tex->target
+                                                                     bytes:srcData
+                                                               bytesPerRow:bytesPerRow
+                                                             bytesPerImage:bytesPerImage
+                                                                     width:width
+                                                                    height:height
+                                                                     depth:depth
+                                                                     level:level
+                                                                     slice:0];
+                            if (!uploaded) {
+                                NSLog(@"MGL WARNING: 3D direct blit upload failed (level %d, face %d)", level, face);
+                            }
+                        } @catch (NSException *exception) {
+                            NSLog(@"MGL ERROR: Failed to upload 3D texture data (level %d, face %d): %@", level, face, exception);
+                        }
+                    }
+                    free(expanded3DUploadData);
+                } else {
+                    NSLog(@"MGL WARNING: Skipping 3D texture upload due to invalid data or parameters");
+                }
+
+    return YES;
+}
+
+- (BOOL)uploadDirtyCPUTextureDataNon3DLevel:(Texture *)tex
+                                       metal:(id<MTLTexture>)texture
+                                 pixelFormat:(MTLPixelFormat)pixelFormat
+                                       face:(int)face
+                                      level:(int)level
+                                      width:(NSUInteger)width
+                                     height:(NSUInteger)height
+                                      depth:(NSUInteger)depth
+                                   isArray:(BOOL)is_array
+                  texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray
+                                    texType:(MTLTextureType)tex_type
+                                 outSkipped:(BOOL *)outSkipped
+{
+    NSUInteger bytesPerRow;
+    NSUInteger bytesPerImage;
+    bool hasExplicitDataSize = false;
+    MTLRegion region;
+
+                bytesPerRow = tex->faces[face].levels[level].pitch;
+                if (bytesPerRow == 0) {
+                    NSLog(@"MGL WARNING: Invalid bytesPerRow (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
+                    if (outSkipped) *outSkipped = YES;
+                    return YES;
+                }
+
+                bytesPerImage = tex->faces[face].levels[level].data_size;
+                hasExplicitDataSize = (bytesPerImage > 0);
+                if (bytesPerImage == 0) {
+                    NSUInteger fallbackHeight = (height > 0) ? (NSUInteger)height : 1;
+                    bytesPerImage = bytesPerRow * fallbackHeight;
+                    NSLog(@"MGL WARNING: data_size was 0, using fallback bytesPerImage=%lu (tex=%d face=%d level=%d)",
+                          (unsigned long)bytesPerImage, tex->name, face, level);
+                }
+                if (bytesPerImage == 0) {
+                    NSLog(@"MGL WARNING: Invalid bytesPerImage (0), skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
+                    if (outSkipped) *outSkipped = YES;
+                    return YES;
+                }
+
+                if (is_array)
+                {
+                    GLuint num_layers;
+                    size_t offset;
+                    GLubyte *tex_data;
+                    BOOL arraySliceIs1D;
+                    NSUInteger uploadSliceHeight;
+                    NSUInteger backingBytes;
+                    NSUInteger logicalBytesPerImage;
+
+                    num_layers = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray)
+                        ? tex->faces[face].levels[level].height
+                        : tex->faces[face].levels[level].depth;
+                    if (num_layers == 0) {
+                        NSLog(@"MGL WARNING: Array texture has 0 layers, skipping upload (tex=%d face=%d level=%d)", tex->name, face, level);
+                        if (outSkipped) *outSkipped = YES;
+                        return YES;
+                    }
+
+                    arraySliceIs1D = (tex_type == MTLTextureType1DArray || texture1DArrayBackedBy2DArray);
+                    uploadSliceHeight = arraySliceIs1D ? 1UL : MAX((NSUInteger)height, 1UL);
+                    backingBytes = bytesPerImage;
+                    NSUInteger uploadSliceRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                    if (uploadSliceRows == 0 || bytesPerRow > (NSUIntegerMax / uploadSliceRows)) {
+                        NSLog(@"MGL WARNING: Array texture invalid row layout tex=%d face=%d level=%d bpr=%lu rows=%lu",
+                              tex->name,
+                              face,
+                              level,
+                              (unsigned long)bytesPerRow,
+                              (unsigned long)uploadSliceRows);
+                        if (outSkipped) *outSkipped = YES;
+                        return YES;
+                    }
+                    logicalBytesPerImage = bytesPerRow * uploadSliceRows;
+                    if (num_layers > 1 && backingBytes >= (NSUInteger)num_layers) {
+                        NSUInteger dividedLayerBytes = backingBytes / (NSUInteger)num_layers;
+                        if (dividedLayerBytes >= logicalBytesPerImage) {
+                            logicalBytesPerImage = dividedLayerBytes;
+                        }
+                    }
+                    NSUInteger requiredArrayBytes = 0;
+                    NSUInteger safeLayerCount = MAX((NSUInteger)num_layers, 1UL);
+                    if (logicalBytesPerImage == 0 ||
+                        logicalBytesPerImage > (NSUIntegerMax / safeLayerCount) ||
+                        backingBytes < (requiredArrayBytes = logicalBytesPerImage * safeLayerCount)) {
+                        NSLog(@"MGL WARNING: Array texture backing too small for logical slices tex=%d face=%d level=%d backing=%lu layerBytes=%lu layers=%u",
+                              tex->name,
+                              face,
+                              level,
+                              (unsigned long)backingBytes,
+                              (unsigned long)logicalBytesPerImage,
+                              num_layers);
+                        if (outSkipped) *outSkipped = YES;
+                        return YES;
+                    }
+                    bytesPerImage = logicalBytesPerImage;
+
+                    if (!arraySliceIs1D)
+                        region = MTLRegionMake2D(0,0,width,height);
+                    else if (height >= 1)
+                        region = MTLRegionMake2D(0,0,width,1);
+                    else {
+                        NSLog(@"MGL TEXTURE ERROR: invalid array texture height=%lu for tex=%u face=%d level=%d",
+                              (unsigned long)height,
+                              tex->name,
+                              face,
+                              level);
+                        return NO;
+                    }
+
+                    for(int layer=0; layer<num_layers; layer++)
+                    {
+                        offset = bytesPerImage * layer;
+
+                        tex_data = (GLubyte *)tex->faces[face].levels[level].data;
+                        tex_data += offset;
+
+                        if (tex_data && bytesPerRow > 0 && bytesPerImage > 0) {
+                            void *srcData = (void *)tex_data;
+                            void *expandedUploadData = NULL;
+                            uintptr_t addr = (uintptr_t)srcData;
+
+                            NSUInteger effectiveBytesPerRow = bytesPerRow;
+                            NSUInteger effectiveBytesPerImage = bytesPerImage;
+                            if (mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBytesPerRow = 0;
+                                NSUInteger expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                                   (const uint8_t *)srcData,
+                                                                                   width,
+                                                                                   uploadSliceHeight,
+                                                                                   bytesPerRow,
+                                                                                   &expandedBytesPerRow,
+                                                                                   &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBytesPerRow;
+                                    effectiveBytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            } else if (mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                                NSUInteger expandedBytesPerRow = 0;
+                                NSUInteger expandedBytesPerImage = 0;
+                                expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                     pixelFormat,
+                                                                                     (const uint8_t *)srcData,
+                                                                                     width,
+                                                                                     uploadSliceHeight,
+                                                                                     bytesPerRow,
+                                                                                     &expandedBytesPerRow,
+                                                                                     &expandedBytesPerImage);
+                                if (expandedUploadData) {
+                                    srcData = expandedUploadData;
+                                    effectiveBytesPerRow = expandedBytesPerRow;
+                                    effectiveBytesPerImage = expandedBytesPerImage;
+                                    addr = (uintptr_t)srcData;
+                                }
+                            }
+
+                            NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                            NSUInteger alignedBytesPerRow = effectiveBytesPerRow;
+                            if (alignedBytesPerRow % alignment != 0) {
+                                alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                            }
+
+                            if (addr % alignment != 0 || alignedBytesPerRow != effectiveBytesPerRow) {
+                                NSUInteger alignedUploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, uploadSliceHeight);
+                                if (alignedUploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / alignedUploadRows)) {
+                                    NSLog(@"MGL WARNING: Rejecting aligned array upload row layout bpr=%lu rows=%lu (tex=%d level=%d layer=%d)",
+                                          (unsigned long)alignedBytesPerRow,
+                                          (unsigned long)alignedUploadRows,
+                                          tex->name,
+                                          level,
+                                          layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                NSUInteger alignedBytesPerImage = alignedBytesPerRow * alignedUploadRows;
+                                NSUInteger alignedSize = alignedBytesPerImage;
+                                if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                                    NSLog(@"MGL WARNING: Rejecting aligned array upload staging size=%lu (tex=%d level=%d layer=%d)",
+                                          (unsigned long)alignedSize, tex->name, level, layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                                if (alignedData) {
+                                    memset(alignedData, 0, alignedSize);
+                                    NSUInteger srcRowSize = effectiveBytesPerRow;
+                                    NSUInteger dstRowSize = alignedBytesPerRow;
+                                    uint8_t *srcPtr = (uint8_t *)srcData;
+                                    uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                                    for (NSUInteger row = 0; row < alignedUploadRows; row++) {
+                                        NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                        memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
+                                        if (dstRowSize > copySize) {
+                                            memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
+                                        }
+                                    }
+
+                                    if (!alignedData) {
+                                        NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        continue;
+                                    }
+                                    if (alignedBytesPerRow == 0) {
+                                        NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        continue;
+                                    }
+                                    if (bytesPerImage == 0) {
+                                        NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                        continue;
+                                    }
+                                    @try {
+                                        if (hasExplicitDataSize) {
+                                            BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                                   texName:tex->name
+                                                                                 texTarget:tex->target
+                                                                                     bytes:alignedData
+                                                                               bytesPerRow:alignedBytesPerRow
+                                                                             bytesPerImage:alignedBytesPerImage
+                                                                                     width:width
+                                                                                    height:uploadSliceHeight
+                                                                                     depth:1
+                                                                                     level:level
+                                                                                     slice:layer];
+                                            if (!uploaded) {
+                                                NSLog(@"MGL WARNING: Array texture blit upload failed (level %d, layer %d)", level, layer);
+                                            }
+                                        } else {
+                                            NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
+                                        }
+                                    } @catch (NSException *exception) {
+                                        NSLog(@"MGL ERROR: Failed to upload aligned array texture data (level %d, layer %d): %@", level, layer, exception);
+                                    }
+                                    free(alignedData);
+                                } else {
+                                    NSLog(@"MGL ERROR: Failed to allocate aligned memory for array texture upload (level %d, layer %d)", level, layer);
+                                }
+                            } else {
+                                if (!srcData) {
+                                    NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (effectiveBytesPerRow == 0) {
+                                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (effectiveBytesPerImage == 0) {
+                                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, layer %d) - SKIPPING to prevent crash", level, layer);
+                                    free(expandedUploadData);
+                                    continue;
+                                }
+                                if (hasExplicitDataSize) {
+                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                           texName:tex->name
+                                                                         texTarget:tex->target
+                                                                             bytes:srcData
+                                                                       bytesPerRow:effectiveBytesPerRow
+                                                                     bytesPerImage:effectiveBytesPerImage
+                                                                             width:width
+                                                                            height:uploadSliceHeight
+                                                                             depth:1
+                                                                             level:level
+                                                                             slice:layer];
+                                    if (!uploaded) {
+                                        NSLog(@"MGL WARNING: Array texture direct blit upload failed (level %d, layer %d)", level, layer);
+                                    }
+                                } else {
+                                    NSLog(@"MGL INFO: Skipping array upload with synthesized data size (level %d, layer %d)", level, layer);
+                                }
+                            }
+                            free(expandedUploadData);
+                        } else {
+                            NSLog(@"MGL WARNING: Skipping array texture upload due to invalid data or parameters");
+                        }
+                    }
+                }
+                else
+                {
+                    DEBUG_PRINT("tex id data update %d\n", tex->name);
+
+                    if (tex->faces[face].levels[level].data && bytesPerRow > 0 && bytesPerImage > 0) {
+                        void *srcData = (void *)tex->faces[face].levels[level].data;
+                        void *swizzledUploadData = NULL;
+                        void *expandedUploadData = NULL;
+                        uintptr_t addr = (uintptr_t)srcData;
+                        if (level == 0 && face == 0 && mglTextureUploadNeedsSingleChannelSwizzle(tex)) {
+                            NSUInteger swizzledBytesPerRow = 0;
+                            NSUInteger swizzledBytesPerImage = 0;
+                            swizzledUploadData = mglCreateSingleChannelSwizzledUpload(tex,
+                                                                                      (const uint8_t *)srcData,
+                                                                                      width,
+                                                                                      MAX((NSUInteger)height, 1UL),
+                                                                                      bytesPerRow,
+                                                                                      &swizzledBytesPerRow,
+                                                                                      &swizzledBytesPerImage);
+                            if (swizzledUploadData) {
+                                srcData = swizzledUploadData;
+                                bytesPerRow = swizzledBytesPerRow;
+                                bytesPerImage = swizzledBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                                if (mglTraceLogIsEnabled()) {
+                                    const uint8_t *swz = (const uint8_t *)swizzledUploadData;
+                                    mglTraceLog("TEXTURE_SWIZZLE_UPLOAD_R8 tex=%u target=0x%x swzR=0x%x size=%lux%lu bpr=%lu first=%u",
+                                                (unsigned)tex->name,
+                                                (unsigned)tex->target,
+                                                (unsigned)tex->params.swizzle_r,
+                                                (unsigned long)width,
+                                                (unsigned long)MAX((NSUInteger)height, 1UL),
+                                                (unsigned long)bytesPerRow,
+                                                swz[0]);
+                                }
+                            }
+                        }
+                        if (!swizzledUploadData &&
+                            mglTextureInternalFormatNeedsRGBA8Expansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateRGBA8ExpandedUpload(tex,
+                                                                               (const uint8_t *)srcData,
+                                                                               width,
+                                                                               MAX((NSUInteger)height, 1UL),
+                                                                               bytesPerRow,
+                                                                               &expandedBytesPerRow,
+                                                                               &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                            }
+                        } else if (!swizzledUploadData &&
+                                   mglTextureNeedsChannelExpansion(tex->internalformat, pixelFormat)) {
+                            NSUInteger expandedBytesPerRow = 0;
+                            NSUInteger expandedBytesPerImage = 0;
+                            expandedUploadData = mglCreateChannelExpandedUpload(tex,
+                                                                                 pixelFormat,
+                                                                                 (const uint8_t *)srcData,
+                                                                                 width,
+                                                                                 MAX((NSUInteger)height, 1UL),
+                                                                                 bytesPerRow,
+                                                                                 &expandedBytesPerRow,
+                                                                                 &expandedBytesPerImage);
+                            if (expandedUploadData) {
+                                srcData = expandedUploadData;
+                                bytesPerRow = expandedBytesPerRow;
+                                bytesPerImage = expandedBytesPerImage;
+                                addr = (uintptr_t)srcData;
+                            }
+                        }
+
+                        NSUInteger alignment = [self getOptimalAlignmentForPixelFormat:pixelFormat];
+                        NSUInteger alignedBytesPerRow = bytesPerRow;
+                        if (alignedBytesPerRow % alignment != 0) {
+                            alignedBytesPerRow = ((alignedBytesPerRow + alignment - 1) / alignment) * alignment;
+                        }
+
+                        if (addr % alignment != 0 || alignedBytesPerRow != bytesPerRow) {
+                            NSUInteger texHeight = MAX((NSUInteger)height, 1UL);
+                            NSUInteger uploadRows = mglMetalUploadRowsForPixelFormat(pixelFormat, texHeight);
+                            if (uploadRows == 0 || alignedBytesPerRow > (NSUIntegerMax / uploadRows)) {
+                                NSLog(@"MGL WARNING: Rejecting aligned 2D upload row layout bpr=%lu rows=%lu (tex=%d level=%d face=%d)",
+                                      (unsigned long)alignedBytesPerRow,
+                                      (unsigned long)uploadRows,
+                                      tex->name,
+                                      level,
+                                      face);
+                                free(swizzledUploadData);
+                                free(expandedUploadData);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            NSUInteger alignedBytesPerImage = alignedBytesPerRow * uploadRows;
+                            NSUInteger alignedSize = alignedBytesPerImage;
+                            if (alignedSize == 0 || alignedSize > (512 * 1024 * 1024)) {
+                                NSLog(@"MGL WARNING: Rejecting aligned 2D upload staging size=%lu (tex=%d level=%d face=%d)",
+                                      (unsigned long)alignedSize, tex->name, level, face);
+                                free(swizzledUploadData);
+                                free(expandedUploadData);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            void *alignedData = aligned_alloc(alignment, alignedSize);
+
+                            if (alignedData) {
+                                memset(alignedData, 0, alignedSize);
+                                NSUInteger srcRowSize = bytesPerRow;
+                                NSUInteger dstRowSize = alignedBytesPerRow;
+                                uint8_t *srcPtr = (uint8_t *)srcData;
+                                uint8_t *dstPtr = (uint8_t *)alignedData;
+
+                                for (NSUInteger row = 0; row < uploadRows; row++) {
+                                    NSUInteger copySize = (srcRowSize < dstRowSize) ? srcRowSize : dstRowSize;
+                                    memcpy(dstPtr + (row * dstRowSize), srcPtr + (row * srcRowSize), copySize);
+                                    if (dstRowSize > copySize) {
+                                        memset(dstPtr + (row * dstRowSize) + copySize, 0, dstRowSize - copySize);
+                                    }
+                                }
+
+                                if (!alignedData) {
+                                    NSLog(@"MGL SECURITY ERROR: NULL alignedData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = YES;
+                                    return YES;
+                                }
+                                if (alignedBytesPerRow == 0) {
+                                    NSLog(@"MGL SECURITY ERROR: Invalid alignedBytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = YES;
+                                    return YES;
+                                }
+                                if (bytesPerImage == 0) {
+                                    NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                    free(alignedData);
+                                    if (outSkipped) *outSkipped = YES;
+                                    return YES;
+                                }
+                                if (hasExplicitDataSize) {
+                                    BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                           texName:tex->name
+                                                                         texTarget:tex->target
+                                                                             bytes:alignedData
+                                                                       bytesPerRow:alignedBytesPerRow
+                                                                     bytesPerImage:alignedBytesPerImage
+                                                                             width:width
+                                                                            height:height
+                                                                             depth:1
+                                                                             level:level
+                                                                             slice:face];
+                                    if (!uploaded) {
+                                        NSLog(@"MGL WARNING: Aligned 2D blit upload failed (level %d, face %d)", level, face);
+                                    }
+                                } else {
+                                    NSLog(@"MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)", level, face);
+                                }
+                                free(alignedData);
+                            } else {
+                                NSLog(@"MGL ERROR: Failed to allocate aligned memory for 2D texture upload (level %d, face %d)", level, face);
+                            }
+                        } else {
+                            if (!srcData) {
+                                NSLog(@"MGL SECURITY ERROR: NULL srcData passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            if (bytesPerRow == 0) {
+                                NSLog(@"MGL SECURITY ERROR: Invalid bytesPerRow (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            if (bytesPerImage == 0) {
+                                NSLog(@"MGL SECURITY ERROR: Invalid bytesPerImage (0) passed to Metal replaceRegion (level %d, face %d) - SKIPPING to prevent crash", level, face);
+                                if (outSkipped) *outSkipped = YES;
+                                return YES;
+                            }
+                            if (hasExplicitDataSize) {
+                                BOOL uploaded = [self uploadTextureSliceViaBlit:texture
+                                                                       texName:tex->name
+                                                                     texTarget:tex->target
+                                                                         bytes:srcData
+                                                                   bytesPerRow:bytesPerRow
+                                                                 bytesPerImage:bytesPerImage
+                                                                         width:width
+                                                                        height:height
+                                                                         depth:1
+                                                                         level:level
+                                                                         slice:face];
+                                if (!uploaded) {
+                                    NSLog(@"MGL WARNING: 2D direct blit upload failed (level %d, face %d)", level, face);
+                                }
+                            } else {
+                                NSLog(@"MGL INFO: Skipping 2D upload with synthesized data size (level %d, face %d)", level, face);
+                            }
+                        }
+                        free(swizzledUploadData);
+                        free(expandedUploadData);
+                    } else {
+                        NSLog(@"MGL WARNING: Skipping 2D texture upload due to invalid data or parameters");
+                    }
+                }
+
+    return YES;
 }
 
 @end
