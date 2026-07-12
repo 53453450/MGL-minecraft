@@ -1,7 +1,11 @@
 set SDKROOT=`xcrun --show-sdk-path`
 
-cp ../MGL/include/MGLContext.h glfw/src
-cp ../MGL/include/MGLRenderer.h glfw/src
+# GLFW keeps its own thin facades in glfw/src/{MGLContext,MGLRenderer}.h.
+# Do NOT copy MGL/include/MGLRenderer.h into glfw — that header pulls
+# mgl_metal_bridge.h → glcorearb.h and redefines GLFW internal.h's GL_* macros
+# (-Wmacro-redefined). Context enums/API live in glfw's MGLContext.h already.
+# cp ../MGL/include/MGLContext.h glfw/src
+# cp ../MGL/include/MGLRenderer.h glfw/src
 cd SPIRV-Tools
 mkdir build
 cd build
