@@ -4180,6 +4180,85 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     return true;
 }
 
+static BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
+                                         Buffer *ptr,
+                                         id<MTLBuffer> *bufferPtr)
+{
+    id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
+    const void *cpuData = ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL;
+    if (!device || !ptr || !buffer || buffer.storageMode != MTLStorageModeShared ||
+        !cpuData || (uintptr_t)cpuData < 0x1000u ||
+        (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents) {
+        return YES;
+    }
+
+    NSUInteger snapshotLength = buffer.length;
+    if (ptr->data.buffer_size > 0) {
+        snapshotLength = MIN(snapshotLength, (NSUInteger)ptr->data.buffer_size);
+    }
+    if (snapshotLength == 0) {
+        return YES;
+    }
+
+    MTLResourceOptions options = MTLResourceStorageModeShared;
+    if (buffer.cpuCacheMode == MTLCPUCacheModeWriteCombined) {
+        options |= MTLResourceCPUCacheModeWriteCombined;
+    }
+
+    id<MTLBuffer> snapshot = [device newBufferWithLength:buffer.length options:options];
+    if (!snapshot) {
+        NSLog(@"MGL BUFFER ERROR: failed to snapshot dynamic buffer %u", ptr->name);
+        return NO;
+    }
+
+    memcpy(snapshot.contents, cpuData, snapshotLength);
+    if (snapshotLength < snapshot.length) {
+        memset((uint8_t *)snapshot.contents + snapshotLength,
+               0,
+               snapshot.length - snapshotLength);
+    }
+
+    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
+    ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
+    *bufferPtr = snapshot;
+    return YES;
+}
+
+static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
+                                         Buffer *ptr,
+                                         id<MTLBuffer> *bufferPtr,
+                                         NSUInteger offset,
+                                         NSUInteger length)
+{
+    id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
+    const uint8_t *cpuData = ptr ? (const uint8_t *)(uintptr_t)ptr->data.buffer_data : NULL;
+    if (!device || !ptr || !buffer || buffer.storageMode != MTLStorageModeShared ||
+        !cpuData || (uintptr_t)cpuData < 0x1000u ||
+        (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents ||
+        offset > buffer.length || length > buffer.length - offset) {
+        return YES;
+    }
+
+    MTLResourceOptions options = MTLResourceStorageModeShared;
+    if (buffer.cpuCacheMode == MTLCPUCacheModeWriteCombined) {
+        options |= MTLResourceCPUCacheModeWriteCombined;
+    }
+
+    id<MTLBuffer> snapshot = [device newBufferWithLength:buffer.length options:options];
+    if (!snapshot) {
+        NSLog(@"MGL BUFFER ERROR: failed to snapshot mapped buffer %u", ptr->name);
+        return NO;
+    }
+
+    memcpy(snapshot.contents, buffer.contents, buffer.length);
+    memcpy((uint8_t *)snapshot.contents + offset, cpuData + offset, length);
+
+    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
+    ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
+    *bufferPtr = snapshot;
+    return YES;
+}
+
 - (bool) updateDirtyBuffer:(Buffer *)ptr
 {
     if (ptr->size < 4096)
@@ -4204,6 +4283,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             id<MTLBuffer> buffer = (id<MTLBuffer>)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
             if (!buffer) {
                 NSLog(@"MGL SECURITY ERROR: Failed to validate small Metal buffer (buffer %u)", ptr->name);
+                return false;
+            }
+
+            if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
                 return false;
             }
 
@@ -4345,6 +4428,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         id<MTLBuffer> buffer = (id<MTLBuffer>)SafeMetalBridge(ptr->data.mtl_data, objc_getClass("MTLBuffer"), "MTLBuffer");
         if (!buffer) {
             NSLog(@"MGL SECURITY ERROR: Failed to validate Metal buffer (buffer %u)", ptr->name);
+            return false;
+        }
+
+        if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
             return false;
         }
 
@@ -9489,6 +9576,14 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         return;
     }
 
+    uint8_t *cpuData = (uint8_t *)(uintptr_t)buf->data.buffer_data;
+    if (cpuData && cpuData != mtl_buffer.contents) {
+        memmove(cpuData + offset, ptr, size);
+        if (!mglSnapshotSharedDirtyBuffer(_device, buf, &mtl_buffer)) {
+            return;
+        }
+    }
+
     if (offset > mtl_buffer.length || size > (mtl_buffer.length - offset)) {
         NSLog(@"MGL ERROR: mtlBufferSubData range exceeds Metal buffer buffer=%u off=%zu size=%zu len=%lu",
               buf->name,
@@ -9563,8 +9658,41 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 
     if (map)
     {
-        uint8_t *mappedPtr = mtlBase ? (mtlBase + offset) : NULL;
+        bool reads = access == GL_READ_ONLY || access == GL_READ_WRITE ||
+                     (access & GL_MAP_READ_BIT) != 0;
+        if (cpuBase) {
+            uint8_t *cpuPtr = cpuBase + offset;
+            if (reads && mtlBase && mtlBase != cpuBase && safeLen > 0) {
+                memcpy(cpuPtr, mtlBase + offset, (size_t)safeLen);
+            }
 
+            if (kMGLDiagnosticStateLogs) {
+                uint64_t mtlHash = mglTraceHashBytes(mtlBase ? mtlBase + offset : NULL, (size_t)safeLen);
+                uint64_t cpuHash = mglTraceHashBytes(cpuPtr, (size_t)safeLen);
+                char mtlHead[64];
+                char cpuHead[64];
+                mtlHead[0] = '\0';
+                cpuHead[0] = '\0';
+                mglTraceFormatBytes(mtlBase ? mtlBase + offset : NULL, (size_t)safeLen, mtlHead, sizeof(mtlHead));
+                mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
+                MGLTraceNSLog(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+                      buf->name,
+                      offset,
+                      size,
+                      (unsigned long)safeLen,
+                      (unsigned)access,
+                      mtlBase ? mtlBase + offset : NULL,
+                      cpuPtr,
+                      (mtlBase && mtlBase + offset == cpuPtr) ? 1 : 0,
+                      (unsigned long long)mtlHash,
+                      (unsigned long long)cpuHash,
+                      mtlHead,
+                      cpuHead);
+            }
+            return cpuPtr;
+        }
+
+        uint8_t *mappedPtr = mtlBase ? (mtlBase + offset) : NULL;
         if (kMGLDiagnosticStateLogs) {
             uint64_t mtlHash = mglTraceHashBytes(mappedPtr, (size_t)safeLen);
             char mtlHead[64];
@@ -9595,18 +9723,7 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
         return mappedPtr;
     }
 
-    // Keep CPU shadow coherent for diagnostics and any CPU-side fallback paths.
-    // For small buffers we often keep a separate vm-allocated CPU store; mapped writes
-    // go to mtl.contents, so mirror them back on unmap.
-    if (cpuBase && mtlBase && safeLen > 0) {
-        uint8_t *mtlPtr = mtlBase + offset;
-        uint8_t *cpuPtr = cpuBase + offset;
-        if (mtlPtr != cpuPtr) {
-            memcpy(cpuPtr, mtlPtr, (size_t)safeLen);
-        }
-    }
-
-    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
+    if (!cpuBase && mtl_buffer.storageMode == MTLStorageModeManaged) {
         [mtl_buffer didModifyRange:NSMakeRange(offset, safeLen)];
     }
 
@@ -9651,45 +9768,11 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 
     mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
     if (!mtl_buffer) {
-        // Lazy-create Metal buffer for persistently mapped buffers.
-        // Sodium maps buffers with GL_MAP_PERSISTENT_BIT before any Metal buffer
-        // exists. Use no-copy wrapping so the CPU pointer Sodium holds stays valid.
-        if (!buf->data.buffer_data || buf->size <= 0) {
-            NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u has no Metal buffer and no CPU backing", buf->name);
+        [self bindMTLBuffer:buf];
+        mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
+        if (!mtl_buffer) {
             return;
         }
-
-        size_t safe_len = (size_t)buf->size;
-        if (safe_len > (size_t)2 * 1024 * 1024 * 1024) {
-            NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u size=%lld too large", buf->name, (long long)buf->size);
-            return;
-        }
-
-        MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeShared;
-        if ((buf->storage_flags & GL_MAP_READ_BIT) == 0) {
-            options |= MTLResourceCPUCacheModeWriteCombined;
-        }
-
-        // Use no-copy wrapping so Sodium's persistent map pointer remains valid.
-        // No deallocator: CPU backing is managed by buffer lifecycle, not Metal.
-        id<MTLBuffer> new_buffer = [_device newBufferWithBytesNoCopy:(void *)(buf->data.buffer_data)
-                                                              length:safe_len
-                                                             options:options
-                                                         deallocator:nil];
-        if (!new_buffer) {
-            // Fallback: allocate with copy and keep CPU backing alive for persistent map
-            new_buffer = [_device newBufferWithBytes:(void *)(buf->data.buffer_data)
-                                             length:safe_len
-                                            options:options];
-            if (!new_buffer) {
-                NSLog(@"MGL ERROR: mtlFlushMappedBufferRange buffer=%u failed to create Metal buffer (size=%zu)",
-                      buf->name, safe_len);
-                return;
-            }
-        }
-
-        buf->data.mtl_data = (void *)CFBridgingRetain(new_buffer);
-        mtl_buffer = new_buffer;
     }
 
     if (offset > mtl_buffer.length || length > (mtl_buffer.length - offset)) {
@@ -9698,6 +9781,14 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
               offset,
               length,
               (unsigned long)mtl_buffer.length);
+        return;
+    }
+
+    if (!mglSnapshotSharedBufferRange(_device,
+                                      buf,
+                                      &mtl_buffer,
+                                      (NSUInteger)offset,
+                                      (NSUInteger)length)) {
         return;
     }
 

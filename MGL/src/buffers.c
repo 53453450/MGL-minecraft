@@ -1675,6 +1675,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
         else
         {
             mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
+            vm_deallocate(mach_task_self(), ptr->data.buffer_data, ptr->data.buffer_size);
 
             ptr->data.buffer_data = 0;
             ptr->data.buffer_size = 0;

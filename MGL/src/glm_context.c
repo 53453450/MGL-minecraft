@@ -700,13 +700,8 @@ static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
     mglSafeReleaseMetalObj((void **)&buffer->data.mtl_data);
 
     if (buffer->data.buffer_data && buffer->data.buffer_size > 0) {
-        GLboolean release_cpu_backing = !had_mtl_data;
-
-        if (had_mtl_data && !(buffer->storage_flags & GL_CLIENT_STORAGE_BIT)) {
-            release_cpu_backing =
-                (buffer->storage_flags & GL_MAP_PERSISTENT_BIT) ||
-                buffer->size <= 4095;
-        }
+        GLboolean release_cpu_backing =
+            !(had_mtl_data && (buffer->storage_flags & GL_CLIENT_STORAGE_BIT));
 
         if (release_cpu_backing) {
             kern_return_t kr = vm_deallocate((vm_map_t)mach_task_self(),

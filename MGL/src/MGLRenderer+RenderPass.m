@@ -115,8 +115,6 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     {
         id<MTLBuffer> buffer;
         
-        // a backing can allocated initially, delete it and point the
-        // backing data to the MTL buffer
         if (ptr->data.buffer_data)
         {
             size_t safeBufferSize = ptr->data.buffer_size;
@@ -124,69 +122,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 safeBufferSize = ptr->size;
             }
 
-            if (ptr->storage_flags & GL_MAP_PERSISTENT_BIT)
-            {
-                /*
-                 * Keep persistent mapped pointers stable. Minecraft/LWJGL writes
-                 * directly through the pointer returned by glMap*Range; copying
-                 * into a new MTLBuffer and replacing buffer_data makes later
-                 * client writes land in stale memory.
-                 */
-                buffer = [_device newBufferWithBytesNoCopy:(void *)ptr->data.buffer_data
-                                                     length:safeBufferSize
-                                                    options:options
-                                                deallocator:nil];
-                if (!buffer) {
-                    NSLog(@"MGL ERROR: Failed to wrap persistent mapped buffer (size=%zu, buffer=%u)",
-                          safeBufferSize, ptr->name);
-                    ptr->data.mtl_data = NULL;
-                    return;
-                }
-            }
-            // check the GL allocated size, not the vm_allocated size as these are page aligned
-            else if (ptr->size > 4095)
-            {
-                buffer = [_device newBufferWithBytes:(void *)ptr->data.buffer_data
-                                                            length:safeBufferSize
-                                                           options:options];
-                if (!buffer) {
-                    NSLog(@"MGL ERROR: Failed to create Metal buffer from backing data (size=%zu, buffer=%u)",
-                          safeBufferSize, ptr->name);
-                    ptr->data.mtl_data = NULL;
-                    return;
-                }
-
-                kern_return_t err;
-                err = vm_deallocate((vm_map_t) mach_task_self(),
-                                    (vm_address_t) ptr->data.buffer_data,
-                                    safeBufferSize);
-                if (err != 0) {
-                    NSLog(@"MGL WARNING: vm_deallocate failed for buffer %u err=%d ptr=%p len=%zu",
-                          ptr->name,
-                          err,
-                          (void *)ptr->data.buffer_data,
-                          safeBufferSize);
-                }
-
-                ptr->data.buffer_data = (vm_address_t)buffer.contents;
-            }
-            else
-            {
-                /*
-                 * Small SSBOs are read back through Buffer::data.buffer_data by
-                 * glGetBufferSubData. Wrap the VM backing directly so compute
-                 * writes are visible to the CPU-side GL buffer storage.
-                 */
-                buffer = [_device newBufferWithBytesNoCopy:(void *)ptr->data.buffer_data
-                                                     length:safeBufferSize
-                                                    options:options
-                                                deallocator:nil];
-                if (!buffer) {
-                    NSLog(@"MGL ERROR: Failed to create small Metal buffer (size=%zu, buffer=%u)",
-                          (size_t)ptr->size, ptr->name);
-                    ptr->data.mtl_data = NULL;
-                    return;
-                }
+            buffer = [_device newBufferWithBytes:(void *)ptr->data.buffer_data
+                                           length:safeBufferSize
+                                          options:options];
+            if (!buffer) {
+                NSLog(@"MGL ERROR: Failed to create Metal buffer from CPU backing (size=%zu, buffer=%u)",
+                      safeBufferSize, ptr->name);
+                ptr->data.mtl_data = NULL;
+                return;
             }
         }
         else
