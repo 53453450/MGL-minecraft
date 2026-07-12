@@ -29,6 +29,131 @@
 #include "mgl_trace_log.h"
 #include "mgl_sampler_compat.h"
 
+/* === Task 4: Snapshot Arena (bump allocator) === */
+
+#define MGL_ARENA_INITIAL_CAPACITY  (4u * 1024u * 1024u)  /* 4 MB */
+
+struct MGLBatchArenaChunk {
+    struct MGLBatchArenaChunk *next;
+    size_t                     offset;
+    size_t                     capacity;
+    unsigned char              data[];
+};
+
+static MGLBatchArenaChunk *mglNewBatchArenaChunk(size_t capacity)
+{
+    if (capacity == 0 || capacity > SIZE_MAX - sizeof(MGLBatchArenaChunk)) {
+        return NULL;
+    }
+
+    MGLBatchArenaChunk *chunk = malloc(sizeof(*chunk) + capacity);
+    if (!chunk) {
+        return NULL;
+    }
+
+    chunk->next = NULL;
+    chunk->offset = 0;
+    chunk->capacity = capacity;
+    return chunk;
+}
+
+bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity)
+{
+    if (!arena) {
+        return false;
+    }
+
+    memset(arena, 0, sizeof(*arena));
+    size_t capacity = initial_capacity ? initial_capacity : MGL_ARENA_INITIAL_CAPACITY;
+    MGLBatchArenaChunk *chunk = mglNewBatchArenaChunk(capacity);
+    if (!chunk) {
+        return false;
+    }
+
+    arena->head = chunk;
+    arena->current = chunk;
+    arena->initial_capacity = capacity;
+    arena->enabled = 1;
+    return true;
+}
+
+static void *arenaAlloc(MGLBatchArena *arena, size_t size)
+{
+    if (!arena || !arena->enabled || size == 0) {
+        return NULL;
+    }
+
+    /* Align to 16 bytes */
+    if (size > SIZE_MAX - 15u) {
+        return NULL;
+    }
+    size_t aligned = (size + 15u) & ~(size_t)15u;
+
+    MGLBatchArenaChunk *chunk = arena->current;
+    if (!chunk || aligned > chunk->capacity - chunk->offset) {
+        MGLBatchArenaChunk *next = chunk ? chunk->next : arena->head;
+        while (next && aligned > next->capacity - next->offset) {
+            next = next->next;
+        }
+        if (next) {
+            chunk = next;
+        } else {
+            size_t capacity = chunk ? chunk->capacity : arena->initial_capacity;
+            if (capacity == 0) {
+                capacity = MGL_ARENA_INITIAL_CAPACITY;
+            }
+            while (capacity < aligned) {
+                if (capacity > SIZE_MAX / 2u) {
+                    capacity = aligned;
+                    break;
+                }
+                capacity *= 2u;
+            }
+            next = mglNewBatchArenaChunk(capacity);
+            if (!next) {
+                return NULL;
+            }
+            if (chunk) {
+                MGLBatchArenaChunk *tail = chunk;
+                while (tail->next) {
+                    tail = tail->next;
+                }
+                tail->next = next;
+            } else if (!arena->head) {
+                arena->head = next;
+            }
+            chunk = next;
+        }
+        arena->current = chunk;
+    }
+
+    void *ptr = chunk->data + chunk->offset;
+    chunk->offset += aligned;
+    return ptr;
+}
+
+void mglResetBatchArena(MGLBatchArena *arena)
+{
+    if (!arena) return;
+    for (MGLBatchArenaChunk *chunk = arena->head; chunk; chunk = chunk->next) {
+        chunk->offset = 0;
+    }
+    arena->current = arena->head;
+}
+
+void mglDestroyBatchArena(MGLBatchArena *arena)
+{
+    if (!arena) return;
+
+    MGLBatchArenaChunk *chunk = arena->head;
+    while (chunk) {
+        MGLBatchArenaChunk *next = chunk->next;
+        free(chunk);
+        chunk = next;
+    }
+    memset(arena, 0, sizeof(*arena));
+}
+
 void mglInitCommandBuffer(MGLCommandBuffer *cb)
 {
     if (!cb) return;
@@ -54,16 +179,25 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
 {
     if (!batch) return;
 
-    if (batch->commands) {
-        free(batch->commands);
+    /* Arena-managed allocations (commands, state_snapshot, vao_snapshot) are
+     * freed collectively via arena reset (mglResetBatchArena), not
+     * individually.  Only free them on the non-arena path. */
+    if (!batch->arena_managed) {
+        if (batch->commands) {
+            free(batch->commands);
+            batch->commands = NULL;
+        }
+        if (batch->state_snapshot) {
+            free(batch->state_snapshot);
+            batch->state_snapshot = NULL;
+        }
+        if (batch->vao_snapshot) {
+            free(batch->vao_snapshot);
+            batch->vao_snapshot = NULL;
+        }
+    } else {
         batch->commands = NULL;
-    }
-    if (batch->state_snapshot) {
-        free(batch->state_snapshot);
         batch->state_snapshot = NULL;
-    }
-    if (batch->vao_snapshot) {
-        free(batch->vao_snapshot);
         batch->vao_snapshot = NULL;
     }
     batch->source_vao = NULL;
@@ -152,11 +286,24 @@ static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
 
 static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
 {
-    if (!ctx || !batch) return false;
+    MGL_SIGNPOST_BEGIN(InitBatchSnapshot);
+    if (!ctx || !batch) {
+        MGL_SIGNPOST_END(InitBatchSnapshot);
+        return false;
+    }
 
-    batch->state_snapshot = malloc(sizeof(ctx->state));
-    batch->vao_snapshot = malloc(sizeof(VertexArray));
+    MGLBatchArena *arena = ctx->batch_arena;
+    if (arena && arena->enabled) {
+        batch->state_snapshot = arenaAlloc(arena, sizeof(ctx->state));
+        batch->vao_snapshot = arenaAlloc(arena, sizeof(VertexArray));
+        batch->arena_managed = true;
+    } else {
+        batch->state_snapshot = malloc(sizeof(ctx->state));
+        batch->vao_snapshot = malloc(sizeof(VertexArray));
+        batch->arena_managed = false;
+    }
     if (!batch->state_snapshot || !batch->vao_snapshot) {
+        MGL_SIGNPOST_END(InitBatchSnapshot);
         return false;
     }
     memcpy(batch->state_snapshot, &ctx->state, sizeof(ctx->state));
@@ -166,11 +313,18 @@ static bool mglInitializeBatchStateSnapshot(GLMContext ctx, MGLDrawBatch *batch)
         ((VertexArray *)batch->vao_snapshot)->transient_batch_vao = GL_TRUE;
         ((GLMState *)batch->state_snapshot)->vao = (VertexArray *)batch->vao_snapshot;
     } else {
-        free(batch->vao_snapshot);
+        if (!batch->arena_managed) {
+            free(batch->vao_snapshot);
+        }
         batch->vao_snapshot = NULL;
     }
 
+    MGL_PERF_INC(g_mglSnapshotAllocationCountSinceSwap);
+    MGL_PERF_ADD(g_mglSnapshotBytesAllocatedSinceSwap,
+                 sizeof(GLMState) + sizeof(VertexArray));
+
     mglRetainBatchProgramReferences(ctx, batch);
+    MGL_SIGNPOST_END(InitBatchSnapshot);
     return true;
 }
 
@@ -310,6 +464,8 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
     range->buffer = buffer;
     range->start = start;
     range->end = end;
+
+    MGL_PERF_ADD(g_mglHazardRangeCountSinceSwap, cb->buffer_read_range_count);
 }
 
 static void mglTrackPendingReadBytes(GLMContext ctx, Buffer *buffer, uint64_t start, uint64_t size)
@@ -585,7 +741,10 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->buffer_read_range_count == 0 && !cb->buffer_read_range_overflow) return false;
-    if (cb->buffer_read_range_overflow) return true;
+    if (cb->buffer_read_range_overflow) {
+        MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
+        return true;
+    }
 
     uint64_t start = 0;
     uint64_t end = 0;
@@ -615,7 +774,10 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return false;
-    if (cb->texture_write_overflow) return true;
+    if (cb->texture_write_overflow) {
+        MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
+        return true;
+    }
 
     for (uint32_t i = 0; i < cb->texture_write_count; i++) {
         if (cb->texture_write_objects[i] == texture) {
@@ -640,7 +802,10 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0 || cb->total_commands == 0) return false;
     if (cb->texture_read_count == 0 && !cb->texture_read_overflow) return false;
-    if (cb->texture_read_overflow) return true;
+    if (cb->texture_read_overflow) {
+        MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
+        return true;
+    }
 
     for (uint32_t i = 0; i < cb->texture_read_count; i++) {
         if (cb->texture_read_objects[i] == texture) {
@@ -843,6 +1008,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
     if (cb->batch_count == 0 || cb->total_commands == 0) return;
     if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return;
     if (cb->texture_write_overflow) {
+        MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
         mglFlushCommandBuffer(ctx);
         return;
     }
@@ -1139,7 +1305,11 @@ static uint16_t mglComputeCapsFlags(GLMContext ctx)
 
 void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStateKey *out)
 {
-    if (!ctx || !out) return;
+    MGL_SIGNPOST_BEGIN(ComputeStateKey);
+    if (!ctx || !out) {
+        MGL_SIGNPOST_END(ComputeStateKey);
+        return;
+    }
     memset(out, 0, sizeof(*out));
 
     out->program_name = ctx->state.program_name;
@@ -1181,6 +1351,7 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     out->render_state_hash = mglComputeRenderStateHash(ctx) ^
                              mglComputeDrawBufferBindingHash(ctx) ^
                              mglRotateLeft64((uint64_t)mode, 21);
+    MGL_SIGNPOST_END(ComputeStateKey);
 }
 
 bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b)
@@ -1490,6 +1661,8 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
 {
     if (!ctx) return;
 
+    uint64_t activeCount = 0;
+
     const int trackedTargets[] = {
         _UNIFORM_BUFFER,
         _UNIFORM_CONSTANT,
@@ -1503,6 +1676,7 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
         for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
             BufferBaseTarget *binding = &ctx->state.buffer_base[target].buffers[i];
             if (!binding->buf) continue;
+            activeCount++;
             if (binding->size > 0 && binding->offset >= 0) {
                 mglTrackPendingReadBytes(ctx,
                                          binding->buf,
@@ -1519,6 +1693,7 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
         for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
             BufferBaseTarget *binding = &program->plain_uniform_buffers[i];
             if (!binding->buf) continue;
+            activeCount++;
             if (binding->size > 0 && binding->offset >= 0) {
                 mglTrackPendingReadBytes(ctx,
                                          binding->buf,
@@ -1529,6 +1704,8 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
             }
         }
     }
+
+    MGL_PERF_ADD(g_mglHazardActiveBindingsSinceSwap, activeCount);
 }
 
 #define MGL_STREAM_MERGE_MAX_SOURCE_BYTES (64u * 1024u)
@@ -2048,14 +2225,27 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
                                            MGLDrawBatch *batch,
                                            const MGLStreamMergeCandidate *candidate)
 {
-    if (!ctx || !batch || !candidate || !candidate->vao) return false;
+    MGL_SIGNPOST_BEGIN(InitStreamMergedBatch);
+    if (!ctx || !batch || !candidate || !candidate->vao) {
+        MGL_SIGNPOST_END(InitStreamMergedBatch);
+        return false;
+    }
 
-    batch->state_snapshot = malloc(sizeof(ctx->state));
-    batch->vao_snapshot = malloc(sizeof(VertexArray));
+    MGLBatchArena *arena = ctx->batch_arena;
+    if (arena && arena->enabled) {
+        batch->state_snapshot = arenaAlloc(arena, sizeof(ctx->state));
+        batch->vao_snapshot = arenaAlloc(arena, sizeof(VertexArray));
+        batch->arena_managed = true;
+    } else {
+        batch->state_snapshot = malloc(sizeof(ctx->state));
+        batch->vao_snapshot = malloc(sizeof(VertexArray));
+        batch->arena_managed = false;
+    }
     batch->stream_vertex_buffer = mglNewTransientBatchBuffer(GL_ARRAY_BUFFER);
     batch->stream_index_buffer = mglNewTransientBatchBuffer(GL_ELEMENT_ARRAY_BUFFER);
     if (!batch->state_snapshot || !batch->vao_snapshot ||
         !batch->stream_vertex_buffer || !batch->stream_index_buffer) {
+        MGL_SIGNPOST_END(InitStreamMergedBatch);
         return false;
     }
 
@@ -2099,7 +2289,13 @@ static bool mglInitializeStreamMergedBatch(GLMContext ctx,
     batch->stream_layout_hash = candidate->layout_hash;
     batch->stream_vertex_stride = candidate->vertex_stride;
     batch->mdi_compatible = true;
+
+    MGL_PERF_INC(g_mglSnapshotAllocationCountSinceSwap);
+    MGL_PERF_ADD(g_mglSnapshotBytesAllocatedSinceSwap,
+                 sizeof(GLMState) + sizeof(VertexArray));
+
     mglRetainBatchProgramReferences(ctx, batch);
+    MGL_SIGNPOST_END(InitStreamMergedBatch);
     return true;
 }
 
@@ -2252,7 +2448,11 @@ static void mglTrackPendingDrawBufferReads(GLMContext ctx,
 
 void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
 {
-    if (!ctx || !cmd) return;
+    MGL_SIGNPOST_BEGIN(RecordDrawCommand);
+    if (!ctx || !cmd) {
+        MGL_SIGNPOST_END(RecordDrawCommand);
+        return;
+    }
 
     /* DrawCommand Recorder: keep the GL entry points shallow and capture a
      * validated draw into the deferred command buffer.  The Batch Builder and
@@ -2320,6 +2520,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             mglFlushCommandBuffer(ctx);
             if (cb->batch_count >= maxBatchCount) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: batch buffer full after flush\n");
+                MGL_SIGNPOST_END(RecordDrawCommand);
                 return;
             }
         }
@@ -2346,6 +2547,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: state snapshot alloc failed\n");
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
+                MGL_SIGNPOST_END(RecordDrawCommand);
                 return;
             }
         }
@@ -2372,6 +2574,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                     mglFlushCommandBuffer(ctx);
                     if (cb->batch_count >= maxBatchCount) {
                         fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback batch buffer full after flush\n");
+                        MGL_SIGNPOST_END(RecordDrawCommand);
                         return;
                     }
                 }
@@ -2384,6 +2587,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                     fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback state snapshot alloc failed\n");
                     mglReleaseBatch(ctx, batch);
                     memset(batch, 0, sizeof(*batch));
+                    MGL_SIGNPOST_END(RecordDrawCommand);
                     return;
                 }
                 cb->batch_count++;
@@ -2399,10 +2603,22 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
         if (newCapacity <= batch->command_count) {
             fprintf(stderr, "MGL Error: mglAppendDrawCommand: command capacity exhausted\n");
+            MGL_SIGNPOST_END(RecordDrawCommand);
             return;
         }
-        MGLDrawCommand *new_cmds = (MGLDrawCommand *)realloc(batch->commands,
-            (size_t)newCapacity * sizeof(MGLDrawCommand));
+        size_t newBytes = (size_t)newCapacity * sizeof(MGLDrawCommand);
+        MGLDrawCommand *new_cmds;
+        if (batch->arena_managed && ctx->batch_arena && ctx->batch_arena->enabled) {
+            /* Arena path: allocate new block and copy; old block is
+             * reclaimed on arena reset (no individual free). */
+            new_cmds = (MGLDrawCommand *)arenaAlloc(ctx->batch_arena, newBytes);
+            if (new_cmds && batch->commands && batch->command_count > 0) {
+                memcpy(new_cmds, batch->commands,
+                       (size_t)batch->command_count * sizeof(MGLDrawCommand));
+            }
+        } else {
+            new_cmds = (MGLDrawCommand *)realloc(batch->commands, newBytes);
+        }
         if (!new_cmds) {
             fprintf(stderr, "MGL Error: mglAppendDrawCommand: realloc failed\n");
             if (batch->command_count == 0 &&
@@ -2412,6 +2628,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 memset(batch, 0, sizeof(*batch));
                 cb->batch_count--;
             }
+            MGL_SIGNPOST_END(RecordDrawCommand);
             return;
         }
         batch->commands = new_cmds;
@@ -2438,6 +2655,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     }
     mglTrackPendingSampledTextureReads(ctx);
     mglTrackPendingFramebufferTextureWrites(ctx);
+    MGL_SIGNPOST_END(RecordDrawCommand);
 }
 
 void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)

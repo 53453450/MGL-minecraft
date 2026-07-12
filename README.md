@@ -100,14 +100,12 @@ MGL-minecraft/
 ├── external/                    # SPIRV-Cross、SPIRV-Tools、glslang、GLFW 等依赖
 ├── benchmark/                   # 性能测试工具
 ├── test_mgl/                    # 本地 smoke/功能测试
-├── MGL Tests/                   # Xcode 测试目标
 ├── MGL_Golden_Images/           # 图像回归基准
 ├── TestImages/                  # 测试纹理素材
 ├── enum_parser/                 # OpenGL enum 生成辅助
 ├── spec_parser/                 # 规范解析辅助
 ├── build/                       # 本地构建输出
-├── MGL.xcodeproj/               # Xcode 项目
-├── Makefile                     # 构建脚本
+├── Makefile                     # 唯一构建入口
 ├── README.md                    # 中文说明
 ├── README_EN.md                 # English README
 └── LICENSE                      # Apache 2.0 许可证

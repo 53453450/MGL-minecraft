@@ -797,6 +797,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     pptr->uses_vertex_id = GL_FALSE;
     pptr->uses_primitive_id = GL_FALSE;
+    /* Invalidate MSL query cache; repopulated from the freshly generated MSL
+     * after the stage compile loop succeeds. */
+    pptr->mslCacheValid = GL_FALSE;
+    pptr->usesFragCoordParams = GL_FALSE;
+    pptr->vertexAttribUsageMask = 0u;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
             has_any_shader = true;
@@ -1054,6 +1059,32 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
     pptr->dirty_bits |= DIRTY_PROGRAM;
+
+    /* Populate the MSL query result cache from the finalized per-stage MSL.
+     * Scanning once here lets the per-draw paths skip repeated strstr() over
+     * the source strings when MGL_MSL_CACHE=1.  mslCacheValid gates readers;
+     * it is only set after both fields below reflect the current MSL. */
+    {
+        const char *fs_msl = pptr->spirv[_FRAGMENT_SHADER].msl_str;
+        pptr->usesFragCoordParams =
+            (fs_msl && strstr(fs_msl, MGL_FRAG_COORD_PARAMS_MSL_NAME))
+                ? GL_TRUE : GL_FALSE;
+
+        const char *vs_msl = pptr->spirv[_VERTEX_SHADER].msl_str;
+        uint32_t attr_mask = 0u;
+        if (vs_msl) {
+            for (GLuint a = 0; a < MAX_ATTRIBS; a++) {
+                char attr_pattern[32];
+                snprintf(attr_pattern, sizeof(attr_pattern),
+                         "[[attribute(%u)]]", a);
+                if (strstr(vs_msl, attr_pattern)) {
+                    attr_mask |= (1u << a);
+                }
+            }
+        }
+        pptr->vertexAttribUsageMask = attr_mask;
+        pptr->mslCacheValid = GL_TRUE;
+    }
 
     /* Only call mtlBindProgram if Metal functions are initialized */
     if (ctx->mtl_funcs.mtlBindProgram) {

@@ -216,6 +216,11 @@ typedef struct GLMContextRec_t {
     bool            draw_defer_enabled;
     bool            sync_strict;
 
+    /* Bump-allocator arena for batch snapshot allocations (Task 4).
+     * NULL when MGL_ARENA_SNAPSHOT is not enabled; otherwise points to the
+     * MGLRenderer-owned MGLBatchArena ivar.  Accessed from draw_command.c. */
+    MGLBatchArena  *batch_arena;
+
     void (* error_func)(GLMContext ctx, const char *func, GLenum type);
 } GLMContextRec;
 

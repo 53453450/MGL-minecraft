@@ -64,6 +64,21 @@ uint64_t mglPerfSummaryInterval(void)
     return cached;
 }
 
+/* === os_signpost instrumentation === */
+
+os_log_t mglSignpostLog = OS_LOG_DEFAULT;
+
+static int _signpostEnabledCache = -1;
+
+int mglSignpostEnabled(void)
+{
+    if (_signpostEnabledCache < 0) {
+        const char *env = getenv("MGL_SIGNPOST");
+        _signpostEnabledCache = (env && atoi(env) == 1) ? 1 : 0;
+    }
+    return _signpostEnabledCache;
+}
+
 /* === Last draw-call metadata === */
 
 _Atomic uint64_t g_mglLastDrawArraysCall       = 0;
@@ -126,6 +141,19 @@ _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap   = 0;
 _Atomic double   g_mglLockWaitTimeSinceSwap   = 0.0;
 _Atomic double   g_mglLockHoldTimeSinceSwap   = 0.0;
 
+/* === Stage 1 CPU audit counters === */
+
+_Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap   = 0;
+_Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap     = 0;
+_Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap     = 0;
+_Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap    = 0;
+_Atomic uint64_t g_mglReplayMemcpyCountSinceSwap          = 0;
+_Atomic uint64_t g_mglHazardActiveBindingsSinceSwap       = 0;
+_Atomic uint64_t g_mglHazardRangeCountSinceSwap           = 0;
+_Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap      = 0;
+_Atomic uint64_t g_mglPSODedupHitsSinceSwap               = 0;
+_Atomic uint64_t g_mglPSODedupMissesSinceSwap             = 0;
+
 #include <mach/mach_time.h>
 
 void mglPrintPerfSummary(double frame_interval_ms)
@@ -147,7 +175,12 @@ void mglPrintPerfSummary(double frame_interval_ms)
           @"encoder: new=%llu fboRot=%llu | "
           @"pgrp: g=%llu batches=%llu max=%llu elig=%llu | "
           @"merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu | "
-          @"lock: wait=%.1fms hold=%.1fms",
+          @"lock: wait=%.1fms hold=%.1fms | "
+          @"ds: creates=%llu skips=%llu | "
+          @"snap: bytes=%llu allocs=%llu | "
+          @"replay: memcpy=%llu | "
+          @"hazard: active=%llu ranges=%llu overflow=%llu | "
+          @"pso_dedup: hits=%llu misses=%llu",
           frame_interval_ms,
           c.draw_direct, c.draw_mdi, c.draw_stream_merged, c.draw_skipped,
           c.batches_direct, c.batches_mdi, c.batches_stream_merged,
@@ -162,7 +195,12 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.merge_reject_state_differs, c.merge_reject_buffer_hazard,
           c.merge_reject_unsafe_builtin, c.merge_reject_excluded_layout,
           c.merge_reject_append_failed,
-          c.lock_wait_time * 1000.0, c.lock_hold_time * 1000.0);
+          c.lock_wait_time * 1000.0, c.lock_hold_time * 1000.0,
+          c.ds_state_creates, c.ds_state_skips,
+          c.snapshot_bytes_allocated, c.snapshot_allocation_count,
+          c.replay_memcpy_count,
+          c.hazard_active_bindings, c.hazard_range_count, c.hazard_overflow_flushes,
+          c.pso_dedup_hits, c.pso_dedup_misses);
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

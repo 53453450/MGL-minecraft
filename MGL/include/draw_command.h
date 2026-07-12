@@ -39,6 +39,21 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
 #define MGL_MAX_PENDING_TEXTURE_READS 512
 
+/* Bump-allocator arena for batch snapshot allocations (Task 4).
+ * Gated by env var MGL_ARENA_SNAPSHOT=1 (default OFF).  When enabled,
+ * state_snapshot, vao_snapshot, and the commands array are allocated from
+ * this arena instead of individual malloc calls, and freed via arena reset
+ * instead of individual free calls.  The arena is owned by MGLRenderer and
+ * accessed from C via GLMContextRec_t::batch_arena. */
+typedef struct MGLBatchArenaChunk MGLBatchArenaChunk;
+
+typedef struct MGLBatchArena {
+    MGLBatchArenaChunk *head;
+    MGLBatchArenaChunk *current;
+    size_t              initial_capacity;
+    int                 enabled;
+} MGLBatchArena;
+
 typedef enum {
     MGL_CMD_DRAW_ARRAYS = 0,
     MGL_CMD_DRAW_ELEMENTS,
@@ -110,6 +125,7 @@ typedef struct {
     bool            mdi_compatible;
     bool            uses_elements;
     bool            stream_merged;
+    bool            arena_managed;  /* snapshot/commands allocated from arena */
 } MGLDrawBatch;
 
 typedef struct {
@@ -156,6 +172,17 @@ void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao);
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
+
+/* Initializes an address-stable, chunked batch arena. */
+bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);
+
+/* Reset the batch arena (sets chunk offsets to 0, keeping all chunks).
+ * Safe to call only when no worker/encoder is accessing snapshot data
+ * (i.e. after teardownBatchReplayForContext).  No-op if arena is NULL. */
+void mglResetBatchArena(MGLBatchArena *arena);
+
+/* Releases every backing chunk and clears the arena. */
+void mglDestroyBatchArena(MGLBatchArena *arena);
 
 /* Draw command classification helpers (pure functions, no ctx dependency). */
 

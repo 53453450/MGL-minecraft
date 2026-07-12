@@ -4,6 +4,116 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
 
+/* === MGLDepthStencilCacheKey ===
+ * Lightweight value key covering every field of MTLDepthStencilDescriptor that
+ * affects the created id<MTLDepthStencilState>.  Used only when the
+ * MGL_DS_CACHE=1 env var gates on the depth/stencil state cache.  All fields
+ * are stored as primitives for fast isEqual:/hash.
+ *
+ * Note: MTLDepthStencilDescriptor in the target SDK exposes
+ * depthCompareFunction, depthWriteEnabled, frontFaceStencil and
+ * backFaceStencil (each stencil descriptor exposes stencilCompareFunction,
+ * readMask, writeMask, stencilFailureOperation, depthFailureOperation and
+ * depthStencilPassOperation).  depthClipMode is NOT a descriptor property in
+ * this SDK — it is set on the render encoder directly and does not affect the
+ * created state object, so it is intentionally not part of the key. */
+@interface MGLDepthStencilCacheKey : NSObject <NSCopying>
+    @property (nonatomic) MTLCompareFunction depthCompareFunction;
+    @property (nonatomic) BOOL depthWriteEnabled;
+    /* front stencil */
+    @property (nonatomic) BOOL frontStencilPresent;
+    @property (nonatomic) MTLCompareFunction frontStencilCompareFunction;
+    @property (nonatomic) uint32_t frontReadMask;
+    @property (nonatomic) uint32_t frontWriteMask;
+    @property (nonatomic) MTLStencilOperation frontStencilFailureOperation;
+    @property (nonatomic) MTLStencilOperation frontDepthFailureOperation;
+    @property (nonatomic) MTLStencilOperation frontDepthStencilPassOperation;
+    /* back stencil */
+    @property (nonatomic) BOOL backStencilPresent;
+    @property (nonatomic) MTLCompareFunction backStencilCompareFunction;
+    @property (nonatomic) uint32_t backReadMask;
+    @property (nonatomic) uint32_t backWriteMask;
+    @property (nonatomic) MTLStencilOperation backStencilFailureOperation;
+    @property (nonatomic) MTLStencilOperation backDepthFailureOperation;
+    @property (nonatomic) MTLStencilOperation backDepthStencilPassOperation;
+@end
+
+@implementation MGLDepthStencilCacheKey
+
+- (BOOL)isEqual:(id)object
+{
+    if (self == object) {
+        return YES;
+    }
+    if (![object isKindOfClass:[MGLDepthStencilCacheKey class]]) {
+        return NO;
+    }
+    MGLDepthStencilCacheKey *other = object;
+    if (_depthCompareFunction != other.depthCompareFunction) return NO;
+    if (_depthWriteEnabled != other.depthWriteEnabled) return NO;
+    if (_frontStencilPresent != other.frontStencilPresent) return NO;
+    if (_frontStencilCompareFunction != other.frontStencilCompareFunction) return NO;
+    if (_frontReadMask != other.frontReadMask) return NO;
+    if (_frontWriteMask != other.frontWriteMask) return NO;
+    if (_frontStencilFailureOperation != other.frontStencilFailureOperation) return NO;
+    if (_frontDepthFailureOperation != other.frontDepthFailureOperation) return NO;
+    if (_frontDepthStencilPassOperation != other.frontDepthStencilPassOperation) return NO;
+    if (_backStencilPresent != other.backStencilPresent) return NO;
+    if (_backStencilCompareFunction != other.backStencilCompareFunction) return NO;
+    if (_backReadMask != other.backReadMask) return NO;
+    if (_backWriteMask != other.backWriteMask) return NO;
+    if (_backStencilFailureOperation != other.backStencilFailureOperation) return NO;
+    if (_backDepthFailureOperation != other.backDepthFailureOperation) return NO;
+    if (_backDepthStencilPassOperation != other.backDepthStencilPassOperation) return NO;
+    return YES;
+}
+
+- (NSUInteger)hash
+{
+    NSUInteger h = 0;
+    h = h * 31 + (NSUInteger)_depthCompareFunction;
+    h = h * 31 + (NSUInteger)(_depthWriteEnabled ? 1 : 0);
+    h = h * 31 + (NSUInteger)(_frontStencilPresent ? 1 : 0);
+    h = h * 31 + (NSUInteger)_frontStencilCompareFunction;
+    h = h * 31 + (NSUInteger)_frontReadMask;
+    h = h * 31 + (NSUInteger)_frontWriteMask;
+    h = h * 31 + (NSUInteger)_frontStencilFailureOperation;
+    h = h * 31 + (NSUInteger)_frontDepthFailureOperation;
+    h = h * 31 + (NSUInteger)_frontDepthStencilPassOperation;
+    h = h * 31 + (NSUInteger)(_backStencilPresent ? 1 : 0);
+    h = h * 31 + (NSUInteger)_backStencilCompareFunction;
+    h = h * 31 + (NSUInteger)_backReadMask;
+    h = h * 31 + (NSUInteger)_backWriteMask;
+    h = h * 31 + (NSUInteger)_backStencilFailureOperation;
+    h = h * 31 + (NSUInteger)_backDepthFailureOperation;
+    h = h * 31 + (NSUInteger)_backDepthStencilPassOperation;
+    return h;
+}
+
+- (id)copyWithZone:(NSZone *)zone
+{
+    MGLDepthStencilCacheKey *copy = [[MGLDepthStencilCacheKey allocWithZone:zone] init];
+    copy.depthCompareFunction = _depthCompareFunction;
+    copy.depthWriteEnabled = _depthWriteEnabled;
+    copy.frontStencilPresent = _frontStencilPresent;
+    copy.frontStencilCompareFunction = _frontStencilCompareFunction;
+    copy.frontReadMask = _frontReadMask;
+    copy.frontWriteMask = _frontWriteMask;
+    copy.frontStencilFailureOperation = _frontStencilFailureOperation;
+    copy.frontDepthFailureOperation = _frontDepthFailureOperation;
+    copy.frontDepthStencilPassOperation = _frontDepthStencilPassOperation;
+    copy.backStencilPresent = _backStencilPresent;
+    copy.backStencilCompareFunction = _backStencilCompareFunction;
+    copy.backReadMask = _backReadMask;
+    copy.backWriteMask = _backWriteMask;
+    copy.backStencilFailureOperation = _backStencilFailureOperation;
+    copy.backDepthFailureOperation = _backDepthFailureOperation;
+    copy.backDepthStencilPassOperation = _backDepthStencilPassOperation;
+    return copy;
+}
+
+@end
+
 /* === Static C helpers used only by RenderPass methods === */
 
 static bool mglGeometryShaderIsPassthrough(const Shader *shader)
@@ -29,6 +139,68 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 }
 
 @implementation MGLRenderer (RenderPass)
+
+/* Returns a cached id<MTLDepthStencilState> for the given descriptor, creating
+ * and caching a new one on miss.  Only used when _dsCacheEnabled == YES (gated
+ * by MGL_DS_CACHE=1).  LRU eviction at 64 entries: NSDictionary preserves
+ * insertion order on macOS 10.12+, so on a hit we remove+re-add the key to
+ * mark it most-recently-used, and evict the first (oldest) key when the cache
+ * exceeds capacity.  The MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap)
+ * counter is the caller's responsibility (increment only on miss). */
+- (id<MTLDepthStencilState>)cachedDepthStencilStateForDescriptor:(MTLDepthStencilDescriptor *)descriptor
+{
+    if (!_dsCacheEnabled || descriptor == nil) {
+        return [_device newDepthStencilStateWithDescriptor:descriptor];
+    }
+
+    MGLDepthStencilCacheKey *key = [MGLDepthStencilCacheKey new];
+    key.depthCompareFunction = descriptor.depthCompareFunction;
+    key.depthWriteEnabled = descriptor.depthWriteEnabled;
+
+    MTLStencilDescriptor *front = descriptor.frontFaceStencil;
+    if (front) {
+        key.frontStencilPresent = YES;
+        key.frontStencilCompareFunction = front.stencilCompareFunction;
+        key.frontReadMask = front.readMask;
+        key.frontWriteMask = front.writeMask;
+        key.frontStencilFailureOperation = front.stencilFailureOperation;
+        key.frontDepthFailureOperation = front.depthFailureOperation;
+        key.frontDepthStencilPassOperation = front.depthStencilPassOperation;
+    }
+
+    MTLStencilDescriptor *back = descriptor.backFaceStencil;
+    if (back) {
+        key.backStencilPresent = YES;
+        key.backStencilCompareFunction = back.stencilCompareFunction;
+        key.backReadMask = back.readMask;
+        key.backWriteMask = back.writeMask;
+        key.backStencilFailureOperation = back.stencilFailureOperation;
+        key.backDepthFailureOperation = back.depthFailureOperation;
+        key.backDepthStencilPassOperation = back.depthStencilPassOperation;
+    }
+
+    id<MTLDepthStencilState> cached = _depthStencilStateCache[key];
+    if (cached) {
+        /* LRU: move key to most-recently-used position by reinserting. */
+        [_depthStencilStateCache removeObjectForKey:key];
+        _depthStencilStateCache[key] = cached;
+        return cached;
+    }
+
+    id<MTLDepthStencilState> state = [_device newDepthStencilStateWithDescriptor:descriptor];
+    MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+    if (state) {
+        _depthStencilStateCache[key] = state;
+        if (_depthStencilStateCache.count > 64) {
+            /* Evict least-recently-used (first inserted) entry. */
+            MGLDepthStencilCacheKey *oldestKey = [_depthStencilStateCache.allKeys firstObject];
+            if (oldestKey) {
+                [_depthStencilStateCache removeObjectForKey:oldestKey];
+            }
+        }
+    }
+    return state;
+}
 
 - (void) bindMTLBuffer:(Buffer *) ptr
 {
@@ -1226,12 +1398,22 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
         }
 
-        id <MTLDepthStencilState> dsState = [_device
-                                  newDepthStencilStateWithDescriptor:dsDesc];
+        id <MTLDepthStencilState> dsState;
+        if (_dsCacheEnabled) {
+            /* Cache miss path inside cachedDepthStencilStateForDescriptor:
+             * increments g_mglDepthStencilStateCreatesSinceSwap; cache hits
+             * do not, so the counter reflects real device calls only. */
+            dsState = [self cachedDepthStencilStateForDescriptor:dsDesc];
+        } else {
+            dsState = [_device newDepthStencilStateWithDescriptor:dsDesc];
+            MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+        }
 
         if (!_lastBoundValid || _lastDepthStencilState != dsState) {
             [_currentRenderEncoder setDepthStencilState: dsState];
             _lastDepthStencilState = dsState;
+        } else {
+            MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
         }
         if (useStencilState) {
             [_currentRenderEncoder setStencilFrontReferenceValue:(uint32_t)state->var.stencil_ref
@@ -1244,12 +1426,19 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         disabledDSDesc.depthCompareFunction = MTLCompareFunctionAlways;
         disabledDSDesc.depthWriteEnabled = NO;
 
-        id <MTLDepthStencilState> disabledDSState = [_device
-                                      newDepthStencilStateWithDescriptor:disabledDSDesc];
+        id <MTLDepthStencilState> disabledDSState;
+        if (_dsCacheEnabled) {
+            disabledDSState = [self cachedDepthStencilStateForDescriptor:disabledDSDesc];
+        } else {
+            disabledDSState = [_device newDepthStencilStateWithDescriptor:disabledDSDesc];
+            MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+        }
         if (disabledDSState) {
             if (!_lastBoundValid || _lastDepthStencilState != disabledDSState) {
                 [_currentRenderEncoder setDepthStencilState:disabledDSState];
                 _lastDepthStencilState = disabledDSState;
+            } else {
+                MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
             }
         }
     }
@@ -4693,8 +4882,14 @@ create_new_command_buffer:
     RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx]);
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
-    if (fragmentMSL && strstr(fragmentMSL, kMGLFragCoordParamsMSLName)) {
+    BOOL useFragCoordParams;
+    if (_mslCacheEnabled && fragmentProgram && fragmentProgram->mslCacheValid) {
+        useFragCoordParams = (fragmentProgram->usesFragCoordParams == GL_TRUE);
+    } else {
+        const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
+        useFragCoordParams = (fragmentMSL && strstr(fragmentMSL, kMGLFragCoordParamsMSLName));
+    }
+    if (useFragCoordParams) {
         NSUInteger passHeight = _renderPassDescriptor ? _renderPassDescriptor.renderTargetHeight : 0;
         if (passHeight == 0 && _renderPassDescriptor) {
             for (int i = 0; i < MAX_COLOR_ATTACHMENTS && passHeight == 0; i++) {
@@ -5059,8 +5254,23 @@ stencil_format_ok:;
             GLMState *state = MGL_STATE(ctx);
             /* Force a rebind of the pipeline state on the next setRenderPipelineState
              * call. Dirty program/VAO/FBO/render-state may rebuild or reuse the
-             * pipeline, but the encoder still needs the binding re-issued. */
-            _lastPipelineState = nil;
+             * pipeline, but the encoder still needs the binding re-issued.
+             *
+             * Task 5 gated fast path: when MGL_PSO_DEDUP=1 and the render
+             * encoder is unchanged (_lastBoundValid == YES) and the resolved
+             * pipeline state pointer is identical to the previously bound
+             * state (_pipelineState == _lastPipelineState), the nil assignment
+             * is skipped. This allows the dedup check in
+             * processGLStateLocked:'s setRenderPipelineState: path to
+             * recognize the encoder already has the correct PSO bound and
+             * skip the redundant MTL call. If any condition is false, the
+             * original conservative nil assignment executes. */
+            if (_psoDedupEnabled && _lastBoundValid && (_pipelineState == _lastPipelineState)) {
+                MGL_PERF_INC(g_mglPSODedupHitsSinceSwap);
+            } else {
+                _lastPipelineState = nil;
+                MGL_PERF_INC(g_mglPSODedupMissesSinceSwap);
+            }
             static CFTimeInterval s_pipelineRetryAfter = 0.0;
             static CFTimeInterval s_interfaceMismatchRetryAfter = 0.0;
             static GLuint s_interfaceMismatchProgramName = 0;

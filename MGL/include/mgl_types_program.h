@@ -197,6 +197,15 @@ typedef struct Program_t {
     GLboolean sampler_units_explicit_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
+    /* MSL query result cache (env-gated by MGL_MSL_CACHE=1, default off).
+     * mslCacheValid is GL_FALSE until mglLinkProgram scans the generated MSL
+     * once and populates usesFragCoordParams / vertexAttribUsageMask; while
+     * GL_FALSE the per-draw paths fall back to their original strstr() scan.
+     * Invalidated at the start of every mglLinkProgram and repopulated on
+     * successful link, so the cache always reflects the current MSL. */
+    GLboolean mslCacheValid;
+    GLboolean usesFragCoordParams;   /* FS: gl_FragCoord params present?  */
+    uint32_t vertexAttribUsageMask;  /* VS: bit N set => [[attribute(N)]] */
     GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];

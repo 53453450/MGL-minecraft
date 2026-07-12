@@ -27,6 +27,7 @@
 
 #include <stdint.h>
 #include <stdatomic.h>
+#include <os/signpost.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -117,9 +118,55 @@ extern _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap;
 extern _Atomic double   g_mglLockWaitTimeSinceSwap;   /* time waiting to acquire lock */
 extern _Atomic double   g_mglLockHoldTimeSinceSwap;   /* time holding lock */
 
+/* Depth/stencil state (Stage 1 — CPU audit gated opts) */
+extern _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap;  /* newDepthStencilStateWithDescriptor: calls */
+extern _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthStencilState: skipped by dedup */
+
+/* Snapshot allocation (Stage 1) */
+extern _Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
+extern _Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
+
+/* State replay (Stage 1) */
+extern _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
+
+/* Hazard tracking (Stage 1) */
+extern _Atomic uint64_t g_mglHazardActiveBindingsSinceSwap;      /* sampled active base-buffer binding count per draw */
+extern _Atomic uint64_t g_mglHazardRangeCountSinceSwap;          /* sampled buffer_read_range_count per draw */
+extern _Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap;     /* overflow-triggered full flushes */
+
+/* PSO dedup (Stage 1 — declared for future Task 5 instrumentation) */
+extern _Atomic uint64_t g_mglPSODedupHitsSinceSwap;              /* PSO dedup fast path hits */
+extern _Atomic uint64_t g_mglPSODedupMissesSinceSwap;            /* PSO dedup fast path misses */
+
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
 uint64_t mglPerfSummaryInterval(void);
+
+/* === os_signpost instrumentation (gated by MGL_SIGNPOST=1 env var) ===
+ *
+ * When MGL_SIGNPOST=1 is set, interval signposts are emitted to the default
+ * os_log handle for visualization in Instruments.  When unset, the
+ * mglSignpostEnabled() check in each macro evaluates to false and the branch
+ * predictor learns to skip it, so per-call overhead is ~1 cycle.  The cache
+ * is queried once and cached for the process lifetime.
+ *
+ * os_signpost_interval_begin/end are safe to call from any thread. */
+
+extern os_log_t mglSignpostLog;
+
+/* Returns 1 if MGL_SIGNPOST=1 is set, 0 otherwise.  Cached after first call. */
+int mglSignpostEnabled(void);
+
+/* Signpost interval macros.  These use a bare `if` (no braces), so they MUST
+ * be used as standalone statements — never inside other expressions, and
+ * never as the body of an if/else/for/while without enclosing braces.  When
+ * MGL_SIGNPOST is not set the check evaluates to false and the os_signpost
+ * call is skipped entirely. */
+#define MGL_SIGNPOST_BEGIN(name) \
+    if (mglSignpostEnabled()) os_signpost_interval_begin(mglSignpostLog, OS_SIGNPOST_ID_EXCLUSIVE, #name)
+
+#define MGL_SIGNPOST_END(name) \
+    if (mglSignpostEnabled()) os_signpost_interval_end(mglSignpostLog, OS_SIGNPOST_ID_EXCLUSIVE, #name)
 
 #define MGL_FRAME_LOAD(var) \
     atomic_load_explicit(&(var), memory_order_relaxed)
@@ -222,6 +269,21 @@ typedef struct MGLPerfCounters {
     /* Lock timing */
     double   lock_wait_time;
     double   lock_hold_time;
+    /* Depth/stencil state */
+    uint64_t ds_state_creates;
+    uint64_t ds_state_skips;
+    /* Snapshot allocation */
+    uint64_t snapshot_bytes_allocated;
+    uint64_t snapshot_allocation_count;
+    /* State replay */
+    uint64_t replay_memcpy_count;
+    /* Hazard tracking */
+    uint64_t hazard_active_bindings;
+    uint64_t hazard_range_count;
+    uint64_t hazard_overflow_flushes;
+    /* PSO dedup */
+    uint64_t pso_dedup_hits;
+    uint64_t pso_dedup_misses;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -258,6 +320,16 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.merge_reject_append_failed   = MGL_FRAME_LOAD(g_mglMergeRejectAppendFailedSinceSwap);
     c.lock_wait_time          = MGL_FRAME_LOAD(g_mglLockWaitTimeSinceSwap);
     c.lock_hold_time          = MGL_FRAME_LOAD(g_mglLockHoldTimeSinceSwap);
+    c.ds_state_creates        = MGL_FRAME_LOAD(g_mglDepthStencilStateCreatesSinceSwap);
+    c.ds_state_skips          = MGL_FRAME_LOAD(g_mglDepthStencilStateSkipsSinceSwap);
+    c.snapshot_bytes_allocated = MGL_FRAME_LOAD(g_mglSnapshotBytesAllocatedSinceSwap);
+    c.snapshot_allocation_count = MGL_FRAME_LOAD(g_mglSnapshotAllocationCountSinceSwap);
+    c.replay_memcpy_count     = MGL_FRAME_LOAD(g_mglReplayMemcpyCountSinceSwap);
+    c.hazard_active_bindings  = MGL_FRAME_LOAD(g_mglHazardActiveBindingsSinceSwap);
+    c.hazard_range_count      = MGL_FRAME_LOAD(g_mglHazardRangeCountSinceSwap);
+    c.hazard_overflow_flushes = MGL_FRAME_LOAD(g_mglHazardOverflowFlushesSinceSwap);
+    c.pso_dedup_hits          = MGL_FRAME_LOAD(g_mglPSODedupHitsSinceSwap);
+    c.pso_dedup_misses        = MGL_FRAME_LOAD(g_mglPSODedupMissesSinceSwap);
     return c;
 }
 
@@ -294,6 +366,16 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglMergeRejectAppendFailedSinceSwap, 0);
     MGL_FRAME_STORE(g_mglLockWaitTimeSinceSwap, 0.0);
     MGL_FRAME_STORE(g_mglLockHoldTimeSinceSwap, 0.0);
+    MGL_FRAME_STORE(g_mglDepthStencilStateCreatesSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDepthStencilStateSkipsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSnapshotBytesAllocatedSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSnapshotAllocationCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglReplayMemcpyCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHazardActiveBindingsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHazardRangeCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglHazardOverflowFlushesSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglPSODedupHitsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglPSODedupMissesSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is

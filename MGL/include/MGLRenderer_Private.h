@@ -202,6 +202,10 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     MTLPixelFormat _pipelineStencilFormat;
     GLuint _pipelineProgramName;
     NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *_pipelineStateCache;
+    /* Gated by MGL_DS_CACHE=1 (default OFF).  Maps cache key →
+     * id<MTLDepthStencilState> with simple LRU eviction at 64 entries. */
+    NSMutableDictionary *_depthStencilStateCache;
+    BOOL _dsCacheEnabled;
     MTLRenderPassDescriptor *_renderPassDescriptor;
     Framebuffer *_renderPassFramebuffer;
     GLuint _renderPassFramebufferName;
@@ -275,6 +279,27 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     float _lastDepthBiasClamp;
     float _lastDepthSlopeScale;
     BOOL _lastBoundValid;
+    /* Cached result of getenv("MGL_MSL_CACHE"); when NO (default) the
+     * per-draw MSL strstr() scan runs unchanged, when YES the renderer reads
+     * Program::mslCacheValid-gated cached query results instead. */
+    BOOL _mslCacheEnabled;
+
+    /* === Task 4: Snapshot Arena (bump allocator) ===
+     * Gated by MGL_ARENA_SNAPSHOT=1 (default OFF).  When enabled, batch
+     * snapshot allocations (GLMState, VertexArray, commands array) come from
+     * _batchArena instead of individual malloc calls, and are freed via
+     * arena reset instead of individual free calls. */
+    MGLBatchArena _batchArena;
+    BOOL _arenaSnapshotEnabled;
+    /* === Task 5: PSO dedup gated fast path ===
+     * Cached result of getenv("MGL_PSO_DEDUP"); when NO (default) the
+     * _lastPipelineState = nil assignment in
+     * syncPipelineStateWithDeferredBufferMap: runs unchanged (0% skip rate).
+     * When YES, the nil assignment is conditionally skipped when the render
+     * encoder is unchanged and the pipeline state pointer is identical to
+     * the previously bound state, allowing setRenderPipelineState:'s
+     * existing dedup to fire. */
+    BOOL _psoDedupEnabled;
 }
 
 @end

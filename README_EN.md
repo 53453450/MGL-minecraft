@@ -118,14 +118,12 @@ MGL-minecraft/
 ├── external/                    # SPIRV-Cross, SPIRV-Tools, glslang, GLFW, etc.
 ├── benchmark/                   # Performance test tools
 ├── test_mgl/                    # Local smoke/functional tests
-├── MGL Tests/                   # Xcode test target
 ├── MGL_Golden_Images/           # Image regression baselines
 ├── TestImages/                  # Test texture assets
 ├── enum_parser/                 # OpenGL enum generation helper
 ├── spec_parser/                 # Specification parsing helper
 ├── build/                       # Local build output
-├── MGL.xcodeproj/               # Xcode project
-├── Makefile                     # Build script
+├── Makefile                     # Sole build entry point
 ├── README.md                    # Chinese README
 ├── README_EN.md                 # English README
 └── LICENSE                      # Apache 2.0 License

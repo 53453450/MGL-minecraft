@@ -3,6 +3,7 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
+#import "mgl_frame_activity.h"
 
 /* === Static C helpers used only by Draw methods === */
 
@@ -102,9 +103,15 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
         }
         // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
         if (vsMslStr) {
-            char attrPattern[32];
-            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
-            if (!strstr(vsMslStr, attrPattern)) {
+            bool attribInMSL;
+            if (_mslCacheEnabled && activeProgram && activeProgram->mslCacheValid) {
+                attribInMSL = ((activeProgram->vertexAttribUsageMask & (1u << attrib)) != 0u);
+            } else {
+                char attrPattern[32];
+                snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
+                attribInMSL = (strstr(vsMslStr, attrPattern) != NULL);
+            }
+            if (!attribInMSL) {
                 continue;
             }
         }
@@ -538,9 +545,15 @@ static bool mglRendererProgramHasSampledResourceNamed(Program *program, const ch
         }
         // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
         if (vsMslStr) {
-            char attrPattern[32];
-            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
-            if (!strstr(vsMslStr, attrPattern)) {
+            bool attribInMSL;
+            if (_mslCacheEnabled && activeProgram && activeProgram->mslCacheValid) {
+                attribInMSL = ((activeProgram->vertexAttribUsageMask & (1u << attrib)) != 0u);
+            } else {
+                char attrPattern[32];
+                snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
+                attribInMSL = (strstr(vsMslStr, attrPattern) != NULL);
+            }
+            if (!attribInMSL) {
                 continue;
             }
         }
@@ -5158,8 +5171,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                      context:(GLMContext)glm_ctx
                   savedState:(const GLMState *)savedState
 {
+    MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     if (batch->state_snapshot) {
         memcpy(&glm_ctx->state, batch->state_snapshot, sizeof(glm_ctx->state));
+        MGL_PERF_INC(g_mglReplayMemcpyCountSinceSwap);
         /* The snapshot shallow-copies the 10 embedded HashTables in GLMState.
          * Each HashTable owns a dynamically-allocated keys/states array that
          * may have been reallocated since the snapshot was taken, making the
@@ -5197,6 +5212,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         replayDirtyBits |= DIRTY_FBO;
     }
     glm_ctx->state.dirty_bits |= replayDirtyBits;
+    MGL_SIGNPOST_END(RestoreStateForBatch);
 }
 
 - (void)teardownBatchReplayForContext:(GLMContext)glm_ctx
@@ -5207,6 +5223,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     /* Deactivate snapshot-based state access — revert to live ctx->state. */
     _activeState = nil;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
+    /* Task 4: Reset the snapshot arena now that all batch replay is complete
+     * and mglResetCommandBufferForContext has cleared all batch references.
+     * This is the safe point — no worker/encoder is accessing snapshot data. */
+    if (_arenaSnapshotEnabled) {
+        mglResetBatchArena(&_batchArena);
+    }
     memcpy(&glm_ctx->state, savedState, sizeof(glm_ctx->state));
     /* Replay has fully applied all pending state to Metal encoders.
      * Clear dirty bits so the next defer-path draw starts clean instead of

@@ -11236,11 +11236,38 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _consecutiveGPUErrors = 0;
     _lastGPUErrorTime = 0;
     _gpuErrorRecoveryMode = NO;
+    // MSL query result cache is opt-in (MGL_MSL_CACHE=1), default off.
+    _mslCacheEnabled = mglEnvFlagEnabled("MGL_MSL_CACHE");
+    // PSO dedup gated fast path is opt-in (MGL_PSO_DEDUP=1), default off.
+    // When enabled, syncPipelineStateWithDeferredBufferMap: conditionally
+    // skips the _lastPipelineState = nil assignment so the existing
+    // setRenderPipelineState: dedup can fire on unchanged pipelines.
+    _psoDedupEnabled = mglEnvFlagEnabled("MGL_PSO_DEDUP");
     _pipelineColor0Format = MTLPixelFormatInvalid;
     _pipelineDepthFormat = MTLPixelFormatInvalid;
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0;
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
+    _dsCacheEnabled = (getenv("MGL_DS_CACHE") != NULL &&
+                       strcmp(getenv("MGL_DS_CACHE"), "1") == 0);
+    if (_dsCacheEnabled) {
+        _depthStencilStateCache = [NSMutableDictionary new];
+    }
+    /* Task 4: Snapshot Arena — opt-in via MGL_ARENA_SNAPSHOT=1 (default OFF).
+     * When enabled, batch snapshot allocations come from a bump-allocator
+     * arena instead of individual malloc calls. */
+    _arenaSnapshotEnabled = (getenv("MGL_ARENA_SNAPSHOT") != NULL &&
+                             strcmp(getenv("MGL_ARENA_SNAPSHOT"), "1") == 0);
+    if (_arenaSnapshotEnabled) {
+        if (mglInitBatchArena(&_batchArena, 4u * 1024u * 1024u)) {
+            ctx->batch_arena = &_batchArena;
+            NSLog(@"MGL INFO: Snapshot arena enabled (initial chunk capacity %zu bytes)",
+                  _batchArena.initial_capacity);
+        } else {
+            _arenaSnapshotEnabled = NO;
+            NSLog(@"MGL WARNING: Snapshot arena malloc failed; falling back to per-batch malloc");
+        }
+    }
     /* Initialize last-bound render encoder dedup state to a clean slate.
      * _lastBoundValid starts NO so the first bind on the first encoder is
      * never incorrectly skipped. */
@@ -11551,6 +11578,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         if (_metalStateLock) {
             _metalStateLock = nil;
         }
+
+        /* Task 4: Release all address-stable snapshot arena chunks. */
+        mglDestroyBatchArena(&_batchArena);
 
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during dealloc cleanup: %@", exception);

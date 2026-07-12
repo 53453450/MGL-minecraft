@@ -1,9 +1,9 @@
 -include config.mk
 
 SHELL := /bin/bash
+.DEFAULT_GOAL := lib
 
-# Find SDK path via xcode-select, backwards compatible with Xcode vers < 4.5
-# on M1 monterey, comment out the following line
+# Find the macOS SDK through the installed Command Line Tools.
 SDK_ROOT = $(shell xcrun --sdk macosx --show-sdk-path)
 APPLE_CLANG = $(shell xcrun --find clang)
 APPLE_CLANGXX = $(shell xcrun --find clang++)
@@ -136,6 +136,15 @@ LIBS += external/SPIRV-Tools/build/source/opt/libSPIRV-Tools-opt.a
 # no need to tweak after this line, hopefully
 
 default: lib
+
+help:
+	@printf '%s\n' \
+		'Build targets:' \
+		'  make                  Build libmgl.dylib, libmgl_es.dylib, and libglfw.dylib.' \
+		'  make lib              Build the runtime dylibs.' \
+		'  make bench            Build the MGL benchmark.' \
+		'  make test-regression  Build the headless regression suite.' \
+		'  make clean            Remove local build outputs.'
 
 brew_prefix := $(shell brew --prefix)
 
@@ -427,6 +436,6 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-o $(build_dir)/test_regression
 	@echo "✅ Regression suite built: $(build_dir)/test_regression"
 
-.PHONY: default test dbg lib clean insall-pkgdeps test-make bench bench-system test-regression
+.PHONY: default help test dbg lib clean insall-pkgdeps test-make bench bench-system test-regression
 
 -include $(deps)
