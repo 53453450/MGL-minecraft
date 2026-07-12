@@ -7,7 +7,7 @@
 /* === MGLDepthStencilCacheKey ===
  * Lightweight value key covering every field of MTLDepthStencilDescriptor that
  * affects the created id<MTLDepthStencilState>.  Used only when the
- * MGL_DS_CACHE=1 env var gates on the depth/stencil state cache.  All fields
+ * MGL_DS_CACHE env var gates the depth/stencil state cache (default ON; =0 off).  All fields
  * are stored as primitives for fast isEqual:/hash.
  *
  * Note: MTLDepthStencilDescriptor in the target SDK exposes
@@ -142,7 +142,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 /* Returns a cached id<MTLDepthStencilState> for the given descriptor, creating
  * and caching a new one on miss.  Only used when _dsCacheEnabled == YES (gated
- * by MGL_DS_CACHE=1).  LRU eviction at 64 entries: NSDictionary preserves
+ * by MGL_DS_CACHE, default ON).  LRU eviction at 64 entries: NSDictionary preserves
  * insertion order on macOS 10.12+, so on a hit we remove+re-add the key to
  * mark it most-recently-used, and evict the first (oldest) key when the cache
  * exceeds capacity.  The MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap)
@@ -5256,7 +5256,8 @@ stencil_format_ok:;
              * call. Dirty program/VAO/FBO/render-state may rebuild or reuse the
              * pipeline, but the encoder still needs the binding re-issued.
              *
-             * Task 5 gated fast path: when MGL_PSO_DEDUP=1 and the render
+             * Task 5 gated fast path: when MGL_PSO_DEDUP is enabled (default ON)
+             * and the render
              * encoder is unchanged (_lastBoundValid == YES) and the resolved
              * pipeline state pointer is identical to the previously bound
              * state (_pipelineState == _lastPipelineState), the nil assignment

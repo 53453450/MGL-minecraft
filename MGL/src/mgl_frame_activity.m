@@ -153,6 +153,18 @@ _Atomic uint64_t g_mglHazardRangeCountSinceSwap           = 0;
 _Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap      = 0;
 _Atomic uint64_t g_mglPSODedupHitsSinceSwap               = 0;
 _Atomic uint64_t g_mglPSODedupMissesSinceSwap             = 0;
+_Atomic uint64_t g_mglFlushTotalSinceSwap                 = 0;
+_Atomic uint64_t g_mglFlushReasonBindTextureSinceSwap     = 0;
+_Atomic uint64_t g_mglFlushReasonBindBufferSinceSwap      = 0;
+_Atomic uint64_t g_mglFlushReasonTexWriteSinceSwap        = 0;
+_Atomic uint64_t g_mglFlushReasonBufferRangeSinceSwap     = 0;
+_Atomic uint64_t g_mglFlushReasonActiveTexWarSinceSwap    = 0;
+_Atomic uint64_t g_mglFlushReasonCapacitySinceSwap        = 0;
+_Atomic uint64_t g_mglFlushReasonOtherSinceSwap           = 0;
+_Atomic uint64_t g_mglSameKeyRestoreSkipsSinceSwap        = 0;
+_Atomic uint64_t g_mglSameKeyOracleWouldSkipSinceSwap     = 0;
+_Atomic uint64_t g_mglDirtyKeyDeltaNarrowSinceSwap        = 0;
+_Atomic uint64_t g_mglBatchesReplayedSinceSwap            = 0;
 
 #include <mach/mach_time.h>
 
@@ -178,7 +190,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           @"lock: wait=%.1fms hold=%.1fms | "
           @"ds: creates=%llu skips=%llu | "
           @"snap: bytes=%llu allocs=%llu | "
-          @"replay: memcpy=%llu | "
+          @"replay: memcpy=%llu same_key_skip=%llu delta_narrow=%llu batches=%llu oracle=%llu | "
           @"hazard: active=%llu ranges=%llu overflow=%llu | "
           @"pso_dedup: hits=%llu misses=%llu",
           frame_interval_ms,
@@ -198,9 +210,13 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.lock_wait_time * 1000.0, c.lock_hold_time * 1000.0,
           c.ds_state_creates, c.ds_state_skips,
           c.snapshot_bytes_allocated, c.snapshot_allocation_count,
-          c.replay_memcpy_count,
+          c.replay_memcpy_count, c.same_key_restore_skips, c.dirty_key_delta_narrow,
+          c.batches_replayed, c.same_key_oracle_would_skip,
           c.hazard_active_bindings, c.hazard_range_count, c.hazard_overflow_flushes,
           c.pso_dedup_hits, c.pso_dedup_misses);
+    NSLog(@"MGL PERF2: flush: total=%llu bindTex=%llu bindBuf=%llu texW=%llu bufR=%llu war=%llu cap=%llu other=%llu",
+          c.flush_total, c.flush_bind_texture, c.flush_bind_buffer, c.flush_tex_write,
+          c.flush_buffer_range, c.flush_active_tex_war, c.flush_capacity, c.flush_other);
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

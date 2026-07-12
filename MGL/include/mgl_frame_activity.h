@@ -138,6 +138,20 @@ extern _Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap;     /* overflow-tri
 extern _Atomic uint64_t g_mglPSODedupHitsSinceSwap;              /* PSO dedup fast path hits */
 extern _Atomic uint64_t g_mglPSODedupMissesSinceSwap;            /* PSO dedup fast path misses */
 
+/* Flush reasons + same-key restore instrumentation (100ms encoder kill path) */
+extern _Atomic uint64_t g_mglFlushTotalSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonBindTextureSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonBindBufferSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonTexWriteSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonBufferRangeSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonActiveTexWarSinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonCapacitySinceSwap;
+extern _Atomic uint64_t g_mglFlushReasonOtherSinceSwap;
+extern _Atomic uint64_t g_mglSameKeyRestoreSkipsSinceSwap;
+extern _Atomic uint64_t g_mglSameKeyOracleWouldSkipSinceSwap;
+extern _Atomic uint64_t g_mglDirtyKeyDeltaNarrowSinceSwap;
+extern _Atomic uint64_t g_mglBatchesReplayedSinceSwap;
+
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
 uint64_t mglPerfSummaryInterval(void);
@@ -284,6 +298,19 @@ typedef struct MGLPerfCounters {
     /* PSO dedup */
     uint64_t pso_dedup_hits;
     uint64_t pso_dedup_misses;
+    /* Flush reasons + same-key restore */
+    uint64_t flush_total;
+    uint64_t flush_bind_texture;
+    uint64_t flush_bind_buffer;
+    uint64_t flush_tex_write;
+    uint64_t flush_buffer_range;
+    uint64_t flush_active_tex_war;
+    uint64_t flush_capacity;
+    uint64_t flush_other;
+    uint64_t same_key_restore_skips;
+    uint64_t same_key_oracle_would_skip;
+    uint64_t dirty_key_delta_narrow;
+    uint64_t batches_replayed;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -330,6 +357,18 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.hazard_overflow_flushes = MGL_FRAME_LOAD(g_mglHazardOverflowFlushesSinceSwap);
     c.pso_dedup_hits          = MGL_FRAME_LOAD(g_mglPSODedupHitsSinceSwap);
     c.pso_dedup_misses        = MGL_FRAME_LOAD(g_mglPSODedupMissesSinceSwap);
+    c.flush_total             = MGL_FRAME_LOAD(g_mglFlushTotalSinceSwap);
+    c.flush_bind_texture      = MGL_FRAME_LOAD(g_mglFlushReasonBindTextureSinceSwap);
+    c.flush_bind_buffer       = MGL_FRAME_LOAD(g_mglFlushReasonBindBufferSinceSwap);
+    c.flush_tex_write         = MGL_FRAME_LOAD(g_mglFlushReasonTexWriteSinceSwap);
+    c.flush_buffer_range      = MGL_FRAME_LOAD(g_mglFlushReasonBufferRangeSinceSwap);
+    c.flush_active_tex_war    = MGL_FRAME_LOAD(g_mglFlushReasonActiveTexWarSinceSwap);
+    c.flush_capacity          = MGL_FRAME_LOAD(g_mglFlushReasonCapacitySinceSwap);
+    c.flush_other             = MGL_FRAME_LOAD(g_mglFlushReasonOtherSinceSwap);
+    c.same_key_restore_skips  = MGL_FRAME_LOAD(g_mglSameKeyRestoreSkipsSinceSwap);
+    c.same_key_oracle_would_skip = MGL_FRAME_LOAD(g_mglSameKeyOracleWouldSkipSinceSwap);
+    c.dirty_key_delta_narrow  = MGL_FRAME_LOAD(g_mglDirtyKeyDeltaNarrowSinceSwap);
+    c.batches_replayed        = MGL_FRAME_LOAD(g_mglBatchesReplayedSinceSwap);
     return c;
 }
 
@@ -376,10 +415,24 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglHazardOverflowFlushesSinceSwap, 0);
     MGL_FRAME_STORE(g_mglPSODedupHitsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglPSODedupMissesSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushTotalSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonBindTextureSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonBindBufferSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonTexWriteSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonBufferRangeSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonActiveTexWarSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonCapacitySinceSwap, 0);
+    MGL_FRAME_STORE(g_mglFlushReasonOtherSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSameKeyRestoreSkipsSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSameKeyOracleWouldSkipSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDirtyKeyDeltaNarrowSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglBatchesReplayedSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is
- * the CPU time between swaps.  No-op when env-var is not set. */
+ * the CPU time between swaps.  No-op when env-var is not set.
+ * NOTE: the env *name* must be exactly MGL_PERF_SUMMARY — a leading space
+ * in the variable name (e.g. " MGL_PERF_SUMMARY") will not be found. */
 void mglPrintPerfSummary(double frame_interval_ms);
 
 #ifdef __cplusplus

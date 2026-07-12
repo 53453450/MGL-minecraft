@@ -4803,6 +4803,17 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       parallelGroupCount, largestParallelGroup);
     }
 
+    /* Same-key restore skip: consecutive sequential batches that share an
+     * MGLStateKey can reuse the already-bound encoder state without another
+     * ~83KB GLMState memcpy + full processGLState.  Collision residual is
+     * identical to batch merge (memcmp of hashed key fields).
+     * Hold a stack copy of lastKey — do not keep pointers into batch array
+     * past teardown. */
+    MGLStateKey lastKey;
+    BOOL lastKeyValid = NO;
+    BOOL lastExecuteOk = NO;
+    memset(&lastKey, 0, sizeof(lastKey));
+
     for (uint32_t b = 0; b < cb->batch_count; b++) {
         @autoreleasepool {
             MGLDrawBatch *batch = &cb->batches[b];
@@ -5043,12 +5054,47 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     }
 
                     b++; /* Skip batch[b+1] — already processed. */
+                    /* Parallel branch ends the encoder and invalidates dedup;
+                     * force a full restore on the next sequential batch. */
+                    lastKeyValid = NO;
+                    lastExecuteOk = NO;
                     continue;
                 }
             }
 
-        sequentialBatch:
-            [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
+        sequentialBatch: {
+            /* Same-key skip: only when the previous sequential batch fully
+             * executed, the same encoder is still open with valid bind
+             * cache, and keys match. Never skip across FBO/pass changes. */
+            BOOL canSkipRestore = NO;
+            if (_skipSameKeyRestoreEnabled &&
+                lastKeyValid &&
+                lastExecuteOk &&
+                _currentRenderEncoder != nil &&
+                _lastBoundValid &&
+                !_parallelEncodeActive &&
+                mglStateKeysEqual(&batch->key, &lastKey) &&
+                [self currentRenderPassMatchesCurrentFramebuffer]) {
+                canSkipRestore = YES;
+            } else if (!_skipSameKeyRestoreEnabled &&
+                       lastKeyValid &&
+                       lastExecuteOk &&
+                       mglStateKeysEqual(&batch->key, &lastKey) &&
+                       mglEnvFlagEnabled("MGL_SKIP_SAME_KEY_ORACLE")) {
+                /* Oracle: measure skip opportunity without changing behavior. */
+                MGL_PERF_INC(g_mglSameKeyOracleWouldSkipSinceSwap);
+            }
+
+            if (canSkipRestore) {
+                _activeState = &glm_ctx->state;
+                glm_ctx->state.dirty_bits = 0;
+                MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
+            } else {
+                [self restoreStateForBatch:batch
+                                   context:glm_ctx
+                                savedState:&savedState
+                                   prevKey:(lastKeyValid ? &lastKey : NULL)];
+            }
 
             if (![self checkBatchShouldExecute:batch
                                        context:glm_ctx
@@ -5056,8 +5102,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     batchIndex:b
                                    replayError:&replayError
                                skippedCommands:&skippedCommandCount]) {
+                lastExecuteOk = NO;
                 continue;
             }
+
+            lastExecuteOk = YES;
+            lastKey = batch->key;
+            lastKeyValid = YES;
+            MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
             switch (scheduledPath) {
@@ -5109,6 +5161,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
 
             [self recordBatchCommandStats:batch context:glm_ctx];
+        } /* sequentialBatch */
         }
     }
     _traceReplayFlushId = 0;
@@ -5171,6 +5224,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                      context:(GLMContext)glm_ctx
                   savedState:(const GLMState *)savedState
 {
+    [self restoreStateForBatch:batch context:glm_ctx savedState:savedState prevKey:NULL];
+}
+
+- (void)restoreStateForBatch:(MGLDrawBatch *)batch
+                     context:(GLMContext)glm_ctx
+                  savedState:(const GLMState *)savedState
+                     prevKey:(const MGLStateKey *)prevKey
+{
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     if (batch->state_snapshot) {
         memcpy(&glm_ctx->state, batch->state_snapshot, sizeof(glm_ctx->state));
@@ -5200,16 +5261,68 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
      * In Stage 5.3 this will point to a per-worker GLMState copy instead. */
     _activeState = &glm_ctx->state;
     glm_ctx->state.dirty_bits = 0;
-    GLuint replayDirtyBits =
+
+    static const GLuint kMGLFullReplayDirtyBits =
         (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
          DIRTY_TEX_BINDING | DIRTY_TEX | DIRTY_TEX_PARAM |
          DIRTY_SAMPLER | DIRTY_ALPHA_STATE | DIRTY_BUFFER |
          DIRTY_BUFFER_BASE_STATE);
+
+    GLuint replayDirtyBits = kMGLFullReplayDirtyBits;
+    BOOL prevKeyValid = (prevKey != NULL);
+    BOOL canDelta = _dirtyKeyDeltaEnabled &&
+                    prevKeyValid &&
+                    _currentRenderEncoder != nil &&
+                    _lastBoundValid;
+
+    if (canDelta) {
+        const MGLStateKey *a = prevKey;
+        const MGLStateKey *b = &batch->key;
+        replayDirtyBits = 0;
+        if (a->program_name != b->program_name ||
+            a->program_pipeline_name != b->program_pipeline_name ||
+            a->vertex_program_name != b->vertex_program_name ||
+            a->fragment_program_name != b->fragment_program_name) {
+            replayDirtyBits |= DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER;
+        }
+        if (a->vao_name != b->vao_name ||
+            a->vertex_layout_hash != b->vertex_layout_hash) {
+            replayDirtyBits |= DIRTY_VAO | DIRTY_BUFFER;
+        }
+        if (a->texture_hash != b->texture_hash) {
+            replayDirtyBits |= DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM | DIRTY_SAMPLER;
+        }
+        if (a->render_state_hash != b->render_state_hash ||
+            a->caps_flags != b->caps_flags ||
+            a->scissor_enabled != b->scissor_enabled ||
+            a->primitive_type != b->primitive_type ||
+            memcmp(a->viewport, b->viewport, sizeof(a->viewport)) != 0 ||
+            memcmp(a->scissor, b->scissor, sizeof(a->scissor)) != 0) {
+            replayDirtyBits |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
+        }
+        if (replayDirtyBits != kMGLFullReplayDirtyBits) {
+            MGL_PERF_INC(g_mglDirtyKeyDeltaNarrowSinceSwap);
+        }
+    }
+
     Framebuffer *replayFBO = glm_ctx->state.framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
+        (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
         (_currentRenderEncoder &&
          ![self currentRenderPassMatchesCurrentFramebuffer])) {
         replayDirtyBits |= DIRTY_FBO;
+    }
+    /* Empty encoder cannot delta-bind — force full domains. */
+    if (_currentRenderEncoder == nil || !_lastBoundValid) {
+        replayDirtyBits = kMGLFullReplayDirtyBits |
+                          ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
+        if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
+            (_currentRenderEncoder &&
+             ![self currentRenderPassMatchesCurrentFramebuffer])) {
+            replayDirtyBits |= DIRTY_FBO;
+        } else if (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) {
+            replayDirtyBits |= DIRTY_FBO;
+        }
     }
     glm_ctx->state.dirty_bits |= replayDirtyBits;
     MGL_SIGNPOST_END(RestoreStateForBatch);

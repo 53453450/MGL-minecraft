@@ -40,11 +40,11 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MAX_PENDING_TEXTURE_READS 512
 
 /* Bump-allocator arena for batch snapshot allocations (Task 4).
- * Gated by env var MGL_ARENA_SNAPSHOT=1 (default OFF).  When enabled,
- * state_snapshot, vao_snapshot, and the commands array are allocated from
- * this arena instead of individual malloc calls, and freed via arena reset
- * instead of individual free calls.  The arena is owned by MGLRenderer and
- * accessed from C via GLMContextRec_t::batch_arena. */
+ * Gated by env var MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When
+ * enabled, state_snapshot, vao_snapshot, and the commands array are allocated
+ * from this arena instead of individual malloc calls, and freed via arena
+ * reset instead of individual free calls.  The arena is owned by MGLRenderer
+ * and accessed from C via GLMContextRec_t::batch_arena. */
 typedef struct MGLBatchArenaChunk MGLBatchArenaChunk;
 
 typedef struct MGLBatchArena {
@@ -172,6 +172,10 @@ void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao);
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture);
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
+
+/* MGL_BIND_NO_FLUSH (default ON; =0 off): pure texture/buffer rebinds skip
+ * unconditional full flush; content mutation paths still flush. */
+int mglBindNoFlushEnabled(void);
 
 /* Initializes an address-stable, chunked batch arena. */
 bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);

@@ -32,6 +32,7 @@
 #include "buffers.h"
 #include "pixel_utils.h"
 #include "mgl_safety.h"
+#include "mgl_frame_activity.h"
 
 // Used to recover from a corrupted context pointer (e.g. small non-NULL values like 0x2f)
 extern void mgl_lazy_init(void);
@@ -1414,7 +1415,15 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             base_slot->offset != 0 ||
             base_slot->size != ptr->size ||
             base_slot->buf != ptr) {
-            mglFlushPendingDraws(ctx);
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
         }
 
         base_slot->buffer = buffer;
@@ -1434,7 +1443,15 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
     {
         if (base_slot->buffer != 0 || base_slot->buf != NULL ||
             base_slot->offset != 0 || base_slot->size != 0) {
-            mglFlushPendingDraws(ctx);
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
         STATE(buffers[buffer_index]) = NULL;
@@ -1511,7 +1528,15 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     {
         if (base_slot->buffer != 0 || base_slot->buf != NULL ||
             base_slot->offset != 0 || base_slot->size != 0) {
-            mglFlushPendingDraws(ctx);
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
         /* Keep indexed and generic target bindings in sync.  CTS exercises
@@ -1582,7 +1607,15 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             base_slot->offset != offset ||
             base_slot->size != size ||
             base_slot->buf != ptr) {
-            mglFlushPendingDraws(ctx);
+            if (mglBindNoFlushEnabled()) {
+                if (base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+            } else {
+                MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
         }
 
         base_slot->buffer = buffer;

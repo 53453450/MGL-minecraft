@@ -206,7 +206,7 @@ typedef struct Program_t {
     GLboolean sampler_units_explicit_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
-    /* MSL query result cache (env-gated by MGL_MSL_CACHE=1, default off).
+    /* MSL query result cache (env-gated by MGL_MSL_CACHE, default ON; =0 off).
      * mslCacheValid is GL_FALSE until mglLinkProgram scans the generated MSL
      * once and populates usesFragCoordParams / vertexAttribUsageMask; while
      * GL_FALSE the per-draw paths fall back to their original strstr() scan.

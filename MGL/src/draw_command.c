@@ -20,7 +20,9 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
+#include <stdatomic.h>
 
 #include "glm_context.h"
 #include "draw_command.h"
@@ -416,6 +418,28 @@ static uint32_t mglRuntimeMaxBatchCount(void)
                                       MGL_MAX_BATCHES);
     }
     return s_value;
+}
+
+/* MGL_BIND_NO_FLUSH: default ON; =0/false/no/off disables. Cached process-wide. */
+int mglBindNoFlushEnabled(void)
+{
+    static _Atomic int cached = -1;
+    int v = atomic_load_explicit(&cached, memory_order_acquire);
+    if (v < 0) {
+        const char *value = getenv("MGL_BIND_NO_FLUSH");
+        if (!value || value[0] == '\0') {
+            v = 1;
+        } else if (strcmp(value, "0") == 0 ||
+                   strcasecmp(value, "false") == 0 ||
+                   strcasecmp(value, "no") == 0 ||
+                   strcasecmp(value, "off") == 0) {
+            v = 0;
+        } else {
+            v = 1;
+        }
+        atomic_store_explicit(&cached, v, memory_order_release);
+    }
+    return v != 0;
 }
 
 static void mglNormalizeMutationRange(int64_t offset, int64_t size, uint64_t *start, uint64_t *end)
@@ -826,6 +850,7 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
 void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 {
     if (mglPendingDrawsReadBufferRange(ctx, buffer, 0, -1)) {
+        MGL_PERF_INC(g_mglFlushReasonBufferRangeSinceSwap);
         mglFlushCommandBuffer(ctx);
     }
 }
@@ -840,6 +865,7 @@ void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size)
 {
     if (mglPendingDrawsReadBufferRange(ctx, buffer, offset, size)) {
+        MGL_PERF_INC(g_mglFlushReasonBufferRangeSinceSwap);
         mglFlushCommandBuffer(ctx);
     }
 }
@@ -948,6 +974,7 @@ void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
                                 ctx ? ctx->draw_command_buffer.batch_count : 0u,
                                 ctx ? ctx->draw_command_buffer.total_commands : 0u);
         }
+        MGL_PERF_INC(g_mglFlushReasonTexWriteSinceSwap);
         mglFlushCommandBuffer(ctx);
     }
 }
@@ -1009,6 +1036,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
     if (cb->texture_write_count == 0 && !cb->texture_write_overflow) return;
     if (cb->texture_write_overflow) {
         MGL_PERF_INC(g_mglHazardOverflowFlushesSinceSwap);
+        MGL_PERF_INC(g_mglFlushReasonActiveTexWarSinceSwap);
         mglFlushCommandBuffer(ctx);
         return;
     }
@@ -1034,6 +1062,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
 
             Texture *active = ctx->state.active_textures[unit];
             if (active && mglPendingDrawsWriteTexture(ctx, active)) {
+                MGL_PERF_INC(g_mglFlushReasonActiveTexWarSinceSwap);
                 mglFlushCommandBuffer(ctx);
                 return;
             }
@@ -1042,6 +1071,7 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
             for (int target = 0; target < _MAX_TEXTURE_TYPES; target++) {
                 Texture *bound = textureUnit->textures[target];
                 if (bound && mglPendingDrawsWriteTexture(ctx, bound)) {
+                    MGL_PERF_INC(g_mglFlushReasonActiveTexWarSinceSwap);
                     mglFlushCommandBuffer(ctx);
                     return;
                 }
@@ -2517,6 +2547,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     }
     if (!batch) {
         if (cb->batch_count >= maxBatchCount) {
+            MGL_PERF_INC(g_mglFlushReasonCapacitySinceSwap);
             mglFlushCommandBuffer(ctx);
             if (cb->batch_count >= maxBatchCount) {
                 fprintf(stderr, "MGL Error: mglAppendDrawCommand: batch buffer full after flush\n");
@@ -2571,6 +2602,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             batch = NULL;
             if (!batch) {
                 if (cb->batch_count >= maxBatchCount) {
+                    MGL_PERF_INC(g_mglFlushReasonCapacitySinceSwap);
                     mglFlushCommandBuffer(ctx);
                     if (cb->batch_count >= maxBatchCount) {
                         fprintf(stderr, "MGL Error: mglAppendDrawCommand: fallback batch buffer full after flush\n");
@@ -2678,6 +2710,7 @@ void mglFlushCommandBuffer(GLMContext ctx)
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
     if (cb->batch_count == 0) return;
 
+    MGL_PERF_INC(g_mglFlushTotalSinceSwap);
     if (ctx->mtl_funcs.mtlFlushDrawBuffer) {
         ctx->mtl_funcs.mtlFlushDrawBuffer(ctx);
     }

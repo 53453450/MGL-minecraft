@@ -273,6 +273,23 @@ BOOL mglEnvFlagEnabled(const char *name)
     return YES;
 }
 
+/* Unset/empty → YES (default ON); "0"/"false"/"no"/"off" → NO; other non-empty → YES.
+ * Use for kill-switchable optimizations that should ship enabled. */
+BOOL mglEnvFlagEnabledDefaultOn(const char *name)
+{
+    const char *value = name ? getenv(name) : NULL;
+    if (!value || value[0] == '\0') {
+        return YES;
+    }
+    if (strcmp(value, "0") == 0 ||
+        strcasecmp(value, "false") == 0 ||
+        strcasecmp(value, "no") == 0 ||
+        strcasecmp(value, "off") == 0) {
+        return NO;
+    }
+    return YES;
+}
+
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
  * mglTraceLogIsEnabled, mglTraceLogV, mglTraceLog, mglTraceLogExternal,
  * MGLTraceNSLog) moved to mgl_trace_log.h/.m. */
@@ -11310,32 +11327,25 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _consecutiveGPUErrors = 0;
     _lastGPUErrorTime = 0;
     _gpuErrorRecoveryMode = NO;
-    // MSL query result cache is opt-in (MGL_MSL_CACHE=1), default off.
-    _mslCacheEnabled = mglEnvFlagEnabled("MGL_MSL_CACHE");
+    // Kill-switchable opts: unset = ON, =0/false/no/off = OFF.
+    _mslCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_MSL_CACHE");
     // Bounded per-Program MSL texture type lookup cache (always on; no env var).
     // Keys include a process-unique Program lifetime ID and link generation.
     _mslTextureTypeCache = [NSCache new];
     _mslTextureTypeCache.countLimit = 4096u;
-    // PSO dedup gated fast path is opt-in (MGL_PSO_DEDUP=1), default off.
-    // When enabled, syncPipelineStateWithDeferredBufferMap: conditionally
-    // skips the _lastPipelineState = nil assignment so the existing
-    // setRenderPipelineState: dedup can fire on unchanged pipelines.
-    _psoDedupEnabled = mglEnvFlagEnabled("MGL_PSO_DEDUP");
+    // PSO dedup: skip forced _lastPipelineState=nil when encoder+PSO unchanged.
+    _psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     _pipelineColor0Format = MTLPixelFormatInvalid;
     _pipelineDepthFormat = MTLPixelFormatInvalid;
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0;
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    _dsCacheEnabled = (getenv("MGL_DS_CACHE") != NULL &&
-                       strcmp(getenv("MGL_DS_CACHE"), "1") == 0);
+    _dsCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     if (_dsCacheEnabled) {
         _depthStencilStateCache = [NSMutableDictionary new];
     }
-    /* Task 4: Snapshot Arena — opt-in via MGL_ARENA_SNAPSHOT=1 (default OFF).
-     * When enabled, batch snapshot allocations come from a bump-allocator
-     * arena instead of individual malloc calls. */
-    _arenaSnapshotEnabled = (getenv("MGL_ARENA_SNAPSHOT") != NULL &&
-                             strcmp(getenv("MGL_ARENA_SNAPSHOT"), "1") == 0);
+    /* Snapshot arena: batch snapshot/commands from bump allocator. */
+    _arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
     if (_arenaSnapshotEnabled) {
         if (mglInitBatchArena(&_batchArena, 4u * 1024u * 1024u)) {
             ctx->batch_arena = &_batchArena;
@@ -11346,11 +11356,21 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL WARNING: Snapshot arena malloc failed; falling back to per-batch malloc");
         }
     }
+    _skipSameKeyRestoreEnabled = mglEnvFlagEnabledDefaultOn("MGL_SKIP_SAME_KEY_RESTORE");
+    _dirtyKeyDeltaEnabled = mglEnvFlagEnabledDefaultOn("MGL_DIRTY_KEY_DELTA");
     /* Initialize last-bound render encoder dedup state to a clean slate.
      * _lastBoundValid starts NO so the first bind on the first encoder is
      * never incorrectly skipped. */
     [self invalidateLastBoundState];
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
+    NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d msl_cache=%d "
+          "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)",
+          _psoDedupEnabled ? 1 : 0,
+          _dsCacheEnabled ? 1 : 0,
+          _arenaSnapshotEnabled ? 1 : 0,
+          _mslCacheEnabled ? 1 : 0,
+          _skipSameKeyRestoreEnabled ? 1 : 0,
+          _dirtyKeyDeltaEnabled ? 1 : 0);
 
     [self bindObjFuncsToGLMContext: glm_ctx];
 

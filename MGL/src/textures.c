@@ -42,6 +42,7 @@
 #include "utils.h"
 #include "glm_context.h"
 #include "draw_command.h"
+#include "mgl_frame_activity.h"
 #include "mgl_pixel_format.h"
 #include "mgl_texture_debug.h"
 #include "mgl_texture_transfer.h"
@@ -800,7 +801,12 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     if (!binding_changed && !pending_write) {
         return;
     }
-    if (binding_changed || pending_write) {
+    if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
+        if (binding_changed && !pending_write) {
+            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
+        } else if (pending_write) {
+            MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+        }
         mglFlushPendingDraws(ctx);
     }
 
@@ -1282,7 +1288,12 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
             if (!binding_changed && !pending_write) {
                 continue;
             }
-            if (binding_changed || pending_write) {
+            if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
+                if (binding_changed && !pending_write) {
+                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
+                } else if (pending_write) {
+                    MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+                }
                 mglFlushPendingDraws(ctx);
             }
 
@@ -1306,7 +1317,10 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
                 had_binding = GL_TRUE;
             }
             if (had_binding) {
-                mglFlushPendingDraws(ctx);
+                if (!mglBindNoFlushEnabled()) {
+                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
+                    mglFlushPendingDraws(ctx);
+                }
             } else {
                 continue;
             }
@@ -1352,7 +1366,10 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
             had_binding = GL_TRUE;
         }
         if (had_binding) {
-            mglFlushPendingDraws(ctx);
+            if (!mglBindNoFlushEnabled()) {
+                MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
+                mglFlushPendingDraws(ctx);
+            }
         }
         for (index = 0; index < _MAX_TEXTURE_TYPES; index++) {
             STATE(texture_units[unit].textures[index]) = NULL;
@@ -1387,7 +1404,12 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
     if (!binding_changed && !pending_write) {
         return;
     }
-    if (binding_changed || pending_write) {
+    if (pending_write || (binding_changed && !mglBindNoFlushEnabled())) {
+        if (binding_changed && !pending_write) {
+            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
+        } else if (pending_write) {
+            MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
+        }
         mglFlushPendingDraws(ctx);
     }
 
