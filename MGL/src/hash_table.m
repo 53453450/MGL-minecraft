@@ -50,6 +50,17 @@
 
 static int mglRehash(HashTable *table, size_t new_capacity);
 
+static void mglInvalidateContainsDataCache(HashTable *table)
+{
+    if (!table) {
+        return;
+    }
+
+    memset(table->cached_valid_ptrs, 0, sizeof(table->cached_valid_ptrs));
+    memset(table->cached_valid_gens, 0, sizeof(table->cached_valid_gens));
+    table->cached_valid_next = 0u;
+}
+
 static inline uintptr_t mglMakeCookie(const void *ptr, uintptr_t salt)
 {
     return ptr ? (((uintptr_t)ptr ^ salt) + 0x9e3779b97f4a7c15ULL) : 0u;
@@ -125,6 +136,8 @@ static int mglRepairHashTableIfNeeded(HashTable *table, const char *where)
     table->size = 0u;
     table->count = 0u;
     table->current_name = saved_name;
+    table->deletion_generation = 0u;
+    mglInvalidateContainsDataCache(table);
 
     return mglRehash(table, MGL_HASH_MIN_CAPACITY);
 }
@@ -144,11 +157,26 @@ int mglHashTableContainsData(HashTable *table, const void *data)
         return 0;
     }
 
+    /* O(1) fast path: if the same pointer was validated before and no
+     * deletion has occurred since, the pointer is still in the table.
+     * This eliminates the O(N) scan for the common hot-path case where
+     * the same bound VAO/program/FBO is validated repeatedly per-draw. */
+    for (size_t index = 0u; index < MGL_HASH_VALID_CACHE_CAPACITY; index++) {
+        if (data == table->cached_valid_ptrs[index] &&
+            table->deletion_generation == table->cached_valid_gens[index]) {
+            return 1;
+        }
+    }
+
     for (size_t i = 0; i < table->size; i++) {
         if (table->states[i] != MGL_HASH_STATE_OCCUPIED) {
             continue;
         }
         if (table->keys[i].data == data) {
+            size_t cache_index = table->cached_valid_next % MGL_HASH_VALID_CACHE_CAPACITY;
+            table->cached_valid_ptrs[cache_index] = data;
+            table->cached_valid_gens[cache_index] = table->deletion_generation;
+            table->cached_valid_next = (uint8_t)((cache_index + 1u) % MGL_HASH_VALID_CACHE_CAPACITY);
             return 1;
         }
     }
@@ -437,6 +465,8 @@ void initHashTable(HashTable *ptr, GLuint size)
     ptr->current_name = 0;
     ptr->size = 0;
     ptr->count = 0;
+    ptr->deletion_generation = 0u;
+    mglInvalidateContainsDataCache(ptr);
 
     if (size > 0) {
         size_t desired = (size_t)size * 2u;
@@ -484,6 +514,8 @@ void destroyHashTable(HashTable *ptr)
     ptr->size = 0u;
     ptr->count = 0u;
     ptr->current_name = 0u;
+    ptr->deletion_generation = 0u;
+    mglInvalidateContainsDataCache(ptr);
 }
 
 GLuint getNewName(HashTable *table)
@@ -559,6 +591,11 @@ void insertHashElement(HashTable *table, GLuint name, void *data)
 
     if (!found) {
         table->count++;
+    } else {
+        /* Replacing an existing name removes its old data pointer from the
+         * table, so cached membership for that pointer is no longer valid. */
+        table->deletion_generation++;
+        mglInvalidateContainsDataCache(table);
     }
 
     table->keys[slot].name = name;
@@ -619,6 +656,9 @@ void deleteHashElement(HashTable *table, GLuint name)
     if (table->count > 0u) {
         table->count--;
     }
+    /* Bump generation so cached pointer validations fall back to full scan. */
+    table->deletion_generation++;
+    mglInvalidateContainsDataCache(table);
 
     if (table->count == 0u && table->states) {
         memset(table->states, MGL_HASH_STATE_EMPTY, table->size * sizeof(unsigned char));
@@ -660,4 +700,7 @@ void mglHashTableClearEntries(HashTable *table)
         table->states[i] = MGL_HASH_STATE_EMPTY;
     }
     table->count = 0u;
+    /* Bump generation and invalidate cache on bulk clear. */
+    table->deletion_generation++;
+    mglInvalidateContainsDataCache(table);
 }

@@ -78,6 +78,11 @@ static inline void mglMarkTextureLevelMetalFilled(Texture *tex, GLuint level, si
 
     if (tex->is_render_target) {
         tex->mtl_render_target_write_version++;
+        if (level < 32u) {
+            tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
+        } else {
+            tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+        }
     }
 }
 

@@ -80,6 +80,12 @@ void mglDumpBytesToLog(NSString *label,
                        size_t length,
                        size_t baseOffset)
 {
+    /* Early return when trace logging is disabled — avoids expensive hex
+     * formatting (snprintf loop) that would be discarded by MGLTraceNSLog. */
+    if (!mglTraceLogIsEnabled()) {
+        return;
+    }
+
     if (!bytes || length == 0) {
         MGLTraceNSLog(@"MGL DUMP %@ empty", label ?: @"(null)");
         return;

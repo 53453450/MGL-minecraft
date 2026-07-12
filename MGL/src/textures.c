@@ -1674,6 +1674,7 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
     tex->mtl_gl_sampled_format = 0;
     tex->mtl_gl_sampled_write_version = 0;
     tex->mtl_render_target_write_version = 0;
+    tex->mtl_gl_sampled_dirty_mip_mask = 0u;
     tex->metal_data_authoritative = GL_FALSE;
     tex->texture_buffer = NULL;
     tex->texture_buffer_offset = 0;

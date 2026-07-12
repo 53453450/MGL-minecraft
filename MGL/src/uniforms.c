@@ -23,7 +23,7 @@
 #include <string.h>
 #include <limits.h>
 #include <stdint.h>
-#include <mach/mach.h>
+#include <unistd.h>
 #include "spirv_cross_c.h"
 
 #include "shaders.h"
@@ -41,62 +41,10 @@
 
 #include "mgl_trace_log.h"
 
-static GLboolean mglPointerRangeReadable(const void *ptr, size_t size)
-{
-    if (size == 0) {
-        return GL_TRUE;
-    }
-    if (!ptr) {
-        return GL_FALSE;
-    }
-
-    uintptr_t start = (uintptr_t)ptr;
-    if (start < 0x10000u || start > UINTPTR_MAX - size + 1u) {
-        return GL_FALSE;
-    }
-
-    uintptr_t end = start + size;
-
-    /* A single allocation may span multiple VM regions (e.g. ASan's
-     * 256 KB region boundaries).  Iterate over every region that
-     * intersects [start, end) and require VM_PROT_READ on each. */
-    uintptr_t cursor = start;
-    while (cursor < end) {
-        vm_address_t address = (vm_address_t)cursor;
-        vm_size_t regionSize = 0;
-        vm_region_basic_info_data_64_t info;
-        mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
-        mach_port_t objectName = MACH_PORT_NULL;
-        kern_return_t kr = vm_region_64(mach_task_self(),
-                                        &address,
-                                        &regionSize,
-                                        VM_REGION_BASIC_INFO_64,
-                                        (vm_region_info_t)&info,
-                                        &count,
-                                        &objectName);
-        if (objectName != MACH_PORT_NULL) {
-            mach_port_deallocate(mach_task_self(), objectName);
-        }
-        if (kr != KERN_SUCCESS || (uintptr_t)address > cursor) {
-            return GL_FALSE;
-        }
-        if ((info.protection & VM_PROT_READ) == 0) {
-            return GL_FALSE;
-        }
-        uintptr_t regionEnd = (uintptr_t)address + (uintptr_t)regionSize;
-        if (regionEnd <= (uintptr_t)address) {
-            return GL_FALSE;
-        }
-        cursor = regionEnd;
-    }
-
-    return GL_TRUE;
-}
-
 static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
 {
     GLMContext current = MGLgetCurrentContext();
-    if (!current || !mglPointerRangeReadable(current, sizeof(*current))) {
+    if (!current || !mglPointerRangeIsReadable(current, sizeof(*current))) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update in %s with invalid current ctx=%p arg=%p\n",
                 func ? func : "(null)",
@@ -123,7 +71,7 @@ static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
 
 static void mglUniformSetError(GLMContext ctx, GLenum error)
 {
-    if (!ctx || !mglPointerRangeReadable(ctx, sizeof(*ctx))) {
+    if (!ctx || !mglPointerRangeIsReadable(ctx, sizeof(*ctx))) {
         return;
     }
     if (ctx->state.error == GL_NO_ERROR) {
@@ -132,6 +80,19 @@ static void mglUniformSetError(GLMContext ctx, GLenum error)
 }
 
 #define MGL_SAFE_CSTRING_MAX 4096u
+
+static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
+{
+    long pageSize = getpagesize();
+    if (pageSize <= 0) {
+        return remaining;
+    }
+
+    size_t page = (size_t)pageSize;
+    size_t pageOffset = (size_t)((uintptr_t)str % page);
+    size_t bytesToPageEnd = page - pageOffset;
+    return remaining < bytesToPageEnd ? remaining : bytesToPageEnd;
+}
 
 static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
 {
@@ -142,16 +103,22 @@ static GLboolean mglSafeCStringLength(const char *str, size_t *length_out)
         return GL_FALSE;
     }
 
-    for (size_t i = 0; i < MGL_SAFE_CSTRING_MAX; i++) {
-        if (!mglPointerRangeReadable(str + i, 1u)) {
+    for (size_t offset = 0u; offset < MGL_SAFE_CSTRING_MAX;) {
+        size_t remaining = MGL_SAFE_CSTRING_MAX - offset;
+        size_t chunkSize = mglSafeCStringReadableChunkSize(str + offset, remaining);
+        if (!mglPointerRangeIsReadable(str + offset, chunkSize)) {
             return GL_FALSE;
         }
-        if (str[i] == '\0') {
+
+        const char *terminator = memchr(str + offset, '\0', chunkSize);
+        if (terminator) {
             if (length_out) {
-                *length_out = i;
+                *length_out = offset + (size_t)(terminator - (str + offset));
             }
             return GL_TRUE;
         }
+
+        offset += chunkSize;
     }
 
     return GL_FALSE;
@@ -196,23 +163,15 @@ static GLboolean mglSafeCStringEquals(const char *lhs, const char *rhs)
         return GL_FALSE;
     }
 
-    for (size_t i = 0; i < MGL_SAFE_CSTRING_MAX; i++) {
-        if (!mglPointerRangeReadable(lhs + i, 1u) ||
-            !mglPointerRangeReadable(rhs + i, 1u)) {
-            return GL_FALSE;
-        }
-
-        char a = lhs[i];
-        char b = rhs[i];
-        if (a != b) {
-            return GL_FALSE;
-        }
-        if (a == '\0') {
-            return GL_TRUE;
-        }
+    size_t lhsLength = 0u;
+    size_t rhsLength = 0u;
+    if (!mglSafeCStringLength(lhs, &lhsLength) ||
+        !mglSafeCStringLength(rhs, &rhsLength) ||
+        lhsLength != rhsLength) {
+        return GL_FALSE;
     }
 
-    return GL_FALSE;
+    return memcmp(lhs, rhs, lhsLength + 1u) == 0 ? GL_TRUE : GL_FALSE;
 }
 
 static GLboolean mglSafeCStringContains(const char *haystack, const char *needle)
@@ -260,7 +219,13 @@ static SpirvResourceList *mglUniformSafeResourceList(Program *program, int stage
     }
 
     SpirvResourceList *resources = &program->spirv_resources_list[stage][res_type];
-    if (!mglPointerRangeReadable(resources, sizeof(*resources))) {
+    if (program->validated_resource_lists[stage][res_type] == resources &&
+        program->validated_resource_list_storage[stage][res_type] == resources->list &&
+        program->validated_resource_list_counts[stage][res_type] == resources->count) {
+        return resources;
+    }
+
+    if (!mglPointerRangeIsReadable(resources, sizeof(*resources))) {
         fprintf(stderr,
                 "MGL WARNING: %s dropping unreadable resource list program=%p stage=%d type=%d\n",
                 func ? func : "uniform",
@@ -271,6 +236,9 @@ static SpirvResourceList *mglUniformSafeResourceList(Program *program, int stage
     }
 
     if (resources->count == 0u) {
+        program->validated_resource_lists[stage][res_type] = resources;
+        program->validated_resource_list_storage[stage][res_type] = NULL;
+        program->validated_resource_list_counts[stage][res_type] = 0u;
         return resources;
     }
     if (resources->count > MGL_SAFE_SPIRV_RESOURCE_MAX) {
@@ -285,7 +253,7 @@ static SpirvResourceList *mglUniformSafeResourceList(Program *program, int stage
     }
     size_t resource_bytes = (size_t)resources->count * sizeof(SpirvResource);
     if (!resources->list ||
-        !mglPointerRangeReadable(resources->list, resource_bytes)) {
+        !mglPointerRangeIsReadable(resources->list, resource_bytes)) {
         fprintf(stderr,
                 "MGL WARNING: %s dropping unreadable resource storage program=%p stage=%d type=%d count=%u list=%p\n",
                 func ? func : "uniform",
@@ -297,6 +265,9 @@ static SpirvResourceList *mglUniformSafeResourceList(Program *program, int stage
         return NULL;
     }
 
+    program->validated_resource_lists[stage][res_type] = resources;
+    program->validated_resource_list_storage[stage][res_type] = resources->list;
+    program->validated_resource_list_counts[stage][res_type] = resources->count;
     return resources;
 }
 
@@ -306,9 +277,14 @@ static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *progra
         return NULL;
     }
 
+    if (mglObjectPointerLooksPlausible(program) &&
+        mglHashTableContainsData(&ctx->state.program_table, program)) {
+        return program;
+    }
+
     GLboolean pointerReadable =
         mglObjectPointerLooksPlausible(program) &&
-        mglPointerRangeReadable(program, sizeof(*program));
+        mglPointerRangeIsReadable(program, sizeof(*program));
     GLuint expectedName = pointerReadable ? program->name : 0u;
 
     if (!pointerReadable ||
@@ -2248,7 +2224,7 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
         return false;
     }
 
-    if (total > 0 && !mglPointerRangeReadable(ptr, total)) {
+    if (total > 0 && !mglPointerRangeIsReadable(ptr, total)) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update location=%d count=%d bytes=%zu unreadable value=%p\n",
                 location,
@@ -2321,7 +2297,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return;
     }
-    if (size > 0 && !mglPointerRangeReadable(ptr, (size_t)size)) {
+    if (size > 0 && !mglPointerRangeIsReadable(ptr, (size_t)size)) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update location=%d bytes=%lld unreadable value=%p\n",
                 location,
@@ -2479,7 +2455,7 @@ void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
 
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    if (count > 0 && value && mglPointerRangeReadable(value, sizeof(*value)) &&
+    if (count > 0 && value && mglPointerRangeIsReadable(value, sizeof(*value)) &&
         mglSetSamplerUniformUnit(ctx, location, value[0])) {
         return;
     }
@@ -2498,7 +2474,7 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    if (count > 0 && value && mglPointerRangeReadable(value, sizeof(*value)) &&
+    if (count > 0 && value && mglPointerRangeIsReadable(value, sizeof(*value)) &&
         value[0] <= (GLuint)INT_MAX &&
         mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
         return;

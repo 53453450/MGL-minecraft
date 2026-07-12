@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <ctype.h>
 #include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -42,6 +43,8 @@
 #include "mgl_uniform_reflection.h"
 #include "mgl_spirv_compile.h"
 
+
+static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
 
 static GLboolean mglPointerLooksMallocOwned(const void *ptr)
 {
@@ -198,6 +201,10 @@ Program *newProgram(GLMContext ctx, GLuint program)
     bzero(ptr, sizeof(Program));
 
     ptr->name = program;
+    ptr->msl_texture_cache_instance_id =
+        atomic_fetch_add_explicit(&mglNextMSLTextureCacheInstanceID,
+                                  1u,
+                                  memory_order_relaxed);
     for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
         ptr->sampler_units[i] = -1;
     }
@@ -802,6 +809,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->mslCacheValid = GL_FALSE;
     pptr->usesFragCoordParams = GL_FALSE;
     pptr->vertexAttribUsageMask = 0u;
+    memset(pptr->msl_named_argument_cache, 0, sizeof(pptr->msl_named_argument_cache));
+    pptr->msl_named_argument_cache_next = 0u;
+    memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
+    memset(pptr->validated_resource_list_storage, 0, sizeof(pptr->validated_resource_list_storage));
+    memset(pptr->validated_resource_list_counts, 0, sizeof(pptr->validated_resource_list_counts));
+    /* Bump the per-Program MSL texture type cache generation so the renderer
+     * (_mslTextureTypeCache) invalidates any entries cached against the
+     * previous MSL; the key includes this generation value. */
+    pptr->msl_texture_cache_generation++;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
             has_any_shader = true;

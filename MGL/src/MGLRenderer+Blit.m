@@ -545,6 +545,7 @@ typedef struct MGLBlitColorState {
     tex->mtl_gl_sampled_format = 0u;
     tex->mtl_gl_sampled_levels = 0u;
     tex->mtl_gl_sampled_write_version = 0u;
+    tex->mtl_gl_sampled_dirty_mip_mask = 0u;
 }
 
 /* Lazy refresh the Y-flipped sampled copy for `tex` if it is stale
@@ -775,7 +776,8 @@ typedef struct MGLBlitColorState {
         tex->mtl_gl_sampled_height == (GLuint)source.height &&
         tex->mtl_gl_sampled_format == (GLuint)source.pixelFormat &&
         tex->mtl_gl_sampled_levels == (GLuint)copyLevelCount &&
-        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version) {
+        tex->mtl_gl_sampled_write_version == tex->mtl_render_target_write_version &&
+        tex->mtl_gl_sampled_dirty_mip_mask == 0u) {
         return YES;
     }
 
@@ -912,7 +914,21 @@ typedef struct MGLBlitColorState {
     if (mipLevels > (NSUInteger)source.mipmapLevelCount) {
         mipLevels = (NSUInteger)source.mipmapLevelCount;
     }
+    uint32_t mipMask = mipLevels >= 32u
+        ? UINT32_MAX
+        : (((uint32_t)1u << mipLevels) - 1u);
+    uint32_t copyMask = needsNewCopy
+        ? mipMask
+        : (tex->mtl_gl_sampled_dirty_mip_mask & mipMask);
+    if (copyMask == 0u &&
+        tex->mtl_gl_sampled_write_version != tex->mtl_render_target_write_version) {
+        copyMask = mipMask;
+    }
+    uint32_t copiedMask = 0u;
     for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
+        if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
+            continue;
+        }
         @autoreleasepool {
             id<MTLTexture> srcLvl = source;
             id<MTLTexture> dstLvl = destination;
@@ -981,10 +997,14 @@ typedef struct MGLBlitColorState {
             }];
             [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
             [copyEncoder endEncoding];
+            copiedMask |= (uint32_t)1u << lvl;
         }
     }
 
-    tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
+    tex->mtl_gl_sampled_dirty_mip_mask &= ~copiedMask;
+    if ((tex->mtl_gl_sampled_dirty_mip_mask & mipMask) == 0u) {
+        tex->mtl_gl_sampled_write_version = tex->mtl_render_target_write_version;
+    }
 
     if (mglTraceLogIsEnabled()) {
         mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u reason=%s",

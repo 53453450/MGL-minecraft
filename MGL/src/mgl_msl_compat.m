@@ -286,6 +286,68 @@ bool mglMSLArgumentIdentifierChar(char c)
            (c >= 'a' && c <= 'z');
 }
 
+static uint8_t mglMSLArgumentCacheKind(const char *attributeKind)
+{
+    if (strcmp(attributeKind, "buffer") == 0) {
+        return 1u;
+    }
+    if (strcmp(attributeKind, "texture") == 0) {
+        return 2u;
+    }
+    if (strcmp(attributeKind, "sampler") == 0) {
+        return 3u;
+    }
+    return 0u;
+}
+
+static bool mglMSLArgumentCacheLookup(Program *program,
+                                      int stage,
+                                      const char *name,
+                                      uint8_t attributeKind,
+                                      GLuint metalBinding,
+                                      bool *result)
+{
+    if (!program || !result || attributeKind == 0u) {
+        return false;
+    }
+
+    for (size_t index = 0u; index < MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY; index++) {
+        MGLMSLNamedArgumentCacheEntry *entry = &program->msl_named_argument_cache[index];
+        if (entry->name == name &&
+            entry->binding == metalBinding &&
+            entry->stage == (uint8_t)stage &&
+            entry->attribute_kind == attributeKind) {
+            *result = entry->result == GL_TRUE;
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void mglMSLArgumentCacheStore(Program *program,
+                                     int stage,
+                                     const char *name,
+                                     uint8_t attributeKind,
+                                     GLuint metalBinding,
+                                     bool result)
+{
+    if (!program || attributeKind == 0u) {
+        return;
+    }
+
+    size_t index = program->msl_named_argument_cache_next %
+                   MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY;
+    MGLMSLNamedArgumentCacheEntry *entry = &program->msl_named_argument_cache[index];
+    entry->name = name;
+    entry->binding = metalBinding;
+    entry->stage = (uint8_t)stage;
+    entry->attribute_kind = attributeKind;
+    entry->result = result ? GL_TRUE : GL_FALSE;
+    program->msl_named_argument_cache_next =
+        (uint8_t)((index + 1u) % MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY);
+}
+
 bool mglStageMSLHasNamedArgument(Program *program,
                                  int stage,
                                  const char *name,
@@ -294,6 +356,17 @@ bool mglStageMSLHasNamedArgument(Program *program,
 {
     if (!program || !name || !attributeKind || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return true;
+    }
+
+    uint8_t cacheKind = mglMSLArgumentCacheKind(attributeKind);
+    bool cachedResult = false;
+    if (mglMSLArgumentCacheLookup(program,
+                                  stage,
+                                  name,
+                                  cacheKind,
+                                  metalBinding,
+                                  &cachedResult)) {
+        return cachedResult;
     }
 
     const char *msl = program->spirv[stage].msl_str;
@@ -310,6 +383,7 @@ bool mglStageMSLHasNamedArgument(Program *program,
         return true;
     }
 
+    bool result = false;
     while ((cursor = strstr(cursor, name)) != NULL) {
         char before = (cursor == msl) ? '\0' : cursor[-1];
         char after = cursor[nameLen];
@@ -339,13 +413,15 @@ bool mglStageMSLHasNamedArgument(Program *program,
         line[lineLen] = '\0';
 
         if (strstr(line, attribute)) {
-            return true;
+            result = true;
+            break;
         }
 
         cursor += nameLen;
     }
 
-    return false;
+    mglMSLArgumentCacheStore(program, stage, name, cacheKind, metalBinding, result);
+    return result;
 }
 
 bool mglStageMSLHasNamedBufferArgument(Program *program,
@@ -381,6 +457,17 @@ bool mglStageMSLHasArgumentAtBinding(Program *program,
         return false;
     }
 
+    uint8_t cacheKind = mglMSLArgumentCacheKind(attributeKind);
+    bool cachedResult = false;
+    if (mglMSLArgumentCacheLookup(program,
+                                  stage,
+                                  NULL,
+                                  cacheKind,
+                                  metalBinding,
+                                  &cachedResult)) {
+        return cachedResult;
+    }
+
     const char *msl = program->spirv[stage].msl_str;
     if (!msl || !*msl) {
         return false;
@@ -388,7 +475,9 @@ bool mglStageMSLHasArgumentAtBinding(Program *program,
 
     char attribute[32];
     snprintf(attribute, sizeof(attribute), "[[%s(%u)]]", attributeKind, (unsigned)metalBinding);
-    return strstr(msl, attribute) != NULL;
+    bool result = strstr(msl, attribute) != NULL;
+    mglMSLArgumentCacheStore(program, stage, NULL, cacheKind, metalBinding, result);
+    return result;
 }
 
 /* === Stale resource skip gating === */

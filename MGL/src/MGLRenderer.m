@@ -599,6 +599,12 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
 
 void mglWriteProgramMSLDump(Program *program, NSString *reason)
 {
+    /* Early return when trace logging is disabled — avoids expensive MSL
+     * file I/O and resource interface logging that would be discarded. */
+    if (!mglTraceLogIsEnabled()) {
+        return;
+    }
+
     if (!program) {
         return;
     }
@@ -772,6 +778,11 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
     texLevel->last_src_hash = 0ull;
 
     tex->mtl_render_target_write_version++;
+    if (level < 32u) {
+        tex->mtl_gl_sampled_dirty_mip_mask |= (uint32_t)1u << level;
+    } else {
+        tex->mtl_gl_sampled_dirty_mip_mask = UINT32_MAX;
+    }
 
     /* Y-Flip Authority: default to "not injected".  The draw-call path
      * (markCurrentFramebufferColorAttachmentWrittenAtIndex) overwrites the
@@ -1516,6 +1527,22 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return NULL;
     }
 
+    /* Fast path: hashtable membership implies the table holds a live
+     * reference, so the memory is valid and we can safely read fields
+     * without the expensive vm_region_64 syscall.  The generation cache
+     * in mglHashTableContainsData makes this O(1) in the common case. */
+    if (mglRendererPointerInHashTable(&ctx->state.vao_table, vao)) {
+        if (vao->magic != MGL_VAO_MAGIC) {
+            NSLog(@"MGL VAO INVALID in %s: vao=%p magic=0x%x",
+                  where ? where : "unknown", vao, vao->magic);
+            mglRendererDropCurrentVAO(ctx);
+            return NULL;
+        }
+        return vao;
+    }
+
+    /* Slow path: not in table — could be a transient_batch_vao or a
+     * dangling pointer.  Use the syscall to determine which. */
     if (!mglPointerRangeIsReadable(vao, sizeof(*vao))) {
         NSLog(@"MGL VAO INVALID in %s: vao=%p (unreadable object memory)",
               where ? where : "unknown", vao);
@@ -1534,14 +1561,10 @@ VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
         return vao;
     }
 
-    if (!mglRendererPointerInHashTable(&ctx->state.vao_table, vao)) {
-        NSLog(@"MGL VAO INVALID in %s: vao=%p (not found in sane vao_table)",
-              where ? where : "unknown", vao);
-        mglRendererDropCurrentVAO(ctx);
-        return NULL;
-    }
-
-    return vao;
+    NSLog(@"MGL VAO INVALID in %s: vao=%p (not found in sane vao_table)",
+          where ? where : "unknown", vao);
+    mglRendererDropCurrentVAO(ctx);
+    return NULL;
 }
 
 Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const char *where, NSUInteger slot)
@@ -1556,6 +1579,13 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return NULL;
     }
 
+    /* Fast path: hashtable membership implies memory is valid (table holds
+     * a live reference), so we can skip the vm_region_64 syscall. */
+    if (ctx && mglRendererPointerInHashTable(&ctx->state.buffer_table, candidate)) {
+        return candidate;
+    }
+
+    /* Slow path: not in table — could be transient_batch_buffer or dangling. */
     if (!mglPointerRangeIsReadable(candidate, sizeof(*candidate))) {
         NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (unreadable object memory)",
               where ? where : "unknown", (unsigned long)slot, candidate);
@@ -1566,13 +1596,9 @@ Buffer *mglRendererGetValidatedBuffer(GLMContext ctx, Buffer *candidate, const c
         return candidate;
     }
 
-    if (!ctx || !mglRendererPointerInHashTable(&ctx->state.buffer_table, candidate)) {
-        NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (not found in sane buffer_table)",
-              where ? where : "unknown", (unsigned long)slot, candidate);
-        return NULL;
-    }
-
-    return candidate;
+    NSLog(@"MGL BUFFER INVALID in %s: slot=%lu candidate=%p (not found in sane buffer_table)",
+          where ? where : "unknown", (unsigned long)slot, candidate);
+    return NULL;
 }
 
 /* MGLResolvedVertexAttribBinding typedef moved to MGLRenderer_Private.h */
@@ -1633,9 +1659,27 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    if (!mglRendererObjectPointerLikelyValid(fbo) ||
-        !mglRendererPointerInHashTable(&ctx->state.framebuffer_table, fbo) ||
-        !mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
+    if (!mglRendererObjectPointerLikelyValid(fbo)) {
+        NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (suspicious pseudo-pointer)",
+              where ? where : "unknown", fbo);
+        if (ctx->state.readbuffer == fbo) {
+            ctx->state.readbuffer = NULL;
+        }
+        ctx->state.framebuffer = NULL;
+        mglRendererSyncFramebufferBindingNames(ctx);
+        ctx->state.dirty_bits |= (DIRTY_FBO | DIRTY_STATE);
+        return NULL;
+    }
+
+    /* Fast path: hashtable membership implies memory is valid, so we can
+     * skip the vm_region_64 syscall that was previously unconditionally
+     * performed on every per-draw/per-batch call to this helper. */
+    if (mglRendererPointerInHashTable(&ctx->state.framebuffer_table, fbo)) {
+        return fbo;
+    }
+
+    /* Slow path: not in table — do the syscall for diagnostics. */
+    if (!mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table or unreadable)",
               where ? where : "unknown", fbo);
         if (ctx->state.readbuffer == fbo) {
@@ -1647,7 +1691,15 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         return NULL;
     }
 
-    return fbo;
+    NSLog(@"MGL FBO INVALID in %s: framebuffer=%p (not found in sane framebuffer_table)",
+          where ? where : "unknown", fbo);
+    if (ctx->state.readbuffer == fbo) {
+        ctx->state.readbuffer = NULL;
+    }
+    ctx->state.framebuffer = NULL;
+    mglRendererSyncFramebufferBindingNames(ctx);
+    ctx->state.dirty_bits |= (DIRTY_FBO | DIRTY_STATE);
+    return NULL;
 }
 
 GLuint mglRendererSafeFramebufferName(GLMContext ctx)
@@ -6839,7 +6891,22 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     }
 
     SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
-    MTLTextureType mslType = mglExpectedTextureTypeFromMSL(ptr->spirv[stage].msl_str, res->binding);
+    // Per-Program cache: the MSL string is immutable post-link, so the
+    // texture type for a given (program instance, generation, stage, binding)
+    // never changes.  The Program instance ID is never reused, even if malloc
+    // later reuses the Program's address.
+    NSString *mslTextureCacheKey = [NSString stringWithFormat:@"T_%llu_%llu_%d_%u",
+                                    (unsigned long long)ptr->msl_texture_cache_instance_id,
+                                    (unsigned long long)ptr->msl_texture_cache_generation,
+                                    stage, (unsigned)res->binding];
+    NSNumber *cachedMslType = [_mslTextureTypeCache objectForKey:mslTextureCacheKey];
+    MTLTextureType mslType;
+    if (cachedMslType != nil) {
+        mslType = (MTLTextureType)[cachedMslType unsignedIntegerValue];
+    } else {
+        mslType = mglExpectedTextureTypeFromMSL(ptr->spirv[stage].msl_str, res->binding);
+        [_mslTextureTypeCache setObject:@(mslType) forKey:mslTextureCacheKey];
+    }
 
     MTLTextureType spirvType = 0;
     switch ((SpvDim)res->image_dim) {
@@ -6906,14 +6973,21 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     }
 
     SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
-    MGLTextureDataKind mslKind = mglExpectedTextureDataKindFromMSL(ptr->spirv[stage].msl_str, res->binding);
-    if (mslKind != MGLTextureDataKindUnknown) {
-        return mslKind;
+    NSString *mslDataKindCacheKey = [NSString stringWithFormat:@"K_%llu_%llu_%d_%u",
+                                      (unsigned long long)ptr->msl_texture_cache_instance_id,
+                                      (unsigned long long)ptr->msl_texture_cache_generation,
+                                      stage, (unsigned)res->binding];
+    NSNumber *cachedMslKind = [_mslTextureTypeCache objectForKey:mslDataKindCacheKey];
+    if (cachedMslKind != nil) {
+        return (MGLTextureDataKind)[cachedMslKind unsignedIntegerValue];
     }
 
-    // SPIRV-Cross can rewrite resource dimensionality/types in MSL; when the MSL
-    // line is not parseable, keep float as the compatibility default for sampled images.
-    return MGLTextureDataKindFloat;
+    MGLTextureDataKind mslKind =
+        mglExpectedTextureDataKindFromMSL(ptr->spirv[stage].msl_str, res->binding);
+    MGLTextureDataKind resolvedKind =
+        mslKind != MGLTextureDataKindUnknown ? mslKind : MGLTextureDataKindFloat;
+    [_mslTextureTypeCache setObject:@(resolvedKind) forKey:mslDataKindCacheKey];
+    return resolvedKind;
 }
 
 - (NSUInteger)getProgramBindingRequiredSizeForStage:(int)stage clientBinding:(GLuint)clientBinding
@@ -11238,6 +11312,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuErrorRecoveryMode = NO;
     // MSL query result cache is opt-in (MGL_MSL_CACHE=1), default off.
     _mslCacheEnabled = mglEnvFlagEnabled("MGL_MSL_CACHE");
+    // Bounded per-Program MSL texture type lookup cache (always on; no env var).
+    // Keys include a process-unique Program lifetime ID and link generation.
+    _mslTextureTypeCache = [NSCache new];
+    _mslTextureTypeCache.countLimit = 4096u;
     // PSO dedup gated fast path is opt-in (MGL_PSO_DEDUP=1), default off.
     // When enabled, syncPipelineStateWithDeferredBufferMap: conditionally
     // skips the _lastPipelineState = nil assignment so the existing

@@ -169,6 +169,15 @@ typedef struct SpirvResourceList_t {
 } SpirvResourceList;
 
 #define MAX_ATTACHED_SHADERS_PER_STAGE 8
+#define MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY 64u
+
+typedef struct {
+    const char *name;
+    GLuint binding;
+    uint8_t stage;
+    uint8_t attribute_kind;
+    GLboolean result;
+} MGLMSLNamedArgumentCacheEntry;
 
 typedef struct Program_t {
     GLuint dirty_bits;
@@ -206,6 +215,16 @@ typedef struct Program_t {
     GLboolean mslCacheValid;
     GLboolean usesFragCoordParams;   /* FS: gl_FragCoord params present?  */
     uint32_t vertexAttribUsageMask;  /* VS: bit N set => [[attribute(N)]] */
+    MGLMSLNamedArgumentCacheEntry
+        msl_named_argument_cache[MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY];
+    uint8_t msl_named_argument_cache_next;
+    SpirvResourceList *validated_resource_lists[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
+    SpirvResource *validated_resource_list_storage[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
+    GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
+    /* Process-unique lifetime ID and per-link generation used by the
+     * renderer's bounded MSL texture type cache. */
+    uint64_t msl_texture_cache_instance_id;
+    uint64_t msl_texture_cache_generation;
     GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     char *attrib_location_names[MAX_ATTRIBS];

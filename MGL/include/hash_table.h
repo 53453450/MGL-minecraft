@@ -29,6 +29,8 @@ typedef struct {
     void *data;
 } HashObj;
 
+#define MGL_HASH_VALID_CACHE_CAPACITY 8u
+
 typedef struct {
     size_t size;
     size_t count;
@@ -37,6 +39,14 @@ typedef struct {
     unsigned char *states;
     uintptr_t keys_cookie;
     uintptr_t states_cookie;
+    /* Generation counter bumped whenever table membership changes.  Callers
+     * that cache a pointer + generation pair can skip the O(N) contains-data
+     * scan when the generation hasn't changed. */
+    uint64_t deletion_generation;
+    /* Small O(1) working set for repeatedly validated bound objects. */
+    const void *cached_valid_ptrs[MGL_HASH_VALID_CACHE_CAPACITY];
+    uint64_t cached_valid_gens[MGL_HASH_VALID_CACHE_CAPACITY];
+    uint8_t cached_valid_next;
 } HashTable;
 
 HashTable *createHashTable(GLuint size);

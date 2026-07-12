@@ -283,6 +283,12 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
      * per-draw MSL strstr() scan runs unchanged, when YES the renderer reads
      * Program::mslCacheValid-gated cached query results instead. */
     BOOL _mslCacheEnabled;
+    /* Bounded per-Program cache for MSL texture type lookups performed by
+     * getProgramExpectedTextureType:type:index:.  Key is a string of the form
+     * "program_instance_generation_stage_binding"; value is an NSNumber
+     * wrapping an MTLTextureType.  Program instances have process-unique IDs,
+     * so allocator address reuse cannot return another Program's value. */
+    NSCache<NSString *, NSNumber *> *_mslTextureTypeCache;
 
     /* === Task 4: Snapshot Arena (bump allocator) ===
      * Gated by MGL_ARENA_SNAPSHOT=1 (default OFF).  When enabled, batch
