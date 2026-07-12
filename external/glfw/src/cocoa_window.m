@@ -361,9 +361,13 @@ static const NSRange kEmptyRange = { NSNotFound, 0 };
         markedText = [[NSMutableAttributedString alloc] init];
 
         [self updateTrackingAreas];
-        // NOTE: kUTTypeURL corresponds to NSPasteboardTypeURL but is available
-        //       on 10.7 without having been deprecated yet
+        // Prefer NSPasteboardTypeURL (not deprecated). Fall back to the
+        // legacy UTI constant only when building against older SDKs.
+#if defined(MAC_OS_X_VERSION_10_13) && MAC_OS_X_VERSION_MIN_REQUIRED >= 101300
+        [self registerForDraggedTypes:@[NSPasteboardTypeURL]];
+#else
         [self registerForDraggedTypes:@[(__bridge NSString*) kUTTypeURL]];
+#endif
     }
 
     return self;

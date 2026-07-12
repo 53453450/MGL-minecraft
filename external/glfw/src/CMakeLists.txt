@@ -35,6 +35,10 @@ if (GLFW_BUILD_COCOA)
                                 cocoa_joystick.m cocoa_monitor.m cocoa_window.m
                                 mgl_context.m)
     target_include_directories(glfw PUBLIC "/usr/local/include/GL")
+    target_include_directories(glfw PRIVATE
+        "${CMAKE_SOURCE_DIR}/../../MGL/include"
+        "${CMAKE_SOURCE_DIR}/../../MGL/include/GL"
+        "${CMAKE_SOURCE_DIR}/../../external/glslang/glslang/Include")
 endif()
 
 if (GLFW_BUILD_WIN32)
@@ -136,7 +140,7 @@ set_target_properties(glfw PROPERTIES
                       VERSION ${GLFW_VERSION_MAJOR}.${GLFW_VERSION_MINOR}
                       SOVERSION ${GLFW_VERSION_MAJOR}
                       POSITION_INDEPENDENT_CODE ON
-                      C_STANDARD 99
+                      C_STANDARD 11
                       C_EXTENSIONS OFF
                       DEFINE_SYMBOL _GLFW_BUILD_DLL
                       FOLDER "GLFW3")
