@@ -7510,6 +7510,10 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 #pragma mark C interface to mtlFlush
 -(void) mtlFlush:(GLMContext) glm_ctx finish:(bool)finish
 {
+    /* Force deferred RT copy update before flush/finish.
+     * These are explicit sync points - must update RT copies. */
+    [self forcePendingGLSampledCopiesUpdate:finish ? "mtlFinish" : "mtlFlush"];
+
     [self flushCommandBuffer: finish];
 }
 
@@ -7525,6 +7529,10 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
 -(void) mtlSwapBuffersLocked:(GLMContext) glm_ctx
 {
+    /* Force deferred RT copy update before present.
+     * Present is a frame boundary - must update all pending RT copies. */
+    [self forcePendingGLSampledCopiesUpdate:"present"];
+
     static uint64_t s_swapCallCount = 0;
     static double s_swapLastCallTime = 0.0;
     static uint64_t s_swapLastCallCount = 0;
@@ -10252,6 +10260,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
     /* P0-2: Initialize pipeline descriptor cache (two-level caching) */
     _pipelineDescriptorCache = [[NSMutableDictionary alloc] initWithCapacity:64];
+    /* Defer RT copy until real flush points (default ON; =0 disables) */
+    _deferRTCopyUntilFlush = !mglEnvFlagEnabledDefaultOn("MGL_DEFER_RT_COPY");
     _dsCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     if (_dsCacheEnabled) {
         _depthStencilStateCache = [NSMutableDictionary new];

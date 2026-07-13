@@ -181,6 +181,12 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat;
 - (CGSize)mglSyncLayerDrawableSizeFromView:(const char *)reason;
 
+/* Force update of deferred RT copies at real flush points.
+ * When _deferRTCopyUntilFlush is YES, RT copies are skipped during batch replay
+ * to allow batch merging. This method forces the update at real flush boundaries:
+ * glFlush/glFinish, buffer rotation, present. Call with current FBO. */
+- (void)forcePendingGLSampledCopiesUpdate:(const char *)reason;
+
 @end
 
 #endif /* MGLRenderer_RenderPass_Private_h */

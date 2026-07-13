@@ -262,6 +262,10 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
      * owns the sub-encoder lifecycle.  This prevents the parallel sub-encoder
      * from being destroyed mid-encode. */
     BOOL _parallelEncodeActive;
+    /* When YES (default), defer RT Y-flip copy until real flush points
+     * (glFlush/buffer-full/present) instead of after each batch replay.
+     * Allows batch merging when RT is sampled. Gated by MGL_DEFER_RT_COPY. */
+    BOOL _deferRTCopyUntilFlush;
 #if MGL_HAS_MTL4_COMPILER
     id<MTL4Compiler> _mtl4Compiler;
 #endif

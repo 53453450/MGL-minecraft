@@ -3163,6 +3163,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool) newCommandBufferLocked
 {
+    /* Force deferred RT copy update before buffer rotation.
+     * Buffer rotation is a real flush point - update any pending RT copies
+     * before committing the current command buffer. */
+    [self forcePendingGLSampledCopiesUpdate:"buffer_rotation"];
+
     // CRITICAL FIX: Proper encoder cleanup BEFORE creating new command buffer
     // Metal API requires ending encoders before creating new command buffers
 
@@ -4414,7 +4419,15 @@ create_new_command_buffer:
             }
         }
 
-        if (endedFramebuffer) {
+        /* Defer RT copy until real flush points when optimization enabled.
+         * During batch replay, skip updateGLSampledCopies to allow batches to
+         * accumulate without rtVer increments breaking batch merging.
+         * RT copies will be updated at real flush points:
+         * - glFlush/glFinish (explicit sync)
+         * - newCommandBufferLocked (buffer rotation)
+         * - Present/swap (frame boundary)
+         * This prevents 71k tiny batches → allows ~100-500 large batches. */
+        if (endedFramebuffer && !_deferRTCopyUntilFlush) {
             [self updateGLSampledCopiesForEndedRenderPassFramebuffer:endedFramebuffer
                                                             drawCount:endedDrawBufferCount
                                                          drawBuffers:endedDrawBuffers
@@ -4441,6 +4454,38 @@ create_new_command_buffer:
 
     return NO;
 }
+
+/* Force update of deferred RT copies at real flush points.
+ * During batch replay with _deferRTCopyUntilFlush=YES, updateGLSampledCopies
+ * is skipped to allow batch merging. This method forces the update at:
+ * - glFlush/glFinish (explicit sync)
+ * - newCommandBufferLocked (buffer rotation)
+ * - Present/swap (frame boundary)
+ * Updates all FBOs that were used since last force update. */
+- (void)forcePendingGLSampledCopiesUpdate:(const char *)reason
+{
+    if (!_deferRTCopyUntilFlush) {
+        return;  /* Not in deferred mode, updates happen per-batch */
+    }
+
+    /* Update current FBO's RT copies if render pass is active.
+     * _renderPassFramebuffer tracks the FBO that was active when the current
+     * encoder was created. If non-NULL, it needs RT copy update before flush. */
+    if (_renderPassFramebuffer) {
+        Framebuffer *fbo = _renderPassFramebuffer;
+        GLsizei drawCount = _renderPassDrawBufferCount;
+        GLenum drawBuffers[MAX_COLOR_ATTACHMENTS];
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            drawBuffers[i] = _renderPassDrawBuffers[i];
+        }
+
+        [self updateGLSampledCopiesForEndedRenderPassFramebuffer:fbo
+                                                        drawCount:drawCount
+                                                     drawBuffers:drawBuffers
+                                                          reason:reason ? reason : "deferred_flush"];
+    }
+}
+
 
 /*
  * synchronizeRenderPassForTextureReadback:reason: — heaviest synchronization boundary (GPU write visibility guarantee before CPU readback)
