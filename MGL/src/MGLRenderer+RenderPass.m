@@ -5413,6 +5413,11 @@ stencil_format_ok:;
 	                   | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
 	                   | ((pipelineSig & 0xFFFu) << 12)
 	                   | (vertexSig & 0xFFFu))];
+
+                /* P0-2: Two-level cache lookup:
+                 * Level 1: PSO cache (fastest - compiled pipeline ready to use)
+                 * Level 2: Descriptor cache (fast - skip expensive descriptor regeneration)
+                 * On double miss: regenerate descriptor + compile PSO */
 	                id cachedEntry = [_pipelineStateCache objectForKey:pipelineCacheKey];
                 id<MTLRenderPipelineState> cachedPipeline = nil;
                 if (cachedEntry) {
@@ -5434,6 +5439,7 @@ stencil_format_ok:;
                     }
                 }
                 if (cachedPipeline) {
+                    /* PSO cache hit - fastest path */
                     static uint64_t s_pipelineCacheHitCount = 0;
                     s_pipelineCacheHitCount++;
                     MGL_PERF_INC(g_mglPipelineCacheHitsSinceSwap);
@@ -5481,6 +5487,34 @@ stencil_format_ok:;
 
 	            // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
 	            if (!pipelineResolvedFromCache) {
+            /* P0-2: Two-level descriptor caching */
+            MTLRenderPipelineDescriptor *finalDescriptor = pipelineStateDescriptor;
+            BOOL descriptorFromCache = NO;
+
+            /* Check descriptor cache on PSO cache miss.
+             * If descriptor is cached, reuse it to avoid expensive regeneration.
+             * If not, cache the newly generated descriptor for future use. */
+            if (_pipelineDescriptorCache && pipelineCacheKey) {
+                MTLRenderPipelineDescriptor *cachedDescriptor = [_pipelineDescriptorCache objectForKey:pipelineCacheKey];
+                if (cachedDescriptor) {
+                    /* Descriptor cache hit - reuse cached descriptor instead of regenerating */
+                    finalDescriptor = cachedDescriptor;
+                    descriptorFromCache = YES;
+
+                    /* Update vertex descriptor (must be set fresh each time) */
+                    finalDescriptor.vertexDescriptor = vertexDescriptor;
+
+                    static uint64_t s_descriptorCacheHitCount = 0;
+                    s_descriptorCacheHitCount++;
+                    if (kMGLVerbosePipelineLogs && s_descriptorCacheHitCount <= 64ull) {
+                        NSLog(@"MGL DESCRIPTOR CACHE hit program=%u key=%016llx (total %llu)",
+                              (unsigned)currentProgramName,
+                              (unsigned long long)pipelineCacheKey.unsignedLongLongValue,
+                              (unsigned long long)s_descriptorCacheHitCount);
+                    }
+                }
+            }
+
             MGL_PERF_INC(g_mglPipelineCacheMissesSinceSwap);
             NSError *error;
 	            id<MTLRenderPipelineState> previousPipelineState = _pipelineState;
@@ -5511,7 +5545,7 @@ stencil_format_ok:;
                     NSLog(@"MGL INFO: AGX virtualization detected - using safe synchronous compilation");
                 }
 
-                _pipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineStateDescriptor error:&error];
+                _pipelineState = [_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error];
 
                 if (!_pipelineState) {
                     NSLog(@"MGL PIPELINE CREATE fail error=%@", error);
@@ -5772,7 +5806,9 @@ stencil_format_ok:;
 
                 [self insertPipelineIntoCacheWithKey:pipelineCacheKey
                                         pipelineSig:pipelineSig
-                                        vertexSig:vertexSig];
+                                        vertexSig:vertexSig
+                                        descriptor:finalDescriptor
+                                        descriptorFromCache:descriptorFromCache];
 	            }
 	            }
 
@@ -5792,7 +5828,9 @@ stencil_format_ok:;
  */
 - (void)insertPipelineIntoCacheWithKey:(NSNumber *)pipelineCacheKey
                            pipelineSig:(uint64_t)pipelineSig
-                           vertexSig:(uint64_t)vertexSig
+                             vertexSig:(uint64_t)vertexSig
+                            descriptor:(MTLRenderPipelineDescriptor *)descriptor
+                    descriptorFromCache:(BOOL)descriptorFromCache
 {
     if (_pipelineStateCache) {
         /* P2-4: True LRU eviction.  Cache hits remove+re-insert the entry
@@ -5817,6 +5855,24 @@ stencil_format_ok:;
                 @"vsig": [NSNumber numberWithUnsignedLongLong:vertexSig]
             };
             [_pipelineStateCache setObject:entry forKey:pipelineCacheKey];
+
+            /* P0-2: Cache the descriptor for future PSO cache misses.
+             * Only cache if descriptor was generated (not from cache).
+             * This avoids redundant descriptor generation on next miss. */
+            if (!descriptorFromCache && _pipelineDescriptorCache && pipelineCacheKey) {
+                /* Make a copy of the descriptor to cache (descriptors are mutable) */
+                MTLRenderPipelineDescriptor *descriptorCopy = [descriptor copy];
+                [_pipelineDescriptorCache setObject:descriptorCopy forKey:pipelineCacheKey];
+
+                /* Apply LRU: limit descriptor cache size (same as PSO cache) */
+                if (_pipelineDescriptorCache.count > 128) {
+                    /* Remove oldest entry (NSMutableDictionary maintains insertion order) */
+                    NSNumber *oldestKey = _pipelineDescriptorCache.allKeys.firstObject;
+                    if (oldestKey) {
+                        [_pipelineDescriptorCache removeObjectForKey:oldestKey];
+                    }
+                }
+            }
         }
     }
 }

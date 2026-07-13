@@ -10250,6 +10250,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0;
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
+    /* P0-2: Initialize pipeline descriptor cache (two-level caching) */
+    _pipelineDescriptorCache = [[NSMutableDictionary alloc] initWithCapacity:64];
     _dsCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     if (_dsCacheEnabled) {
         _depthStencilStateCache = [NSMutableDictionary new];

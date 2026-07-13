@@ -231,6 +231,12 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
      * so on cache hit the full signatures are compared to guard against
      * collisions mapping two different pipelines to the same truncated key. */
     NSMutableDictionary<NSNumber *, id> *_pipelineStateCache;
+    /* P0-2: Pipeline descriptor cache — caches MTLRenderPipelineDescriptor
+     * objects to avoid expensive descriptor regeneration on PSO cache miss.
+     * Two-level caching: descriptor cache (cheap) → PSO cache (expensive).
+     * Key: same as _pipelineStateCache (program + sig + vsig).
+     * Value: MTLRenderPipelineDescriptor. */
+    NSMutableDictionary<NSNumber *, MTLRenderPipelineDescriptor *> *_pipelineDescriptorCache;
     /* Gated by MGL_DS_CACHE (default ON; =0 disables).  Maps cache key →
      * id<MTLDepthStencilState> with simple LRU eviction at 64 entries. */
     NSMutableDictionary *_depthStencilStateCache;
