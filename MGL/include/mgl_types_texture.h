@@ -167,7 +167,7 @@ typedef struct Texture_t {
      * framebuffer-yflip writes; framebuffer-input blit/post passes do not set
      * this bit. */
     GLuint  mtl_render_yflip_authority;
-    /* Stage 4.2 DontCare inference: renderer frame generation at which this
+    /* DontCare inference: renderer frame generation at which this
      * texture was last written as a render target. Compared against the
      * renderer's current generation to decide "first render-target use this
      * frame" (a frame's first write can skip loading prior tile contents). */

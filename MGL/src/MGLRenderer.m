@@ -7327,7 +7327,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
  * by the dedup fast path. */
 /* invalidateLastBoundState moved to MGLRenderer+Draw.m */
 
-#pragma mark - Stage 5.3: Parallel Command Recording Infrastructure
+#pragma mark - Parallel Command Recording Infrastructure
 
 /* Save the renderer's dedup ivars into a worker context.
  * Called before dispatching batch encode to a background thread so the
@@ -7344,11 +7344,11 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
  * When enabled, flushDrawBuffer will attempt to use MTLParallelRenderCommandEncoder
  * for parallel groups with ≥2 batches.  Disabled by default.
  *
- * Stage 5.3 Step 4: the parallel encoder path is validated in headless FBO
- * mode (regression tests).  In windowed mode with sampled render targets,
- * endRenderEncodingLocked triggers Y-flip copy encoders that conflict with
- * parallel encoder creation on the AGX driver.  A future Step 5 will handle
- * sampled RT deferral to enable parallel encoding in windowed mode. */
+ * The parallel encoder path is validated in headless FBO mode (regression
+ * tests).  In windowed mode with sampled render targets, endRenderEncodingLocked
+ * triggers Y-flip copy encoders that conflict with parallel encoder creation on
+ * the AGX driver.  Future work will handle sampled RT deferral to enable
+ * parallel encoding in windowed mode. */
 /* parallelEncodeEnabled moved to MGLRenderer+Draw.m */
 
 /* Encode a single batch onto the encoder referenced by the worker context.
@@ -7398,7 +7398,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 /* processGLStateLocked: moved to MGLRenderer+RenderPass.m */
 
 /*
- * Resource Sync domain (Stage 3.4). "Stability rebind" before draw: command buffer rotation /
+ * Resource Sync domain (Resource Sync domain). "Stability rebind" before draw: command buffer rotation /
  * encoder reconstruction discards latched bindings, so before each draw vertex/fragment
  * buffers, buffer-size constants, active textures and sampled textures are remapped and rebound.
  * Only Metal encoder bindings are touched; state is read via glm_ctx (unchanged from before extraction).
@@ -7477,7 +7477,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 /* teardownBatchReplayForContext:(GLMContext)glm_ctx moved to MGLRenderer+Draw.m */
 
 /*
- * RenderPass Sync domain (Stage 3.2).
+ * RenderPass Sync domain (RenderPass Sync domain).
  *
  * Maps a DIRTY_FBO transition onto the Metal render pass: if the current
  * encoder already targets the bound framebuffer nothing changes (dirty bit
@@ -7534,7 +7534,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     double swapStartSeconds = mglNowSeconds();
     bool traceSwap = mglShouldTraceCall(swapCall);
     MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
-    /* Stage 4.2: advance the DontCare frame generation. Any color attachment
+    /* advance the DontCare frame generation. Any color attachment
      * written before this point belongs to the previous frame, so its next
      * write this frame is a "first use" that may skip loading prior contents.
      * Skips 0 so a zero-initialized texture stamp never matches. */
@@ -10216,7 +10216,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     ctx = glm_ctx;
 
-    /* Stage 4.2: start the DontCare frame generation at 1 so it never matches a
+    /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
     _dontCareFrameGeneration = 1u;

@@ -141,7 +141,7 @@ _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap   = 0;
 _Atomic double   g_mglLockWaitTimeSinceSwap   = 0.0;
 _Atomic double   g_mglLockHoldTimeSinceSwap   = 0.0;
 
-/* === Stage 1 CPU audit counters === */
+/* === CPU audit counters === */
 
 _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap   = 0;
 _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap     = 0;

@@ -2947,7 +2947,7 @@ bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
 }
 
 /*
- * mglComputeParallelGroups — Stage 5.1 parallel-group planning.
+ * mglComputeParallelGroups — parallel-group planning.
  *
  * Walks cb->batches in order and groups consecutive, non-empty batches that
  * share key.fbo_name. The Hazard Tracker splits read-after-write hazards into
@@ -2957,7 +2957,7 @@ bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
  *
  * This is a pure data pass over the command buffer — no ctx, no Metal, no
  * side effects (core principle 3). The renderer is free to ignore the groups
- * and replay sequentially; parallelization is a later Stage 5.3 decision.
+ * and replay sequentially; parallelization is a decision made later.
  *
  * Returns the number of groups written to out_groups (<= max_groups).
  */

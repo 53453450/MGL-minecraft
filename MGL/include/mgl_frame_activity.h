@@ -97,11 +97,11 @@ extern _Atomic uint64_t g_mglSetVertexBufferSkipsSinceSwap;
 extern _Atomic uint64_t g_mglSetFragmentBufferSkipsSinceSwap;
 extern _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap;
 
-/* Render encoder lifecycle (Stage 4 — RenderPass Manager instrumentation) */
+/* Render encoder lifecycle (RenderPass Manager) */
 extern _Atomic uint64_t g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
 extern _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
 
-/* Parallel-group planning (Stage 5.1) */
+/* Parallel-group planning */
 extern _Atomic uint64_t g_mglParallelGroupsSinceSwap;          /* groups computed per swap */
 extern _Atomic uint64_t g_mglParallelGroupBatchesSinceSwap;     /* batches inside groups */
 extern _Atomic uint64_t g_mglLargestParallelGroupSinceSwap;     /* largest group batch count */
@@ -118,23 +118,23 @@ extern _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap;
 extern _Atomic double   g_mglLockWaitTimeSinceSwap;   /* time waiting to acquire lock */
 extern _Atomic double   g_mglLockHoldTimeSinceSwap;   /* time holding lock */
 
-/* Depth/stencil state (Stage 1 — CPU audit gated opts) */
+/* Depth/stencil state */
 extern _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap;  /* newDepthStencilStateWithDescriptor: calls */
 extern _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthStencilState: skipped by dedup */
 
-/* Snapshot allocation (Stage 1) */
+/* Snapshot allocation */
 extern _Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
 extern _Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
 
-/* State replay (Stage 1) */
+/* State replay */
 extern _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
 
-/* Hazard tracking (Stage 1) */
+/* Hazard tracking */
 extern _Atomic uint64_t g_mglHazardActiveBindingsSinceSwap;      /* sampled active base-buffer binding count per draw */
 extern _Atomic uint64_t g_mglHazardRangeCountSinceSwap;          /* sampled buffer_read_range_count per draw */
 extern _Atomic uint64_t g_mglHazardOverflowFlushesSinceSwap;     /* overflow-triggered full flushes */
 
-/* PSO dedup (Stage 1 — declared for future Task 5 instrumentation) */
+/* PSO dedup */
 extern _Atomic uint64_t g_mglPSODedupHitsSinceSwap;              /* PSO dedup fast path hits */
 extern _Atomic uint64_t g_mglPSODedupMissesSinceSwap;            /* PSO dedup fast path misses */
 

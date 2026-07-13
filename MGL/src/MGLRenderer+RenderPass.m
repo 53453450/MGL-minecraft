@@ -1974,7 +1974,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 }
 
 /*
- * Stage 4.2 — DontCare load-action inference for a color attachment.
+ * DontCare load-action inference for a color attachment.
  *
  * Returns YES only when it is provably safe to skip loading the attachment's
  * existing tile contents at pass start, i.e. the pass fully defines them:
@@ -2344,7 +2344,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     Framebuffer *fbo = ctx->active_state->framebuffer;
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
-    /* Stage 4.2: read the DontCare flag once per pass so the feature-off
+    /* Read the DontCare flag once per pass so the feature-off
      * (default) path skips both the per-attachment stamp write and the
      * shouldUse call entirely — avoiding per-attachment getenv and a
      * cache-line write on the common no-DontCare path. */
@@ -2370,7 +2370,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
 
         Texture *attachmentTextureForClear = [self framebufferAttachmentTexture:att];
-        /* Stage 4.2: stamp this attachment's frame generation on EVERY
+        /* stamp this attachment's frame generation on EVERY
          * render-target use (clear/load/dontcare), capturing whether this
          * is its first use this frame BEFORE stamping. A clear-then-resume
          * within one frame must record the clear as a use so the resume is
@@ -2427,7 +2427,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         } else if (dontCareLoadEnabled &&
                    [self shouldUseDontCareLoadForColorTexture:attachmentTextureForClear
                                                 firstUseThisFrame:colorFirstUseThisFrame]) {
-            /* Stage 4.2: first render-target use this frame, no clear, no
+            /* first render-target use this frame, no clear, no
              * blend — prior tile contents are dead, skip the load. */
             _renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionDontCare;
         } else {
@@ -3012,7 +3012,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool) newRenderEncoderLocked
 {
-    /* Stage 4 instrumentation: count every render encoder (re)creation. */
+    /* instrumentation: count every render encoder (re)creation. */
     MGL_PERF_INC(g_mglEncoderCreationsSinceSwap);
     // I can't remember why this is here...
     @autoreleasepool {
@@ -4720,8 +4720,8 @@ create_new_command_buffer:
 
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
-    // Stage 5.3 Step 5: skip this in parallel-encode mode — the caller owns
-    // the command buffer and sub-encoder lifecycle.
+    // Skip this in parallel-encode mode — the caller owns the command buffer
+    // and sub-encoder lifecycle.
     if (!_parallelEncodeActive && _currentCommandBuffer && _currentRenderEncoder == NULL) {
         MTLCommandBufferStatus preStatus = _currentCommandBuffer.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
@@ -4760,8 +4760,8 @@ create_new_command_buffer:
     RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command]);
 
     // Ensure a render encoder exists for draw commands.
-    // Stage 5.3 Step 5: skip nil-encoder recovery in parallel-encode mode —
-    // the sub-encoder is managed by encodeBatchForParallelWorker.
+    // Skip nil-encoder recovery in parallel-encode mode — the sub-encoder
+    // is managed by encodeBatchForParallelWorker.
     if (!_parallelEncodeActive && !_currentRenderEncoder) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
@@ -4797,10 +4797,10 @@ create_new_command_buffer:
     }
 
     if (draw_command) {
-        /* Stage 5.3 Step 5: skip FBO-mismatch rebuild in parallel-encode
-         * mode — encodeBatchForParallelWorker already syncs
-         * _renderPassFramebuffer* ivars and clears DIRTY_FBO, so a mismatch
-         * here would be a false positive that destroys the sub-encoder. */
+        /* Skip FBO-mismatch rebuild in parallel-encode mode —
+         * encodeBatchForParallelWorker already syncs _renderPassFramebuffer*
+         * ivars and clears DIRTY_FBO, so a mismatch here would be a false
+         * positive that destroys the sub-encoder. */
         if (!_parallelEncodeActive) {
             RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
         }
@@ -4877,7 +4877,7 @@ create_new_command_buffer:
         return false;
     }
 
-    // Resource Sync domain (Stage 3.4): stability rebind before draw. The logic was moved to
+    // Resource Sync domain (Resource Sync domain): stability rebind before draw. The logic was moved to
     // syncResourceBindingsForContext:, only the dispatch remains here.
     RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx]);
 
@@ -4953,7 +4953,7 @@ create_new_command_buffer:
         // FBO binding/attachment changes alter the Metal render pass itself. They must
         // be handled even when no generic DIRTY_STATE bit is present; otherwise the
         // current render encoder can keep drawing into an old attachment while GL state
-        // already points at a different FBO. RenderPass Sync domain (Stage 3.2).
+        // already points at a different FBO. RenderPass Sync domain (RenderPass Sync domain).
         if (ctx->active_state->dirty_bits & DIRTY_FBO)
         {
             RETURN_FALSE_ON_FAILURE([self syncRenderPassStateForContext:ctx]);
@@ -5073,7 +5073,7 @@ create_new_command_buffer:
         }
 
         // new pipeline / vertex / renderbuffer and pipelinestate descriptor, should probably make this a single dirty bit
-        // Pipeline Sync domain (Stage 3.3): when program/VAO/FBO/alpha/render-state changes,
+        // Pipeline Sync domain (Pipeline Sync domain): when program/VAO/FBO/alpha/render-state changes,
         // rebuild or reuse the PSO. The logic was moved entirely to syncPipelineStateWithDeferredBufferMap:,
         // only the dispatch remains here; deferredBufferMap is passed as a value parameter (not read after the block).
         if (ctx->active_state->dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
@@ -5243,7 +5243,7 @@ stencil_format_ok:;
 
 
 /*
- * Pipeline Sync domain (Stage 3.3). PSO build/reuse logic moved verbatim from processGLStateLocked:
+ * Pipeline Sync domain (Pipeline Sync domain). PSO build/reuse logic moved verbatim from processGLStateLocked:
  * generates pipeline+vertex descriptor, queries/builds PSO cache, interface-mismatch
  * circuit breaker, failure fallback chain. Only operates on Metal pipeline state, state is read via ctx (same as before the move).
  * deferredBufferMap is passed in by the caller (deferred buffer mapping flag for nil pipeline).
@@ -6055,11 +6055,11 @@ stencil_format_ok:;
         }
     }
 
-    /* Stage 4 instrumentation: an FBO change forced a real encoder rotation
+    /* instrumentation: an FBO change forced a real encoder rotation
      * (the "already matches" fast path above returned early without counting).
      * newRenderEncoderLocked also bumps g_mglEncoderCreationsSinceSwap, so
      * fboRot <= new always holds; new-minus-fboRot is non-FBO creation. */
-    /* Stage 4.3: encoder open/close is owned by the RenderPass Manager
+    /* RenderPass Manager: encoder open/close is owned by the RenderPass Manager
      * facade (rotateRenderEncoderForCurrentFramebufferLocked), not by this
      * Sync unit directly. The Sync layer only decides that a rotation is
      * needed and delegates the lifecycle transition. */
@@ -6068,7 +6068,7 @@ stencil_format_ok:;
 }
 
 /*
- * Stage 4.3 — RenderPass Manager facade: single owner of the FBO-driven
+ * RenderPass Manager — RenderPass Manager facade: single owner of the FBO-driven
  * encoder rotation (the primary open/close transition). Ends the current
  * render encoder and opens a fresh one against the now-bound framebuffer's
  * render-pass descriptor. Called by the RenderPass Sync unit
@@ -6095,8 +6095,8 @@ stencil_format_ok:;
     if (!(glm_ctx->active_state->dirty_bits & DIRTY_FBO))
         return YES;
 
-    /* Orchestrator-driven FBO rotation (Stage 3.1) delegates to the shared
-     * RenderPass Sync unit (Stage 3.2), surfacing any GL error as replayError
+    /* Orchestrator-driven FBO rotation (Orchestrator-driven FBO rotation) delegates to the shared
+     * RenderPass Sync unit (RenderPass Sync domain), surfacing any GL error as replayError
      * so the batch is skipped rather than drawn against a stale pass. */
     if (![self syncRenderPassStateForContext:glm_ctx]) {
         if (glm_ctx->active_state->error != GL_NO_ERROR)

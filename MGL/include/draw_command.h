@@ -213,7 +213,7 @@ const char *mglDrawCommandTypeName(MGLDrawCommandType type);
  * false for array (glDrawArrays*) variants or NULL cmd. */
 bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd);
 
-/* Parallel-group planning (Stage 5.1).
+/* Parallel-group planning.
  *
  * A parallel group is a maximal run of consecutive batches in the command
  * buffer that share the same FBO (key.fbo_name) and have no inter-batch

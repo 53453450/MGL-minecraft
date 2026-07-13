@@ -410,7 +410,7 @@
 
     /* Redirect state access to the worker's per-worker GLMState copy so
      * that restoreStateForBatch memcpy's the snapshot into workerState,
-     * not the shared ctx->state.  This is the key Stage 5.3 change: each
+     * not the shared ctx->state.  This is key for parallel encoding: each
      * worker's encoding reads from its own isolated state, making true
      * dispatch_async parallel encoding safe.  In sequential mode both
      * pointers ultimately reference the same data, so behaviour is
@@ -1167,11 +1167,10 @@
     GLenum savedError = savedState.error;
     GLenum replayError = GL_NO_ERROR;
 
-    /* Stage 5.1: compute parallel groups (runs of consecutive, non-empty
+    /* Compute parallel groups (runs of consecutive, non-empty
      * batches sharing the same FBO). The replay loop still runs sequentially;
      * this only instruments the grouping so it can be observed in
-     * MGL_PERF_SUMMARY. A later Stage 5.3 will actually parallelize within
-     * these groups. Groups are pure metadata over the command buffer. */
+     * MGL_PERF_SUMMARY. Groups are pure metadata over the command buffer. */
     MGLParallelGroup parallelGroups[MGL_MAX_PARALLEL_GROUPS];
     uint32_t parallelGroupCount = mglComputeParallelGroups(cb, parallelGroups,
                                                             MGL_MAX_PARALLEL_GROUPS);
@@ -1189,7 +1188,7 @@
         if (largestParallelGroup > MGL_FRAME_LOAD(g_mglLargestParallelGroupSinceSwap)) {
             MGL_FRAME_STORE(g_mglLargestParallelGroupSinceSwap, largestParallelGroup);
         }
-        /* Stage 5.3: count batches in groups with ≥2 members — these are
+        /* Count batches in groups with ≥2 members — these are
          * parallel-encode candidates.  When MGL_PARALLEL_ENCODE=1 and the
          * processGLStateLocked parameterization is complete, these batches
          * will be encoded on separate sub-encoders. */
@@ -1227,14 +1226,14 @@
             if (batch->command_count == 0)
                 continue;
 
-            /* Stage 5.3 Step 4: Parallel encode via MTLParallelRenderCommandEncoder.
+            /* Parallel encode via MTLParallelRenderCommandEncoder.
              *
              * When MGL_PARALLEL_ENCODE=1 and the current batch starts a
              * parallel group with ≥2 members, create a parallel render
              * encoder with 2 sub-encoders.  Each sub-encoder gets its own
-             * batch, encoded sequentially on the calling thread (Step 4
-             * validates the parallel encoder API and execution order;
-             * multi-threaded dispatch is a future enhancement).
+             * batch, encoded sequentially on the calling thread (validates
+             * the parallel encoder API and execution order; multi-threaded
+             * dispatch is a future enhancement).
              *
              * Sub-encoder execution order = creation order (Apple docs),
              * which matches GL submission order: batch[b] before batch[b+1].
@@ -1305,7 +1304,7 @@
                     }
                     parallelEncoder.label = @"MGL Parallel Render Encoder";
 
-                    /* Stage 5.3 Step 5: Activate parallel-encode mode so
+                    /* Activate parallel-encode mode so
                      * processGLStateLocked (called inside
                      * encodeBatchForParallelWorker → checkBatchShouldExecute)
                      * skips encoder reconstruction paths that would destroy
@@ -1445,7 +1444,7 @@
                      * and triggers load/store actions. */
                     [parallelEncoder endEncoding];
 
-                    /* Stage 5.3 Step 5: Deactivate parallel-encode mode —
+                    /* Deactivate parallel-encode mode —
                      * subsequent sequential batches resume normal
                      * processGLStateLocked encoder management. */
                     _parallelEncodeActive = NO;
@@ -1686,7 +1685,7 @@
     }
     /* Activate snapshot-based state access for sync functions.
      * _activeState points to ctx->state (which now holds the snapshot data).
-     * In Stage 5.3 this will point to a per-worker GLMState copy instead. */
+     * In parallel encode this will point to a per-worker GLMState copy instead. */
     _activeState = glm_ctx->active_state;
     glm_ctx->active_state->dirty_bits = 0;
 

@@ -35,7 +35,7 @@
 typedef struct {
     id<MTLRenderCommandEncoder> encoder;
 
-    /* Per-worker GLMState snapshot.  During parallel encoding (Stage 5.3),
+    /* Per-worker GLMState snapshot.  During parallel encoding,
      * ctx->active_state is redirected to point here so that all
      * ctx->active_state->* accesses in the encoding hot path are
      * thread-safe.  Heap-allocated to avoid ~83KB stack frame in the
@@ -246,7 +246,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (bool)bindFragmentBuffersToCurrentRenderEncoder;
 - (bool)bindActiveTexturesToMTL;
 
-// === Stage 5.3: Parallel command recording infrastructure ===
+// === Parallel command recording infrastructure ===
 - (void)saveDedupStateToWorker:(MGLWorkerContext *)worker;
 - (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker;
 - (BOOL)parallelEncodeEnabled;

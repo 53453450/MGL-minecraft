@@ -108,7 +108,7 @@ typedef struct GLMContextRec_t {
     GLMState    state;
     /* Pointer to the currently active GLMState.  In non-parallel mode this
      * always points to the embedded state above.  During parallel batch
-     * encoding (Stage 5.3) each worker redirects this to its own per-worker
+     * encoding each worker redirects this to its own per-worker
      * GLMState copy, so that ctx->active_state->* accesses are thread-safe.
      * STATE() / STATE_VAR() / VAO() macros and all direct accesses in the
      * Metal encoding layer go through this pointer. */

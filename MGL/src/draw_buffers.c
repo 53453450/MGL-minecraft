@@ -1446,7 +1446,7 @@ bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
 
 
 /* ================================================================== */
-/* Stage 1 — Unified Draw Frontend: mglDrawDispatch                  */
+/* Unified Draw Frontend: mglDrawDispatch                  */
 /* ================================================================== */
 /* All "normal" draw entries (arrays / elements / instanced /         */
 /* basevertex / baseinstance / range) funnel through this single     */
@@ -1480,7 +1480,7 @@ static inline bool mglCmdIsInstanced(MGLDrawCommandType t)
            t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
 }
 
-/* The 8-step unified draw frontend (Stage 1.1 steps S1-S11 + S14/S15). */
+/* The 8-step unified draw frontend (S1-S11 + S14/S15). */
 static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 {
     const bool indexed   = mglCmdIsIndexed(cmd->type);
