@@ -136,6 +136,7 @@ typedef struct MGLBlitColorState {
     }
 
     _scaledBlitPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_scaledBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu", (unsigned long)pixelFormat);
     return pipeline;
 }
@@ -216,6 +217,7 @@ typedef struct MGLBlitColorState {
     }
 
     _scaledDepthBlitPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_scaledDepthBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu", (unsigned long)pixelFormat);
     return pipeline;
 }
@@ -278,6 +280,7 @@ typedef struct MGLBlitColorState {
     }
 
     _msaaIntegerResolvePipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_msaaIntegerResolvePipelineCache limit:8];
     return pipeline;
 }
 
@@ -1117,6 +1120,7 @@ typedef struct MGLBlitColorState {
     }
 
     _clearRectPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_clearRectPipelineCache limit:16];
     return pipeline;
 }
 

@@ -2315,11 +2315,13 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
 
     /*
      * Deferred draws snapshot the GL state struct, but Program-owned uniform
-     * storage is mutable shared state. Match Apple OpenGL call ordering by
-     * submitting queued draws before this glUniform* changes that storage.
+     * storage is mutable shared state.  Only flush when the upload will
+     * actually mutate the buffer — if the data is unchanged the pending draws
+     * render identically, so skipping the flush is safe and lets batching
+     * survive the frequent no-op glUniform* calls that Minecraft's shader
+     * layer makes.  When buf is NULL (first upload) there is no existing
+     * buffer for pending draws to reference, so no flush is needed.
      */
-    mglFlushPendingDraws(ctx);
-
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
     if (mglUniformBufferDataWouldChange(buf, size, ptr)) {

@@ -31,10 +31,63 @@
 #include "glm_context.h"
 
 #include <stdbool.h>
+#include <stddef.h>   /* size_t (P1-6: TCS stage-in parsing uses standard C types) */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* === TCS stage-in struct parsing (P1-6: migrated from MGLRenderer.m) ===
+ *
+ * SPIRV-Cross lowers GL tessellation-control per-vertex inputs to an MSL
+ * struct named <entry>_in.  These helpers parse that struct from the MSL
+ * source to recover per-attribute offset/size/component info, which is
+ * needed when MGL assembles the TCS stage-in vertex buffer on the CPU. */
+
+typedef enum MGLTCSStageInBaseType_t {
+    MGLTCSStageInBaseFloat = 0,
+    MGLTCSStageInBaseInt,
+    MGLTCSStageInBaseUInt
+} MGLTCSStageInBaseType;
+
+typedef struct MGLTCSStageInMember_t {
+    GLuint attribute;
+    size_t offset;
+    size_t size;
+    size_t componentBytes;
+    GLuint components;
+    MGLTCSStageInBaseType baseType;
+} MGLTCSStageInMember;
+
+/* Parse the <entry>_in struct from `msl` and populate `members` up to
+ * `capacity`.  Returns the number of members found.  *outStride receives
+ * the struct's total stride (aligned to max member alignment). */
+size_t mglParseTCSStageInMembers(const char *msl,
+                                 MGLTCSStageInMember *members,
+                                 size_t capacity,
+                                 size_t *outStride);
+
+/* Write one component of a TCS stage-in member into `dst`. */
+void mglWriteTCSStageInComponent(uint8_t *dst,
+                                 const MGLTCSStageInMember *member,
+                                 size_t component,
+                                 double value);
+
+/* === Tessellation passthrough detection (P1-6: migrated from MGLRenderer.m) ===
+ *
+ * Detects whether the TCS/TES shader source is a "unit passthrough" for a
+ * given patch size.  If so, the draw can be redirected to the equivalent
+ * primitive mode (GL_POINTS/LINES/TRIANGLES) without invoking the
+ * tessellation pipeline, saving GPU work. */
+
+bool mglTessellationShadersArePassthrough(Program *program, GLuint patchVertices);
+
+/* If `*mode` is GL_PATCHES and the active tessellation shaders are unit
+ * passthrough for the current patch_vertices, rewrites `*mode` to the
+ * equivalent primitive mode and returns true.  Otherwise returns false. */
+bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
+                                              GLenum *mode,
+                                              const char *label);
 
 /* === Per-stage pipeline === */
 
@@ -140,7 +193,13 @@ GLboolean mslPipelinePostLinkAddStep(MSLPatchPipelinePostLink *pipeline,
                                      const char *name,
                                      MSLPatchFnPostLink fn);
 
-/* Runs all enabled post-link steps.  Returns GL_FALSE if any step failed. */
+/* Runs all enabled post-link steps.  Before each step, all stages' MSL
+ * strings are snapshotted.  If a step returns GL_FALSE, the snapshots are
+ * restored (the failed step's MSL changes are discarded) and a warning is
+ * logged; failed_step is set.  Execution continues with the next step so
+ * that independent patches are still applied.
+ *
+ * Returns GL_FALSE if any step failed (even if later steps succeeded). */
 GLboolean mslPipelinePostLinkRun(MSLPatchPipelinePostLink *pipeline);
 
 /* Frees the post-link pipeline's internal resources. */

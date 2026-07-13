@@ -39,6 +39,16 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
 #define MGL_MAX_PENDING_TEXTURE_READS 512
 
+/* P1-3: open-addressing hash-set index sizes (2× the array capacity, rounded
+ * up to a power of two, so load factor stays ≤ 0.5 for O(1) probe length).
+ * Each slot stores (array_index + 1); 0 means empty.  The backing object
+ * arrays remain the source of truth for iteration — the index only accelerates
+ * dedup (mglTrackPendingTexture*) and membership (mglPendingDrawsWrite/ReadTexture). */
+#define MGL_TEX_WRITE_INDEX_SIZE  512   /* 2 × MGL_MAX_PENDING_TEXTURE_WRITES */
+#define MGL_TEX_READ_INDEX_SIZE   1024  /* 2 × MGL_MAX_PENDING_TEXTURE_READS */
+#define MGL_TEX_WRITE_INDEX_MASK  (MGL_TEX_WRITE_INDEX_SIZE - 1)
+#define MGL_TEX_READ_INDEX_MASK   (MGL_TEX_READ_INDEX_SIZE - 1)
+
 /* Bump-allocator arena for batch snapshot allocations (Task 4).
  * Gated by env var MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When
  * enabled, state_snapshot, vao_snapshot, and the commands array are allocated
@@ -148,9 +158,14 @@ typedef struct {
     void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
     uint32_t     texture_write_count;
     bool         texture_write_overflow;
+    /* P1-3: hash-set index for O(1) dedup/membership on texture_write_objects.
+     * Slot value is (array_index + 1); 0 = empty. Zeroed by memset in reset. */
+    uint32_t     texture_write_index[MGL_TEX_WRITE_INDEX_SIZE];
     void        *texture_read_objects[MGL_MAX_PENDING_TEXTURE_READS];
     uint32_t     texture_read_count;
     bool         texture_read_overflow;
+    /* P1-3: hash-set index for O(1) dedup/membership on texture_read_objects. */
+    uint32_t     texture_read_index[MGL_TEX_READ_INDEX_SIZE];
 } MGLCommandBuffer;
 
 /* GL API -> DrawCommand Recorder -> DrawCommandBuffer. */

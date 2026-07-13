@@ -320,6 +320,10 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     ptr->written_min = -1;
     ptr->written_max = -1;
 
+    // P0-4A: initial reference owned by the caller (hash table / binding site).
+    ptr->refcount = 1;
+    ptr->delete_status = GL_FALSE;
+
     // create buffers doesn't provide a target
     if (target)
     {
@@ -327,6 +331,43 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     }
 
     return ptr;
+}
+
+/* P0-4A: Buffer reference counting. Mirrors the Program refcount pattern
+ * (program.c:441-475).  Batch snapshots retain the 5 hot buffer_base types
+ * so a glDeleteBuffers during deferred replay cannot free backing storage
+ * out from under the encoder.  mglDeleteBuffers sets delete_status and
+ * releases the caller's reference; if refcount>0 the shell survives as a
+ * tombstone until the last release frees it. */
+void mglRetainBufferReference(Buffer *buf)
+{
+    if (!buf) return;
+    buf->refcount++;
+}
+
+void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
+{
+    if (!buf) return;
+    if (buf->refcount > 0) {
+        buf->refcount--;
+    }
+    if (buf->refcount == 0 && buf->delete_status) {
+        /* All references dropped and glDeleteBuffers was called: release
+         * Metal backing + CPU backing and free the shell.  Mirrors
+         * mglDestroyContextBuffer's cleanup (glm_context.c). */
+        GLboolean had_mtl_data = buf->data.mtl_data ? GL_TRUE : GL_FALSE;
+        mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
+        if (buf->data.buffer_data && buf->data.buffer_size > 0) {
+            GLboolean release_cpu_backing =
+                !(had_mtl_data && (buf->storage_flags & GL_CLIENT_STORAGE_BIT));
+            if (release_cpu_backing) {
+                vm_deallocate((vm_map_t)mach_task_self(),
+                              (vm_address_t)buf->data.buffer_data,
+                              (vm_size_t)buf->data.buffer_size);
+            }
+        }
+        free(buf);
+    }
 }
 
 Buffer *getBuffer(GLMContext ctx, GLenum target, GLuint buffer)
@@ -1240,20 +1281,20 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
             mglClearBufferMapReferences(&ctx->state.compute_buffer_map_list, ptr, buffer);
 
             /*
-             * GL buffer deletion is name deletion, not necessarily immediate
-             * object destruction: VAOs, indexed bindings, or an in-flight Metal
-             * command buffer may still hold references. Earlier eager release
-             * paths made those references use-after-free. Remove the name from
-             * the hash table now, but keep the shell/backing storage as a
-             * tombstone until we have real refcount/deferred-free machinery.
+             * P0-4A: GL buffer deletion is name deletion, not necessarily
+             * immediate object destruction.  Mark delete_status and release
+             * the caller's reference.  If a batch snapshot still holds a
+             * reference (refcount>0), the shell survives as a tombstone
+             * until mglReleaseBufferReference frees it when refcount hits 0.
+             * mtl_data is NOT released here — it is released only in
+             * mglReleaseBufferReference (or mglDestroyContextBuffer for
+             * never-deleted buffers at context destroy time).
              */
-            void *saved_mtl_data = ptr->data.mtl_data;
+            ptr->delete_status = GL_TRUE;
             deleteHashElement(&STATE(buffer_table), buffer);
-            ptr->data.mtl_data = saved_mtl_data;
 
-            // Do not free the Buffer shell immediately. Some VAOs/map lists can
-            // legally be rebuilt later in the same frame, and stale references
-            // should become harmless tombstones instead of unmapped pointers.
+            // Clear GL-facing identity fields so stale references become
+            // inert tombstones regardless of whether release frees the shell.
             ptr->name = 0;
             ptr->target = 0;
             ptr->index = 0;
@@ -1263,6 +1304,13 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
             ptr->written_max = -1;
             ptr->mapped = GL_FALSE;
             ptr->mapped_ptr = NULL;
+
+            /* Release the caller's reference.  If refcount>0 (in-flight batch
+             * holds a reference), the shell survives as a tombstone.  If
+             * refcount==0, mtl_data + buffer_data are released and the shell
+             * is freed. */
+            mglReleaseBufferReference(ctx, ptr);
+
             STATE(dirty_bits) |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_VAO);
     } // while(--n)
 }
@@ -1419,6 +1467,14 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
                 if (base_slot->buf) {
                     MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
                     mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+                /* Also hazard-check the NEW buffer: pending draws may be
+                 * reading it through a different binding slot.  Without
+                 * this, subsequent CPU writes through the new binding
+                 * race with those unflushed draws. */
+                if (ptr != base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, ptr);
                 }
             } else {
                 MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
@@ -1611,6 +1667,14 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
                 if (base_slot->buf) {
                     MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
                     mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+                /* Also hazard-check the NEW buffer: pending draws may be
+                 * reading it through a different binding slot.  Without
+                 * this, subsequent CPU writes through the new binding
+                 * race with those unflushed draws. */
+                if (ptr != base_slot->buf) {
+                    MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
+                    mglFlushPendingDrawsForBuffer(ctx, ptr);
                 }
             } else {
                 MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);

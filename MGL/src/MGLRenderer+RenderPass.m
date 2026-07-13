@@ -340,21 +340,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
      * side-effect of state setup (e.g. glDrawBuffers restoring the same values
      * after a glBindFramebuffer round-trip).  Skip it — no content is lost.
      */
-    Framebuffer *curFbo = glm_ctx->state.framebuffer;
+    Framebuffer *curFbo = glm_ctx->active_state->framebuffer;
     if (curFbo == _renderPassFramebuffer &&
-        glm_ctx->state.draw_buffer == _renderPassDrawBuffer) {
+        glm_ctx->active_state->draw_buffer == _renderPassDrawBuffer) {
         return;
     }
 
     static uint64_t s_renderPassInvalidateCount = 0;
     uint64_t hit = ++s_renderPassInvalidateCount;
     if (mglTraceLogIsEnabled() && (hit <= 64ull || (hit % 512ull) == 0ull)) {
-        Framebuffer *fbo = glm_ctx->state.framebuffer;
+        Framebuffer *fbo = glm_ctx->active_state->framebuffer;
         mglTraceLog("RENDERPASS_INVALIDATE hit=%llu fbo=%u(%p) drawBuf=0x%x rpFbo=%u(%p) rpDrawBuf=0x%x",
                     (unsigned long long)hit,
                     (unsigned)(fbo ? fbo->name : 0u),
                     fbo,
-                    (unsigned)glm_ctx->state.draw_buffer,
+                    (unsigned)glm_ctx->active_state->draw_buffer,
                     (unsigned)_renderPassFramebufferName,
                     _renderPassFramebuffer,
                     (unsigned)_renderPassDrawBuffer);
@@ -415,11 +415,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return true;
     }
 
-    Framebuffer *fbo = ctx->state.framebuffer;
+    Framebuffer *fbo = ctx->active_state->framebuffer;
     GLuint fboName = fbo ? fbo->name : 0u;
     if (_renderPassFramebuffer != fbo ||
         _renderPassFramebufferName != fboName ||
-        _renderPassDrawBuffer != ctx->state.draw_buffer ||
+        _renderPassDrawBuffer != ctx->active_state->draw_buffer ||
         _renderPassDrawBufferCount != mglMetalDrawBufferCount(ctx)) {
         return false;
     }
@@ -430,7 +430,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     if (!fbo) {
-        GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(ctx->state.draw_buffer);
+        GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(ctx->active_state->draw_buffer);
         id<MTLTexture> expectedColor0 = nil;
         id<MTLTexture> actualColor0 = _renderPassDescriptor.colorAttachments[0].texture;
 
@@ -447,17 +447,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         id<MTLTexture> expectedDepth = nil;
         id<MTLTexture> expectedStencil = nil;
         if (mgl_drawbuffer < _MAX_DRAW_BUFFERS) {
-            BOOL defaultPassNeedsDepth = ctx->state.caps.depth_test ||
+            BOOL defaultPassNeedsDepth = ctx->active_state->caps.depth_test ||
                                          _drawBuffers[mgl_drawbuffer].depthbuffer != nil;
-            BOOL defaultPassNeedsStencil = ctx->state.caps.stencil_test ||
+            BOOL defaultPassNeedsStencil = ctx->active_state->caps.stencil_test ||
                                            ctx->stencil_format.format ||
                                            _drawBuffers[mgl_drawbuffer].stencilbuffer != nil;
             expectedDepth = defaultPassNeedsDepth ? _drawBuffers[mgl_drawbuffer].depthbuffer : nil;
             expectedStencil = defaultPassNeedsStencil ? _drawBuffers[mgl_drawbuffer].stencilbuffer : nil;
-            if (ctx->state.caps.depth_test && !expectedDepth) {
+            if (ctx->active_state->caps.depth_test && !expectedDepth) {
                 return false;
             }
-            if ((ctx->state.caps.stencil_test || ctx->stencil_format.format) && !expectedStencil) {
+            if ((ctx->active_state->caps.stencil_test || ctx->stencil_format.format) && !expectedStencil) {
                 return false;
             }
         }
@@ -579,9 +579,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     static uint64_t s_fboPassMismatchCount = 0;
     uint64_t hit = ++s_fboPassMismatchCount;
     if (hit <= 32ull || (hit % 256ull) == 0ull) {
-        Framebuffer *fbo = ctx->state.framebuffer;
+        Framebuffer *fbo = ctx->active_state->framebuffer;
         id<MTLTexture> color0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
-        GLuint mglDefaultDrawbuffer = fbo ? 0u : mglDefaultDrawBufferIndexForGL(ctx->state.draw_buffer);
+        GLuint mglDefaultDrawbuffer = fbo ? 0u : mglDefaultDrawBufferIndexForGL(ctx->active_state->draw_buffer);
         id<MTLTexture> expectedDefaultColor0 = nil;
         if (!fbo) {
             expectedDefaultColor0 = (mglDefaultDrawbuffer == _FRONT)
@@ -593,7 +593,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         NSLog(@"MGL WARNING: render pass/FBO mismatch before draw hit=%llu fbo=%u drawBuffer=0x%x attachment0=%u passColor0=%p expectedDefaultColor0=%p defaultDrawBuffer=%u; rebuilding encoder",
               (unsigned long long)hit,
               (unsigned)fboName,
-              (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
+              (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
               (unsigned)attachment0Name,
               color0,
               expectedDefaultColor0,
@@ -612,7 +612,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     [self endRenderEncoding];
-    ctx->state.dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE | DIRTY_VAO);
+    ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE | DIRTY_VAO);
     return [self newRenderEncoder];
 }
 
@@ -629,7 +629,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     static uint64_t s_nonDrawFboMismatchCount = 0;
     uint64_t hit = ++s_nonDrawFboMismatchCount;
     if (mglTraceLogIsEnabled() && (hit <= 32ull || (hit % 256ull) == 0ull)) {
-        Framebuffer *fbo = ctx->state.framebuffer;
+        Framebuffer *fbo = ctx->active_state->framebuffer;
         GLuint fboName = fbo ? fbo->name : 0u;
         mglTraceLog("RENDERPASS_NON_DRAW_MISMATCH processCall=%llu hit=%llu "
                     "ctxFbo=%u(%p) ctxDrawBuf=0x%x rpFbo=%u(%p) rpDrawBuf=0x%x",
@@ -637,7 +637,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                     (unsigned long long)hit,
                     (unsigned)fboName,
                     fbo,
-                    (unsigned)ctx->state.draw_buffer,
+                    (unsigned)ctx->active_state->draw_buffer,
                     (unsigned)_renderPassFramebufferName,
                     _renderPassFramebuffer,
                     (unsigned)_renderPassDrawBuffer);
@@ -655,7 +655,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     [self endRenderEncoding];
-    ctx->state.dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE);
+    ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE);
 }
 
 - (bool)bindMTLTexture:(Texture *)tex
@@ -921,9 +921,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                          ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                          _pipelineProgramName);
     memset(_fragmentTextureTraceBindings, 0, sizeof(_fragmentTextureTraceBindings));
-    _renderPassFramebuffer = ctx ? ctx->state.framebuffer : NULL;
+    _renderPassFramebuffer = ctx ? ctx->active_state->framebuffer : NULL;
     _renderPassFramebufferName = _renderPassFramebuffer ? _renderPassFramebuffer->name : 0u;
-    _renderPassDrawBuffer = ctx ? ctx->state.draw_buffer : 0u;
+    _renderPassDrawBuffer = ctx ? ctx->active_state->draw_buffer : 0u;
     _renderPassDrawBufferCount = ctx ? mglMetalDrawBufferCount(ctx) : 0;
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         _renderPassDrawBuffers[i] = (ctx && i < _renderPassDrawBufferCount)
@@ -933,7 +933,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     [self updateCurrentRenderEncoder];
 
     if (!_pipelineState) {
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
         return false;
     }
 
@@ -944,7 +944,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %@",
               exception.reason);
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
         return false;
     }
 
@@ -1201,7 +1201,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	    }
 
 	    if (ctx &&
-	        ctx->state.var.clip_depth_mode == GL_ZERO_TO_ONE &&
+	        ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
 	        ptr->shader_slots[_VERTEX_SHADER] &&
 	        ptr->shader_slots[_VERTEX_SHADER]->mtl_data.zero_to_one_library == NULL)
 	    {
@@ -1242,11 +1242,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	    }
 
 	    if (ctx &&
-	        ctx->state.var.clip_origin == GL_UPPER_LEFT &&
+	        ctx->active_state->var.clip_origin == GL_UPPER_LEFT &&
 	        ptr->shader_slots[_VERTEX_SHADER])
 	    {
 	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
-	        BOOL zeroToOneDepth = (ctx->state.var.clip_depth_mode == GL_ZERO_TO_ONE);
+	        BOOL zeroToOneDepth = (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE);
 	        BOOL needsVariant = zeroToOneDepth
 	            ? (vertexShader->mtl_data.upper_left_zero_to_one_library == NULL)
 	            : (vertexShader->mtl_data.upper_left_library == NULL);
@@ -1257,7 +1257,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	            if (!variantSource || !variantEntry) {
 	                NSLog(@"MGL ERROR: Failed to create UPPER_LEFT vertex variant source for program=%u depthMode=0x%x",
 	                      (unsigned)ptr->name,
-	                      (unsigned)ctx->state.var.clip_depth_mode);
+	                      (unsigned)ctx->active_state->var.clip_depth_mode);
 	                return false;
 	            }
 
@@ -1269,7 +1269,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	            if (!library) {
 	                NSLog(@"MGL ERROR: Failed to compile UPPER_LEFT vertex shader for program=%u depthMode=0x%x: %@",
 	                      (unsigned)ptr->name,
-	                      (unsigned)ctx->state.var.clip_depth_mode,
+	                      (unsigned)ctx->active_state->var.clip_depth_mode,
 	                      error.localizedDescription ?: error);
 	                return false;
 	            }
@@ -2003,7 +2003,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (!tex || !tex->mtl_data) {
         return NO;
     }
-    if (ctx && ctx->state.caps.blend) {
+    if (ctx && ctx->active_state->caps.blend) {
         return NO;
     }
     if (!firstUseThisFrame) {
@@ -2016,7 +2016,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     Framebuffer *fbo;
 
-    fbo = ctx->state.framebuffer;
+    fbo = ctx->active_state->framebuffer;
 
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
     for (int i = 0; i < drawBufferCount; i++)
@@ -2141,7 +2141,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     id<MTLTexture> depth_texture = nil;
     id<MTLTexture> stencil_texture = nil;
 
-    switch(ctx->state.draw_buffer)
+    switch(ctx->active_state->draw_buffer)
     {
         case GL_FRONT: mgl_drawbuffer = _FRONT; break;
         case GL_BACK: mgl_drawbuffer = _FRONT; break;
@@ -2159,9 +2159,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             DEBUG_PRINT("MGL: draw_buffer is GL_NONE, falling back to FRONT\n");
             break;
         default:
-            DEBUG_PRINT("MGL: Unknown draw_buffer value: 0x%x, falling back to FRONT\n", ctx->state.draw_buffer);
+            DEBUG_PRINT("MGL: Unknown draw_buffer value: 0x%x, falling back to FRONT\n", ctx->active_state->draw_buffer);
             mgl_drawbuffer = _FRONT; // fallback to front instead of failing render setup
-            NSLog(@"MGL WARNING: Unknown draw_buffer value 0x%x, using FRONT fallback", ctx->state.draw_buffer);
+            NSLog(@"MGL WARNING: Unknown draw_buffer value 0x%x, using FRONT fallback", ctx->active_state->draw_buffer);
             break;
     }
 
@@ -2213,7 +2213,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     // attach depth. The default framebuffer must have a usable depth
     // attachment whenever GL depth testing is active, even if the legacy
     // context format fields were left unset by the window/bootstrap path.
-    BOOL defaultPassNeedsDepth = ctx->state.caps.depth_test ||
+    BOOL defaultPassNeedsDepth = ctx->active_state->caps.depth_test ||
                                  _drawBuffers[mgl_drawbuffer].depthbuffer != nil;
     if (defaultPassNeedsDepth)
     {
@@ -2245,7 +2245,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     // attach stencil
-    BOOL defaultPassNeedsStencil = ctx->state.caps.stencil_test ||
+    BOOL defaultPassNeedsStencil = ctx->active_state->caps.stencil_test ||
                                    ctx->stencil_format.format ||
                                    _drawBuffers[mgl_drawbuffer].stencilbuffer != nil;
     if (defaultPassNeedsStencil)
@@ -2281,8 +2281,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (void) ensureTransientDepthForDefaultFramebufferLocked
 {
-    if (!ctx->state.framebuffer &&
-        ctx->state.caps.depth_test &&
+    if (!ctx->active_state->framebuffer &&
+        ctx->active_state->caps.depth_test &&
         !_renderPassDescriptor.depthAttachment.texture) {
         NSUInteger depthWidth = _renderPassDescriptor.renderTargetWidth;
         NSUInteger depthHeight = _renderPassDescriptor.renderTargetHeight;
@@ -2332,7 +2332,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 _renderPassDescriptor.depthAttachment.texture = _transientDepthTexture;
                 _renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
                 _renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
-                _renderPassDescriptor.depthAttachment.clearDepth = ctx->state.var.depth_clear_value;
+                _renderPassDescriptor.depthAttachment.clearDepth = ctx->active_state->var.depth_clear_value;
             }
         }
     }
@@ -2342,7 +2342,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                   fboColorClearMask:(GLbitfield *)outFboColorClearMask
                      fboColorAttachment0ClearMask:(GLbitfield *)outFboColorAttachment0ClearMask
 {
-    Framebuffer *fbo = ctx->state.framebuffer;
+    Framebuffer *fbo = ctx->active_state->framebuffer;
     GLsizei drawBufferCount = mglMetalDrawBufferCount(ctx);
     /* Stage 4.2: read the DontCare flag once per pass so the feature-off
      * (default) path skips both the per-attachment stamp write and the
@@ -2397,19 +2397,19 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                             att->clear_color[1],
                             att->clear_color[2],
                             att->clear_color[3],
-                            (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
-                            (unsigned)(ctx ? ctx->state.read_buffer : 0u),
-                            (ctx && ctx->state.caps.scissor_test) ? 1 : 0,
-                            (int)(ctx ? ctx->state.var.scissor_box[0] : 0),
-                            (int)(ctx ? ctx->state.var.scissor_box[1] : 0),
-                            (int)(ctx ? ctx->state.var.scissor_box[2] : 0),
-                            (int)(ctx ? ctx->state.var.scissor_box[3] : 0),
-                            (ctx && ctx->state.var.color_writemask[0][0]) ? 1 : 0,
-                            (ctx && ctx->state.var.color_writemask[0][1]) ? 1 : 0,
-                            (ctx && ctx->state.var.color_writemask[0][2]) ? 1 : 0,
-                            (ctx && ctx->state.var.color_writemask[0][3]) ? 1 : 0,
-                            (ctx && ctx->state.caps.depth_test) ? 1 : 0,
-                            (ctx && ctx->state.var.depth_writemask) ? 1 : 0);
+                            (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
+                            (unsigned)(ctx ? ctx->active_state->read_buffer : 0u),
+                            (ctx && ctx->active_state->caps.scissor_test) ? 1 : 0,
+                            (int)(ctx ? ctx->active_state->var.scissor_box[0] : 0),
+                            (int)(ctx ? ctx->active_state->var.scissor_box[1] : 0),
+                            (int)(ctx ? ctx->active_state->var.scissor_box[2] : 0),
+                            (int)(ctx ? ctx->active_state->var.scissor_box[3] : 0),
+                            (ctx && ctx->active_state->var.color_writemask[0][0]) ? 1 : 0,
+                            (ctx && ctx->active_state->var.color_writemask[0][1]) ? 1 : 0,
+                            (ctx && ctx->active_state->var.color_writemask[0][2]) ? 1 : 0,
+                            (ctx && ctx->active_state->var.color_writemask[0][3]) ? 1 : 0,
+                            (ctx && ctx->active_state->caps.depth_test) ? 1 : 0,
+                            (ctx && ctx->active_state->var.depth_writemask) ? 1 : 0);
             }
             _renderPassDescriptor.colorAttachments[colorSlot].clearColor =
                 MTLClearColorMake(att->clear_color[0],
@@ -2473,17 +2473,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (void) configureDefaultFramebufferLoadStoreActionsLocked
 {
-    Framebuffer *fbo = ctx->state.framebuffer;
-    GLbitfield defaultClearMask = ctx->state.default_fbo_clear_bitmask;
+    Framebuffer *fbo = ctx->active_state->framebuffer;
+    GLbitfield defaultClearMask = ctx->active_state->default_fbo_clear_bitmask;
     if (defaultClearMask & GL_COLOR_BUFFER_BIT) {
         _renderPassDescriptor.colorAttachments[0].clearColor =
-            MTLClearColorMake(ctx->state.default_clear_color[0],
-                              ctx->state.default_clear_color[1],
-                              ctx->state.default_clear_color[2],
-                              ctx->state.default_clear_color[3]);
+            MTLClearColorMake(ctx->active_state->default_clear_color[0],
+                              ctx->active_state->default_clear_color[1],
+                              ctx->active_state->default_clear_color[2],
+                              ctx->active_state->default_clear_color[3]);
         _renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
         _renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-        ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        ctx->active_state->default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
     } else {
         _renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
         static uint64_t s_defaultFboLoadLogCount = 0;
@@ -2491,7 +2491,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
             MGLTraceNSLog(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
                           (unsigned long long)hit,
-                          ctx->state.draw_buffer,
+                          ctx->active_state->draw_buffer,
                           fbo ? (unsigned)fbo->name : 0u);
         }
     }
@@ -2500,7 +2500,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         _renderPassDescriptor.depthAttachment.clearDepth = STATE_VAR(depth_clear_value);
         _renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
         _renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
-        ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        ctx->active_state->default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
         _renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
         if (_renderPassDescriptor.depthAttachment.texture) {
@@ -2512,7 +2512,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         _renderPassDescriptor.stencilAttachment.clearStencil = STATE_VAR(stencil_clear_value);
         _renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionClear;
         _renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
-        ctx->state.default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
+        ctx->active_state->default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
     } else {
         _renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
         if (_renderPassDescriptor.stencilAttachment.texture) {
@@ -2575,22 +2575,22 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                        (unsigned long long)renderEncoderCall,
 	                        (unsigned long long)hit,
 	                        (unsigned)(mglRendererSafeFramebufferName(ctx)),
-	                        (unsigned)ctx->state.draw_buffer,
-	                        (unsigned)ctx->state.read_buffer,
-	                        (int)ctx->state.viewport[0],
-	                        (int)ctx->state.viewport[1],
-	                        (int)ctx->state.viewport[2],
-	                        (int)ctx->state.viewport[3],
-	                        ctx->state.caps.scissor_test ? 1 : 0,
-	                        (int)ctx->state.var.scissor_box[0],
-	                        (int)ctx->state.var.scissor_box[1],
-	                        (int)ctx->state.var.scissor_box[2],
-	                        (int)ctx->state.var.scissor_box[3],
+	                        (unsigned)ctx->active_state->draw_buffer,
+	                        (unsigned)ctx->active_state->read_buffer,
+	                        (int)ctx->active_state->viewport[0],
+	                        (int)ctx->active_state->viewport[1],
+	                        (int)ctx->active_state->viewport[2],
+	                        (int)ctx->active_state->viewport[3],
+	                        ctx->active_state->caps.scissor_test ? 1 : 0,
+	                        (int)ctx->active_state->var.scissor_box[0],
+	                        (int)ctx->active_state->var.scissor_box[1],
+	                        (int)ctx->active_state->var.scissor_box[2],
+	                        (int)ctx->active_state->var.scissor_box[3],
 	                        (unsigned)fboColorClearCount,
 	                        (unsigned)fboColorClearMask,
 	                        (unsigned)fboColorAttachment0ClearMask,
-	                        (unsigned)ctx->state.clear_bitmask,
-	                        (unsigned)ctx->state.default_fbo_clear_bitmask,
+	                        (unsigned)ctx->active_state->clear_bitmask,
+	                        (unsigned)ctx->active_state->default_fbo_clear_bitmask,
 	                        (unsigned)fboDepthClearMaskBefore,
 	                        (unsigned)fboStencilClearMaskBefore,
 	                        mglLoadActionName(_renderPassDescriptor.colorAttachments[0].loadAction),
@@ -2614,9 +2614,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                        c0.alpha,
 	                        _renderPassDescriptor.depthAttachment.clearDepth,
 	                        (unsigned)_renderPassDescriptor.stencilAttachment.clearStencil,
-	                        ctx->state.caps.depth_test ? 1 : 0,
-	                        ctx->state.var.depth_writemask ? 1 : 0,
-	                        (unsigned)ctx->state.var.depth_func);
+	                        ctx->active_state->caps.depth_test ? 1 : 0,
+	                        ctx->active_state->var.depth_writemask ? 1 : 0,
+	                        (unsigned)ctx->active_state->var.depth_func);
 	        }
 	    }
 }
@@ -2634,7 +2634,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
               "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
               (unsigned long long)renderEncoderCall,
               (unsigned)(mglRendererSafeFramebufferName(ctx)),
-              (unsigned)ctx->state.draw_buffer,
+              (unsigned)ctx->active_state->draw_buffer,
               (unsigned long)_renderPassDescriptor.renderTargetWidth,
               (unsigned long)_renderPassDescriptor.renderTargetHeight,
               c0Tex,
@@ -2718,7 +2718,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     // Default-framebuffer paths expect color attachment 0 specifically.
     // FBO draw-buffer mappings may intentionally leave slot 0 as GL_NONE.
-    if (!ctx->state.framebuffer && !_renderPassDescriptor.colorAttachments[0].texture) {
+    if (!ctx->active_state->framebuffer && !_renderPassDescriptor.colorAttachments[0].texture) {
         for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++) {
             if (_renderPassDescriptor.colorAttachments[i].texture) {
                 NSLog(@"MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]", i);
@@ -2869,17 +2869,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                            (unsigned long long)renderEncoderCall,
 	                            (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
 	                            (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
-	                            (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
-	                            (unsigned)(ctx ? ctx->state.read_buffer : 0u),
-	                            (int)(ctx ? ctx->state.viewport[0] : 0),
-	                            (int)(ctx ? ctx->state.viewport[1] : 0),
-	                            (int)(ctx ? ctx->state.viewport[2] : 0),
-	                            (int)(ctx ? ctx->state.viewport[3] : 0),
-	                            (ctx && ctx->state.caps.scissor_test) ? 1 : 0,
-	                            (int)(ctx ? ctx->state.var.scissor_box[0] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[1] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[2] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[3] : 0),
+	                            (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
+	                            (unsigned)(ctx ? ctx->active_state->read_buffer : 0u),
+	                            (int)(ctx ? ctx->active_state->viewport[0] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[1] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[2] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[3] : 0),
+	                            (ctx && ctx->active_state->caps.scissor_test) ? 1 : 0,
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[0] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[1] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[2] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[3] : 0),
 	                            c0,
 	                            (unsigned long)(c0 ? c0.pixelFormat : MTLPixelFormatInvalid),
 	                            (unsigned long)(c0 ? c0.width : 0),
@@ -2893,11 +2893,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                            mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
 	                            mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
 	                            _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.clearDepth : 0.0,
-	                            (ctx && ctx->state.caps.depth_test) ? 1 : 0,
-	                            (ctx && ctx->state.var.depth_writemask) ? 1 : 0,
-	                            (unsigned)(ctx ? ctx->state.var.depth_func : 0u),
-	                            (unsigned)(ctx ? ctx->state.default_fbo_clear_bitmask : 0u),
-	                            (unsigned)(ctx && ctx->state.framebuffer ? ctx->state.framebuffer->depth.clear_bitmask : 0u));
+	                            (ctx && ctx->active_state->caps.depth_test) ? 1 : 0,
+	                            (ctx && ctx->active_state->var.depth_writemask) ? 1 : 0,
+	                            (unsigned)(ctx ? ctx->active_state->var.depth_func : 0u),
+	                            (unsigned)(ctx ? ctx->active_state->default_fbo_clear_bitmask : 0u),
+	                            (unsigned)(ctx && ctx->active_state->framebuffer ? ctx->active_state->framebuffer->depth.clear_bitmask : 0u));
 	            }
 	        }
 	    }
@@ -2922,7 +2922,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (_sampleQueryActive) {
             [_currentRenderEncoder setVisibilityResultMode:MTLVisibilityResultModeBoolean offset:0];
         }
-        _renderPassFramebuffer = ctx ? ctx->state.framebuffer : NULL;
+        _renderPassFramebuffer = ctx ? ctx->active_state->framebuffer : NULL;
         mglTraceFragmentTextureTraceBindings("CLEAR",
                                              "new_render_encoder",
                                              _fragmentTextureTraceBindings,
@@ -2931,7 +2931,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                              _pipelineProgramName);
         memset(_fragmentTextureTraceBindings, 0, sizeof(_fragmentTextureTraceBindings));
         _renderPassFramebufferName = _renderPassFramebuffer ? _renderPassFramebuffer->name : 0u;
-        _renderPassDrawBuffer = ctx ? ctx->state.draw_buffer : 0u;
+        _renderPassDrawBuffer = ctx ? ctx->active_state->draw_buffer : 0u;
         _renderPassDrawBufferCount = ctx ? mglMetalDrawBufferCount(ctx) : 0;
         for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
             _renderPassDrawBuffers[i] = (ctx && i < _renderPassDrawBufferCount)
@@ -2977,17 +2977,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                            (unsigned)(ctx ? mglCurrentRenderProgramKey(ctx) : 0u),
 	                            (unsigned)(ctx ? mglRendererSafeFramebufferName(ctx) : 0u),
 	                            (unsigned)_renderPassFramebufferName,
-	                            (unsigned)(ctx ? ctx->state.draw_buffer : 0u),
-	                            (unsigned)(ctx ? ctx->state.read_buffer : 0u),
-	                            (int)(ctx ? ctx->state.viewport[0] : 0),
-	                            (int)(ctx ? ctx->state.viewport[1] : 0),
-	                            (int)(ctx ? ctx->state.viewport[2] : 0),
-	                            (int)(ctx ? ctx->state.viewport[3] : 0),
-	                            (ctx && ctx->state.caps.scissor_test) ? 1 : 0,
-	                            (int)(ctx ? ctx->state.var.scissor_box[0] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[1] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[2] : 0),
-	                            (int)(ctx ? ctx->state.var.scissor_box[3] : 0),
+	                            (unsigned)(ctx ? ctx->active_state->draw_buffer : 0u),
+	                            (unsigned)(ctx ? ctx->active_state->read_buffer : 0u),
+	                            (int)(ctx ? ctx->active_state->viewport[0] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[1] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[2] : 0),
+	                            (int)(ctx ? ctx->active_state->viewport[3] : 0),
+	                            (ctx && ctx->active_state->caps.scissor_test) ? 1 : 0,
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[0] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[1] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[2] : 0),
+	                            (int)(ctx ? ctx->active_state->var.scissor_box[3] : 0),
 	                            c0,
 	                            (unsigned long)(c0 ? c0.pixelFormat : MTLPixelFormatInvalid),
 	                            (unsigned long)(c0 ? c0.width : 0),
@@ -3001,9 +3001,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	                            mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
 	                            mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
 	                            _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.clearDepth : 0.0,
-	                            (ctx && ctx->state.caps.depth_test) ? 1 : 0,
-	                            (ctx && ctx->state.var.depth_writemask) ? 1 : 0,
-	                            (unsigned)(ctx ? ctx->state.var.depth_func : 0u));
+	                            (ctx && ctx->active_state->caps.depth_test) ? 1 : 0,
+	                            (ctx && ctx->active_state->var.depth_writemask) ? 1 : 0,
+	                            (unsigned)(ctx ? ctx->active_state->var.depth_func : 0u));
 	            }
 	        }
 	    }
@@ -3068,12 +3068,12 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             drawableHeight = (NSUInteger)_drawable.texture.height;
         }
 
-        if (!ctx->state.caps.scissor_test) {
-            ctx->state.var.scissor_box[0] = 0;
-            ctx->state.var.scissor_box[1] = 0;
+        if (!ctx->active_state->caps.scissor_test) {
+            ctx->active_state->var.scissor_box[0] = 0;
+            ctx->active_state->var.scissor_box[1] = 0;
         }
-        ctx->state.var.scissor_box[2] = (GLint)drawableWidth;
-        ctx->state.var.scissor_box[3] = (GLint)drawableHeight;
+        ctx->active_state->var.scissor_box[2] = (GLint)drawableWidth;
+        ctx->active_state->var.scissor_box[3] = (GLint)drawableHeight;
     }
 
     _renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -3084,7 +3084,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 
     // Configure color/depth/stencil attachments based on FBO type
-    if (ctx->state.framebuffer) {
+    if (ctx->active_state->framebuffer) {
         RETURN_FALSE_ON_FAILURE([self configureUserFBOAttachmentsLocked]);
     } else {
         RETURN_FALSE_ON_FAILURE([self configureDefaultFramebufferAttachmentsLocked]);
@@ -3096,8 +3096,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     GLbitfield fboColorClearMask = 0;
     GLbitfield fboColorAttachment0ClearMask = 0;
 
-    Framebuffer *fbo = ctx->state.framebuffer;
-    GLbitfield defaultClearMask = ctx->state.default_fbo_clear_bitmask;
+    Framebuffer *fbo = ctx->active_state->framebuffer;
+    GLbitfield defaultClearMask = ctx->active_state->default_fbo_clear_bitmask;
     GLbitfield fboDepthClearMaskBefore = fbo ? fbo->depth.clear_bitmask : 0u;
     GLbitfield fboStencilClearMaskBefore = fbo ? fbo->stencil.clear_bitmask : 0u;
 
@@ -3493,15 +3493,15 @@ create_new_command_buffer:
     GLuint renderProgramKey = mglCurrentRenderProgramKey(ctx);
     GLuint vertexProgramName = vertexProgram ? vertexProgram->name : 0u;
     GLuint fragmentProgramName = fragmentProgram ? fragmentProgram->name : 0u;
-    BOOL rasterizerDiscard = ctx->state.caps.rasterizer_discard ? YES : NO;
+    BOOL rasterizerDiscard = ctx->active_state->caps.rasterizer_discard ? YES : NO;
 
     if (!vertexProgram || (!fragmentProgram && !rasterizerDiscard)) {
         NSLog(@"MGL PIPELINE DESC fail: missing stage program key=%u vs=%p fs=%p current=%u pipeline=%u",
               (unsigned)renderProgramKey,
               vertexProgram,
               fragmentProgram,
-              (unsigned)ctx->state.program_name,
-              (unsigned)ctx->state.var.program_pipeline_binding);
+              (unsigned)ctx->active_state->program_name,
+              (unsigned)ctx->active_state->var.program_pipeline_binding);
         return nil;
     }
 
@@ -3538,15 +3538,15 @@ create_new_command_buffer:
     }
 
 	    void *vertexFunctionPtr = vertex_shader->mtl_data.function;
-	    if (ctx->state.var.clip_origin == GL_UPPER_LEFT) {
-	        if (ctx->state.var.clip_depth_mode == GL_ZERO_TO_ONE &&
+	    if (ctx->active_state->var.clip_origin == GL_UPPER_LEFT) {
+	        if (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
 	            vertex_shader->mtl_data.upper_left_zero_to_one_function) {
 	            vertexFunctionPtr = vertex_shader->mtl_data.upper_left_zero_to_one_function;
-	        } else if (ctx->state.var.clip_depth_mode != GL_ZERO_TO_ONE &&
+	        } else if (ctx->active_state->var.clip_depth_mode != GL_ZERO_TO_ONE &&
 	                   vertex_shader->mtl_data.upper_left_function) {
 	            vertexFunctionPtr = vertex_shader->mtl_data.upper_left_function;
 	        }
-	    } else if (ctx->state.var.clip_depth_mode == GL_ZERO_TO_ONE &&
+	    } else if (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
 	               vertex_shader->mtl_data.zero_to_one_function) {
 	        vertexFunctionPtr = vertex_shader->mtl_data.zero_to_one_function;
 	    }
@@ -3592,8 +3592,8 @@ create_new_command_buffer:
         pipelineStateDescriptor.rasterizationEnabled = YES;
     }
 
-    if (ctx->state.framebuffer) {
-        Framebuffer *fbo = ctx->state.framebuffer;
+    if (ctx->active_state->framebuffer) {
+        Framebuffer *fbo = ctx->active_state->framebuffer;
 
         for (int i = 0; i < STATE(max_color_attachments); i++) {
             if (fbo->color_attachments[i].texture) {
@@ -3696,7 +3696,7 @@ create_new_command_buffer:
     }
 
     BOOL color0IsIntentionallyDisabled =
-        ctx->state.framebuffer &&
+        ctx->active_state->framebuffer &&
         mglMetalDrawBufferAt(ctx, 0u) == GL_NONE;
 
     if (!color0IsIntentionallyDisabled &&
@@ -4074,55 +4074,55 @@ create_new_command_buffer:
 {
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
-        if (!mglIsValidGLBlendFactor(ctx->state.var.blend_src_rgb[i])) {
-            mglLogRenderStateRepair("blend_src_rgb", ctx->state.var.blend_src_rgb[i], GL_ONE);
-            ctx->state.var.blend_src_rgb[i] = GL_ONE;
+        if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_src_rgb[i])) {
+            mglLogRenderStateRepair("blend_src_rgb", ctx->active_state->var.blend_src_rgb[i], GL_ONE);
+            ctx->active_state->var.blend_src_rgb[i] = GL_ONE;
         }
-        if (!mglIsValidGLBlendFactor(ctx->state.var.blend_src_alpha[i])) {
-            mglLogRenderStateRepair("blend_src_alpha", ctx->state.var.blend_src_alpha[i], GL_ONE);
-            ctx->state.var.blend_src_alpha[i] = GL_ONE;
+        if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_src_alpha[i])) {
+            mglLogRenderStateRepair("blend_src_alpha", ctx->active_state->var.blend_src_alpha[i], GL_ONE);
+            ctx->active_state->var.blend_src_alpha[i] = GL_ONE;
         }
-        if (!mglIsValidGLBlendFactor(ctx->state.var.blend_dst_rgb[i])) {
-            mglLogRenderStateRepair("blend_dst_rgb", ctx->state.var.blend_dst_rgb[i], GL_ZERO);
-            ctx->state.var.blend_dst_rgb[i] = GL_ZERO;
+        if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_dst_rgb[i])) {
+            mglLogRenderStateRepair("blend_dst_rgb", ctx->active_state->var.blend_dst_rgb[i], GL_ZERO);
+            ctx->active_state->var.blend_dst_rgb[i] = GL_ZERO;
         }
-        if (!mglIsValidGLBlendFactor(ctx->state.var.blend_dst_alpha[i])) {
-            mglLogRenderStateRepair("blend_dst_alpha", ctx->state.var.blend_dst_alpha[i], GL_ZERO);
-            ctx->state.var.blend_dst_alpha[i] = GL_ZERO;
+        if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_dst_alpha[i])) {
+            mglLogRenderStateRepair("blend_dst_alpha", ctx->active_state->var.blend_dst_alpha[i], GL_ZERO);
+            ctx->active_state->var.blend_dst_alpha[i] = GL_ZERO;
         }
-        if (!mglIsValidGLBlendEquation(ctx->state.var.blend_equation_rgb[i])) {
-            mglLogRenderStateRepair("blend_equation_rgb", ctx->state.var.blend_equation_rgb[i], GL_FUNC_ADD);
-            ctx->state.var.blend_equation_rgb[i] = GL_FUNC_ADD;
+        if (!mglIsValidGLBlendEquation(ctx->active_state->var.blend_equation_rgb[i])) {
+            mglLogRenderStateRepair("blend_equation_rgb", ctx->active_state->var.blend_equation_rgb[i], GL_FUNC_ADD);
+            ctx->active_state->var.blend_equation_rgb[i] = GL_FUNC_ADD;
         }
-        if (!mglIsValidGLBlendEquation(ctx->state.var.blend_equation_alpha[i])) {
-            mglLogRenderStateRepair("blend_equation_alpha", ctx->state.var.blend_equation_alpha[i], GL_FUNC_ADD);
-            ctx->state.var.blend_equation_alpha[i] = GL_FUNC_ADD;
+        if (!mglIsValidGLBlendEquation(ctx->active_state->var.blend_equation_alpha[i])) {
+            mglLogRenderStateRepair("blend_equation_alpha", ctx->active_state->var.blend_equation_alpha[i], GL_FUNC_ADD);
+            ctx->active_state->var.blend_equation_alpha[i] = GL_FUNC_ADD;
         }
 
-        _src_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->state.var.blend_src_rgb[i]];
-        _src_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->state.var.blend_src_alpha[i]];
+        _src_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_src_rgb[i]];
+        _src_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_src_alpha[i]];
 
-        _dst_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->state.var.blend_dst_rgb[i]];
-        _dst_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->state.var.blend_dst_alpha[i]];
+        _dst_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_dst_rgb[i]];
+        _dst_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_dst_alpha[i]];
 
-        _rgb_blend_operation[i] = [self blendOperationFromGL: ctx->state.var.blend_equation_rgb[i]];
-        _alpha_blend_operation[i] = [self blendOperationFromGL: ctx->state.var.blend_equation_alpha[i]];
+        _rgb_blend_operation[i] = [self blendOperationFromGL: ctx->active_state->var.blend_equation_rgb[i]];
+        _alpha_blend_operation[i] = [self blendOperationFromGL: ctx->active_state->var.blend_equation_alpha[i]];
 
-        if (!ctx->state.caps.use_color_mask[i]) {
+        if (!ctx->active_state->caps.use_color_mask[i]) {
             _color_mask[i] = MTLColorWriteMaskAll;
         } else {
             _color_mask[i] = MTLColorWriteMaskNone;
 
-            if (ctx->state.var.color_writemask[i][0])
+            if (ctx->active_state->var.color_writemask[i][0])
                 _color_mask[i] |= MTLColorWriteMaskRed;
 
-            if (ctx->state.var.color_writemask[i][1])
+            if (ctx->active_state->var.color_writemask[i][1])
                 _color_mask[i] |= MTLColorWriteMaskGreen;
 
-            if (ctx->state.var.color_writemask[i][2])
+            if (ctx->active_state->var.color_writemask[i][2])
                 _color_mask[i] |= MTLColorWriteMaskBlue;
 
-            if (ctx->state.var.color_writemask[i][3])
+            if (ctx->active_state->var.color_writemask[i][3])
                 _color_mask[i] |= MTLColorWriteMaskAlpha;
         }
     }
@@ -4130,8 +4130,8 @@ create_new_command_buffer:
 
 -(void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
 {
-    pipelineStateDescriptor.alphaToCoverageEnabled = ctx->state.caps.sample_alpha_to_coverage ? YES : NO;
-    pipelineStateDescriptor.alphaToOneEnabled = ctx->state.caps.sample_alpha_to_one ? YES : NO;
+    pipelineStateDescriptor.alphaToCoverageEnabled = ctx->active_state->caps.sample_alpha_to_coverage ? YES : NO;
+    pipelineStateDescriptor.alphaToOneEnabled = ctx->active_state->caps.sample_alpha_to_one ? YES : NO;
 
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
@@ -4144,7 +4144,7 @@ create_new_command_buffer:
             }
 
             pipelineStateDescriptor.colorAttachments[i].blendingEnabled =
-                ctx->state.caps.blendi[i] ? true : false;
+                ctx->active_state->caps.blendi[i] ? true : false;
 
             pipelineStateDescriptor.colorAttachments[i].sourceRGBBlendFactor = _src_blend_rgb_factor[i];
             pipelineStateDescriptor.colorAttachments[i].destinationRGBBlendFactor = _dst_blend_rgb_factor[i];
@@ -4176,7 +4176,7 @@ create_new_command_buffer:
         return false;
     }
 
-    fbo = ctx->state.framebuffer;
+    fbo = ctx->active_state->framebuffer;
 
     // MEMORY SAFETY: Validate framebuffer pointer
     if (!fbo) {
@@ -4641,7 +4641,7 @@ create_new_command_buffer:
         }
 
         // for a clear flush sequence...
-        if (ctx->state.dirty_bits & DIRTY_STATE)
+        if (ctx->active_state->dirty_bits & DIRTY_STATE)
         {
             // end encoding on current render encoder
             [self endRenderEncodingLocked];
@@ -4649,7 +4649,7 @@ create_new_command_buffer:
             // Use GPU throttling to prevent crashes when creating new render encoder
             if (![self validateMetalObjects]) {
                 NSLog(@"MGL WARNING: GPU throttling active - deferring render encoder creation");
-                ctx->state.dirty_bits &= ~DIRTY_STATE;
+                ctx->active_state->dirty_bits &= ~DIRTY_STATE;
                 return true;
             }
 
@@ -4660,7 +4660,7 @@ create_new_command_buffer:
             }
 
             // Clear the dirty bit to prevent repeated attempts
-            ctx->state.dirty_bits &= ~DIRTY_STATE;
+            ctx->active_state->dirty_bits &= ~DIRTY_STATE;
         }
 
         return true;
@@ -4815,7 +4815,7 @@ create_new_command_buffer:
             Program *lookupVertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
             Program *lookupFragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
             GLuint lookupProgramName = mglCurrentRenderProgramKey(ctx);
-            Framebuffer *lookupFBO = ctx->state.framebuffer;
+            Framebuffer *lookupFBO = ctx->active_state->framebuffer;
             GLuint lookupFBOName = lookupFBO ? lookupFBO->name : 0;
             fprintf(stderr, "MGL Draw current program key=%u mono=%p vs=%u fs=%u\n",
                     (unsigned)lookupProgramName,
@@ -4827,7 +4827,7 @@ create_new_command_buffer:
                   (unsigned)lookupProgramName,
                   lookupVertexProgram ? (unsigned)lookupVertexProgram->name : 0u,
                   lookupFragmentProgram ? (unsigned)lookupFragmentProgram->name : 0u,
-                  ctx->state.vao,
+                  ctx->active_state->vao,
                   (unsigned)lookupFBOName);
         }
     }
@@ -4840,7 +4840,7 @@ create_new_command_buffer:
                           (unsigned long long)nil_pipeline_count);
         }
         // Force rebuild on next state processing pass.
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.nil_pipeline",
                                 ctx,
@@ -4865,7 +4865,7 @@ create_new_command_buffer:
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
         // Force pipeline/state retranslation on next draw instead of crashing this frame.
-        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.set_pipeline",
                                 ctx,
@@ -4906,7 +4906,7 @@ create_new_command_buffer:
 
         vector_float4 fragCoordParams = {
             (float)passHeight,
-            ctx->state.var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
+            ctx->active_state->var.clip_origin == GL_LOWER_LEFT ? 1.0f : 0.0f,
             0.0f,
             0.0f
         };
@@ -4948,21 +4948,21 @@ create_new_command_buffer:
 - (bool)processDirtyStateDomainsLocked:(bool)draw_command
 {
     bool deferredBufferMapForPipelineBuild = false;
-    if (ctx->state.dirty_bits)
+    if (ctx->active_state->dirty_bits)
     {
         // FBO binding/attachment changes alter the Metal render pass itself. They must
         // be handled even when no generic DIRTY_STATE bit is present; otherwise the
         // current render encoder can keep drawing into an old attachment while GL state
         // already points at a different FBO. RenderPass Sync domain (Stage 3.2).
-        if (ctx->state.dirty_bits & DIRTY_FBO)
+        if (ctx->active_state->dirty_bits & DIRTY_FBO)
         {
             RETURN_FALSE_ON_FAILURE([self syncRenderPassStateForContext:ctx]);
         }
 
         // dirty state covers all rendering attachments and general state
-        if (ctx->state.dirty_bits & DIRTY_STATE)
+        if (ctx->active_state->dirty_bits & DIRTY_STATE)
         {
-            if (ctx->state.dirty_bits & DIRTY_FBO)
+            if (ctx->active_state->dirty_bits & DIRTY_FBO)
             {
                 // MEMORY SAFETY: Add comprehensive validation to prevent use-after-free crashes
                 Framebuffer *framebuffer = mglRendererGetValidatedFramebuffer(ctx, "processGLState.dirtyStateFBO");
@@ -4983,7 +4983,7 @@ create_new_command_buffer:
                 // dirty FBO state can't be cleared just yet its needed below
             }
 
-            ctx->state.dirty_bits &= ~DIRTY_STATE;
+            ctx->active_state->dirty_bits &= ~DIRTY_STATE;
         }
 
         // check for dirty program and vao
@@ -4991,14 +4991,14 @@ create_new_command_buffer:
         // dirty program causes buffers to be remapped
         // dirty vao causes attributes to be remapped to new buffers
         // dirty buffer base causes buffers to be remapped to new indexes
-        if (ctx->state.dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_BUFFER_BASE_STATE))
+        if (ctx->active_state->dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_BUFFER_BASE_STATE))
         {
             // Avoid mapping draw buffers against a nil pipeline during startup/rebuild.
             // We'll map again after a valid pipeline is bound.
             bool deferBufferMapForNilPipeline =
                 (draw_command &&
                  _pipelineState == nil &&
-                 (ctx->state.dirty_bits & DIRTY_PROGRAM));
+                 (ctx->active_state->dirty_bits & DIRTY_PROGRAM));
 
             if (deferBufferMapForNilPipeline) {
                 deferredBufferMapForPipelineBuild = true;
@@ -5016,29 +5016,29 @@ create_new_command_buffer:
                 RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
             }
 
-            ctx->state.dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
+            ctx->active_state->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
         }
 
         // Texture object uploads can be prepared before pipeline selection, but
         // sampled-resource binding must wait until after setRenderPipelineState()
         // so it uses the current program's sampler reflection.
-        if (ctx->state.dirty_bits & (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER))
+        if (ctx->active_state->dirty_bits & (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER))
         {
             RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
 
             // textures / active textures and samplers are all handled in bindActiveTexturesToMTL
-            ctx->state.dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
+            ctx->active_state->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
         }
 
         // A dirty VAO changes vertex buffer bindings and may require a new
         // pipeline descriptor, but it does not change the render-pass
         // attachments. Keep the current encoder alive so GL draw ordering and
         // depth/load-store continuity are preserved across HUD/hand/UI passes.
-        if (ctx->state.dirty_bits & DIRTY_VAO)
+        if (ctx->active_state->dirty_bits & DIRTY_VAO)
         {
             // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
 
             if (!_currentRenderEncoder) {
                 RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
@@ -5047,17 +5047,17 @@ create_new_command_buffer:
             [self updateCurrentRenderEncoder];
 
             // clear dirty render state
-            ctx->state.dirty_bits &= ~DIRTY_RENDER_STATE;
+            ctx->active_state->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
-        else if (ctx->state.dirty_bits & DIRTY_BUFFER)
+        else if (ctx->active_state->dirty_bits & DIRTY_BUFFER)
         {
             // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.vertex_buffer_map_list]);
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
 
-            ctx->state.dirty_bits &= ~DIRTY_BUFFER;
+            ctx->active_state->dirty_bits &= ~DIRTY_BUFFER;
         }
-        else if (ctx->state.dirty_bits & DIRTY_RENDER_STATE)
+        else if (ctx->active_state->dirty_bits & DIRTY_RENDER_STATE)
         {
             if (_currentRenderEncoder == NULL)
             {
@@ -5069,14 +5069,14 @@ create_new_command_buffer:
             // updateCurrentRenderEncoder will update the renderstate outside of creating a new one
             [self updateCurrentRenderEncoder];
 
-            ctx->state.dirty_bits &= ~DIRTY_RENDER_STATE;
+            ctx->active_state->dirty_bits &= ~DIRTY_RENDER_STATE;
         }
 
         // new pipeline / vertex / renderbuffer and pipelinestate descriptor, should probably make this a single dirty bit
         // Pipeline Sync domain (Stage 3.3): when program/VAO/FBO/alpha/render-state changes,
         // rebuild or reuse the PSO. The logic was moved entirely to syncPipelineStateWithDeferredBufferMap:,
         // only the dispatch remains here; deferredBufferMap is passed as a value parameter (not read after the block).
-        if (ctx->state.dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
+        if (ctx->active_state->dirty_bits & (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE))
         {
             RETURN_FALSE_ON_FAILURE([self syncPipelineStateWithDeferredBufferMap:deferredBufferMapForPipelineBuild]);
         }
@@ -5089,23 +5089,23 @@ create_new_command_buffer:
         // remaining bits (e.g. DIRTY_DRAWABLE set at init, or bits accumulated
         // via |= in the defer path without DIRTY_ALL_BIT) are stale and would
         // cause false-positive rebinds on the next draw.
-        ctx->state.dirty_bits = 0;
+        ctx->active_state->dirty_bits = 0;
     }
     else // if (ctx->state.dirty_bits)
     {
         // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
         // like a uniform or buffer sub data call
         
-        if( [self checkForDirtyBufferData: &ctx->state.vertex_buffer_map_list])
+        if( [self checkForDirtyBufferData: &ctx->active_state->vertex_buffer_map_list])
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.vertex_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
 
             RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
         }
         
-        if( [self checkForDirtyBufferData: &ctx->state.fragment_buffer_map_list])
+        if( [self checkForDirtyBufferData: &ctx->active_state->fragment_buffer_map_list])
         {
-            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->state.fragment_buffer_map_list]);
+            RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
 
             RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
         }
@@ -5207,7 +5207,7 @@ create_new_command_buffer:
 	                  (unsigned long)_pipelineColor0Format, (unsigned long)currentColor0Format);
 	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass color format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 
@@ -5220,7 +5220,7 @@ create_new_command_buffer:
 	        NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	              (unsigned long)_pipelineDepthFormat, (unsigned long)currentDepthFormat);
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 depth_format_ok:;
@@ -5234,7 +5234,7 @@ depth_format_ok:;
 	        NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	              (unsigned long)_pipelineStencilFormat, (unsigned long)currentStencilFormat);
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
-	        ctx->state.dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 stencil_format_ok:;
@@ -5399,35 +5399,65 @@ stencil_format_ok:;
             }
 
 	            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
-	            NSString *pipelineCacheKey = nil;
-	            bool pipelineResolvedFromCache = false;
+	            NSNumber *pipelineCacheKey = nil;
+            bool pipelineResolvedFromCache = false;
+            uint64_t pipelineSig = 0;
+            uint64_t vertexSig = 0;
 
-	            if (!pipelineResolvedFromCache && _pipelineStateCache && currentProgramName != 0) {
-	                uint64_t pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
-                uint64_t vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
-	                pipelineCacheKey = [NSString stringWithFormat:@"%u:%x:%x:%016llx:%016llx",
-		                                    (unsigned)currentProgramName,
-		                                    (unsigned)state->var.clip_origin,
-		                                    (unsigned)state->var.clip_depth_mode,
-		                                    (unsigned long long)pipelineSig,
-		                                    (unsigned long long)vertexSig];
-	                id<MTLRenderPipelineState> cachedPipeline = [_pipelineStateCache objectForKey:pipelineCacheKey];
-	                if (cachedPipeline) {
-	                    static uint64_t s_pipelineCacheHitCount = 0;
+            if (!pipelineResolvedFromCache && _pipelineStateCache && currentProgramName != 0) {
+                pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
+                vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
+	                pipelineCacheKey = [NSNumber numberWithUnsignedLongLong:
+	                    (((uint64_t)currentProgramName << 32)
+	                   | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
+	                   | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
+	                   | ((pipelineSig & 0xFFFu) << 12)
+	                   | (vertexSig & 0xFFFu))];
+	                id cachedEntry = [_pipelineStateCache objectForKey:pipelineCacheKey];
+                id<MTLRenderPipelineState> cachedPipeline = nil;
+                if (cachedEntry) {
+                    /* Secondary validation: the NSNumber key truncates each
+                     * signature to 12 bits, so two different pipeline/vertex
+                     * descriptor combinations can collide to the same key.
+                     * Compare the full 64-bit signatures stored in the wrapper
+                     * to reject false hits. */
+                    if ([cachedEntry isKindOfClass:[NSDictionary class]]) {
+                        NSDictionary *entry = (NSDictionary *)cachedEntry;
+                        uint64_t cachedPSig = [entry[@"sig"] unsignedLongLongValue];
+                        uint64_t cachedVSig = [entry[@"vsig"] unsignedLongLongValue];
+                        if (cachedPSig == pipelineSig && cachedVSig == vertexSig) {
+                            cachedPipeline = entry[@"pipeline"];
+                        }
+                    } else {
+                        /* Legacy bare pipeline entry (pre-migration). */
+                        cachedPipeline = (id<MTLRenderPipelineState>)cachedEntry;
+                    }
+                }
+                if (cachedPipeline) {
+                    static uint64_t s_pipelineCacheHitCount = 0;
                     s_pipelineCacheHitCount++;
                     MGL_PERF_INC(g_mglPipelineCacheHitsSinceSwap);
 	                    if (kMGLVerbosePipelineLogs &&
                             (s_pipelineCacheHitCount <= 128ull || (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
-	                        NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%@",
-	                              (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName, pipelineCacheKey);
+	                        NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%016llx",
+	                              (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName,
+	                              (unsigned long long)pipelineCacheKey.unsignedLongLongValue);
 	                    }
 
 	                    _pipelineState = cachedPipeline;
-	                    pipelineResolvedFromCache = true;
-	                    _pipelineColor0Format = builtColor0Format;
-	                    _pipelineDepthFormat = builtDepthFormat;
-	                    _pipelineStencilFormat = builtStencilFormat;
-	                    _pipelineProgramName = currentProgramName;
+                    pipelineResolvedFromCache = true;
+                    _pipelineColor0Format = builtColor0Format;
+                    _pipelineDepthFormat = builtDepthFormat;
+                    _pipelineStencilFormat = builtStencilFormat;
+                    _pipelineProgramName = currentProgramName;
+
+                    /* P2-4: True LRU — remove and re-insert the entry so
+                     * NSMutableDictionary's insertion order reflects access
+                     * order.  This makes the oldest entries the true LRU
+                     * victims, not just the oldest inserts.  The remove+
+                     * re-insert is O(1) for NSMutableDictionary. */
+                    [_pipelineStateCache removeObjectForKey:pipelineCacheKey];
+                    [_pipelineStateCache setObject:cachedEntry forKey:pipelineCacheKey];
 
 	                    // Mirror successful compile-side breaker resets.
 	                    s_interfaceMismatchStreak = 0;
@@ -5740,7 +5770,9 @@ stencil_format_ok:;
 	                    _interfaceMismatchBlockedStreak = 0u;
 	                }
 
-                [self insertPipelineIntoCacheWithKey:pipelineCacheKey];
+                [self insertPipelineIntoCacheWithKey:pipelineCacheKey
+                                        pipelineSig:pipelineSig
+                                        vertexSig:vertexSig];
 	            }
 	            }
 
@@ -5758,15 +5790,15 @@ stencil_format_ok:;
  * Pipeline cache insertion with LRU eviction, extracted from
  * syncPipelineStateWithDeferredBufferMap:.
  */
-- (void)insertPipelineIntoCacheWithKey:(NSString *)pipelineCacheKey
+- (void)insertPipelineIntoCacheWithKey:(NSNumber *)pipelineCacheKey
+                           pipelineSig:(uint64_t)pipelineSig
+                           vertexSig:(uint64_t)vertexSig
 {
     if (_pipelineStateCache) {
-        /* LRU eviction: remove the oldest 25% of cached entries instead
-         * of clearing the whole cache. NSMutableDictionary preserves
-         * insertion order, so the first keys are the oldest inserts.
-         * This is an approximation of true LRU — a real access-ordered
-         * LRU would require rebuilding the dictionary on each hit,
-         * which is too expensive for this hot path. */
+        /* P2-4: True LRU eviction.  Cache hits remove+re-insert the entry
+         * (see syncPipelineStateWithDeferredBufferMap:), so NSMutableDictionary's
+         * insertion order reflects access order.  Evicting the first 25% of
+         * allKeys removes the least-recently-used entries. */
         if (_pipelineStateCache.count >= 256) {
             NSArray *keys = _pipelineStateCache.allKeys;
             NSUInteger evictCount = keys.count / 4;  /* evict 25% */
@@ -5776,7 +5808,15 @@ stencil_format_ok:;
             }
         }
         if (pipelineCacheKey) {
-            [_pipelineStateCache setObject:_pipelineState forKey:pipelineCacheKey];
+            /* Store the pipeline wrapped in an NSDictionary alongside the
+             * full 64-bit signatures so that cache lookups can reject false
+             * hits caused by the 12-bit truncation in the packed NSNumber key. */
+            NSDictionary *entry = @{
+                @"pipeline": _pipelineState,
+                @"sig": [NSNumber numberWithUnsignedLongLong:pipelineSig],
+                @"vsig": [NSNumber numberWithUnsignedLongLong:vertexSig]
+            };
+            [_pipelineStateCache setObject:entry forKey:pipelineCacheKey];
         }
     }
 }
@@ -5803,9 +5843,9 @@ stencil_format_ok:;
         uint32_t sizeConstants[31];
         memset(sizeConstants, 0, sizeof(sizeConstants));
 
-        for (int i = 0; i < ctx->state.vertex_buffer_map_list.count; i++)
+        for (int i = 0; i < ctx->active_state->vertex_buffer_map_list.count; i++)
         {
-            BufferMap *map = &ctx->state.vertex_buffer_map_list.buffers[i];
+            BufferMap *map = &ctx->active_state->vertex_buffer_map_list.buffers[i];
             if (!map->buf)
                 continue;
             NSUInteger metalSlot = map->has_metal_binding
@@ -5836,9 +5876,9 @@ stencil_format_ok:;
         uint32_t sizeConstants[31];
         memset(sizeConstants, 0, sizeof(sizeConstants));
 
-        for (int i = 0; i < ctx->state.fragment_buffer_map_list.count; i++)
+        for (int i = 0; i < ctx->active_state->fragment_buffer_map_list.count; i++)
         {
-            BufferMap *map = &ctx->state.fragment_buffer_map_list.buffers[i];
+            BufferMap *map = &ctx->active_state->fragment_buffer_map_list.buffers[i];
             if (!map->buf)
                 continue;
             NSUInteger metalSlot = map->has_metal_binding
@@ -5996,15 +6036,15 @@ stencil_format_ok:;
                               context:(GLMContext)glm_ctx
                           replayError:(GLenum *)replayError
 {
-    if (!(glm_ctx->state.dirty_bits & DIRTY_FBO))
+    if (!(glm_ctx->active_state->dirty_bits & DIRTY_FBO))
         return YES;
 
     /* Orchestrator-driven FBO rotation (Stage 3.1) delegates to the shared
      * RenderPass Sync unit (Stage 3.2), surfacing any GL error as replayError
      * so the batch is skipped rather than drawn against a stale pass. */
     if (![self syncRenderPassStateForContext:glm_ctx]) {
-        if (glm_ctx->state.error != GL_NO_ERROR)
-            *replayError = glm_ctx->state.error;
+        if (glm_ctx->active_state->error != GL_NO_ERROR)
+            *replayError = glm_ctx->active_state->error;
         return NO;
     }
     return YES;

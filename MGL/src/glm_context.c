@@ -209,6 +209,10 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     bzero((void *)ctx, sizeof(GLMContextRec));
 
+    /* active_state defaults to the embedded state; parallel-encoding
+     * workers will redirect this to their per-worker GLMState copy. */
+    ctx->active_state = &ctx->state;
+
     _ctx = ctx;
 
     if ((format == 0) && (type == 0))
@@ -595,6 +599,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     initHashTable(&STATE(renderbuffer_table), 32);
     initHashTable(&STATE(framebuffer_table), 32);
     initHashTable(&STATE(sampler_table), 32);
+    initHashTable(&STATE(sync_table), 32);
     
     init_dispatch(ctx);
 
@@ -833,6 +838,29 @@ static void mglDestroyContextTransformFeedback(GLuint name, void *data, void *us
     free(tf);
 }
 
+/* P0-4B: release Sync objects left in sync_table at context destroy time.
+ * Mirrors mglDeleteSync's release logic — non-blocking path preferred,
+ * blocking wait as fallback. */
+static void mglDestroyContextSync(GLuint name, void *data, void *user)
+{
+    (void)name;
+    GLMContext ctx = (GLMContext)user;
+    Sync *sync = (Sync *)data;
+
+    if (!sync) {
+        return;
+    }
+
+    if (ctx && ctx->mtl_funcs.mtlReleaseSync) {
+        ctx->mtl_funcs.mtlReleaseSync(ctx, sync);
+    } else if (ctx && ctx->mtl_funcs.mtlWaitForSync &&
+               (sync->mtl_command_buffer || sync->mtl_event)) {
+        ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
+    }
+
+    free(sync);
+}
+
 // CRITICAL FIX: Proper context destruction to prevent memory leaks
 void destroyGLMContext(GLMContext ctx)
 {
@@ -858,6 +886,7 @@ void destroyGLMContext(GLMContext ctx)
     mglHashTableForEach(&ctx->state.vao_table, mglDestroyContextVertexArray, ctx);
     mglHashTableForEach(&ctx->state.program_pipeline_table, mglDestroyContextProgramPipeline, ctx);
     mglHashTableForEach(&ctx->state.transform_feedback_table, mglDestroyContextTransformFeedback, ctx);
+    mglHashTableForEach(&ctx->state.sync_table, mglDestroyContextSync, ctx);
 
     mglHashTableClearEntries(&ctx->state.program_table);
     mglHashTableClearEntries(&ctx->state.shader_table);
@@ -869,6 +898,7 @@ void destroyGLMContext(GLMContext ctx)
     mglHashTableClearEntries(&ctx->state.vao_table);
     mglHashTableClearEntries(&ctx->state.program_pipeline_table);
     mglHashTableClearEntries(&ctx->state.transform_feedback_table);
+    mglHashTableClearEntries(&ctx->state.sync_table);
 
     // CRITICAL FIX: Use hash-table owned cleanup to avoid freeing non-owned/corrupted pointers.
     #define MGL_FREE_HASH_TABLE(_tbl_) destroyHashTable(&(_tbl_))
@@ -890,9 +920,17 @@ void destroyGLMContext(GLMContext ctx)
     MGL_FREE_HASH_TABLE(ctx->state.sampler_table);
     MGL_FREE_HASH_TABLE(ctx->state.program_pipeline_table);
     MGL_FREE_HASH_TABLE(ctx->state.transform_feedback_table);
+    MGL_FREE_HASH_TABLE(ctx->state.sync_table);
 
     #undef MGL_FREE_HASH_TABLE
 
+    /* P2-11: mtlView/mtlObj are retained via CFBridgingRetain in
+     * MGLRenderer.m:bindObjFuncsToGLMContext: (ARC ObjC TU).  This TU is
+     * plain C, where CFBridgingRelease is not declared — CFRelease is the
+     * correct plain-C counterpart (CFBridgingRelease is macro-equivalent to
+     * CFRelease under non-ARC).  If this file is ever renamed to .mm and
+     * compiled under ARC, switch to CFBridgingRelease for correct bridge
+     * semantics.  See mgl_metal_ref.h lines 58-60. */
     if (ctx->mtl_funcs.mtlView) {
         CFRelease(ctx->mtl_funcs.mtlView);
         ctx->mtl_funcs.mtlView = NULL;
@@ -914,17 +952,23 @@ void destroyGLMContext(GLMContext ctx)
     free(ctx);
 }
 
-// CRITICAL FIX: Library destructor for proper cleanup
+// CRITICAL FIX: Library destructor for proper cleanup.
+// project_memory hard constraint: mgl_auto_cleanup must call destroyGLMContext
+// when _ctx != NULL to prevent Metal object leaks in dlopen/dlclose scenarios.
+// ctx holds a CFBridgingRetain reference on MGLRenderer (mtlObj), so MGLRenderer
+// cannot be fully dealloc'd until we release it here.  Clearing _ctx before the
+// call lets destroyGLMContext's save/restore logic leave the TLS slot clean.
 __attribute__((destructor))
 static void mgl_auto_cleanup(void)
 {
     if (_ctx != NULL) {
         fprintf(stderr, "MGL INFO: Auto-cleanup - destroying GLMContext\n");
 
-        // Signal cleanup to any in-flight operations
-        // The MGLRenderer dealloc will handle Metal resource cleanup
-
+        GLMContext ctx_to_destroy = _ctx;
         _ctx = NULL;
+        _ctx_explicitly_unbound = GL_TRUE;
+        destroyGLMContext(ctx_to_destroy);
+
         fprintf(stderr, "MGL INFO: Auto-cleanup completed\n");
     }
 }

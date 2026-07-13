@@ -45,6 +45,8 @@
 #import "mgl_msl_compat.h"
 #import "mgl_safety.h"
 #import "mgl_vertex_format.h"
+/* Kept: many .m files transitively rely on this header for SPVC_* constants
+ * (SPVC_RESOURCE_TYPE_*, spvc_compiler_*).  Removing it breaks 7+ categories. */
 #include "spirv_cross_c.h"
 #define MGL_NO_MTL_PIXEL_FORMAT
 #import "pixel_utils.h"
@@ -164,23 +166,42 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 #define SYNC_LOCK()    do { mglMetalLock(&_syncListLock); } while (0)
 #define SYNC_UNLOCK()  do { mglMetalUnlock(&_syncListLock); } while (0)
 
-/* Returns the active GLMState pointer for sync functions.
- * During batch replay, _activeState points to the snapshot; otherwise
- * it falls back to the live &ctx->state. */
-#define MGL_STATE(context)  (_activeState ? _activeState : &(context)->state)
+/* Returns the active GLMState pointer for Metal-layer sync functions.
+ *
+ * DUAL-PROXY INVARIANT: _activeState (ivar) and ctx->active_state (context
+ * pointer) must always refer to the same logical GLMState.  They are two
+ * proxies for the same concept:
+ *   - ctx->active_state: used by STATE()/STATE_VAR()/VAO() macros in the
+ *     C GL layer (glm_context.h)
+ *   - _activeState: used by MGL_STATE() in the Metal layer
+ *
+ * Both default to &ctx->state (live state).  During batch replay,
+ * restoreStateForBatch sets both to the snapshot.  During parallel-worker
+ * encoding, encodeBatchForParallelWorker redirects both to the worker's
+ * GLMState.  teardownBatchReplayForContext resets both back to &ctx->state.
+ *
+ * NEVER set one without the other — a desync causes STATE() and MGL_STATE()
+ * to read different GLMState objects, producing wrong binds/dirty bits. */
+#define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
 
 @interface MGLRenderer () {
     NSView *_view;
     CAMetalLayer *_layer;
     id<CAMetalDrawable> _drawable;
     GLMContext  ctx;    // context macros need this exact name
-    GLMState *_activeState;  // NULL = use live ctx->state (normal path)
+    GLMState *_activeState;  // NULL = use ctx->active_state (see invariant above)
     id<MTLDevice> _device;
     MGLCapability _capability;
     NSRecursiveLock *_metalStateLock;  // reentrant — dense call graph requires it
     double _metalLockHoldStartStack[MGL_LOCK_TIMING_STACK_CAPACITY];
     NSUInteger _metalLockHoldDepth;
     os_unfair_lock _syncListLock;
+    /* P1-1 fix: dedicated lock for GPU error-tracking ivars below.
+     * MUST NOT be _metalStateLock — addCompletedHandler runs on a Metal
+     * worker thread and the render thread calls waitUntilCompleted while
+     * holding _metalStateLock, so using _metalStateLock in the completion
+     * handler would deadlock (waitUntilCompleted waits for the handler). */
+    os_unfair_lock _gpuErrorLock;
     NSUInteger _consecutiveGPUErrors;
     NSUInteger _consecutiveGPUSuccesses;
     NSTimeInterval _lastGPUErrorTime;
@@ -204,7 +225,12 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     MTLPixelFormat _pipelineDepthFormat;
     MTLPixelFormat _pipelineStencilFormat;
     GLuint _pipelineProgramName;
-    NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *_pipelineStateCache;
+    /* Pipeline cache values are NSDictionary wrappers carrying the pipeline
+     * state plus the full 64-bit pipeline/vertex signatures used for false-hit
+     * validation.  The NSNumber key packs only 12 bits of each signature,
+     * so on cache hit the full signatures are compared to guard against
+     * collisions mapping two different pipelines to the same truncated key. */
+    NSMutableDictionary<NSNumber *, id> *_pipelineStateCache;
     /* Gated by MGL_DS_CACHE (default ON; =0 disables).  Maps cache key →
      * id<MTLDepthStencilState> with simple LRU eviction at 64 entries. */
     NSMutableDictionary *_depthStencilStateCache;
@@ -316,6 +342,16 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
      * same-key skipped. */
     BOOL _dirtyKeyDeltaEnabled;
 }
+
+/* P1-5: cap an auxiliary cache at `limit` entries with FIFO eviction of
+ * the oldest 1/4 on overflow.  Mirrors the _pipelineStateCache eviction
+ * strategy.  Keeps unbounded auxiliary caches (blit/clear/resolve pipelines,
+ * fallback textures, double-vertex buffers) from growing without bound. */
+- (void)mglCapAuxCache:(NSMutableDictionary *)cache
+                 limit:(NSUInteger)limit;
+
+/* P2-1: Methods called from MGLRenderer+Compute.m */
+- (bool)mapGLBuffersToMTLBufferMap:(BufferMapList *)buffer_map stage:(int)stage;
 
 @end
 

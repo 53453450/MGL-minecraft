@@ -91,12 +91,12 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
                                                    GLenum indexType,
                                                    uint32_t *outRestartIndex)
 {
-    if (!ctx || (!ctx->state.caps.primitive_restart && !ctx->state.caps.primitive_restart_fixed_index)) {
+    if (!ctx || (!ctx->active_state->caps.primitive_restart && !ctx->active_state->caps.primitive_restart_fixed_index)) {
         return false;
     }
 
     uint32_t restartIndex = 0u;
-    if (ctx->state.caps.primitive_restart_fixed_index) {
+    if (ctx->active_state->caps.primitive_restart_fixed_index) {
         switch (indexType) {
             case GL_UNSIGNED_BYTE:
                 restartIndex = 0xffu;
@@ -111,7 +111,7 @@ static inline bool mglPrimitiveRestartIndexForType(GLMContext ctx,
                 return false;
         }
     } else {
-        restartIndex = ctx->state.var.primitive_restart_index;
+        restartIndex = ctx->active_state->var.primitive_restart_index;
     }
 
     if (outRestartIndex) {

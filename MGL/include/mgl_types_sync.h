@@ -22,6 +22,7 @@
 #ifndef mgl_types_sync_h
 #define mgl_types_sync_h
 
+#include <stdatomic.h>
 #include "glm_params.h"
 
 typedef struct __GLsync {
@@ -31,6 +32,15 @@ typedef struct __GLsync {
      * fence insertion point. mtlWaitForSync blocks on its completion. Stored as
      * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
     void *mtl_command_buffer;
+    /* P1-2: reference count for deferred sync lifetime management.
+     * - newSync sets refcount=1 (caller's GLsync handle)
+     * - mglClientWaitSync/mglWaitSync retain at entry, release at exit, so a
+     *   glDeleteSync during a concurrent wait cannot free the sync out from
+     *   under the waiter
+     * - mglDeleteSync sets delete_status and releases; if refcount>0 (wait in
+     *   progress), the shell survives until the last release frees it */
+    _Atomic int refcount;
+    GLboolean delete_status;
 #ifdef __cplusplus
 } Sync;
 #else

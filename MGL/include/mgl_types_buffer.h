@@ -116,7 +116,24 @@ typedef struct Buffer_t {
     uint64_t last_write_src_hash;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
+    /* P0-4A: reference count for deferred buffer lifetime management.
+     * Follows the Program refcount pattern (program.c:441-475).
+     * - newBuffer sets refcount=1 (caller holds initial reference)
+     * - mglRetainBufferReference increments
+     * - mglReleaseBufferReference decrements; when refcount==0 && delete_status,
+     *   releases mtl_data + buffer_data and frees the shell
+     * - mglDeleteBuffers sets delete_status=GL_TRUE and calls release; if
+     *   refcount>0 (in-flight batch holds reference), shell becomes tombstone
+     *   until the last release frees it */
+    int refcount;
+    GLboolean delete_status;
 } Buffer;
+
+/* P0-4A: Buffer reference counting (mirrors Program refcount pattern).
+ * Declared here alongside the Buffer type, matching how Program refcount
+ * helpers are declared in mgl_types_program.h. */
+void mglRetainBufferReference(Buffer *buf);
+void mglReleaseBufferReference(GLMContext ctx, Buffer *buf);
 
 typedef struct BufferBaseTarget_t {
     GLuint      buffer;

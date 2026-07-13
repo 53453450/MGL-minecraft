@@ -25,6 +25,7 @@
 #define MGLRenderer_Draw_Private_h
 
 #import "MGLRenderer_Private.h"
+#import "msl_patch_pipeline.h"  /* P1-6: mglResolvePassthroughPatchModeForContext moved here */
 
 /* === Per-worker context for parallel command recording ===
  * Each worker thread encodes draws onto its own MTLRenderCommandEncoder
@@ -33,6 +34,15 @@
  * to skip a needed bind. */
 typedef struct {
     id<MTLRenderCommandEncoder> encoder;
+
+    /* Per-worker GLMState snapshot.  During parallel encoding (Stage 5.3),
+     * ctx->active_state is redirected to point here so that all
+     * ctx->active_state->* accesses in the encoding hot path are
+     * thread-safe.  Heap-allocated to avoid ~83KB stack frame in the
+     * parallel-encode path (3 stack copies = ~250KB+ can overflow
+     * small-stack threads).  Owned by encodeBatchForParallelWorker:
+     * allocated on entry, freed on exit.  NULL when unused. */
+    GLMState *workerState;
 
     MGLLastBoundBuffer lastBoundVertexBuffers[kMGLMaxBufferSlots];
     MGLLastBoundBuffer lastBoundFragmentBuffers[kMGLMaxBufferSlots];
@@ -207,9 +217,12 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
                                                      uint32_t batchIndex,
                                                      uint32_t commandIndex,
                                                      bool forceTrace);
-bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
-                                                     GLenum *mode,
-                                                     const char *label);
+
+/* P1-6: mglResolvePassthroughPatchModeForContext moved to msl_patch_pipeline.h. */
+
+/* P2-1: mglRendererProgramHasSampledResourceNamed is defined in
+ * MGLRenderer+Draw.m, also called from MGLRenderer+Batch.m. */
+bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *name);
 
 @interface MGLRenderer ()
 
@@ -322,6 +335,31 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
                             program:(Program *)tesProgram
                               first:(GLint)first
                             count:(GLsizei)count;
+
+// === P2-1: Methods defined in MGLRenderer+Draw.m, called from MGLRenderer+Batch.m ===
+- (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (bool)bindTexturesToCurrentRenderEncoder;
+- (BOOL)currentDrawRasterizationIsEmpty;
+- (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
+- (void)applyPolygonOffsetForDrawMode:(GLenum)mode;
+- (BOOL)resolveElementBufferForCommand:(const MGLDrawCommand *)cmd
+                                  label:(const char *)label
+                                context:(GLMContext)drawCtx
+                               glBuffer:(Buffer **)glBufferOut
+                              mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+
+// === P2-1: Methods defined in MGLRenderer+Batch.m, called from MGLRenderer+Draw.m ===
+- (void)traceReplayCommand:(MGLDrawBatch *)batch
+                   command:(MGLDrawCommand *)cmd
+                   context:(GLMContext)glm_ctx
+                   flushId:(uint64_t)flushId
+                batchIndex:(uint32_t)batchIndex
+              commandIndex:(uint32_t)commandIndex
+                     phase:(const char *)phase
+                    reason:(const char *)reason;
+- (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount;
+- (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount;
 
 @end
 

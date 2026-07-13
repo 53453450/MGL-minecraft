@@ -46,13 +46,13 @@ GLuint mglDefaultDrawBufferIndexForGL(GLenum drawBuffer)
 
 GLsizei mglMetalDrawBufferCount(GLMContext drawCtx)
 {
-    if (!drawCtx || drawCtx->state.draw_buffer_count <= 0) {
+    if (!drawCtx || drawCtx->active_state->draw_buffer_count <= 0) {
         return 0;
     }
-    if (drawCtx->state.draw_buffer_count > (GLsizei)MAX_COLOR_ATTACHMENTS) {
+    if (drawCtx->active_state->draw_buffer_count > (GLsizei)MAX_COLOR_ATTACHMENTS) {
         return MAX_COLOR_ATTACHMENTS;
     }
-    return drawCtx->state.draw_buffer_count;
+    return drawCtx->active_state->draw_buffer_count;
 }
 
 GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
@@ -63,7 +63,7 @@ GLenum mglMetalDrawBufferAt(GLMContext drawCtx, GLuint slot)
 
     GLsizei count = mglMetalDrawBufferCount(drawCtx);
     if (slot < (GLuint)count) {
-        return drawCtx->state.draw_buffers[slot];
+        return drawCtx->active_state->draw_buffers[slot];
     }
 
     return GL_NONE;
@@ -78,7 +78,7 @@ BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
     }
 
     if (drawBuffer >= GL_COLOR_ATTACHMENT0 &&
-        drawBuffer < (GL_COLOR_ATTACHMENT0 + drawCtx->state.max_color_attachments) &&
+        drawBuffer < (GL_COLOR_ATTACHMENT0 + drawCtx->active_state->max_color_attachments) &&
         drawBuffer < (GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS)) {
         if (attachmentIndex) {
             *attachmentIndex = (GLuint)(drawBuffer - GL_COLOR_ATTACHMENT0);
@@ -108,7 +108,7 @@ BOOL mglMetalResolveFboDrawAttachmentIndex(GLMContext drawCtx,
 
 GLuint mglMetalColorSlotForDrawBuffer(GLMContext drawCtx, GLuint drawBufferSlot)
 {
-    if (!drawCtx || drawCtx->state.draw_buffer_count == 1u) {
+    if (!drawCtx || drawCtx->active_state->draw_buffer_count == 1u) {
         return 0u;
     }
     return drawBufferSlot;

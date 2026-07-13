@@ -78,7 +78,7 @@ static inline BOOL mglDrawModeProducesPolygons(GLenum mode)
  * polygons — the draw path must expand the draw into indexed points. */
 static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
 {
-    if (!ctx || ctx->state.var.polygon_mode != GL_POINT) {
+    if (!ctx || ctx->active_state->var.polygon_mode != GL_POINT) {
         return NO;
     }
 
@@ -98,7 +98,7 @@ static inline BOOL mglPolygonModePointForDrawMode(GLMContext ctx, GLenum mode)
 static inline BOOL mglPolygonModeLineForDrawMode(GLMContext ctx, GLenum mode)
 {
     return ctx &&
-           ctx->state.var.polygon_mode == GL_LINE &&
+           ctx->active_state->var.polygon_mode == GL_LINE &&
            mglDrawModeProducesPolygons(mode);
 }
 

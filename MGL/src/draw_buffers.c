@@ -32,7 +32,7 @@
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 #include "mgl_trace_log.h"
-#include "spirv_cross_c.h"
+#include "spirv_cross_c.h"   /* SPVC_RESOURCE_TYPE_STAGE_INPUT/OUTPUT constants */
 
 static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
 {
