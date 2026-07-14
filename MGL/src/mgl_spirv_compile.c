@@ -5417,8 +5417,15 @@ void clearStageCompileState(Program *pptr, int stage)
         free(pptr->spirv[stage].entry_point);
         pptr->spirv[stage].entry_point = NULL;
     }
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_compute_pipeline);
     mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_function);
     mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_library);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_zero_to_one_function);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_zero_to_one_library);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_upper_left_function);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_upper_left_library);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_upper_left_zero_to_one_function);
+    mglSafeReleaseMetalObj((void **)&pptr->spirv[stage].mtl_upper_left_zero_to_one_library);
 
     for (int res_type = 0; res_type < _MAX_SPIRV_RES; res_type++) {
         SpirvResourceList *rl = &pptr->spirv_resources_list[stage][res_type];

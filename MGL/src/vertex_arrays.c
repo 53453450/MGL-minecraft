@@ -76,7 +76,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
         ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
         ctx->state.var.element_array_buffer_binding =
             ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
 
@@ -88,7 +88,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *func_name)
         ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
         ctx->state.var.element_array_buffer_binding =
             ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
 
@@ -225,7 +225,7 @@ void mglBindVertexArray(GLMContext ctx, GLuint array)
             STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
             STATE_VAR(element_array_buffer_binding) = STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
         }
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -539,7 +539,7 @@ void setVertexAttrib(GLMContext ctx,
     }
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
-    STATE(dirty_bits) |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 void mglVertexAttribPointer(GLMContext ctx, GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer)
@@ -721,7 +721,7 @@ void mglEnableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
 
     ptr->dirty_bits |= DIRTY_VAO_ATTRIB;
     if (ctx->state.vao == ptr) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -744,7 +744,7 @@ void mglDisableVertexArrayAttrib(GLMContext ctx, GLuint vaobj, GLuint index)
 
     ptr->dirty_bits |= DIRTY_VAO;
     if (ctx->state.vao == ptr) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -763,7 +763,7 @@ void mglEnableVertexAttribArray(GLMContext ctx, GLuint index)
     vao->enabled_attribs |= (0x1 << index);
 
     vao->dirty_bits |= DIRTY_VAO;
-    STATE(dirty_bits) |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 void mglDisableVertexAttribArray(GLMContext ctx, GLuint index)
@@ -780,7 +780,7 @@ void mglDisableVertexAttribArray(GLMContext ctx, GLuint index)
 
     vao->enabled_attribs &= ~(0x1 << index);
     vao->dirty_bits |= DIRTY_VAO;
-    STATE(dirty_bits) |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 /*
@@ -819,7 +819,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
         {
             STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = NULL;
             STATE_VAR(element_array_buffer_binding) = 0;
-            STATE(dirty_bits) |= DIRTY_VAO;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         }
         return;
     }
@@ -837,7 +837,7 @@ void mglVertexArrayElementBuffer(GLMContext ctx, GLuint vaobj, GLuint buffer)
     {
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = buf_ptr;
         STATE_VAR(element_array_buffer_binding) = buf_ptr->name;
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -858,7 +858,7 @@ void setVertexBindingIndex(GLMContext ctx, VertexArray *vao, GLuint attribindex,
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -936,7 +936,7 @@ void setAttribFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLint
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
     if (ctx->state.vao == vao) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -1009,7 +1009,7 @@ void setAttribIFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
     if (ctx->state.vao == vao) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -1072,7 +1072,7 @@ void setAttribLFormat(GLMContext ctx, VertexArray *vao, GLuint attribindex, GLin
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB;
     if (ctx->state.vao == vao) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 
@@ -1118,7 +1118,7 @@ void mglVertexAttribDivisor(GLMContext ctx, GLuint index, GLuint divisor)
     ptr->attrib[index].divisor = divisor;
     ptr->bindings[index].divisor = divisor;
     ptr->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
-    STATE(dirty_bits) |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GLuint divisor)
@@ -1140,7 +1140,7 @@ void setBindingDivisor(GLMContext ctx, VertexArray *vao, GLuint bindingindex, GL
 
     vao->dirty_bits |= DIRTY_VAO_ATTRIB | DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
     }
 }
 

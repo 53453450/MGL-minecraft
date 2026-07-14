@@ -137,7 +137,7 @@ void mglDisable(GLMContext ctx, GLenum cap)
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
         ctx->state.caps.clip_distances[clipIndex] = GL_FALSE;
-        ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
 
@@ -179,15 +179,15 @@ void mglDisable(GLMContext ctx, GLenum cap)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
     if (cap == GL_BLEND ||
         cap == GL_COLOR_LOGIC_OP ||
         cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
         cap == GL_SAMPLE_ALPHA_TO_ONE) {
-        ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_ALPHA_STATE);
     }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
-        ctx->state.dirty_bits |= DIRTY_FBO;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO);
         Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
         if (fbo) {
             fbo->dirty_bits |= DIRTY_FBO_BINDING;
@@ -202,7 +202,7 @@ void mglEnable(GLMContext ctx, GLenum cap)
     if (mglClipDistanceIndex(ctx, cap, &clipIndex))
     {
         ctx->state.caps.clip_distances[clipIndex] = GL_TRUE;
-        ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
 
@@ -244,15 +244,15 @@ void mglEnable(GLMContext ctx, GLenum cap)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
     if (cap == GL_BLEND ||
         cap == GL_COLOR_LOGIC_OP ||
         cap == GL_SAMPLE_ALPHA_TO_COVERAGE ||
         cap == GL_SAMPLE_ALPHA_TO_ONE) {
-        ctx->state.dirty_bits |= DIRTY_ALPHA_STATE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_ALPHA_STATE);
     }
     if (cap == GL_DEPTH_TEST || cap == GL_STENCIL_TEST || cap == GL_FRAMEBUFFER_SRGB) {
-        ctx->state.dirty_bits |= DIRTY_FBO;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO);
         Framebuffer *fbo = mglGetSafeDrawFramebuffer(ctx, __FUNCTION__);
         if (fbo) {
             fbo->dirty_bits |= DIRTY_FBO_BINDING;
@@ -275,7 +275,7 @@ void mglCullFace(GLMContext ctx, GLenum mode)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglFrontFace(GLMContext ctx, GLenum mode)
@@ -292,7 +292,7 @@ void mglFrontFace(GLMContext ctx, GLenum mode)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 #define HINT(_target_) ctx->state.hints._target_ = mode; break;
@@ -311,7 +311,8 @@ void mglHint(GLMContext ctx, GLenum target, GLenum mode)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkRendererDirtyBits(&ctx->state,
+                             DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglLineWidth(GLMContext ctx, GLfloat width)
@@ -320,7 +321,7 @@ void mglLineWidth(GLMContext ctx, GLfloat width)
 
     ctx->state.var.line_width = width;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglPointSize(GLMContext ctx, GLfloat size)
@@ -329,7 +330,7 @@ void mglPointSize(GLMContext ctx, GLfloat size)
 
     ctx->state.var.point_size = size;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglPolygonMode(GLMContext ctx, GLenum face, GLenum mode)
@@ -353,7 +354,7 @@ void mglPolygonMode(GLMContext ctx, GLenum face, GLenum mode)
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -370,7 +371,7 @@ void mglScissor(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
     ctx->state.scissor_box_array[0][2] = width;
     ctx->state.scissor_box_array[0][3] = height;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglLogicOp(GLMContext ctx, GLenum opcode)
@@ -401,7 +402,7 @@ void mglLogicOp(GLMContext ctx, GLenum opcode)
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglStencilFunc(GLMContext ctx, GLenum func, GLint ref, GLuint mask)
@@ -428,7 +429,7 @@ void mglStencilFunc(GLMContext ctx, GLenum func, GLint ref, GLuint mask)
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 static bool validStencilOpSeparate(GLMContext ctx, GLenum op)
@@ -462,7 +463,7 @@ void mglStencilOp(GLMContext ctx, GLenum fail, GLenum zfail, GLenum zpass)
     ctx->state.var.stencil_back_pass_depth_fail = zfail;
     ctx->state.var.stencil_back_pass_depth_pass = zpass;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 
@@ -471,7 +472,7 @@ void mglStencilMask(GLMContext ctx, GLuint mask)
     ctx->state.var.stencil_writemask = mask;
     ctx->state.var.stencil_back_writemask = mask;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglColorMask(GLMContext ctx, GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha)
@@ -514,14 +515,14 @@ void mglColorMask(GLMContext ctx, GLboolean red, GLboolean green, GLboolean blue
     // Metal color write masks are baked into MTLRenderPipelineState, not a
     // dynamic encoder state. Rebuild the pipeline whenever GL_COLOR_WRITEMASK
     // changes; otherwise a depth-only pass can poison later color draws.
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
 }
 
 void mglDepthMask(GLMContext ctx, GLboolean flag)
 {
     ctx->state.var.depth_writemask = flag ? GL_TRUE : GL_FALSE;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglStencilOpSeparate(GLMContext ctx, GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass)
@@ -557,7 +558,7 @@ void mglStencilOpSeparate(GLMContext ctx, GLenum face, GLenum sfail, GLenum dpfa
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglStencilFuncSeparate(GLMContext ctx, GLenum face, GLenum func, GLint ref, GLuint mask)
@@ -605,7 +606,7 @@ void mglStencilFuncSeparate(GLMContext ctx, GLenum face, GLenum func, GLint ref,
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglStencilMaskSeparate(GLMContext ctx, GLenum face, GLuint mask)
@@ -629,7 +630,7 @@ void mglStencilMaskSeparate(GLMContext ctx, GLenum face, GLuint mask)
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglDepthFunc(GLMContext ctx, GLenum func)
@@ -651,7 +652,7 @@ void mglDepthFunc(GLMContext ctx, GLenum func)
             ERROR_RETURN(GL_INVALID_ENUM);
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 static GLdouble _clamp(GLdouble a)
@@ -674,7 +675,7 @@ void mglDepthRange(GLMContext ctx, GLdouble n, GLdouble f)
     ctx->state.depth_range_array[0][0] = n;
     ctx->state.depth_range_array[0][1] = f;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height)
@@ -699,7 +700,7 @@ void mglViewport(GLMContext ctx, GLint x, GLint y, GLsizei width, GLsizei height
     ctx->state.viewport_array[0][2] = (GLfloat)width;
     ctx->state.viewport_array[0][3] = (GLfloat)height;
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 #define RET_VAR(_VAR_, _DEFAULT_)  return (ctx->state.var._VAR_ == _DEFAULT_)
@@ -760,7 +761,7 @@ void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
         {
             ctx->state.caps.blendi[index] = GL_TRUE;
             mglRecomputeGlobalBlendEnable(ctx);
-            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 
             return;
         }
@@ -776,7 +777,7 @@ void mglEnablei(GLMContext ctx, GLenum target, GLuint index)
             ctx->state.caps.scissor_testi[index] = GL_TRUE;
             if (index == 0)
                 mglUpdateGlobalScissorEnableFromIndexZero(ctx);
-            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
             return;
         }
 
@@ -798,7 +799,7 @@ void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
         {
             ctx->state.caps.blendi[index] = GL_FALSE;
             mglRecomputeGlobalBlendEnable(ctx);
-            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 
             return;
         }
@@ -814,7 +815,7 @@ void mglDisablei(GLMContext ctx, GLenum target, GLuint index)
             ctx->state.caps.scissor_testi[index] = GL_FALSE;
             if (index == 0)
                 mglUpdateGlobalScissorEnableFromIndexZero(ctx);
-            ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
             return;
         }
 
@@ -856,7 +857,7 @@ GLboolean mglIsEnabledi(GLMContext ctx, GLenum target, GLuint index)
 void mglClearDepthf(GLMContext ctx, GLfloat d)
 {
     ctx->state.var.depth_clear_value = _clamp(d);
-    ctx->state.dirty_bits |= DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 }
 
 void mglBlendColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha)
@@ -866,7 +867,7 @@ void mglBlendColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
     ctx->state.var.blend_color[2] = blue;
     ctx->state.var.blend_color[3] = alpha;
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendEquation(GLMContext ctx, GLenum mode)
@@ -891,7 +892,7 @@ void mglBlendEquation(GLMContext ctx, GLenum mode)
         ctx->state.var.blend_equation_alpha[i] = mode;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendEquationi(GLMContext ctx, GLuint buf, GLenum mode)
@@ -915,7 +916,7 @@ void mglBlendEquationi(GLMContext ctx, GLuint buf, GLenum mode)
     ctx->state.var.blend_equation_rgb[buf] = mode;
     ctx->state.var.blend_equation_alpha[buf] = mode;
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendEquationSeparatei(GLMContext ctx, GLuint buf, GLenum modeRGB, GLenum modeAlpha)
@@ -953,7 +954,7 @@ void mglBlendEquationSeparatei(GLMContext ctx, GLuint buf, GLenum modeRGB, GLenu
     ctx->state.var.blend_equation_rgb[buf] = modeRGB;
     ctx->state.var.blend_equation_alpha[buf] = modeAlpha;
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendFunc(GLMContext ctx, GLenum sfactor, GLenum dfactor)
@@ -1013,7 +1014,7 @@ void mglBlendFunc(GLMContext ctx, GLenum sfactor, GLenum dfactor)
         ctx->state.var.blend_dst_alpha[i] = dfactor;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendFunci(GLMContext ctx, GLuint buf, GLenum sfactor, GLenum dfactor)
@@ -1072,7 +1073,7 @@ void mglBlendFunci(GLMContext ctx, GLuint buf, GLenum sfactor, GLenum dfactor)
     ctx->state.var.blend_dst_rgb[buf] = dfactor;
     ctx->state.var.blend_dst_alpha[buf] = dfactor;
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha)
@@ -1177,7 +1178,7 @@ void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dst
     ctx->state.var.blend_dst_rgb[buf] = dstRGB;
     ctx->state.var.blend_src_alpha[buf] = srcAlpha;
     ctx->state.var.blend_dst_alpha[buf] = dstAlpha;
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendEquationSeparate(GLMContext ctx, GLenum modeRGB, GLenum modeAlpha)
@@ -1216,7 +1217,7 @@ void mglBlendEquationSeparate(GLMContext ctx, GLenum modeRGB, GLenum modeAlpha)
         ctx->state.var.blend_equation_alpha[i] = modeAlpha;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 
@@ -1247,7 +1248,7 @@ void mglPolygonOffset(GLMContext ctx, GLfloat factor, GLfloat units)
 
     ctx->state.var.polygon_offset_factor = factor;
     ctx->state.var.polygon_offset_units = units;
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha)
@@ -1354,7 +1355,7 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
         ctx->state.var.blend_dst_alpha[i] = dfactorAlpha;
     }
 
-    ctx->state.dirty_bits |= DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_STATE | DIRTY_ALPHA_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglPointParameterf(GLMContext ctx, GLenum pname, GLfloat param)

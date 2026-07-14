@@ -200,9 +200,9 @@ static void mglMarkTextureParameterDirty(GLMContext ctx, Texture *tex, GLenum pn
         tex->dirty_bits |= (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA);
     }
     if (ctx) {
-        STATE(dirty_bits) |= DIRTY_TEX_PARAM;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX_PARAM);
         if (mglTextureParameterAffectsTextureDescriptor(pname)) {
-            STATE(dirty_bits) |= DIRTY_TEX;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
         }
     }
 }

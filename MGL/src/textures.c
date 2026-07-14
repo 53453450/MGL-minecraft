@@ -575,6 +575,8 @@ Texture *getTex(GLMContext ctx, GLuint name, GLenum target)
                 return NULL;
             }
             STATE(texture_units[active_texture].textures[index]) = ptr;
+            mglUpdateTextureUnitActiveMask(ctx, active_texture);
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX_BINDING);
             fprintf(stderr, "MGL: Created default texture for target 0x%x\n", target);
         }
     }
@@ -828,7 +830,7 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
     }
     mglRecordLastSampled2DTexture(ctx, active_texture, ptr);
     mglUpdateTextureUnitActiveMask(ctx, active_texture);
-    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
 
     mglTraceTextureUnitState(ctx, ptr ? "BindTexture" : "BindTexture.unbindTarget", active_texture, target, texture, STATE(active_textures[active_texture]));
 }
@@ -863,7 +865,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
 
     if (texture == 0u) {
         bzero(&ctx->state.image_units[unit], sizeof(ImageUnit));
-        ctx->state.dirty_bits |= DIRTY_IMAGE_UNIT_STATE;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
         return;
     }
 
@@ -971,7 +973,7 @@ void mglBindImageTexture(GLMContext ctx, GLuint unit, GLuint texture, GLint leve
 
     ctx->state.image_units[unit] = unit_params;
 
-    ctx->state.dirty_bits |= DIRTY_IMAGE_UNIT_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
 }
 
 /* Callback for mglHashTableForEach: detach a deleted texture from every FBO
@@ -1049,7 +1051,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
 
                 if (cleared_unit) {
                     mglUpdateTextureUnitActiveMask(ctx, (GLuint)i);
-                    ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
+                    mglMarkStateDirtyBits(&ctx->state, DIRTY_TEX_BINDING);
                 }
             }
 
@@ -1059,7 +1061,7 @@ void mglDeleteTextures(GLMContext ctx, GLsizei n, const GLuint *textures)
                 {
                     bzero(&ctx->state.image_units[i], sizeof(ImageUnit));
 
-                    ctx->state.dirty_bits |= DIRTY_IMAGE_UNIT_STATE;
+                    mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
                 }
             }
 
@@ -1188,7 +1190,7 @@ void mglBindImageTextures(GLMContext ctx, GLuint first, GLsizei count, const GLu
                             tex->internalformat);
     }
 
-    ctx->state.dirty_bits |= DIRTY_IMAGE_UNIT_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_IMAGE_UNIT_STATE);
 }
 
 void mglClientActiveTexture(GLMContext ctx, GLenum texture)
@@ -1224,7 +1226,7 @@ void mglActiveTexture(GLMContext ctx, GLenum texture)
     }
 
     STATE(active_texture) = unit;
-    ctx->state.dirty_bits |= DIRTY_TEX_BINDING;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_TEX_BINDING);
     mglTraceTextureUnitState(ctx, "ActiveTexture", unit, 0, 0, STATE(active_textures[unit]));
 }
 
@@ -1376,7 +1378,7 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
 
     STATE(active_texture) = old_active_texture;
     if (any_changed) {
-        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
     }
 }
 
@@ -1431,7 +1433,7 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
         }
         STATE(active_textures[unit]) = NULL;
         mglUpdateTextureUnitActiveMask(ctx, unit);
-        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
         mglTraceTextureUnitState(ctx, "BindTextureUnit.unbind", unit, 0, 0, NULL);
         return;
     }
@@ -1483,7 +1485,7 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
     STATE(active_textures[unit]) = ptr;
     mglRecordLastSampled2DTexture(ctx, unit, ptr);
     mglUpdateTextureUnitActiveMask(ctx, unit);
-    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
     mglTraceTextureUnitState(ctx, "BindTextureUnit", unit, ptr->target, texture, ptr);
 }
 
@@ -1983,7 +1985,7 @@ static bool mglTextureStorageMultisampleMetadata(GLMContext ctx,
     tex->immutable_storage = BUFFER_IMMUTABLE_STORAGE_FLAG;
     tex->mtl_requires_private_storage = GL_TRUE;
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-    STATE(dirty_bits) |= DIRTY_TEX;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
 
     return true;
 }
@@ -2842,7 +2844,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         tex->faces[face].levels[level].complete = false;
         tex->complete = false;
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-        STATE(dirty_bits) |= DIRTY_TEX;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
         return true;
     }
 
@@ -2863,7 +2865,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         tex->faces[face].levels[level].last_src_hash = 0ull;
         tex->faces[face].levels[level].complete = true;
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-        STATE(dirty_bits) |= DIRTY_TEX;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
         return true;
     }
 
@@ -3085,7 +3087,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
 
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
     mglReleaseGLSampledTextureCopy(ctx, tex, "texImage");
-    STATE(dirty_bits) |= DIRTY_TEX;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
 
     /* Populate depth_shadow for depth internal formats so that
      * glReadPixels(GL_DEPTH_COMPONENT) can read back uploaded data. */
@@ -3333,7 +3335,7 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
         {
             tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
             tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
-            STATE(dirty_bits) |= DIRTY_TEX;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
             ctx->state.error = GL_NO_ERROR;
         }
 
@@ -6171,7 +6173,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         tex->complete = GL_FALSE;
         tex->mtl_data = NULL;
         tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
-        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
         return;
     }
 
@@ -6212,7 +6214,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
         tex->complete == GL_TRUE)
     {
         tex->dirty_bits &= ~DIRTY_TEXTURE_LEVEL;
-        STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
 
         static uint64_t s_texBufferUnchangedLogs = 0;
         uint64_t hit = ++s_texBufferUnchangedLogs;
@@ -6251,7 +6253,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     tex->num_levels = 1;
     tex->mipmap_levels = 1;
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
-    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
 
     fprintf(stderr,
             "MGL TRACE TexBuffer texture=%u internal=0x%x buffer=%u offset=%lld size=%lld texels=%u bpt=%zu\n",
@@ -6721,5 +6723,5 @@ void mglSampleCoverage(GLMContext ctx, GLfloat value, GLboolean invert)
 
     STATE(var.sample_coverage_value) = clamp(value, 0.0f, 1.0f);
     STATE(var.sample_coverage_invert) = invert ? GL_TRUE : GL_FALSE;
-    STATE(dirty_bits) |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 }

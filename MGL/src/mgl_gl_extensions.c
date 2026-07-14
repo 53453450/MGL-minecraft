@@ -57,7 +57,7 @@ static void mglSetCurrentVertexAttribFloat(GLMContext ctx,
 	attrib->type = GL_FLOAT;
 	attrib->integer = GL_FALSE;
 	attrib->long_attribute = GL_FALSE;
-	ctx->state.dirty_bits |= DIRTY_VAO;
+	mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
 }
 
 static void mglSetCurrentVertexAttribInt(GLMContext ctx,
@@ -83,7 +83,7 @@ static void mglSetCurrentVertexAttribInt(GLMContext ctx,
 	attrib->type = GL_INT;
 	attrib->integer = GL_TRUE;
 	attrib->long_attribute = GL_FALSE;
-	ctx->state.dirty_bits |= DIRTY_VAO;
+	mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
 }
 
 static void mglSetCurrentVertexAttribUInt(GLMContext ctx,
@@ -109,7 +109,7 @@ static void mglSetCurrentVertexAttribUInt(GLMContext ctx,
 	attrib->type = GL_UNSIGNED_INT;
 	attrib->integer = GL_TRUE;
 	attrib->long_attribute = GL_FALSE;
-	ctx->state.dirty_bits |= DIRTY_VAO;
+	mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
 }
 
 static void mglSetCurrentVertexAttribDouble(GLMContext ctx,
@@ -135,7 +135,7 @@ static void mglSetCurrentVertexAttribDouble(GLMContext ctx,
 	attrib->type = GL_DOUBLE;
 	attrib->integer = GL_FALSE;
 	attrib->long_attribute = GL_TRUE;
-	ctx->state.dirty_bits |= DIRTY_VAO;
+	mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
 }
 
 // Forward declarations for transform feedback functions from program.c
@@ -1754,7 +1754,7 @@ void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLi
 				STATE(default_clear_color[2]) = (GLfloat)value[2];
 				STATE(default_clear_color[3]) = (GLfloat)value[3];
 			}
-			STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
+			mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
 			break;
 		case GL_STENCIL:
 			if (drawbuffer != 0)
@@ -1820,7 +1820,7 @@ void mglClearBufferuiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GL
 			STATE(default_clear_color[2]) = (GLfloat)value[2];
 			STATE(default_clear_color[3]) = (GLfloat)value[3];
 		}
-		STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
+		mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE);
 		return;
 	}
 	ERROR_RETURN(GL_INVALID_ENUM);
@@ -1842,7 +1842,7 @@ void mglClipControl(GLMContext ctx, GLenum origin, GLenum depth)
 
 	STATE(var.clip_origin) = origin;
 	STATE(var.clip_depth_mode) = depth;
-	STATE(dirty_bits) |= DIRTY_RENDER_STATE | DIRTY_PROGRAM;
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE | DIRTY_PROGRAM);
 }
 
 void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a)
@@ -1871,7 +1871,7 @@ void mglColorMaski(GLMContext ctx, GLuint index, GLboolean r, GLboolean g, GLboo
 	STATE(var.color_writemask[index][3]) = a ? GL_TRUE : GL_FALSE;
 
 	// Color write masks are part of the Metal pipeline descriptor.
-	STATE(dirty_bits) |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
 }
 
 void mglColorP3ui(GLMContext ctx, GLenum type, GLuint color)
@@ -2575,7 +2575,7 @@ void mglDepthRangeArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLdo
 		} else if (index < MGL_MAX_VIEWPORTS) {
 			ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
 			ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-			ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
 }
@@ -2588,7 +2588,7 @@ void mglDepthRangeIndexed(GLMContext ctx, GLuint index, GLdouble n, GLdouble f)
 	} else if (index < MGL_MAX_VIEWPORTS) {
 		ctx->state.depth_range_array[index][0] = n < 0.0 ? 0.0 : (n > 1.0 ? 1.0 : n);
 		ctx->state.depth_range_array[index][1] = f < 0.0 ? 0.0 : (f > 1.0 ? 1.0 : f);
-		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
@@ -5554,7 +5554,7 @@ void mglPopDebugGroup(GLMContext ctx)
 void mglPrimitiveRestartIndex(GLMContext ctx, GLuint index)
 {
 	STATE(var.primitive_restart_index) = index;
-	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 }
 
 void mglProgramBinary(GLMContext ctx, GLuint program, GLenum binaryFormat, const void *binary, GLsizei length)
@@ -5693,7 +5693,7 @@ void mglProvokingVertex(GLMContext ctx, GLenum mode)
 		return;
 	}
 	STATE(var.provoking_vertex) = mode;
-	STATE(dirty_bits) |= DIRTY_RENDER_STATE;
+	mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
 }
 
 void mglPushDebugGroup(GLMContext ctx, GLenum source, GLuint id, GLsizei length, const GLchar *message)
@@ -5803,7 +5803,7 @@ void mglScissorArrayv(GLMContext ctx, GLuint first, GLsizei count, const GLint *
 			ctx->state.scissor_box_array[index][1] = box[1];
 			ctx->state.scissor_box_array[index][2] = box[2];
 			ctx->state.scissor_box_array[index][3] = box[3];
-			ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+			mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 		}
 	}
 }
@@ -5820,7 +5820,7 @@ void mglScissorIndexed(GLMContext ctx, GLuint index, GLint left, GLint bottom, G
 		ctx->state.scissor_box_array[index][1] = bottom;
 		ctx->state.scissor_box_array[index][2] = width;
 		ctx->state.scissor_box_array[index][3] = height;
-		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 
@@ -5908,7 +5908,7 @@ void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storage
 		}
 	}
 
-	ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM;
+	mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM);
 }
 
 void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
@@ -6587,7 +6587,7 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 		ctx->state.viewport_array[index][1] = y;
 		ctx->state.viewport_array[index][2] = w;
 		ctx->state.viewport_array[index][3] = h;
-		ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
 

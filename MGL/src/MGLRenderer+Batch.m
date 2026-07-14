@@ -7,6 +7,15 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 
+static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger index)
+{
+    if (index < 64) {
+        mask[0] |= 1ULL << index;
+    } else {
+        mask[1] |= 1ULL << (index - 64);
+    }
+}
+
 @implementation MGLRenderer (Batch)
 
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
@@ -222,6 +231,8 @@
                     {
                         // Stale active texture mask bit; clear it and continue.
                         STATE(active_texture_mask[i]) &= ~(0x1u << bitpos);
+                        mglInvalidateStateHashCachesForDirtyBits(ctx->active_state,
+                                                                DIRTY_TEX_BINDING);
                         continue;
                     }
 
@@ -252,6 +263,10 @@
         _lastBoundVertexSamplers[i] = nil;
         _lastBoundFragmentSamplers[i] = nil;
     }
+    _lastBoundVertexBufferMask = 0;
+    _lastBoundFragmentBufferMask = 0;
+    _lastBoundTextureSlotMask[0] = 0;
+    _lastBoundTextureSlotMask[1] = 0;
     _lastPipelineState = nil;
     _lastDepthStencilState = nil;
     _lastViewport = (MTLViewport){0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
@@ -271,15 +286,63 @@
 
     worker->encoder = _currentRenderEncoder;
 
-    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
+    /* The masks are owned by the dedup cache and use Metal resource indices.
+     * They accumulate every slot touched on the current encoder, so a worker
+     * snapshot never omits an older cache entry that is still observable. */
+    static uint64_t s_sparse_iteration_count = 0;
+    static uint64_t s_slot_iteration_count = 0;
+    BOOL trace_sparse = (getenv("MGL_TRACE_SPARSE_BINDING") != NULL);
+
+    uint32_t vbuf_mask = _lastBoundVertexBufferMask;
+    worker->saved_vbuf_mask = vbuf_mask;
+    while (vbuf_mask) {
+        int i = __builtin_ctz(vbuf_mask);
         worker->lastBoundVertexBuffers[i] = _lastBoundVertexBuffers[i];
-        worker->lastBoundFragmentBuffers[i] = _lastBoundFragmentBuffers[i];
+        vbuf_mask &= ~(1U << i);
+        if (trace_sparse) s_slot_iteration_count++;
     }
-    for (int i = 0; i < TEXTURE_UNITS; i++) {
+
+    uint32_t fbuf_mask = _lastBoundFragmentBufferMask;
+    worker->saved_fbuf_mask = fbuf_mask;
+    while (fbuf_mask) {
+        int i = __builtin_ctz(fbuf_mask);
+        worker->lastBoundFragmentBuffers[i] = _lastBoundFragmentBuffers[i];
+        fbuf_mask &= ~(1U << i);
+        if (trace_sparse) s_slot_iteration_count++;
+    }
+
+    uint64_t tex_mask_lo = _lastBoundTextureSlotMask[0];
+    worker->saved_texture_mask[0] = tex_mask_lo;
+    while (tex_mask_lo) {
+        int i = __builtin_ctzll(tex_mask_lo);
         worker->lastBoundVertexTextures[i] = _lastBoundVertexTextures[i];
         worker->lastBoundFragmentTextures[i] = _lastBoundFragmentTextures[i];
         worker->lastBoundVertexSamplers[i] = _lastBoundVertexSamplers[i];
         worker->lastBoundFragmentSamplers[i] = _lastBoundFragmentSamplers[i];
+        tex_mask_lo &= ~(1ULL << i);
+        if (trace_sparse) s_slot_iteration_count++;
+    }
+
+    uint64_t tex_mask_hi = _lastBoundTextureSlotMask[1];
+    worker->saved_texture_mask[1] = tex_mask_hi;
+    while (tex_mask_hi) {
+        int i = __builtin_ctzll(tex_mask_hi) + 64;
+        worker->lastBoundVertexTextures[i] = _lastBoundVertexTextures[i];
+        worker->lastBoundFragmentTextures[i] = _lastBoundFragmentTextures[i];
+        worker->lastBoundVertexSamplers[i] = _lastBoundVertexSamplers[i];
+        worker->lastBoundFragmentSamplers[i] = _lastBoundFragmentSamplers[i];
+        tex_mask_hi &= ~(1ULL << (i - 64));
+        if (trace_sparse) s_slot_iteration_count++;
+    }
+
+    if (trace_sparse) {
+        s_sparse_iteration_count++;
+        if ((s_sparse_iteration_count % 1000) == 0) {
+            NSLog(@"MGL SPARSE: %llu calls, %llu slots (avg %.1f slots/call, baseline would be ~192)",
+                  s_sparse_iteration_count,
+                  s_slot_iteration_count,
+                  (double)s_slot_iteration_count / s_sparse_iteration_count);
+        }
     }
     worker->lastPipelineState = _lastPipelineState;
     worker->lastDepthStencilState = _lastDepthStencilState;
@@ -311,16 +374,82 @@
 
     _currentRenderEncoder = worker->encoder;
 
-    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
-        _lastBoundVertexBuffers[i] = worker->lastBoundVertexBuffers[i];
-        _lastBoundFragmentBuffers[i] = worker->lastBoundFragmentBuffers[i];
+    /* Clear cache entries that belong to the currently installed worker but
+     * not to the incoming one.  Without this, a later bind could compare
+     * against a value from a different encoder and be incorrectly skipped. */
+    uint32_t stale_vbuf_mask = _lastBoundVertexBufferMask & ~worker->saved_vbuf_mask;
+    while (stale_vbuf_mask) {
+        int i = __builtin_ctz(stale_vbuf_mask);
+        _lastBoundVertexBuffers[i].buffer = nil;
+        _lastBoundVertexBuffers[i].offset = 0;
+        stale_vbuf_mask &= ~(1U << i);
     }
-    for (int i = 0; i < TEXTURE_UNITS; i++) {
+
+    uint32_t vbuf_mask = worker->saved_vbuf_mask;
+    while (vbuf_mask) {
+        int i = __builtin_ctz(vbuf_mask);
+        _lastBoundVertexBuffers[i] = worker->lastBoundVertexBuffers[i];
+        vbuf_mask &= ~(1U << i);
+    }
+    _lastBoundVertexBufferMask = worker->saved_vbuf_mask;
+
+    uint32_t stale_fbuf_mask = _lastBoundFragmentBufferMask & ~worker->saved_fbuf_mask;
+    while (stale_fbuf_mask) {
+        int i = __builtin_ctz(stale_fbuf_mask);
+        _lastBoundFragmentBuffers[i].buffer = nil;
+        _lastBoundFragmentBuffers[i].offset = 0;
+        stale_fbuf_mask &= ~(1U << i);
+    }
+
+    uint32_t fbuf_mask = worker->saved_fbuf_mask;
+    while (fbuf_mask) {
+        int i = __builtin_ctz(fbuf_mask);
+        _lastBoundFragmentBuffers[i] = worker->lastBoundFragmentBuffers[i];
+        fbuf_mask &= ~(1U << i);
+    }
+    _lastBoundFragmentBufferMask = worker->saved_fbuf_mask;
+
+    uint64_t stale_tex_mask_lo = _lastBoundTextureSlotMask[0] & ~worker->saved_texture_mask[0];
+    while (stale_tex_mask_lo) {
+        int i = __builtin_ctzll(stale_tex_mask_lo);
+        _lastBoundVertexTextures[i] = nil;
+        _lastBoundFragmentTextures[i] = nil;
+        _lastBoundVertexSamplers[i] = nil;
+        _lastBoundFragmentSamplers[i] = nil;
+        stale_tex_mask_lo &= ~(1ULL << i);
+    }
+
+    uint64_t tex_mask_lo = worker->saved_texture_mask[0];
+    while (tex_mask_lo) {
+        int i = __builtin_ctzll(tex_mask_lo);
         _lastBoundVertexTextures[i] = worker->lastBoundVertexTextures[i];
         _lastBoundFragmentTextures[i] = worker->lastBoundFragmentTextures[i];
         _lastBoundVertexSamplers[i] = worker->lastBoundVertexSamplers[i];
         _lastBoundFragmentSamplers[i] = worker->lastBoundFragmentSamplers[i];
+        tex_mask_lo &= ~(1ULL << i);
     }
+
+    uint64_t stale_tex_mask_hi = _lastBoundTextureSlotMask[1] & ~worker->saved_texture_mask[1];
+    while (stale_tex_mask_hi) {
+        int i = __builtin_ctzll(stale_tex_mask_hi) + 64;
+        _lastBoundVertexTextures[i] = nil;
+        _lastBoundFragmentTextures[i] = nil;
+        _lastBoundVertexSamplers[i] = nil;
+        _lastBoundFragmentSamplers[i] = nil;
+        stale_tex_mask_hi &= ~(1ULL << (i - 64));
+    }
+
+    uint64_t tex_mask_hi = worker->saved_texture_mask[1];
+    while (tex_mask_hi) {
+        int i = __builtin_ctzll(tex_mask_hi) + 64;
+        _lastBoundVertexTextures[i] = worker->lastBoundVertexTextures[i];
+        _lastBoundFragmentTextures[i] = worker->lastBoundFragmentTextures[i];
+        _lastBoundVertexSamplers[i] = worker->lastBoundVertexSamplers[i];
+        _lastBoundFragmentSamplers[i] = worker->lastBoundFragmentSamplers[i];
+        tex_mask_hi &= ~(1ULL << (i - 64));
+    }
+    _lastBoundTextureSlotMask[0] = worker->saved_texture_mask[0];
+    _lastBoundTextureSlotMask[1] = worker->saved_texture_mask[1];
     _lastPipelineState = worker->lastPipelineState;
     _lastDepthStencilState = worker->lastDepthStencilState;
     _lastViewport = worker->lastViewport;
@@ -550,6 +679,7 @@
     }
     _lastBoundVertexBuffers[index].buffer = buffer;
     _lastBoundVertexBuffers[index].offset = offset;
+    _lastBoundVertexBufferMask |= 1U << index;
 }
 
 - (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
@@ -559,6 +689,7 @@
     }
     _lastBoundFragmentBuffers[index].buffer = buffer;
     _lastBoundFragmentBuffers[index].offset = offset;
+    _lastBoundFragmentBufferMask |= 1U << index;
 }
 
 - (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
@@ -568,6 +699,7 @@
     }
     _lastBoundVertexBuffers[index].buffer = nil;
     _lastBoundVertexBuffers[index].offset = (NSUInteger)-1;
+    _lastBoundVertexBufferMask |= 1U << index;
 }
 
 - (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
@@ -577,6 +709,7 @@
     }
     _lastBoundFragmentBuffers[index].buffer = nil;
     _lastBoundFragmentBuffers[index].offset = (NSUInteger)-1;
+    _lastBoundFragmentBufferMask |= 1U << index;
 }
 
 - (void)setVertexTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
@@ -584,6 +717,7 @@
     if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
         return;
     }
+    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
     if (!_lastBoundValid || _lastBoundVertexTextures[index] != texture) {
         [_currentRenderEncoder setVertexTexture:texture atIndex:index];
         _lastBoundVertexTextures[index] = texture;
@@ -595,6 +729,7 @@
     if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
         return;
     }
+    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
     if (!_lastBoundValid || _lastBoundFragmentTextures[index] != texture) {
         [_currentRenderEncoder setFragmentTexture:texture atIndex:index];
         _lastBoundFragmentTextures[index] = texture;
@@ -606,6 +741,7 @@
     if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
         return;
     }
+    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
     if (!_lastBoundValid || _lastBoundVertexSamplers[index] != sampler) {
         [_currentRenderEncoder setVertexSamplerState:sampler atIndex:index];
         _lastBoundVertexSamplers[index] = sampler;
@@ -617,6 +753,7 @@
     if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
         return;
     }
+    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
     if (!_lastBoundValid || _lastBoundFragmentSamplers[index] != sampler) {
         [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:index];
         _lastBoundFragmentSamplers[index] = sampler;
@@ -1257,6 +1394,12 @@
                     /* Save the current render pass descriptor before ending
                      * the encoder — the parallel encoder reuses it. */
                     MTLRenderPassDescriptor *parallelDesc = _renderPassDescriptor;
+                    Framebuffer *parallelFramebuffer = _renderPassFramebuffer;
+                    GLsizei parallelDrawBufferCount = _renderPassDrawBufferCount;
+                    GLenum parallelDrawBuffers[MAX_COLOR_ATTACHMENTS];
+                    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+                        parallelDrawBuffers[i] = _renderPassDrawBuffers[i];
+                    }
 
                     /* End the current render encoder and commit the command
                      * buffer.  The parallel encoder needs a fresh render pass
@@ -1328,6 +1471,15 @@
                     if (!subEncoder0) {
                         NSLog(@"MGL WARNING: sub-encoder 0 creation failed");
                         [parallelEncoder endEncoding];
+                        _currentRenderEncoder = nil;
+                        _parallelEncodeActive = NO;
+                        [self invalidateLastBoundState];
+                        if (parallelFramebuffer) {
+                            [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
+                                                                                    drawCount:parallelDrawBufferCount
+                                                                                 drawBuffers:parallelDrawBuffers
+                                                                                      reason:"parallel_render_pass"];
+                        }
                         [self loadDedupStateFromWorker:&preGroupState];
                         if (![self newRenderEncoderLocked]) {
                             continue;
@@ -1390,6 +1542,15 @@
                     if (!subEncoder1) {
                         NSLog(@"MGL WARNING: sub-encoder 1 creation failed");
                         [parallelEncoder endEncoding];
+                        _currentRenderEncoder = nil;
+                        _parallelEncodeActive = NO;
+                        [self invalidateLastBoundState];
+                        if (parallelFramebuffer) {
+                            [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
+                                                                                    drawCount:parallelDrawBufferCount
+                                                                                 drawBuffers:parallelDrawBuffers
+                                                                                      reason:"parallel_render_pass"];
+                        }
                         [self loadDedupStateFromWorker:&preGroupState];
                         if (![self newRenderEncoderLocked]) {
                             continue;
@@ -1443,6 +1604,14 @@
                     /* End the parallel encoder — this finalizes the pass
                      * and triggers load/store actions. */
                     [parallelEncoder endEncoding];
+                    _currentRenderEncoder = nil;
+                    [self invalidateLastBoundState];
+                    if (parallelFramebuffer) {
+                        [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
+                                                                                drawCount:parallelDrawBufferCount
+                                                                             drawBuffers:parallelDrawBuffers
+                                                                                  reason:"parallel_render_pass"];
+                    }
 
                     /* Deactivate parallel-encode mode —
                      * subsequent sequential batches resume normal
@@ -1751,7 +1920,7 @@
             replayDirtyBits |= DIRTY_FBO;
         }
     }
-    glm_ctx->active_state->dirty_bits |= replayDirtyBits;
+    mglMarkRendererDirtyBits(glm_ctx->active_state, replayDirtyBits);
     MGL_SIGNPOST_END(RestoreStateForBatch);
 }
 
@@ -1773,10 +1942,10 @@
         mglResetBatchArena(&_batchArena);
     }
     memcpy(glm_ctx->active_state, savedState, sizeof(GLMState));
-    /* Replay has fully applied all pending state to Metal encoders.
-     * Clear dirty bits so the next defer-path draw starts clean instead of
-     * inheriting the stale DIRTY_ALL from savedState. */
-    glm_ctx->active_state->dirty_bits = 0;
+    /* savedState carries the independent hash flags latched by live mutations.
+     * Clear only renderer-consumed legacy bits; deriving flags from those bits
+     * would force an unnecessary hash recompute after every non-empty flush. */
+    mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
     mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
                                   glm_ctx->active_state->var.program_pipeline_binding);
     if (savedError == GL_NO_ERROR && replayError != GL_NO_ERROR) {

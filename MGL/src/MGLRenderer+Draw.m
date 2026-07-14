@@ -494,6 +494,27 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
     [self bindPointSizeParamsIfNeeded:anyBindingPresent];
 
+    /* Snapshot the final Metal slot set only after VAO, fallback, and
+     * generated point-size bindings have all updated anyBindingPresent.  The
+     * cache mask accumulates for the encoder lifetime because older dedup
+     * entries remain valid until invalidateLastBoundState. */
+    uint32_t boundVertexBufferMask = 0;
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        if (anyBindingPresent[i]) {
+            boundVertexBufferMask |= 1U << i;
+        }
+    }
+    _lastBoundVertexBufferMask |= boundVertexBufferMask;
+
+    if (getenv("MGL_TRACE_SPARSE_BINDING")) {
+        static uint64_t s_vbind_trace_count = 0;
+        if ((++s_vbind_trace_count % 500) == 1) {
+            NSLog(@"MGL SPARSE VBIND: mask=0x%x activeSlots=%d/31",
+                  boundVertexBufferMask,
+                  __builtin_popcount(boundVertexBufferMask));
+        }
+    }
+
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(vbindCall)) {
         NSUInteger boundSlots = 0;
         NSUInteger reservedSlots = 0;
@@ -1517,6 +1538,28 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                          anyBindingPresent:anyBindingPresent
                                          baseBindingPresent:baseBindingPresent];
 
+    /* Fallback bindings are real Metal slots and must be included in the
+     * worker snapshot. */
+    uint32_t boundFragmentBufferMask = 0;
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        if (anyBindingPresent[i]) {
+            boundFragmentBufferMask |= 1U << i;
+        }
+    }
+    _lastBoundFragmentBufferMask |= boundFragmentBufferMask;
+
+    if (getenv("MGL_TRACE_SPARSE_BINDING")) {
+        static uint64_t s_fbind_trace_count = 0;
+        if ((++s_fbind_trace_count % 500) == 1) {
+            int textureSlotCount = __builtin_popcountll(_lastBoundTextureSlotMask[0]) +
+                                   __builtin_popcountll(_lastBoundTextureSlotMask[1]);
+            NSLog(@"MGL SPARSE FBIND: fbuf=0x%x(%d/31) textureSlots=%d/128",
+                  boundFragmentBufferMask,
+                  __builtin_popcount(boundFragmentBufferMask),
+                  textureSlotCount);
+        }
+    }
+
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(fbindCall)) {
         NSUInteger boundSlots = 0;
         NSUInteger baseSlots = 0;
@@ -1633,7 +1676,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 #define MGL_ABORT_TBIND_IF_ENCODER_CLOSED() do { \
     if (!_currentRenderEncoder) { \
         if (ctx) { \
-            ctx->active_state->dirty_bits |= (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE); \
+            mglMarkRendererDirtyBits(ctx->active_state, (DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_RENDER_STATE)); \
         } \
         return false; \
     } \
@@ -5091,7 +5134,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                    ctx->active_state->var.polygon_mode != GL_POINT) {
             mglLogRenderStateRepair("polygon_mode", ctx->active_state->var.polygon_mode, GL_FILL);
             ctx->active_state->var.polygon_mode = GL_FILL;
-            ctx->active_state->dirty_bits |= DIRTY_RENDER_STATE;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
         }
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];

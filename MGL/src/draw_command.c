@@ -177,19 +177,21 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
     free(buffer);
 }
 
-/* P0-4A: All buffer_base types that batch snapshots must retain.  Originally
- * only hot types (5 types matching mglCopyHotStateFields Region 4) were
- * retained, but cold types restored from savedState during replay also need
- * protection: if a cold-type buffer is deleted after snapshot but before
- * replay, restoring it from savedState would create a dangling pointer.
- * Must cover all 16 buffer_base types to prevent use-after-free. */
+/* P0-4A: Buffer_base types that batch snapshots must retain/release.
+ *
+ * Only the 5 "hot" buffer_base types are copied into the snapshot by
+ * mglCopyHotStateFields (mgl_types_state.h Region 4).  The other 11 "cold"
+ * types are NOT in the snapshot — their slots contain recycled arena garbage.
+ * Cold types are restored from savedState (a full memcpy of live state taken
+ * at replay start, MGLRenderer+Batch.m:1247) via mglRestoreColdBufferBase,
+ * so they always point to valid live-state buffers.  Retaining/releasing
+ * the 11 cold types would dereference stale arena pointers → SIGSEGV.
+ *
+ * This array MUST stay in sync with the 5 types in mglCopyHotStateFields
+ * Region 4 and mglRestoreColdBufferBase (the complementary cold set). */
 static const int kMGLSnapshotBufferBaseTypes[] = {
-    _TEXTURE_BUFFER, _ARRAY_BUFFER, _ELEMENT_ARRAY_BUFFER,
     _UNIFORM_BUFFER, _UNIFORM_CONSTANT, _SHADER_STORAGE_BUFFER,
-    _TRANSFORM_FEEDBACK_BUFFER, _QUERY_BUFFER,
-    _PIXEL_PACK_BUFFER, _PIXEL_UNPACK_BUFFER, _ATOMIC_COUNTER_BUFFER,
-    _COPY_READ_BUFFER, _COPY_WRITE_BUFFER,
-    _DISPATCH_INDIRECT_BUFFER, _DRAW_INDIRECT_BUFFER, _PARAMETER_BUFFER
+    _TRANSFORM_FEEDBACK_BUFFER, _ATOMIC_COUNTER_BUFFER
 };
 static const size_t kMGLSnapshotBufferBaseTypeCount =
     sizeof(kMGLSnapshotBufferBaseTypes) / sizeof(kMGLSnapshotBufferBaseTypes[0]);
@@ -1310,12 +1312,14 @@ static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
 {
     uint64_t hash = 0;
 
+    /* Keep this list aligned with the buffer_base slots captured by
+     * mglCopyHotStateFields for deferred batch replay. */
     const int draw_buffer_targets[] = {
         _UNIFORM_BUFFER,
         _UNIFORM_CONSTANT,
         _SHADER_STORAGE_BUFFER,
         _ATOMIC_COUNTER_BUFFER,
-        _TEXTURE_BUFFER
+        _TRANSFORM_FEEDBACK_BUFFER
     };
 
     for (size_t t = 0; t < sizeof(draw_buffer_targets) / sizeof(draw_buffer_targets[0]); t++) {
@@ -1363,6 +1367,16 @@ static void mglHashCurrentVertexAttrib(uint64_t *hash,
     *hash ^= mglRotateLeft64((uint64_t)current->long_attribute, (salt + 3u) & 63);
 }
 
+static void mglHashElementArrayState(uint64_t *hash, const VertexArray *vao)
+{
+    if (!hash || !vao) return;
+
+    mglHashBufferPointerName(hash, vao->element_array.buffer, 0x900u);
+    *hash ^= mglRotateLeft64((uint64_t)vao->element_array.type, 11);
+    *hash ^= mglRotateLeft64((uint64_t)vao->element_array.size, 13);
+    *hash ^= mglRotateLeft64((uint64_t)(uintptr_t)vao->element_array.ptr, 17);
+}
+
 static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_elements)
 {
     VertexArray *vao = ctx ? ctx->active_state->vao : NULL;
@@ -1403,12 +1417,8 @@ static uint64_t mglComputeVertexArrayStateHash(GLMContext ctx, bool uses_element
         hash ^= mglRotateLeft64((uint64_t)binding->divisor, (salt + 3u) & 63);
     }
 
-    if (uses_elements) {
-        mglHashBufferPointerName(&hash, vao->element_array.buffer, 0x900u);
-        hash ^= mglRotateLeft64((uint64_t)vao->element_array.type, 11);
-        hash ^= mglRotateLeft64((uint64_t)vao->element_array.size, 13);
-        hash ^= mglRotateLeft64((uint64_t)(uintptr_t)vao->element_array.ptr, 17);
-    }
+    if (uses_elements)
+        mglHashElementArrayState(&hash, vao);
 
     return hash;
 }
@@ -1559,11 +1569,67 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
 
     out->primitive_type = mglModeToPrimitiveType(mode);
     out->caps_flags = mglComputeCapsFlags(ctx);
-    out->texture_hash = mglComputeTextureHash(ctx);
-    out->vertex_layout_hash = mglComputeVertexArrayStateHash(ctx, uses_elements);
-    out->render_state_hash = mglComputeRenderStateHash(ctx) ^
-                             mglComputeDrawBufferBindingHash(ctx) ^
-                             mglRotateLeft64((uint64_t)mode, 21);
+
+    /* Phase 1 #1: Dirty-Flag Hash Optimization
+     * Only recompute hashes when dirty flags are set (texture bindings changed,
+     * VAO changed, render state changed). This reduces redundant hash computation
+     * from ~1200 → ~360 per frame when state is stable across draw calls.
+     *
+     * NOTE: cached hashes live in GLMState (ctx->active_state), NOT in the
+     * MGLStateKey output struct.  mglStateKeysEqual() uses memcmp on the full
+     * MGLStateKey, so the key must contain only per-draw-computed values —
+     * any cached/padding fields there would be uninitialized garbage and
+     * break batch-merge comparisons.
+     *
+     * NOTE: `mode` is a per-draw parameter, not persistent GL state, so it is
+     * NOT part of the cached render-state hash.  It is XORed in on every call
+     * so that different draw modes produce different keys. */
+    static int dirty_hash_enabled = -1;
+    if (dirty_hash_enabled < 0) {
+        const char *env = getenv("MGL_OPT_DIRTY_HASH");
+        dirty_hash_enabled = (env == NULL || atoi(env) != 0) ? 1 : 0;
+    }
+
+    if (dirty_hash_enabled) {
+        /* Legacy dirty bits remain set until Metal consumes them. Hash-cache
+         * invalidation is tracked separately so stable draws do not recompute
+         * the same hashes while renderer state is still pending. */
+        if (ctx->active_state->texture_dirty) {
+            ctx->active_state->cached_texture_hash = mglComputeTextureHash(ctx);
+            ctx->active_state->texture_dirty = 0;
+        }
+        out->texture_hash = ctx->active_state->cached_texture_hash;
+
+        if (ctx->active_state->vertex_layout_dirty) {
+            /* Cache only the draw-arrays-independent portion.  Element-array
+             * state is added below for indexed draws so changing draw kind
+             * cannot reuse a hash computed with the opposite uses_elements
+             * value. */
+            ctx->active_state->cached_vertex_layout_hash =
+                mglComputeVertexArrayStateHash(ctx, false);
+            ctx->active_state->vertex_layout_dirty = 0;
+        }
+        out->vertex_layout_hash = ctx->active_state->cached_vertex_layout_hash;
+        if (uses_elements)
+            mglHashElementArrayState(&out->vertex_layout_hash, ctx->active_state->vao);
+
+        if (ctx->active_state->render_state_dirty) {
+            ctx->active_state->cached_render_state_hash =
+                mglComputeRenderStateHash(ctx) ^
+                mglComputeDrawBufferBindingHash(ctx);
+            ctx->active_state->render_state_dirty = 0;
+        }
+        out->render_state_hash = ctx->active_state->cached_render_state_hash ^
+                                 mglRotateLeft64((uint64_t)mode, 21);
+    } else {
+        /* Legacy path: unconditional hash computation */
+        out->texture_hash = mglComputeTextureHash(ctx);
+        out->vertex_layout_hash = mglComputeVertexArrayStateHash(ctx, uses_elements);
+        out->render_state_hash = mglComputeRenderStateHash(ctx) ^
+                                 mglComputeDrawBufferBindingHash(ctx) ^
+                                 mglRotateLeft64((uint64_t)mode, 21);
+    }
+
     MGL_SIGNPOST_END(ComputeStateKey);
 }
 

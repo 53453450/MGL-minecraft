@@ -187,7 +187,7 @@ void MGLsetDefaultFramebufferSRGBCapable(GLMContext ctx, GLboolean capable)
     ctx->pixel_format.mtl_pixel_format = ctx->default_framebuffer_srgb_capable
         ? ctx->default_framebuffer_srgb_mtl_pixel_format
         : ctx->default_framebuffer_linear_mtl_pixel_format;
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE | DIRTY_DRAWABLE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_RENDER_STATE | DIRTY_DRAWABLE);
 }
 
 GLMContext createGLMContext(GLenum format, GLenum type,
@@ -588,6 +588,14 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(var.current_program) = 0;
 
     STATE(dirty_bits) = DIRTY_ALL;
+
+    /* Phase 1 #1: Initialize hash cache dirty flags to 1 (needs initial computation) */
+    STATE(texture_dirty) = 1;
+    STATE(vertex_layout_dirty) = 1;
+    STATE(render_state_dirty) = 1;
+    STATE(cached_texture_hash) = 0;
+    STATE(cached_vertex_layout_hash) = 0;
+    STATE(cached_render_state_hash) = 0;
 
     initHashTable(&STATE(vao_table), 32);
     initHashTable(&STATE(buffer_table), 32);

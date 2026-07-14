@@ -553,7 +553,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
             mglFlushPendingDrawsForVertexArray(ctx, bound_vao);
             bound_vao->element_array.buffer = NULL;
             bound_vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
-            STATE(dirty_bits) |= DIRTY_VAO;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         }
         else
         {
@@ -569,7 +569,7 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
     if (STATE(buffers[index]) != NULL)
     {
         STATE(buffers[index]) = NULL;
-        STATE(dirty_bits) |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_BUFFER);
     }
     mglSetGenericBufferBinding(ctx, target, 0u);
 }
@@ -768,7 +768,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
         STATE_VAR(element_array_buffer_binding) =
             STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
 
@@ -781,7 +781,7 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
         STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
         STATE_VAR(element_array_buffer_binding) =
             STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-        STATE(dirty_bits) |= DIRTY_VAO;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
         return NULL;
     }
 
@@ -1066,7 +1066,7 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
     }
 
     ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-    ctx->state.dirty_bits |= DIRTY_BUFFER;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     mglBufferMarkWrite(ptr,
                        kInitBufferSubData,
                        offset,
@@ -1311,7 +1311,7 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
              * is freed. */
             mglReleaseBufferReference(ctx, ptr);
 
-            STATE(dirty_bits) |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_VAO);
+            mglMarkStateDirtyBits(ctx->active_state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_VAO));
     } // while(--n)
 }
 
@@ -1396,7 +1396,7 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
                 mglFlushPendingDrawsForVertexArray(ctx, vao);
                 vao->element_array.buffer = ptr;
                 vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
-                STATE(dirty_bits) |= DIRTY_VAO;
+                mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
             }
         }
         else
@@ -1413,7 +1413,7 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
     if (STATE(buffers[index]) != ptr)
     {
         STATE(buffers[index]) = ptr;
-        STATE(dirty_bits) |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_BUFFER);
     }
     mglSetGenericBufferBinding(ctx, target, ptr ? ptr->name : 0u);
 }
@@ -1514,7 +1514,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         mglSetGenericBufferBinding(ctx, target, 0u);
     }
 
-    ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
+    mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
 }
 
 
@@ -1599,7 +1599,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
          * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = NULL;
         mglSetGenericBufferBinding(ctx, target, 0);
-        ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
+        mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
         return;
     }
 
@@ -1694,7 +1694,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     }
 
     mglSetGenericBufferBinding(ctx, target, buffer);
-    ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
+    mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
 }
 
 #pragma mark GL Buffer Data Functions
@@ -2110,7 +2110,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         
         memcpy((char*)ptr->data.buffer_data + offset, data, size);
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        ctx->state.dirty_bits |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
         mglBufferMarkWrite(ptr,
                            kInitBufferSubData,
                            offset,
@@ -2265,7 +2265,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
             ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
 
             // probably shouldn't have to do this... if its not bound its an excess
-            ctx->state.dirty_bits |= DIRTY_BUFFER;
+            mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
         }
     }
     else
@@ -2412,7 +2412,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     memcpy(dst_data, src_data, size);
     dst_buf->data.dirty_bits |= DIRTY_BUFFER_DATA;
-    ctx->state.dirty_bits |= DIRTY_BUFFER;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     mglBufferMarkWrite(dst_buf,
                        kInitCopyBufferSubData,
                        writeOffset,
@@ -2738,7 +2738,7 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        ctx->state.dirty_bits |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 
     ptr->mapped = GL_FALSE;
@@ -2793,7 +2793,7 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
-        ctx->state.dirty_bits |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 
     ptr->mapped = GL_FALSE;
@@ -3336,7 +3336,7 @@ void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei co
             bzero(base_slot, sizeof(BufferBaseTarget));
             STATE(buffers[buffer_index]) = NULL;
             mglSetGenericBufferBinding(ctx, target, 0u);
-            ctx->state.dirty_bits |= (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE);
+            mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));
             continue;
         }
 

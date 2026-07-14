@@ -70,6 +70,11 @@ typedef struct {
 
     NSUInteger mdiArgsScratchOffset;
 
+    /* Metal-slot masks for the dedup entries copied into this worker. */
+    uint32_t saved_vbuf_mask;
+    uint32_t saved_fbuf_mask;
+    uint64_t saved_texture_mask[2];
+
     uint64_t traceReplayFlushId;
     uint32_t traceReplayBatchIndex;
 } MGLWorkerContext;

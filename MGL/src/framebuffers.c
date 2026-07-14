@@ -291,7 +291,7 @@ static GLboolean mglFlushPendingColorClearToTexture(GLMContext ctx, FBOAttachmen
     level->last_src_hash = 0ull;
 
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
-    STATE(dirty_bits) |= DIRTY_TEX | DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_FBO);
     att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
 
     static unsigned s_flush_logs = 0u;
@@ -518,7 +518,7 @@ void mglSetViewportToFramebufferSize(GLMContext ctx, Framebuffer *fbo)
         ctx->state.viewport_array[0][3] = (GLfloat)height;
     }
 
-    ctx->state.dirty_bits |= DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 }
 
 static GLboolean mglFramebufferBufferIsColorAttachment(GLMContext ctx, GLenum buffer)
@@ -675,7 +675,7 @@ void mglAssignDrawFramebuffer(GLMContext ctx, Framebuffer *fbo)
     if (fbo) {
         fbo->dirty_bits |= DIRTY_FBO_BINDING;
     }
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 typedef struct MGLFramebufferBindingSnapshot_t {
@@ -724,7 +724,7 @@ static void mglFramebufferRestoreBindingSnapshot(GLMContext ctx, const MGLFrameb
     if (ctx->state.readbuffer) {
         ctx->state.readbuffer->dirty_bits |= DIRTY_FBO_BINDING;
     }
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 static void mglNormalizeDrawBufferForFramebufferBinding(GLMContext ctx, Framebuffer *fbo)
@@ -821,7 +821,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
         ctx->state.var.element_array_buffer_binding =
             ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
-        ctx->state.dirty_bits |= DIRTY_VAO;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
         currentVAO = NULL;
     }
     else if (currentVAO && currentVAO->magic != MGL_VAO_MAGIC)
@@ -833,7 +833,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         ctx->state.buffers[_ELEMENT_ARRAY_BUFFER] = ctx->state.default_vao_element_array_buffer;
         ctx->state.var.element_array_buffer_binding =
             ctx->state.default_vao_element_array_buffer ? ctx->state.default_vao_element_array_buffer->name : 0;
-        ctx->state.dirty_bits |= DIRTY_VAO;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
     }
 
     if(framebuffer)
@@ -1005,7 +1005,7 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         {
             ptr->dirty_bits |= DIRTY_FBO_BINDING;
         }
-        STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE | DIRTY_PROGRAM;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE | DIRTY_PROGRAM);
     }
 }
 
@@ -1036,7 +1036,7 @@ void mglDeleteFramebuffers(GLMContext ctx, GLsizei n, const GLuint *framebuffers
         free(fbo);
     }
     
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 /* Returns true if the internal format is an integer (signed or unsigned)
@@ -1609,7 +1609,7 @@ void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffe
         free(rbo);
     }
 
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 void mglRenderbufferStorage(GLMContext ctx, GLenum target, GLenum internalformat, GLsizei width, GLsizei height)
@@ -2059,7 +2059,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 /*
@@ -2235,7 +2235,7 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 #pragma mark =====
@@ -3198,7 +3198,7 @@ void mglNamedFramebufferParameteri(GLMContext ctx, GLuint framebuffer, GLenum pn
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 void mglNamedFramebufferTexture(GLMContext ctx, GLuint framebuffer, GLenum attachment, GLuint texture, GLint level)
@@ -3336,7 +3336,7 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
     if (fbo) {
         fbo->dirty_bits |= DIRTY_FBO_BINDING;
     }
-    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglNamedFramebufferReadBuffer(GLMContext ctx, GLuint framebuffer, GLenum src)
@@ -3628,7 +3628,7 @@ void mglNamedRenderbufferStorage(GLMContext ctx, GLuint renderbuffer, GLenum int
     tex->mipmap_levels = 1u;
     rbo->tex = tex;
     rbo->dirty_bits |= DIRTY_RENDBUF_TEX;
-    STATE(dirty_bits) |= DIRTY_FBO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
 void mglNamedRenderbufferStorageMultisample(GLMContext ctx, GLuint renderbuffer, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height)

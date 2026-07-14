@@ -233,7 +233,7 @@ static void mglDropCurrentVAO(GLMContext ctx)
     STATE(buffers[_ELEMENT_ARRAY_BUFFER]) = STATE(default_vao_element_array_buffer);
     STATE_VAR(element_array_buffer_binding) =
         STATE(default_vao_element_array_buffer) ? STATE(default_vao_element_array_buffer)->name : 0;
-    STATE(dirty_bits) |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller)

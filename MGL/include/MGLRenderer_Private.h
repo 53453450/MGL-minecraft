@@ -225,21 +225,25 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     MTLPixelFormat _pipelineDepthFormat;
     MTLPixelFormat _pipelineStencilFormat;
     GLuint _pipelineProgramName;
+    id<MTLFunction> _pipelineVertexFunction;
+    id<MTLFunction> _pipelineFragmentFunction;
     /* Pipeline cache values are NSDictionary wrappers carrying the pipeline
-     * state plus the full 64-bit pipeline/vertex signatures used for false-hit
-     * validation.  The NSNumber key packs only 12 bits of each signature,
-     * so on cache hit the full signatures are compared to guard against
-     * collisions mapping two different pipelines to the same truncated key. */
-    NSMutableDictionary<NSNumber *, id> *_pipelineStateCache;
+     * state plus the full 64-bit pipeline/vertex signatures. The string key
+     * also includes Program lifetime/generation identity. Recency is tracked
+     * separately because NSDictionary enumeration order is unspecified. */
+    NSMutableDictionary<NSString *, id> *_pipelineStateCache;
+    NSMutableOrderedSet<NSString *> *_pipelineStateCacheLRU;
     /* P0-2: Pipeline descriptor cache — caches MTLRenderPipelineDescriptor
      * objects to avoid expensive descriptor regeneration on PSO cache miss.
      * Two-level caching: descriptor cache (cheap) → PSO cache (expensive).
      * Key: same as _pipelineStateCache (program + sig + vsig).
      * Value: MTLRenderPipelineDescriptor. */
-    NSMutableDictionary<NSNumber *, MTLRenderPipelineDescriptor *> *_pipelineDescriptorCache;
+    NSMutableDictionary<NSString *, MTLRenderPipelineDescriptor *> *_pipelineDescriptorCache;
+    NSMutableOrderedSet<NSString *> *_pipelineDescriptorCacheLRU;
     /* Gated by MGL_DS_CACHE (default ON; =0 disables).  Maps cache key →
      * id<MTLDepthStencilState> with simple LRU eviction at 64 entries. */
     NSMutableDictionary *_depthStencilStateCache;
+    NSMutableOrderedSet *_depthStencilStateCacheLRU;
     BOOL _dsCacheEnabled;
     MTLRenderPassDescriptor *_renderPassDescriptor;
     Framebuffer *_renderPassFramebuffer;
@@ -262,10 +266,12 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
      * owns the sub-encoder lifecycle.  This prevents the parallel sub-encoder
      * from being destroyed mid-encode. */
     BOOL _parallelEncodeActive;
-    /* When YES (default), defer RT Y-flip copy until real flush points
-     * (glFlush/buffer-full/present) instead of after each batch replay.
-     * Allows batch merging when RT is sampled. Gated by MGL_DEFER_RT_COPY. */
-    BOOL _deferRTCopyUntilFlush;
+    /* Phase 2 #6: Binary Archive for PSO compile acceleration.
+     * Loaded from disk on init (if cache exists), used as descriptor.binaryArchives
+     * on every PSO compile to skip shader compilation when a cached binary exists,
+     * and serialized back to disk on dealloc.  Gated by MGL_BINARY_ARCHIVE. */
+    id<MTLBinaryArchive> _binaryArchive;
+    BOOL _binaryArchiveEnabled;
 #if MGL_HAS_MTL4_COMPILER
     id<MTL4Compiler> _mtl4Compiler;
 #endif
@@ -307,6 +313,9 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     id<MTLTexture> _lastBoundFragmentTextures[TEXTURE_UNITS];
     id<MTLSamplerState> _lastBoundVertexSamplers[TEXTURE_UNITS];
     id<MTLSamplerState> _lastBoundFragmentSamplers[TEXTURE_UNITS];
+    uint32_t _lastBoundVertexBufferMask;
+    uint32_t _lastBoundFragmentBufferMask;
+    uint64_t _lastBoundTextureSlotMask[2];
     id<MTLRenderPipelineState> _lastPipelineState;
     id<MTLDepthStencilState> _lastDepthStencilState;
     MTLViewport _lastViewport;

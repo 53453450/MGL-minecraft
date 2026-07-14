@@ -116,6 +116,48 @@
 
 /* === Static C helpers used only by RenderPass methods === */
 
+/* Renderer instances for the same application/device share one archive so
+ * one context cannot overwrite another context's newly compiled entries. */
+static os_unfair_lock s_mglBinaryArchiveLock = OS_UNFAIR_LOCK_INIT;
+static NSMutableDictionary<NSString *, id<MTLBinaryArchive>> *s_mglBinaryArchives;
+
+static void mglTouchCacheLRU(NSMutableOrderedSet *lru, id key)
+{
+    if (!lru || !key) {
+        return;
+    }
+    [lru removeObject:key];
+    [lru addObject:key];
+}
+
+static NSUInteger mglEvictCacheLRU(NSMutableDictionary *cache,
+                                   NSMutableOrderedSet *lru,
+                                   NSUInteger count)
+{
+    NSUInteger removed = 0;
+    while (removed < count && lru.count > 0) {
+        id key = lru.firstObject;
+        [lru removeObjectAtIndex:0];
+        if ([cache objectForKey:key]) {
+            [cache removeObjectForKey:key];
+            removed++;
+        }
+    }
+#if DEBUG
+    NSCAssert(cache.count == lru.count, @"cache/LRU index count mismatch");
+#endif
+    return removed;
+}
+
+static NSString *mglSafeArchivePathComponent(NSString *value)
+{
+    if (value.length == 0) {
+        return @"unknown";
+    }
+    NSCharacterSet *unsafe = [[NSCharacterSet alphanumericCharacterSet] invertedSet];
+    return [[value componentsSeparatedByCharactersInSet:unsafe] componentsJoinedByString:@"_"];
+}
+
 static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     const char *src = shader ? shader->src : NULL;
@@ -142,11 +184,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 /* Returns a cached id<MTLDepthStencilState> for the given descriptor, creating
  * and caching a new one on miss.  Only used when _dsCacheEnabled == YES (gated
- * by MGL_DS_CACHE, default ON).  LRU eviction at 64 entries: NSDictionary preserves
- * insertion order on macOS 10.12+, so on a hit we remove+re-add the key to
- * mark it most-recently-used, and evict the first (oldest) key when the cache
- * exceeds capacity.  The MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap)
- * counter is the caller's responsibility (increment only on miss). */
+ * by MGL_DS_CACHE, default ON). Recency is tracked independently of dictionary
+ * enumeration order and capped at 64 entries. */
 - (id<MTLDepthStencilState>)cachedDepthStencilStateForDescriptor:(MTLDepthStencilDescriptor *)descriptor
 {
     if (!_dsCacheEnabled || descriptor == nil) {
@@ -181,9 +220,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     id<MTLDepthStencilState> cached = _depthStencilStateCache[key];
     if (cached) {
-        /* LRU: move key to most-recently-used position by reinserting. */
-        [_depthStencilStateCache removeObjectForKey:key];
-        _depthStencilStateCache[key] = cached;
+        mglTouchCacheLRU(_depthStencilStateCacheLRU, key);
         return cached;
     }
 
@@ -191,12 +228,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
     if (state) {
         _depthStencilStateCache[key] = state;
+        mglTouchCacheLRU(_depthStencilStateCacheLRU, key);
         if (_depthStencilStateCache.count > 64) {
-            /* Evict least-recently-used (first inserted) entry. */
-            MGLDepthStencilCacheKey *oldestKey = [_depthStencilStateCache.allKeys firstObject];
-            if (oldestKey) {
-                [_depthStencilStateCache removeObjectForKey:oldestKey];
-            }
+            mglEvictCacheLRU(_depthStencilStateCache,
+                             _depthStencilStateCacheLRU,
+                             _depthStencilStateCache.count - 64);
         }
     }
     return state;
@@ -612,7 +648,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     [self endRenderEncoding];
-    ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE | DIRTY_VAO);
+    mglMarkRendererDirtyBits(ctx->active_state,
+                             DIRTY_FBO | DIRTY_PROGRAM |
+                             DIRTY_RENDER_STATE | DIRTY_VAO);
     return [self newRenderEncoder];
 }
 
@@ -655,7 +693,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     [self endRenderEncoding];
-    ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE);
+    mglMarkRendererDirtyBits(ctx->active_state,
+                             DIRTY_FBO | DIRTY_PROGRAM | DIRTY_RENDER_STATE);
 }
 
 - (bool)bindMTLTexture:(Texture *)tex
@@ -933,7 +972,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     [self updateCurrentRenderEncoder];
 
     if (!_pipelineState) {
-        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         return false;
     }
 
@@ -944,7 +985,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %@",
               exception.reason);
-        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         return false;
     }
 
@@ -989,6 +1032,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     _pipelineDepthFormat = MTLPixelFormatInvalid;
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0u;
+    _pipelineVertexFunction = nil;
+    _pipelineFragmentFunction = nil;
 }
 
 -(bool)bindMTLProgram:(Program *)ptr
@@ -1003,41 +1048,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     if (ptr->dirty_bits & DIRTY_PROGRAM)
     {
-        // release mtl shaders
-        for(int i=_VERTEX_SHADER; i<_MAX_SHADER_TYPES; i++)
-        {
-            Shader *shader;
-            shader = ptr->shader_slots[i];
-
-	            if (shader)
-	            {
-	                if (shader->mtl_data.library)
-	                {
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.library);
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.function);
-	                }
-	                if (shader->mtl_data.zero_to_one_library)
-	                {
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.zero_to_one_library);
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.zero_to_one_function);
-	                }
-	                if (shader->mtl_data.upper_left_library)
-	                {
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_library);
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_function);
-	                }
-	                if (shader->mtl_data.upper_left_zero_to_one_library)
-	                {
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_zero_to_one_library);
-	                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.upper_left_zero_to_one_function);
-	                }
-	            }
-	        }
-
+        /* Metal libraries/functions are linked Program products and are
+         * invalidated by clearStageCompileState during relink. DIRTY_PROGRAM
+         * also covers pre-link state changes, which must not discard the
+         * currently linked executable. */
         ptr->dirty_bits &= ~DIRTY_PROGRAM;
     }
 
-	    // bind mtl functions to shaders
+	    // Compile linked Program stages on demand.
 	    for(int i=_VERTEX_SHADER; i<_MAX_SHADER_TYPES; i++)
 	    {
 	        Shader *shader;
@@ -1046,12 +1064,6 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (shader)
         {
             if (i == _GEOMETRY_SHADER) {
-                if (shader->mtl_data.library) {
-                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.library);
-                }
-                if (shader->mtl_data.function) {
-                    mglSafeReleaseMetalObj((void **)&shader->mtl_data.function);
-                }
                 if (mglGeometryShaderIsPassthrough(shader)) {
                     static uint64_t s_passthroughGeometryShaderSkipCount = 0;
                     uint64_t hit = ++s_passthroughGeometryShaderSkipCount;
@@ -1075,14 +1087,15 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 NSLog(@"MGL WARNING: Program %u stage %d has reflection but no MSL; skipping Metal bind",
                       (unsigned)ptr->name,
                       i);
-                shader->mtl_data.library = NULL;
-                shader->mtl_data.function = NULL;
                 return false;
             }
-            if (shader->mtl_data.library == NULL)
+            if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL)
             {
                 id<MTLLibrary> library;
                 id<MTLFunction> function;
+
+                mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
+                mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
 
                 if (mglProgramExplicitlyTraced(ptr)) {
                     mglWriteProgramMSLDump(ptr, @"explicit-trace");
@@ -1179,8 +1192,6 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                         case _COMPUTE_SHADER: stageName = "compute"; break;
                     }
                     NSLog(@"MGL ERROR: Failed to compile %s shader, skipping render", stageName);
-                    shader->mtl_data.library = NULL;
-                    shader->mtl_data.function = NULL;
                     return false;  // Signal shader compilation failure
                 }
                 NSString *entryName = [NSString stringWithUTF8String:shader->entry_point];
@@ -1190,12 +1201,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                   label:entryName];
                 if (!function) {
                     NSLog(@"MGL ERROR: Failed to find function '%s' in compiled shader", shader->entry_point);
-                    shader->mtl_data.library = NULL;
-                    shader->mtl_data.function = NULL;
                     return false;  // Signal function lookup failure
                 }
-                shader->mtl_data.library = (void *)CFBridgingRetain(library);
-	                shader->mtl_data.function = (void *)CFBridgingRetain(function);
+                ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
+	                ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
 	            }
 	        }
 	    }
@@ -1203,7 +1212,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	    if (ctx &&
 	        ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
 	        ptr->shader_slots[_VERTEX_SHADER] &&
-	        ptr->shader_slots[_VERTEX_SHADER]->mtl_data.zero_to_one_library == NULL)
+	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_library == NULL)
 	    {
 	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
 	        NSString *variantSource = mglZeroToOneVertexMSLSource(ptr, vertexShader);
@@ -1237,8 +1246,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	            return false;
 	        }
 
-	        vertexShader->mtl_data.zero_to_one_library = (void *)CFBridgingRetain(library);
-	        vertexShader->mtl_data.zero_to_one_function = (void *)CFBridgingRetain(function);
+	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_library = (void *)CFBridgingRetain(library);
+	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_function = (void *)CFBridgingRetain(function);
 	    }
 
 	    if (ctx &&
@@ -1248,8 +1257,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
 	        BOOL zeroToOneDepth = (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE);
 	        BOOL needsVariant = zeroToOneDepth
-	            ? (vertexShader->mtl_data.upper_left_zero_to_one_library == NULL)
-	            : (vertexShader->mtl_data.upper_left_library == NULL);
+	            ? (ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_library == NULL)
+	            : (ptr->spirv[_VERTEX_SHADER].mtl_upper_left_library == NULL);
 
 	        if (needsVariant) {
 	            NSString *variantSource = mglUpperLeftVertexMSLSource(ptr, vertexShader, zeroToOneDepth);
@@ -1286,11 +1295,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	            }
 
 	            if (zeroToOneDepth) {
-	                vertexShader->mtl_data.upper_left_zero_to_one_library = (void *)CFBridgingRetain(library);
-	                vertexShader->mtl_data.upper_left_zero_to_one_function = (void *)CFBridgingRetain(function);
+	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_library = (void *)CFBridgingRetain(library);
+	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function = (void *)CFBridgingRetain(function);
 	            } else {
-	                vertexShader->mtl_data.upper_left_library = (void *)CFBridgingRetain(library);
-	                vertexShader->mtl_data.upper_left_function = (void *)CFBridgingRetain(function);
+	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_library = (void *)CFBridgingRetain(library);
+	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_function = (void *)CFBridgingRetain(function);
 	            }
 	        }
 	    }
@@ -1341,7 +1350,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             if (!mglIsValidGLCompareFunction(state->var.depth_func)) {
                 mglLogRenderStateRepair("depth_func", state->var.depth_func, GL_LESS);
                 state->var.depth_func = GL_LESS;
-                state->dirty_bits |= DIRTY_RENDER_STATE;
+                mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
             }
 
             dsDesc.depthCompareFunction =
@@ -1357,7 +1366,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 if (!mglIsValidGLCompareFunction(state->var.stencil_func)) {
                     mglLogRenderStateRepair("stencil_func", state->var.stencil_func, GL_ALWAYS);
                     state->var.stencil_func = GL_ALWAYS;
-                    state->dirty_bits |= DIRTY_RENDER_STATE;
+                    mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
 
                 MTLStencilDescriptor *frontSDesc = [[MTLStencilDescriptor alloc] init];
@@ -1379,7 +1388,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 if (!mglIsValidGLCompareFunction(state->var.stencil_back_func)) {
                     mglLogRenderStateRepair("stencil_back_func", state->var.stencil_back_func, GL_ALWAYS);
                     state->var.stencil_back_func = GL_ALWAYS;
-                    state->dirty_bits |= DIRTY_RENDER_STATE;
+                    mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
                 }
 
                 MTLStencilDescriptor *backSDesc = [[MTLStencilDescriptor alloc] init];
@@ -1458,7 +1467,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (state->var.front_face != GL_CW && state->var.front_face != GL_CCW) {
         mglLogRenderStateRepair("front_face", state->var.front_face, GL_CCW);
         state->var.front_face = GL_CCW;
-        state->dirty_bits |= DIRTY_RENDER_STATE;
+        mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
 
     BOOL defaultFramebufferSampledPass =
@@ -1578,6 +1587,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     {
         mglLogRenderStateRepair("polygon_mode", state->var.polygon_mode, GL_FILL);
         state->var.polygon_mode = GL_FILL;
+        mglMarkStateDirtyBits(state, DIRTY_RENDER_STATE);
     }
     [self setTriangleFillModeIfNeeded:triangleFillMode];
 }
@@ -2808,12 +2818,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     // Check if command buffer already has an active encoder (Metal API violation)
     if (_currentRenderEncoder) {
         NSLog(@"MGL WARNING: Active render encoder detected - ending it before creating new one");
-        @try {
-            [_currentRenderEncoder endEncoding];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: Exception ending existing encoder: %@", exception);
-        }
-        _currentRenderEncoder = nil;
+        [self endRenderEncodingLocked];
     }
 
     // Validate command buffer status. If already committed/completed, rotate to a new buffer.
@@ -3163,11 +3168,6 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool) newCommandBufferLocked
 {
-    /* Force deferred RT copy update before buffer rotation.
-     * Buffer rotation is a real flush point - update any pending RT copies
-     * before committing the current command buffer. */
-    [self forcePendingGLSampledCopiesUpdate:"buffer_rotation"];
-
     // CRITICAL FIX: Proper encoder cleanup BEFORE creating new command buffer
     // Metal API requires ending encoders before creating new command buffers
 
@@ -3176,13 +3176,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Ending existing render encoder before creating new command buffer");
         }
-        @try {
-            [_currentRenderEncoder endEncoding];
-            _currentRenderEncoder = nil;
-        } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: Exception ending render encoder: %@", exception);
-            _currentRenderEncoder = nil; // Force clear even on exception
-        }
+        [self endRenderEncodingLocked];
     }
 
     // STEP 1: Clean up sync tracking list safely.
@@ -3542,22 +3536,24 @@ create_new_command_buffer:
         return nil;
     }
 
-	    void *vertexFunctionPtr = vertex_shader->mtl_data.function;
+	    void *vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_function;
 	    if (ctx->active_state->var.clip_origin == GL_UPPER_LEFT) {
 	        if (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
-	            vertex_shader->mtl_data.upper_left_zero_to_one_function) {
-	            vertexFunctionPtr = vertex_shader->mtl_data.upper_left_zero_to_one_function;
+	            vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function) {
+	            vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function;
 	        } else if (ctx->active_state->var.clip_depth_mode != GL_ZERO_TO_ONE &&
-	                   vertex_shader->mtl_data.upper_left_function) {
-	            vertexFunctionPtr = vertex_shader->mtl_data.upper_left_function;
+	                   vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_function) {
+	            vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_function;
 	        }
 	    } else if (ctx->active_state->var.clip_depth_mode == GL_ZERO_TO_ONE &&
-	               vertex_shader->mtl_data.zero_to_one_function) {
-	        vertexFunctionPtr = vertex_shader->mtl_data.zero_to_one_function;
+	               vertexProgram->spirv[_VERTEX_SHADER].mtl_zero_to_one_function) {
+	        vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_zero_to_one_function;
 	    }
 
 	    id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vertexFunctionPtr;
-	    id<MTLFunction> fragmentFunction = fragment_shader ? (__bridge id<MTLFunction>)(fragment_shader->mtl_data.function) : nil;
+	    id<MTLFunction> fragmentFunction = fragmentProgram
+	        ? (__bridge id<MTLFunction>)fragmentProgram->spirv[_FRAGMENT_SHADER].mtl_function
+	        : nil;
     if (kMGLVerbosePipelineLogs) {
         NSLog(@"MGL PIPELINE DESC vs=%@ fs=%@",
               vertexFunction ? vertexFunction.name : @"(null)",
@@ -4077,31 +4073,38 @@ create_new_command_buffer:
 
 - (void) updateBlendStateCache
 {
+    bool repairedState = false;
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
         if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_src_rgb[i])) {
             mglLogRenderStateRepair("blend_src_rgb", ctx->active_state->var.blend_src_rgb[i], GL_ONE);
             ctx->active_state->var.blend_src_rgb[i] = GL_ONE;
+            repairedState = true;
         }
         if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_src_alpha[i])) {
             mglLogRenderStateRepair("blend_src_alpha", ctx->active_state->var.blend_src_alpha[i], GL_ONE);
             ctx->active_state->var.blend_src_alpha[i] = GL_ONE;
+            repairedState = true;
         }
         if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_dst_rgb[i])) {
             mglLogRenderStateRepair("blend_dst_rgb", ctx->active_state->var.blend_dst_rgb[i], GL_ZERO);
             ctx->active_state->var.blend_dst_rgb[i] = GL_ZERO;
+            repairedState = true;
         }
         if (!mglIsValidGLBlendFactor(ctx->active_state->var.blend_dst_alpha[i])) {
             mglLogRenderStateRepair("blend_dst_alpha", ctx->active_state->var.blend_dst_alpha[i], GL_ZERO);
             ctx->active_state->var.blend_dst_alpha[i] = GL_ZERO;
+            repairedState = true;
         }
         if (!mglIsValidGLBlendEquation(ctx->active_state->var.blend_equation_rgb[i])) {
             mglLogRenderStateRepair("blend_equation_rgb", ctx->active_state->var.blend_equation_rgb[i], GL_FUNC_ADD);
             ctx->active_state->var.blend_equation_rgb[i] = GL_FUNC_ADD;
+            repairedState = true;
         }
         if (!mglIsValidGLBlendEquation(ctx->active_state->var.blend_equation_alpha[i])) {
             mglLogRenderStateRepair("blend_equation_alpha", ctx->active_state->var.blend_equation_alpha[i], GL_FUNC_ADD);
             ctx->active_state->var.blend_equation_alpha[i] = GL_FUNC_ADD;
+            repairedState = true;
         }
 
         _src_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_src_rgb[i]];
@@ -4131,6 +4134,9 @@ create_new_command_buffer:
                 _color_mask[i] |= MTLColorWriteMaskAlpha;
         }
     }
+    if (repairedState)
+        mglMarkStateDirtyBits(ctx->active_state,
+                              DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
 }
 
 -(void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
@@ -4419,15 +4425,9 @@ create_new_command_buffer:
             }
         }
 
-        /* Defer RT copy until real flush points when optimization enabled.
-         * During batch replay, skip updateGLSampledCopies to allow batches to
-         * accumulate without rtVer increments breaking batch merging.
-         * RT copies will be updated at real flush points:
-         * - glFlush/glFinish (explicit sync)
-         * - newCommandBufferLocked (buffer rotation)
-         * - Present/swap (frame boundary)
-         * This prevents 71k tiny batches → allows ~100-500 large batches. */
-        if (endedFramebuffer && !_deferRTCopyUntilFlush) {
+        /* A later batch may sample this render target before the command
+         * buffer is submitted, so refresh its GL-visible copy immediately. */
+        if (endedFramebuffer) {
             [self updateGLSampledCopiesForEndedRenderPassFramebuffer:endedFramebuffer
                                                             drawCount:endedDrawBufferCount
                                                          drawBuffers:endedDrawBuffers
@@ -4455,34 +4455,151 @@ create_new_command_buffer:
     return NO;
 }
 
-/* Force update of deferred RT copies at real flush points.
- * During batch replay with _deferRTCopyUntilFlush=YES, updateGLSampledCopies
- * is skipped to allow batch merging. This method forces the update at:
- * - glFlush/glFinish (explicit sync)
- * - newCommandBufferLocked (buffer rotation)
- * - Present/swap (frame boundary)
- * Updates all FBOs that were used since last force update. */
-- (void)forcePendingGLSampledCopiesUpdate:(const char *)reason
+#pragma mark - Binary Archive (Phase 2 #6)
+
+/* Returns a per-application, per-device archive URL. Metal archives are not
+ * portable between GPU devices. */
+- (NSURL *)mglBinaryArchiveURL
 {
-    if (!_deferRTCopyUntilFlush) {
-        return;  /* Not in deferred mode, updates happen per-batch */
+    NSArray *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
+                                                          NSUserDomainMask, YES);
+    NSString *baseDir = caches.firstObject ?: NSTemporaryDirectory();
+    NSString *bundleID = NSBundle.mainBundle.bundleIdentifier;
+    if (bundleID.length == 0) {
+        bundleID = NSProcessInfo.processInfo.processName;
+    }
+    NSString *mglDir = [[baseDir stringByAppendingPathComponent:@"MGL"]
+                        stringByAppendingPathComponent:mglSafeArchivePathComponent(bundleID)];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:mglDir]) {
+        [fm createDirectoryAtPath:mglDir withIntermediateDirectories:YES
+                    attributes:nil error:NULL];
     }
 
-    /* Update current FBO's RT copies if render pass is active.
-     * _renderPassFramebuffer tracks the FBO that was active when the current
-     * encoder was created. If non-NULL, it needs RT copy update before flush. */
-    if (_renderPassFramebuffer) {
-        Framebuffer *fbo = _renderPassFramebuffer;
-        GLsizei drawCount = _renderPassDrawBufferCount;
-        GLenum drawBuffers[MAX_COLOR_ATTACHMENTS];
-        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            drawBuffers[i] = _renderPassDrawBuffers[i];
+    uint64_t registryID = 0;
+    if (@available(macOS 11.0, *)) {
+        registryID = _device.registryID;
+    }
+    NSString *deviceID = registryID != 0
+        ? [NSString stringWithFormat:@"%016llx", (unsigned long long)registryID]
+        : mglSafeArchivePathComponent(_device.name);
+    NSString *filename = [NSString stringWithFormat:@"pipeline-%@.binaryarchive", deviceID];
+    return [NSURL fileURLWithPath:[mglDir stringByAppendingPathComponent:filename]];
+}
+
+- (void)loadBinaryArchive
+{
+    if (!_device) return;
+
+    NSURL *archiveURL = [self mglBinaryArchiveURL];
+    NSString *archiveKey = archiveURL.path;
+
+    os_unfair_lock_lock(&s_mglBinaryArchiveLock);
+    @try {
+        id<MTLBinaryArchive> sharedArchive = s_mglBinaryArchives[archiveKey];
+        if (sharedArchive) {
+            _binaryArchive = sharedArchive;
+            return;
         }
 
-        [self updateGLSampledCopiesForEndedRenderPassFramebuffer:fbo
-                                                        drawCount:drawCount
-                                                     drawBuffers:drawBuffers
-                                                          reason:reason ? reason : "deferred_flush"];
+        NSFileManager *fm = NSFileManager.defaultManager;
+        BOOL archiveExists = [fm fileExistsAtPath:archiveKey];
+        MTLBinaryArchiveDescriptor *desc = [[MTLBinaryArchiveDescriptor alloc] init];
+        if (archiveExists) {
+            desc.url = archiveURL;
+        }
+
+        NSError *loadError = nil;
+        id<MTLBinaryArchive> archive = [_device newBinaryArchiveWithDescriptor:desc
+                                                                         error:&loadError];
+        if (!archive && archiveExists) {
+            NSError *removeError = nil;
+            if (![fm removeItemAtURL:archiveURL error:&removeError]) {
+                NSLog(@"MGL BINARY ARCHIVE: failed to remove incompatible archive: %@",
+                      removeError.localizedDescription);
+            }
+
+            NSLog(@"MGL BINARY ARCHIVE: rebuilding incompatible archive: %@",
+                  loadError.localizedDescription);
+            loadError = nil;
+            desc = [[MTLBinaryArchiveDescriptor alloc] init];
+            archive = [_device newBinaryArchiveWithDescriptor:desc error:&loadError];
+            archiveExists = NO;
+        }
+
+        if (archive) {
+            archive.label = @"MGL Pipeline Binary Archive";
+            if (!s_mglBinaryArchives) {
+                s_mglBinaryArchives = [NSMutableDictionary new];
+            }
+            s_mglBinaryArchives[archiveKey] = archive;
+            _binaryArchive = archive;
+            NSLog(@"MGL BINARY ARCHIVE: %@ %@",
+                  archiveExists ? @"loaded" : @"created", archiveURL.lastPathComponent);
+        } else {
+            NSLog(@"MGL BINARY ARCHIVE: unavailable, PSO compile will continue without it: %@",
+                  loadError.localizedDescription);
+        }
+    } @catch (NSException *exception) {
+        _binaryArchive = nil;
+        NSLog(@"MGL BINARY ARCHIVE: load exception, continuing without archive: %@",
+              exception.reason);
+    } @finally {
+        os_unfair_lock_unlock(&s_mglBinaryArchiveLock);
+    }
+}
+
+- (void)saveBinaryArchive
+{
+    if (!_binaryArchive) return;
+
+    NSURL *archiveURL = [self mglBinaryArchiveURL];
+    NSError *serializeError = nil;
+    BOOL ok = NO;
+    os_unfair_lock_lock(&s_mglBinaryArchiveLock);
+    @try {
+        ok = [_binaryArchive serializeToURL:archiveURL error:&serializeError];
+    } @catch (NSException *exception) {
+        NSLog(@"MGL BINARY ARCHIVE: serialize exception: %@", exception.reason);
+    } @finally {
+        os_unfair_lock_unlock(&s_mglBinaryArchiveLock);
+    }
+    if (ok) {
+        NSLog(@"MGL BINARY ARCHIVE: saved to %@", archiveURL.lastPathComponent);
+    } else if (serializeError) {
+        NSLog(@"MGL BINARY ARCHIVE: serialize failed: %@",
+              serializeError.localizedDescription);
+    }
+}
+
+- (void)applyBinaryArchiveToDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+{
+    if (!_binaryArchiveEnabled || !_binaryArchive || !descriptor) return;
+    /* Attach the binary archive so newRenderPipelineStateWithDescriptor: can
+     * skip shader compilation when a matching compiled binary already exists
+     * in the archive. */
+    descriptor.binaryArchives = @[_binaryArchive];
+}
+
+- (void)addPipelineToBinaryArchive:(MTLRenderPipelineDescriptor *)descriptor
+{
+    if (!_binaryArchiveEnabled || !_binaryArchive || !descriptor) return;
+    /* After a successful PSO compile, add the descriptor to the archive so
+     * the compiled binary persists across launches.  Metal silently accepts
+     * duplicates.  Errors here are non-fatal — the archive just won't have
+     * this entry for next launch. */
+    NSError *addError = nil;
+    os_unfair_lock_lock(&s_mglBinaryArchiveLock);
+    @try {
+        [_binaryArchive addRenderPipelineFunctionsWithDescriptor:descriptor error:&addError];
+    } @catch (NSException *exception) {
+        NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline exception: %@", exception.reason);
+    } @finally {
+        os_unfair_lock_unlock(&s_mglBinaryArchiveLock);
+    }
+    if (addError) {
+        NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline warning: %@",
+              addError.localizedDescription);
     }
 }
 
@@ -4885,7 +5002,9 @@ create_new_command_buffer:
                           (unsigned long long)nil_pipeline_count);
         }
         // Force rebuild on next state processing pass.
-        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.nil_pipeline",
                                 ctx,
@@ -4910,7 +5029,9 @@ create_new_command_buffer:
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: processGLState - setRenderPipelineState failed: %@", exception.reason);
         // Force pipeline/state retranslation on next draw instead of crashing this frame.
-        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_PROGRAM | DIRTY_VAO |
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         if (traceProcess) {
             mglLogStateSnapshot("processGLState.fail.set_pipeline",
                                 ctx,
@@ -5252,7 +5373,9 @@ create_new_command_buffer:
 	                  (unsigned long)_pipelineColor0Format, (unsigned long)currentColor0Format);
 	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass color format mismatch"];
-	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        mglMarkRendererDirtyBits(ctx->active_state,
+	                                 DIRTY_PROGRAM | DIRTY_VAO |
+	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 
@@ -5265,7 +5388,9 @@ create_new_command_buffer:
 	        NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	              (unsigned long)_pipelineDepthFormat, (unsigned long)currentDepthFormat);
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
-	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        mglMarkRendererDirtyBits(ctx->active_state,
+	                                 DIRTY_PROGRAM | DIRTY_VAO |
+	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 depth_format_ok:;
@@ -5279,7 +5404,9 @@ depth_format_ok:;
 	        NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
 	              (unsigned long)_pipelineStencilFormat, (unsigned long)currentStencilFormat);
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
-	        ctx->active_state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+	        mglMarkRendererDirtyBits(ctx->active_state,
+	                                 DIRTY_PROGRAM | DIRTY_VAO |
+	                                 DIRTY_FBO | DIRTY_RENDER_STATE);
 	        return false;
 	    }
 stencil_format_ok:;
@@ -5394,7 +5521,9 @@ stencil_format_ok:;
 	                NSLog(@"MGL PIPELINE CREATE fail error=generatePipelineDescriptor returned nil");
 	                [self invalidateCurrentPipelineStateForReason:@"pipeline descriptor failure"];
 	                s_pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
-                state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+                mglMarkRendererDirtyBits(state,
+                                         DIRTY_PROGRAM | DIRTY_VAO |
+                                         DIRTY_FBO | DIRTY_RENDER_STATE);
                 return false;
             }
 
@@ -5420,7 +5549,9 @@ stencil_format_ok:;
 	                NSLog(@"MGL PIPELINE CREATE fail error=generateVertexDescriptor returned nil");
 	                [self invalidateCurrentPipelineStateForReason:@"vertex descriptor failure"];
 	                s_pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
-                state->dirty_bits |= (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO | DIRTY_RENDER_STATE);
+                mglMarkRendererDirtyBits(state,
+                                         DIRTY_PROGRAM | DIRTY_VAO |
+                                         DIRTY_FBO | DIRTY_RENDER_STATE);
                 return false;
             }
 
@@ -5444,7 +5575,7 @@ stencil_format_ok:;
             }
 
 	            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
-	            NSNumber *pipelineCacheKey = nil;
+	            NSString *pipelineCacheKey = nil;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
             uint64_t vertexSig = 0;
@@ -5452,31 +5583,58 @@ stencil_format_ok:;
             if (!pipelineResolvedFromCache && _pipelineStateCache && currentProgramName != 0) {
                 pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
                 vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
-	                pipelineCacheKey = [NSNumber numberWithUnsignedLongLong:
-	                    (((uint64_t)currentProgramName << 32)
-	                   | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
-	                   | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
-	                   | ((pipelineSig & 0xFFFu) << 12)
-	                   | (vertexSig & 0xFFFu))];
+
+                /* Keep descriptor signatures and linked Program identities
+                 * lossless. GL names can be reused and a Program can relink
+                 * without changing its name. */
+                uint64_t primaryKey = (((uint64_t)currentProgramName << 32)
+                                     | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
+                                     | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24));
+                uint64_t vertexInstance = currentVertexProgram
+                    ? currentVertexProgram->msl_texture_cache_instance_id : 0u;
+                uint64_t vertexGeneration = currentVertexProgram
+                    ? currentVertexProgram->msl_texture_cache_generation : 0u;
+                uint64_t fragmentInstance = currentFragmentProgram
+                    ? currentFragmentProgram->msl_texture_cache_instance_id : 0u;
+                uint64_t fragmentGeneration = currentFragmentProgram
+                    ? currentFragmentProgram->msl_texture_cache_generation : 0u;
+                pipelineCacheKey = [NSString stringWithFormat:
+                                   @"%016llx-%016llx-%016llx-%016llx-%016llx-%016llx-%016llx",
+                                   (unsigned long long)primaryKey,
+                                   (unsigned long long)vertexInstance,
+                                   (unsigned long long)vertexGeneration,
+                                   (unsigned long long)fragmentInstance,
+                                   (unsigned long long)fragmentGeneration,
+                                   (unsigned long long)pipelineSig,
+                                   (unsigned long long)vertexSig];
 
                 /* P0-2: Two-level cache lookup:
                  * Level 1: PSO cache (fastest - compiled pipeline ready to use)
                  * Level 2: Descriptor cache (fast - skip expensive descriptor regeneration)
                  * On double miss: regenerate descriptor + compile PSO */
-	                id cachedEntry = [_pipelineStateCache objectForKey:pipelineCacheKey];
+                id cachedEntry = [_pipelineStateCache objectForKey:pipelineCacheKey];
                 id<MTLRenderPipelineState> cachedPipeline = nil;
+                id<MTLFunction> cachedVertexFunction = nil;
+                id<MTLFunction> cachedFragmentFunction = nil;
+                BOOL cachedFunctionMetadataPresent = NO;
                 if (cachedEntry) {
-                    /* Secondary validation: the NSNumber key truncates each
-                     * signature to 12 bits, so two different pipeline/vertex
-                     * descriptor combinations can collide to the same key.
-                     * Compare the full 64-bit signatures stored in the wrapper
-                     * to reject false hits. */
+                    /* The wrapper validation is cheap and protects against a
+                     * malformed or stale entry even though the key is lossless. */
                     if ([cachedEntry isKindOfClass:[NSDictionary class]]) {
                         NSDictionary *entry = (NSDictionary *)cachedEntry;
                         uint64_t cachedPSig = [entry[@"sig"] unsignedLongLongValue];
                         uint64_t cachedVSig = [entry[@"vsig"] unsignedLongLongValue];
                         if (cachedPSig == pipelineSig && cachedVSig == vertexSig) {
                             cachedPipeline = entry[@"pipeline"];
+                            id cachedVertexEntry = entry[@"vertexFunction"];
+                            id cachedFragmentEntry = entry[@"fragmentFunction"];
+                            cachedFunctionMetadataPresent = cachedVertexEntry != nil;
+                            if (cachedVertexEntry != [NSNull null]) {
+                                cachedVertexFunction = cachedVertexEntry;
+                            }
+                            if (cachedFragmentEntry != [NSNull null]) {
+                                cachedFragmentFunction = cachedFragmentEntry;
+                            }
                         }
                     } else {
                         /* Legacy bare pipeline entry (pre-migration). */
@@ -5488,27 +5646,25 @@ stencil_format_ok:;
                     static uint64_t s_pipelineCacheHitCount = 0;
                     s_pipelineCacheHitCount++;
                     MGL_PERF_INC(g_mglPipelineCacheHitsSinceSwap);
-	                    if (kMGLVerbosePipelineLogs &&
+                    if (kMGLVerbosePipelineLogs &&
                             (s_pipelineCacheHitCount <= 128ull || (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
-	                        NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%016llx",
-	                              (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName,
-	                              (unsigned long long)pipelineCacheKey.unsignedLongLongValue);
-	                    }
+                        NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%@",
+                              (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName,
+                              pipelineCacheKey);
+                    }
 
-	                    _pipelineState = cachedPipeline;
+                    _pipelineState = cachedPipeline;
                     pipelineResolvedFromCache = true;
                     _pipelineColor0Format = builtColor0Format;
                     _pipelineDepthFormat = builtDepthFormat;
                     _pipelineStencilFormat = builtStencilFormat;
                     _pipelineProgramName = currentProgramName;
+                    _pipelineVertexFunction = cachedFunctionMetadataPresent
+                        ? cachedVertexFunction : pipelineStateDescriptor.vertexFunction;
+                    _pipelineFragmentFunction = cachedFunctionMetadataPresent
+                        ? cachedFragmentFunction : pipelineStateDescriptor.fragmentFunction;
 
-                    /* P2-4: True LRU — remove and re-insert the entry so
-                     * NSMutableDictionary's insertion order reflects access
-                     * order.  This makes the oldest entries the true LRU
-                     * victims, not just the oldest inserts.  The remove+
-                     * re-insert is O(1) for NSMutableDictionary. */
-                    [_pipelineStateCache removeObjectForKey:pipelineCacheKey];
-                    [_pipelineStateCache setObject:cachedEntry forKey:pipelineCacheKey];
+                    mglTouchCacheLRU(_pipelineStateCacheLRU, pipelineCacheKey);
 
 	                    // Mirror successful compile-side breaker resets.
 	                    s_interfaceMismatchStreak = 0;
@@ -5548,13 +5704,14 @@ stencil_format_ok:;
 
                     /* Update vertex descriptor (must be set fresh each time) */
                     finalDescriptor.vertexDescriptor = vertexDescriptor;
+                    mglTouchCacheLRU(_pipelineDescriptorCacheLRU, pipelineCacheKey);
 
                     static uint64_t s_descriptorCacheHitCount = 0;
                     s_descriptorCacheHitCount++;
                     if (kMGLVerbosePipelineLogs && s_descriptorCacheHitCount <= 64ull) {
-                        NSLog(@"MGL DESCRIPTOR CACHE hit program=%u key=%016llx (total %llu)",
+                        NSLog(@"MGL DESCRIPTOR CACHE hit program=%u key=%@ (total %llu)",
                               (unsigned)currentProgramName,
-                              (unsigned long long)pipelineCacheKey.unsignedLongLongValue,
+                              pipelineCacheKey,
                               (unsigned long long)s_descriptorCacheHitCount);
                     }
                 }
@@ -5562,6 +5719,7 @@ stencil_format_ok:;
 
             MGL_PERF_INC(g_mglPipelineCacheMissesSinceSwap);
             NSError *error;
+	            MTLRenderPipelineDescriptor *successfulDescriptor = nil;
 	            id<MTLRenderPipelineState> previousPipelineState = _pipelineState;
 	            bool pipelineReusedPrevious = false;
 
@@ -5590,7 +5748,11 @@ stencil_format_ok:;
                     NSLog(@"MGL INFO: AGX virtualization detected - using safe synchronous compilation");
                 }
 
+                [self applyBinaryArchiveToDescriptor:finalDescriptor];
                 _pipelineState = [_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error];
+                if (_pipelineState) {
+                    successfulDescriptor = finalDescriptor;
+                }
 
                 if (!_pipelineState) {
                     NSLog(@"MGL PIPELINE CREATE fail error=%@", error);
@@ -5609,7 +5771,11 @@ stencil_format_ok:;
 	                        } else if (!currentVertexProgram) {
 	                            mglWriteProgramMSLDump(currentProgram, errDesc);
 	                        }
-	                        BOOL sameProgram = (_pipelineProgramName != 0 && _pipelineProgramName == currentProgramName);
+		                        BOOL sameProgram =
+		                            (_pipelineProgramName != 0 &&
+		                             _pipelineProgramName == currentProgramName &&
+		                             _pipelineVertexFunction == pipelineStateDescriptor.vertexFunction &&
+		                             _pipelineFragmentFunction == pipelineStateDescriptor.fragmentFunction);
                         BOOL colorCompatible = (_pipelineColor0Format == MTLPixelFormatInvalid ||
                                                 builtColor0Format == MTLPixelFormatInvalid ||
                                                 _pipelineColor0Format == builtColor0Format);
@@ -5625,6 +5791,13 @@ stencil_format_ok:;
                                   (unsigned)currentProgramName);
                             _pipelineState = previousPipelineState;
                             pipelineReusedPrevious = true;
+                            s_interfaceMismatchProgramName = currentProgramName;
+                            s_interfaceMismatchColor0Format = builtColor0Format;
+                            s_interfaceMismatchDepthFormat = builtDepthFormat;
+                            s_interfaceMismatchStencilFormat = builtStencilFormat;
+                            s_interfaceMismatchStreak = 1u;
+                            s_interfaceMismatchRetryAfter = now + 0.10;
+                            s_pipelineRetryAfter = s_interfaceMismatchRetryAfter;
                         } else {
                             BOOL sameMismatchSignature =
                                 (currentProgramName == s_interfaceMismatchProgramName &&
@@ -5732,8 +5905,10 @@ stencil_format_ok:;
                             mglNormalizePipelineDepthStencilFormats(simpleDescriptor, "simple-fallback");
                             mglEnableIndirectCommandBuffersForPipeline(simpleDescriptor);
 
+                            [self applyBinaryArchiveToDescriptor:simpleDescriptor];
                             _pipelineState = [_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error];
                             if (_pipelineState) {
+                                successfulDescriptor = simpleDescriptor;
                                 builtColor0Format = simpleDescriptor.colorAttachments[0].pixelFormat;
                                 builtDepthFormat = simpleDescriptor.depthAttachmentPixelFormat;
                                 builtStencilFormat = simpleDescriptor.stencilAttachmentPixelFormat;
@@ -5788,8 +5963,10 @@ stencil_format_ok:;
                         safeDescriptor.vertexFunction = [vertLibrary newFunctionWithName:@"main"];
                         safeDescriptor.fragmentFunction = [fragLibrary newFunctionWithName:@"main"];
 
+                        [self applyBinaryArchiveToDescriptor:safeDescriptor];
                         _pipelineState = [_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error];
                         if (_pipelineState) {
+                            successfulDescriptor = safeDescriptor;
                             builtColor0Format = safeDescriptor.colorAttachments[0].pixelFormat;
                             builtDepthFormat = safeDescriptor.depthAttachmentPixelFormat;
                             builtStencilFormat = safeDescriptor.stencilAttachmentPixelFormat;
@@ -5825,36 +6002,40 @@ stencil_format_ok:;
                     NSLog(@"MGL PIPELINE CREATE success pipeline=%p", _pipelineState);
                     NSLog(@"MGL INFO: Pipeline state created successfully");
                 }
-                // Clear interface-mismatch breaker after a successful compile path.
-                s_interfaceMismatchStreak = 0;
-                s_interfaceMismatchProgramName = 0;
-                s_interfaceMismatchColor0Format = MTLPixelFormatInvalid;
-                s_interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
-                s_interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
-                s_interfaceMismatchRetryAfter = 0.0;
-                if (!pipelineReusedPrevious) {
+                if (!pipelineReusedPrevious && successfulDescriptor) {
+                    // Clear interface-mismatch breaker after a real compile.
+                    s_interfaceMismatchStreak = 0;
+                    s_interfaceMismatchProgramName = 0;
+                    s_interfaceMismatchColor0Format = MTLPixelFormatInvalid;
+                    s_interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
+                    s_interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
+                    s_interfaceMismatchRetryAfter = 0.0;
                     _pipelineColor0Format = builtColor0Format;
                     _pipelineDepthFormat = builtDepthFormat;
                     _pipelineStencilFormat = builtStencilFormat;
                     _pipelineProgramName = currentProgramName;
-                }
-                if (s_programMismatchProgramName == currentProgramName) {
-                    s_programMismatchProgramName = 0;
-                    s_programMismatchRetryAfter = 0.0;
-                    s_programMismatchStreak = 0u;
-                }
-	                if (_interfaceMismatchBlockedProgram == currentProgramName) {
-	                    _interfaceMismatchBlockedProgram = 0;
-	                    _interfaceMismatchBlockedUntil = 0.0;
-	                    _interfaceMismatchBlockedStreak = 0u;
-	                }
+                    _pipelineVertexFunction = successfulDescriptor.vertexFunction;
+                    _pipelineFragmentFunction = successfulDescriptor.fragmentFunction;
+                    [self addPipelineToBinaryArchive:successfulDescriptor];
+                    if (s_programMismatchProgramName == currentProgramName) {
+                        s_programMismatchProgramName = 0;
+                        s_programMismatchRetryAfter = 0.0;
+                        s_programMismatchStreak = 0u;
+                    }
+		                    if (_interfaceMismatchBlockedProgram == currentProgramName) {
+		                        _interfaceMismatchBlockedProgram = 0;
+		                        _interfaceMismatchBlockedUntil = 0.0;
+		                        _interfaceMismatchBlockedStreak = 0u;
+		                    }
 
-                [self insertPipelineIntoCacheWithKey:pipelineCacheKey
-                                        pipelineSig:pipelineSig
-                                        vertexSig:vertexSig
-                                        descriptor:finalDescriptor
-                                        descriptorFromCache:descriptorFromCache];
-	            }
+                    [self insertPipelineIntoCacheWithKey:pipelineCacheKey
+                                            pipelineSig:pipelineSig
+                                            vertexSig:vertexSig
+                                            descriptor:successfulDescriptor
+                                            descriptorFromCache:(descriptorFromCache &&
+                                                successfulDescriptor == finalDescriptor)];
+                }
+		            }
 	            }
 
                 if (deferredBufferMapForPipelineBuild && _pipelineState != nil) {
@@ -5871,54 +6052,53 @@ stencil_format_ok:;
  * Pipeline cache insertion with LRU eviction, extracted from
  * syncPipelineStateWithDeferredBufferMap:.
  */
-- (void)insertPipelineIntoCacheWithKey:(NSNumber *)pipelineCacheKey
+- (void)insertPipelineIntoCacheWithKey:(NSString *)pipelineCacheKey
                            pipelineSig:(uint64_t)pipelineSig
                              vertexSig:(uint64_t)vertexSig
                             descriptor:(MTLRenderPipelineDescriptor *)descriptor
                     descriptorFromCache:(BOOL)descriptorFromCache
 {
-    if (_pipelineStateCache) {
-        /* P2-4: True LRU eviction.  Cache hits remove+re-insert the entry
-         * (see syncPipelineStateWithDeferredBufferMap:), so NSMutableDictionary's
-         * insertion order reflects access order.  Evicting the first 25% of
-         * allKeys removes the least-recently-used entries. */
-        if (_pipelineStateCache.count >= 256) {
-            NSArray *keys = _pipelineStateCache.allKeys;
-            NSUInteger evictCount = keys.count / 4;  /* evict 25% */
-            MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, evictCount);
-            for (NSUInteger i = 0; i < evictCount; i++) {
-                [_pipelineStateCache removeObjectForKey:keys[i]];
-            }
+    if (_pipelineStateCache && pipelineCacheKey && _pipelineState) {
+        BOOL replacingPipeline = [_pipelineStateCache objectForKey:pipelineCacheKey] != nil;
+        if (!replacingPipeline && _pipelineStateCache.count >= 256) {
+            NSUInteger evictCount = MAX((NSUInteger)1, _pipelineStateCache.count / 4);
+            NSUInteger removed = mglEvictCacheLRU(_pipelineStateCache,
+                                                  _pipelineStateCacheLRU,
+                                                  evictCount);
+            MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
         }
-        if (pipelineCacheKey) {
-            /* Store the pipeline wrapped in an NSDictionary alongside the
-             * full 64-bit signatures so that cache lookups can reject false
-             * hits caused by the 12-bit truncation in the packed NSNumber key. */
+
+            /* Retain the signatures in the value as a defensive consistency
+             * check in addition to the lossless string key. */
+            id vertexFunctionValue = descriptor.vertexFunction;
+            id fragmentFunctionValue = descriptor.fragmentFunction;
+            if (!vertexFunctionValue) vertexFunctionValue = [NSNull null];
+            if (!fragmentFunctionValue) fragmentFunctionValue = [NSNull null];
             NSDictionary *entry = @{
                 @"pipeline": _pipelineState,
                 @"sig": [NSNumber numberWithUnsignedLongLong:pipelineSig],
-                @"vsig": [NSNumber numberWithUnsignedLongLong:vertexSig]
+                @"vsig": [NSNumber numberWithUnsignedLongLong:vertexSig],
+                @"vertexFunction": vertexFunctionValue,
+                @"fragmentFunction": fragmentFunctionValue
             };
             [_pipelineStateCache setObject:entry forKey:pipelineCacheKey];
+            mglTouchCacheLRU(_pipelineStateCacheLRU, pipelineCacheKey);
 
             /* P0-2: Cache the descriptor for future PSO cache misses.
              * Only cache if descriptor was generated (not from cache).
              * This avoids redundant descriptor generation on next miss. */
-            if (!descriptorFromCache && _pipelineDescriptorCache && pipelineCacheKey) {
+            if (!descriptorFromCache && descriptor && _pipelineDescriptorCache) {
                 /* Make a copy of the descriptor to cache (descriptors are mutable) */
                 MTLRenderPipelineDescriptor *descriptorCopy = [descriptor copy];
                 [_pipelineDescriptorCache setObject:descriptorCopy forKey:pipelineCacheKey];
+                mglTouchCacheLRU(_pipelineDescriptorCacheLRU, pipelineCacheKey);
 
-                /* Apply LRU: limit descriptor cache size (same as PSO cache) */
                 if (_pipelineDescriptorCache.count > 128) {
-                    /* Remove oldest entry (NSMutableDictionary maintains insertion order) */
-                    NSNumber *oldestKey = _pipelineDescriptorCache.allKeys.firstObject;
-                    if (oldestKey) {
-                        [_pipelineDescriptorCache removeObjectForKey:oldestKey];
-                    }
+                    mglEvictCacheLRU(_pipelineDescriptorCache,
+                                     _pipelineDescriptorCacheLRU,
+                                     _pipelineDescriptorCache.count - 128);
                 }
             }
-        }
     }
 }
 

@@ -1901,7 +1901,7 @@ bool mglStoreCompressedTextureImage(GLMContext ctx,
     tex->num_levels = MAX(tex->num_levels, (GLuint)level + 1u);
     tex->complete = GL_TRUE;
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
-    STATE(dirty_bits) |= DIRTY_TEX;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
     return true;
 }
 bool mglCompressedSubImageUpdate(GLMContext ctx,
@@ -2007,7 +2007,7 @@ bool mglCompressedSubImageUpdate(GLMContext ctx,
     lvl->last_src_hash = resolved_src ? mglHashBytesSampled(resolved_src, (size_t)imageSize) : 0ull;
     tex->dirty_bits |= DIRTY_TEXTURE_DATA;
     mglReleaseGLSampledTextureCopy(ctx, tex, "compressedTexSubImage");
-    STATE(dirty_bits) |= DIRTY_TEX;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
     return true;
 }
 bool mglCopyTextureSubImageValidate(GLMContext ctx,

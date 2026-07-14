@@ -324,8 +324,15 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
             free(ptr->spirv[i].entry_point);
             ptr->spirv[i].entry_point = NULL;
         }
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_compute_pipeline);
         mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
         mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_zero_to_one_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_zero_to_one_library);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_library);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_zero_to_one_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_zero_to_one_library);
         
         for(int j=0; j<_MAX_SPIRV_RES; j++)
         {
@@ -1228,7 +1235,7 @@ void mglUseProgram(GLMContext ctx, GLuint program)
         {
             pptr->refcount++;
         }
-        ctx->state.dirty_bits |= DIRTY_PROGRAM;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_PROGRAM);
     }
 
     /*
@@ -1662,7 +1669,7 @@ void mglDeleteProgramPipelines(GLMContext ctx, GLsizei n, const GLuint *pipeline
         {
             STATE(program_pipeline) = NULL;
             STATE(var.program_pipeline_binding) = 0;
-            STATE(dirty_bits) |= DIRTY_PROGRAM;
+            mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
         }
         
         /* Release every retained stage program reference before freeing
@@ -1688,14 +1695,14 @@ void mglBindProgramPipeline(GLMContext ctx, GLuint pipeline)
     {
         STATE(program_pipeline) = NULL;
         STATE(var.program_pipeline_binding) = 0;
-        STATE(dirty_bits) |= DIRTY_PROGRAM;
+        mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
         return;
     }
     
     ProgramPipeline *ptr = getProgramPipeline(ctx, pipeline);
     STATE(program_pipeline) = ptr;
     STATE(var.program_pipeline_binding) = ptr ? pipeline : 0;
-    STATE(dirty_bits) |= DIRTY_PROGRAM;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
 }
 
 void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLuint program)
@@ -1750,5 +1757,5 @@ void mglUseProgramStages(GLMContext ctx, GLuint pipeline, GLbitfield stages, GLu
 #undef MGL_REPLACE_STAGE_SLOT
 
     pipe_ptr->validated = GL_FALSE;
-    STATE(dirty_bits) |= DIRTY_PROGRAM;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
 }

@@ -86,7 +86,7 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
 
     vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
     if (ctx->state.vao == vao) {
-        ctx->state.dirty_bits |= DIRTY_VAO;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_VAO);
     }
 
     return true;

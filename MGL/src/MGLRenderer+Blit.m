@@ -127,6 +127,7 @@ typedef struct MGLBlitColorState {
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
+    [self applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit pipeline create failed pixelFormat=%lu error=%@",
@@ -134,6 +135,7 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
+    [self addPipelineToBinaryArchive:desc];
 
     _scaledBlitPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_scaledBlitPipelineCache limit:16];
@@ -208,6 +210,7 @@ typedef struct MGLBlitColorState {
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
+    [self applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled depth blit pipeline create failed depthPixelFormat=%lu error=%@",
@@ -215,6 +218,7 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
+    [self addPipelineToBinaryArchive:desc];
 
     _scaledDepthBlitPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_scaledDepthBlitPipelineCache limit:16];
@@ -1108,6 +1112,7 @@ typedef struct MGLBlitColorState {
     }
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
+    [self applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scissored clear pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
@@ -1118,6 +1123,7 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
+    [self addPipelineToBinaryArchive:desc];
 
     _clearRectPipelineCache[key] = pipeline;
     [self mglCapAuxCache:_clearRectPipelineCache limit:16];
@@ -2671,7 +2677,7 @@ typedef struct MGLBlitColorState {
                                              source:destTexture
                                              reason:"copy_tex_sub_image_blit"];
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
-    glm_ctx->state.dirty_bits |= DIRTY_TEX | DIRTY_TEX_BINDING;
+    mglMarkRendererDirtyBits(&glm_ctx->state, DIRTY_TEX | DIRTY_TEX_BINDING);
     return YES;
 }
 
@@ -2862,7 +2868,8 @@ typedef struct MGLBlitColorState {
                                              reason:"copy_tex_sub_image"];
     tex->dirty_bits &= ~(DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_LEVEL);
     if (glm_ctx) {
-        glm_ctx->state.dirty_bits |= DIRTY_TEX | DIRTY_TEX_BINDING;
+        mglMarkRendererDirtyBits(&glm_ctx->state,
+                                 DIRTY_TEX | DIRTY_TEX_BINDING);
     }
 }
 

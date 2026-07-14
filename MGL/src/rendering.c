@@ -373,7 +373,7 @@ static void mglMarkPackBufferReadPixelsWrite(GLMContext ctx,
     ptr->last_write_src_hash = 0ull;
     ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
     if (ctx)
-        ctx->state.dirty_bits |= DIRTY_BUFFER;
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
 }
 
 static GLuint mglMaxDrawBuffers(GLMContext ctx)
@@ -636,7 +636,8 @@ void mglClear(GLMContext ctx, GLbitfield mask)
                 (GLfloat)ctx->state.var.stencil_clear_value;
         }
         ctx->state.clear_bitmask = 0;
-        ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+        mglMarkRendererDirtyBits(&ctx->state,
+                                 DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
 
@@ -743,7 +744,7 @@ clear_stencil:
     }
 
 clear_done:
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_SET call=%llu mask=0x%x prevMask=0x%x fbo=%u drawBuf=0x%x readBuf=0x%x scissor(test=%d box=%d,%d,%d,%d) clearBits(global=0x%x default=0x%x fboDepth=0x%x) depth(write=%d clear=%.6f) dirty=0x%x",
@@ -779,7 +780,7 @@ void mglClearColor(GLMContext ctx, GLfloat red, GLfloat green, GLfloat blue, GLf
     ctx->state.color_clear_value[2] = blue;
     ctx->state.color_clear_value[3] = alpha;
 
-    ctx->state.dirty_bits |= DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_COLOR call=%llu value=(%.3f,%.3f,%.3f,%.3f) fbo=%p(%u) drawBuf=0x%x dirty=0x%x",
@@ -799,14 +800,14 @@ void mglClearStencil(GLMContext ctx, GLint s)
 {
     ctx->state.var.stencil_clear_value = s;
 
-    ctx->state.dirty_bits |= DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 }
 
 void mglClearDepth(GLMContext ctx, GLdouble depth)
 {
     ctx->state.var.depth_clear_value = mglClampDepthClearValue(depth);
 
-    ctx->state.dirty_bits |= DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_STATE);
 
 }
 
@@ -885,7 +886,7 @@ void mglClearBufferfv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLf
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFV call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) value=(%.6f,%.6f,%.6f,%.6f) depthWrite=%d dirty=0x%x",
@@ -963,7 +964,7 @@ void mglClearBufferfi(GLMContext ctx, GLenum buffer, GLint drawbuffer, GLfloat d
             return;
     }
 
-    ctx->state.dirty_bits |= DIRTY_FBO | DIRTY_STATE;
+    mglMarkRendererDirtyBits(&ctx->state, DIRTY_FBO | DIRTY_STATE);
 
     if (mglShouldTraceClearCall(callCount)) {
         mglTraceLogExternal("CLEAR_BUFFERFI call=%llu buffer=0x%x drawbuffer=%d fbo=%u scissor(test=%d box=%d,%d,%d,%d) depth=%.6f stencil=%d depthWrite=%d dirty=0x%x",
@@ -1101,7 +1102,7 @@ void mglDrawBuffers(GLMContext ctx, GLsizei n, const GLenum *bufs)
     STATE(draw_buffer_count) = n;
     STATE(draw_buffer) = (n > 0) ? bufs[0] : GL_NONE;
     mglStoreCurrentDrawBufferSelection(ctx);
-    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglDrawBuffer(GLMContext ctx, GLenum buf)
@@ -1130,7 +1131,8 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
         for (GLuint i = 1; i < MAX_COLOR_ATTACHMENTS; ++i)
             STATE(draw_buffers[i]) = GL_NONE;
         mglStoreCurrentDrawBufferSelection(ctx);
-        STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
+        mglMarkStateDirtyBits(ctx->active_state,
+                              DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
         return;
     }
 
@@ -1209,7 +1211,8 @@ void mglDrawBuffer(GLMContext ctx, GLenum buf)
     for (GLuint i = 1; i < MAX_COLOR_ATTACHMENTS; ++i)
         STATE(draw_buffers[i]) = GL_NONE;
     mglStoreCurrentDrawBufferSelection(ctx);
-    STATE(dirty_bits) |= DIRTY_FBO | DIRTY_STATE;
+    mglMarkStateDirtyBits(ctx->active_state,
+                          DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }
 
 void mglReadBuffer(GLMContext ctx, GLenum buf)

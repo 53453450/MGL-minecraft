@@ -48,6 +48,7 @@
 #import "mgl_trace_log.h"
 #import "mgl_byte_hash.h"
 #import "mgl_msl_compiler.h"
+#import "mgl_compute_pipeline_cache.h"
 #import "mgl_metal_bridge.h"
 #import "msl_patch_pipeline.h"  /* P1-6: TCS stage-in + tessellation passthrough helpers */
 
@@ -367,7 +368,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
 
     ctx->active_state->program = resolved;
     resolved->refcount++;
-    ctx->active_state->dirty_bits |= DIRTY_PROGRAM;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_PROGRAM);
 
     NSLog(@"MGL PROGRAM RESOLVE recovered name=%u ptr=%p",
           (unsigned)ctx->active_state->program_name, resolved);
@@ -1524,7 +1525,7 @@ static void mglRendererDropCurrentVAO(GLMContext ctx)
     ctx->active_state->buffers[_ELEMENT_ARRAY_BUFFER] = ctx->active_state->default_vao_element_array_buffer;
     ctx->active_state->var.element_array_buffer_binding =
         ctx->active_state->default_vao_element_array_buffer ? ctx->active_state->default_vao_element_array_buffer->name : 0;
-    ctx->active_state->dirty_bits |= DIRTY_VAO;
+    mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
 }
 
 VertexArray *mglRendererGetValidatedVAO(GLMContext ctx, const char *where)
@@ -1685,7 +1686,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         }
         ctx->active_state->framebuffer = NULL;
         mglRendererSyncFramebufferBindingNames(ctx);
-        ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_STATE);
+        mglMarkStateDirtyBits(ctx->active_state, (DIRTY_FBO | DIRTY_STATE));
         return NULL;
     }
 
@@ -1705,7 +1706,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
         }
         ctx->active_state->framebuffer = NULL;
         mglRendererSyncFramebufferBindingNames(ctx);
-        ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_STATE);
+        mglMarkStateDirtyBits(ctx->active_state, (DIRTY_FBO | DIRTY_STATE));
         return NULL;
     }
 
@@ -1716,7 +1717,7 @@ Framebuffer *mglRendererGetValidatedFramebuffer(GLMContext ctx, const char *wher
     }
     ctx->active_state->framebuffer = NULL;
     mglRendererSyncFramebufferBindingNames(ctx);
-    ctx->active_state->dirty_bits |= (DIRTY_FBO | DIRTY_STATE);
+    mglMarkStateDirtyBits(ctx->active_state, (DIRTY_FBO | DIRTY_STATE));
     return NULL;
 }
 
@@ -7510,10 +7511,6 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 #pragma mark C interface to mtlFlush
 -(void) mtlFlush:(GLMContext) glm_ctx finish:(bool)finish
 {
-    /* Force deferred RT copy update before flush/finish.
-     * These are explicit sync points - must update RT copies. */
-    [self forcePendingGLSampledCopiesUpdate:finish ? "mtlFinish" : "mtlFlush"];
-
     [self flushCommandBuffer: finish];
 }
 
@@ -7529,10 +7526,6 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
 -(void) mtlSwapBuffersLocked:(GLMContext) glm_ctx
 {
-    /* Force deferred RT copy update before present.
-     * Present is a frame boundary - must update all pending RT copies. */
-    [self forcePendingGLSampledCopiesUpdate:"present"];
-
     static uint64_t s_swapCallCount = 0;
     static double s_swapLastCallTime = 0.0;
     static uint64_t s_swapLastCallCount = 0;
@@ -7835,7 +7828,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             return;
         }
         _defaultDrawableWrittenSinceLastSwap = NO;
-        ctx->active_state->dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE;
+        mglMarkRendererDirtyBits(ctx->active_state,
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         double swapElapsedMs = (mglNowSeconds() - swapStartSeconds) * 1000.0;
         if (traceSwap) {
             MGLTraceNSLog(@"MGL TRACE swap.end call=%llu elapsed=%.3fms",
@@ -8236,7 +8230,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
         RETURN_ON_FAILURE([self newRenderEncoder]);
         [self endRenderEncoding];
-        glm_ctx->active_state->dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE;
+        mglMarkRendererDirtyBits(glm_ctx->active_state,
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
         return;
     }
 
@@ -8495,7 +8490,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         mglMarkTextureLevelRenderTargetWritten(depthTexObj, depthAttachment->level);
     }
 
-    glm_ctx->active_state->dirty_bits |= DIRTY_FBO | DIRTY_RENDER_STATE;
+    mglMarkRendererDirtyBits(glm_ctx->active_state,
+                             DIRTY_FBO | DIRTY_RENDER_STATE);
 }
 
 #pragma mark C interface to mtlBufferSubData
@@ -9323,16 +9319,18 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
 
     Shader *tcsShader = tcsProgram->shader_slots[_TESS_CONTROL_SHADER];
-    if (!tcsShader || !tcsShader->mtl_data.function) {
+    if (!tcsShader || !tcsProgram->spirv[_TESS_CONTROL_SHADER].mtl_function) {
         NSLog(@"MGL TESS WARNING: TCS program %u has no compiled function", tcsProgram->name);
         return false;
     }
 
-    id<MTLFunction> tcsFunc = (__bridge id<MTLFunction>)(tcsShader->mtl_data.function);
-
     /* Create compute pipeline state for TCS kernel. */
     NSError *err = nil;
-    id<MTLComputePipelineState> tcsPipeline = [_device newComputePipelineStateWithFunction:tcsFunc error:&err];
+    id<MTLComputePipelineState> tcsPipeline = mglGetOrCreateProgramComputePipeline(
+        _device,
+        tcsProgram,
+        _TESS_CONTROL_SHADER,
+        &err);
     if (!tcsPipeline) {
         NSLog(@"MGL TESS ERROR: failed to create TCS compute pipeline for program %u: %@",
               tcsProgram->name, err);
@@ -9346,8 +9344,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
     if (_currentRenderEncoder) {
-        [_currentRenderEncoder endEncoding];
-        _currentRenderEncoder = NULL;
+        [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists.  The GL_PATCHES path returns
@@ -9645,16 +9642,18 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
 
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
-    if (!tesShader || !tesShader->mtl_data.function) {
+    if (!tesShader || !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function) {
         NSLog(@"MGL TESS WARNING: TES program %u has no compiled function", tesProgram->name);
         return false;
     }
 
-    id<MTLFunction> tesFunc = (__bridge id<MTLFunction>)(tesShader->mtl_data.function);
-
     /* Create compute pipeline state for TES kernel. */
     NSError *err = nil;
-    id<MTLComputePipelineState> tesPipeline = [_device newComputePipelineStateWithFunction:tesFunc error:&err];
+    id<MTLComputePipelineState> tesPipeline = mglGetOrCreateProgramComputePipeline(
+        _device,
+        tesProgram,
+        _TESS_EVALUATION_SHADER,
+        &err);
     if (!tesPipeline) {
         NSLog(@"MGL TESS ERROR: failed to create TES compute pipeline for program %u: %@",
               tesProgram->name, err);
@@ -9664,8 +9663,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
     if (_currentRenderEncoder) {
-        [_currentRenderEncoder endEncoding];
-        _currentRenderEncoder = NULL;
+        [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
@@ -10257,14 +10255,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _pipelineDepthFormat = MTLPixelFormatInvalid;
     _pipelineStencilFormat = MTLPixelFormatInvalid;
     _pipelineProgramName = 0;
+    _pipelineVertexFunction = nil;
+    _pipelineFragmentFunction = nil;
     _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
+    _pipelineStateCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
     /* P0-2: Initialize pipeline descriptor cache (two-level caching) */
     _pipelineDescriptorCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    /* Defer RT copy until real flush points (default ON; =0 disables) */
-    _deferRTCopyUntilFlush = !mglEnvFlagEnabledDefaultOn("MGL_DEFER_RT_COPY");
+    _pipelineDescriptorCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
     _dsCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     if (_dsCacheEnabled) {
         _depthStencilStateCache = [NSMutableDictionary new];
+        _depthStencilStateCacheLRU = [NSMutableOrderedSet new];
     }
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
     _arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
@@ -10358,6 +10359,20 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     NSLog(@"MGL INFO: Metal command queue created successfully");
+
+    /* Phase 2 #6: Load or create Binary Archive for PSO compile acceleration.
+     * Gated by MGL_BINARY_ARCHIVE (default ON; =0 disables).
+     * The archive is stored in the user's Caches directory and persists
+     * compiled PSO binaries across launches, reducing cold-start PSO
+     * compile time from ~10s to ~2s on subsequent launches. */
+    _binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
+    if (_binaryArchiveEnabled) {
+        if (@available(macOS 11.0, *)) {
+            [self loadBinaryArchive];
+        } else {
+            _binaryArchiveEnabled = NO;
+        }
+    }
 
     _view = view;
 
@@ -10564,9 +10579,28 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL INFO: Releasing pipeline state");
             _pipelineState = nil;
         }
+        _pipelineVertexFunction = nil;
+        _pipelineFragmentFunction = nil;
         if (_pipelineStateCache) {
             [_pipelineStateCache removeAllObjects];
             _pipelineStateCache = nil;
+        }
+        [_pipelineStateCacheLRU removeAllObjects];
+        _pipelineStateCacheLRU = nil;
+        [_pipelineDescriptorCache removeAllObjects];
+        _pipelineDescriptorCache = nil;
+        [_pipelineDescriptorCacheLRU removeAllObjects];
+        _pipelineDescriptorCacheLRU = nil;
+        [_depthStencilStateCache removeAllObjects];
+        _depthStencilStateCache = nil;
+        [_depthStencilStateCacheLRU removeAllObjects];
+        _depthStencilStateCacheLRU = nil;
+
+        /* Phase 2 #6: Serialize Binary Archive to disk before releasing it.
+         * This persists compiled PSO binaries for the next launch. */
+        if (_binaryArchiveEnabled && _binaryArchive) {
+            [self saveBinaryArchive];
+            _binaryArchive = nil;
         }
 
         // Cleanup drawable and layer
@@ -10793,7 +10827,14 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // Reset pipeline state
     _pipelineState = nil;
+    _pipelineVertexFunction = nil;
+    _pipelineFragmentFunction = nil;
     [_pipelineStateCache removeAllObjects];
+    [_pipelineStateCacheLRU removeAllObjects];
+    [_pipelineDescriptorCache removeAllObjects];
+    [_pipelineDescriptorCacheLRU removeAllObjects];
+    [_depthStencilStateCache removeAllObjects];
+    [_depthStencilStateCacheLRU removeAllObjects];
     // Note: _depthStencilState would be an instance variable if it exists
 
     // Clear all cached objects

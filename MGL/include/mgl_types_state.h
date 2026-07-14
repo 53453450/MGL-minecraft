@@ -77,6 +77,14 @@ enum {
 #define DIRTY_ALL_BIT   ((unsigned)0x1 << dirtyAllBit)    // so we know the dirty all was set.
 #define DIRTY_ALL       (0xFFFFFFFF)
 
+/* State-key hash domains. Keep invalidation and recomputation on the same
+ * masks so renderer-side dirty-bit consumption cannot silently stale a cache. */
+#define MGL_TEXTURE_HASH_DIRTY_BITS \
+    (DIRTY_TEX_BINDING | DIRTY_SAMPLER)
+#define MGL_VERTEX_LAYOUT_HASH_DIRTY_BITS (DIRTY_VAO)
+#define MGL_RENDER_STATE_HASH_DIRTY_BITS \
+    (DIRTY_RENDER_STATE | DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM)
+
 typedef struct {
     GLuint dirty_bits;
 
@@ -194,10 +202,56 @@ typedef struct {
 
     // hints
     GLMHints    hints;
-    
+
+    /* Phase 1 #1: Dirty-Flag Hash Optimization
+     * Cache hash values to avoid recomputing on every draw when state unchanged.
+     * dirty flags indicate which hashes need recomputation. */
+    uint64_t cached_texture_hash;
+    uint64_t cached_vertex_layout_hash;
+    uint64_t cached_render_state_hash;
+    uint8_t  texture_dirty;
+    uint8_t  vertex_layout_dirty;
+    uint8_t  render_state_dirty;
+    uint8_t  _hash_cache_padding;
+
     // put at end, big chunk of yuck
     GLMParams   var;
 } GLMState;
+
+/* State-key invalidation is latched when a live mutation is made. Renderer
+ * consumption of the legacy bits must not alter those independent flags. */
+static inline void mglInvalidateStateHashCachesForDirtyBits(GLMState *state,
+                                                            GLuint dirty_bits)
+{
+    if (!state || dirty_bits == 0u) return;
+
+    if ((dirty_bits & MGL_TEXTURE_HASH_DIRTY_BITS) != 0u)
+        state->texture_dirty = 1;
+    if ((dirty_bits & MGL_VERTEX_LAYOUT_HASH_DIRTY_BITS) != 0u)
+        state->vertex_layout_dirty = 1;
+    if ((dirty_bits & MGL_RENDER_STATE_HASH_DIRTY_BITS) != 0u)
+        state->render_state_dirty = 1;
+}
+
+static inline void mglMarkRendererDirtyBits(GLMState *state, GLuint dirty_bits)
+{
+    if (!state || dirty_bits == 0u) return;
+    state->dirty_bits |= dirty_bits;
+}
+
+/* State-key input mutations preserve the renderer's legacy dirty bits and
+ * also invalidate every cache domain fed by those bits. */
+static inline void mglMarkStateDirtyBits(GLMState *state, GLuint dirty_bits)
+{
+    mglMarkRendererDirtyBits(state, dirty_bits);
+    mglInvalidateStateHashCachesForDirtyBits(state, dirty_bits);
+}
+
+static inline void mglClearStateDirtyBitsPreservingHashInvalidation(GLMState *state)
+{
+    if (!state) return;
+    state->dirty_bits = 0;
+}
 
 /* === Selective state snapshot helpers ===
  *

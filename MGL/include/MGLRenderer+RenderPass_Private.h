@@ -110,6 +110,10 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 // === Framebuffer attachment helpers ===
 - (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;
 - (BOOL)currentRenderPassUsesTexture:(id<MTLTexture>)texture;
+- (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
+                                                  drawCount:(GLsizei)drawCount
+                                               drawBuffers:(const GLenum *)drawBuffers
+                                                    reason:(const char *)reason;
 - (bool)restoreRenderEncoderAfterTextureUploadForDraw:(const char *)reason;
 - (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
                                           reason:(const char *)reason;
@@ -181,11 +185,15 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat;
 - (CGSize)mglSyncLayerDrawableSizeFromView:(const char *)reason;
 
-/* Force update of deferred RT copies at real flush points.
- * When _deferRTCopyUntilFlush is YES, RT copies are skipped during batch replay
- * to allow batch merging. This method forces the update at real flush boundaries:
- * glFlush/glFinish, buffer rotation, present. Call with current FBO. */
-- (void)forcePendingGLSampledCopiesUpdate:(const char *)reason;
+/* Phase 2 #6: Binary Archive for PSO compile acceleration.
+ * loadBinaryArchive loads from disk (or creates empty if not found);
+ * saveBinaryArchive serializes back to disk on dealloc.
+ * applyBinaryArchiveToDescriptor: attaches the archive to a pipeline
+ * descriptor so PSO compile can reuse cached shader binaries. */
+- (void)loadBinaryArchive;
+- (void)saveBinaryArchive;
+- (void)applyBinaryArchiveToDescriptor:(MTLRenderPipelineDescriptor *)descriptor;
+- (void)addPipelineToBinaryArchive:(MTLRenderPipelineDescriptor *)descriptor;
 
 @end
 

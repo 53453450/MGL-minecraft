@@ -4,6 +4,16 @@
 // These methods do not depend on any file-scope static functions in MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
+#import "mgl_compute_pipeline_cache.h"
+
+@interface MGLRenderer (ComputeLocked)
+- (void)mtlDispatchComputeLocked:(GLMContext)glm_ctx
+                         groupsX:(GLuint)groups_x
+                         groupsY:(GLuint)groups_y
+                         groupsZ:(GLuint)groups_z;
+- (void)mtlDispatchComputeIndirectLocked:(GLMContext)glm_ctx
+                                indirect:(GLintptr)indirect;
+@end
 
 @implementation MGLRenderer (Compute)
 
@@ -451,15 +461,19 @@
     }
 
     id <MTLFunction> func;
-    func = (__bridge id<MTLFunction>)(computeShader->mtl_data.function);
+    func = (__bridge id<MTLFunction>)(program->spirv[_COMPUTE_SHADER].mtl_function);
     if (!func) {
         NSLog(@"MGL COMPUTE ERROR: compute shader for program %u has no Metal function", program->name);
         return false;
     }
 
     id <MTLComputePipelineState> computePipelineState;
-    NSError *errors;
-    computePipelineState = [_device newComputePipelineStateWithFunction:func error: &errors];
+    NSError *errors = nil;
+    computePipelineState = mglGetOrCreateProgramComputePipeline(
+        _device,
+        program,
+        _COMPUTE_SHADER,
+        &errors);
     if (!computePipelineState) {
         NSLog(@"MGL COMPUTE ERROR: failed to create compute pipeline for program %u: %@",
               program->name,
@@ -488,6 +502,16 @@
 }
 
 -(void)mtlDispatchCompute:(GLMContext)glm_ctx groupsX:(GLuint)groups_x groupsY:(GLuint)groups_y groupsZ:(GLuint)groups_z
+{
+    METAL_LOCK();
+    [self mtlDispatchComputeLocked:glm_ctx
+                           groupsX:groups_x
+                           groupsY:groups_y
+                           groupsZ:groups_z];
+    METAL_UNLOCK();
+}
+
+-(void)mtlDispatchComputeLocked:(GLMContext)glm_ctx groupsX:(GLuint)groups_x groupsY:(GLuint)groups_y groupsZ:(GLuint)groups_z
 {
     if (!glm_ctx) {
         NSLog(@"MGL COMPUTE ERROR: mtlDispatchCompute called with NULL context");
@@ -589,17 +613,25 @@
      * re-bind all GL resources that the render encoder needs.  DIRTY_SHADER and
      * DIRTY_DRAWABLE are intentionally excluded — DIRTY_SHADER is a per-program
      * bit, and DIRTY_DRAWABLE only applies at context init. */
-    glm_ctx->active_state->dirty_bits |=
-        (DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
-         DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
-         DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
-         DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
+    mglMarkRendererDirtyBits(
+        glm_ctx->active_state,
+        DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
+        DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
+        DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
+        DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
 
     //[self newRenderEncoder];
 }
 
 
 -(void)mtlDispatchComputeIndirect:(GLMContext)glm_ctx indirect:(GLintptr)indirect
+{
+    METAL_LOCK();
+    [self mtlDispatchComputeIndirectLocked:glm_ctx indirect:indirect];
+    METAL_UNLOCK();
+}
+
+-(void)mtlDispatchComputeIndirectLocked:(GLMContext)glm_ctx indirect:(GLintptr)indirect
 {
     if (!glm_ctx) {
         NSLog(@"MGL COMPUTE ERROR: mtlDispatchComputeIndirect called with NULL context");
@@ -693,11 +725,12 @@
     [computeCommandEncoder endEncoding];
 
     /* P2-6: Fine-grained dirty bits — see mtlDispatchCompute for rationale. */
-    glm_ctx->active_state->dirty_bits |=
-        (DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
-         DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
-         DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
-         DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
+    mglMarkRendererDirtyBits(
+        glm_ctx->active_state,
+        DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |
+        DIRTY_RENDER_STATE | DIRTY_TEX_BINDING | DIRTY_TEX |
+        DIRTY_TEX_PARAM | DIRTY_SAMPLER | DIRTY_ALPHA_STATE |
+        DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE | DIRTY_IMAGE_UNIT_STATE);
 }
 
 @end

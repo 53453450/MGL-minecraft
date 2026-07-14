@@ -3,10 +3,14 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := lib
 
-# Find the macOS SDK through the installed Command Line Tools.
-SDK_ROOT = $(shell xcrun --sdk macosx --show-sdk-path)
-APPLE_CLANG = $(shell xcrun --find clang)
-APPLE_CLANGXX = $(shell xcrun --find clang++)
+# Resolve host/toolchain probes once. Values supplied by config.mk or the
+# command line remain overrideable.
+SDK_ROOT ?= $(shell xcrun --sdk macosx --show-sdk-path)
+SDK_ROOT := $(strip $(SDK_ROOT))
+APPLE_CLANG ?= $(shell xcrun --find clang)
+APPLE_CLANG := $(strip $(APPLE_CLANG))
+HOST_ARCH ?= $(shell uname -m)
+HOST_ARCH := $(strip $(HOST_ARCH))
 
 # lets only install from external, devs complained about brew and we want the latest build from spirv
 spirv_cross_include_path ?= ./external/SPIRV-Cross
@@ -17,6 +21,7 @@ spirv_tools_include_path ?= ./external/SPIRV-Tools/include
 spirv_tools_path ?= ./external/SPIRV-Tools/build
 
 glslang_include_path ?= ./external/glslang/glslang/Include
+glslang_lib_path ?= ./external/glslang/build
 
 
 #glslang_path ?= glslang
@@ -35,8 +40,8 @@ CFLAGS += -O2
 # Disable AddressSanitizer for production - causes crashes when loaded via dlopen()
 #CFLAGS += -fsanitize=address
 #LIBS += -fsanitize=address
-CFLAGS += -arch $(shell uname -m)
-LIBS += -arch $(shell uname -m)
+CFLAGS += -arch $(HOST_ARCH)
+LIBS += -arch $(HOST_ARCH)
 
 LIBS += -F$(SDK_ROOT)/System/Library/Frameworks
 LIBS += -framework Metal -framework OpenGL -framework Foundation
@@ -110,26 +115,36 @@ CFLAGS_GL_CORE += -isysroot $(SDK_ROOT)
 CFLAGS_GL_ES += -isysroot $(SDK_ROOT)
 endif
 
-LIBS += -L$(spirv_cross_lib_path) -lspirv-cross-core -lspirv-cross-c -lspirv-cross-cpp -lspirv-cross-msl -lspirv-cross-glsl -lspirv-cross-hlsl -lspirv-cross-reflect
-# Use static libraries from external/glslang instead of homebrew
-LIBS += external/glslang/build/glslang/libglslang.a external/glslang/build/glslang/libMachineIndependent.a external/glslang/build/glslang/libGenericCodeGen.a external/glslang/build/glslang/OSDependent/Unix/libOSDependent.a external/glslang/build/glslang/libglslang-default-resource-limits.a external/glslang/build/SPIRV/libSPIRV.a
+SPIRV_CROSS_ARCHIVES := \
+	$(spirv_cross_lib_path)/libspirv-cross-c.a \
+	$(spirv_cross_lib_path)/libspirv-cross-msl.a \
+	$(spirv_cross_lib_path)/libspirv-cross-glsl.a \
+	$(spirv_cross_lib_path)/libspirv-cross-hlsl.a \
+	$(spirv_cross_lib_path)/libspirv-cross-cpp.a \
+	$(spirv_cross_lib_path)/libspirv-cross-reflect.a \
+	$(spirv_cross_lib_path)/libspirv-cross-util.a \
+	$(spirv_cross_lib_path)/libspirv-cross-core.a
+
+GLSLANG_ARCHIVES := \
+	$(glslang_lib_path)/glslang/libglslang.a \
+	$(glslang_lib_path)/glslang/libMachineIndependent.a \
+	$(glslang_lib_path)/glslang/libGenericCodeGen.a \
+	$(glslang_lib_path)/glslang/OSDependent/Unix/libOSDependent.a \
+	$(glslang_lib_path)/glslang/libglslang-default-resource-limits.a \
+	$(glslang_lib_path)/SPIRV/libSPIRV.a
+
+SPIRV_TOOLS_ARCHIVES := \
+	$(spirv_tools_path)/source/lint/libSPIRV-Tools-lint.a \
+	$(spirv_tools_path)/source/reduce/libSPIRV-Tools-reduce.a \
+	$(spirv_tools_path)/source/diff/libSPIRV-Tools-diff.a \
+	$(spirv_tools_path)/source/link/libSPIRV-Tools-link.a \
+	$(spirv_tools_path)/source/opt/libSPIRV-Tools-opt.a \
+	$(spirv_tools_path)/source/libSPIRV-Tools.a
+
+THIRD_PARTY_ARCHIVES := $(SPIRV_CROSS_ARCHIVES) $(GLSLANG_ARCHIVES) $(SPIRV_TOOLS_ARCHIVES)
+LIBS += $(THIRD_PARTY_ARCHIVES)
 LIBS += -L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib
 LIBS += -lc++
-
-# add all the SPIRV libs
-SPIRV_LIBS := $(wildcard external/SPIRV-Cross/build/libspirv*.a)
-LIBS += $(SPIRV_LIBS)
-
-GLSL_LIBS := $(wildcard external/glslang/build/glslang/lib*.a)
-LIBS += $(GLSL_LIBS)
-
-# SPIRV-Tools
-LIBS += external/SPIRV-Tools/build/source/lint/libSPIRV-Tools-lint.a
-LIBS += external/SPIRV-Tools/build/source/reduce/libSPIRV-Tools-reduce.a
-LIBS += external/SPIRV-Tools/build/source/diff/libSPIRV-Tools-diff.a
-LIBS += external/SPIRV-Tools/build/source/libSPIRV-Tools.a
-LIBS += external/SPIRV-Tools/build/source/link/libSPIRV-Tools-link.a
-LIBS += external/SPIRV-Tools/build/source/opt/libSPIRV-Tools-opt.a
 
 
 # --
@@ -142,11 +157,12 @@ help:
 		'Build targets:' \
 		'  make                  Build libmgl.dylib, libmgl_es.dylib, and libglfw.dylib.' \
 		'  make lib              Build the runtime dylibs.' \
+		'  make core             Build only Core MGL and GLFW (Minecraft path).' \
+		'  make es               Build only the OpenGL ES MGL dylib.' \
 		'  make bench            Build the MGL benchmark.' \
 		'  make test-regression  Build the headless regression suite.' \
+		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make clean            Remove local build outputs.'
-
-brew_prefix := $(shell brew --prefix)
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
@@ -167,16 +183,10 @@ mgl_es_obj := $(addprefix $(build_es_dir)/,$(mgl_es_obj))
 mgl_core_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
 mgl_core_objs := $(addprefix $(build_core_dir)/,$(mgl_core_objs))
 
-mgl_core_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
-mgl_core_objs := $(addprefix $(build_core_dir)/,$(mgl_core_objs))
-
 mgl_core_arc_objs := $(mgl_srcs_objc:.m=.o)
 mgl_core_arc_objs := $(addprefix $(build_core_dir)/arc/,$(mgl_core_arc_objs))
 
 # es objs
-mgl_es_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
-mgl_es_objs := $(addprefix $(build_es_dir)/,$(mgl_es_objs))
-
 mgl_es_objs := $(mgl_srcs_c:.c=.o) $(mgl_srcs_cpp:.cpp=.o)
 mgl_es_objs := $(addprefix $(build_es_dir)/,$(mgl_es_objs))
 
@@ -250,15 +260,59 @@ mgl_es_lib := $(build_dir)/libmgl_es.dylib
 mgl_toolchain_obj := $(build_dir)/MGL/src/mgl_toolchain.o
 mgl_toolchain_lib := $(build_dir)/libmgl_toolchain.a
 
-$(mgl_lib): $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
+mgl_core_link_objs := $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
+mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
+
+CC_ID := $(shell $(CC) --version 2>/dev/null | sed -n '1p')
+CXX_ID := $(shell $(CXX) --version 2>/dev/null | sed -n '1p')
+APPLE_CLANG_ID := $(shell $(APPLE_CLANG) --version 2>/dev/null | sed -n '1p')
+
+core_compile_key := $(shell printf '%s\n' "$(CC)" "$(CC_ID)" "$(CXX)" "$(CXX_ID)" "$(APPLE_CLANG)" "$(APPLE_CLANG_ID)" "$(SDK_ROOT)" "$(CFLAGS_GL_CORE)" "$(CXXFLAGS_GL_CORE)" | shasum -a 256 | awk '{print $$1}')
+es_compile_key := $(shell printf '%s\n' "$(CC)" "$(CC_ID)" "$(CXX)" "$(CXX_ID)" "$(APPLE_CLANG)" "$(APPLE_CLANG_ID)" "$(SDK_ROOT)" "$(CFLAGS_GL_ES)" "$(CXXFLAGS_GL_ES)" | shasum -a 256 | awk '{print $$1}')
+core_link_key := $(shell printf '%s\n' "$(CC)" "$(CC_ID)" "$(SDK_ROOT)" "$(LDFLAGS)" "$(LIBS)" | shasum -a 256 | awk '{print $$1}')
+es_link_key := $(core_link_key)
+
+core_compile_stamp := $(build_core_dir)/.compile-config-$(core_compile_key)
+es_compile_stamp := $(build_es_dir)/.compile-config-$(es_compile_key)
+core_link_stamp := $(build_core_dir)/.link-config-$(core_link_key)
+es_link_stamp := $(build_es_dir)/.link-config-$(es_link_key)
+
+$(core_compile_stamp):
 	@mkdir -p $(dir $@)
-	$(CC) -D$(CFLAGS_GL_CORE) -dynamiclib -o $@ $^ $(LIBS)
+	@rm -f $(build_core_dir)/.compile-config-*
+	@sleep 1
+	@touch $@
+
+$(es_compile_stamp):
+	@mkdir -p $(dir $@)
+	@rm -f $(build_es_dir)/.compile-config-*
+	@sleep 1
+	@touch $@
+
+$(core_link_stamp):
+	@mkdir -p $(dir $@)
+	@rm -f $(build_core_dir)/.link-config-*
+	@sleep 1
+	@touch $@
+
+$(es_link_stamp):
+	@mkdir -p $(dir $@)
+	@rm -f $(build_es_dir)/.link-config-*
+	@sleep 1
+	@touch $@
+
+$(mgl_core_link_objs): $(core_compile_stamp)
+$(mgl_es_link_objs): $(es_compile_stamp)
+
+$(mgl_lib): $(mgl_core_link_objs) $(THIRD_PARTY_ARCHIVES) $(core_link_stamp)
+	@mkdir -p $(dir $@)
+	$(CC) $(LDFLAGS) -dynamiclib -o $@ $(mgl_core_link_objs) $(LIBS)
 	# loading dynamic library requires this
 	ln -fs $(mgl_lib) .
 
-$(mgl_es_lib): $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
+$(mgl_es_lib): $(mgl_es_link_objs) $(THIRD_PARTY_ARCHIVES) $(es_link_stamp)
 	@mkdir -p $(dir $@)
-	$(CC) -D$(CFLAGS_GL_ES) -dynamiclib -o $@ $^ $(LIBS)
+	$(CC) $(LDFLAGS) -dynamiclib -o $@ $(mgl_es_link_objs) $(LIBS)
 	# loading dynamic library requires this
 	ln -fs $(mgl_es_lib) .
 
@@ -285,7 +339,11 @@ $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
 
 # specific rules
 
-lib: $(mgl_lib) $(mgl_es_lib) $(build_dir)/libglfw.dylib
+core: $(mgl_lib) $(build_dir)/libglfw.dylib
+
+es: $(mgl_es_lib)
+
+lib: core es
 
 toolchain: $(mgl_toolchain_lib)
 
@@ -380,7 +438,7 @@ compile-pkgdeps:
 # Benchmark target — builds the comprehensive MGL translation-overhead benchmark.
 # Depends on libmgl.dylib and libglfw.dylib being built first (run `make lib`).
 bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
-	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I./external/glfw/include \
 		-IMGL/include -IMGL/include/GL \
 		-DMGL_GL_CORE \
@@ -397,7 +455,7 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 # with -D__MGL_BENCHMARK_SYSTEM_GL__ and links against the system OpenGL
 # framework via brew's GLFW (no MGL dependency).  Requires `brew install glfw`.
 bench-system: benchmark/mgl_benchmark.c
-	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I$(shell brew --prefix glfw)/include \
 		-IMGL/include -IMGL/include/GL \
 		-D__MGL_BENCHMARK_SYSTEM_GL__ \
@@ -416,7 +474,7 @@ bench-system: benchmark/mgl_benchmark.c
 # multidraw/indirect + FBO switch + XFB + conditional render. Produces TGA
 # snapshots compared against MGL_Golden_Images/Reg_*.tga.
 test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
-	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(shell uname -m) \
+	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-I./external/glfw/include \
 		-I./external/glslang/glslang/Include \
@@ -428,14 +486,34 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
 		-isysroot $(SDK_ROOT) \
 		test_regression/main.c \
-		-L$(build_dir) -lmgl -lglfw -lc++ \
-		$(LIBS) \
+		-L$(build_dir) -lmgl -lglfw \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework Metal -framework OpenGL \
 		-o $(build_dir)/test_regression
 	@echo "✅ Regression suite built: $(build_dir)/test_regression"
 
-.PHONY: default help test dbg lib clean insall-pkgdeps test-make bench bench-system test-regression
+$(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-I./external/glslang/glslang/Include \
+		-I./external/SPIRV-Cross \
+		-I./external/SPIRV-Tools/include \
+		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
+		-DMGL_GL_CORE -DENABLE_OPT=0 \
+		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
+		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-isysroot $(SDK_ROOT) \
+		test_dirty_hash/main.c \
+		-L$(build_dir) -lmgl \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-dirty-hash: $(build_dir)/test_dirty_hash
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_dirty_hash
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash
 
 -include $(deps)

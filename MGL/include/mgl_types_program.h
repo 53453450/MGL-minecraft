@@ -97,6 +97,13 @@ typedef struct Spirv_t {
     char *entry_point;
     void *mtl_function;
     void *mtl_library;
+    void *mtl_compute_pipeline;
+    void *mtl_zero_to_one_function;
+    void *mtl_zero_to_one_library;
+    void *mtl_upper_left_function;
+    void *mtl_upper_left_library;
+    void *mtl_upper_left_zero_to_one_function;
+    void *mtl_upper_left_zero_to_one_library;
     GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
                                                * texCoord Y-flip for sampled
                                                * framebuffer in this shader */

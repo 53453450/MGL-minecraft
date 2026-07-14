@@ -219,7 +219,7 @@ void mglBindSampler(GLMContext ctx, GLuint unit, GLuint sampler)
                         ptr ? (unsigned)ptr->params.compare_func : 0u);
 
     ctx->state.texture_samplers[unit] = ptr;
-    ctx->state.dirty_bits  |= DIRTY_SAMPLER;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_SAMPLER);
 }
 
 void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
@@ -251,13 +251,17 @@ void mglDeleteSamplers(GLMContext ctx, GLsizei count, const GLuint *samplers)
                 continue;
 
             // remove any references to this sampler
+            GLboolean cleared_binding = GL_FALSE;
             for(int i=0; i<TEXTURE_UNITS; i++)
             {
                 if (ctx->state.texture_samplers[i] == ptr)
                 {
                     ctx->state.texture_samplers[i] = NULL;
+                    cleared_binding = GL_TRUE;
                 }
             }
+            if (cleared_binding)
+                mglMarkStateDirtyBits(&ctx->state, DIRTY_SAMPLER);
 
             deleteHashElement(&ctx->state.sampler_table, sampler);
 

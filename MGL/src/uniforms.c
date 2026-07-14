@@ -1344,7 +1344,8 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                             changed ? 1 : 0,
                             explicit_changed ? 1 : 0,
                             hit);
-        ctx->state.dirty_bits |= DIRTY_TEX_BINDING | DIRTY_SAMPLER;
+        mglMarkRendererDirtyBits(&ctx->state,
+                                 DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
     return GL_TRUE;
 }
@@ -2152,7 +2153,7 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
         }
     }
 
-    ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM);
 }
 
 bool checkUniformParams(GLMContext ctx, GLint location)
@@ -2371,7 +2372,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->size = size;
     }
 
-    ctx->state.dirty_bits |= DIRTY_BUFFER_BASE_STATE;
+    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
 }
 
 static void mglUniformDoubleVectorAsFloat(GLMContext ctx,
