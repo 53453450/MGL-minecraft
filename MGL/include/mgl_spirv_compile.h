@@ -48,17 +48,13 @@ extern "C" {
 
 /* ---- Types moved from program.c ---- */
 
-typedef enum MGLMSLBindingKind {
-    MGL_MSL_BINDING_TEXTURE,
-    MGL_MSL_BINDING_BUFFER,
-    MGL_MSL_BINDING_SAMPLER
-} MGLMSLBindingKind;
-
 typedef struct MGLMSLBindingEntry {
     MGLMSLBindingKind kind;
     GLuint index;
     const char *segment;
     size_t segment_len;
+    const char *identifier;
+    size_t identifier_len;
 } MGLMSLBindingEntry;
 
 #define MGL_MSL_BINDING_MAP_MAX 512u
@@ -110,6 +106,9 @@ GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
                                        const char *name);
 GLboolean mglMSLBufferSlotConflicts(Program *pptr, int stage, GLuint slot);
 void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr);
+GLboolean mglValidateFinalMSLResourceBindings(Program *pptr,
+                                              int stage,
+                                              const char *msl);
 
 /* ---- Group B.2: MSL String Manipulation Utilities ---- */
 
@@ -212,6 +211,7 @@ GLboolean mglPatchFragCoordOriginFix(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchFixPlainStructPointerArray(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchInjectAtomicCounterArgs(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_ptr);
+GLboolean mglPatchValidateResourceBindings(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchFixImage2DRectImageSize(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchTesAsComputeKernel(MSLPatchContext *ctx, char **msl_ptr);
@@ -247,7 +247,10 @@ bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang_progra
 
 void error_callback(void *userdata, const char *error);
 void addShadersToProgram(GLMContext ctx, Program *pptr, glslang_program_t *glsl_program);
-char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage);
+char *parseSPIRVShaderToMetal(GLMContext ctx,
+                              Program *ptr,
+                              int stage,
+                              GLboolean *resource_validation_failed_out);
 char *mglCompileMSLCaptureVariant(GLMContext ctx, Program *ptr, int stage);
 GLboolean mglProgramPipelinePerVertexCompatible(Program *const *stage_programs);
 

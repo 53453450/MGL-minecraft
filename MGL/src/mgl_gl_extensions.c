@@ -1591,6 +1591,8 @@ void mglBeginTransformFeedback(GLMContext ctx, GLenum primitiveMode)
 	STATE(transform_feedback)->primitive_mode = primitiveMode;
 	STATE(transform_feedback)->primitives_generated = 0;
 	STATE(transform_feedback)->primitives_written = 0;
+	bzero(STATE(transform_feedback)->buffer_write_offsets,
+	      sizeof(STATE(transform_feedback)->buffer_write_offsets));
 }
 
 void mglBindFragDataLocation(GLMContext ctx, GLuint program, GLuint color, const GLchar *name)
@@ -6050,7 +6052,8 @@ void mglTransformFeedbackBufferBase(GLMContext ctx, GLuint xfb, GLuint index, GL
 	}
 	slot->buffer = buffer;
 	slot->offset = 0;
-	slot->size = buf->size;
+	/* BindBufferBase tracks the whole data store dynamically. */
+	slot->size = 0;
 	slot->buf = buf;
 	buf->target = GL_TRANSFORM_FEEDBACK_BUFFER;
 }
@@ -6082,11 +6085,6 @@ void mglTransformFeedbackBufferRange(GLMContext ctx, GLuint xfb, GLuint index, G
 	if (!buf)
 	{
 		STATE(error) = GL_OUT_OF_MEMORY;
-		return;
-	}
-	if (buf->size > 0 && ((GLsizeiptr)offset > buf->size || size > buf->size - (GLsizeiptr)offset))
-	{
-		STATE(error) = GL_INVALID_VALUE;
 		return;
 	}
 	BufferBaseTarget *slot = &ptr->buffers[index];

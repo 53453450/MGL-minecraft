@@ -2654,6 +2654,22 @@ void mglFreeSpirvResourceOwnedFields(SpirvResource *res)
     free((void *)res->name);
     res->name = NULL;
 
+    free(res->msl_name);
+    res->msl_name = NULL;
+    for (GLuint i = 0; res->msl_argument_names &&
+                       i < res->msl_argument_count; i++) {
+        free(res->msl_argument_names[i]);
+    }
+    free(res->msl_argument_names);
+    res->msl_argument_names = NULL;
+    res->msl_argument_count = 0u;
+    free(res->msl_combined_sampler_name);
+    res->msl_combined_sampler_name = NULL;
+    res->msl_combined_sampler_binding = (GLuint)-1;
+    res->msl_active = GL_FALSE;
+    res->msl_has_combined_sampler = GL_FALSE;
+    res->msl_binding_kind = MGL_MSL_BINDING_NONE;
+
     if (res->ubo_members) {
         for (GLuint m = 0; m < res->ubo_member_count; m++) {
             free((void *)res->ubo_members[m].name);

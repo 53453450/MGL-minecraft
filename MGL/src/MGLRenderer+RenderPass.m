@@ -6134,8 +6134,7 @@ stencil_format_ok:;
                 : (NSUInteger)map->buffer_base_index;
             if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
                 continue;
-            GLsizeiptr visibleSize = map->size > 0 ? map->size : (map->buf->size - map->offset);
-            if (visibleSize < 0) visibleSize = 0;
+            GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
         }
 
@@ -6167,8 +6166,7 @@ stencil_format_ok:;
                 : (NSUInteger)map->buffer_base_index;
             if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
                 continue;
-            GLsizeiptr visibleSize = map->size > 0 ? map->size : (map->buf->size - map->offset);
-            if (visibleSize < 0) visibleSize = 0;
+            GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
         }
 

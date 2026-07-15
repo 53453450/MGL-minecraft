@@ -161,6 +161,56 @@ typedef struct BufferMap_t {
     GLsizeiptr  size;
 } BufferMap;
 
+static inline GLsizeiptr mglBufferMapStorageRemaining(const BufferMap *map)
+{
+    if (!map || !map->buf || map->offset < 0 ||
+        map->buf->size <= map->offset) {
+        return 0;
+    }
+
+    return map->buf->size - map->offset;
+}
+
+static inline size_t mglBufferMapAvailableBackingBytes(const BufferMap *map,
+                                                       size_t backing_size)
+{
+    if (!map || map->offset < 0 || (size_t)map->offset >= backing_size) {
+        return 0;
+    }
+
+    GLsizeiptr storage_remaining = mglBufferMapStorageRemaining(map);
+    size_t backing_remaining = backing_size - (size_t)map->offset;
+    if (storage_remaining <= 0 || (size_t)storage_remaining > backing_remaining) {
+        return storage_remaining > 0 ? backing_remaining : 0;
+    }
+    return (size_t)storage_remaining;
+}
+
+/* OpenGL 4.2+ permits an indexed range to extend beyond the buffer's current
+ * data store.  The usable range is resolved when the buffer is consumed;
+ * size == 0 is the BindBufferBase sentinel for the whole current store. */
+static inline GLsizeiptr mglBufferMapVisibleSize(const BufferMap *map)
+{
+    GLsizeiptr visible = mglBufferMapStorageRemaining(map);
+
+    if (visible > 0 && map->size > 0 && map->size < visible) {
+        visible = map->size;
+    }
+    return visible;
+}
+
+static inline size_t mglBufferMapVisibleBackingBytes(const BufferMap *map,
+                                                      size_t backing_size)
+{
+    size_t backed = mglBufferMapAvailableBackingBytes(map, backing_size);
+    GLsizeiptr visible = mglBufferMapVisibleSize(map);
+
+    if (visible <= 0) {
+        return 0;
+    }
+    return (size_t)visible < backed ? (size_t)visible : backed;
+}
+
 typedef struct BufferMapList_t {
     GLuint      count;
     BufferMap   buffers[MAX_MAPPED_BUFFERS];

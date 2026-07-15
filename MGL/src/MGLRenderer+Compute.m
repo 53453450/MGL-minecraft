@@ -20,8 +20,9 @@
 #pragma mark ----- compute utility ---------------------------------------------------------------------
 
 - (bool) bindBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
-    if (!computeCommandEncoder) {
+    if (!computeCommandEncoder || !copyBacks) {
         NSLog(@"MGL COMPUTE ERROR: NULL compute encoder for buffer binding");
         return false;
     }
@@ -47,7 +48,6 @@
         ptr = map->buf;
 
         RETURN_FALSE_ON_NULL(ptr);
-        RETURN_FALSE_ON_NULL(ptr->data.mtl_data);
 
         metalBindingIndex = map->has_metal_binding
             ? (NSUInteger)map->metal_binding_index
@@ -58,25 +58,72 @@
                   (unsigned long)metalBindingIndex);
             continue;
         }
+        [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
         if (map->offset < 0) {
             NSLog(@"MGL COMPUTE WARNING: buffer map[%d] negative offset=%lld, skipping",
                   i,
                   (long long)map->offset);
-            continue;
+            return false;
         }
         bindOffset = (NSUInteger)map->offset;
 
-        id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-        if (!buffer) {
-            NSLog(@"MGL COMPUTE ERROR: buffer %u has NULL Metal buffer after mapping", ptr->name);
-            return false;
+        id<MTLBuffer> buffer = ptr->data.mtl_data
+            ? (__bridge id<MTLBuffer>)(ptr->data.mtl_data)
+            : nil;
+
+        NSUInteger requiredBytes =
+            [self getProgramBindingRequiredSize:_COMPUTE_SHADER
+                                           type:(int)map->resource_type
+                                          index:(int)map->resource_index];
+        if (map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+            requiredBytes < sizeof(uint32_t)) {
+            requiredBytes = sizeof(uint32_t);
         }
-        if (bindOffset >= buffer.length) {
-            NSLog(@"MGL COMPUTE WARNING: buffer map[%d] buffer=%u offset=%lu length=%lu, skipping",
-                  i,
-                  (unsigned)ptr->name,
-                  (unsigned long)bindOffset,
-                  (unsigned long)buffer.length);
+
+        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
+        NSUInteger availableBytes = buffer
+            ? mglBufferMapVisibleBackingBytes(map, buffer.length)
+            : 0u;
+        BOOL needsIsolatedBinding =
+            !buffer ||
+            storageRemaining <= 0 ||
+            bindOffset >= buffer.length ||
+            availableBytes == 0 ||
+            (requiredBytes > 0 && availableBytes < requiredBytes);
+        if (needsIsolatedBinding) {
+            NSUInteger fallbackLength = MAX(requiredBytes, sizeof(uint32_t));
+            id<MTLBuffer> isolated =
+                [self isolatedStageBindingBufferForMap:map
+                                                 source:buffer
+                                         requiredLength:fallbackLength];
+            if (!isolated) {
+                NSLog(@"MGL COMPUTE ERROR: failed to isolate undersized buffer map[%d] buffer=%u required=%lu available=%lu",
+                      i,
+                      (unsigned)ptr->name,
+                      (unsigned long)fallbackLength,
+                      (unsigned long)availableBytes);
+                return false;
+            }
+
+            BOOL writableResource =
+                map->resource_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+                map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER;
+            if (writableResource && buffer && availableBytes > 0 &&
+                ![self recordStageBindingCopyBack:copyBacks
+                                           atIndex:metalBindingIndex
+                                         temporary:isolated
+                                       destination:buffer
+                                 destinationBuffer:ptr
+                                destinationOffset:bindOffset
+                                            length:availableBytes]) {
+                return false;
+            }
+
+            /* Isolate the undefined suffix from page-alignment bytes. A
+             * post-dispatch blit preserves writes to the legal prefix. */
+            [computeCommandEncoder setBuffer:isolated
+                                      offset:0
+                                     atIndex:metalBindingIndex];
             continue;
         }
 
@@ -104,8 +151,7 @@
                     : (NSUInteger)map->buffer_base_index;
                 if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
                     continue;
-                GLsizeiptr visibleSize = map->size > 0 ? map->size : (map->buf->size - map->offset);
-                if (visibleSize < 0) visibleSize = 0;
+                GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
                 sizeConstants[metalSlot] = (uint32_t)visibleSize;
             }
 
@@ -292,8 +338,13 @@
                     }
 
                     [computeCommandEncoder setTexture:texture atIndex:metalBinding];
-                    if (gl_texture_type == _TEXTURE) {
-                        [computeCommandEncoder setSamplerState:sampler atIndex:metalBinding];
+                    if (gl_texture_type == _TEXTURE &&
+                        (!resource || resource->msl_has_combined_sampler)) {
+                        GLuint samplerBinding = resource
+                            ? mglMetalCombinedSamplerSlot(resource)
+                            : metalBinding;
+                        [computeCommandEncoder setSamplerState:sampler
+                                                       atIndex:samplerBinding];
                     }
 
                     textures_to_be_mapped--;
@@ -325,6 +376,9 @@
                                               index:(int)resourceIndex];
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
+                GLuint samplerSlot =
+                    mglMetalCombinedSamplerSlotForElement(resource,
+                                                          (GLuint)element);
                 if (metalSlot >= TEXTURE_UNITS) {
                     break;
                 }
@@ -358,8 +412,8 @@
                 }
 
                 [computeCommandEncoder setTexture:texture atIndex:metalSlot];
-                if (sampler) {
-                    [computeCommandEncoder setSamplerState:sampler atIndex:metalSlot];
+                if (resource->msl_has_combined_sampler && sampler) {
+                    [computeCommandEncoder setSamplerState:sampler atIndex:samplerSlot];
                 }
             }
         }
@@ -428,6 +482,7 @@
 #pragma mark processCompute
 #pragma mark ------------------------------------------------------------------------------------------
 -(bool)processCompute:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
     // from https://developer.apple.com/library/archive/documentation/Miscellaneous/Conceptual/MetalProgrammingGuide/Compute-Ctx/Compute-Ctx.html#//apple_ref/doc/uid/TP40014221-CH6-SW1
     Program *program;
@@ -483,7 +538,8 @@
 
     [computeCommandEncoder setComputePipelineState:computePipelineState];
 
-    RETURN_FALSE_ON_FAILURE([self bindBuffersToComputeEncoder: computeCommandEncoder]);
+    RETURN_FALSE_ON_FAILURE([self bindBuffersToComputeEncoder:computeCommandEncoder
+                                                   copyBacks:copyBacks]);
 
     //setTexture:atIndex:
     //setTextures:withRange:
@@ -545,14 +601,16 @@
         }
     }
 
+    MGLStageBindingCopyBackList copyBacks = {0};
     id <MTLComputeCommandEncoder> computeCommandEncoder = [_currentCommandBuffer computeCommandEncoder];
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder");
         return;
     }
 
-    if (![self processCompute:computeCommandEncoder]) {
+    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
         [computeCommandEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&copyBacks];
         return;
     }
 
@@ -564,6 +622,7 @@
     if (!ptr) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchCompute with no current compute program after binding");
         [computeCommandEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&copyBacks];
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
@@ -590,6 +649,13 @@
     }
 
     [computeCommandEncoder endEncoding];
+
+    if (![self flushStageBindingCopyBacks:&copyBacks
+                     requireCPUVisibility:NO]) {
+        NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after dispatch");
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
+    }
 
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
         ImageUnit *imageUnit = &glm_ctx->active_state->image_units[unit];
@@ -694,14 +760,16 @@
         }
     }
 
+    MGLStageBindingCopyBackList copyBacks = {0};
     id<MTLComputeCommandEncoder> computeCommandEncoder = [_currentCommandBuffer computeCommandEncoder];
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder for indirect dispatch");
         return;
     }
 
-    if (![self processCompute:computeCommandEncoder]) {
+    if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
         [computeCommandEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&copyBacks];
         return;
     }
 
@@ -709,6 +777,7 @@
     if (!ptr) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchComputeIndirect with no current compute program after binding");
         [computeCommandEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&copyBacks];
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
@@ -723,6 +792,13 @@
                                             threadsPerThreadgroup:threadsPerThreadgroup];
 
     [computeCommandEncoder endEncoding];
+
+    if (![self flushStageBindingCopyBacks:&copyBacks
+                     requireCPUVisibility:NO]) {
+        NSLog(@"MGL COMPUTE ERROR: failed to copy isolated writable buffer prefixes after indirect dispatch");
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
+        return;
+    }
 
     /* P2-6: Fine-grained dirty bits — see mtlDispatchCompute for rationale. */
     mglMarkRendererDirtyBits(

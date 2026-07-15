@@ -162,6 +162,7 @@ help:
 		'  make bench            Build the MGL benchmark.' \
 		'  make test-regression  Build the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
+		'  make test-msl-bindings Run focused MSL binding reconciliation tests.' \
 		'  make clean            Remove local build outputs.'
 
 # mgl
@@ -514,6 +515,27 @@ $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 test-dirty-hash: $(build_dir)/test_dirty_hash
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_dirty_hash
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash
+$(build_dir)/test_msl_bindings: test_msl_bindings/main.c $(build_dir)/libmgl.dylib
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-I./external/glslang/glslang/Include \
+		-I./external/SPIRV-Cross \
+		-I./external/SPIRV-Tools/include \
+		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
+		-DMGL_GL_CORE -DENABLE_OPT=0 \
+		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
+		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-isysroot $(SDK_ROOT) \
+		test_msl_bindings/main.c \
+		-L$(build_dir) -lmgl \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
+
+test-msl-bindings: $(build_dir)/test_msl_bindings
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_msl_bindings
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings
 
 -include $(deps)

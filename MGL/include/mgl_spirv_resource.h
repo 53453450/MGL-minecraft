@@ -54,6 +54,13 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
 GLuint mglMetalResourceSlotForElement(const SpirvResource *res,
                                       GLuint element);
 
+/* Returns the independently allocated Metal sampler slot for a combined
+ * sampled image. Metal texture and sampler argument namespaces can diverge
+ * (for example when a samplerBuffer consumes a texture slot only). */
+GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res);
+GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
+                                             GLuint element);
+
 /* Returns true if a plain uniform resource may fall back to the global
  * (Minecraft legacy) binding table.  Mojang/Iris u_* uniforms are
  * excluded because their numeric locations collide with legacy slots

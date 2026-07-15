@@ -45,6 +45,7 @@
 #include "mgl_ir_postprocess.h"
 #include "msl_patch_pipeline.h"
 #include "mgl_metal_ref.h"
+#include "mgl_spirv_resource.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_spirv_compile.h"
 
@@ -151,14 +152,26 @@ GLboolean mglParseMSLBindingAttribute(const char *attribute,
         return GL_FALSE;
     }
 
-    const char *index_start = attribute + prefix_len;
-    char *end = NULL;
-    unsigned long value = strtoul(index_start, &end, 10);
-    if (end == index_start || value >= TEXTURE_UNITS) {
+    const char *cursor = attribute + prefix_len;
+    if (*cursor < '0' || *cursor > '9') {
         return GL_FALSE;
     }
 
-    *index_out = (GLuint)value;
+    GLuint value = 0;
+    do {
+        GLuint digit = (GLuint)(*cursor - '0');
+        if (value > ((GLuint)TEXTURE_UNITS - 1u - digit) / 10u) {
+            return GL_FALSE;
+        }
+        value = value * 10u + digit;
+        cursor++;
+    } while (*cursor >= '0' && *cursor <= '9');
+
+    if (cursor[0] != ')' || cursor[1] != ']' || cursor[2] != ']') {
+        return GL_FALSE;
+    }
+
+    *index_out = value;
     return GL_TRUE;
 }
 
@@ -223,7 +236,28 @@ void mglBuildMSLBindingMap(const char *msl, MGLMSLBindingMap *map)
         if (mglParseMSLBindingAttribute(attribute, prefix, &index)) {
             const char *segment_start = mglPreviousMSLArgumentBoundary(msl, attribute);
             const char *segment_end = mglNextMSLArgumentBoundary(attribute);
+            size_t previous_count = map->count;
             mglMSLBindingMapAdd(map, kind, index, segment_start, segment_end);
+            if (map->count > previous_count) {
+                MGLMSLBindingEntry *entry = &map->entries[previous_count];
+                const char *identifier_end = attribute;
+                while (identifier_end > segment_start &&
+                       (identifier_end[-1] == ' ' || identifier_end[-1] == '\t')) {
+                    identifier_end--;
+                }
+
+                const char *identifier_start = identifier_end;
+                while (identifier_start > segment_start &&
+                       mglMSLIdentifierChar(identifier_start[-1])) {
+                    identifier_start--;
+                }
+                if (identifier_start < identifier_end &&
+                    !((*identifier_start >= '0' && *identifier_start <= '9'))) {
+                    entry->identifier = identifier_start;
+                    entry->identifier_len =
+                        (size_t)(identifier_end - identifier_start);
+                }
+            }
         }
 
         cursor = attribute + 2;
@@ -241,8 +275,10 @@ GLboolean mglFindMSLResourceIndexInMap(const MGLMSLBindingMap *map,
 
     for (size_t i = 0; i < map->count; i++) {
         const MGLMSLBindingEntry *entry = &map->entries[i];
-        if (entry->kind == kind &&
-            mglSegmentContainsIdentifier(entry->segment, entry->segment_len, name)) {
+        size_t name_len = strlen(name);
+        if (entry->kind == kind && entry->identifier &&
+            entry->identifier_len == name_len &&
+            memcmp(entry->identifier, name, name_len) == 0) {
             *index_out = entry->index;
             return GL_TRUE;
         }
@@ -261,8 +297,10 @@ GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
 
     for (size_t i = 0; i < map->count; i++) {
         const MGLMSLBindingEntry *entry = &map->entries[i];
-        if (entry->kind != kind ||
-            !mglSegmentContainsIdentifier(entry->segment, entry->segment_len, name)) {
+        size_t name_len = strlen(name);
+        if (entry->kind != kind || !entry->identifier ||
+            entry->identifier_len != name_len ||
+            memcmp(entry->identifier, name, name_len) != 0) {
             continue;
         }
 
@@ -291,6 +329,455 @@ GLint mglFindMSLResourceArraySizeInMap(const MGLMSLBindingMap *map,
 
     return 1;
 }
+
+static const int kMGLMSLBindableResourceTypes[] = {
+    SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
+    SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+    SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
+    SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+    SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+    SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
+    SPVC_RESOURCE_TYPE_PUSH_CONSTANT,
+    SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+    SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+};
+
+static const char *mglMSLBindingKindName(MGLMSLBindingKind kind)
+{
+    switch (kind) {
+        case MGL_MSL_BINDING_TEXTURE: return "texture";
+        case MGL_MSL_BINDING_BUFFER: return "buffer";
+        case MGL_MSL_BINDING_SAMPLER: return "sampler";
+        default: return "none";
+    }
+}
+
+static const MGLMSLBindingEntry *mglFindMSLBindingEntryByIndex(
+    const MGLMSLBindingMap *map,
+    MGLMSLBindingKind kind,
+    GLuint index)
+{
+    const MGLMSLBindingEntry *match = NULL;
+    if (!map) {
+        return NULL;
+    }
+
+    for (size_t i = 0; i < map->count; i++) {
+        const MGLMSLBindingEntry *entry = &map->entries[i];
+        if (entry->kind != kind || entry->index != index ||
+            !entry->identifier || entry->identifier_len == 0u) {
+            continue;
+        }
+        if (match) {
+            return NULL;
+        }
+        match = entry;
+    }
+    return match;
+}
+
+static char *mglCopyMSLBindingEntryIdentifier(
+    const MGLMSLBindingMap *map,
+    MGLMSLBindingKind kind,
+    GLuint index)
+{
+    const MGLMSLBindingEntry *entry =
+        mglFindMSLBindingEntryByIndex(map, kind, index);
+    if (!entry || entry->identifier_len == SIZE_MAX) {
+        return NULL;
+    }
+
+    char *name = malloc(entry->identifier_len + 1u);
+    if (!name) {
+        return NULL;
+    }
+    memcpy(name, entry->identifier, entry->identifier_len);
+    name[entry->identifier_len] = '\0';
+    return name;
+}
+
+static void mglFreeMSLArgumentNames(SpirvResource *res)
+{
+    if (!res) {
+        return;
+    }
+    for (GLuint i = 0; res->msl_argument_names &&
+                       i < res->msl_argument_count; i++) {
+        free(res->msl_argument_names[i]);
+    }
+    free(res->msl_argument_names);
+    res->msl_argument_names = NULL;
+    res->msl_argument_count = 0u;
+}
+
+static void mglFreeTemporaryMSLArgumentNames(char **names, GLuint count)
+{
+    for (GLuint i = 0; names && i < count; i++) {
+        free(names[i]);
+    }
+    free(names);
+}
+
+static SpirvResource *mglFindProgramResourceByID(Program *pptr,
+                                                 int stage,
+                                                 int res_type,
+                                                 SpvId id)
+{
+    if (!pptr || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        res_type < 0 || res_type >= _MAX_SPIRV_RES) {
+        return NULL;
+    }
+
+    SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+    for (GLuint i = 0; resources->list && i < resources->count; i++) {
+        if (resources->list[i]._id == id) {
+            return &resources->list[i];
+        }
+    }
+    return NULL;
+}
+
+static MGLMSLBindingKind mglMSLBindingKindForReflectedResource(
+    spvc_compiler compiler,
+    int res_type,
+    const spvc_reflected_resource *resource)
+{
+    switch (res_type) {
+        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
+        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
+        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+            return MGL_MSL_BINDING_TEXTURE;
+        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
+            return MGL_MSL_BINDING_SAMPLER;
+        case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER:
+        case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
+        case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
+        case SPVC_RESOURCE_TYPE_PUSH_CONSTANT:
+            return MGL_MSL_BINDING_BUFFER;
+        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT: {
+            if (!compiler || !resource) {
+                return MGL_MSL_BINDING_NONE;
+            }
+            spvc_type type = resource->type_id
+                ? spvc_compiler_get_type_handle(compiler, resource->type_id)
+                : NULL;
+            if (!type && resource->base_type_id) {
+                type = spvc_compiler_get_type_handle(compiler, resource->base_type_id);
+            }
+            if (!type) {
+                return MGL_MSL_BINDING_NONE;
+            }
+            switch (spvc_type_get_basetype(type)) {
+                case SPVC_BASETYPE_IMAGE:
+                case SPVC_BASETYPE_SAMPLED_IMAGE:
+                    return MGL_MSL_BINDING_TEXTURE;
+                case SPVC_BASETYPE_SAMPLER:
+                    return MGL_MSL_BINDING_SAMPLER;
+                default:
+                    return MGL_MSL_BINDING_BUFFER;
+            }
+        }
+        default:
+            return MGL_MSL_BINDING_NONE;
+    }
+}
+
+static GLboolean mglReflectedResourceHasCombinedSampler(
+    spvc_compiler compiler,
+    int res_type,
+    const spvc_reflected_resource *resource,
+    GLboolean *metadata_valid_out)
+{
+    if (metadata_valid_out) {
+        *metadata_valid_out = GL_TRUE;
+    }
+
+    if (res_type != SPVC_RESOURCE_TYPE_SAMPLED_IMAGE &&
+        res_type != SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+        return GL_FALSE;
+    }
+    if (!compiler || !resource) {
+        if (metadata_valid_out) {
+            *metadata_valid_out = GL_FALSE;
+        }
+        return GL_FALSE;
+    }
+
+    spvc_type type = resource->type_id
+        ? spvc_compiler_get_type_handle(compiler, resource->type_id)
+        : NULL;
+    if (!type && resource->base_type_id) {
+        type = spvc_compiler_get_type_handle(compiler, resource->base_type_id);
+    }
+    if (!type) {
+        if (metadata_valid_out) {
+            *metadata_valid_out = GL_FALSE;
+        }
+        return GL_FALSE;
+    }
+
+    if (spvc_type_get_basetype(type) != SPVC_BASETYPE_SAMPLED_IMAGE) {
+        if (res_type == SPVC_RESOURCE_TYPE_SAMPLED_IMAGE && metadata_valid_out) {
+            *metadata_valid_out = GL_FALSE;
+        }
+        return GL_FALSE;
+    }
+
+    /* SPIRV-Cross lowers texture buffers to a texture argument only. Regular
+     * combined images also emit a sampler argument using the configured
+     * suffix. MGL does not install constexpr-sampler remaps. */
+    return spvc_type_get_image_dimension(type) != SpvDimBuffer
+        ? GL_TRUE
+        : GL_FALSE;
+}
+
+static void mglClearActiveMSLResourceMetadata(Program *pptr, int stage)
+{
+    if (!pptr || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return;
+    }
+
+    for (size_t t = 0;
+         t < sizeof(kMGLMSLBindableResourceTypes) /
+                 sizeof(kMGLMSLBindableResourceTypes[0]);
+         t++) {
+        int res_type = kMGLMSLBindableResourceTypes[t];
+        SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            free(res->msl_name);
+            res->msl_name = NULL;
+            mglFreeMSLArgumentNames(res);
+            free(res->msl_combined_sampler_name);
+            res->msl_combined_sampler_name = NULL;
+            res->msl_combined_sampler_binding = (GLuint)-1;
+            res->msl_active = GL_FALSE;
+            res->msl_has_combined_sampler = GL_FALSE;
+            res->msl_binding_kind = MGL_MSL_BINDING_NONE;
+        }
+    }
+}
+
+static GLboolean mglPopulateActiveMSLResourceMetadata(Program *pptr,
+                                                       int stage,
+                                                       spvc_compiler compiler,
+                                                       spvc_set active_set,
+                                                       const char *msl)
+{
+    if (!pptr || stage < 0 || stage >= _MAX_SHADER_TYPES ||
+        !compiler || !active_set || !msl) {
+        return GL_FALSE;
+    }
+
+    mglClearActiveMSLResourceMetadata(pptr, stage);
+
+    MGLMSLBindingMap binding_map;
+    mglBuildMSLBindingMap(msl, &binding_map);
+
+    spvc_resources active_resources = NULL;
+    if (spvc_compiler_create_shader_resources_for_active_variables(
+            compiler, &active_resources, active_set) != SPVC_SUCCESS ||
+        !active_resources) {
+        fprintf(stderr,
+                "MGL MSL RESOURCE VALIDATION: active reflection failed "
+                "program=%u stage=%d\n",
+                pptr->name,
+                stage);
+        return GL_FALSE;
+    }
+
+    GLboolean ok = GL_TRUE;
+    for (size_t t = 0;
+         t < sizeof(kMGLMSLBindableResourceTypes) /
+                 sizeof(kMGLMSLBindableResourceTypes[0]);
+         t++) {
+        int res_type = kMGLMSLBindableResourceTypes[t];
+        const spvc_reflected_resource *active_list = NULL;
+        size_t active_count = 0;
+        if (spvc_resources_get_resource_list_for_type(active_resources,
+                                                       res_type,
+                                                       &active_list,
+                                                       &active_count) != SPVC_SUCCESS) {
+            fprintf(stderr,
+                    "MGL MSL RESOURCE VALIDATION: active resource list failed "
+                    "program=%u stage=%d type=%d\n",
+                    pptr->name,
+                    stage,
+                    res_type);
+            ok = GL_FALSE;
+            continue;
+        }
+
+        for (size_t i = 0; i < active_count; i++) {
+            const spvc_reflected_resource *reflected = &active_list[i];
+            SpirvResource *res = mglFindProgramResourceByID(pptr,
+                                                            stage,
+                                                            res_type,
+                                                            reflected->id);
+            MGLMSLBindingKind kind = mglMSLBindingKindForReflectedResource(
+                compiler, res_type, reflected);
+            if (!res || !reflected->name || !reflected->name[0] ||
+                kind == MGL_MSL_BINDING_NONE) {
+                fprintf(stderr,
+                        "MGL MSL RESOURCE VALIDATION: active metadata mismatch "
+                        "program=%u stage=%d type=%d id=%u name=%s kind=%s\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        (unsigned)reflected->id,
+                        reflected->name ? reflected->name : "(null)",
+                        mglMSLBindingKindName(kind));
+                ok = GL_FALSE;
+                continue;
+            }
+
+            GLuint automatic_binding =
+                spvc_compiler_msl_get_automatic_resource_binding(
+                    compiler, reflected->id);
+            GLuint argument_count = kind == MGL_MSL_BINDING_BUFFER
+                ? mglStageBufferResourceElementCount(res_type, res)
+                : 1u;
+            if (argument_count == 0u) {
+                argument_count = 1u;
+            }
+
+            char **argument_names = calloc(argument_count, sizeof(*argument_names));
+            if (!argument_names) {
+                fprintf(stderr,
+                        "MGL MSL RESOURCE VALIDATION: argument allocation failed "
+                        "program=%u stage=%d type=%d id=%u\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        (unsigned)reflected->id);
+                ok = GL_FALSE;
+                continue;
+            }
+
+            GLboolean argument_names_valid = GL_TRUE;
+            for (GLuint argument = 0; argument < argument_count; argument++) {
+                if (automatic_binding != (GLuint)-1 &&
+                    automatic_binding <= (GLuint)-1 - argument) {
+                    argument_names[argument] = mglCopyMSLBindingEntryIdentifier(
+                        &binding_map,
+                        kind,
+                        automatic_binding + argument);
+                }
+
+                /* Atomic counter arguments can be injected by MGL after the
+                 * initial SPIRV-Cross compile. Their reflected name is the
+                 * exact identifier used by that injection step. */
+                if (!argument_names[argument] && argument == 0u &&
+                    res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER) {
+                    argument_names[argument] = strdup(reflected->name);
+                }
+                if (!argument_names[argument]) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION: final argument name "
+                            "missing program=%u stage=%d type=%d id=%u "
+                            "kind=%s slot=%u element=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)reflected->id,
+                            mglMSLBindingKindName(kind),
+                            (unsigned)automatic_binding,
+                            (unsigned)argument);
+                    argument_names_valid = GL_FALSE;
+                    break;
+                }
+            }
+            if (!argument_names_valid) {
+                mglFreeTemporaryMSLArgumentNames(argument_names,
+                                                 argument_count);
+                ok = GL_FALSE;
+                continue;
+            }
+
+            char *msl_name = strdup(argument_names[0]);
+            if (!msl_name) {
+                mglFreeTemporaryMSLArgumentNames(argument_names,
+                                                 argument_count);
+                ok = GL_FALSE;
+                continue;
+            }
+
+            GLboolean combined_sampler_metadata_valid = GL_FALSE;
+            GLboolean has_combined_sampler =
+                mglReflectedResourceHasCombinedSampler(compiler,
+                                                        res_type,
+                                                        reflected,
+                                                        &combined_sampler_metadata_valid);
+            if (!combined_sampler_metadata_valid) {
+                fprintf(stderr,
+                        "MGL MSL RESOURCE VALIDATION: combined sampler metadata "
+                        "mismatch program=%u stage=%d type=%d id=%u\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        (unsigned)reflected->id);
+                free(msl_name);
+                mglFreeTemporaryMSLArgumentNames(argument_names,
+                                                 argument_count);
+                ok = GL_FALSE;
+                continue;
+            }
+            char *combined_sampler_name = NULL;
+            GLuint combined_sampler_binding = (GLuint)-1;
+            if (has_combined_sampler) {
+                combined_sampler_binding =
+                    spvc_compiler_msl_get_automatic_resource_binding_secondary(
+                        compiler, reflected->id);
+                if (combined_sampler_binding == (GLuint)-1) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION: missing combined "
+                            "sampler slot program=%u stage=%d type=%d id=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)reflected->id);
+                    free(msl_name);
+                    mglFreeTemporaryMSLArgumentNames(argument_names,
+                                                     argument_count);
+                    ok = GL_FALSE;
+                    continue;
+                }
+                combined_sampler_name = mglCopyMSLBindingEntryIdentifier(
+                    &binding_map,
+                    MGL_MSL_BINDING_SAMPLER,
+                    combined_sampler_binding);
+                if (!combined_sampler_name) {
+                    free(msl_name);
+                    mglFreeTemporaryMSLArgumentNames(argument_names,
+                                                     argument_count);
+                    ok = GL_FALSE;
+                    continue;
+                }
+            }
+
+            free(res->msl_name);
+            mglFreeMSLArgumentNames(res);
+            free(res->msl_combined_sampler_name);
+            res->msl_name = msl_name;
+            res->msl_argument_names = argument_names;
+            res->msl_argument_count = argument_count;
+            res->msl_combined_sampler_name = combined_sampler_name;
+            res->msl_combined_sampler_binding = combined_sampler_binding;
+            res->msl_active = GL_TRUE;
+            res->msl_has_combined_sampler = has_combined_sampler;
+            res->msl_binding_kind = kind;
+            if (automatic_binding != (GLuint)-1) {
+                res->binding = automatic_binding;
+            }
+        }
+    }
+
+    if (!ok) {
+        mglClearActiveMSLResourceMetadata(pptr, stage);
+    }
+    return ok;
+}
+
 GLboolean mglMSLBufferSlotConflicts(Program *pptr, int stage, GLuint slot)
 {
     /* Delegates to the unified predicate in mgl_ir_postprocess.  This keeps
@@ -298,6 +785,172 @@ GLboolean mglMSLBufferSlotConflicts(Program *pptr, int stage, GLuint slot)
      * string fallback (applyMSLResourceBindings, after compile) using the
      * exact same conflict definition so they cannot drift. */
     return mglBufferSlotConflictsForProgram(pptr, stage, slot);
+}
+
+GLboolean mglValidateFinalMSLResourceBindings(Program *pptr,
+                                              int stage,
+                                              const char *msl)
+{
+    if (!pptr || !msl || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return GL_FALSE;
+    }
+
+    MGLMSLBindingMap binding_map;
+    mglBuildMSLBindingMap(msl, &binding_map);
+
+    GLboolean ok = GL_TRUE;
+    GLuint active_count = 0;
+    for (size_t t = 0;
+         t < sizeof(kMGLMSLBindableResourceTypes) /
+                 sizeof(kMGLMSLBindableResourceTypes[0]);
+         t++) {
+        int res_type = kMGLMSLBindableResourceTypes[t];
+        SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (!res->msl_active) {
+                continue;
+            }
+
+            active_count++;
+            if (!res->msl_name || !res->msl_name[0] ||
+                res->msl_binding_kind == MGL_MSL_BINDING_NONE) {
+                fprintf(stderr,
+                        "MGL MSL RESOURCE VALIDATION FAIL: incomplete metadata "
+                        "program=%u stage=%d type=%d id=%u gl_name=%s\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        (unsigned)res->_id,
+                        res->name ? res->name : "(null)");
+                ok = GL_FALSE;
+                continue;
+            }
+
+            GLuint argument_count = res->msl_argument_count > 0u
+                ? res->msl_argument_count
+                : 1u;
+            for (GLuint argument = 0; argument < argument_count; argument++) {
+                const char *argument_name = res->msl_argument_names
+                    ? res->msl_argument_names[argument]
+                    : (argument == 0u ? res->msl_name : NULL);
+                if (!argument_name || !argument_name[0] ||
+                    argument > (GLuint)-1 - res->binding) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: incomplete "
+                            "argument metadata program=%u stage=%d type=%d "
+                            "id=%u gl_name=%s element=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)res->_id,
+                            res->name ? res->name : "(null)",
+                            (unsigned)argument);
+                    ok = GL_FALSE;
+                    continue;
+                }
+
+                GLuint expected_index = res->binding + argument;
+                GLuint final_index = 0;
+                if (!mglFindMSLResourceIndexInMap(&binding_map,
+                                                  res->msl_binding_kind,
+                                                  argument_name,
+                                                  &final_index)) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: missing active "
+                            "resource program=%u stage=%d type=%d id=%u "
+                            "gl_name=%s msl_name=%s kind=%s expected_slot=%u "
+                            "element=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)res->_id,
+                            res->name ? res->name : "(null)",
+                            argument_name,
+                            mglMSLBindingKindName(res->msl_binding_kind),
+                            (unsigned)expected_index,
+                            (unsigned)argument);
+                    ok = GL_FALSE;
+                    continue;
+                }
+
+                if (final_index != expected_index) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: slot mismatch "
+                            "program=%u stage=%d type=%d id=%u gl_name=%s "
+                            "msl_name=%s kind=%s metadata_slot=%u final_slot=%u "
+                            "element=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)res->_id,
+                            res->name ? res->name : "(null)",
+                            argument_name,
+                            mglMSLBindingKindName(res->msl_binding_kind),
+                            (unsigned)expected_index,
+                            (unsigned)final_index,
+                            (unsigned)argument);
+                    ok = GL_FALSE;
+                }
+            }
+
+            if (res->msl_has_combined_sampler) {
+                GLuint sampler_index = 0;
+                if (!res->msl_combined_sampler_name ||
+                    !res->msl_combined_sampler_name[0] ||
+                    res->msl_combined_sampler_binding == (GLuint)-1 ||
+                    !mglFindMSLResourceIndexInMap(
+                        &binding_map,
+                        MGL_MSL_BINDING_SAMPLER,
+                        res->msl_combined_sampler_name,
+                        &sampler_index)) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: missing combined "
+                            "sampler program=%u stage=%d type=%d id=%u "
+                            "gl_name=%s sampler_name=%s expected_slot=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)res->_id,
+                            res->name ? res->name : "(null)",
+                            res->msl_combined_sampler_name
+                                ? res->msl_combined_sampler_name
+                                : "(null)",
+                            (unsigned)res->msl_combined_sampler_binding);
+                    ok = GL_FALSE;
+                } else if (sampler_index !=
+                           res->msl_combined_sampler_binding) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: combined sampler "
+                            "slot mismatch program=%u stage=%d type=%d id=%u "
+                            "gl_name=%s sampler_name=%s metadata_slot=%u "
+                            "final_slot=%u\n",
+                            pptr->name,
+                            stage,
+                            res_type,
+                            (unsigned)res->_id,
+                            res->name ? res->name : "(null)",
+                            res->msl_combined_sampler_name,
+                            (unsigned)res->msl_combined_sampler_binding,
+                            (unsigned)sampler_index);
+                    ok = GL_FALSE;
+                }
+            }
+        }
+    }
+
+    const char *force_failure =
+        getenv("MGL_TEST_FORCE_MSL_BINDING_VALIDATION_FAILURE");
+    if (active_count > 0 && force_failure && strcmp(force_failure, "1") == 0) {
+        fprintf(stderr,
+                "MGL MSL RESOURCE VALIDATION FAIL: forced test mismatch "
+                "program=%u stage=%d\n",
+                pptr->name,
+                stage);
+        ok = GL_FALSE;
+    }
+
+    return ok;
 }
 
 void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
@@ -322,9 +975,15 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
         SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
+            const char *msl_name = res->msl_name;
             GLuint metal_index = 0;
-            if (!res->name ||
-                !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_TEXTURE, res->name, &metal_index)) {
+            if (!res->msl_active ||
+                res->msl_binding_kind != MGL_MSL_BINDING_TEXTURE ||
+                !msl_name ||
+                !mglFindMSLResourceIndexInMap(&binding_map,
+                                              MGL_MSL_BINDING_TEXTURE,
+                                              msl_name,
+                                              &metal_index)) {
                 continue;
             }
 
@@ -334,13 +993,15 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                         pptr->name,
                         stage,
                         res_type,
-                        res->name,
+                        res->name ? res->name : msl_name,
                         (unsigned)res->binding,
                         (unsigned)metal_index);
                 res->binding = metal_index;
             }
             GLint msl_array_size =
-                mglFindMSLResourceArraySizeInMap(&binding_map, MGL_MSL_BINDING_TEXTURE, res->name);
+                mglFindMSLResourceArraySizeInMap(&binding_map,
+                                                 MGL_MSL_BINDING_TEXTURE,
+                                                 msl_name);
             if (msl_array_size > res->gl_array_size) {
                 res->gl_array_size = msl_array_size;
             }
@@ -368,9 +1029,15 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
         SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
+            const char *msl_name = res->msl_name;
             GLuint metal_index = 0;
-            if (!res->name ||
-                !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_BUFFER, res->name, &metal_index)) {
+            if (!res->msl_active ||
+                res->msl_binding_kind != MGL_MSL_BINDING_BUFFER ||
+                !msl_name ||
+                !mglFindMSLResourceIndexInMap(&binding_map,
+                                              MGL_MSL_BINDING_BUFFER,
+                                              msl_name,
+                                              &metal_index)) {
                 continue;
             }
 
@@ -411,7 +1078,7 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                             mglSegmentContainsIdentifier(
                                 binding_map.entries[k].segment,
                                 binding_map.entries[k].segment_len,
-                                res->name)) {
+                                msl_name)) {
                             map_entry = &binding_map.entries[k];
                             break;
                         }
@@ -485,7 +1152,7 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                                                     ? "SSBO" :
                                                 res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
                                                     ? "atomic" : "buffer",
-                                                res->name,
+                                                res->name ? res->name : msl_name,
                                                 (unsigned)metal_index,
                                                 (unsigned)free_slot);
                                         metal_index = free_slot;
@@ -510,7 +1177,7 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                                     ? "SSBO" :
                                 res_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
                                     ? "atomic" : "buffer",
-                                res->name,
+                                res->name ? res->name : msl_name,
                                 (unsigned)metal_index,
                                 reserved_name ? reserved_name : "?",
                                 free_slot < kMGLMaxMetalVertexBufferCount
@@ -528,7 +1195,7 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
                         pptr->name,
                         stage,
                         res_type,
-                        res->name,
+                        res->name ? res->name : msl_name,
                         (unsigned)res->binding,
                         (unsigned)metal_index,
                         (unsigned)res->gl_binding);
@@ -537,25 +1204,41 @@ void applyMSLResourceBindings(Program *pptr, int stage, char **msl_ptr)
         }
     }
 
-    SpirvResourceList *samplers =
-        &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
-    for (GLuint i = 0; i < samplers->count; i++) {
-        SpirvResource *res = &samplers->list[i];
-        GLuint metal_index = 0;
-        if (!res->name ||
-            !mglFindMSLResourceIndexInMap(&binding_map, MGL_MSL_BINDING_SAMPLER, res->name, &metal_index)) {
-            continue;
-        }
-        if (res->binding != metal_index) {
-            fprintf(stderr,
-                    "MGL RESOURCE FIX: program=%u stage=%d type=%d %s sampler binding %u -> %u\n",
-                    pptr->name,
-                    stage,
-                    SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-                    res->name,
-                    (unsigned)res->binding,
-                    (unsigned)metal_index);
-            res->binding = metal_index;
+    const int direct_sampler_resource_types[] = {
+        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS
+    };
+    for (size_t t = 0;
+         t < sizeof(direct_sampler_resource_types) /
+                 sizeof(direct_sampler_resource_types[0]);
+         t++) {
+        int res_type = direct_sampler_resource_types[t];
+        SpirvResourceList *samplers = &pptr->spirv_resources_list[stage][res_type];
+        for (GLuint i = 0; i < samplers->count; i++) {
+            SpirvResource *res = &samplers->list[i];
+            const char *msl_name = res->msl_name;
+            GLuint metal_index = 0;
+            if (!res->msl_active ||
+                res->msl_binding_kind != MGL_MSL_BINDING_SAMPLER ||
+                !msl_name ||
+                !mglFindMSLResourceIndexInMap(&binding_map,
+                                              MGL_MSL_BINDING_SAMPLER,
+                                              msl_name,
+                                              &metal_index)) {
+                continue;
+            }
+            if (res->binding != metal_index) {
+                fprintf(stderr,
+                        "MGL RESOURCE FIX: program=%u stage=%d type=%d %s "
+                        "sampler binding %u -> %u\n",
+                        pptr->name,
+                        stage,
+                        res_type,
+                        res->name ? res->name : msl_name,
+                        (unsigned)res->binding,
+                        (unsigned)metal_index);
+                res->binding = metal_index;
+            }
         }
     }
 
@@ -2640,14 +3323,17 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
     GLuint next_slot = 0u;
     for (GLuint i = 0; i < atomics->count; i++) {
         SpirvResource *res = &atomics->list[i];
-        if (!res->name || res->name[0] == '\0') {
+        const char *msl_name = res->msl_name;
+        if (!res->msl_active ||
+            res->msl_binding_kind != MGL_MSL_BINDING_BUFFER ||
+            !msl_name || msl_name[0] == '\0') {
             continue;
         }
 
         GLuint existing_slot = 0u;
         if (mglFindMSLResourceIndexInMap(&binding_map,
                                          MGL_MSL_BINDING_BUFFER,
-                                         res->name,
+                                         msl_name,
                                          &existing_slot)) {
             continue;
         }
@@ -2658,7 +3344,7 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
         if (next_slot >= MAX_BINDABLE_BUFFERS) {
             fprintf(stderr,
                     "MGL WARNING: no Metal buffer slot available for atomic counter %s\n",
-                    res->name);
+                    res->name ? res->name : msl_name);
             break;
         }
 
@@ -2678,7 +3364,7 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
                                "%sdevice atomic_uint%s %s [[buffer(%u)]]",
                                empty_param_list ? "" : ", ",
                                is_array ? "*" : "&",
-                               res->name,
+                               msl_name,
                                (unsigned)next_slot);
         if (written <= 0 || (size_t)written >= sizeof(injected_parameter)) {
             continue;
@@ -2687,7 +3373,7 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
         if (!close || !mglInsertStringAt(msl_ptr, close, injected_parameter)) {
             fprintf(stderr,
                     "MGL WARNING: failed to inject Metal atomic counter argument %s\n",
-                    res->name);
+                    res->name ? res->name : msl_name);
             continue;
         }
 
@@ -2735,14 +3421,28 @@ void mglFixMSLPlainStructPointerArrayAccess(Program *program,
     size_t fix_count = 0;
     for (GLuint i = 0; resources->list && i < resources->count; i++) {
         SpirvResource *res = &resources->list[i];
-        if (!res->name || !res->ubo_members || res->gl_array_size <= 1) {
+        const char *msl_name = res->msl_name;
+        if (!res->msl_active ||
+            res->msl_binding_kind != MGL_MSL_BINDING_BUFFER ||
+            !msl_name || !res->ubo_members || res->gl_array_size <= 1) {
             continue;
         }
 
+        char array_name_storage[256];
+        const char *array_name = res->name ? res->name : msl_name;
+        size_t first_argument_len = strlen(msl_name);
+        if (res->msl_argument_count > 1u && first_argument_len > 2u &&
+            strcmp(msl_name + first_argument_len - 2u, "_0") == 0 &&
+            first_argument_len - 2u < sizeof(array_name_storage)) {
+            memcpy(array_name_storage, msl_name, first_argument_len - 2u);
+            array_name_storage[first_argument_len - 2u] = '\0';
+            array_name = array_name_storage;
+        }
+
         char pointer_array_decl[128];
-        snprintf(pointer_array_decl, sizeof(pointer_array_decl), "* %s[]", res->name);
+        snprintf(pointer_array_decl, sizeof(pointer_array_decl), "* %s[]", array_name);
         if (!strstr(*msl, pointer_array_decl)) {
-            snprintf(pointer_array_decl, sizeof(pointer_array_decl), "*%s[]", res->name);
+            snprintf(pointer_array_decl, sizeof(pointer_array_decl), "*%s[]", array_name);
             if (!strstr(*msl, pointer_array_decl)) {
                 continue;
             }
@@ -2751,8 +3451,8 @@ void mglFixMSLPlainStructPointerArrayAccess(Program *program,
         for (GLint elem = 0; elem < res->gl_array_size && elem < 64; elem++) {
             char from[64];
             char to[64];
-            snprintf(from, sizeof(from), "%s[%d].", res->name, elem);
-            snprintf(to, sizeof(to), "%s[%d]->", res->name, elem);
+            snprintf(from, sizeof(from), "%s[%d].", array_name, elem);
+            snprintf(to, sizeof(to), "%s[%d]->", array_name, elem);
             size_t hits = count_substr(*msl, from);
             if (hits > 0) {
                 replace_all_substr(msl, from, to);
@@ -3673,6 +4373,62 @@ GLboolean mglPatchRemoveRestrict(MSLPatchContext *ctx, char **msl_ptr)
     return GL_TRUE;
 }
 
+static char *mglMSLMatchingFunctionBrace(char *open_brace)
+{
+    unsigned depth = 0u;
+    for (char *cursor = open_brace; cursor && *cursor; cursor++) {
+        if (*cursor == '{') {
+            depth++;
+        } else if (*cursor == '}') {
+            if (depth == 0u) {
+                return NULL;
+            }
+            depth--;
+            if (depth == 0u) {
+                return cursor;
+            }
+        }
+    }
+    return NULL;
+}
+
+static void mglReplaceMSLIdentifierInPlace(char *start,
+                                           char *end,
+                                           const char *from,
+                                           const char *to)
+{
+    size_t length = strlen(from);
+    if (!start || !end || start >= end || length == 0u ||
+        strlen(to) != length) {
+        return;
+    }
+
+    for (char *cursor = start; cursor + length <= end; cursor++) {
+        if (memcmp(cursor, from, length) != 0) {
+            continue;
+        }
+        char before = cursor == start ? '\0' : cursor[-1];
+        char after = cursor + length == end ? '\0' : cursor[length];
+        if (mglMSLIdentifierChar(before) || mglMSLIdentifierChar(after)) {
+            continue;
+        }
+        /* In `sampler samplerSmplr`, the first token is the MSL type, not
+         * the shadowing texture variable. Variable uses/declarators are
+         * followed by punctuation; leave whitespace-followed type tokens. */
+        if (strcmp(from, "sampler") == 0 && isspace((unsigned char)after)) {
+            char *next = cursor + length;
+            while (next < end && isspace((unsigned char)*next)) {
+                next++;
+            }
+            if (next < end && mglMSLIdentifierChar(*next)) {
+                continue;
+            }
+        }
+        memcpy(cursor, to, length);
+        cursor += length - 1u;
+    }
+}
+
 GLboolean mglPatchFixSamplerShadowing(MSLPatchContext *ctx, char **msl_ptr)
 {
     /* Pass 2 (MSL string level, after compile): some generated MSL uses
@@ -3692,6 +4448,10 @@ GLboolean mglPatchFixSamplerShadowing(MSLPatchContext *ctx, char **msl_ptr)
      * emit `sampler` as a parameter name regardless of whether the user
      * also declared a uniform named "sampler".  See parseSPIRVShaderToMetal
      * for the Pass 1 cross-reference. */
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_FALSE;
+    }
+
     char *str_ret = *msl_ptr;
     static const char *sampler_shadowing_texture_types[] = {
         "texture1d<float>", "texture1d<int>", "texture1d<uint>",
@@ -3712,37 +4472,42 @@ GLboolean mglPatchFixSamplerShadowing(MSLPatchContext *ctx, char **msl_ptr)
         "depthcube_array<float>", "depthcube_array<int>", "depthcube_array<uint>",
     };
     size_t n_types = sizeof(sampler_shadowing_texture_types) / sizeof(sampler_shadowing_texture_types[0]);
-    GLboolean renamed_sampler_parameter = GL_FALSE;
     for (size_t ti = 0; ti < n_types; ti++) {
         const char *type = sampler_shadowing_texture_types[ti];
-        char from[128], to[128];
-        snprintf(from, sizeof(from), "%s sampler,", type);
-        snprintf(to, sizeof(to), "%s sourceTex,", type);
-        if (strstr(str_ret, from))
-            renamed_sampler_parameter = GL_TRUE;
-        replace_all_substr(&str_ret, from, to);
+        char needle[128];
+        int written = snprintf(needle, sizeof(needle), "%s sampler", type);
+        if (written <= 0 || (size_t)written >= sizeof(needle)) {
+            continue;
+        }
 
-        snprintf(from, sizeof(from), "%s sampler)", type);
-        snprintf(to, sizeof(to), "%s sourceTex)", type);
-        if (strstr(str_ret, from))
-            renamed_sampler_parameter = GL_TRUE;
-        replace_all_substr(&str_ret, from, to);
+        char *search = str_ret;
+        while ((search = strstr(search, needle)) != NULL) {
+            char *sampler_name = search + (size_t)written - strlen("sampler");
+            char after = sampler_name[strlen("sampler")];
+            if (after != ',' && after != ')' && after != ' ') {
+                search = sampler_name + 1;
+                continue;
+            }
 
-        snprintf(from, sizeof(from), "%s sampler [[", type);
-        snprintf(to, sizeof(to), "%s sourceTex [[", type);
-        if (strstr(str_ret, from))
-            renamed_sampler_parameter = GL_TRUE;
-        replace_all_substr(&str_ret, from, to);
-    }
-    if (renamed_sampler_parameter) {
-        replace_all_substr(&str_ret, " samplerSmplr", " sourceSmplr");
-        replace_all_substr(&str_ret, "(samplerSmplr", "(sourceSmplr");
-        replace_all_substr(&str_ret, ", samplerSmplr", ", sourceSmplr");
-        mglReplaceMSLIdentifierBeforeChar(&str_ret, "sampler", "sourceTex", '.');
-        replace_all_substr(&str_ret, "(sampler, ", "(sourceTex, ");
-        replace_all_substr(&str_ret, ", sampler, ", ", sourceTex, ");
-        replace_all_substr(&str_ret, "(sampler)", "(sourceTex)");
-        replace_all_substr(&str_ret, ", sampler)", ", sourceTex)");
+            char *open_brace = strchr(sampler_name, '{');
+            char *close_brace = mglMSLMatchingFunctionBrace(open_brace);
+            if (!open_brace || !close_brace) {
+                break;
+            }
+
+            /* Keep replacements length-preserving and local to this helper
+             * function. A global rename can corrupt an unrelated entry-point
+             * resource named samplerSmplr after its metadata was captured. */
+            mglReplaceMSLIdentifierInPlace(sampler_name,
+                                           close_brace + 1,
+                                           "samplerSmplr",
+                                           "_mglTexSmplr");
+            mglReplaceMSLIdentifierInPlace(sampler_name,
+                                           close_brace + 1,
+                                           "sampler",
+                                           "_mglTex");
+            search = close_brace + 1;
+        }
     }
     *msl_ptr = str_ret;
     (void)ctx;
@@ -3866,16 +4631,30 @@ GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_ptr)
      *      table and the MSL [[buffer(N)]] annotations out of sync —
      *      a worse state than simply proceeding with best-effort
      *      remapping.
-     *   3. No failure mode here warrants aborting the whole MSL patch
-     *      pipeline: the worst case is a user buffer colliding with a
-     *      reserved slot, which surfaces as a Metal validation error at
-     *      draw time with a clear diagnostic, rather than as a silent
-     *      shader-compilation gap.
+     *   3. A separate final validation step checks every active resource after
+     *      all patches have run. That step is fail-closed without changing the
+     *      historical best-effort behavior of this mutating repair step.
      * Returning GL_TRUE keeps the pipeline running so subsequent steps
      * (point-size injection, TES-as-compute, etc.) still execute. */
     applyMSLResourceBindings(ctx->program, ctx->stage, msl_ptr);
     return GL_TRUE;
 }
+
+GLboolean mglPatchValidateResourceBindings(MSLPatchContext *ctx, char **msl_ptr)
+{
+    if (!ctx) {
+        return GL_FALSE;
+    }
+
+    ctx->final_resource_validation_ran = GL_TRUE;
+    GLboolean ok = mglValidateFinalMSLResourceBindings(
+        ctx->program,
+        ctx->stage,
+        (msl_ptr && *msl_ptr) ? *msl_ptr : NULL);
+    ctx->final_resource_validation_failed = ok ? GL_FALSE : GL_TRUE;
+    return ok;
+}
+
 GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr)
 {
     Program *ptr = ctx->program;
@@ -3939,7 +4718,10 @@ GLboolean mglPatchTcsStageInFix(MSLPatchContext *ctx, char **msl_ptr)
     }
     return GL_TRUE;
 }
-char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
+char *parseSPIRVShaderToMetal(GLMContext ctx,
+                              Program *ptr,
+                              int stage,
+                              GLboolean *resource_validation_failed_out)
 {
     const SpvId *spirv;
     size_t word_count;
@@ -3951,10 +4733,15 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
     spvc_compiler compiler_msl = NULL;
     spvc_compiler_options options = NULL;
     spvc_resources resources = NULL;
+    spvc_set active_interface_variables = NULL;
     const spvc_reflected_resource *list = NULL;
     const char *result = NULL;
     size_t count;
     size_t i;
+
+    if (resource_validation_failed_out) {
+        *resource_validation_failed_out = GL_FALSE;
+    }
 
     if (!ptr || stage < 0 || stage >= _MAX_SHADER_TYPES || !ptr->shader_slots[stage]) {
         ERROR_RETURN_VALUE(GL_INVALID_OPERATION, NULL);
@@ -5196,6 +5983,21 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
      * on the compiler instead of relying on the `resources` snapshot. */
     mglRunIRPostprocessPipeline(ctx, ptr, stage, compiler_msl);
 
+    if (spvc_compiler_get_active_interface_variables(
+            compiler_msl, &active_interface_variables) != SPVC_SUCCESS ||
+        !active_interface_variables) {
+        fprintf(stderr,
+                "MGL MSL RESOURCE VALIDATION: failed to collect active "
+                "interface variables program=%u stage=%d\n",
+                ptr->name,
+                stage);
+        if (resource_validation_failed_out) {
+            *resource_validation_failed_out = GL_TRUE;
+        }
+        spvc_context_destroy(context);
+        return NULL;
+    }
+
     if (spvc_compiler_compile(compiler_msl, &result) != SPVC_SUCCESS || !result) {
         const char *last_error = spvc_context_get_last_error_string(context);
         fprintf(stderr,
@@ -5206,6 +6008,18 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
         spvc_context_destroy(context);
         return NULL;
     }
+
+    if (!mglPopulateActiveMSLResourceMetadata(ptr,
+                                              stage,
+                                              compiler_msl,
+                                              active_interface_variables,
+                                              result)) {
+        if (resource_validation_failed_out) {
+            *resource_validation_failed_out = GL_TRUE;
+        }
+        spvc_context_destroy(context);
+        return NULL;
+    }
     if (getenv("MGL_DUMP_MSL")) {
         fprintf(stderr, "MGL DBG MSL DUMP (program=%u stage=%d):\n%.8000s\n", ptr->name, stage, result);
     }
@@ -5213,6 +6027,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
 
     str_ret = strdup(result);
     if (str_ret) {
+        GLboolean final_resource_validation_failed = GL_FALSE;
         MSLPatchPipeline pipeline;
         if (mslPipelineInit(&pipeline, ptr, stage, str_ret)) {
             str_ret = NULL;  /* pipeline owns it now */
@@ -5234,10 +6049,26 @@ char *parseSPIRVShaderToMetal(GLMContext ctx, Program *ptr, int stage)
             mslPipelineAddStep(&pipeline, "tes_as_compute_kernel", mglPatchTesAsComputeKernel);
             mslPipelineAddStep(&pipeline, "tcs_stage_in_fix", mglPatchTcsStageInFix);
             mslPipelineAddStep(&pipeline, "apply_resource_bindings_final", mglPatchApplyResourceBindings);
+            mslPipelineAddStep(&pipeline, "validate_resource_bindings_final", mglPatchValidateResourceBindings);
 
             mslPipelineRun(&pipeline);
+            final_resource_validation_failed =
+                (!pipeline.ctx.final_resource_validation_ran ||
+                 pipeline.ctx.final_resource_validation_failed)
+                    ? GL_TRUE
+                    : GL_FALSE;
             str_ret = mslPipelineTakeResult(&pipeline);
             mslPipelineDestroy(&pipeline);
+        } else {
+            final_resource_validation_failed = GL_TRUE;
+        }
+
+        if (final_resource_validation_failed) {
+            free(str_ret);
+            str_ret = NULL;
+            if (resource_validation_failed_out) {
+                *resource_validation_failed_out = GL_TRUE;
+            }
         }
 
         if (getenv("MGL_DUMP_MSL") && str_ret) {
@@ -6203,11 +7034,24 @@ bool compileStageFromLinkedProgram(GLMContext ctx, Program *pptr, glslang_progra
     if (MGL_VERBOSE_PROGRAM_LOGS) {
         fprintf(stderr, "MGL DEBUG: About to parse SPIRV to Metal\n");
     }
-    pptr->spirv[stage].msl_str = parseSPIRVShaderToMetal(ctx, pptr, stage);
+    GLboolean resource_validation_failed = GL_FALSE;
+    pptr->spirv[stage].msl_str = parseSPIRVShaderToMetal(
+        ctx,
+        pptr,
+        stage,
+        &resource_validation_failed);
     if (MGL_VERBOSE_PROGRAM_LOGS) {
         fprintf(stderr, "MGL DEBUG: SPIRV parsed to Metal\n");
     }
     if (pptr->spirv[stage].msl_str == NULL) {
+        if (resource_validation_failed) {
+            fprintf(stderr,
+                    "MGL ERROR: final active MSL resource validation failed "
+                    "for program=%u stage=%d\n",
+                    pptr->name,
+                    stage);
+            return false;
+        }
         fprintf(stderr,
                 "MGL WARNING: parseSPIRVShaderToMetal failed for stage %d; keeping reflection data and marking stage non-renderable\n",
                 stage);

@@ -1432,6 +1432,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
 
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
+            return;
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
@@ -1456,12 +1457,11 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         }
 
         // Bind-by-name semantics: bind succeeds even when storage is not yet initialized.
-        // Storage/range validity is validated later at draw/upload time.
         ERROR_CHECK_RETURN(ptr->size >= 0, GL_INVALID_VALUE);
 
         if (base_slot->buffer != buffer ||
             base_slot->offset != 0 ||
-            base_slot->size != ptr->size ||
+            base_slot->size != 0 ||
             base_slot->buf != ptr) {
             if (mglBindNoFlushEnabled()) {
                 if (base_slot->buf) {
@@ -1484,7 +1484,9 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
 
         base_slot->buffer = buffer;
         base_slot->offset = 0;
-        base_slot->size = ptr->size;
+        /* BindBufferBase follows later data-store resizes.  Zero is the GL
+         * query/state sentinel meaning "the whole buffer at time of use". */
+        base_slot->size = 0;
         base_slot->buf = ptr;
         /* Indexed buffer binds also update the generic binding for target.
          * CTS allocates SSBO storage through glBindBufferBase followed by
@@ -1571,6 +1573,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
 
         default:
             ERROR_RETURN(GL_INVALID_ENUM);
+            return;
     }
 
     ERROR_CHECK_RETURN(index >= 0, GL_INVALID_VALUE);
@@ -1607,12 +1610,14 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
     if (offset < 0) {
         fprintf(stderr, "MGL Error: mglBindBufferRange: offset < 0 (%ld)\n", offset);
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     // ERROR_CHECK_RETURN(size > 0, GL_INVALID_VALUE);
     if (size <= 0) {
         fprintf(stderr, "MGL Error: mglBindBufferRange: size <= 0 (%ld)\n", size);
         ERROR_RETURN(GL_INVALID_VALUE);
+        return;
     }
 
     GLuint offset_alignment = 1u;
@@ -1651,13 +1656,8 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             return;
         }
 
-        // GL allows binding ranges before upload; validate known storage sizes,
-        // but still record state for newly generated buffers with no store yet.
-        if (ptr->size > 0 && !mgl_range_ok_size_t(offset, size, ptr->size)) {
-            fprintf(stderr, "MGL Error: mglBindBufferRange: range overflow (offset=%ld size=%ld buffer_size=%ld)\n",
-                    offset, size, (long)ptr->size);
-            ERROR_RETURN(GL_INVALID_VALUE);
-        }
+        /* OpenGL 4.2+ permits a range beyond the current data store.  Keep the
+         * requested range; consumers clamp it against the store at time of use. */
 
         if (base_slot->buffer != buffer ||
             base_slot->offset != offset ||

@@ -29,6 +29,13 @@
 
 typedef struct GLMContextRec_t *GLMContext;
 
+typedef enum MGLMSLBindingKind {
+    MGL_MSL_BINDING_NONE = 0,
+    MGL_MSL_BINDING_TEXTURE,
+    MGL_MSL_BINDING_BUFFER,
+    MGL_MSL_BINDING_SAMPLER
+} MGLMSLBindingKind;
+
 enum {
     _VERTEX_SHADER = 0,
     _TESS_CONTROL_SHADER,
@@ -136,6 +143,20 @@ typedef struct SpirvResource_t {
     GLuint  base_type_id;
     GLuint  type_id;
     const char *name;
+    /* Final identifier and argument kind emitted by SPIRV-Cross for active
+     * resources. `name` remains the original GL-facing reflection name. */
+    char   *msl_name;
+    /* Exact final MSL declarators for resources expanded into more than one
+     * argument (for example, UBO arrays lowered to block_0, block_1, ...).
+     * msl_name remains the first argument name for existing callers. */
+    char  **msl_argument_names;
+    GLuint  msl_argument_count;
+    char   *msl_combined_sampler_name;
+    /* Metal allocates texture and sampler indices in independent namespaces. */
+    GLuint  msl_combined_sampler_binding;
+    GLboolean msl_active;
+    GLboolean msl_has_combined_sampler;
+    MGLMSLBindingKind msl_binding_kind;
     GLuint  set;
     /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
@@ -286,6 +307,9 @@ typedef struct TransformFeedback_t {
     GLenum primitive_mode;
     GLuint64 primitives_generated;
     GLuint64 primitives_written;
+    /* Byte cursors for the current Begin/End capture session. Begin resets
+     * them; pause/resume preserves them so subsequent draws append. */
+    GLuint64 buffer_write_offsets[MAX_BINDABLE_BUFFERS];
     BufferBaseTarget buffers[MAX_BINDABLE_BUFFERS];
 } TransformFeedback;
 

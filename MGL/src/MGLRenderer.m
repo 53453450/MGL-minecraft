@@ -9001,35 +9001,250 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
 #pragma mark Tessellation dispatch
 
-/* Bind stage buffers (UBO, SSBO, atomic counters) to a compute encoder for
- * tessellation stages (TCS/TES) that are dispatched as compute kernels.
- * Uses a local BufferMapList since tessellation stages don't have a
- * persistent one in the context state. */
-- (bool) bindTessStageBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
-                                        stage:(int) stage
+- (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map
+                                           source:(id<MTLBuffer>)source
+                                   requiredLength:(NSUInteger)requiredLength
 {
-    if (!computeCommandEncoder) {
+    if (!map || !map->buf || requiredLength == 0) {
+        return nil;
+    }
+
+    id<MTLBuffer> isolated = [_device newBufferWithLength:requiredLength
+                                                   options:MTLResourceStorageModeShared];
+    if (!isolated || !isolated.contents) {
+        return nil;
+    }
+
+    memset(isolated.contents, 0, requiredLength);
+    if (!source || map->offset < 0 || !source.contents) {
+        return isolated;
+    }
+
+    size_t copyLength = mglBufferMapVisibleBackingBytes(map, source.length);
+    if (copyLength > requiredLength) {
+        copyLength = requiredLength;
+    }
+    if (copyLength > 0) {
+        memcpy(isolated.contents,
+               ((const uint8_t *)source.contents) + (size_t)map->offset,
+               copyLength);
+    }
+    return isolated;
+}
+
+- (void)clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
+{
+    if (!copyBacks) {
+        return;
+    }
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        [self clearStageBindingCopyBack:copyBacks atIndex:i];
+    }
+}
+
+- (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
+                           atIndex:(NSUInteger)index
+{
+    if (!copyBacks || index >= kMGLMaxBufferSlots) {
+        return;
+    }
+    MGLStageBindingCopyBack *entry = &copyBacks->slots[index];
+    entry->temporary = nil;
+    entry->destination = nil;
+    entry->destination_buffer = NULL;
+    entry->destination_offset = 0;
+    entry->length = 0;
+}
+
+- (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
+                           atIndex:(NSUInteger)index
+                         temporary:(id<MTLBuffer>)temporary
+                       destination:(id<MTLBuffer>)destination
+                 destinationBuffer:(Buffer *)destinationBuffer
+                destinationOffset:(NSUInteger)destinationOffset
+                            length:(NSUInteger)length
+{
+    if (!copyBacks || index >= kMGLMaxBufferSlots) {
+        return false;
+    }
+    [self clearStageBindingCopyBack:copyBacks atIndex:index];
+    if (length == 0) {
+        return true;
+    }
+    if (!temporary || !destination ||
+        length > temporary.length ||
+        destinationOffset > destination.length ||
+        length > destination.length - destinationOffset) {
         return false;
     }
 
-    BufferMapList stageBufferMap;
-    memset(&stageBufferMap, 0, sizeof(stageBufferMap));
+    MGLStageBindingCopyBack *entry = &copyBacks->slots[index];
+    entry->temporary = temporary;
+    entry->destination = destination;
+    entry->destination_buffer = destinationBuffer;
+    entry->destination_offset = destinationOffset;
+    entry->length = length;
+    return true;
+}
 
+- (bool)flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
+              requireCPUVisibility:(BOOL)requireCPUVisibility
+{
+    if (!copyBacks) {
+        return true;
+    }
+
+    BOOL hasCopies = NO;
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
+        if (entry->length == 0) {
+            continue;
+        }
+        if (!entry->temporary || !entry->destination ||
+            entry->length > entry->temporary.length ||
+            entry->destination_offset > entry->destination.length ||
+            entry->length > entry->destination.length - entry->destination_offset) {
+            [self clearStageBindingCopyBacks:copyBacks];
+            return false;
+        }
+        hasCopies = YES;
+    }
+
+    if (!hasCopies && !requireCPUVisibility) {
+        [self clearStageBindingCopyBacks:copyBacks];
+        return true;
+    }
+    if (!_currentCommandBuffer ||
+        _currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+        [self clearStageBindingCopyBacks:copyBacks];
+        return false;
+    }
+
+    if (hasCopies) {
+        id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
+        if (!blit) {
+            [self clearStageBindingCopyBacks:copyBacks];
+            return false;
+        }
+        for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+            MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
+            if (entry->length == 0) {
+                continue;
+            }
+            [blit copyFromBuffer:entry->temporary
+                    sourceOffset:0
+                        toBuffer:entry->destination
+               destinationOffset:entry->destination_offset
+                            size:entry->length];
+        }
+        [blit endEncoding];
+    }
+
+    /* Isolated copy-backs must become CPU-visible before another short binding
+     * snapshots their destination. TCS also forces this boundary because TES
+     * sizing and query accounting currently read its factor buffer on the CPU. */
+    id<MTLCommandBuffer> stageCommandBuffer = _currentCommandBuffer;
+    _currentCommandBuffer = nil;
+    @try {
+        [self commitCommandBufferWithAGXRecovery:stageCommandBuffer];
+        [stageCommandBuffer waitUntilCompleted];
+    } @catch (NSException *exception) {
+        NSLog(@"MGL BUFFER RANGE: stage synchronization failed: %@",
+              exception.reason);
+        [self clearStageBindingCopyBacks:copyBacks];
+        [self newCommandBufferLocked];
+        return false;
+    }
+    if (stageCommandBuffer.error) {
+        NSLog(@"MGL BUFFER RANGE: stage command failed: %@",
+              stageCommandBuffer.error);
+        [self clearStageBindingCopyBacks:copyBacks];
+        [self newCommandBufferLocked];
+        return false;
+    }
+
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        MGLStageBindingCopyBack *entry = &copyBacks->slots[i];
+        if (entry->length > 0 && entry->destination_buffer) {
+            Buffer *buffer = entry->destination_buffer;
+            buffer->ever_written = GL_TRUE;
+
+            /* BufferSubData updates the CPU snapshot and may later upload the
+             * whole store. Keep that snapshot authoritative for the legal
+             * prefix written through the isolated Metal binding. */
+            if (buffer->data.buffer_data) {
+                if (!entry->destination.contents ||
+                    entry->destination_offset > buffer->data.buffer_size ||
+                    entry->length > buffer->data.buffer_size - entry->destination_offset) {
+                    NSLog(@"MGL BUFFER RANGE: cannot synchronize copied-back prefix to CPU buffer=%u offset=%lu length=%lu cpuSize=%zu",
+                          (unsigned)buffer->name,
+                          (unsigned long)entry->destination_offset,
+                          (unsigned long)entry->length,
+                          buffer->data.buffer_size);
+                    [self clearStageBindingCopyBacks:copyBacks];
+                    [self newCommandBufferLocked];
+                    return false;
+                }
+
+                uint8_t *cpuBytes = (uint8_t *)(uintptr_t)buffer->data.buffer_data;
+                const uint8_t *metalBytes = (const uint8_t *)entry->destination.contents;
+                if (cpuBytes != metalBytes) {
+                    memmove(cpuBytes + entry->destination_offset,
+                            metalBytes + entry->destination_offset,
+                            entry->length);
+                }
+            }
+        }
+    }
+    [self clearStageBindingCopyBacks:copyBacks];
+    return [self newCommandBufferLocked];
+}
+
+typedef struct {
+    id<MTLBuffer> __strong buffer;
+    NSUInteger offset;
+    id<MTLBuffer> __strong initialization_source;
+    NSUInteger initialization_source_offset;
+    NSUInteger initialization_length;
+    BOOL valid;
+} MGLTessStageBufferBinding;
+
+typedef struct {
+    MGLTessStageBufferBinding slots[kMGLMaxBufferSlots];
+    id<MTLBuffer> __strong size_buffer;
+} MGLTessStageBufferBindingList;
+
+/* Tessellation shaders run as consecutive compute encoders. Prepare their
+ * buffer bindings before opening the next encoder so an isolated binding can
+ * be initialized by an ordered GPU copy from a buffer written by the previous
+ * stage. Reading source.contents here would capture stale CPU bytes while the
+ * preceding TCS encoder is still pending on the same command buffer. */
+- (bool)prepareTessStageBufferBindings:(MGLTessStageBufferBindingList *)bindings
+                                 stage:(int)stage
+                             copyBacks:(MGLStageBindingCopyBackList *)copyBacks
+{
+    if (!bindings || !copyBacks) {
+        return false;
+    }
+
+    BufferMapList stageBufferMap = {0};
     if (![self mapGLBuffersToMTLBufferMap:&stageBufferMap stage:stage]) {
         return false;
+    }
+
+    /* Complete every lazy allocation before creating the initialization blit
+     * encoder. bindMTLBuffer: may itself need an encoder. */
+    for (GLuint i = 0; i < stageBufferMap.count; i++) {
+        Buffer *ptr = stageBufferMap.buffers[i].buf;
+        if (ptr && !ptr->data.mtl_data) {
+            [self bindMTLBuffer:ptr];
+        }
     }
 
     for (GLuint i = 0; i < stageBufferMap.count; i++) {
         BufferMap *map = &stageBufferMap.buffers[i];
         Buffer *ptr = map->buf;
         if (!ptr) {
-            continue;
-        }
-        /* Ensure Metal buffer is created (lazy allocation). */
-        if (!ptr->data.mtl_data) {
-            [self bindMTLBuffer:ptr];
-        }
-        if (!ptr->data.mtl_data) {
             continue;
         }
 
@@ -9039,50 +9254,156 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         if (metalBindingIndex >= kMGLMaxMetalVertexBufferCount) {
             continue;
         }
+        [self clearStageBindingCopyBack:copyBacks atIndex:metalBindingIndex];
         if (map->offset < 0) {
-            continue;
+            return false;
         }
         NSUInteger bindOffset = (NSUInteger)map->offset;
 
-        id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-        if (!buffer || bindOffset >= buffer.length) {
+        id<MTLBuffer> buffer = ptr->data.mtl_data
+            ? (__bridge id<MTLBuffer>)(ptr->data.mtl_data)
+            : nil;
+        NSUInteger requiredBytes =
+            [self getProgramBindingRequiredSize:stage
+                                           type:(int)map->resource_type
+                                          index:(int)map->resource_index];
+        if (map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+            requiredBytes < sizeof(uint32_t)) {
+            requiredBytes = sizeof(uint32_t);
+        }
+
+        GLsizeiptr storageRemaining = mglBufferMapStorageRemaining(map);
+        NSUInteger availableBytes = buffer
+            ? mglBufferMapVisibleBackingBytes(map, buffer.length)
+            : 0u;
+        BOOL needsIsolatedBinding =
+            !buffer ||
+            storageRemaining <= 0 ||
+            bindOffset >= buffer.length ||
+            availableBytes == 0 ||
+            (requiredBytes > 0 && availableBytes < requiredBytes);
+
+        MGLTessStageBufferBinding *binding = &bindings->slots[metalBindingIndex];
+        binding->buffer = nil;
+        binding->offset = 0u;
+        binding->initialization_source = nil;
+        binding->initialization_source_offset = 0u;
+        binding->initialization_length = 0u;
+        binding->valid = YES;
+        if (!needsIsolatedBinding) {
+            binding->buffer = buffer;
+            binding->offset = bindOffset;
             continue;
         }
 
-        [computeCommandEncoder setBuffer:buffer offset:bindOffset atIndex:metalBindingIndex];
+        NSUInteger fallbackLength = MAX(requiredBytes, sizeof(uint32_t));
+        id<MTLBuffer> isolated = [_device newBufferWithLength:fallbackLength
+                                                      options:MTLResourceStorageModeShared];
+        if (!isolated || !isolated.contents) {
+            return false;
+        }
+        memset(isolated.contents, 0, fallbackLength);
+
+        binding->buffer = isolated;
+        binding->offset = 0u;
+        if (buffer && availableBytes > 0) {
+            binding->initialization_source = buffer;
+            binding->initialization_source_offset = bindOffset;
+            binding->initialization_length = MIN(availableBytes, fallbackLength);
+        }
+
+        BOOL writableResource =
+            map->resource_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
+            map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER;
+        if (writableResource && buffer && availableBytes > 0 &&
+            ![self recordStageBindingCopyBack:copyBacks
+                                       atIndex:metalBindingIndex
+                                     temporary:isolated
+                                   destination:buffer
+                             destinationBuffer:ptr
+                            destinationOffset:bindOffset
+                                        length:availableBytes]) {
+            return false;
+        }
     }
 
     Program *stageProgram = mglResolveProgramForStageFromState(ctx, stage);
-    if (stageProgram && stageProgram->spirv[stage].needs_buffer_size_buffer)
-    {
-        uint32_t sizeConstants[31];
-        memset(sizeConstants, 0, sizeof(sizeConstants));
-
-        for (GLuint i = 0; i < stageBufferMap.count; i++)
-        {
+    if (stageProgram && stageProgram->spirv[stage].needs_buffer_size_buffer) {
+        uint32_t sizeConstants[31] = {0};
+        for (GLuint i = 0; i < stageBufferMap.count; i++) {
             BufferMap *map = &stageBufferMap.buffers[i];
-            if (!map->buf)
+            if (!map->buf) {
                 continue;
+            }
             NSUInteger metalSlot = map->has_metal_binding
                 ? (NSUInteger)map->metal_binding_index
                 : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
+            if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX) {
                 continue;
-            GLsizeiptr visibleSize = map->size > 0 ? map->size : (map->buf->size - map->offset);
-            if (visibleSize < 0) visibleSize = 0;
-            sizeConstants[metalSlot] = (uint32_t)visibleSize;
+            }
+            sizeConstants[metalSlot] = (uint32_t)mglBufferMapVisibleSize(map);
         }
-
-        id<MTLBuffer> sizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                        length:sizeof(sizeConstants)
-                                                       options:MTLResourceStorageModeShared];
-        if (sizeBuffer) {
-            [computeCommandEncoder setBuffer:sizeBuffer
-                                      offset:0
-                                     atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+        bindings->size_buffer = [_device newBufferWithBytes:sizeConstants
+                                                     length:sizeof(sizeConstants)
+                                                    options:MTLResourceStorageModeShared];
+        if (!bindings->size_buffer) {
+            return false;
         }
     }
 
+    BOOL needsInitializationBlit = NO;
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        if (bindings->slots[i].initialization_length > 0) {
+            needsInitializationBlit = YES;
+            break;
+        }
+    }
+    if (!needsInitializationBlit) {
+        return true;
+    }
+    if (!_currentCommandBuffer ||
+        _currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+        return false;
+    }
+
+    id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
+    if (!blit) {
+        return false;
+    }
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        MGLTessStageBufferBinding *binding = &bindings->slots[i];
+        if (binding->initialization_length == 0) {
+            continue;
+        }
+        [blit copyFromBuffer:binding->initialization_source
+                sourceOffset:binding->initialization_source_offset
+                    toBuffer:binding->buffer
+           destinationOffset:0
+                        size:binding->initialization_length];
+    }
+    [blit endEncoding];
+    return true;
+}
+
+- (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
+                           toComputeEncoder:(id<MTLComputeCommandEncoder>)computeCommandEncoder
+{
+    if (!bindings || !computeCommandEncoder) {
+        return false;
+    }
+    for (NSUInteger i = 0; i < kMGLMaxBufferSlots; i++) {
+        const MGLTessStageBufferBinding *binding = &bindings->slots[i];
+        if (binding->valid) {
+            [computeCommandEncoder setBuffer:binding->buffer
+                                      offset:binding->offset
+                                     atIndex:i];
+        }
+    }
+    if (bindings->size_buffer) {
+        [computeCommandEncoder setBuffer:bindings->size_buffer
+                                  offset:0
+                                 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+    }
     return true;
 }
 
@@ -9386,9 +9707,19 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         }
     }
 
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    MGLTessStageBufferBindingList stageBufferBindings = {0};
+    if (![self prepareTessStageBufferBindings:&stageBufferBindings
+                                         stage:_TESS_CONTROL_SHADER
+                                     copyBacks:&stageCopyBacks]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+
     id<MTLComputeCommandEncoder> computeEncoder = [_currentCommandBuffer computeCommandEncoder];
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TCS dispatch");
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
 
@@ -9473,11 +9804,40 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         }
         id<MTLTexture> texture = ptr ? (__bridge id<MTLTexture>)(ptr->mtl_data) : nil;
         [computeEncoder setTexture:texture atIndex:metalSlot];
+        if (resource && resource->msl_has_combined_sampler) {
+            id<MTLSamplerState> sampler = nil;
+            if (STATE(texture_samplers[glUnit])) {
+                Sampler *glSampler = STATE(texture_samplers[glUnit]);
+                if (glSampler->dirty_bits && glSampler->mtl_data) {
+                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
+                }
+                if (!glSampler->mtl_data && ptr) {
+                    glSampler->mtl_data = (void *)CFBridgingRetain(
+                        [self createMTLSamplerForTexParam:&glSampler->params
+                                                  target:ptr->target]);
+                    glSampler->dirty_bits = 0;
+                }
+                sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+            } else if (ptr && ptr->params.mtl_data) {
+                sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+            }
+            if (!sampler) {
+                sampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+            }
+            if (sampler) {
+                [computeEncoder setSamplerState:sampler
+                                        atIndex:mglMetalCombinedSamplerSlot(resource)];
+            }
+        }
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TCS. */
-    [self bindTessStageBuffersToComputeEncoder:computeEncoder
-                                         stage:_TESS_CONTROL_SHADER];
+    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
+                                  toComputeEncoder:computeEncoder]) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     [self bindPointSizeParamsToComputeEncoder:computeEncoder
                                       program:tcsProgram
                                         stage:_TESS_CONTROL_SHADER];
@@ -9534,6 +9894,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     NSUInteger tcsOutSize = (NSUInteger)patchCountTC * tcsOutVertices * tcsOutStride;
     _tcsOutputBuffer = [_device newBufferWithLength:tcsOutSize
                                             options:MTLResourceStorageModeShared];
+    if (!_tcsOutputBuffer || !_tcsOutputBuffer.contents) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     memset(_tcsOutputBuffer.contents, 0, tcsOutSize);
     [computeEncoder setBuffer:_tcsOutputBuffer offset:0 atIndex:28];
 
@@ -9563,6 +9928,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
     _tcsPatchOutBuffer = [_device newBufferWithLength:tcsPatchSize
                                               options:MTLResourceStorageModeShared];
+    if (!_tcsPatchOutBuffer || !_tcsPatchOutBuffer.contents) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     memset(_tcsPatchOutBuffer.contents, 0, tcsPatchSize);
     [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
 
@@ -9570,6 +9940,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     id<MTLBuffer> indirectBuf = [_device newBufferWithBytes:indirectParams
                                                      length:sizeof(indirectParams)
                                                     options:MTLResourceStorageModeShared];
+    if (!indirectBuf) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     [computeEncoder setBuffer:indirectBuf offset:0 atIndex:29];
 
     /* Create tessellation factor buffer (buffer 26).
@@ -9579,6 +9954,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     NSUInteger tessFactorSize = (NSUInteger)patchCount * 12u;
     id<MTLBuffer> tessFactorBuf = [_device newBufferWithLength:tessFactorSize
                                                        options:MTLResourceStorageModeShared];
+    if (!tessFactorBuf || !tessFactorBuf.contents) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     memset(tessFactorBuf.contents, 0, tessFactorSize);
     [computeEncoder setBuffer:tessFactorBuf offset:0 atIndex:26];
 
@@ -9600,6 +9980,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
             NSLog(@"MGL TESS WARNING: failed to pack TCS stage_in buffer for program %u",
                   tcsProgram ? (unsigned)tcsProgram->name : 0u);
             [computeEncoder endEncoding];
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
             return false;
         }
         [computeEncoder setBuffer:tcsStageInBuffer
@@ -9615,9 +9996,83 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
     [computeEncoder endEncoding];
 
+    if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                     requireCPUVisibility:YES]) {
+        NSLog(@"MGL TESS ERROR: failed to synchronize TCS buffer writes");
+        return false;
+    }
+
     /* Save tess factor buffer for TES drawPatches path. */
     _tessFactorBuffer = tessFactorBuf;
 
+    return true;
+}
+
+static NSUInteger mglTESXFBFieldByteSize(GLenum glType)
+{
+    switch (glType) {
+        case GL_FLOAT:
+        case GL_INT:
+        case GL_UNSIGNED_INT:
+            return 4u;
+        case GL_FLOAT_VEC2:
+        case GL_INT_VEC2:
+        case GL_UNSIGNED_INT_VEC2:
+            return 8u;
+        case GL_FLOAT_VEC3:
+        case GL_INT_VEC3:
+        case GL_UNSIGNED_INT_VEC3:
+            return 12u;
+        case GL_FLOAT_VEC4:
+        case GL_INT_VEC4:
+        case GL_UNSIGNED_INT_VEC4:
+            return 16u;
+        default:
+            return 0u;
+    }
+}
+
+/* Keep this layout calculation in lockstep with the packed writes injected by
+ * mglFixMSLTesAsComputeKernel.  A zero result means the renderer cannot prove
+ * the write stride and must not copy temporary capture data into the GL store. */
+static NSUInteger mglTESXFBVertexStride(const Program *program)
+{
+    if (!program || program->transform_feedback_varying_count <= 0) {
+        return 0u;
+    }
+
+    const SpirvResourceList *outputs =
+        &program->spirv_resources_list[_TESS_EVALUATION_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+    NSUInteger stride = 0u;
+    for (GLsizei varying = 0;
+         varying < program->transform_feedback_varying_count;
+         varying++) {
+        const char *name = program->transform_feedback_varying_names[varying];
+        const SpirvResource *output = NULL;
+        for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
+            if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
+                output = &outputs->list[i];
+                break;
+            }
+        }
+
+        NSUInteger fieldBytes = output ? mglTESXFBFieldByteSize(output->gl_type) : 0u;
+        if (fieldBytes == 0u || stride > NSUIntegerMax - fieldBytes) {
+            return 0u;
+        }
+        stride += fieldBytes;
+    }
+    return stride;
+}
+
+static bool mglCheckedNSUIntegerProduct(NSUInteger a,
+                                        NSUInteger b,
+                                        NSUInteger *result)
+{
+    if (!result || (a != 0u && b > NSUIntegerMax / a)) {
+        return false;
+    }
+    *result = a * b;
     return true;
 }
 
@@ -9702,9 +10157,19 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         }
     }
 
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    MGLTessStageBufferBindingList stageBufferBindings = {0};
+    if (![self prepareTessStageBufferBindings:&stageBufferBindings
+                                         stage:_TESS_EVALUATION_SHADER
+                                     copyBacks:&stageCopyBacks]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+
     id<MTLComputeCommandEncoder> computeEncoder = [_currentCommandBuffer computeCommandEncoder];
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES dispatch");
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
 
@@ -9789,11 +10254,40 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         }
         id<MTLTexture> texture = ptr ? (__bridge id<MTLTexture>)(ptr->mtl_data) : nil;
         [computeEncoder setTexture:texture atIndex:metalSlot];
+        if (resource && resource->msl_has_combined_sampler) {
+            id<MTLSamplerState> sampler = nil;
+            if (STATE(texture_samplers[glUnit])) {
+                Sampler *glSampler = STATE(texture_samplers[glUnit]);
+                if (glSampler->dirty_bits && glSampler->mtl_data) {
+                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
+                }
+                if (!glSampler->mtl_data && ptr) {
+                    glSampler->mtl_data = (void *)CFBridgingRetain(
+                        [self createMTLSamplerForTexParam:&glSampler->params
+                                                  target:ptr->target]);
+                    glSampler->dirty_bits = 0;
+                }
+                sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+            } else if (ptr && ptr->params.mtl_data) {
+                sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+            }
+            if (!sampler) {
+                sampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+            }
+            if (sampler) {
+                [computeEncoder setSamplerState:sampler
+                                        atIndex:mglMetalCombinedSamplerSlot(resource)];
+            }
+        }
     }
 
     /* Bind stage buffers (UBO, SSBO, atomic counters) for TES. */
-    [self bindTessStageBuffersToComputeEncoder:computeEncoder
-                                         stage:_TESS_EVALUATION_SHADER];
+    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
+                                  toComputeEncoder:computeEncoder]) {
+        [computeEncoder endEncoding];
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
     [self bindPointSizeParamsToComputeEncoder:computeEncoder
                                       program:tesProgram
                                         stage:_TESS_EVALUATION_SHADER];
@@ -9832,44 +10326,6 @@ Buffer *getIndirectBuffer(GLMContext ctx)
      * TCS → TES. */
     if (_tcsPatchOutBuffer) {
         [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
-    }
-
-    /* Bind XFB output buffer to buffer(29) for _mgl_xfb_out.
-     * The TES kernel writes captured output fields into this buffer when
-     * transform feedback is active with GL_INTERLEAVED_ATTRIBS.  The MSL
-     * rewriter (mglFixMSLTesAsComputeKernel Step 6) injects the write code.
-     *
-     * TODO(gpu-xfb): General VS/GS XFB GPU capture. When
-     * spirv[_VERTEX_SHADER].msl_str_capture is non-NULL (compiled by
-     * mglCompileMSLCaptureVariant in program.c, gated on MGL_XFB_GPU_CAPTURE),
-     * build a rasterization-disabled render pipeline (or compute dispatch)
-     * that runs that capture-variant MSL and writes VS outputs to this same
-     * buffer(29). The bind logic below would then also apply to the VS path,
-     * generalized to N>0 buffers for GL_SEPARATE_ATTRIBS. Not yet wired —
-     * non-passthrough VS XFB currently falls through to the GPU render path
-     * which captures nothing (honest fail), and the CPU passthrough path in
-     * draw_buffers.c handles only true input→output copies. */
-    if (tesProgram &&
-        tesProgram->transform_feedback_varying_count > 0 &&
-        tesProgram->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS &&
-        glm_ctx->active_state->transform_feedback &&
-        glm_ctx->active_state->transform_feedback->active &&
-        !glm_ctx->active_state->transform_feedback->paused) {
-        BufferBaseTarget *xfbSlot =
-            &glm_ctx->active_state->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
-        if (xfbSlot->buf) {
-            /* Lazily create Metal buffer backing if not yet created. */
-            if (!xfbSlot->buf->data.mtl_data) {
-                [self bindMTLBuffer:xfbSlot->buf];
-            }
-            if (xfbSlot->buf->data.mtl_data) {
-                id<MTLBuffer> xfbMTL = (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
-                [computeEncoder setBuffer:xfbMTL
-                                   offset:xfbSlot->offset
-                                  atIndex:29];
-                xfbSlot->buf->ever_written = GL_TRUE;
-            }
-        }
     }
 
     /* Compute vertsPerPatch from tessellation factors.
@@ -9911,12 +10367,177 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     }
     if (vertsPerPatch == 0) vertsPerPatch = 1;
 
+    /* Bind XFB output buffer to buffer(29) for _mgl_xfb_out. Metal buffer
+     * arguments cannot express a subrange, so a direct binding is safe only
+     * when every injected write fits in both the requested GL range and the
+     * current logical store. On overflow, capture into a full-size temporary
+     * buffer and copy back only the prefix containing complete primitives. */
+    TransformFeedback *xfbState = glm_ctx->active_state->transform_feedback;
+    const bool xfbCaptureActive =
+        tesProgram->transform_feedback_varying_count > 0 &&
+        tesProgram->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS &&
+        xfbState &&
+        xfbState->active &&
+        !xfbState->paused &&
+        tesProgram->spirv[_TESS_EVALUATION_SHADER].msl_str &&
+        strstr(tesProgram->spirv[_TESS_EVALUATION_SHADER].msl_str, "_mgl_xfb_out");
+    id<MTLBuffer> xfbTemporary = nil;
+    id<MTLBuffer> xfbCopyDestination = nil;
+    Buffer *xfbDestination = NULL;
+    NSUInteger xfbCopyDestinationOffset = 0u;
+    NSUInteger xfbCopyBytes = 0u;
+    NSUInteger xfbPrimitiveCapacity = 0u;
+    NSUInteger xfbWrittenBytes = 0u;
+
+    if (xfbCaptureActive) {
+        BufferBaseTarget *xfbSlot =
+            &glm_ctx->active_state->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
+        NSUInteger xfbStride = mglTESXFBVertexStride(tesProgram);
+        NSUInteger conservativeStride =
+            (NSUInteger)tesProgram->transform_feedback_varying_count * 16u;
+        NSUInteger allocationStride = xfbStride ? xfbStride : conservativeStride;
+        NSUInteger captureVertices = 0u;
+        NSUInteger requiredBytes = 0u;
+        NSUInteger xfbSessionOffset = 0u;
+        bool sessionOffsetOK =
+            xfbState->buffer_write_offsets[0] <= (GLuint64)NSUIntegerMax;
+        if (sessionOffsetOK) {
+            xfbSessionOffset = (NSUInteger)xfbState->buffer_write_offsets[0];
+        }
+        bool sizeOK =
+            allocationStride > 0u &&
+            mglCheckedNSUIntegerProduct((NSUInteger)patchCount,
+                                        (NSUInteger)vertsPerPatch,
+                                        &captureVertices) &&
+            mglCheckedNSUIntegerProduct(captureVertices,
+                                        allocationStride,
+                                        &requiredBytes) &&
+            requiredBytes > 0u;
+
+        id<MTLBuffer> xfbMTL = nil;
+        NSUInteger visibleBytes = 0u;
+        NSUInteger remainingVisibleBytes = 0u;
+        NSUInteger destinationOffset = 0u;
+        bool destinationOffsetOK = false;
+        if (xfbSlot->buf) {
+            if (!xfbSlot->buf->data.mtl_data) {
+                [self bindMTLBuffer:xfbSlot->buf];
+            }
+            xfbMTL = (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
+            if (xfbMTL) {
+                BufferMap xfbMap = {0};
+                xfbMap.buf = xfbSlot->buf;
+                xfbMap.offset = xfbSlot->offset;
+                xfbMap.size = xfbSlot->size;
+                visibleBytes = mglBufferMapVisibleBackingBytes(
+                    &xfbMap, (size_t)xfbMTL.length);
+                if (sessionOffsetOK && xfbSessionOffset <= visibleBytes &&
+                    xfbSlot->offset >= 0 &&
+                    (NSUInteger)xfbSlot->offset <= NSUIntegerMax - xfbSessionOffset) {
+                    remainingVisibleBytes = visibleBytes - xfbSessionOffset;
+                    destinationOffset = (NSUInteger)xfbSlot->offset + xfbSessionOffset;
+                    destinationOffsetOK = true;
+                }
+            }
+        }
+
+        if (!sizeOK) {
+            NSLog(@"MGL TESS XFB: capture size overflow for program %u",
+                  (unsigned)tesProgram->name);
+            [computeEncoder endEncoding];
+            [self clearStageBindingCopyBacks:&stageCopyBacks];
+            return false;
+        }
+
+        GLuint verticesPerPrimitive =
+            tesProgram->tess_gen_point_mode ? 1u :
+            (tesProgram->tess_gen_mode == GL_ISOLINES ? 2u : 3u);
+        NSUInteger primitiveBytes = 0u;
+        bool primitiveLayoutOK =
+            xfbStride != 0u &&
+            mglCheckedNSUIntegerProduct(xfbStride,
+                                        (NSUInteger)verticesPerPrimitive,
+                                        &primitiveBytes) &&
+            primitiveBytes > 0u;
+
+        if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
+            requiredBytes <= remainingVisibleBytes) {
+            [computeEncoder setBuffer:xfbMTL
+                               offset:destinationOffset
+                              atIndex:kMGLBufferSlot_IndirectParams];
+            xfbSlot->buf->ever_written = GL_TRUE;
+            xfbPrimitiveCapacity = captureVertices / verticesPerPrimitive;
+            xfbWrittenBytes = xfbPrimitiveCapacity * primitiveBytes;
+        } else {
+            xfbTemporary = [_device newBufferWithLength:requiredBytes
+                                                options:MTLResourceStorageModeShared];
+            if (!xfbTemporary) {
+                NSLog(@"MGL TESS XFB: failed to allocate %lu-byte overflow buffer",
+                      (unsigned long)requiredBytes);
+                [computeEncoder endEncoding];
+                [self clearStageBindingCopyBacks:&stageCopyBacks];
+                return false;
+            }
+            memset(xfbTemporary.contents, 0, requiredBytes);
+            [computeEncoder setBuffer:xfbTemporary
+                               offset:0
+                              atIndex:kMGLBufferSlot_IndirectParams];
+
+            /* Unknown layouts stay in the temporary buffer. This is an honest
+             * no-capture fallback; copying an unproven stride could overwrite
+             * bytes outside a complete transform-feedback primitive. */
+            if (primitiveLayoutOK && xfbMTL && destinationOffsetOK &&
+                remainingVisibleBytes >= primitiveBytes) {
+                xfbPrimitiveCapacity = MIN(captureVertices / verticesPerPrimitive,
+                                           remainingVisibleBytes / primitiveBytes);
+                xfbCopyBytes = xfbPrimitiveCapacity * primitiveBytes;
+                xfbWrittenBytes = xfbCopyBytes;
+                xfbCopyDestination = xfbMTL;
+                xfbCopyDestinationOffset = destinationOffset;
+                xfbDestination = xfbSlot->buf;
+            }
+        }
+    }
+
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
     MTLSize threadsPerTG = MTLSizeMake(vertsPerPatch, 1, 1);
     [computeEncoder dispatchThreadgroups:threadgroups
                      threadsPerThreadgroup:threadsPerTG];
 
     [computeEncoder endEncoding];
+
+    if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                     requireCPUVisibility:NO]) {
+        NSLog(@"MGL TESS ERROR: failed to copy isolated TES writable buffer prefixes");
+        return false;
+    }
+
+    if (xfbCopyBytes > 0u) {
+        id<MTLBlitCommandEncoder> xfbBlit = [_currentCommandBuffer blitCommandEncoder];
+        if (!xfbBlit) {
+            NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
+            return false;
+        }
+        [xfbBlit copyFromBuffer:xfbTemporary
+                   sourceOffset:0
+                       toBuffer:xfbCopyDestination
+              destinationOffset:xfbCopyDestinationOffset
+                           size:xfbCopyBytes];
+        [xfbBlit endEncoding];
+        if (xfbDestination) {
+            xfbDestination->ever_written = GL_TRUE;
+        }
+    }
+
+    if (xfbCaptureActive && xfbWrittenBytes > 0u) {
+        GLuint64 currentOffset = xfbState->buffer_write_offsets[0];
+        if ((GLuint64)xfbWrittenBytes > UINT64_MAX - currentOffset) {
+            xfbState->buffer_write_offsets[0] = UINT64_MAX;
+        } else {
+            xfbState->buffer_write_offsets[0] =
+                currentOffset + (GLuint64)xfbWrittenBytes;
+        }
+    }
 
     /* Update GL_PRIMITIVES_GENERATED query by reading the tess factor buffer
      * and computing the number of primitives generated per patch.  The TES
@@ -9976,7 +10597,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
             totalPrimitives += perPatch;
         }
 
-        mglRecordActivePrimitiveQueryDraw(glm_ctx, totalPrimitives, totalPrimitives);
+        GLuint64 writtenPrimitives = totalPrimitives;
+        if (xfbCaptureActive && writtenPrimitives > (GLuint64)xfbPrimitiveCapacity) {
+            writtenPrimitives = (GLuint64)xfbPrimitiveCapacity;
+        }
+        mglRecordActivePrimitiveQueryDraw(glm_ctx, totalPrimitives, writtenPrimitives);
     }
 
     return true;

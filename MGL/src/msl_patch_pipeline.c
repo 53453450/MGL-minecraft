@@ -42,6 +42,8 @@ GLboolean mslPipelineInit(MSLPatchPipeline *pipeline,
     pipeline->msl = initialMSL;  /* take ownership */
     pipeline->ctx.program = program;
     pipeline->ctx.stage = stage;
+    pipeline->ctx.final_resource_validation_ran = GL_FALSE;
+    pipeline->ctx.final_resource_validation_failed = GL_FALSE;
     pipeline->failed_step = -1;
 
     return GL_TRUE;

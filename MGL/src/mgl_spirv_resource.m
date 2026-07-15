@@ -146,6 +146,20 @@ GLuint mglMetalResourceSlotForElement(const SpirvResource *res, GLuint element)
     return mglMetalResourceSlot(res) + element;
 }
 
+GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res)
+{
+    if (!res || !res->msl_has_combined_sampler) {
+        return 0u;
+    }
+    return res->msl_combined_sampler_binding;
+}
+
+GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
+                                             GLuint element)
+{
+    return mglMetalCombinedSamplerSlot(res) + element;
+}
+
 bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
 {
     if (!res || !res->name) {

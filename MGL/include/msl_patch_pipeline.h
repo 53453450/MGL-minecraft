@@ -95,6 +95,8 @@ bool mglResolvePassthroughPatchModeForContext(GLMContext drawCtx,
 typedef struct MSLPatchContext {
     Program *program;
     int stage;
+    GLboolean final_resource_validation_ran;
+    GLboolean final_resource_validation_failed;
 } MSLPatchContext;
 
 /* Per-stage patch function signature.

@@ -112,6 +112,18 @@ typedef struct {
 
 #define kMGLMaxBufferSlots 31
 
+typedef struct {
+    id<MTLBuffer> __strong temporary;
+    id<MTLBuffer> __strong destination;
+    Buffer *destination_buffer;
+    NSUInteger destination_offset;
+    NSUInteger length;
+} MGLStageBindingCopyBack;
+
+typedef struct {
+    MGLStageBindingCopyBack slots[kMGLMaxBufferSlots];
+} MGLStageBindingCopyBackList;
+
 /* Referenced by the _metalLockHoldStartStack ivar and the METAL_LOCK macro. */
 #define MGL_LOCK_TIMING_STACK_CAPACITY 64
 
@@ -371,6 +383,21 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 
 /* P2-1: Methods called from MGLRenderer+Compute.m */
 - (bool)mapGLBuffersToMTLBufferMap:(BufferMapList *)buffer_map stage:(int)stage;
+- (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map
+                                           source:(id<MTLBuffer>)source
+                                   requiredLength:(NSUInteger)requiredLength;
+- (void)clearStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks;
+- (void)clearStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
+                           atIndex:(NSUInteger)index;
+- (bool)recordStageBindingCopyBack:(MGLStageBindingCopyBackList *)copyBacks
+                           atIndex:(NSUInteger)index
+                         temporary:(id<MTLBuffer>)temporary
+                        destination:(id<MTLBuffer>)destination
+                  destinationBuffer:(Buffer *)destinationBuffer
+                 destinationOffset:(NSUInteger)destinationOffset
+                             length:(NSUInteger)length;
+- (bool)flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
+              requireCPUVisibility:(BOOL)requireCPUVisibility;
 
 @end
 

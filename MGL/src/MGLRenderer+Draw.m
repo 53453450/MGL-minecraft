@@ -57,7 +57,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     bool baseBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
     bool attribBindingReserved[MAX_MAPPED_BUFFERS] = {false};
     int attribBindingIndex[MAX_ATTRIBS];
-    static id<MTLBuffer> minimumBindingBuffer = nil;
     Program *activeProgram;
     VertexArray *vao;
     GLuint mapCount;
@@ -249,42 +248,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
         }
-        if (!ptr->data.mtl_data) {
-            NSLog(@"MGL WARNING: Vertex buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
-            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _lastBoundVertexBuffers[bindingIndex].offset = 0;
-            continue;
-        }
-        if ((uintptr_t)ptr->data.mtl_data < 0x10000u) {
-            NSLog(@"MGL VBIND skip base slot %d buffer=%u: suspicious mtl_data pointer=%p",
-                  i, ptr->name, ptr->data.mtl_data);
-            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _lastBoundVertexBuffers[bindingIndex].offset = 0;
-            continue;
+        id<MTLBuffer> buffer = nil;
+        if (ptr->data.mtl_data &&
+            (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
+            buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
         }
 
-        id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-        if (!buffer) {
-            NSLog(@"MGL WARNING: Vertex buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
-            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _lastBoundVertexBuffers[bindingIndex].offset = 0;
-            continue;
-        }
-
-        NSUInteger metalLen = buffer.length;
+        NSUInteger metalLen = buffer ? buffer.length : 0u;
         NSUInteger bindOffset = (NSUInteger)offset;
-        if (bindOffset >= metalLen) {
-            NSLog(@"MGL VBIND skip base slot %d buffer=%u: offset=%lu length=%lu",
-                  i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
-            [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _lastBoundVertexBuffers[bindingIndex].offset = 0;
-            continue;
-        }
-
         NSUInteger reflectedRequiredBytes = 0;
         NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
         if (isBaseBinding && glBindingIndex < MAX_BINDABLE_BUFFERS) {
@@ -298,114 +269,45 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 requiredBindingBytes = reflectedRequiredBytes;
             }
         }
-        NSUInteger availableBytes = metalLen - bindOffset;
-        // When the Metal buffer is larger than the GL binding range, use the
-        // full Metal buffer size for validation.  Minecraft 1.21.11 commonly
-        // writes a full UBO struct (e.g. 64-byte Globals) but binds a slightly
-        // smaller range (56 bytes) due to padding differences.  Clamping here
-        // would force a zero-padded copy that truncates real shader data.
-        //
-        // Only clamp when the GL range is *larger* than the Metal buffer
-        // (emulated via setVertexBytes), not the other way around.
-        if (isBaseBinding &&
-            map->size > 0 &&
-            (NSUInteger)map->size > availableBytes) {
-            availableBytes = (NSUInteger)map->size;
-        }
+        NSUInteger availableBytes = buffer
+            ? mglBufferMapVisibleBackingBytes(map, metalLen)
+            : 0u;
 
-        if (isBaseBinding &&
-            glBindingIndex < MAX_BINDABLE_BUFFERS &&
+        if (!buffer || bindOffset >= metalLen ||
             availableBytes < requiredBindingBytes) {
-            BOOL boundPaddedBytes = NO;
-            uint8_t stackScratch[kMGLStageBindingStackScratchSize];
-            bzero(stackScratch, sizeof(stackScratch));
-
-            if (ptr->data.buffer_data && ptr->size > 0) {
-                uintptr_t cpuData = (uintptr_t)ptr->data.buffer_data;
-                if (cpuData >= 0x100000000ULL) {
-                    size_t cpuSize = (size_t)ptr->size;
-                    size_t cpuOffset = bindOffset;
-                    if (cpuOffset < cpuSize) {
-                        size_t remaining = cpuSize - cpuOffset;
-                        size_t paddedLen = (size_t)requiredBindingBytes;
-                        uint8_t *paddedBytes = stackScratch;
-                        bool usingHeap = false;
-
-                        if (paddedLen > sizeof(stackScratch)) {
-                            paddedBytes = (uint8_t *)calloc(1, paddedLen);
-                            usingHeap = (paddedBytes != NULL);
-                        }
-
-                        if (paddedBytes) {
-                            size_t copyLimit = remaining;
-                            if (map->size > 0 && (size_t)map->size < copyLimit) {
-                                copyLimit = (size_t)map->size;
-                            }
-                            size_t copyLen = MIN(paddedLen, copyLimit);
-                            memcpy(paddedBytes,
-                               ((const uint8_t *)ptr->data.buffer_data) + cpuOffset,
-                               copyLen);
-                            [_currentRenderEncoder setVertexBytes:paddedBytes
-                                                           length:paddedLen
-                                                          atIndex:bindingIndex];
-                            [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
-        if (kMGLVerboseBindLogs) {
-            NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=%lu available=%lu source=base-padded-bytes(min=%lu reflected=%lu copy=%lu range=%lld)",
-                  (unsigned long)bindingIndex,
-                  ptr->name,
-                  (unsigned long)bindOffset,
-                  (unsigned long)availableBytes,
-                  (unsigned long)requiredBindingBytes,
-                  (unsigned long)reflectedRequiredBytes,
-                  (unsigned long)copyLen,
-                  (long long)map->size);
-        }
-                            anyBindingPresent[bindingIndex] = true;
-                            boundPaddedBytes = YES;
-
-                            if (usingHeap) {
-                                free(paddedBytes);
-                            }
-                        } else {
-                            NSLog(@"MGL WARNING: VBIND failed to allocate %lu-byte scratch buffer for binding index=%lu",
-                                  (unsigned long)paddedLen, (unsigned long)bindingIndex);
-                        }
-                    }
-                }
-            }
-
-            if (!boundPaddedBytes) {
-                if (!minimumBindingBuffer || minimumBindingBuffer.length < requiredBindingBytes) {
-                    minimumBindingBuffer = [_device newBufferWithLength:requiredBindingBytes
-                                                                 options:MTLResourceStorageModeShared];
-                }
-                if (minimumBindingBuffer) {
-                    if (!_lastBoundValid ||
-                        _lastBoundVertexBuffers[bindingIndex].buffer != minimumBindingBuffer ||
-                        _lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                        [_currentRenderEncoder setVertexBuffer:minimumBindingBuffer
-                                                        offset:0
-                                                       atIndex:bindingIndex];
-                        _lastBoundVertexBuffers[bindingIndex].buffer = minimumBindingBuffer;
-                        _lastBoundVertexBuffers[bindingIndex].offset = 0;
-                        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-                    } else {
-                        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
-                    }
-                    if (kMGLVerboseBindLogs) {
-                        NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=0 available=%lu source=base-min-fallback(min=%lu reflected=%lu)",
-                              (unsigned long)bindingIndex,
-                              ptr->name,
-                              (unsigned long)minimumBindingBuffer.length,
-                              (unsigned long)requiredBindingBytes,
-                              (unsigned long)reflectedRequiredBytes);
-                    }
-                    anyBindingPresent[bindingIndex] = true;
-                    continue;
-                }
-            } else {
+            id<MTLBuffer> isolated =
+                [self isolatedStageBindingBufferForMap:map
+                                                 source:buffer
+                                         requiredLength:requiredBindingBytes];
+            if (!isolated) {
+                NSLog(@"MGL WARNING: VBIND failed to isolate undersized buffer=%u slot=%lu required=%lu available=%lu",
+                      ptr->name,
+                      (unsigned long)bindingIndex,
+                      (unsigned long)requiredBindingBytes,
+                      (unsigned long)availableBytes);
+                [_currentRenderEncoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
+                _lastBoundVertexBuffers[bindingIndex].buffer = nil;
+                _lastBoundVertexBuffers[bindingIndex].offset = 0;
                 continue;
             }
+
+            [_currentRenderEncoder setVertexBuffer:isolated
+                                            offset:0
+                                           atIndex:bindingIndex];
+            _lastBoundVertexBuffers[bindingIndex].buffer = isolated;
+            _lastBoundVertexBuffers[bindingIndex].offset = 0;
+            MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            anyBindingPresent[bindingIndex] = true;
+            if (kMGLVerboseBindLogs) {
+                NSLog(@"MGL SET VERTEX BUFFER index=%lu glName=%u offset=0 source=isolated required=%lu reflected=%lu available=%lu range=%lld",
+                      (unsigned long)bindingIndex,
+                      ptr->name,
+                      (unsigned long)requiredBindingBytes,
+                      (unsigned long)reflectedRequiredBytes,
+                      (unsigned long)availableBytes,
+                      (long long)map->size);
+            }
+            continue;
         }
 
         /* For small uniform constants (plain uniforms), use setVertexBytes
@@ -1110,7 +1012,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     bool isBaseBinding;
     bool anyBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
     bool baseBindingPresent[MAX_BINDABLE_BUFFERS] = {false};
-    static id<MTLBuffer> minimumBindingBuffer = nil;
     Program *activeProgram = NULL;
 
     if (kMGLVerboseBindLogs) {
@@ -1293,42 +1194,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             if (!ptr->data.mtl_data) {
                 [self bindMTLBuffer:ptr];
             }
-            if (!ptr->data.mtl_data) {
-                NSLog(@"MGL WARNING: Fragment buffer %u has no Metal backing after bind attempt, skipping slot %d", ptr->name, i);
-                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
-                continue;
-            }
-            if ((uintptr_t)ptr->data.mtl_data < 0x100000000ULL) {
-                NSLog(@"MGL FBIND skip slot=%u buffer=%u: suspicious mtl_data pointer=%p",
-                      i, ptr->name, ptr->data.mtl_data);
-                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
-                continue;
-            }
-            
-            id<MTLBuffer> buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-            if (!buffer) {
-                NSLog(@"MGL WARNING: Fragment buffer %u Metal object bridge failed, skipping slot %d", ptr->name, i);
-                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
-                continue;
+            id<MTLBuffer> buffer = nil;
+            if (ptr->data.mtl_data &&
+                (uintptr_t)ptr->data.mtl_data >= 0x100000000ULL) {
+                buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
             }
 
-            NSUInteger metalLen = buffer.length;
+            NSUInteger metalLen = buffer ? buffer.length : 0u;
             NSUInteger bindOffset = (NSUInteger)offset;
-            if (bindOffset >= metalLen) {
-                NSLog(@"MGL FBIND skip slot=%u buffer=%u: offset=%lu length=%lu",
-                      i, ptr->name, (unsigned long)bindOffset, (unsigned long)metalLen);
-                [_currentRenderEncoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
-                continue;
-            }
-
             NSUInteger reflectedRequiredBytes = 0;
             NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
             if (isBaseBinding && glBindingIndex < MAX_BINDABLE_BUFFERS) {
@@ -1342,109 +1215,47 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     requiredBindingBytes = reflectedRequiredBytes;
                 }
             }
-            NSUInteger availableBytes = metalLen - bindOffset;
-            // Match the vertex path: use full Metal buffer size when the GL
-            // range is smaller, so UBO padding (e.g. Globals 56→64) does not
-            // create zero-filled copies that truncate shader data.
-            if (isBaseBinding &&
-                map->size > 0 &&
-                (NSUInteger)map->size > availableBytes) {
-                availableBytes = (NSUInteger)map->size;
-            }
+            NSUInteger availableBytes = buffer
+                ? mglBufferMapVisibleBackingBytes(map, metalLen)
+                : 0u;
 
-            if (isBaseBinding &&
-                glBindingIndex < MAX_BINDABLE_BUFFERS &&
+            if (!buffer || bindOffset >= metalLen ||
                 availableBytes < requiredBindingBytes) {
-                BOOL boundPaddedBytes = NO;
-                uint8_t stackScratch[kMGLStageBindingStackScratchSize];
-                bzero(stackScratch, sizeof(stackScratch));
-
-                if (ptr->data.buffer_data && ptr->size > 0) {
-                    uintptr_t cpuData = (uintptr_t)ptr->data.buffer_data;
-                    if (cpuData >= 0x100000000ULL) {
-                        size_t cpuSize = (size_t)ptr->size;
-                        size_t cpuOffset = (size_t)offset;
-                        if (cpuOffset < cpuSize) {
-                            size_t remaining = cpuSize - cpuOffset;
-                            size_t paddedLen = (size_t)requiredBindingBytes;
-                            uint8_t *paddedBytes = stackScratch;
-                            bool usingHeap = false;
-
-                            if (paddedLen > sizeof(stackScratch)) {
-                                paddedBytes = (uint8_t *)calloc(1, paddedLen);
-                                usingHeap = (paddedBytes != NULL);
-                            }
-
-                            if (paddedBytes) {
-                                size_t copyLimit = remaining;
-                                if (map->size > 0 && (size_t)map->size < copyLimit) {
-                                    copyLimit = (size_t)map->size;
-                                }
-                                size_t copyLen = MIN(paddedLen, copyLimit);
-                                memcpy(paddedBytes,
-                                   ((const uint8_t *)ptr->data.buffer_data) + cpuOffset,
-                                   copyLen);
-                                [_currentRenderEncoder setFragmentBytes:paddedBytes
-                                                                 length:paddedLen
-                                                                atIndex:bindingIndex];
-                                [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
-                                if (kMGLVerboseBindLogs) {
-                                    NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=%lu available=%lu source=base-padded-bytes(min=%lu reflected=%lu copy=%lu range=%lld)",
-                                          (unsigned long)bindingIndex,
-                                          ptr->name,
-                                          (unsigned long)bindOffset,
-                                          (unsigned long)availableBytes,
-                                          (unsigned long)requiredBindingBytes,
-                                          (unsigned long)reflectedRequiredBytes,
-                                          (unsigned long)copyLen,
-                                          (long long)map->size);
-                                }
-                                anyBindingPresent[bindingIndex] = true;
-                                boundPaddedBytes = YES;
-
-                                if (usingHeap) {
-                                    free(paddedBytes);
-                                }
-                            } else {
-                                NSLog(@"MGL WARNING: FBIND failed to allocate %lu-byte scratch buffer for binding index=%lu",
-                                      (unsigned long)paddedLen, (unsigned long)bindingIndex);
-                            }
-                        }
-                    }
-                }
-
-                if (!boundPaddedBytes) {
-                    if (!minimumBindingBuffer || minimumBindingBuffer.length < requiredBindingBytes) {
-                        minimumBindingBuffer = [_device newBufferWithLength:requiredBindingBytes
-                                                                     options:MTLResourceStorageModeShared];
-                    }
-                    if (minimumBindingBuffer) {
-                        if (!_lastBoundValid ||
-                            _lastBoundFragmentBuffers[bindingIndex].buffer != minimumBindingBuffer ||
-                            _lastBoundFragmentBuffers[bindingIndex].offset != 0) {
-                            [_currentRenderEncoder setFragmentBuffer:minimumBindingBuffer
-                                                              offset:0
-                                                             atIndex:bindingIndex];
-                            _lastBoundFragmentBuffers[bindingIndex].buffer = minimumBindingBuffer;
-                            _lastBoundFragmentBuffers[bindingIndex].offset = 0;
-                            MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
-                        } else {
-                            MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
-                        }
-                        if (kMGLVerboseBindLogs) {
-                            NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=0 available=%lu source=base-min-fallback(min=%lu reflected=%lu)",
-                                  (unsigned long)bindingIndex,
-                                  ptr->name,
-                                  (unsigned long)minimumBindingBuffer.length,
-                                  (unsigned long)requiredBindingBytes,
-                                  (unsigned long)reflectedRequiredBytes);
-                        }
-                        anyBindingPresent[bindingIndex] = true;
-                        continue;
-                    }
-                } else {
+                id<MTLBuffer> isolated =
+                    [self isolatedStageBindingBufferForMap:map
+                                                     source:buffer
+                                             requiredLength:requiredBindingBytes];
+                if (!isolated) {
+                    NSLog(@"MGL WARNING: FBIND failed to isolate undersized buffer=%u slot=%lu required=%lu available=%lu",
+                          ptr->name,
+                          (unsigned long)bindingIndex,
+                          (unsigned long)requiredBindingBytes,
+                          (unsigned long)availableBytes);
+                    [_currentRenderEncoder setFragmentBuffer:nil
+                                                      offset:0
+                                                     atIndex:bindingIndex];
+                    _lastBoundFragmentBuffers[bindingIndex].buffer = nil;
+                    _lastBoundFragmentBuffers[bindingIndex].offset = 0;
                     continue;
                 }
+
+                [_currentRenderEncoder setFragmentBuffer:isolated
+                                                  offset:0
+                                                 atIndex:bindingIndex];
+                _lastBoundFragmentBuffers[bindingIndex].buffer = isolated;
+                _lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
+                anyBindingPresent[bindingIndex] = true;
+                if (kMGLVerboseBindLogs) {
+                    NSLog(@"MGL SET FRAGMENT BUFFER index=%lu glName=%u offset=0 source=isolated required=%lu reflected=%lu available=%lu range=%lld",
+                          (unsigned long)bindingIndex,
+                          ptr->name,
+                          (unsigned long)requiredBindingBytes,
+                          (unsigned long)reflectedRequiredBytes,
+                          (unsigned long)availableBytes,
+                          (long long)map->size);
+                }
+                continue;
             }
             
             /* For small uniform constants (plain uniforms), use setFragmentBytes
@@ -2114,8 +1925,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         [self setVertexTextureIfNeeded:texture atIndex:spirvBinding];
-        if (sampler && spirvBinding < kMaxFragmentSamplerSlots) {
-            [self setVertexSamplerStateIfNeeded:sampler atIndex:spirvBinding];
+        GLuint samplerBinding = sampledResource && sampledResource->msl_has_combined_sampler
+            ? mglMetalCombinedSamplerSlot(sampledResource)
+            : spirvBinding;
+        if (sampler &&
+            (!sampledResource || sampledResource->msl_has_combined_sampler) &&
+            samplerBinding < kMaxFragmentSamplerSlots) {
+            [self setVertexSamplerStateIfNeeded:sampler atIndex:samplerBinding];
         }
         Program *focusedTextureProgram = currentProgram;
         if (mglProgramNeedsBindingTrace(focusedTextureProgram)) {
@@ -2657,8 +2473,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         } else {
             nilSampledTextures++;
         }
-        if (sampler && spirvBinding < kMaxFragmentSamplerSlots) {
-            [self setFragmentSamplerStateIfNeeded:sampler atIndex:spirvBinding];
+        GLuint samplerBinding = sampledResource && sampledResource->msl_has_combined_sampler
+            ? mglMetalCombinedSamplerSlot(sampledResource)
+            : spirvBinding;
+        if (sampler &&
+            (!sampledResource || sampledResource->msl_has_combined_sampler) &&
+            samplerBinding < kMaxFragmentSamplerSlots) {
+            [self setFragmentSamplerStateIfNeeded:sampler atIndex:samplerBinding];
             boundSampledSamplers++;
         }
 
@@ -3685,6 +3506,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                         index:(int)resourceIndex];
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
+                GLuint samplerSlot =
+                    mglMetalCombinedSamplerSlotForElement(resource,
+                                                          (GLuint)element);
                 if (metalSlot >= TEXTURE_UNITS) {
                     break;
                 }
@@ -3719,13 +3543,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
                 if (arrayStage == _VERTEX_SHADER) {
                     [self setVertexTextureIfNeeded:metalTexture atIndex:metalSlot];
-                    if (metalSampler && metalSlot < kMaxFragmentSamplerSlots) {
-                        [self setVertexSamplerStateIfNeeded:metalSampler atIndex:metalSlot];
+                    if (resource->msl_has_combined_sampler && metalSampler &&
+                        samplerSlot < kMaxFragmentSamplerSlots) {
+                        [self setVertexSamplerStateIfNeeded:metalSampler atIndex:samplerSlot];
                     }
                 } else {
                     [self setFragmentTextureIfNeeded:metalTexture atIndex:metalSlot];
-                    if (metalSampler && metalSlot < kMaxFragmentSamplerSlots) {
-                        [self setFragmentSamplerStateIfNeeded:metalSampler atIndex:metalSlot];
+                    if (resource->msl_has_combined_sampler && metalSampler &&
+                        samplerSlot < kMaxFragmentSamplerSlots) {
+                        [self setFragmentSamplerStateIfNeeded:metalSampler atIndex:samplerSlot];
                     }
                 }
             }
@@ -5378,7 +5204,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (tesProgram->dirty_bits) {
             [self bindMTLProgram:tesProgram];
         }
-        [self dispatchTessEvaluationShader:drawCtx program:tesProgram first:first count:count];
+        if (![self dispatchTessEvaluationShader:drawCtx
+                                           program:tesProgram
+                                             first:first
+                                             count:count]) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
     }
 
     drawCtx->state.dirty_bits = DIRTY_ALL;
