@@ -160,6 +160,7 @@ help:
 		'  make core             Build only Core MGL and GLFW (Minecraft path).' \
 		'  make es               Build only the OpenGL ES MGL dylib.' \
 		'  make bench            Build the MGL benchmark.' \
+		'  make test-benchmark   Run the benchmark smoke gate.' \
 		'  make test-regression  Build the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test-msl-bindings Run focused MSL binding reconciliation tests.' \
@@ -438,11 +439,15 @@ compile-pkgdeps:
 
 # Benchmark target — builds the comprehensive MGL translation-overhead benchmark.
 # Depends on libmgl.dylib and libglfw.dylib being built first (run `make lib`).
+BENCHMARK_GIT_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+SYSTEM_GLFW_PREFIX ?= $(if $(wildcard /opt/homebrew/opt/glfw/include/GLFW/glfw3.h),/opt/homebrew/opt/glfw,$(shell brew --prefix glfw 2>/dev/null))
+
 bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		-I./external/glfw/include \
 		-IMGL/include -IMGL/include/GL \
 		-DMGL_GL_CORE \
+		-DMGL_BENCHMARK_GIT_COMMIT=\"$(BENCHMARK_GIT_COMMIT)\" \
 		-isysroot $(SDK_ROOT) \
 		benchmark/mgl_benchmark.c \
 		-L$(build_dir) -lmgl -lglfw \
@@ -457,16 +462,17 @@ bench: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 # framework via brew's GLFW (no MGL dependency).  Requires `brew install glfw`.
 bench-system: benchmark/mgl_benchmark.c
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
-		-I$(shell brew --prefix glfw)/include \
+		-I$(SYSTEM_GLFW_PREFIX)/include \
 		-IMGL/include -IMGL/include/GL \
 		-D__MGL_BENCHMARK_SYSTEM_GL__ \
+		-DMGL_BENCHMARK_GIT_COMMIT=\"$(BENCHMARK_GIT_COMMIT)\" \
 		-isysroot $(SDK_ROOT) \
 		benchmark/mgl_benchmark.c \
-		-L$(shell brew --prefix glfw)/lib -lglfw \
+		-L$(SYSTEM_GLFW_PREFIX)/lib -lglfw \
 		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
 		-framework IOKit -framework Foundation -framework QuartzCore \
 		-framework OpenGL \
-		-Wl,-rpath,$(shell brew --prefix glfw)/lib \
+		-Wl,-rpath,$(SYSTEM_GLFW_PREFIX)/lib \
 		-o $(build_dir)/mgl_benchmark_system
 	@echo "✅ System OpenGL benchmark built: $(build_dir)/mgl_benchmark_system"
 
@@ -536,6 +542,9 @@ $(build_dir)/test_msl_bindings: test_msl_bindings/main.c $(build_dir)/libmgl.dyl
 test-msl-bindings: $(build_dir)/test_msl_bindings
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_msl_bindings
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings
+test-benchmark: bench
+	scripts/run_benchmark_smoke.sh --no-build
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark
 
 -include $(deps)
