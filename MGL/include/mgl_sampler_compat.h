@@ -86,6 +86,12 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      int stage,
                                                      GLuint metalBinding);
 
+/* Resolves a sampler-like reflected resource to its GL texture unit. */
+GLint mglResolveSamplerResourceUnit(Program *program,
+                                    SpirvResource *res,
+                                    int stage,
+                                    int resType);
+
 /* Returns true if `program` has any sampler-like resource (across all stages
  * and the 5 sampler-like resource types) whose resolved GL texture unit
  * equals `unit`.  Resolution mirrors MGLRenderer

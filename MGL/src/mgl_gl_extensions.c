@@ -1547,6 +1547,9 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	 * tests (depth, stencil, scissor, etc.). */
 	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlBeginSampleQuery)
 	{
+		/* Deferred draws issued before glBeginQuery must be encoded before the
+		 * visibility query starts or they would be counted by this query. */
+		mglFlushCommandBuffer(ctx);
 		ctx->mtl_funcs.mtlBeginSampleQuery(ctx);
 	}
 
@@ -1554,6 +1557,8 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 	 * timestamp so mglEndQuery can compute accurate GPU elapsed time. */
 	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlBeginTimerQuery)
 	{
+		/* Establish the GL ordering boundary before the Metal timestamp. */
+		mglFlushCommandBuffer(ctx);
 		ctx->mtl_funcs.mtlBeginTimerQuery(ctx);
 	}
 }
@@ -2681,6 +2686,9 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 	 * draws where all fragments failed the depth/stencil test. */
 	if (mgl_query_target_is_sample(target) && ctx->mtl_funcs.mtlEndSampleQuery)
 	{
+		/* Draws inside the query are normally still in MGL's deferred command
+		 * buffer. Replay them while the Metal visibility query is active. */
+		mglFlushCommandBuffer(ctx);
 		GLuint64 gpuResult = ctx->mtl_funcs.mtlEndSampleQuery(ctx);
 		q->result = gpuResult;
 		q->sample_result_known = GL_TRUE;
@@ -2690,6 +2698,7 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 	 * elapsed time via Metal's sampleTimestamps API. */
 	if (target == GL_TIME_ELAPSED && ctx->mtl_funcs.mtlEndTimerQuery)
 	{
+		mglFlushCommandBuffer(ctx);
 		q->result = ctx->mtl_funcs.mtlEndTimerQuery(ctx);
 		q->timer_result_known = GL_TRUE;
 	}

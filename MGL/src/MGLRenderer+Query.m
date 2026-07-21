@@ -13,19 +13,10 @@
 -(void)mtlBeginSampleQuery:(GLMContext)glm_ctx
 {
     (void)glm_ctx;
-    if (!_visibilityResultBuffer) {
-        _visibilityResultBuffer = [_device newBufferWithLength:8
-                                                       options:MTLResourceStorageModeShared];
-        if (!_visibilityResultBuffer) {
-            NSLog(@"MGL ERROR: Failed to allocate visibility result buffer");
-            return;
-        }
-        _visibilityResultBuffer.label = @"MGL Visibility Result";
+    if (![_queryManager beginSampleQueryWithDevice:_device]) {
+        NSLog(@"MGL ERROR: Failed to allocate visibility result buffer");
+        return;
     }
-    /* Zero the buffer now so that if no draw happens before glEndQuery, the
-     * result is correctly 0. */
-    memset(_visibilityResultBuffer.contents, 0, _visibilityResultBuffer.length);
-    _sampleQueryActive = YES;
     /* End the current render encoder so the next draw creates a new one with
      * the visibility result buffer attached. */
     [self endRenderEncoding];
@@ -40,7 +31,7 @@
     (void)glm_ctx;
 
     /* End the current render encoder so the GPU writes the visibility result
-     * to the buffer.  Do this BEFORE clearing _sampleQueryActive so that
+     * to the buffer. Do this before clearing the manager's active flag so that
      * any code triggered by endRenderEncoding sees a consistent state
      * (query still active while the visibility-mode encoder is being torn
      * down). */
@@ -48,27 +39,20 @@
 
     /* Now that the encoder with visibility mode has been ended, clear the
      * flag so subsequent render encoders are created without it. */
-    _sampleQueryActive = NO;
+    [_queryManager endSampleQuery];
 
     /* Flush and wait for the GPU to complete so the buffer is readable. */
-    if (_visibilityResultBuffer) {
+    if ([_queryManager hasSampleQueryResultBuffer]) {
         [self flushCommandBuffer:YES];
     }
-
-    if (!_visibilityResultBuffer) {
-        return 0;
-    }
-
-    uint64_t *resultPtr = (uint64_t *)_visibilityResultBuffer.contents;
-    GLuint64 result = *resultPtr;
-    return result;
+    return [_queryManager sampleQueryResult];
 }
 
 #pragma mark Metal GPU timer query (GL_TIME_ELAPSED / GL_TIMESTAMP)
 
 /* Called from glBeginQuery(GL_TIME_ELAPSED).  Flushes all pending GPU
  * work so the GPU is idle, then samples the GPU timestamp.  The timestamp
- * is stored in _timerQueryBeginGPU and used by mtlEndTimerQuery to compute
+ * is stored by MGLQueryManager and used by mtlEndTimerQuery to compute
  * the elapsed GPU time.
  *
  * The flush ensures the begin timestamp is taken before any commands
@@ -80,7 +64,7 @@
     /* Flush and wait for all pending GPU work to complete so the GPU
      * is idle when we sample the begin timestamp. */
     [self flushCommandBuffer:YES];
-    _timerQueryBeginGPU = [self sampleGPUTimestamp];
+    [_queryManager beginTimerQueryWithDevice:_device];
 }
 
 /* Called from glEndQuery(GL_TIME_ELAPSED).  Flushes all pending GPU work
@@ -92,13 +76,7 @@
     (void)glm_ctx;
     /* Flush and wait for all GPU work submitted between begin and end. */
     [self flushCommandBuffer:YES];
-    uint64_t endGPU = [self sampleGPUTimestamp];
-    if (endGPU >= _timerQueryBeginGPU) {
-        return endGPU - _timerQueryBeginGPU;
-    }
-    /* Timestamp wrap (shouldn't happen with 64-bit counter, but guard
-     * against undefined behavior). */
-    return 0;
+    return [_queryManager endTimerQueryWithDevice:_device];
 }
 
 /* Returns the current GPU timestamp in nanoseconds.  Used by
@@ -110,19 +88,7 @@
 {
     (void)glm_ctx;
     [self flushCommandBuffer:YES];
-    return [self sampleGPUTimestamp];
-}
-
-/* Internal helper: samples the GPU timestamp via Metal's
- * sampleTimestamps:gpuTimestamp: API.  The GPU timestamp is in
- * nanoseconds. */
--(uint64_t)sampleGPUTimestamp
-{
-    if (!_device) return 0;
-    uint64_t cpuTime = 0;
-    uint64_t gpuTime = 0;
-    [_device sampleTimestamps:&cpuTime gpuTimestamp:&gpuTime];
-    return gpuTime;
+    return [_queryManager gpuTimestampWithDevice:_device];
 }
 
 #pragma mark C interface to mtlGetSync
@@ -181,12 +147,12 @@
     // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
     // completion via waitUntilCompleted. This runs regardless of
     // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
-    if (_currentCommandBuffer &&
-        _currentCommandBuffer.status == MTLCommandBufferStatusNotEnqueued &&
-        !_currentCommandBuffer.error) {
-        sync->mtl_command_buffer = (void *)CFBridgingRetain(_currentCommandBuffer);
-        id<MTLCommandBuffer> cbToCommit = _currentCommandBuffer;
-        _currentCommandBuffer = nil;
+    if (_renderPassManager.state->currentCommandBuffer &&
+        _renderPassManager.state->currentCommandBuffer.status == MTLCommandBufferStatusNotEnqueued &&
+        !_renderPassManager.state->currentCommandBuffer.error) {
+        id<MTLCommandBuffer> cbToCommit =
+            [_renderPassManager detachCurrentCommandBufferForSubmission];
+        sync->mtl_command_buffer = (void *)CFBridgingRetain(cbToCommit);
 
         @try {
             [self commitCommandBufferWithAGXRecovery:cbToCommit];
@@ -211,8 +177,7 @@
     // sync is explicitly enabled.
     if (kMGLDisableSharedEventSync) {
         sync->mtl_event = NULL;
-        _currentEvent = NULL;
-        _currentSyncName = 0;
+        [_renderPassManager clearPendingEvent];
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: mtlGetSync captured CB=%p (shared event sync disabled)",
                   sync->mtl_command_buffer);
@@ -220,23 +185,20 @@
         return;
     }
 
-    if (_currentEvent == NULL)
-    {
-        @try {
-            _currentEvent = [_device newEvent];
-            if (!_currentEvent) {
-                NSLog(@"MGL ERROR: Failed to create Metal event");
-                return;
-            }
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: Exception creating Metal event: %@", exception);
+    id<MTLEvent> pendingEvent = nil;
+    @try {
+        pendingEvent = [_renderPassManager preparePendingEventWithDevice:_device
+                                                                syncName:sync->name];
+        if (!pendingEvent) {
+            NSLog(@"MGL ERROR: Failed to create Metal event");
             return;
         }
+    } @catch (NSException *exception) {
+        NSLog(@"MGL ERROR: Exception creating Metal event: %@", exception);
+        return;
     }
 
-    _currentSyncName = sync->name;
-
-    sync->mtl_event = (void *)CFBridgingRetain(_currentEvent);
+    sync->mtl_event = (void *)CFBridgingRetain(pendingEvent);
 
     // Phase 3: Lock the sync list for the write path — newCommandBuffer
     // acquires the same lock on the read/clear path, so without this lock
@@ -244,57 +206,11 @@
     // Uses _syncListLock (independent from _metalStateLock) to avoid
     // deadlock if mtlGetSync: is ever called from within a Locked method.
     SYNC_LOCK();
-
-    if (_currentCommandBufferSyncList == NULL)
-    {
-        // CRITICAL SECURITY FIX: Check malloc results instead of using assert()
-        _currentCommandBufferSyncList = (SyncList *)malloc(sizeof(SyncList));
-        if (!_currentCommandBufferSyncList) {
-            NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList");
-            SYNC_UNLOCK();
-            return;
-        }
-
-        _currentCommandBufferSyncList->size = 8;
-        _currentCommandBufferSyncList->list = (Sync **)malloc(sizeof(Sync *) * 8);
-        if (!_currentCommandBufferSyncList->list) {
-            NSLog(@"MGL SECURITY ERROR: Failed to allocate SyncList array");
-            free(_currentCommandBufferSyncList);
-            _currentCommandBufferSyncList = NULL;
-            SYNC_UNLOCK();
-            return;
-        }
-
-        _currentCommandBufferSyncList->count = 0;
-    }
-
-    if (_currentCommandBufferSyncList->count >= _currentCommandBufferSyncList->size)
-    {
-        // CRITICAL SECURITY FIX: Check for integer overflow before multiplication
-        size_t current_size = (size_t)_currentCommandBufferSyncList->size;
-        if (current_size > SIZE_MAX / 2 / sizeof(Sync *)) {
-            NSLog(@"MGL SECURITY ERROR: SyncList size would overflow, preventing expansion");
-            SYNC_UNLOCK();
-            return;
-        }
-
-        size_t new_size = current_size * 2;
-        Sync **new_list = (Sync **)realloc(_currentCommandBufferSyncList->list,
-                                           sizeof(Sync *) * new_size);
-        if (!new_list) {
-            NSLog(@"MGL SECURITY ERROR: Failed to reallocate SyncList array");
-            SYNC_UNLOCK();
-            return;
-        }
-
-        _currentCommandBufferSyncList->size = new_size;
-        _currentCommandBufferSyncList->list = new_list;
-    }
-
-    _currentCommandBufferSyncList->list[_currentCommandBufferSyncList->count] = sync;
-    _currentCommandBufferSyncList->count++;
-
+    BOOL appended = [_renderPassManager appendSyncToCurrentCommandBuffer:sync];
     SYNC_UNLOCK();
+    if (!appended) {
+        return;
+    }
     } @finally {
         METAL_UNLOCK();
     }

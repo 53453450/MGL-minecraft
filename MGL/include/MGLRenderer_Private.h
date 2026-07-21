@@ -69,63 +69,12 @@ extern bool isColorAttachment(GLMContext ctx, GLuint attachment);
 extern FBOAttachment *getFBOAttachment(GLMContext ctx, Framebuffer *fbo, GLenum attachment);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 
-/* MTL4 compiler support (conditional) — needed by the _mtl4Compiler ivar. */
-#if __has_include(<Metal/MTL4Compiler.h>) && __has_include(<Metal/MTL4LibraryDescriptor.h>)
-#import <Metal/MTL4Compiler.h>
-#import <Metal/MTL4LibraryDescriptor.h>
-#define MGL_HAS_MTL4_COMPILER 1
-#else
-#define MGL_HAS_MTL4_COMPILER 0
-#endif
-
-/* === Types needed by ivar declarations below === */
-
-typedef struct SyncList_t {
-    GLuint count;
-    GLuint  size;
-    Sync **list;
-} SyncList;
-
-typedef struct MGLDrawable_t {
-    GLuint width;
-    GLuint height;
-    id<MTLTexture> drawbuffer;
-    id<MTLTexture> depthbuffer;
-    id<MTLTexture> stencilbuffer;
-} MGLDrawable;
-
-enum {
-    _FRONT,
-    _BACK,
-    _FRONT_LEFT,
-    _FRONT_RIGHT,
-    _BACK_LEFT,
-    _BACK_RIGHT,
-    _MAX_DRAW_BUFFERS
-};
-
-/* Last-bound state cache for render encoder dedup. */
-typedef struct {
-    id<MTLBuffer> __strong buffer;
-    NSUInteger offset;
-} MGLLastBoundBuffer;
-
-#define kMGLMaxBufferSlots 31
-
-typedef struct {
-    id<MTLBuffer> __strong temporary;
-    id<MTLBuffer> __strong destination;
-    Buffer *destination_buffer;
-    NSUInteger destination_offset;
-    NSUInteger length;
-} MGLStageBindingCopyBack;
-
-typedef struct {
-    MGLStageBindingCopyBack slots[kMGLMaxBufferSlots];
-} MGLStageBindingCopyBackList;
-
-/* Referenced by the _metalLockHoldStartStack ivar and the METAL_LOCK macro. */
-#define MGL_LOCK_TIMING_STACK_CAPACITY 64
+/* State container types and independent renderer subsystems. */
+#import "MGLRenderer_State.h"
+#import "MGLPipelineCache.h"
+#import "MGLBindingSync.h"
+#import "MGLQueryManager.h"
+#import "MGLRenderPassManager.h"
 
 /* Shared helpers — declared here because inline functions in per-category
  * private headers (e.g. mglTraceRTYFlipDiagnosticsEnabled) call them.
@@ -187,195 +136,59 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
  *     C GL layer (glm_context.h)
  *   - _activeState: used by MGL_STATE() in the Metal layer
  *
- * Both default to &ctx->state (live state).  During batch replay,
- * restoreStateForBatch sets both to the snapshot.  During parallel-worker
- * encoding, encodeBatchForParallelWorker redirects both to the worker's
- * GLMState.  teardownBatchReplayForContext resets both back to &ctx->state.
+ * Two valid configurations:
+ *   (A) _activeState == NULL  -> MGL_STATE() falls through to ctx->active_state
+ *                                (the default / post-teardown mode; both
+ *                                conceptually refer to &ctx->state)
+ *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
+ *                                (the redirected mode used during parallel-
+ *                                worker encode and batch replay)
  *
- * NEVER set one without the other — a desync causes STATE() and MGL_STATE()
- * to read different GLMState objects, producing wrong binds/dirty bits. */
+ * Enforcement: all writes to either proxy MUST go through the centralized
+ * helpers declared below this macro:
+ *   - mglSetActiveStateForContext:state:      -> config (B)
+ *   - mglRestoreLiveActiveStateForContext:     -> config (A)
+ *   - mglAssertDualProxyInSyncForContext:      -> debug-mode checkpoint
+ * These prevent the desync that previously occurred when callers wrote one
+ * proxy without the other (e.g., the old encodeBatchForParallelWorker wrote
+ * only ctx->active_state = workerState, leaving _activeState stale until
+ * restoreStateForBatch synced it — a window in which any MGL_STATE() read
+ * would have returned the wrong state).
+ *
+ * Checkpoints (NSCAssert, compiled out in release): flushDrawBuffer entry,
+ * encodeBatchForParallelWorker entry/exit, restoreStateForBatch entry,
+ * teardownBatchReplayForContext entry/exit.
+ *
+ * NOTE on multi-threaded encode: the helpers make the existing sequential
+ * parallel-encode path safe, but true multi-threaded encode on a single
+ * GLMContext is still blocked by the shared ctx->active_state pointer itself
+ * (see the Bug D10 CONCURRENCY NOTE in encodeBatchForParallelWorker).
+ * Enabling true concurrency requires per-worker GLMContext or copy-on-write
+ * state, which is a separate, larger refactor.
+ *
+ * A desync causes STATE() and MGL_STATE() to read different GLMState objects,
+ * producing wrong binds/dirty bits — intermittent render errors that are
+ * extremely hard to debug. */
 #define MGL_STATE(context)  (_activeState ? _activeState : (context)->active_state)
 
 @interface MGLRenderer () {
-    NSView *_view;
-    CAMetalLayer *_layer;
-    id<CAMetalDrawable> _drawable;
+    /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
+     * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name
-    GLMState *_activeState;  // NULL = use ctx->active_state (see invariant above)
-    id<MTLDevice> _device;
-    MGLCapability _capability;
-    NSRecursiveLock *_metalStateLock;  // reentrant — dense call graph requires it
-    double _metalLockHoldStartStack[MGL_LOCK_TIMING_STACK_CAPACITY];
-    NSUInteger _metalLockHoldDepth;
-    os_unfair_lock _syncListLock;
-    /* P1-1 fix: dedicated lock for GPU error-tracking ivars below.
-     * MUST NOT be _metalStateLock — addCompletedHandler runs on a Metal
-     * worker thread and the render thread calls waitUntilCompleted while
-     * holding _metalStateLock, so using _metalStateLock in the completion
-     * handler would deadlock (waitUntilCompleted waits for the handler). */
-    os_unfair_lock _gpuErrorLock;
-    NSUInteger _consecutiveGPUErrors;
-    NSUInteger _consecutiveGPUSuccesses;
-    NSTimeInterval _lastGPUErrorTime;
-    BOOL _gpuErrorRecoveryMode;
-    GLuint _interfaceMismatchBlockedProgram;
-    CFTimeInterval _interfaceMismatchBlockedUntil;
-    uint32_t _interfaceMismatchBlockedStreak;
-    NSMutableArray *_proactiveTextures;
-    MGLDrawable _drawBuffers[_MAX_DRAW_BUFFERS];
-    BOOL _defaultDrawableWrittenSinceLastSwap;
-    MTLBlendFactor _src_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor _dst_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor _src_blend_alpha_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendFactor _dst_blend_alpha_factor[MAX_COLOR_ATTACHMENTS];
-    MTLBlendOperation _rgb_blend_operation[MAX_COLOR_ATTACHMENTS];
-    MTLBlendOperation _alpha_blend_operation[MAX_COLOR_ATTACHMENTS];
-    MTLColorWriteMask _color_mask[MAX_COLOR_ATTACHMENTS];
-    id<MTLCommandQueue> _commandQueue;
-    id<MTLRenderPipelineState> _pipelineState;
-    MTLPixelFormat _pipelineColor0Format;
-    MTLPixelFormat _pipelineDepthFormat;
-    MTLPixelFormat _pipelineStencilFormat;
-    GLuint _pipelineProgramName;
-    id<MTLFunction> _pipelineVertexFunction;
-    id<MTLFunction> _pipelineFragmentFunction;
-    /* Pipeline cache values are NSDictionary wrappers carrying the pipeline
-     * state plus the full 64-bit pipeline/vertex signatures. The string key
-     * also includes Program lifetime/generation identity. Recency is tracked
-     * separately because NSDictionary enumeration order is unspecified. */
-    NSMutableDictionary<NSString *, id> *_pipelineStateCache;
-    NSMutableOrderedSet<NSString *> *_pipelineStateCacheLRU;
-    /* P0-2: Pipeline descriptor cache — caches MTLRenderPipelineDescriptor
-     * objects to avoid expensive descriptor regeneration on PSO cache miss.
-     * Two-level caching: descriptor cache (cheap) → PSO cache (expensive).
-     * Key: same as _pipelineStateCache (program + sig + vsig).
-     * Value: MTLRenderPipelineDescriptor. */
-    NSMutableDictionary<NSString *, MTLRenderPipelineDescriptor *> *_pipelineDescriptorCache;
-    NSMutableOrderedSet<NSString *> *_pipelineDescriptorCacheLRU;
-    /* Gated by MGL_DS_CACHE (default ON; =0 disables).  Maps cache key →
-     * id<MTLDepthStencilState> with simple LRU eviction at 64 entries. */
-    NSMutableDictionary *_depthStencilStateCache;
-    NSMutableOrderedSet *_depthStencilStateCacheLRU;
-    BOOL _dsCacheEnabled;
-    MTLRenderPassDescriptor *_renderPassDescriptor;
-    Framebuffer *_renderPassFramebuffer;
-    GLuint _renderPassFramebufferName;
-    GLenum _renderPassDrawBuffer;
-    GLsizei _renderPassDrawBufferCount;
-    GLenum _renderPassDrawBuffers[MAX_COLOR_ATTACHMENTS];
-    uint64_t _traceReplayFlushId;
-    uint32_t _traceReplayBatchIndex;
-    GLuint _dontCareFrameGeneration;
-    id<MTLCommandBuffer> _currentCommandBuffer;
-    SyncList  *_currentCommandBufferSyncList;
-    id<MTLBuffer> _mdiArgsScratchBuffer;
-    NSUInteger _mdiArgsScratchCapacity;
-    NSUInteger _mdiArgsScratchOffset;
-    id<MTLRenderCommandEncoder> _currentRenderEncoder;
-    /* When YES during parallel encoding, processGLStateLocked skips encoder
-     * reconstruction paths (nil-encoder recovery, command-buffer rotation,
-     * FBO-mismatch rebuild) because the caller (encodeBatchForParallelWorker)
-     * owns the sub-encoder lifecycle.  This prevents the parallel sub-encoder
-     * from being destroyed mid-encode. */
-    BOOL _parallelEncodeActive;
-    /* Phase 2 #6: Binary Archive for PSO compile acceleration.
-     * Loaded from disk on init (if cache exists), used as descriptor.binaryArchives
-     * on every PSO compile to skip shader compilation when a cached binary exists,
-     * and serialized back to disk on dealloc.  Gated by MGL_BINARY_ARCHIVE. */
-    id<MTLBinaryArchive> _binaryArchive;
-    BOOL _binaryArchiveEnabled;
-#if MGL_HAS_MTL4_COMPILER
-    id<MTL4Compiler> _mtl4Compiler;
-#endif
-    id<MTLTexture> _fallbackRenderTargetTexture;
-    id<MTLBuffer> _visibilityResultBuffer;
-    BOOL _sampleQueryActive;
-    uint64_t _timerQueryBeginGPU;
-    id<MTLTexture> _transientDepthTexture;
-    NSUInteger _transientDepthTextureWidth;
-    NSUInteger _transientDepthTextureHeight;
-    id<MTLTexture> _fallbackSampledTexture;
-    id<MTLTexture> _fallbackCubeSampledTexture;
-    id<MTLBuffer> _fallbackTextureBufferStorage;
-    id<MTLBuffer> _tessFactorBuffer;
-    id<MTLBuffer> _tcsOutputBuffer;     /* TCS per-vertex output (spvOut, buffer 28) */
-    id<MTLBuffer> _tcsPatchOutBuffer;   /* TCS per-patch output (spvPatchOut, buffer 27) */
-    NSUInteger _tcsOutputStride;        /* bytes per TCS output vertex */
-    GLuint _tcsOutVertices;             /* TCS output vertices per patch */
-    id<MTLTexture> _fallbackSintTextureBuffer;
-    NSMutableDictionary<NSNumber *, id<MTLTexture>> *_fallbackSampledTextureCache;
-    NSMutableDictionary<NSString *, id<MTLBuffer>> *_doubleVertexAttribBufferCache;
-    id<MTLSamplerState> _fallbackSamplerState;
-    MGLFragmentTextureTraceBinding _fragmentTextureTraceBindings[TEXTURE_UNITS];
-    NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *_scaledBlitPipelineCache;
-    id<MTLSamplerState> _scaledBlitNearestSampler;
-    id<MTLSamplerState> _scaledBlitLinearSampler;
-    NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *_scaledDepthBlitPipelineCache;
-    NSMutableDictionary<NSNumber *, id<MTLComputePipelineState>> *_msaaIntegerResolvePipelineCache;
-    NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *_clearRectPipelineCache;
-    id<MTLDepthStencilState> _clearRectDepthState;
-    BOOL _currentDrawUsesRTSampledCopy;
-    GLuint _blitOperationComplete;
-    id<MTLEvent> _currentEvent;
-    GLsizei _currentSyncName;
-    BOOL _isCommittingCommandBuffer;
-    MGLLastBoundBuffer _lastBoundVertexBuffers[kMGLMaxBufferSlots];
-    MGLLastBoundBuffer _lastBoundFragmentBuffers[kMGLMaxBufferSlots];
-    id<MTLTexture> _lastBoundVertexTextures[TEXTURE_UNITS];
-    id<MTLTexture> _lastBoundFragmentTextures[TEXTURE_UNITS];
-    id<MTLSamplerState> _lastBoundVertexSamplers[TEXTURE_UNITS];
-    id<MTLSamplerState> _lastBoundFragmentSamplers[TEXTURE_UNITS];
-    uint32_t _lastBoundVertexBufferMask;
-    uint32_t _lastBoundFragmentBufferMask;
-    uint64_t _lastBoundTextureSlotMask[2];
-    id<MTLRenderPipelineState> _lastPipelineState;
-    id<MTLDepthStencilState> _lastDepthStencilState;
-    MTLViewport _lastViewport;
-    MTLScissorRect _lastScissorRect;
-    MTLCullMode _lastCullMode;
-    MTLWinding _lastFrontFacingWinding;
-    MTLTriangleFillMode _lastTriangleFillMode;
-    float _lastDepthBias;
-    float _lastDepthBiasClamp;
-    float _lastDepthSlopeScale;
-    BOOL _lastBoundValid;
-    /* Cached result of MGL_MSL_CACHE (default ON; =0 disables). When YES the
-     * renderer reads Program::mslCacheValid-gated cached query results
-     * instead of re-scanning MSL with strstr per draw. */
-    BOOL _mslCacheEnabled;
-    /* Bounded per-Program cache for MSL texture type lookups performed by
-     * getProgramExpectedTextureType:type:index:.  Key is a string of the form
-     * "program_instance_generation_stage_binding"; value is an NSNumber
-     * wrapping an MTLTextureType.  Program instances have process-unique IDs,
-     * so allocator address reuse cannot return another Program's value. */
-    NSCache<NSString *, NSNumber *> *_mslTextureTypeCache;
-
-    /* === Task 4: Snapshot Arena (bump allocator) ===
-     * Gated by MGL_ARENA_SNAPSHOT (default ON; =0 disables).  When enabled,
-     * batch snapshot allocations (GLMState, VertexArray, commands array) come
-     * from _batchArena instead of individual malloc calls, and are freed via
-     * arena reset instead of individual free calls. */
-    MGLBatchArena _batchArena;
-    BOOL _arenaSnapshotEnabled;
-    /* === Task 5: PSO dedup gated fast path ===
-     * Cached result of MGL_PSO_DEDUP (default ON; =0 disables). When ON, the
-     * _lastPipelineState = nil assignment in
-     * syncPipelineStateWithDeferredBufferMap: is conditionally skipped when
-     * the render encoder is unchanged and the pipeline state pointer matches
-     * the previously bound state, allowing setRenderPipelineState: dedup. */
-    BOOL _psoDedupEnabled;
-    /* Same-key restore skip (default ON; MGL_SKIP_SAME_KEY_RESTORE=0 off).
-     * Consecutive deferred batches with equal MGLStateKey reuse encoder state
-     * without memcpy(GLMState) + full processGLState. */
-    BOOL _skipSameKeyRestoreEnabled;
-    /* Dirty-bit delta from MGLStateKey subfields (default ON;
-     * MGL_DIRTY_KEY_DELTA=0 off). Only applies on restore path when not
-     * same-key skipped. */
-    BOOL _dirtyKeyDeltaEnabled;
+    MGLRendererCoreState _core;
+    MGLGPURecoveryState _gpuRecovery;
+    MGLPipelineCache *_pipelineCache;
+    MGLQueryManager *_queryManager;
+    MGLRenderPassManager *_renderPassManager;
+    MGLResourceFallbackState _resourceFallback;
+    MGLBlitState _blit;
+    MGLBindingSync *_bindingSync;
+    MGLTessellationState _tessellation;
+    MGLBatchingState _batching;
 }
 
 /* P1-5: cap an auxiliary cache at `limit` entries with FIFO eviction of
- * the oldest 1/4 on overflow.  Mirrors the _pipelineStateCache eviction
+ * the oldest 1/4 on overflow.  Mirrors the pipeline state cache eviction
  * strategy.  Keeps unbounded auxiliary caches (blit/clear/resolve pipelines,
  * fallback textures, double-vertex buffers) from growing without bound. */
 - (void)mglCapAuxCache:(NSMutableDictionary *)cache
@@ -399,7 +212,44 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 - (bool)flushStageBindingCopyBacks:(MGLStageBindingCopyBackList *)copyBacks
               requireCPUVisibility:(BOOL)requireCPUVisibility;
 
+/* DUAL-PROXY INVARIANT HELPERS: centralize writes to _core.activeState and
+ * ctx->active_state to prevent desync.  See the DUAL-PROXY INVARIANT comment
+ * above MGL_STATE() for the invariant definition.
+ *
+ * Use these instead of writing either proxy directly:
+ *   - mglSetActiveStateForContext:state:    parallel-worker redirect or any
+ *                                          case where both proxies must point
+ *                                          to the same non-default GLMState
+ *   - mglRestoreLiveActiveStateForContext:  batch replay teardown (revert to
+ *                                          live ctx->state, ivar = NULL)
+ *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
+ *                                          (NSCAssert compiled out in release)
+ */
+- (void)mglSetActiveStateForContext:(GLMContext)glm_ctx
+                               state:(GLMState *)state;
+- (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
+- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
+
 @end
+
+/* Temporary compatibility aliases for the state-container migration.
+ * New or touched code should prefer the explicit container fields directly.
+ * These aliases keep the existing category implementations behavior-identical
+ * while shrinking MGLRenderer's ivar surface. */
+#define _view _core.view
+#define _layer _core.layer
+#define _drawable _core.drawable
+#define _activeState _core.activeState
+#define _device _core.device
+#define _capability _core.capability
+#define _metalStateLock _core.metalStateLock
+#define _metalLockHoldStartStack _core.metalLockHoldStartStack
+#define _metalLockHoldDepth _core.metalLockHoldDepth
+#define _syncListLock _core.syncListLock
+#define _proactiveTextures _core.proactiveTextures
+#define _drawBuffers _core.drawBuffers
+#define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
+#define _commandQueue _core.commandQueue
 
 /* === Aggregate imports of per-category private headers ===
  * These headers declare ObjC methods and C helpers implemented in each

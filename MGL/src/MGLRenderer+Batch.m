@@ -6,14 +6,92 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
+#import "mgl_sampler_compat.h"
 
-static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger index)
+static BOOL mglTextureMayNeedUploadEncoderDuringReplay(Texture *tex)
 {
-    if (index < 64) {
-        mask[0] |= 1ULL << index;
-    } else {
-        mask[1] |= 1ULL << (index - 64);
+    if (!tex) {
+        return NO;
     }
+
+    if (tex->target == GL_TEXTURE_BUFFER &&
+        tex->texture_buffer &&
+        tex->texture_buffer->data.dirty_bits) {
+        return YES;
+    }
+
+    if (!tex->mtl_data) {
+        return YES;
+    }
+
+    if ((tex->dirty_bits &
+         (DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA | DIRTY_TEXTURE_ACCESS)) != 0) {
+        return YES;
+    }
+
+    if (tex->is_render_target) {
+        id<MTLTexture> existingTexture = (__bridge id<MTLTexture>)(tex->mtl_data);
+        if (!existingTexture) {
+            return YES;
+        }
+
+        MTLTextureUsage requiredRenderTargetUsage =
+            MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        NSUInteger requiredMipLevels =
+            (tex->target == GL_RENDERBUFFER || tex->samples > 1u)
+                ? 1u
+                : ((tex->mipmap_levels > 1u) ? (NSUInteger)tex->mipmap_levels : 1u);
+        if ((existingTexture.usage & requiredRenderTargetUsage) != requiredRenderTargetUsage ||
+            requiredMipLevels > existingTexture.mipmapLevelCount) {
+            return YES;
+        }
+    }
+
+    return NO;
+}
+
+static BOOL mglProgramSetSamplesTextureUnit(Program *program,
+                                            Program *vertexProgram,
+                                            Program *fragmentProgram,
+                                            GLuint unit)
+{
+    return mglProgramSamplesTextureUnit(program, unit) ||
+           mglProgramSamplesTextureUnit(vertexProgram, unit) ||
+           mglProgramSamplesTextureUnit(fragmentProgram, unit);
+}
+
+static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *batch)
+{
+    if (!batch || !batch->state_snapshot) {
+        return NO;
+    }
+
+    const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    Program *program = (Program *)batch->retained_program;
+    Program *vertexProgram = (Program *)batch->retained_vertex_program;
+    Program *fragmentProgram = (Program *)batch->retained_fragment_program;
+
+    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+        if (!mglProgramSetSamplesTextureUnit(program, vertexProgram, fragmentProgram, unit)) {
+            continue;
+        }
+
+        Texture *active = snapshot->active_textures[unit];
+        if (mglTextureMayNeedUploadEncoderDuringReplay(active)) {
+            return YES;
+        }
+
+        const TextureUnit *textureUnit = &snapshot->texture_units[unit];
+        for (GLuint target = 0; target < _MAX_TEXTURE_TYPES; target++) {
+            Texture *bound = textureUnit->textures[target];
+            if (bound != active &&
+                mglTextureMayNeedUploadEncoderDuringReplay(bound)) {
+                return YES;
+            }
+        }
+    }
+
+    return NO;
 }
 
 @implementation MGLRenderer (Batch)
@@ -68,8 +146,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             id<MTLTexture> depthMTL = (rtDepth && rtDepth->mtl_data)
                 ? (__bridge id<MTLTexture>)(rtDepth->mtl_data)
                 : nil;
-            id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
-            id<MTLTexture> rpDepth = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+            id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
+            id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.texture : nil;
             mglTraceLog("RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) blend=%d cull=%d colorMask=%d%d%d%d level=%u texInit(ever=%u full=%u source=%u) levels=%u mips=%u mipmapped=%u mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
                         (unsigned long long)hit,
                         (unsigned)fbo->name,
@@ -142,7 +220,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         }
     }
 
-    if (!_renderPassDescriptor) {
+    if (!_renderPassManager.state->renderPassDescriptor) {
         return;
     }
 
@@ -177,7 +255,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             continue;
         }
         for (GLuint colorSlot = 0u; colorSlot < MAX_COLOR_ATTACHMENTS; colorSlot++) {
-            if (_renderPassDescriptor.colorAttachments[colorSlot].texture == mtlTex) {
+            if (_renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].texture == mtlTex) {
                 [self markCurrentFramebufferColorAttachmentWrittenAtIndex:attachmentIndex];
                 break;
             }
@@ -251,227 +329,41 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 
 - (void)invalidateLastBoundState
 {
-    for (int i = 0; i < kMGLMaxBufferSlots; i++) {
-        _lastBoundVertexBuffers[i].buffer = nil;
-        _lastBoundVertexBuffers[i].offset = 0;
-        _lastBoundFragmentBuffers[i].buffer = nil;
-        _lastBoundFragmentBuffers[i].offset = 0;
-    }
-    for (int i = 0; i < TEXTURE_UNITS; i++) {
-        _lastBoundVertexTextures[i] = nil;
-        _lastBoundFragmentTextures[i] = nil;
-        _lastBoundVertexSamplers[i] = nil;
-        _lastBoundFragmentSamplers[i] = nil;
-    }
-    _lastBoundVertexBufferMask = 0;
-    _lastBoundFragmentBufferMask = 0;
-    _lastBoundTextureSlotMask[0] = 0;
-    _lastBoundTextureSlotMask[1] = 0;
-    _lastPipelineState = nil;
-    _lastDepthStencilState = nil;
-    _lastViewport = (MTLViewport){0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
-    _lastScissorRect = (MTLScissorRect){0, 0, 0, 0};
-    _lastCullMode = MTLCullModeNone;
-    _lastFrontFacingWinding = MTLWindingClockwise;
-    _lastTriangleFillMode = MTLTriangleFillModeFill;
-    _lastDepthBias = 0;
-    _lastDepthBiasClamp = 0;
-    _lastDepthSlopeScale = 0;
-    _lastBoundValid = NO;
+    [_bindingSync invalidate];
 }
 
 - (void)saveDedupStateToWorker:(MGLWorkerContext *)worker
 {
     if (!worker) return;
 
-    worker->encoder = _currentRenderEncoder;
+    worker->encoder = _renderPassManager.state->currentRenderEncoder;
+    [_bindingSync copyStateTo:&worker->bindingState];
 
-    /* The masks are owned by the dedup cache and use Metal resource indices.
-     * They accumulate every slot touched on the current encoder, so a worker
-     * snapshot never omits an older cache entry that is still observable. */
-    static uint64_t s_sparse_iteration_count = 0;
-    static uint64_t s_slot_iteration_count = 0;
-    BOOL trace_sparse = (getenv("MGL_TRACE_SPARSE_BINDING") != NULL);
-
-    uint32_t vbuf_mask = _lastBoundVertexBufferMask;
-    worker->saved_vbuf_mask = vbuf_mask;
-    while (vbuf_mask) {
-        int i = __builtin_ctz(vbuf_mask);
-        worker->lastBoundVertexBuffers[i] = _lastBoundVertexBuffers[i];
-        vbuf_mask &= ~(1U << i);
-        if (trace_sparse) s_slot_iteration_count++;
-    }
-
-    uint32_t fbuf_mask = _lastBoundFragmentBufferMask;
-    worker->saved_fbuf_mask = fbuf_mask;
-    while (fbuf_mask) {
-        int i = __builtin_ctz(fbuf_mask);
-        worker->lastBoundFragmentBuffers[i] = _lastBoundFragmentBuffers[i];
-        fbuf_mask &= ~(1U << i);
-        if (trace_sparse) s_slot_iteration_count++;
-    }
-
-    uint64_t tex_mask_lo = _lastBoundTextureSlotMask[0];
-    worker->saved_texture_mask[0] = tex_mask_lo;
-    while (tex_mask_lo) {
-        int i = __builtin_ctzll(tex_mask_lo);
-        worker->lastBoundVertexTextures[i] = _lastBoundVertexTextures[i];
-        worker->lastBoundFragmentTextures[i] = _lastBoundFragmentTextures[i];
-        worker->lastBoundVertexSamplers[i] = _lastBoundVertexSamplers[i];
-        worker->lastBoundFragmentSamplers[i] = _lastBoundFragmentSamplers[i];
-        tex_mask_lo &= ~(1ULL << i);
-        if (trace_sparse) s_slot_iteration_count++;
-    }
-
-    uint64_t tex_mask_hi = _lastBoundTextureSlotMask[1];
-    worker->saved_texture_mask[1] = tex_mask_hi;
-    while (tex_mask_hi) {
-        int i = __builtin_ctzll(tex_mask_hi) + 64;
-        worker->lastBoundVertexTextures[i] = _lastBoundVertexTextures[i];
-        worker->lastBoundFragmentTextures[i] = _lastBoundFragmentTextures[i];
-        worker->lastBoundVertexSamplers[i] = _lastBoundVertexSamplers[i];
-        worker->lastBoundFragmentSamplers[i] = _lastBoundFragmentSamplers[i];
-        tex_mask_hi &= ~(1ULL << (i - 64));
-        if (trace_sparse) s_slot_iteration_count++;
-    }
-
-    if (trace_sparse) {
-        s_sparse_iteration_count++;
-        if ((s_sparse_iteration_count % 1000) == 0) {
-            NSLog(@"MGL SPARSE: %llu calls, %llu slots (avg %.1f slots/call, baseline would be ~192)",
-                  s_sparse_iteration_count,
-                  s_slot_iteration_count,
-                  (double)s_slot_iteration_count / s_sparse_iteration_count);
-        }
-    }
-    worker->lastPipelineState = _lastPipelineState;
-    worker->lastDepthStencilState = _lastDepthStencilState;
-    worker->lastViewport = _lastViewport;
-    worker->lastScissorRect = _lastScissorRect;
-    worker->lastCullMode = _lastCullMode;
-    worker->lastFrontFacingWinding = _lastFrontFacingWinding;
-    worker->lastTriangleFillMode = _lastTriangleFillMode;
-    worker->lastDepthBias = _lastDepthBias;
-    worker->lastDepthBiasClamp = _lastDepthBiasClamp;
-    worker->lastDepthSlopeScale = _lastDepthSlopeScale;
-    worker->lastBoundValid = _lastBoundValid;
-
-    worker->pipelineState = _pipelineState;
-    worker->pipelineColor0Format = _pipelineColor0Format;
-    worker->pipelineDepthFormat = _pipelineDepthFormat;
-    worker->pipelineStencilFormat = _pipelineStencilFormat;
-    worker->pipelineProgramName = _pipelineProgramName;
-
-    worker->mdiArgsScratchOffset = _mdiArgsScratchOffset;
-
-    worker->traceReplayFlushId = _traceReplayFlushId;
-    worker->traceReplayBatchIndex = _traceReplayBatchIndex;
+    worker->pipelineState = _pipelineCache.state->pipelineState;
+    worker->pipelineColor0Format = _pipelineCache.state->pipelineColor0Format;
+    worker->pipelineDepthFormat = _pipelineCache.state->pipelineDepthFormat;
+    worker->pipelineStencilFormat = _pipelineCache.state->pipelineStencilFormat;
+    worker->pipelineProgramName = _pipelineCache.state->pipelineProgramName;
+    worker->mdiArgsScratchOffset = _renderPassManager.state->mdiArgsScratchOffset;
+    worker->traceReplayFlushId = _renderPassManager.state->traceReplayFlushId;
+    worker->traceReplayBatchIndex = _renderPassManager.state->traceReplayBatchIndex;
 }
 
 - (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker
 {
     if (!worker) return;
 
-    _currentRenderEncoder = worker->encoder;
+    [_renderPassManager installRenderEncoder:worker->encoder];
+    [_bindingSync restoreStateFrom:&worker->bindingState];
 
-    /* Clear cache entries that belong to the currently installed worker but
-     * not to the incoming one.  Without this, a later bind could compare
-     * against a value from a different encoder and be incorrectly skipped. */
-    uint32_t stale_vbuf_mask = _lastBoundVertexBufferMask & ~worker->saved_vbuf_mask;
-    while (stale_vbuf_mask) {
-        int i = __builtin_ctz(stale_vbuf_mask);
-        _lastBoundVertexBuffers[i].buffer = nil;
-        _lastBoundVertexBuffers[i].offset = 0;
-        stale_vbuf_mask &= ~(1U << i);
-    }
-
-    uint32_t vbuf_mask = worker->saved_vbuf_mask;
-    while (vbuf_mask) {
-        int i = __builtin_ctz(vbuf_mask);
-        _lastBoundVertexBuffers[i] = worker->lastBoundVertexBuffers[i];
-        vbuf_mask &= ~(1U << i);
-    }
-    _lastBoundVertexBufferMask = worker->saved_vbuf_mask;
-
-    uint32_t stale_fbuf_mask = _lastBoundFragmentBufferMask & ~worker->saved_fbuf_mask;
-    while (stale_fbuf_mask) {
-        int i = __builtin_ctz(stale_fbuf_mask);
-        _lastBoundFragmentBuffers[i].buffer = nil;
-        _lastBoundFragmentBuffers[i].offset = 0;
-        stale_fbuf_mask &= ~(1U << i);
-    }
-
-    uint32_t fbuf_mask = worker->saved_fbuf_mask;
-    while (fbuf_mask) {
-        int i = __builtin_ctz(fbuf_mask);
-        _lastBoundFragmentBuffers[i] = worker->lastBoundFragmentBuffers[i];
-        fbuf_mask &= ~(1U << i);
-    }
-    _lastBoundFragmentBufferMask = worker->saved_fbuf_mask;
-
-    uint64_t stale_tex_mask_lo = _lastBoundTextureSlotMask[0] & ~worker->saved_texture_mask[0];
-    while (stale_tex_mask_lo) {
-        int i = __builtin_ctzll(stale_tex_mask_lo);
-        _lastBoundVertexTextures[i] = nil;
-        _lastBoundFragmentTextures[i] = nil;
-        _lastBoundVertexSamplers[i] = nil;
-        _lastBoundFragmentSamplers[i] = nil;
-        stale_tex_mask_lo &= ~(1ULL << i);
-    }
-
-    uint64_t tex_mask_lo = worker->saved_texture_mask[0];
-    while (tex_mask_lo) {
-        int i = __builtin_ctzll(tex_mask_lo);
-        _lastBoundVertexTextures[i] = worker->lastBoundVertexTextures[i];
-        _lastBoundFragmentTextures[i] = worker->lastBoundFragmentTextures[i];
-        _lastBoundVertexSamplers[i] = worker->lastBoundVertexSamplers[i];
-        _lastBoundFragmentSamplers[i] = worker->lastBoundFragmentSamplers[i];
-        tex_mask_lo &= ~(1ULL << i);
-    }
-
-    uint64_t stale_tex_mask_hi = _lastBoundTextureSlotMask[1] & ~worker->saved_texture_mask[1];
-    while (stale_tex_mask_hi) {
-        int i = __builtin_ctzll(stale_tex_mask_hi) + 64;
-        _lastBoundVertexTextures[i] = nil;
-        _lastBoundFragmentTextures[i] = nil;
-        _lastBoundVertexSamplers[i] = nil;
-        _lastBoundFragmentSamplers[i] = nil;
-        stale_tex_mask_hi &= ~(1ULL << (i - 64));
-    }
-
-    uint64_t tex_mask_hi = worker->saved_texture_mask[1];
-    while (tex_mask_hi) {
-        int i = __builtin_ctzll(tex_mask_hi) + 64;
-        _lastBoundVertexTextures[i] = worker->lastBoundVertexTextures[i];
-        _lastBoundFragmentTextures[i] = worker->lastBoundFragmentTextures[i];
-        _lastBoundVertexSamplers[i] = worker->lastBoundVertexSamplers[i];
-        _lastBoundFragmentSamplers[i] = worker->lastBoundFragmentSamplers[i];
-        tex_mask_hi &= ~(1ULL << (i - 64));
-    }
-    _lastBoundTextureSlotMask[0] = worker->saved_texture_mask[0];
-    _lastBoundTextureSlotMask[1] = worker->saved_texture_mask[1];
-    _lastPipelineState = worker->lastPipelineState;
-    _lastDepthStencilState = worker->lastDepthStencilState;
-    _lastViewport = worker->lastViewport;
-    _lastScissorRect = worker->lastScissorRect;
-    _lastCullMode = worker->lastCullMode;
-    _lastFrontFacingWinding = worker->lastFrontFacingWinding;
-    _lastTriangleFillMode = worker->lastTriangleFillMode;
-    _lastDepthBias = worker->lastDepthBias;
-    _lastDepthBiasClamp = worker->lastDepthBiasClamp;
-    _lastDepthSlopeScale = worker->lastDepthSlopeScale;
-    _lastBoundValid = worker->lastBoundValid;
-
-    _pipelineState = worker->pipelineState;
-    _pipelineColor0Format = worker->pipelineColor0Format;
-    _pipelineDepthFormat = worker->pipelineDepthFormat;
-    _pipelineStencilFormat = worker->pipelineStencilFormat;
-    _pipelineProgramName = worker->pipelineProgramName;
-
-    _mdiArgsScratchOffset = worker->mdiArgsScratchOffset;
-
-    _traceReplayFlushId = worker->traceReplayFlushId;
-    _traceReplayBatchIndex = worker->traceReplayBatchIndex;
+    _pipelineCache.state->pipelineState = worker->pipelineState;
+    _pipelineCache.state->pipelineColor0Format = worker->pipelineColor0Format;
+    _pipelineCache.state->pipelineDepthFormat = worker->pipelineDepthFormat;
+    _pipelineCache.state->pipelineStencilFormat = worker->pipelineStencilFormat;
+    _pipelineCache.state->pipelineProgramName = worker->pipelineProgramName;
+    _renderPassManager.state->mdiArgsScratchOffset = worker->mdiArgsScratchOffset;
+    _renderPassManager.state->traceReplayFlushId = worker->traceReplayFlushId;
+    _renderPassManager.state->traceReplayBatchIndex = worker->traceReplayBatchIndex;
 }
 
 - (BOOL)parallelEncodeEnabled
@@ -495,6 +387,11 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                                     executed:(BOOL *)executedOut
 {
     if (executedOut) *executedOut = NO;
+
+    /* DUAL-PROXY INVARIANT checkpoint: entering parallel-worker redirect.
+     * Both proxies must be in default config (ctx->active_state == &ctx->state,
+     * _activeState == NULL or matching).  NSCAssert compiled out in release. */
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
 
     /* Bug 4: Re-entrancy guard.  If active_state is already redirected
      * (not pointing at &ctx->state), a previous encodeBatchForParallelWorker
@@ -551,7 +448,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
      * encode → endEncoding → create sub1 → encode → endEncoding).  True
      * multi-thread parallel encode on one GLMContext (e.g. dispatch_async
      * to concurrent queues) would race active_state/_activeState/
-     * _currentRenderEncoder between workers.  Enabling true concurrency
+     * _renderPassManager.state->currentRenderEncoder between workers.  Enabling true concurrency
      * requires per-worker GLMContext or a copy-on-write state model. */
     GLMState *savedActiveState = glm_ctx->active_state;
     /* Bug B4: Save _activeState too — restoreStateForBatch sets
@@ -562,7 +459,15 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     /* Bug 2: Only redirect if we have a valid workerState; otherwise
      * encode on live ctx->state (sequential fallback). */
     if (worker->workerState) {
-        glm_ctx->active_state = worker->workerState;
+        /* DUAL-PROXY INVARIANT: redirect BOTH proxies atomically via the
+         * helper.  Previously this was a single-sided write to
+         * ctx->active_state, leaving _activeState stale until
+         * restoreStateForBatch synced it — temporarily breaking the
+         * invariant in the window [here, restoreStateForBatch's line 1775].
+         * No MGL_STATE() call happened in that window so no bug was
+         * observed, but the asymmetry was fragile. */
+        [self mglSetActiveStateForContext:glm_ctx
+                                    state:worker->workerState];
     }
 
     MGLBatchPath scheduledPath = MGL_BATCH_PATH_DIRECT;
@@ -573,6 +478,11 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
      * active_state still pointing at the worker's (soon-freed) state. */
     @try {
         [self restoreStateForBatch:batch context:glm_ctx savedState:savedState];
+        if (mglEnvFlagEnabled("MGL_TEST_THROW_PARALLEL_WORKER")) {
+            @throw [NSException exceptionWithName:@"MGLParallelWorkerTestException"
+                                           reason:@"injected parallel worker failure"
+                                         userInfo:nil];
+        }
 
         /* Parallel group batches share the same FBO — clear DIRTY_FBO and
          * DIRTY_STATE to prevent checkBatchShouldExecute from triggering
@@ -583,24 +493,16 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         /* Sync render-pass metadata ivars to match the batch's restored FBO.
          * endRenderEncodingLocked (called before creating the parallel encoder)
          * nulls these ivars, but the parallel sub-encoder reuses the saved
-         * _renderPassDescriptor which was built for this FBO.  Without this
+         * _renderPassManager.state->renderPassDescriptor which was built for this FBO.  Without this
          * sync, ensureCurrentRenderPassMatchesFramebufferForDraw sees a NULL
-         * _renderPassFramebuffer vs the batch's FBO, falsely reports a
+         * _renderPassManager.state->renderPassFramebuffer vs the batch's FBO, falsely reports a
          * mismatch, and calls newRenderEncoder — which asserts on AGX because
          * the parallel sub-encoder is still active on the command buffer.
          * This mirrors the ivar sync in newRenderEncoderLocked. */
-        _renderPassFramebuffer = glm_ctx->active_state->framebuffer;
-        _renderPassFramebufferName = _renderPassFramebuffer ? _renderPassFramebuffer->name : 0u;
-        _renderPassDrawBuffer = glm_ctx->active_state->draw_buffer;
-        _renderPassDrawBufferCount = mglMetalDrawBufferCount(glm_ctx);
-        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-            _renderPassDrawBuffers[i] = (i < _renderPassDrawBufferCount)
-                ? mglMetalDrawBufferAt(glm_ctx, (GLuint)i)
-                : GL_NONE;
-        }
+        [_renderPassManager updateRenderPassIdentityForContext:glm_ctx];
 
         /* checkBatchShouldExecute calls processGLStateLocked which syncs GL state
-         * to _currentRenderEncoder + dedup ivars.  It also handles FBO rotation
+         * to _renderPassManager.state->currentRenderEncoder + dedup ivars.  It also handles FBO rotation
          * and rasterization-empty culling. */
         GLenum replayError = GL_NO_ERROR;
         uint32_t skippedCommands = 0;
@@ -660,6 +562,9 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         /* Restore both state proxies to their pre-redirect values. */
         glm_ctx->active_state = savedActiveState;
         _activeState = savedIvarActiveState;
+        /* DUAL-PROXY INVARIANT checkpoint: exit parallel-worker redirect.
+         * Verifies the restore put both proxies back in sync. */
+        [self mglAssertDualProxyInSyncForContext:glm_ctx];
         /* Bug D7: Free heap-allocated workerState.
          * Bug 2: Only free if we allocated it (malloc-fail fallback leaves
          * workerState NULL and uses live state instead). */
@@ -672,135 +577,108 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     return scheduledPath;
 }
 
+/* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
+ *
+ * These centralize all writes to _core.activeState and ctx->active_state so
+ * that the invariant ("MGL_STATE(ctx) and STATE(ctx) return the same
+ * GLMState") cannot be broken by a caller forgetting to update one side.
+ *
+ * Valid invariant configurations:
+ *   (A) _activeState == NULL  -> MGL_STATE falls through to ctx->active_state
+ *                                (the "deactivated" / default mode)
+ *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
+ *                                (the "redirected" mode used during parallel
+ *                                worker encode and batch replay)
+ *
+ * Configuration (A) is the teardown target; (B) is the redirect target. */
+- (void)mglSetActiveStateForContext:(GLMContext)glm_ctx
+                               state:(GLMState *)state
+{
+    /* Configuration (B): both proxies point to `state`. */
+    glm_ctx->active_state = state;
+    _core.activeState = state;
+}
+
+- (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx
+{
+    /* Configuration (A): ctx->active_state points to live embedded state,
+     * _activeState is NULL so MGL_STATE() falls through. */
+    glm_ctx->active_state = &glm_ctx->state;
+    _core.activeState = NULL;
+}
+
+- (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx
+{
+    /* Invariant checkpoint.  NSCAssert is compiled out in release builds,
+     * so this is zero-cost in shipping binaries.  In debug builds it catches
+     * desync at the earliest observation point (function entry/exit) instead
+     * of letting it manifest as wrong binds/dirty bits later. */
+    NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
+              @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
+              @"STATE() and MGL_STATE() would read different GLMState objects");
+}
+
 - (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    if (index >= kMGLMaxBufferSlots) {
-        return;
-    }
-    _lastBoundVertexBuffers[index].buffer = buffer;
-    _lastBoundVertexBuffers[index].offset = offset;
-    _lastBoundVertexBufferMask |= 1U << index;
+    [_bindingSync recordVertexBuffer:buffer offset:offset atIndex:index];
 }
 
 - (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    if (index >= kMGLMaxBufferSlots) {
-        return;
-    }
-    _lastBoundFragmentBuffers[index].buffer = buffer;
-    _lastBoundFragmentBuffers[index].offset = offset;
-    _lastBoundFragmentBufferMask |= 1U << index;
+    [_bindingSync recordFragmentBuffer:buffer offset:offset atIndex:index];
 }
 
 - (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
 {
-    if (index >= kMGLMaxBufferSlots) {
-        return;
-    }
-    _lastBoundVertexBuffers[index].buffer = nil;
-    _lastBoundVertexBuffers[index].offset = (NSUInteger)-1;
-    _lastBoundVertexBufferMask |= 1U << index;
+    [_bindingSync invalidateVertexBufferAtIndex:index];
 }
 
 - (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
 {
-    if (index >= kMGLMaxBufferSlots) {
-        return;
-    }
-    _lastBoundFragmentBuffers[index].buffer = nil;
-    _lastBoundFragmentBuffers[index].offset = (NSUInteger)-1;
-    _lastBoundFragmentBufferMask |= 1U << index;
+    [_bindingSync invalidateFragmentBufferAtIndex:index];
 }
 
 - (void)setVertexTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
 {
-    if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
-        return;
-    }
-    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
-    if (!_lastBoundValid || _lastBoundVertexTextures[index] != texture) {
-        [_currentRenderEncoder setVertexTexture:texture atIndex:index];
-        _lastBoundVertexTextures[index] = texture;
-    }
+    [_bindingSync setVertexTextureIfNeeded:texture
+                                   atIndex:index
+                                   encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setFragmentTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
 {
-    if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
-        return;
-    }
-    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
-    if (!_lastBoundValid || _lastBoundFragmentTextures[index] != texture) {
-        [_currentRenderEncoder setFragmentTexture:texture atIndex:index];
-        _lastBoundFragmentTextures[index] = texture;
-    }
+    [_bindingSync setFragmentTextureIfNeeded:texture
+                                     atIndex:index
+                                     encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setVertexSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
 {
-    if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
-        return;
-    }
-    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
-    if (!_lastBoundValid || _lastBoundVertexSamplers[index] != sampler) {
-        [_currentRenderEncoder setVertexSamplerState:sampler atIndex:index];
-        _lastBoundVertexSamplers[index] = sampler;
-    }
+    [_bindingSync setVertexSamplerIfNeeded:sampler
+                                   atIndex:index
+                                   encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setFragmentSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
 {
-    if (!_currentRenderEncoder || index >= TEXTURE_UNITS) {
-        return;
-    }
-    mglMarkLastBoundTextureSlot(_lastBoundTextureSlotMask, index);
-    if (!_lastBoundValid || _lastBoundFragmentSamplers[index] != sampler) {
-        [_currentRenderEncoder setFragmentSamplerState:sampler atIndex:index];
-        _lastBoundFragmentSamplers[index] = sampler;
-    }
+    [_bindingSync setFragmentSamplerIfNeeded:sampler
+                                     atIndex:index
+                                     encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setViewportIfNeeded:(MTLViewport)viewport
 {
-    if (!_currentRenderEncoder) {
-        return;
-    }
-    if (!_lastBoundValid ||
-        _lastViewport.originX != viewport.originX ||
-        _lastViewport.originY != viewport.originY ||
-        _lastViewport.width != viewport.width ||
-        _lastViewport.height != viewport.height ||
-        _lastViewport.znear != viewport.znear ||
-        _lastViewport.zfar != viewport.zfar) {
-        [_currentRenderEncoder setViewport:viewport];
-        _lastViewport = viewport;
-    }
+    [_bindingSync setViewportIfNeeded:viewport encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setScissorRectIfNeeded:(MTLScissorRect)rect
 {
-    if (!_currentRenderEncoder) {
-        return;
-    }
-    if (!_lastBoundValid ||
-        _lastScissorRect.x != rect.x ||
-        _lastScissorRect.y != rect.y ||
-        _lastScissorRect.width != rect.width ||
-        _lastScissorRect.height != rect.height) {
-        [_currentRenderEncoder setScissorRect:rect];
-        _lastScissorRect = rect;
-    }
+    [_bindingSync setScissorRectIfNeeded:rect encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
 {
-    if (!_currentRenderEncoder) {
-        return;
-    }
-    if (!_lastBoundValid || _lastTriangleFillMode != mode) {
-        [_currentRenderEncoder setTriangleFillMode:mode];
-        _lastTriangleFillMode = mode;
-    }
+    [_bindingSync setTriangleFillModeIfNeeded:mode encoder:_renderPassManager.state->currentRenderEncoder];
 }
 
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
@@ -879,10 +757,10 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     }
 
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLFragmentTextureTraceBinding *earlyFs0 = &_fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *earlyFs1 = &_fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *earlyFs2 = &_fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *earlyFs3 = &_fragmentTextureTraceBindings[3];
+    MGLFragmentTextureTraceBinding *earlyFs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
+    MGLFragmentTextureTraceBinding *earlyFs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
+    MGLFragmentTextureTraceBinding *earlyFs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
+    MGLFragmentTextureTraceBinding *earlyFs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
     BOOL earlyFsSlotHasRT =
         earlyFs0->rt_write_version != 0u ||
         earlyFs1->rt_write_version != 0u ||
@@ -907,8 +785,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
-    id<MTLTexture> rpDepth = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+    id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
+    id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.texture : nil;
     GLMState *snapshot = batch->state_snapshot ? (GLMState *)batch->state_snapshot : NULL;
     GLuint snapshotFBOName = 0u;
     if (snapshot &&
@@ -978,9 +856,9 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                 (unsigned)glm_ctx->active_state->var.cull_face_mode,
                 (unsigned)glm_ctx->active_state->var.front_face,
                 (unsigned)glm_ctx->active_state->dirty_bits,
-                _currentRenderEncoder,
-                _pipelineState,
-                (unsigned)_renderPassFramebufferName,
+                _renderPassManager.state->currentRenderEncoder,
+                _pipelineCache.state->pipelineState,
+                (unsigned)_renderPassManager.state->renderPassFramebufferName,
                 rpColor0,
                 rpDepth);
 }
@@ -999,10 +877,10 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     }
 
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
-    MGLFragmentTextureTraceBinding *fs0 = &_fragmentTextureTraceBindings[0];
-    MGLFragmentTextureTraceBinding *fs1 = &_fragmentTextureTraceBindings[1];
-    MGLFragmentTextureTraceBinding *fs2 = &_fragmentTextureTraceBindings[2];
-    MGLFragmentTextureTraceBinding *fs3 = &_fragmentTextureTraceBindings[3];
+    MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
+    MGLFragmentTextureTraceBinding *fs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
+    MGLFragmentTextureTraceBinding *fs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
+    MGLFragmentTextureTraceBinding *fs3 = &_resourceFallback.fragmentTextureTraceBindings[3];
     BOOL earlyFsSlotHasRT =
         fs0->rt_write_version != 0u ||
         fs1->rt_write_version != 0u ||
@@ -1033,8 +911,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         mglPointerRangeIsReadable(fbo, sizeof(*fbo))) {
         fboName = fbo->name;
     }
-    id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
-    id<MTLTexture> rpDepth = _renderPassDescriptor ? _renderPassDescriptor.depthAttachment.texture : nil;
+    id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
+    id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.texture : nil;
     Program *vertexProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     Program *fragmentProgram = mglResolveProgramForStageFromState(glm_ctx, _FRAGMENT_SHADER);
     FBOAttachment *color0Attachment = (fbo && (fbo->color_attachment_bitfield & 1u))
@@ -1101,20 +979,20 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                 (unsigned)cmd->baseInstance,
                 (unsigned)eboName,
                 ebo,
-                _currentRenderEncoder,
-                _pipelineState,
+                _renderPassManager.state->currentRenderEncoder,
+                _pipelineCache.state->pipelineState,
                 (unsigned)fboName,
-                (unsigned)_renderPassFramebufferName,
+                (unsigned)_renderPassManager.state->renderPassFramebufferName,
                 rpColor0,
                 rpDepth,
                 (unsigned long)(rpColor0 ? rpColor0.width : 0),
                 (unsigned long)(rpColor0 ? rpColor0.height : 0),
                 (unsigned long)(rpDepth ? rpDepth.width : 0),
                 (unsigned long)(rpDepth ? rpDepth.height : 0),
-                mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare),
-                mglLoadActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
-                mglStoreActionName(_renderPassDescriptor ? _renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(_renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction : MTLLoadActionDontCare),
+                mglStoreActionName(_renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction : MTLStoreActionDontCare),
+                mglLoadActionName(_renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction : MTLLoadActionDontCare),
+                mglStoreActionName(_renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction : MTLStoreActionDontCare),
                 color0Attachment ? (unsigned)color0Attachment->texture : 0u,
                 color0Attachment ? (unsigned)color0Attachment->textarget : 0u,
                 color0Attachment ? (unsigned)color0Attachment->level : 0u,
@@ -1179,7 +1057,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     (unsigned)mglCurrentRenderProgramKey(glm_ctx),
                     vertexProgram ? (unsigned)vertexProgram->name : 0u,
                     fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
-                    (unsigned)_pipelineProgramName,
+                    (unsigned)_pipelineCache.state->pipelineProgramName,
                     (unsigned)fs0->gl_texture_name,
                     (unsigned)fs0->sampler_unit,
                     (unsigned)fs0->program_name,
@@ -1278,6 +1156,11 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
      * acquisition from already-locked callers a no-op. */
     METAL_LOCK();
 
+    /* DUAL-PROXY INVARIANT checkpoint: entering flushDrawBuffer.  All
+     * subsequent batch replay / parallel-worker / teardown paths assume
+     * the proxies start in sync.  NSCAssert compiled out in release. */
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
+
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) {
         METAL_UNLOCK();
@@ -1303,6 +1186,12 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     memcpy(&savedState, glm_ctx->active_state, sizeof(savedState));
     GLenum savedError = savedState.error;
     GLenum replayError = GL_NO_ERROR;
+    id<MTLParallelRenderCommandEncoder> activeParallelEncoder = nil;
+    Framebuffer *activeParallelFramebuffer = NULL;
+    GLsizei activeParallelDrawBufferCount = 0;
+    GLenum activeParallelDrawBuffers[MAX_COLOR_ATTACHMENTS] = {0};
+
+    @try {
 
     /* Compute parallel groups (runs of consecutive, non-empty
      * batches sharing the same FBO). The replay loop still runs sequentially;
@@ -1313,10 +1202,26 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                                                             MGL_MAX_PARALLEL_GROUPS);
     uint32_t parallelGroupBatches = 0u;
     uint32_t largestParallelGroup = 0u;
+    BOOL hasDynamicPerDrawBindings = NO;
+    BOOL hasReplayTextureUploadHazard = NO;
     for (uint32_t g = 0u; g < parallelGroupCount; g++) {
         parallelGroupBatches += parallelGroups[g].batch_count;
         if (parallelGroups[g].batch_count > largestParallelGroup) {
             largestParallelGroup = parallelGroups[g].batch_count;
+        }
+    }
+    for (uint32_t b = 0u; b < cb->batch_count; b++) {
+        if (cb->batches[b].has_dynamic_uniform_bindings ||
+            cb->batches[b].has_dynamic_vertex_bindings ||
+            cb->batches[b].has_dynamic_texture_bindings ||
+            cb->batches[b].sampler_snapshots_mixed) {
+            hasDynamicPerDrawBindings = YES;
+        }
+        if (mglBatchMayNeedTextureUploadEncoderDuringReplay(&cb->batches[b])) {
+            hasReplayTextureUploadHazard = YES;
+        }
+        if (hasDynamicPerDrawBindings && hasReplayTextureUploadHazard) {
+            break;
         }
     }
     if (parallelGroupCount > 0u) {
@@ -1340,7 +1245,17 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         }
     }
 
-    BOOL useParallelEncode = [self parallelEncodeEnabled] && (largestParallelGroup >= 2u);
+    /* Dynamic UBO/VAO replay may need the normal buffer mapper's validated
+     * fallback allocation path, and dirty sampled textures can upload/rebuild
+     * through bindMTLTexture. Both can open a blit encoder. Metal forbids that
+     * while a parallel render encoder is active, so keep these command buffers
+     * on the sequential path until those operations are represented directly on
+     * each worker sub-encoder or pre-flushed before the parallel pass. */
+    BOOL useParallelEncode = [self parallelEncodeEnabled] &&
+                             !hasDynamicPerDrawBindings &&
+                             !hasReplayTextureUploadHazard &&
+                             !cb->has_deferred_uniform_range_rebind &&
+                             (largestParallelGroup >= 2u);
     if (useParallelEncode && traceFlush) {
         MGLTraceNSLog(@"MGL TRACE parallelEncode ENABLED groups=%u eligibleBatches=%u",
                       parallelGroupCount, largestParallelGroup);
@@ -1393,12 +1308,12 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 
                     /* Save the current render pass descriptor before ending
                      * the encoder — the parallel encoder reuses it. */
-                    MTLRenderPassDescriptor *parallelDesc = _renderPassDescriptor;
-                    Framebuffer *parallelFramebuffer = _renderPassFramebuffer;
-                    GLsizei parallelDrawBufferCount = _renderPassDrawBufferCount;
+                    MTLRenderPassDescriptor *parallelDesc = _renderPassManager.state->renderPassDescriptor;
+                    Framebuffer *parallelFramebuffer = _renderPassManager.state->renderPassFramebuffer;
+                    GLsizei parallelDrawBufferCount = _renderPassManager.state->renderPassDrawBufferCount;
                     GLenum parallelDrawBuffers[MAX_COLOR_ATTACHMENTS];
                     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-                        parallelDrawBuffers[i] = _renderPassDrawBuffers[i];
+                        parallelDrawBuffers[i] = _renderPassManager.state->renderPassDrawBuffers[i];
                     }
 
                     /* End the current render encoder and commit the command
@@ -1414,13 +1329,13 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                      * saveDedupStateToWorker does not touch — garbage would
                      * cause encodeBatchForParallelWorker to skip malloc and
                      * treat the garbage as a live GLMState*. */
-                    MGLWorkerContext preGroupState;
-                    memset(&preGroupState, 0, sizeof(preGroupState));
+                    MGLWorkerContext preGroupState = {0};
                     [self saveDedupStateToWorker:&preGroupState];
 
-                    if (_currentCommandBuffer) {
-                        [self commitCommandBufferWithAGXRecovery:_currentCommandBuffer];
-                        _currentCommandBuffer = nil;
+                    if (_renderPassManager.state->currentCommandBuffer) {
+                        id<MTLCommandBuffer> commandBufferToCommit =
+                            [_renderPassManager detachCurrentCommandBufferForSubmission];
+                        [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
                     }
                     if (![self newCommandBufferLocked]) {
                         NSLog(@"MGL WARNING: newCommandBufferLocked failed before parallel encode, "
@@ -1434,7 +1349,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     }
 
                     id<MTLParallelRenderCommandEncoder> parallelEncoder =
-                        [_currentCommandBuffer parallelRenderCommandEncoderWithDescriptor:parallelDesc];
+                        [_renderPassManager.state->currentCommandBuffer parallelRenderCommandEncoderWithDescriptor:parallelDesc];
                     if (!parallelEncoder) {
                         NSLog(@"MGL WARNING: parallelRenderCommandEncoder failed, "
                               "falling back to sequential for batches %u-%u", b, b + 1);
@@ -1446,13 +1361,19 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                         goto sequentialBatch;
                     }
                     parallelEncoder.label = @"MGL Parallel Render Encoder";
+                    activeParallelEncoder = parallelEncoder;
+                    activeParallelFramebuffer = parallelFramebuffer;
+                    activeParallelDrawBufferCount = parallelDrawBufferCount;
+                    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+                        activeParallelDrawBuffers[i] = parallelDrawBuffers[i];
+                    }
 
                     /* Activate parallel-encode mode so
                      * processGLStateLocked (called inside
                      * encodeBatchForParallelWorker → checkBatchShouldExecute)
                      * skips encoder reconstruction paths that would destroy
                      * the sub-encoder. */
-                    _parallelEncodeActive = YES;
+                    [_renderPassManager beginParallelEncoding];
 
                     /* Sub-encoder lifecycle: Metal requires that each
                      * sub-encoder created from a parallel encoder be
@@ -1471,8 +1392,9 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     if (!subEncoder0) {
                         NSLog(@"MGL WARNING: sub-encoder 0 creation failed");
                         [parallelEncoder endEncoding];
-                        _currentRenderEncoder = nil;
-                        _parallelEncodeActive = NO;
+                        activeParallelEncoder = nil;
+                        [_renderPassManager clearCurrentRenderEncoder];
+                        [_renderPassManager endParallelEncoding];
                         [self invalidateLastBoundState];
                         if (parallelFramebuffer) {
                             [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
@@ -1489,11 +1411,11 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     }
                     subEncoder0.label = @"MGL Sub-encoder 0";
 
-                    _currentRenderEncoder = subEncoder0;
+                    [_renderPassManager installRenderEncoder:subEncoder0];
                     MGLWorkerContext worker0 = preGroupState;
                     /* loadDedupStateFromWorker (called inside
                      * encodeBatchForParallelWorker) overwrites
-                     * _currentRenderEncoder with worker->encoder.  preGroupState
+                     * _renderPassManager.state->currentRenderEncoder with worker->encoder.  preGroupState
                      * was saved after endRenderEncodingLocked, so its encoder
                      * is nil.  Set worker0.encoder to the sub-encoder so the
                      * load restores the correct encoder. */
@@ -1538,12 +1460,15 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 
                     /* --- Worker 1: create subEncoder1, encode batch[b+1], end --- */
                     id<MTLRenderCommandEncoder> subEncoder1 =
-                        [parallelEncoder renderCommandEncoder];
+                        mglEnvFlagEnabled("MGL_TEST_FAIL_PARALLEL_SUBENCODER_1")
+                            ? nil
+                            : [parallelEncoder renderCommandEncoder];
                     if (!subEncoder1) {
                         NSLog(@"MGL WARNING: sub-encoder 1 creation failed");
                         [parallelEncoder endEncoding];
-                        _currentRenderEncoder = nil;
-                        _parallelEncodeActive = NO;
+                        activeParallelEncoder = nil;
+                        [_renderPassManager clearCurrentRenderEncoder];
+                        [_renderPassManager endParallelEncoding];
                         [self invalidateLastBoundState];
                         if (parallelFramebuffer) {
                             [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
@@ -1555,12 +1480,14 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                         if (![self newRenderEncoderLocked]) {
                             continue;
                         }
+                        batch = batch1;
+                        b++;
                         [self restoreStateForBatch:batch context:glm_ctx savedState:&savedState];
                         goto sequentialBatch;
                     }
                     subEncoder1.label = @"MGL Sub-encoder 1";
 
-                    _currentRenderEncoder = subEncoder1;
+                    [_renderPassManager installRenderEncoder:subEncoder1];
                     MGLWorkerContext worker1 = preGroupState;
                     worker1.encoder = subEncoder1;
                     BOOL exec1 = NO;
@@ -1604,7 +1531,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     /* End the parallel encoder — this finalizes the pass
                      * and triggers load/store actions. */
                     [parallelEncoder endEncoding];
-                    _currentRenderEncoder = nil;
+                    activeParallelEncoder = nil;
+                    [_renderPassManager clearCurrentRenderEncoder];
                     [self invalidateLastBoundState];
                     if (parallelFramebuffer) {
                         [self updateGLSampledCopiesForEndedRenderPassFramebuffer:parallelFramebuffer
@@ -1616,14 +1544,14 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     /* Deactivate parallel-encode mode —
                      * subsequent sequential batches resume normal
                      * processGLStateLocked encoder management. */
-                    _parallelEncodeActive = NO;
+                    [_renderPassManager endParallelEncoding];
 
                     /* Restore dedup state from worker1 (last encoded batch).
                      * The encoder is now ended, so invalidate to force
                      * re-bind on the next sequential batch. */
                     [self loadDedupStateFromWorker:&worker1];
                     [self invalidateLastBoundState];
-                    _currentRenderEncoder = nil;
+                    [_renderPassManager clearCurrentRenderEncoder];
 
                     if (traceFlush) {
                         MGLTraceNSLog(@"MGL TRACE parallelEncode "
@@ -1647,16 +1575,16 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
              * executed, the same encoder is still open with valid bind
              * cache, and keys match. Never skip across FBO/pass changes. */
             BOOL canSkipRestore = NO;
-            if (_skipSameKeyRestoreEnabled &&
+            if (_batching.skipSameKeyRestoreEnabled &&
                 lastKeyValid &&
                 lastExecuteOk &&
-                _currentRenderEncoder != nil &&
-                _lastBoundValid &&
-                !_parallelEncodeActive &&
+                _renderPassManager.state->currentRenderEncoder != nil &&
+                _bindingSync.state->lastBoundValid &&
+                ![_renderPassManager isParallelEncodingActive] &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 [self currentRenderPassMatchesCurrentFramebuffer]) {
                 canSkipRestore = YES;
-            } else if (!_skipSameKeyRestoreEnabled &&
+            } else if (!_batching.skipSameKeyRestoreEnabled &&
                        lastKeyValid &&
                        lastExecuteOk &&
                        mglStateKeysEqual(&batch->key, &lastKey) &&
@@ -1713,6 +1641,10 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                                 batchIndex:b
                                      phase:"ISSUE_STREAM_MERGE"];
                     [self issueStreamMergedBatch:batch context:glm_ctx];
+                    /* Stream batches bind transient vertex storage that is not
+                     * represented by MGLStateKey. Force the next batch to
+                     * restore its real VAO even when the GL keys are equal. */
+                    [self invalidateLastBoundState];
                     break;
                 case MGL_BATCH_PATH_MDI:
                     mdiBatchCount++;
@@ -1752,9 +1684,6 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         } /* sequentialBatch */
         }
     }
-    _traceReplayFlushId = 0;
-    _traceReplayBatchIndex = 0;
-
     MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
     if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
         MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
@@ -1767,9 +1696,51 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
               directBatchCount, directCommandCount,
               skippedCommandCount);
     }
-    [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
-                            savedError:savedError replayError:replayError];
-    METAL_UNLOCK();
+    } @finally {
+        BOOL interruptedParallelEncode =
+            [_renderPassManager isParallelEncodingActive] || activeParallelEncoder != nil;
+        if ([_renderPassManager isParallelEncodingActive] && _renderPassManager.state->currentRenderEncoder) {
+            @try {
+                [_renderPassManager.state->currentRenderEncoder endEncoding];
+            } @catch (NSException *exception) {
+                NSLog(@"MGL WARNING: failed to end interrupted parallel sub-encoder: %@",
+                      exception.reason);
+            }
+            [_renderPassManager clearCurrentRenderEncoder];
+        }
+        if (activeParallelEncoder) {
+            @try {
+                [activeParallelEncoder endEncoding];
+            } @catch (NSException *exception) {
+                NSLog(@"MGL WARNING: failed to end interrupted parallel encoder: %@",
+                      exception.reason);
+            }
+            activeParallelEncoder = nil;
+        }
+        if (interruptedParallelEncode) {
+            [_renderPassManager endParallelEncoding];
+            [self invalidateLastBoundState];
+            if (activeParallelFramebuffer) {
+                @try {
+                    [self updateGLSampledCopiesForEndedRenderPassFramebuffer:activeParallelFramebuffer
+                                                                            drawCount:activeParallelDrawBufferCount
+                                                                         drawBuffers:activeParallelDrawBuffers
+                                                                              reason:"parallel_render_pass_interrupted"];
+                } @catch (NSException *exception) {
+                    NSLog(@"MGL WARNING: interrupted parallel render-pass cleanup failed: %@",
+                          exception.reason);
+                }
+            }
+        }
+        _renderPassManager.state->traceReplayFlushId = 0;
+        _renderPassManager.state->traceReplayBatchIndex = 0;
+        @try {
+            [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
+                                    savedError:savedError replayError:replayError];
+        } @finally {
+            METAL_UNLOCK();
+        }
+    }
 }
 
 - (MGLBatchPath)scheduleDrawBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -1778,11 +1749,19 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         return MGL_BATCH_PATH_DIRECT;
     }
 
+    if (batch->sampler_snapshots_mixed) {
+        return MGL_BATCH_PATH_DIRECT;
+    }
+
     if (batch->stream_merged) {
         return MGL_BATCH_PATH_STREAM_MERGE;
     }
 
-    if (mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") &&
+    if (!batch->has_dynamic_uniform_bindings &&
+        !batch->has_dynamic_vertex_bindings &&
+        !batch->has_dynamic_texture_bindings &&
+        !batch->sampler_snapshots_mixed &&
+        mglEnvFlagEnabled("MGL_ENABLE_ICB_BATCH") &&
         !mglEnvFlagEnabled("MGL_DISABLE_ICB_BATCH") &&
         batch->key.primitive_type != 0xFFu) {
         if (@available(macOS 10.14, *)) {
@@ -1822,6 +1801,12 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                      prevKey:(const MGLStateKey *)prevKey
 {
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
+    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay state restore.
+     * Caller is responsible for having ctx->active_state already pointing
+     * to the desired target (either &ctx->state for sequential replay, or
+     * worker->workerState for parallel-worker replay).  We sync _activeState
+     * to match at the end of this function. */
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
     if (batch->state_snapshot) {
         /* Selective restore: only copy hot fields (~51KB vs 82KB full).
          * Cold fields (HashTables + unused buffer_base types) are restored
@@ -1866,10 +1851,10 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 
     GLuint replayDirtyBits = kMGLFullReplayDirtyBits;
     BOOL prevKeyValid = (prevKey != NULL);
-    BOOL canDelta = _dirtyKeyDeltaEnabled &&
+    BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
                     prevKeyValid &&
-                    _currentRenderEncoder != nil &&
-                    _lastBoundValid;
+                    _renderPassManager.state->currentRenderEncoder != nil &&
+                    _bindingSync.state->lastBoundValid;
 
     if (canDelta) {
         const MGLStateKey *a = prevKey;
@@ -1904,16 +1889,16 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     Framebuffer *replayFBO = glm_ctx->active_state->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
         (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
-        (_currentRenderEncoder &&
+        (_renderPassManager.state->currentRenderEncoder &&
          ![self currentRenderPassMatchesCurrentFramebuffer])) {
         replayDirtyBits |= DIRTY_FBO;
     }
     /* Empty encoder cannot delta-bind — force full domains. */
-    if (_currentRenderEncoder == nil || !_lastBoundValid) {
+    if (_renderPassManager.state->currentRenderEncoder == nil || !_bindingSync.state->lastBoundValid) {
         replayDirtyBits = kMGLFullReplayDirtyBits |
                           ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
         if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
-            (_currentRenderEncoder &&
+            (_renderPassManager.state->currentRenderEncoder &&
              ![self currentRenderPassMatchesCurrentFramebuffer])) {
             replayDirtyBits |= DIRTY_FBO;
         } else if (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) {
@@ -1929,17 +1914,25 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                            savedError:(GLenum)savedError
                           replayError:(GLenum)replayError
 {
-    /* Deactivate snapshot-based state access — revert to live ctx->state. */
-    _activeState = nil;
-    /* Ensure active_state points back to the embedded state (not a worker
-     * copy) before restoring the saved live state. */
-    glm_ctx->active_state = &glm_ctx->state;
+    /* DUAL-PROXY INVARIANT checkpoint: entering batch replay teardown.
+     * Pre-teardown, both proxies may be in either config:
+     *   (A) default: _activeState=NULL, ctx->active_state=&ctx->state
+     *   (B) redirected: both = workerState (if parallel-worker path ran)
+     * The assert verifies whichever config holds is internally consistent. */
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
+    /* Deactivate snapshot-based state access — revert to live ctx->state.
+     * DUAL-PROXY INVARIANT: use the helper so both proxies revert atomically
+     * (previously two separate statements: _activeState=nil then ctx reset). */
+    [self mglRestoreLiveActiveStateForContext:glm_ctx];
+    /* DUAL-PROXY INVARIANT checkpoint: post-teardown, both proxies must be
+     * in default config (A).  MGL_STATE now falls through to &ctx->state. */
+    [self mglAssertDualProxyInSyncForContext:glm_ctx];
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
     /* Task 4: Reset the snapshot arena now that all batch replay is complete
      * and mglResetCommandBufferForContext has cleared all batch references.
      * This is the safe point — no worker/encoder is accessing snapshot data. */
-    if (_arenaSnapshotEnabled) {
-        mglResetBatchArena(&_batchArena);
+    if (_batching.arenaSnapshotEnabled) {
+        mglResetBatchArena(&_batching.batchArena);
     }
     memcpy(glm_ctx->active_state, savedState, sizeof(GLMState));
     /* savedState carries the independent hash flags latched by live mutations.
@@ -1960,8 +1953,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     replayError:(GLenum *)replayError
                 skippedCommands:(uint32_t *)skippedCommands
 {
-    _traceReplayFlushId  = flushId;
-    _traceReplayBatchIndex = batchIndex;
+    _renderPassManager.state->traceReplayFlushId  = flushId;
+    _renderPassManager.state->traceReplayBatchIndex = batchIndex;
     [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                 batchIndex:batchIndex phase:"RESTORE"];
 
@@ -1990,6 +1983,26 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                              context:glm_ctx flushId:flushId
                           batchIndex:batchIndex commandIndex:i
                                phase:"SKIP" reason:"processGLState"];
+        }
+        *skippedCommands += batch->command_count;
+        MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
+        return NO;
+    }
+
+    /* A stable sampler snapshot is batch state, not per-draw state. Apply it
+     * once after texture binding so stream-merge, MDI, ICB and parallel paths
+     * remain available. Only genuinely mixed batches rebind per command. */
+    if (!batch->sampler_snapshots_mixed &&
+        batch->sampler_snapshot_id != MGL_INVALID_SAMPLER_SNAPSHOT_ID &&
+        ![self applySamplerSnapshotForCommand:&batch->commands[0]
+                                      context:glm_ctx]) {
+        [self traceReplayBatch:batch context:glm_ctx flushId:flushId
+                    batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"];
+        for (uint32_t i = 0; i < batch->command_count; i++) {
+            [self traceReplayCommand:batch command:&batch->commands[i]
+                             context:glm_ctx flushId:flushId
+                          batchIndex:batchIndex commandIndex:i
+                               phase:"SKIP" reason:"sampler_snapshot"];
         }
         *skippedCommands += batch->command_count;
         MGL_PERF_INC(g_mglDrawSkippedSinceSwap);
@@ -2069,8 +2082,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"SKIP"
                               reason:"stream_empty"];
@@ -2083,8 +2096,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_unsupported_primitive"];
@@ -2098,8 +2111,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"ISSUE"
                               reason:"stream_merge_to_mdi"];
@@ -2115,8 +2128,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_index_buffer"];
@@ -2131,8 +2144,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_no_mtl_index"];
@@ -2144,7 +2157,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     MGLDrawCommand *firstCmd = &batch->commands[0];
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
 
-    [_currentRenderEncoder drawIndexedPrimitives:primType
+    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primType
                                       indexCount:(NSUInteger)batch->stream_index_count
                                        indexType:MTLIndexTypeUInt32
                                      indexBuffer:mtlIndexBuffer
@@ -2155,8 +2168,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     [self traceReplayCommand:batch
                      command:firstCmd
                      context:glm_ctx
-                     flushId:_traceReplayFlushId
-                  batchIndex:_traceReplayBatchIndex
+                     flushId:_renderPassManager.state->traceReplayFlushId
+                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                 commandIndex:0
                        phase:"SUBMIT"
                       reason:"stream_direct_merged"];
@@ -2165,7 +2178,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 - (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
     if (!batch || !batch->stream_merged || batch->command_count == 0 ||
-        batch->stream_index_count == 0 || !_currentRenderEncoder) {
+        batch->stream_index_count == 0 || !_renderPassManager.state->currentRenderEncoder) {
         return NO;
     }
     if (mglEnvFlagEnabled("MGL_DISABLE_MDI") ||
@@ -2179,8 +2192,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_index_buffer"];
@@ -2194,8 +2207,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_no_mtl_index"];
@@ -2209,8 +2222,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_args_overflow"];
@@ -2228,8 +2241,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"stream_mdi_args_alloc"];
@@ -2251,7 +2264,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        [_currentRenderEncoder drawIndexedPrimitives:primType
+        [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primType
                                            indexType:MTLIndexTypeUInt32
                                          indexBuffer:mtlIndexBuffer
                                    indexBufferOffset:(NSUInteger)cmd->indexBufferOffset
@@ -2260,8 +2273,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
-                         flushId:_traceReplayFlushId
-                      batchIndex:_traceReplayBatchIndex
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
                     commandIndex:i
                            phase:"SUBMIT"
                           reason:"stream_mdi_indexed"];
@@ -2272,13 +2285,13 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 
 - (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
 {
-    if (!batch || batch->command_count == 0 || !_device || !_currentRenderEncoder) {
+    if (!batch || batch->command_count == 0 || !_device || !_renderPassManager.state->currentRenderEncoder) {
         if (batch && batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_unavailable"];
@@ -2289,8 +2302,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
         [self traceReplayCommand:batch
                          command:&batch->commands[0]
                          context:glm_ctx
-                         flushId:_traceReplayFlushId
-                      batchIndex:_traceReplayBatchIndex
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
                     commandIndex:0
                            phase:"FALLBACK"
                           reason:"icb_unsupported_primitive"];
@@ -2324,8 +2337,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_create_exception"];
@@ -2335,8 +2348,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:0
                                phase:"FALLBACK"
                               reason:"icb_create_nil"];
@@ -2353,8 +2366,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_traceReplayFlushId
-                                  batchIndex:_traceReplayBatchIndex
+                                     flushId:_renderPassManager.state->traceReplayFlushId
+                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_u8_index"];
@@ -2371,8 +2384,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_traceReplayFlushId
-                                  batchIndex:_traceReplayBatchIndex
+                                     flushId:_renderPassManager.state->traceReplayFlushId
+                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_resolve_element"];
@@ -2391,8 +2404,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_traceReplayFlushId
-                                  batchIndex:_traceReplayBatchIndex
+                                     flushId:_renderPassManager.state->traceReplayFlushId
+                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_prepared_index"];
@@ -2404,8 +2417,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_traceReplayFlushId
-                                  batchIndex:_traceReplayBatchIndex
+                                     flushId:_renderPassManager.state->traceReplayFlushId
+                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_command_nil"];
@@ -2420,7 +2433,7 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                                          instanceCount:(NSUInteger)cmd->instanceCount
                                             baseVertex:(NSInteger)cmd->baseVertex
                                           baseInstance:(NSUInteger)cmd->baseInstance];
-                [_currentRenderEncoder useResource:drawIndexBuffer
+                [_renderPassManager.state->currentRenderEncoder useResource:drawIndexBuffer
                                              usage:MTLResourceUsageRead
                                             stages:MTLRenderStageVertex];
             }
@@ -2432,8 +2445,8 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
                     [self traceReplayCommand:batch
                                      command:cmd
                                      context:glm_ctx
-                                     flushId:_traceReplayFlushId
-                                  batchIndex:_traceReplayBatchIndex
+                                     flushId:_renderPassManager.state->traceReplayFlushId
+                                  batchIndex:_renderPassManager.state->traceReplayBatchIndex
                                 commandIndex:i
                                        phase:"FALLBACK"
                                       reason:"icb_command_nil"];
@@ -2447,17 +2460,17 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
             }
         }
 
-        [_currentRenderEncoder useResource:icb
+        [_renderPassManager.state->currentRenderEncoder useResource:icb
                                      usage:MTLResourceUsageRead
                                     stages:MTLRenderStageVertex];
-        [_currentRenderEncoder executeCommandsInBuffer:icb
+        [_renderPassManager.state->currentRenderEncoder executeCommandsInBuffer:icb
                                              withRange:NSMakeRange(0, (NSUInteger)batch->command_count)];
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
                              context:glm_ctx
-                             flushId:_traceReplayFlushId
-                          batchIndex:_traceReplayBatchIndex
+                             flushId:_renderPassManager.state->traceReplayFlushId
+                          batchIndex:_renderPassManager.state->traceReplayBatchIndex
                         commandIndex:i
                                phase:"SUBMIT"
                               reason:"icb"];
@@ -2471,49 +2484,9 @@ static inline void mglMarkLastBoundTextureSlot(uint64_t mask[2], NSUInteger inde
 - (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut
 {
-    if (offsetOut) {
-        *offsetOut = 0;
-    }
-    if (!_device || !_currentCommandBuffer || length == 0) {
-        return nil;
-    }
-
-    const NSUInteger alignment = 256u;
-    NSUInteger alignedOffset = (_mdiArgsScratchOffset + (alignment - 1u)) & ~(alignment - 1u);
-    if (alignedOffset < _mdiArgsScratchOffset ||
-        length > (NSUIntegerMax - alignedOffset)) {
-        return nil;
-    }
-
-    NSUInteger requiredBytes = alignedOffset + length;
-    if (!_mdiArgsScratchBuffer || requiredBytes > _mdiArgsScratchCapacity) {
-        NSUInteger newCapacity = _mdiArgsScratchCapacity ? (_mdiArgsScratchCapacity * 2u) : (64u * 1024u);
-        if (newCapacity < length) {
-            newCapacity = length;
-        }
-        if (newCapacity < requiredBytes) {
-            newCapacity = requiredBytes;
-        }
-        if (newCapacity < _mdiArgsScratchCapacity) {
-            return nil;
-        }
-
-        id<MTLBuffer> newBuffer = [_device newBufferWithLength:newCapacity
-                                                       options:MTLResourceStorageModeShared];
-        if (!newBuffer) {
-            return nil;
-        }
-        _mdiArgsScratchBuffer = newBuffer;
-        _mdiArgsScratchCapacity = newCapacity;
-        alignedOffset = 0;
-        requiredBytes = length;
-    }
-
-    _mdiArgsScratchOffset = requiredBytes;
-    if (offsetOut) {
-        *offsetOut = alignedOffset;
-    }
-    return _mdiArgsScratchBuffer;
+    return [_renderPassManager mdiArgumentScratchBufferWithDevice:_device
+                                                            length:length
+                                                            offset:offsetOut];
 }
 
 @end

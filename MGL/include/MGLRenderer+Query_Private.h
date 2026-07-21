@@ -36,10 +36,6 @@
 
 @interface MGLRenderer ()
 
-// Internal helper: samples the GPU timestamp via Metal's
-// sampleTimestamps:gpuTimestamp: API.  Used by timer query methods.
-- (uint64_t)sampleGPUTimestamp;
-
 @end
 
 #endif /* MGLRenderer_Query_Private_h */

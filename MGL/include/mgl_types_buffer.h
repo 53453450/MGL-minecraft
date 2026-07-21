@@ -76,6 +76,8 @@ typedef struct BufferData_t {
     size_t          buffer_size;
     vm_address_t    buffer_data;
     void            *mtl_data;
+    /* True when a no-copy MTLBuffer deallocator owns buffer_data. */
+    GLboolean       mtl_owns_buffer_data;
 } BufferData;
 
 #define BUFFER_IMMUTABLE_STORAGE_FLAG   0x1
@@ -134,6 +136,7 @@ typedef struct Buffer_t {
  * helpers are declared in mgl_types_program.h. */
 void mglRetainBufferReference(Buffer *buf);
 void mglReleaseBufferReference(GLMContext ctx, Buffer *buf);
+void mglReleaseBufferStorage(Buffer *buf);
 
 typedef struct BufferBaseTarget_t {
     GLuint      buffer;

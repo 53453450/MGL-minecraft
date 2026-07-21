@@ -853,17 +853,23 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
         }
     }
 
-    if ((target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
-        oldDrawFbo != ptr)
-    {
-        mglFlushPendingDraws(ctx);
-    }
+    GLboolean drawFboChanged =
+        (target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
+        oldDrawFbo != ptr;
+    GLboolean deferFboRotation =
+        drawFboChanged && ctx->draw_defer_enabled && mglBindNoFlushEnabled() &&
+        ctx->draw_command_buffer.total_commands > 0u;
 
-    if ((target == GL_DRAW_FRAMEBUFFER || target == GL_FRAMEBUFFER) &&
-        oldDrawFbo != ptr &&
-        ctx->mtl_funcs.mtlInvalidateRenderPass)
-    {
-        ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+    /* Deferred batches carry an FBO snapshot and replay already rotates the
+     * render encoder when key.fbo_name changes.  Keep independent FBO draws
+     * in one Metal command buffer; texture read/write hazards, clears,
+     * readback, attachment mutation and FBO deletion retain their explicit
+     * flushes. */
+    if (drawFboChanged && !deferFboRotation) {
+        mglFlushPendingDraws(ctx);
+        if (ctx->mtl_funcs.mtlInvalidateRenderPass) {
+            ctx->mtl_funcs.mtlInvalidateRenderPass(ctx);
+        }
     }
 
     switch(target) {

@@ -19,6 +19,8 @@
  */
 
 #include <strings.h>
+#include <string.h>
+#include <stddef.h>
 #include <stdio.h>
 #include "glm_context.h"
 #include "mgl_metal_ref.h"
@@ -40,6 +42,33 @@ static void mglMarkSamplerParameterDirty(Sampler *sampler)
 {
     if (sampler)
         sampler->dirty_bits |= DIRTY_SAMPLER_PARAM;
+}
+
+static bool mglSamplerParameterValuesEqual(const TextureParameter *a,
+                                           const TextureParameter *b)
+{
+    return a && b &&
+           memcmp(a, b, offsetof(TextureParameter, mtl_data)) == 0;
+}
+
+static void mglCommitSamplerParameter(GLMContext ctx,
+                                      Sampler *sampler,
+                                      GLenum pname,
+                                      const TextureParameter *candidate)
+{
+    if (!sampler || !candidate ||
+        mglSamplerParameterValuesEqual(&sampler->params, candidate)) {
+        return;
+    }
+
+    if (!mglSamplerSnapshotCanDeferParameter(ctx, pname)) {
+        mglFlushPendingDraws(ctx);
+    }
+
+    void *metal_sampler = sampler->params.mtl_data;
+    sampler->params = *candidate;
+    sampler->params.mtl_data = metal_sampler;
+    mglMarkSamplerParameterDirty(sampler);
 }
 
 static void mglSamplerParameterUnhandled(GLMContext ctx)
@@ -327,16 +356,16 @@ void mglSamplerParameterf(GLMContext ctx, GLuint sampler, GLenum pname, GLfloat 
 {
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
 
     mglTraceLogExternal("SAMPLER_PARAM_F sampler=%u pname=0x%x fparam=%.6f",
                         (unsigned)sampler,
                         (unsigned)pname,
                         (double)param);
 
-    if (setParam(ctx, &ptr->params, pname, 0, param))
+    TextureParameter candidate = ptr->params;
+    if (setParam(ctx, &candidate, pname, 0, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
@@ -353,19 +382,17 @@ void mglSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, const G
 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
+    TextureParameter candidate = ptr->params;
 
-    if (setTexParamsf(ctx, &ptr->params, pname, param))
+    if (setTexParamsf(ctx, &candidate, pname, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setParam(ctx, &ptr->params, pname, 0, *param))
+    if (setParam(ctx, &candidate, pname, 0, *param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
@@ -376,16 +403,16 @@ void mglSamplerParameteri(GLMContext ctx, GLuint sampler, GLenum pname, GLint pa
 {
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
 
     mglTraceLogExternal("SAMPLER_PARAM sampler=%u pname=0x%x iparam=%d",
                         (unsigned)sampler,
                         (unsigned)pname,
                         (int)param);
 
-    if (setParam(ctx, &ptr->params, pname, param, 0.0f))
+    TextureParameter candidate = ptr->params;
+    if (setParam(ctx, &candidate, pname, param, 0.0f))
     {
-        mglMarkSamplerParameterDirty(ptr);
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
@@ -403,18 +430,17 @@ void mglSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, const G
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
+    TextureParameter candidate = ptr->params;
 
-    if (setTexParamsi(ctx, &ptr->params, pname, param))
+    if (setTexParamsi(ctx, &candidate, pname, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setParam(ctx, &ptr->params, pname, *param, fparam))
+    if (setParam(ctx, &candidate, pname, *param, fparam))
     {
-        mglMarkSamplerParameterDirty(ptr);
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
@@ -432,25 +458,23 @@ void mglSamplerParameterIiv(GLMContext ctx, GLuint sampler, GLenum pname, const 
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
+    TextureParameter candidate = ptr->params;
 
-    if (setTexParamsIiv(ctx, &ptr->params, pname, param))
+    if (setTexParamsIiv(ctx, &candidate, pname, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setTexParamsi(ctx, &ptr->params, pname, param))
+    if (setTexParamsi(ctx, &candidate, pname, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setParam(ctx, &ptr->params, pname, *param, fparam))
+    if (setParam(ctx, &candidate, pname, *param, fparam))
     {
-        mglMarkSamplerParameterDirty(ptr);
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
@@ -468,25 +492,23 @@ void mglSamplerParameterIuiv(GLMContext ctx, GLuint sampler, GLenum pname, const
 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
-    mglFlushPendingDraws(ctx);
+    TextureParameter candidate = ptr->params;
 
-    if (setTexParamsIuiv(ctx, &ptr->params, pname, param))
+    if (setTexParamsIuiv(ctx, &candidate, pname, param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setTexParamsi(ctx, &ptr->params, pname, (GLint *)param))
+    if (setTexParamsi(ctx, &candidate, pname, (GLint *)param))
     {
-        mglMarkSamplerParameterDirty(ptr);
-
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 
-    if (setParam(ctx, &ptr->params, pname, *param, fparam))
+    if (setParam(ctx, &candidate, pname, *param, fparam))
     {
-        mglMarkSamplerParameterDirty(ptr);
+        mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
         return;
     }
 

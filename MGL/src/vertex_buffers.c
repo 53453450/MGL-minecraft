@@ -78,7 +78,13 @@ bool bindVertexBuffer(GLMContext ctx, GLuint vaobj, GLuint bindingindex, GLuint 
     if (!changed)
         return true;
 
-    mglFlushPendingDrawsForVertexArray(ctx, vao);
+    /* A deferred draw owns a VAO snapshot and captures per-draw buffer/offset
+     * overrides.  Pure binding-table changes therefore do not invalidate
+     * queued draws.  Format/enable/divisor mutations keep their conservative
+     * VAO hazard flushes in vertex_arrays.c. */
+    if (!mglBindNoFlushEnabled()) {
+        mglFlushPendingDrawsForVertexArray(ctx, vao);
+    }
 
     vao->bindings[bindingindex].buffer = buf;
     vao->bindings[bindingindex].offset = offset;

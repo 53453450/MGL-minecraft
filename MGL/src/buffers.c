@@ -345,6 +345,35 @@ void mglRetainBufferReference(Buffer *buf)
     buf->refcount++;
 }
 
+void mglReleaseBufferStorage(Buffer *buf)
+{
+    if (!buf) return;
+
+    GLboolean metal_owns_cpu_backing = buf->data.mtl_owns_buffer_data;
+    mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
+
+    if (buf->data.buffer_data && buf->data.buffer_size > 0 &&
+        !metal_owns_cpu_backing) {
+        kern_return_t kr = vm_deallocate((vm_map_t)mach_task_self(),
+                                         (vm_address_t)buf->data.buffer_data,
+                                         (vm_size_t)buf->data.buffer_size);
+        if (kr != KERN_SUCCESS) {
+            fprintf(stderr,
+                    "MGL WARNING: failed to release buffer CPU backing name=%u ptr=%p size=%zu kr=%d\n",
+                    buf->name,
+                    (void *)(uintptr_t)buf->data.buffer_data,
+                    buf->data.buffer_size,
+                    kr);
+        }
+    }
+
+    /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
+     * Its deallocator owns the old VM range after this point. */
+    buf->data.buffer_data = 0;
+    buf->data.buffer_size = 0;
+    buf->data.mtl_owns_buffer_data = GL_FALSE;
+}
+
 void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
 {
     if (!buf) return;
@@ -355,17 +384,7 @@ void mglReleaseBufferReference(GLMContext ctx, Buffer *buf)
         /* All references dropped and glDeleteBuffers was called: release
          * Metal backing + CPU backing and free the shell.  Mirrors
          * mglDestroyContextBuffer's cleanup (glm_context.c). */
-        GLboolean had_mtl_data = buf->data.mtl_data ? GL_TRUE : GL_FALSE;
-        mglSafeReleaseMetalObj((void **)&buf->data.mtl_data);
-        if (buf->data.buffer_data && buf->data.buffer_size > 0) {
-            GLboolean release_cpu_backing =
-                !(had_mtl_data && (buf->storage_flags & GL_CLIENT_STORAGE_BIT));
-            if (release_cpu_backing) {
-                vm_deallocate((vm_map_t)mach_task_self(),
-                              (vm_address_t)buf->data.buffer_data,
-                              (vm_size_t)buf->data.buffer_size);
-            }
-        }
+        mglReleaseBufferStorage(buf);
         free(buf);
     }
 }
@@ -550,7 +569,11 @@ static void mglBindNullBufferForTarget(GLMContext ctx, GLenum target, GLint inde
 
         if (bound_vao)
         {
-            mglFlushPendingDrawsForVertexArray(ctx, bound_vao);
+            /* Indexed draw commands retain their element-buffer pointer, so
+             * a pure EBO unbind cannot change already deferred draws. */
+            if (!mglBindNoFlushEnabled()) {
+                mglFlushPendingDrawsForVertexArray(ctx, bound_vao);
+            }
             bound_vao->element_array.buffer = NULL;
             bound_vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
             mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
@@ -869,12 +892,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
         return;
     }
 
-    mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
-    if (ptr->data.buffer_data && ptr->data.buffer_size > 0) {
-        vm_deallocate((vm_map_t)mach_task_self(),
-                      (vm_address_t)ptr->data.buffer_data,
-                      (vm_size_t)ptr->data.buffer_size);
-    }
+    mglReleaseBufferStorage(ptr);
 
     // init
     ptr->data.buffer_data = buffer_data;
@@ -1027,6 +1045,11 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
     }
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
+
+    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
     if (ctx->sync_strict) {
@@ -1393,7 +1416,12 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
         {
             if (vao->element_array.buffer != ptr)
             {
-                mglFlushPendingDrawsForVertexArray(ctx, vao);
+                /* The draw command snapshots the EBO and index offset. Keep
+                 * Minecraft's per-draw EBO switches in the deferred command
+                 * buffer; storage mutation/deletion still flushes by buffer. */
+                if (!mglBindNoFlushEnabled()) {
+                    mglFlushPendingDrawsForVertexArray(ctx, vao);
+                }
                 vao->element_array.buffer = ptr;
                 vao->dirty_bits |= DIRTY_VAO_BUFFER_BASE;
                 mglMarkStateDirtyBits(ctx->active_state, DIRTY_VAO);
@@ -1664,9 +1692,17 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             base_slot->size != size ||
             base_slot->buf != ptr) {
             if (mglBindNoFlushEnabled()) {
-                if (base_slot->buf) {
+                /* Deferred batches either snapshot BufferBaseTarget or store
+                 * a per-command range override.  A pure range rebind of the
+                 * same object is therefore immutable from older draws and is
+                 * not a buffer mutation hazard. */
+                if (base_slot->buf && ptr != base_slot->buf) {
                     MGL_PERF_INC(g_mglFlushReasonBindBufferSinceSwap);
                     mglFlushPendingDrawsForBuffer(ctx, base_slot->buf);
+                }
+                if (target == GL_UNIFORM_BUFFER && base_slot->buf == ptr &&
+                    (base_slot->offset != offset || base_slot->size != size)) {
+                    ctx->draw_command_buffer.has_deferred_uniform_range_rebind = true;
                 }
                 /* Also hazard-check the NEW buffer: pending draws may be
                  * reading it through a different binding slot.  Without
@@ -1754,29 +1790,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
             }
         }
 
-        if (ptr->storage_flags & GL_CLIENT_STORAGE_BIT)
-        {
-            if (ptr->data.mtl_data)
-            {
-                // the mtl buffer has a deallocator for the vm allocate
-                mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
-            }
-            else
-            {
-                vm_deallocate(mach_host_self(), ptr->data.buffer_data, ptr->data.buffer_size);
-            }
-
-            ptr->data.buffer_data = 0;
-            ptr->data.buffer_size = 0;
-        }
-        else
-        {
-            mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
-            vm_deallocate(mach_task_self(), ptr->data.buffer_data, ptr->data.buffer_size);
-
-            ptr->data.buffer_data = 0;
-            ptr->data.buffer_size = 0;
-        }
+        mglReleaseBufferStorage(ptr);
     }
 
     buffer_size = page_size_align(size);
@@ -2054,6 +2068,11 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
+    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
@@ -2219,6 +2238,11 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
 
     mglFlushPendingDrawsForBufferRange(ctx, ptr, offset, size);
 
+    if (ptr->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
     /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
@@ -2361,6 +2385,11 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     mglFlushPendingDrawsForBufferRange(ctx, dst_buf, writeOffset, size);
     mglFlushPendingDrawsForBufferRange(ctx, src_buf, readOffset, size);
+
+    if (dst_buf->data.mtl_owns_buffer_data && ctx->mtl_funcs.mtlFlush) {
+        mglFlushCommandBuffer(ctx);
+        ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
 
     /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
     if (ctx->sync_strict) {

@@ -157,15 +157,19 @@ int mglHashTableContainsData(HashTable *table, const void *data)
         return 0;
     }
 
-    /* O(1) fast path: if the same pointer was validated before and no
-     * deletion has occurred since, the pointer is still in the table.
-     * This eliminates the O(N) scan for the common hot-path case where
-     * the same bound VAO/program/FBO is validated repeatedly per-draw. */
-    for (size_t index = 0u; index < MGL_HASH_VALID_CACHE_CAPACITY; index++) {
-        if (data == table->cached_valid_ptrs[index] &&
-            table->deletion_generation == table->cached_valid_gens[index]) {
-            return 1;
-        }
+    /* Direct-mapped pointer cache. Minecraft rotates through more than eight
+     * arena/section buffers per frame, so the old linear 8-entry ring thrashed
+     * and repeatedly fell back to scanning the full object table. */
+    uintptr_t cache_hash = (uintptr_t)data;
+    cache_hash >>= 4u;
+    cache_hash ^= cache_hash >> 17u;
+    cache_hash *= UINT64_C(0x9e3779b97f4a7c15);
+    cache_hash ^= cache_hash >> 29u;
+    size_t cache_index =
+        (size_t)cache_hash & (MGL_HASH_VALID_CACHE_CAPACITY - 1u);
+    if (data == table->cached_valid_ptrs[cache_index] &&
+        table->deletion_generation == table->cached_valid_gens[cache_index]) {
+        return 1;
     }
 
     for (size_t i = 0; i < table->size; i++) {
@@ -173,10 +177,8 @@ int mglHashTableContainsData(HashTable *table, const void *data)
             continue;
         }
         if (table->keys[i].data == data) {
-            size_t cache_index = table->cached_valid_next % MGL_HASH_VALID_CACHE_CAPACITY;
             table->cached_valid_ptrs[cache_index] = data;
             table->cached_valid_gens[cache_index] = table->deletion_generation;
-            table->cached_valid_next = (uint8_t)((cache_index + 1u) % MGL_HASH_VALID_CACHE_CAPACITY);
             return 1;
         }
     }

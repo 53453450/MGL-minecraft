@@ -157,7 +157,6 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (bool)checkForDirtyBufferData:(BufferMapList *)buffer_map_list;
 
 // === Private method declarations (defined in MGLRenderer.m, called from categories) ===
-- (void)initializeMTL4CompilerIfAvailable;
 - (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
                                     options:(MTLCompileOptions *)options
                                       label:(NSString *)label
@@ -184,16 +183,6 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                                         reason:(const char *)reason;
 - (NSUInteger)bytesPerPixelForFormat:(GLenum)internalformat;
 - (CGSize)mglSyncLayerDrawableSizeFromView:(const char *)reason;
-
-/* Phase 2 #6: Binary Archive for PSO compile acceleration.
- * loadBinaryArchive loads from disk (or creates empty if not found);
- * saveBinaryArchive serializes back to disk on dealloc.
- * applyBinaryArchiveToDescriptor: attaches the archive to a pipeline
- * descriptor so PSO compile can reuse cached shader binaries. */
-- (void)loadBinaryArchive;
-- (void)saveBinaryArchive;
-- (void)applyBinaryArchiveToDescriptor:(MTLRenderPipelineDescriptor *)descriptor;
-- (void)addPipelineToBinaryArchive:(MTLRenderPipelineDescriptor *)descriptor;
 
 @end
 

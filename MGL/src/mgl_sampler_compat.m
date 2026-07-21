@@ -26,6 +26,7 @@
 #import "mgl_sampler_compat.h"
 #import <Foundation/Foundation.h>
 #import "spirv_cross_c.h"
+#import "mgl_trace_log.h"
 #include <string.h>
 
 /* === Program SPIR-V resource queries === */
@@ -122,7 +123,7 @@ bool mglProgramHasResourceNamed(Program *program,
 
 bool mglProgramNeedsBindingTrace(Program *program)
 {
-    if (!program) {
+    if (!program || !mglTraceLogIsEnabled()) {
         return false;
     }
 
@@ -196,10 +197,10 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
  * mirroring MGLRenderer -textureUnitForSampledResource:metalBinding:stage:
  * but operating purely on the Program struct.  Returns the resolved unit
  * (0-based), or -1 if the resource is not sampler-like. */
-static GLint mglResolveSamplerResourceUnit(Program *program,
-                                           SpirvResource *res,
-                                           int stage,
-                                           int resType)
+GLint mglResolveSamplerResourceUnit(Program *program,
+                                    SpirvResource *res,
+                                    int stage,
+                                    int resType)
 {
     if (!program || !res) return -1;
     if (!mglRendererResourceLooksSamplerLike(res, resType)) return -1;

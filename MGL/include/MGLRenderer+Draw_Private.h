@@ -44,23 +44,7 @@ typedef struct {
      * allocated on entry, freed on exit.  NULL when unused. */
     GLMState *workerState;
 
-    MGLLastBoundBuffer lastBoundVertexBuffers[kMGLMaxBufferSlots];
-    MGLLastBoundBuffer lastBoundFragmentBuffers[kMGLMaxBufferSlots];
-    id<MTLTexture> lastBoundVertexTextures[TEXTURE_UNITS];
-    id<MTLTexture> lastBoundFragmentTextures[TEXTURE_UNITS];
-    id<MTLSamplerState> lastBoundVertexSamplers[TEXTURE_UNITS];
-    id<MTLSamplerState> lastBoundFragmentSamplers[TEXTURE_UNITS];
-    id<MTLRenderPipelineState> lastPipelineState;
-    id<MTLDepthStencilState> lastDepthStencilState;
-    MTLViewport lastViewport;
-    MTLScissorRect lastScissorRect;
-    MTLCullMode lastCullMode;
-    MTLWinding lastFrontFacingWinding;
-    MTLTriangleFillMode lastTriangleFillMode;
-    float lastDepthBias;
-    float lastDepthBiasClamp;
-    float lastDepthSlopeScale;
-    BOOL lastBoundValid;
+    MGLBindingDedupState bindingState;
 
     id<MTLRenderPipelineState> pipelineState;
     MTLPixelFormat pipelineColor0Format;
@@ -69,11 +53,6 @@ typedef struct {
     GLuint pipelineProgramName;
 
     NSUInteger mdiArgsScratchOffset;
-
-    /* Metal-slot masks for the dedup entries copied into this worker. */
-    uint32_t saved_vbuf_mask;
-    uint32_t saved_fbuf_mask;
-    uint64_t saved_texture_mask[2];
 
     uint64_t traceReplayFlushId;
     uint32_t traceReplayBatchIndex;
@@ -344,6 +323,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 // === P2-1: Methods defined in MGLRenderer+Draw.m, called from MGLRenderer+Batch.m ===
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
+                                context:(GLMContext)glm_ctx;
 - (bool)bindTexturesToCurrentRenderEncoder;
 - (BOOL)currentDrawRasterizationIsEmpty;
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;

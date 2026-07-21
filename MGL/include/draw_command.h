@@ -38,6 +38,16 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MAX_PENDING_BUFFER_RANGES 4096
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
 #define MGL_MAX_PENDING_TEXTURE_READS 512
+#define MGL_MAX_DYNAMIC_UNIFORM_BINDINGS 8
+#define MGL_MAX_DYNAMIC_TEXTURE_BINDINGS 8
+#define MGL_MAX_DYNAMIC_VERTEX_BINDINGS 8
+#define MGL_MAX_SAMPLER_SNAPSHOT_KEYS 128
+#define MGL_MAX_SAMPLER_SNAPSHOT_SETS 256
+#define MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES 8
+#define MGL_SAMPLER_SNAPSHOT_KEY_INDEX_SIZE 256
+#define MGL_SAMPLER_SNAPSHOT_SET_INDEX_SIZE 512
+#define MGL_INVALID_SAMPLER_SNAPSHOT_ID UINT16_MAX
+#define MGL_FALLBACK_SAMPLER_KEY_INDEX UINT16_MAX
 
 /* P1-3: open-addressing hash-set index sizes (2× the array capacity, rounded
  * up to a power of two, so load factor stays ≤ 0.5 for O(1) probe length).
@@ -77,6 +87,61 @@ typedef enum {
 } MGLDrawCommandType;
 
 typedef struct {
+    uint16_t binding_index;
+    GLintptr offset;
+    GLsizeiptr size;
+} MGLDynamicUniformBinding;
+
+typedef struct {
+    uint8_t unit;
+    uint8_t target_index;
+    uint8_t is_active;
+    void   *texture;
+} MGLDynamicTextureBinding;
+
+/* Per-draw vertex binding override relative to the batch VAO snapshot.
+ * Keeping the offset as a 32-bit delta makes the common Minecraft/Sodium
+ * case (one arena VBO binding per draw) 16 bytes per captured binding. */
+typedef struct {
+    void    *buffer;
+    uint32_t offset_delta;
+    uint8_t  binding_index;
+    uint8_t  reserved[3];
+} MGLDynamicVertexBinding;
+
+/* Immutable value key for the subset of TextureParameter represented by an
+ * MTLSamplerState. Keeping this type independent of mgl_types_texture.h
+ * avoids the glm_context.h / mgl_types_state.h include cycle. */
+typedef struct {
+    uint32_t target;
+    uint32_t min_filter;
+    uint32_t mag_filter;
+    uint32_t wrap_s;
+    uint32_t wrap_t;
+    uint32_t wrap_r;
+    uint32_t compare_mode;
+    uint32_t compare_func;
+    float    max_anisotropy;
+    float    min_lod;
+    float    max_lod;
+    float    border_color[4];
+} MGLSamplerSnapshotKey;
+
+typedef struct {
+    uint16_t key_index;
+    uint8_t  stage;
+    uint8_t  metal_slot;
+    uint8_t  texture_unit;
+    uint8_t  target_index;
+} MGLSamplerSnapshotEntry;
+
+typedef struct {
+    uint8_t count;
+    uint8_t reserved;
+    MGLSamplerSnapshotEntry entries[MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES];
+} MGLSamplerSnapshotSet;
+
+typedef struct {
     MGLDrawCommandType type;
     GLenum   mode;
     GLint    first;
@@ -87,6 +152,16 @@ typedef struct {
     GLenum   indexType;
     GLuint   indexBufferOffset;
     void    *elementBuffer;
+    uint8_t  dynamic_vertex_binding_count;
+    MGLDynamicVertexBinding
+             dynamic_vertex_bindings[MGL_MAX_DYNAMIC_VERTEX_BINDINGS];
+    uint8_t  dynamic_uniform_binding_count;
+    MGLDynamicUniformBinding
+             dynamic_uniform_bindings[MGL_MAX_DYNAMIC_UNIFORM_BINDINGS];
+    uint8_t  dynamic_texture_binding_count;
+    MGLDynamicTextureBinding
+             dynamic_texture_bindings[MGL_MAX_DYNAMIC_TEXTURE_BINDINGS];
+    uint16_t sampler_snapshot_id;
 } MGLDrawCommand;
 
 typedef enum {
@@ -111,6 +186,7 @@ typedef struct {
     uint16_t caps_flags;
     uint64_t texture_hash;
     uint64_t render_state_hash;
+    uint64_t uniform_buffer_hash;
     uint64_t vertex_layout_hash;
 } MGLStateKey;
 
@@ -132,9 +208,15 @@ typedef struct {
     size_t          stream_index_count;
     size_t          stream_vertex_stride;
     uint64_t        stream_layout_hash;
+    uint16_t        sampler_snapshot_id;
     bool            mdi_compatible;
     bool            uses_elements;
     bool            stream_merged;
+    bool            has_dynamic_uniform_bindings;
+    bool            has_dynamic_vertex_bindings;
+    bool            has_dynamic_texture_bindings;
+    bool            has_sampler_snapshots;
+    bool            sampler_snapshots_mixed;
     bool            arena_managed;  /* snapshot/commands allocated from arena */
 } MGLDrawBatch;
 
@@ -152,6 +234,14 @@ typedef struct {
     size_t       mdi_scratch_capacity;
     uint32_t     array_cmd_count;
     uint32_t     element_cmd_count;
+    bool         has_deferred_uniform_range_rebind;
+    bool         sampler_snapshot_incomplete;
+    MGLSamplerSnapshotKey sampler_snapshot_keys[MGL_MAX_SAMPLER_SNAPSHOT_KEYS];
+    uint16_t     sampler_snapshot_key_count;
+    uint16_t     sampler_snapshot_key_index[MGL_SAMPLER_SNAPSHOT_KEY_INDEX_SIZE];
+    MGLSamplerSnapshotSet sampler_snapshot_sets[MGL_MAX_SAMPLER_SNAPSHOT_SETS];
+    uint16_t     sampler_snapshot_set_count;
+    uint16_t     sampler_snapshot_set_index[MGL_SAMPLER_SNAPSHOT_SET_INDEX_SIZE];
     MGLBufferReadRange buffer_read_ranges[MGL_MAX_PENDING_BUFFER_RANGES];
     uint32_t     buffer_read_range_count;
     bool         buffer_read_range_overflow;
@@ -191,6 +281,12 @@ void mglFlushPendingDrawsForActiveTextures(GLMContext ctx);
 /* MGL_BIND_NO_FLUSH (default ON; =0 off): pure texture/buffer rebinds skip
  * unconditional full flush; content mutation paths still flush. */
 int mglBindNoFlushEnabled(void);
+
+/* Per-draw sampler snapshots are default-on and can be disabled with
+ * MGL_DRAW_SAMPLER_SNAPSHOT=0. The parameter query returns true only when
+ * every pending draw has a complete immutable sampler snapshot. */
+int mglSamplerSnapshotEnabled(void);
+bool mglSamplerSnapshotCanDeferParameter(GLMContext ctx, GLenum pname);
 
 /* Initializes an address-stable, chunked batch arena. */
 bool mglInitBatchArena(MGLBatchArena *arena, size_t initial_capacity);

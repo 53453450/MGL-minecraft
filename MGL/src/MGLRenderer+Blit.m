@@ -39,7 +39,7 @@ typedef struct MGLBlitColorState {
 - (id<MTLSamplerState>)scaledBlitSamplerForFilter:(GLuint)filter
 {
     BOOL wantsNearest = (filter == GL_NEAREST);
-    id<MTLSamplerState> cached = wantsNearest ? _scaledBlitNearestSampler : _scaledBlitLinearSampler;
+    id<MTLSamplerState> cached = wantsNearest ? _blit.scaledBlitNearestSampler : _blit.scaledBlitLinearSampler;
     if (cached) {
         return cached;
     }
@@ -59,9 +59,9 @@ typedef struct MGLBlitColorState {
     }
 
     if (wantsNearest) {
-        _scaledBlitNearestSampler = sampler;
+        _blit.scaledBlitNearestSampler = sampler;
     } else {
-        _scaledBlitLinearSampler = sampler;
+        _blit.scaledBlitLinearSampler = sampler;
     }
 
     return sampler;
@@ -73,12 +73,12 @@ typedef struct MGLBlitColorState {
         pixelFormat = MTLPixelFormatBGRA8Unorm;
     }
 
-    if (!_scaledBlitPipelineCache) {
-        _scaledBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    if (!_blit.scaledBlitPipelineCache) {
+        _blit.scaledBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
     }
 
     NSNumber *key = @((NSUInteger)pixelFormat);
-    id<MTLRenderPipelineState> cached = _scaledBlitPipelineCache[key];
+    id<MTLRenderPipelineState> cached = _blit.scaledBlitPipelineCache[key];
     if (cached) {
         return cached;
     }
@@ -127,7 +127,7 @@ typedef struct MGLBlitColorState {
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [self applyBinaryArchiveToDescriptor:desc];
+    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit pipeline create failed pixelFormat=%lu error=%@",
@@ -135,10 +135,10 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
-    [self addPipelineToBinaryArchive:desc];
+    [_pipelineCache addPipelineToBinaryArchive:desc];
 
-    _scaledBlitPipelineCache[key] = pipeline;
-    [self mglCapAuxCache:_scaledBlitPipelineCache limit:16];
+    _blit.scaledBlitPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.scaledBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu", (unsigned long)pixelFormat);
     return pipeline;
 }
@@ -149,12 +149,12 @@ typedef struct MGLBlitColorState {
         return nil;
     }
 
-    if (!_scaledDepthBlitPipelineCache) {
-        _scaledDepthBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    if (!_blit.scaledDepthBlitPipelineCache) {
+        _blit.scaledDepthBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
     }
 
     NSNumber *key = @((NSUInteger)pixelFormat);
-    id<MTLRenderPipelineState> cached = _scaledDepthBlitPipelineCache[key];
+    id<MTLRenderPipelineState> cached = _blit.scaledDepthBlitPipelineCache[key];
     if (cached) {
         return cached;
     }
@@ -210,7 +210,7 @@ typedef struct MGLBlitColorState {
     desc.rasterSampleCount = 1;
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [self applyBinaryArchiveToDescriptor:desc];
+    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled depth blit pipeline create failed depthPixelFormat=%lu error=%@",
@@ -218,22 +218,22 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
-    [self addPipelineToBinaryArchive:desc];
+    [_pipelineCache addPipelineToBinaryArchive:desc];
 
-    _scaledDepthBlitPipelineCache[key] = pipeline;
-    [self mglCapAuxCache:_scaledDepthBlitPipelineCache limit:16];
+    _blit.scaledDepthBlitPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.scaledDepthBlitPipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu", (unsigned long)pixelFormat);
     return pipeline;
 }
 
 - (id<MTLComputePipelineState>)msaaIntegerResolvePipelineForSigned:(BOOL)signedInteger
 {
-    if (!_msaaIntegerResolvePipelineCache) {
-        _msaaIntegerResolvePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:2];
+    if (!_blit.msaaIntegerResolvePipelineCache) {
+        _blit.msaaIntegerResolvePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:2];
     }
 
     NSNumber *key = @(signedInteger ? 1u : 0u);
-    id<MTLComputePipelineState> cached = _msaaIntegerResolvePipelineCache[key];
+    id<MTLComputePipelineState> cached = _blit.msaaIntegerResolvePipelineCache[key];
     if (cached) {
         return cached;
     }
@@ -283,8 +283,8 @@ typedef struct MGLBlitColorState {
         return nil;
     }
 
-    _msaaIntegerResolvePipelineCache[key] = pipeline;
-    [self mglCapAuxCache:_msaaIntegerResolvePipelineCache limit:8];
+    _blit.msaaIntegerResolvePipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.msaaIntegerResolvePipelineCache limit:8];
     return pipeline;
 }
 
@@ -315,7 +315,7 @@ typedef struct MGLBlitColorState {
         return NO;
     }
 
-    id<MTLComputeCommandEncoder> encoder = [_currentCommandBuffer computeCommandEncoder];
+    id<MTLComputeCommandEncoder> encoder = [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
     if (!encoder) {
         NSLog(@"MGL WARN: failed to create MSAA integer resolve encoder for %s",
               reason ? reason : "unknown");
@@ -420,7 +420,7 @@ typedef struct MGLBlitColorState {
     }
 
     id<MTLRenderCommandEncoder> resolveEncoder =
-        [_currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
+        [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
     if (!resolveEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create MSAA resolve encoder for %s",
               reason ? reason : "unknown");
@@ -482,7 +482,7 @@ typedef struct MGLBlitColorState {
     pass.depthAttachment.storeAction = MTLStoreActionStore;
 
     id<MTLRenderCommandEncoder> encoder =
-        [_currentCommandBuffer renderCommandEncoderWithDescriptor:pass];
+        [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:pass];
     if (!encoder) {
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return nil;
@@ -592,7 +592,7 @@ typedef struct MGLBlitColorState {
     /* Stale (or no copy yet): safe to refresh only if the texture is not an
      * attachment of the active render pass.  Reading a render-pass
      * attachment mid-pass is a Metal read-after-write hazard. */
-    if (mglTextureIsAttachmentOfFramebuffer(_renderPassFramebuffer, tex)) {
+    if (mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex)) {
         if (mglTraceLogIsEnabled()) {
             mglTraceLog("RT_SAMPLE_COPY_LAZY_SKIP stage=%s program=%u binding=%u unit=%u tex=%u writeVer=%u rtVer=%u reason=current-pass-attachment",
                         stage ? stage : "",
@@ -650,7 +650,7 @@ typedef struct MGLBlitColorState {
         return sampledCopy;
     }
 
-    BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_renderPassFramebuffer, tex);
+    BOOL isFbAttachment = mglTextureIsAttachmentOfFramebuffer(_renderPassManager.state->renderPassFramebuffer, tex);
 
     if ([self currentRenderPassUsesTexture:source] && !isFbAttachment) {
         /* The texture is used by the current render pass in a non-attachment
@@ -691,7 +691,7 @@ typedef struct MGLBlitColorState {
         }
     }
 
-    BOOL hadRenderEncoder = (_currentRenderEncoder != nil);
+    BOOL hadRenderEncoder = (_renderPassManager.state->currentRenderEncoder != nil);
     if (hadRenderEncoder) {
         [self endRenderEncodingLocked];
     }
@@ -714,7 +714,7 @@ typedef struct MGLBlitColorState {
             : nil;
     }
 
-    if (hadRenderEncoder && !_currentRenderEncoder) {
+    if (hadRenderEncoder && !_renderPassManager.state->currentRenderEncoder) {
         if (![self restoreRenderEncoderAfterTextureUploadForDraw:"sample_gate_miss_repair"]) {
             return nil;
         }
@@ -969,7 +969,7 @@ typedef struct MGLBlitColorState {
             copyPass.renderTargetWidth = dstLvl.width;
             copyPass.renderTargetHeight = dstLvl.height;
 
-            id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+            id<MTLRenderCommandEncoder> copyEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
             if (!copyEncoder) {
                 static uint64_t s_copyEncoderFailCount = 0;
                 uint64_t hit = ++s_copyEncoderFailCount;
@@ -1052,8 +1052,8 @@ typedef struct MGLBlitColorState {
         return nil;
     }
 
-    if (!_clearRectPipelineCache) {
-        _clearRectPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:8];
+    if (!_blit.clearRectPipelineCache) {
+        _blit.clearRectPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:8];
     }
 
     NSString *key = [NSString stringWithFormat:@"%lu:%lu:%d:%d",
@@ -1061,7 +1061,7 @@ typedef struct MGLBlitColorState {
                      (unsigned long)depthFormat,
                      writesColor ? 1 : 0,
                      writesDepth ? 1 : 0];
-    id<MTLRenderPipelineState> cached = _clearRectPipelineCache[key];
+    id<MTLRenderPipelineState> cached = _blit.clearRectPipelineCache[key];
     if (cached) {
         return cached;
     }
@@ -1112,7 +1112,7 @@ typedef struct MGLBlitColorState {
     }
     mglEnableIndirectCommandBuffersForPipeline(desc);
 
-    [self applyBinaryArchiveToDescriptor:desc];
+    [_pipelineCache applyBinaryArchiveToDescriptor:desc];
     id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scissored clear pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
@@ -1123,24 +1123,24 @@ typedef struct MGLBlitColorState {
               error);
         return nil;
     }
-    [self addPipelineToBinaryArchive:desc];
+    [_pipelineCache addPipelineToBinaryArchive:desc];
 
-    _clearRectPipelineCache[key] = pipeline;
-    [self mglCapAuxCache:_clearRectPipelineCache limit:16];
+    _blit.clearRectPipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.clearRectPipelineCache limit:16];
     return pipeline;
 }
 
 - (id<MTLDepthStencilState>)clearRectDepthState
 {
-    if (_clearRectDepthState) {
-        return _clearRectDepthState;
+    if (_blit.clearRectDepthState) {
+        return _blit.clearRectDepthState;
     }
 
     MTLDepthStencilDescriptor *desc = [[MTLDepthStencilDescriptor alloc] init];
     desc.depthCompareFunction = MTLCompareFunctionAlways;
     desc.depthWriteEnabled = YES;
-    _clearRectDepthState = [_device newDepthStencilStateWithDescriptor:desc];
-    return _clearRectDepthState;
+    _blit.clearRectDepthState = [_device newDepthStencilStateWithDescriptor:desc];
+    return _blit.clearRectDepthState;
 }
 
 /* Depth/stencil blit path for mtlBlitFramebuffer.
@@ -1224,7 +1224,7 @@ typedef struct MGLBlitColorState {
 
                     if (resolvedAny) {
                         id<MTLRenderCommandEncoder> resolveEncoder =
-                            [_currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
+                            [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
                         if (resolveEncoder) {
                             [resolveEncoder endEncoding];
                             mglMarkTextureLevelRenderTargetWritten(depthDrawObject, depthDrawAttachment->level);
@@ -1286,7 +1286,7 @@ typedef struct MGLBlitColorState {
                                                                    textureObj:depthDrawObject
                                                                    mtlTexture:depthDrawTexture];
                             }
-                            id<MTLBlitCommandEncoder> depthBlit = [_currentCommandBuffer blitCommandEncoder];
+                            id<MTLBlitCommandEncoder> depthBlit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
                             if (depthBlit) {
                                 NSUInteger sourceMetalY =
                                     depthReadTexture.height - (NSUInteger)(copySrcY + copyHeight);
@@ -1366,7 +1366,7 @@ typedef struct MGLBlitColorState {
                                 }
 
                                 id<MTLRenderCommandEncoder> depthEncoder =
-                                    [_currentCommandBuffer renderCommandEncoderWithDescriptor:scaledDepthPass];
+                                    [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:scaledDepthPass];
                                 if (depthEncoder) {
                                     [depthEncoder setRenderPipelineState:depthPipeline];
                                     [depthEncoder setDepthStencilState:[self clearRectDepthState]];
@@ -1678,12 +1678,12 @@ typedef struct MGLBlitColorState {
         resolvePass.colorAttachments[0].resolveLevel = 0;
 
         id<MTLRenderCommandEncoder> resolveEncoder =
-            [_currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
+            [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:resolvePass];
         [resolveEncoder endEncoding];
 
         /* Synchronize the resolved texture so the subsequent blit/shader can
          * read it on a tile-based Apple GPU without stale tile memory. */
-        id<MTLBlitCommandEncoder> syncBlit = [_currentCommandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> syncBlit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
         if (syncBlit) {
             [syncBlit synchronizeTexture:resolveTex slice:0 level:0];
             [syncBlit endEncoding];
@@ -1811,7 +1811,7 @@ typedef struct MGLBlitColorState {
             return YES;
         }
 
-        id<MTLBlitCommandEncoder> integerBlit = [_currentCommandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> integerBlit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
         if (!integerBlit) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create integer direct blit encoder");
             return YES;
@@ -1943,7 +1943,7 @@ typedef struct MGLBlitColorState {
         scaledPass.colorAttachments[0].loadAction = MTLLoadActionLoad;
         scaledPass.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-        id<MTLRenderCommandEncoder> encoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:scaledPass];
+        id<MTLRenderCommandEncoder> encoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:scaledPass];
         if (!encoder) {
             NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create scaled render encoder");
             return YES;
@@ -2049,7 +2049,7 @@ typedef struct MGLBlitColorState {
     BOOL didMsaaResolve = st->didMsaaResolve;
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
-    blitCommandEncoder = [_currentCommandBuffer blitCommandEncoder];
+    blitCommandEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
     if (!blitCommandEncoder) {
         NSLog(@"MGL WARN: mtlBlitFramebuffer failed to create blit encoder");
         return;
@@ -2208,7 +2208,7 @@ typedef struct MGLBlitColorState {
                               readFBOAttachment->clear_color[2],
                               readFBOAttachment->clear_color[3]);
 
-        id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+        id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
         if (clearEncoder) {
             [clearEncoder endEncoding];
             readFBOAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -2645,7 +2645,7 @@ typedef struct MGLBlitColorState {
                                        attachmentEnum:readBuffer];
     }
 
-    id<MTLBlitCommandEncoder> blitEncoder = [_currentCommandBuffer blitCommandEncoder];
+    id<MTLBlitCommandEncoder> blitEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
     if (!blitEncoder) {
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return YES;
@@ -2875,6 +2875,68 @@ typedef struct MGLBlitColorState {
 
 #pragma mark C interface to mtlCopyImageSubData
 
+- (BOOL)readTextureRegionViaBlit:(id<MTLTexture>)texture
+                          region:(MTLRegion)region
+                           slice:(NSUInteger)slice
+                           level:(NSUInteger)level
+                           bytes:(void *)bytes
+                     bytesPerRow:(NSUInteger)bytesPerRow
+                   bytesPerImage:(NSUInteger)bytesPerImage
+                          reason:(const char *)reason
+{
+    NSUInteger depth = MAX(region.size.depth, 1u);
+    if (!texture || !bytes || bytesPerRow == 0 || bytesPerImage == 0 ||
+        depth > NSUIntegerMax / bytesPerImage) {
+        return NO;
+    }
+
+    NSUInteger totalBytes = bytesPerImage * depth;
+    id<MTLBuffer> stagingBuffer =
+        [_device newBufferWithLength:totalBytes options:MTLResourceStorageModeShared];
+    if (!stagingBuffer) {
+        return NO;
+    }
+
+    [self endRenderEncoding];
+    if (![self ensureWritableCommandBuffer:reason ? reason : "texture_readback_blit"]) {
+        return NO;
+    }
+
+    id<MTLCommandBuffer> readCommandBuffer = _renderPassManager.state->currentCommandBuffer;
+    id<MTLBlitCommandEncoder> readEncoder = [readCommandBuffer blitCommandEncoder];
+    if (!readEncoder) {
+        return NO;
+    }
+
+    @try {
+        [readEncoder copyFromTexture:texture
+                         sourceSlice:slice
+                         sourceLevel:level
+                        sourceOrigin:region.origin
+                          sourceSize:region.size
+                            toBuffer:stagingBuffer
+                   destinationOffset:0
+              destinationBytesPerRow:bytesPerRow
+            destinationBytesPerImage:bytesPerImage];
+        [readEncoder endEncoding];
+    } @catch (NSException *exception) {
+        @try {
+            [readEncoder endEncoding];
+        } @catch (__unused NSException *endException) {
+        }
+        NSLog(@"MGL WARNING: texture readback blit failed (%s): %@",
+              reason ? reason : "texture_readback_blit", exception.reason);
+        return NO;
+    }
+
+    [self flushCommandBuffer:YES];
+    if (readCommandBuffer.error) {
+        return NO;
+    }
+    memcpy(bytes, stagingBuffer.contents, totalBytes);
+    return YES;
+}
+
 /* CPU-to-CPU copy path for mtlCopyImageSubData.
  * Raw memcpy between matching-format textures that both have CPU data.
  * Returns YES if the copy succeeded (caller should return). */
@@ -3099,7 +3161,7 @@ typedef struct MGLBlitColorState {
                                                                             length:srcImageBytes
                                                                            options:MTLResourceStorageModeShared];
                             if (stagingBuf) {
-                                id<MTLBlitCommandEncoder> uploadEncoder = [_currentCommandBuffer blitCommandEncoder];
+                                id<MTLBlitCommandEncoder> uploadEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
                                 if (uploadEncoder) {
                                     [uploadEncoder copyFromBuffer:stagingBuf
                                                     sourceOffset:0
@@ -3244,19 +3306,35 @@ typedef struct MGLBlitColorState {
                     }
 
                     if (!srcReadFromCPU) {
-                    @try {
-                        [srcTexture getBytes:stagingBuf
-                                  bytesPerRow:rowBytes
-                                bytesPerImage:imageBytes
-                                   fromRegion:srcRegion
-                                  mipmapLevel:(NSUInteger)srcLevel
-                                        slice:srcMtlSlice];
-                    } @catch (NSException *exception) {
-                        NSLog(@"MGL WARNING: format conv renderbuffer readback failed: %@",
-                              exception);
-                        metalCopyOK = false;
-                        break;
-                    }
+                        if (srcType == MTLTextureType3D &&
+                            MGLCapabilityHasBug(&_capability,
+                                                MGL_BUG_3D_GETBYTES_SLICE_OOB)) {
+                            if (![self readTextureRegionViaBlit:srcTexture
+                                                        region:srcRegion
+                                                         slice:srcMtlSlice
+                                                         level:(NSUInteger)srcLevel
+                                                         bytes:stagingBuf
+                                                   bytesPerRow:rowBytes
+                                                 bytesPerImage:imageBytes
+                                                        reason:"copyImageSubData.formatConv3DReadback"]) {
+                                metalCopyOK = false;
+                                break;
+                            }
+                        } else {
+                            @try {
+                                [srcTexture getBytes:stagingBuf
+                                          bytesPerRow:rowBytes
+                                        bytesPerImage:imageBytes
+                                           fromRegion:srcRegion
+                                          mipmapLevel:(NSUInteger)srcLevel
+                                                slice:srcMtlSlice];
+                            } @catch (NSException *exception) {
+                                NSLog(@"MGL WARNING: format conv renderbuffer readback failed: %@",
+                                      exception);
+                                metalCopyOK = false;
+                                break;
+                            }
+                        }
                     }
 
                     /* Write to destination Metal via replaceRegion */
@@ -3381,7 +3459,11 @@ typedef struct MGLBlitColorState {
      * This bypasses the buggy blit path entirely.  Private 3D destinations
      * cannot use replaceRegion and fall through to the blit path below.
      * Driver bug is tracked via MGLCapabilityHasBug(MGL_BUG_3D_GETBYTES_SLICE_OOB). */
-    if (MGLCapabilityHasBug(&_capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) &&
+    bool needs3DWorkaround =
+        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) ||
+        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) ||
+        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB);
+    if (needs3DWorkaround &&
         dstType == MTLTextureType3D &&
         dstTexture.storageMode != MTLStorageModePrivate) {
         NSUInteger bpp = mglMetalReadbackBytesPerPixel(srcTexture.pixelFormat);
@@ -3525,41 +3607,26 @@ typedef struct MGLBlitColorState {
                 MTLRegion srcRegion = MTLRegionMake3D((NSUInteger)srcX, (NSUInteger)srcY,
                                                       (NSUInteger)srcZ, copyWidth,
                                                       copyHeight, copyDepth3D);
-                if (srcTexture.storageMode != MTLStorageModePrivate) {
+                if (srcTexture.storageMode != MTLStorageModePrivate &&
+                    !MGLCapabilityHasBug(&_capability,
+                                         MGL_BUG_3D_GETBYTES_SLICE_OOB)) {
                     [srcTexture getBytes:stagingBytes
                              bytesPerRow:rowBytes
                            bytesPerImage:imageBytes
                               fromRegion:srcRegion
                              mipmapLevel:(NSUInteger)srcLevel
                                    slice:0];
-                } else {
-                    id<MTLBuffer> stagingBuffer =
-                        [_device newBufferWithLength:totalBytes
-                                             options:MTLResourceStorageModeShared];
-                    if (!stagingBuffer) {
-                        free(stagingBytes);
-                        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
-                        return YES;
-                    }
-                    id<MTLBlitCommandEncoder> readEncoder =
-                        [_currentCommandBuffer blitCommandEncoder];
-                    if (!readEncoder) {
-                        free(stagingBytes);
-                        mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
-                        return YES;
-                    }
-                    [readEncoder copyFromTexture:srcTexture
-                                      sourceSlice:0
-                                      sourceLevel:(NSUInteger)srcLevel
-                                     sourceOrigin:srcRegion.origin
-                                       sourceSize:srcRegion.size
-                                         toBuffer:stagingBuffer
-                                    destinationOffset:0
-                               destinationBytesPerRow:rowBytes
-                             destinationBytesPerImage:imageBytes];
-                    [readEncoder endEncoding];
-                    [self flushCommandBuffer:YES];
-                    memcpy(stagingBytes, [stagingBuffer contents], totalBytes);
+                } else if (![self readTextureRegionViaBlit:srcTexture
+                                                        region:srcRegion
+                                                         slice:0
+                                                         level:(NSUInteger)srcLevel
+                                                         bytes:stagingBytes
+                                                   bytesPerRow:rowBytes
+                                                 bytesPerImage:imageBytes
+                                                        reason:"copyImageSubData.3DReadback"]) {
+                    free(stagingBytes);
+                    mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+                    return YES;
                 }
             } else {
                 /* Non-3D source (2D array, cube, rectangle, etc.):
@@ -3586,7 +3653,7 @@ typedef struct MGLBlitColorState {
                             return YES;
                         }
                         id<MTLBlitCommandEncoder> readEncoder =
-                            [_currentCommandBuffer blitCommandEncoder];
+                            [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
                         if (!readEncoder) {
                             free(stagingBytes);
                             mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
@@ -3725,22 +3792,29 @@ typedef struct MGLBlitColorState {
                             levelPitch, &expandedBPR, &expandedBPI);
                     }
                     if (expandedData) {
+                        NSUInteger expandedImageBytes = expandedBPR * levelHeight;
                         [dstTexture replaceRegion:fullRegion
                                       mipmapLevel:(NSUInteger)dstLevel
+                                            slice:0
                                         withBytes:expandedData
-                                      bytesPerRow:expandedBPR];
+                                      bytesPerRow:expandedBPR
+                                    bytesPerImage:expandedImageBytes];
                         free(expandedData);
                     } else {
                         [dstTexture replaceRegion:fullRegion
                                       mipmapLevel:(NSUInteger)dstLevel
+                                            slice:0
                                         withBytes:fullLevelBytes
-                                      bytesPerRow:levelPitch];
+                                      bytesPerRow:levelPitch
+                                    bytesPerImage:levelImageBytes];
                     }
                 } else {
                     [dstTexture replaceRegion:fullRegion
                                   mipmapLevel:(NSUInteger)dstLevel
+                                        slice:0
                                     withBytes:fullLevelBytes
-                                  bytesPerRow:levelPitch];
+                                  bytesPerRow:levelPitch
+                                bytesPerImage:levelImageBytes];
                 }
             } @catch (NSException *exception) {
                 free(stagingBytes);
@@ -4089,6 +4163,38 @@ typedef struct MGLBlitColorState {
     MTLTextureType srcType = srcTexture.textureType;
     MTLTextureType dstType = dstTexture.textureType;
 
+    if ((NSUInteger)srcLevel >= srcTexture.mipmapLevelCount ||
+        (NSUInteger)dstLevel >= dstTexture.mipmapLevelCount) {
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
+        return;
+    }
+
+    bool needs3DDestinationWorkaround = dstType == MTLTextureType3D &&
+        (MGLCapabilityHasBug(&_capability, MGL_BUG_3D_GETBYTES_SLICE_OOB) ||
+         MGLCapabilityHasBug(&_capability, MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) ||
+         MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB));
+    if (needs3DDestinationWorkaround) {
+        RETURN_ON_FAILURE([self processGLState:false]);
+        [self endRenderEncoding];
+        RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlCopyImageSubData.3D"]);
+        if ([self copyImageSubData3DFallback:glm_ctx
+                                     srcTex:srcTex
+                                 srcTexture:srcTexture
+                                    srcType:srcType
+                                   srcLevel:srcLevel
+                                       srcX:srcX srcY:srcY srcZ:srcZ
+                                     dstTex:dstTex
+                                 dstTexture:dstTexture
+                                    dstType:dstType
+                                   dstLevel:dstLevel
+                                       dstX:dstX dstY:dstY dstZ:dstZ
+                                      width:width height:height depth:depth]) {
+            return;
+        }
+        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
+        return;
+    }
+
     if ([self copyImageSubDataCpuToCpu:glm_ctx
                                 srcTex:srcTex
                             srcTexture:srcTexture
@@ -4119,30 +4225,9 @@ typedef struct MGLBlitColorState {
         return;
     }
 
-    if ((NSUInteger)srcLevel >= srcTexture.mipmapLevelCount ||
-        (NSUInteger)dstLevel >= dstTexture.mipmapLevelCount) {
-        mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_VALUE);
-        return;
-    }
-
     RETURN_ON_FAILURE([self processGLState: false]);
     [self endRenderEncoding];
     RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlCopyImageSubData"]);
-
-    if ([self copyImageSubData3DFallback:glm_ctx
-                                    srcTex:srcTex
-                                srcTexture:srcTexture
-                                   srcType:srcType
-                                  srcLevel:srcLevel
-                                      srcX:srcX srcY:srcY srcZ:srcZ
-                                    dstTex:dstTex
-                                dstTexture:dstTexture
-                                   dstType:dstType
-                                  dstLevel:dstLevel
-                                      dstX:dstX dstY:dstY dstZ:dstZ
-                                     width:width height:height depth:depth]) {
-        return;
-    }
 
     /* For cube / cube-array / 2D-array / 1D-array targets, srcZ selects
      * the slice.  For 3D textures, srcZ is the depth origin. */
@@ -4189,7 +4274,7 @@ typedef struct MGLBlitColorState {
         [self endRenderEncoding];
     }
 
-    id<MTLBlitCommandEncoder> blitEncoder = [_currentCommandBuffer blitCommandEncoder];
+    id<MTLBlitCommandEncoder> blitEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
     if (!blitEncoder) {
         NSLog(@"MGL ERROR: mtlCopyImageSubData failed to create blit encoder");
         mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);

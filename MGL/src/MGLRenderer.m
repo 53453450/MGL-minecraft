@@ -1994,7 +1994,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 //
 // Two independent locks:
 //   _metalStateLock  — guards the 15 Locked-method targets (draw path)
-//   _syncListLock    — guards _currentCommandBufferSyncList access
+//   _syncListLock    — guards MGLRenderPassManager sync-list access
 //                      (mtlGetSync: vs newCommandBufferLocked)
 //
 // The Locked pattern (public wrapper + *Locked impl) is retained for
@@ -2728,10 +2728,10 @@ void logDirtyBits(GLMContext ctx)
                           (unsigned long)convertedStride,
                           copyLength,
                           (unsigned long long)sourceHash];
-    if (!_doubleVertexAttribBufferCache) {
-        _doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _doubleVertexAttribBufferCache[cacheKey];
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -2787,8 +2787,8 @@ void logDirtyBits(GLMContext ctx)
     if (!converted) {
         return nil;
     }
-    _doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_doubleVertexAttribBufferCache limit:64];
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
     if (outStride) {
         *outStride = convertedStride;
     }
@@ -2856,10 +2856,10 @@ void logDirtyBits(GLMContext ctx)
                           (unsigned long)convertedStride,
                           copyLength,
                           (unsigned long long)sourceHash];
-    if (!_doubleVertexAttribBufferCache) {
-        _doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _doubleVertexAttribBufferCache[cacheKey];
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -2932,8 +2932,8 @@ void logDirtyBits(GLMContext ctx)
     if (!converted) {
         return nil;
     }
-    _doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_doubleVertexAttribBufferCache limit:64];
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
     if (outStride) {
         *outStride = convertedStride;
     }
@@ -3002,10 +3002,10 @@ void logDirtyBits(GLMContext ctx)
                           (unsigned long)srcCompSize,
                           copyLength,
                           (unsigned long long)sourceHash];
-    if (!_doubleVertexAttribBufferCache) {
-        _doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
     }
-    id<MTLBuffer> cached = _doubleVertexAttribBufferCache[cacheKey];
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
     if (cached) {
         if (outStride) {
             *outStride = convertedStride;
@@ -3103,8 +3103,8 @@ void logDirtyBits(GLMContext ctx)
     if (!converted) {
         return nil;
     }
-    _doubleVertexAttribBufferCache[cacheKey] = converted;
-    [self mglCapAuxCache:_doubleVertexAttribBufferCache limit:64];
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
     if (outStride) {
         *outStride = convertedStride;
     }
@@ -3994,7 +3994,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
             Buffer *drawIndexBuffer = vao->element_array.buffer;
             void *indexBufferMetal = drawIndexBuffer ? drawIndexBuffer->data.mtl_data : NULL;
             NSLog(@"MGL WARNING: mapGLBuffersToMTLBufferMap mismatch (pipeline=%p mapped=%u expected=%u stage=%d hit=%llu indexBuffer=%p vao=%p)",
-                  _pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
+                  _pipelineCache.state->pipelineState, mapped_buffers, count, stage, s_map_mismatch_hits, indexBufferMetal, vao);
         }
     }
 
@@ -5790,8 +5790,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
 - (id<MTLTexture>)fallbackSampledTexture
 {
-    if (_fallbackSampledTexture || !kMGLEnableSampledTextureFallback) {
-        return _fallbackSampledTexture;
+    if (_resourceFallback.fallbackSampledTexture || !kMGLEnableSampledTextureFallback) {
+        return _resourceFallback.fallbackSampledTexture;
     }
 
     MTLTextureDescriptor *desc =
@@ -5802,25 +5802,25 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _fallbackSampledTexture = [_device newTextureWithDescriptor:desc];
-    if (_fallbackSampledTexture) {
+    _resourceFallback.fallbackSampledTexture = [_device newTextureWithDescriptor:desc];
+    if (_resourceFallback.fallbackSampledTexture) {
         uint32_t pixel = 0xff000000u;
-        [_fallbackSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                                   mipmapLevel:0
-                                     withBytes:&pixel
-                                   bytesPerRow:sizeof(pixel)];
+        [_resourceFallback.fallbackSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                                                    mipmapLevel:0
+                                                      withBytes:&pixel
+                                                    bytesPerRow:sizeof(pixel)];
         NSLog(@"MGL INFO: Created 1x1 fallback sampled texture for missing shader resources");
     } else {
         NSLog(@"MGL ERROR: Failed to create fallback sampled texture");
     }
 
-    return _fallbackSampledTexture;
+    return _resourceFallback.fallbackSampledTexture;
 }
 
 - (id<MTLTexture>)fallbackCubeSampledTexture
 {
-    if (_fallbackCubeSampledTexture || !kMGLEnableSampledTextureFallback) {
-        return _fallbackCubeSampledTexture;
+    if (_resourceFallback.fallbackCubeSampledTexture || !kMGLEnableSampledTextureFallback) {
+        return _resourceFallback.fallbackCubeSampledTexture;
     }
 
     MTLTextureDescriptor *desc = [MTLTextureDescriptor new];
@@ -5834,43 +5834,43 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _fallbackCubeSampledTexture = [_device newTextureWithDescriptor:desc];
-    if (_fallbackCubeSampledTexture) {
+    _resourceFallback.fallbackCubeSampledTexture = [_device newTextureWithDescriptor:desc];
+    if (_resourceFallback.fallbackCubeSampledTexture) {
         uint32_t pixel = 0xff000000u;
         for (NSUInteger face = 0; face < 6; face++) {
-            [_fallbackCubeSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                                           mipmapLevel:0
-                                                 slice:face
-                                             withBytes:&pixel
-                                           bytesPerRow:sizeof(pixel)
-                                         bytesPerImage:sizeof(pixel)];
+            [_resourceFallback.fallbackCubeSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                                                             mipmapLevel:0
+                                                                   slice:face
+                                                               withBytes:&pixel
+                                                             bytesPerRow:sizeof(pixel)
+                                                           bytesPerImage:sizeof(pixel)];
         }
         NSLog(@"MGL INFO: Created 1x1 fallback cube sampled texture for missing shader resources");
     } else {
         NSLog(@"MGL ERROR: Failed to create fallback cube sampled texture");
     }
 
-    return _fallbackCubeSampledTexture;
+    return _resourceFallback.fallbackCubeSampledTexture;
 }
 
 - (id<MTLTexture>)fallbackTextureBufferSampledTexture
 {
-    if (_fallbackSintTextureBuffer || !kMGLEnableSampledTextureFallback) {
-        return _fallbackSintTextureBuffer;
+    if (_resourceFallback.fallbackSintTextureBuffer || !kMGLEnableSampledTextureFallback) {
+        return _resourceFallback.fallbackSintTextureBuffer;
     }
 
     static const NSUInteger kFallbackTexelCount = 64;
     static const NSUInteger kFallbackBytesPerTexel = 4;
 
-    if (!_fallbackTextureBufferStorage) {
-        _fallbackTextureBufferStorage = [_device newBufferWithLength:(kFallbackTexelCount * kFallbackBytesPerTexel)
-                                                              options:MTLResourceStorageModeShared];
-        if (_fallbackTextureBufferStorage && _fallbackTextureBufferStorage.contents) {
-            memset(_fallbackTextureBufferStorage.contents, 0, kFallbackTexelCount * kFallbackBytesPerTexel);
+    if (!_resourceFallback.fallbackTextureBufferStorage) {
+        _resourceFallback.fallbackTextureBufferStorage = [_device newBufferWithLength:(kFallbackTexelCount * kFallbackBytesPerTexel)
+                                                                               options:MTLResourceStorageModeShared];
+        if (_resourceFallback.fallbackTextureBufferStorage && _resourceFallback.fallbackTextureBufferStorage.contents) {
+            memset(_resourceFallback.fallbackTextureBufferStorage.contents, 0, kFallbackTexelCount * kFallbackBytesPerTexel);
         }
     }
 
-    if (!_fallbackTextureBufferStorage) {
+    if (!_resourceFallback.fallbackTextureBufferStorage) {
         NSLog(@"MGL ERROR: Failed to create fallback texture-buffer backing storage");
         return nil;
     }
@@ -5886,19 +5886,19 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     desc.storageMode = MTLStorageModeShared;
 
     @try {
-        _fallbackSintTextureBuffer = [_fallbackTextureBufferStorage newTextureWithDescriptor:desc
-                                                                                     offset:0
-                                                                                bytesPerRow:(kFallbackTexelCount * kFallbackBytesPerTexel)];
+        _resourceFallback.fallbackSintTextureBuffer = [_resourceFallback.fallbackTextureBufferStorage newTextureWithDescriptor:desc
+                                                                                                                        offset:0
+                                                                                                                   bytesPerRow:(kFallbackTexelCount * kFallbackBytesPerTexel)];
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Failed to create fallback texture-buffer texture: %@", exception);
-        _fallbackSintTextureBuffer = nil;
+        _resourceFallback.fallbackSintTextureBuffer = nil;
     }
 
-    if (_fallbackSintTextureBuffer) {
+    if (_resourceFallback.fallbackSintTextureBuffer) {
         NSLog(@"MGL INFO: Created fallback signed integer texture buffer for missing/invalid texel-buffer resources");
     }
 
-    return _fallbackSintTextureBuffer;
+    return _resourceFallback.fallbackSintTextureBuffer;
 }
 
 - (id<MTLTexture>)fallbackSampledTextureForExpectedType:(MTLTextureType)expectedType
@@ -5922,13 +5922,13 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         pixelFormat = MTLPixelFormatDepth32Float;
     }
 
-    if (!_fallbackSampledTextureCache) {
-        _fallbackSampledTextureCache = [[NSMutableDictionary alloc] initWithCapacity:8];
+    if (!_resourceFallback.fallbackSampledTextureCache) {
+        _resourceFallback.fallbackSampledTextureCache = [[NSMutableDictionary alloc] initWithCapacity:8];
     }
 
     NSUInteger keyValue = (((NSUInteger)textureType) << 8u) | ((NSUInteger)dataKind);
     NSNumber *key = @(keyValue);
-    id<MTLTexture> cached = _fallbackSampledTextureCache[key];
+    id<MTLTexture> cached = _resourceFallback.fallbackSampledTextureCache[key];
     if (cached) {
         return cached;
     }
@@ -5991,8 +5991,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                    bytesPerRow:sizeof(pixel)];
     }
 
-    _fallbackSampledTextureCache[key] = texture;
-    [self mglCapAuxCache:_fallbackSampledTextureCache limit:32];
+    _resourceFallback.fallbackSampledTextureCache[key] = texture;
+    [self mglCapAuxCache:_resourceFallback.fallbackSampledTextureCache limit:32];
     NSLog(@"MGL INFO: Created %@ fallback sampled texture type=%lu format=%lu",
           [NSString stringWithUTF8String:mglTextureDataKindName(dataKind)],
           (unsigned long)textureType,
@@ -6234,8 +6234,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
 - (id<MTLSamplerState>)fallbackSamplerState
 {
-    if (_fallbackSamplerState) {
-        return _fallbackSamplerState;
+    if (_resourceFallback.fallbackSamplerState) {
+        return _resourceFallback.fallbackSamplerState;
     }
 
     MTLSamplerDescriptor *desc = [MTLSamplerDescriptor new];
@@ -6246,12 +6246,12 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     desc.tAddressMode = MTLSamplerAddressModeClampToEdge;
     desc.rAddressMode = MTLSamplerAddressModeClampToEdge;
 
-    _fallbackSamplerState = [_device newSamplerStateWithDescriptor:desc];
-    if (!_fallbackSamplerState) {
+    _resourceFallback.fallbackSamplerState = [_device newSamplerStateWithDescriptor:desc];
+    if (!_resourceFallback.fallbackSamplerState) {
         NSLog(@"MGL ERROR: Failed to create fallback sampler state");
     }
 
-    return _fallbackSamplerState;
+    return _resourceFallback.fallbackSamplerState;
 }
 
 - (void)traceSampledTextureReadback:(id<MTLTexture>)texture
@@ -6680,13 +6680,13 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                                     (unsigned long long)ptr->msl_texture_cache_instance_id,
                                     (unsigned long long)ptr->msl_texture_cache_generation,
                                     stage, (unsigned)res->binding];
-    NSNumber *cachedMslType = [_mslTextureTypeCache objectForKey:mslTextureCacheKey];
+    NSNumber *cachedMslType = [_resourceFallback.mslTextureTypeCache objectForKey:mslTextureCacheKey];
     MTLTextureType mslType;
     if (cachedMslType != nil) {
         mslType = (MTLTextureType)[cachedMslType unsignedIntegerValue];
     } else {
         mslType = mglExpectedTextureTypeFromMSL(ptr->spirv[stage].msl_str, res->binding);
-        [_mslTextureTypeCache setObject:@(mslType) forKey:mslTextureCacheKey];
+        [_resourceFallback.mslTextureTypeCache setObject:@(mslType) forKey:mslTextureCacheKey];
     }
 
     MTLTextureType spirvType = 0;
@@ -6758,7 +6758,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                                       (unsigned long long)ptr->msl_texture_cache_instance_id,
                                       (unsigned long long)ptr->msl_texture_cache_generation,
                                       stage, (unsigned)res->binding];
-    NSNumber *cachedMslKind = [_mslTextureTypeCache objectForKey:mslDataKindCacheKey];
+    NSNumber *cachedMslKind = [_resourceFallback.mslTextureTypeCache objectForKey:mslDataKindCacheKey];
     if (cachedMslKind != nil) {
         return (MGLTextureDataKind)[cachedMslKind unsignedIntegerValue];
     }
@@ -6767,7 +6767,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         mglExpectedTextureDataKindFromMSL(ptr->spirv[stage].msl_str, res->binding);
     MGLTextureDataKind resolvedKind =
         mslKind != MGLTextureDataKindUnknown ? mslKind : MGLTextureDataKindFloat;
-    [_mslTextureTypeCache setObject:@(resolvedKind) forKey:mslDataKindCacheKey];
+    [_resourceFallback.mslTextureTypeCache setObject:@(resolvedKind) forKey:mslDataKindCacheKey];
     return resolvedKind;
 }
 
@@ -6862,38 +6862,15 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     return ptr->spirv_resources_list[stage][type].list[index].location;
 }
 
-- (void)initializeMTL4CompilerIfAvailable
-{
-#if MGL_HAS_MTL4_COMPILER
-    if (!_device || _mtl4Compiler || mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER")) {
-        return;
-    }
-
-    if (@available(macOS 26.0, *)) {
-        if (![_device respondsToSelector:@selector(newCompilerWithDescriptor:error:)]) {
-            return;
-        }
-
-        __autoreleasing NSError *error = nil;
-        MTL4CompilerDescriptor *descriptor = [[MTL4CompilerDescriptor alloc] init];
-        descriptor.label = @"MGL Metal 4 shader compiler";
-        _mtl4Compiler = [_device newCompilerWithDescriptor:descriptor error:&error];
-        if (_mtl4Compiler) {
-            NSLog(@"MGL INFO: Metal 4 compiler enabled for shader libraries");
-        } else if (error) {
-            NSLog(@"MGL WARNING: Metal 4 compiler unavailable, falling back to MTLDevice library compile: %@",
-                  error.localizedDescription);
-        }
-    }
-#endif
-}
-
 - (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
                                     options:(MTLCompileOptions *)options
                                       label:(NSString *)label
                                       error:(NSError **)error
 {
-    return mglCompileMSL(_device, _mtl4Compiler, source, options, label, error);
+    return [_pipelineCache newMetalLibraryWithSource:source
+                                             options:options
+                                               label:label
+                                               error:error];
 }
 
 - (id<MTLLibrary>) compileShader: (const char *) str
@@ -7539,8 +7516,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
      * written before this point belongs to the previous frame, so its next
      * write this frame is a "first use" that may skip loading prior contents.
      * Skips 0 so a zero-initialized texture stamp never matches. */
-    if (++_dontCareFrameGeneration == 0u) {
-        _dontCareFrameGeneration = 2u;  /* skip 0 (texture stamp init) and wrap sentinel */
+    if (++_renderPassManager.state->dontCareFrameGeneration == 0u) {
+        _renderPassManager.state->dontCareFrameGeneration = 2u;  /* skip 0 (texture stamp init) and wrap sentinel */
     }
     MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
@@ -7575,9 +7552,9 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
-                            _currentCommandBuffer,
-                            _currentRenderEncoder,
-                            _renderPassDescriptor,
+                            _renderPassManager.state->currentCommandBuffer,
+                            _renderPassManager.state->currentRenderEncoder,
+                            _renderPassManager.state->renderPassDescriptor,
                             _drawable);
     }
 
@@ -7601,9 +7578,9 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 if (traceSwap || (swapCall % 120ull) == 0ull) {
                     mglLogStateSnapshot("mainthread.stall.snapshot",
                                         activeCtx,
-                                        _currentCommandBuffer,
-                                        _currentRenderEncoder,
-                                        _renderPassDescriptor,
+                                        _renderPassManager.state->currentCommandBuffer,
+                                        _renderPassManager.state->currentRenderEncoder,
+                                        _renderPassManager.state->renderPassDescriptor,
                                         _drawable);
                 }
             } else if (traceSwap) {
@@ -7728,7 +7705,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             }
         }
 
-        id<MTLTexture> rpColor0 = _renderPassDescriptor ? _renderPassDescriptor.colorAttachments[0].texture : nil;
+        id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
         id<MTLTexture> drawableTexture = _drawable ? _drawable.texture : nil;
         [self copyRenderPassColorToDrawableIfNeeded:rpColor0 drawableTexture:drawableTexture swapCall:swapCall traceSwap:traceSwap];
 
@@ -7739,17 +7716,17 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             return;
         }
 
-        if (!_currentCommandBuffer) {
+        if (!_renderPassManager.state->currentCommandBuffer) {
             NSLog(@"MGL ERROR: No command buffer available for presentation");
             return;
         }
 
-        MTLCommandBufferStatus bufferStatus = _currentCommandBuffer.status;
+        MTLCommandBufferStatus bufferStatus = _renderPassManager.state->currentCommandBuffer.status;
         if (bufferStatus != MTLCommandBufferStatusNotEnqueued) {
             NSLog(@"MGL WARNING: mtlSwapBuffers found finalized command buffer (status: %ld), rotating", (long)bufferStatus);
             [self endRenderEncodingLocked];
             [self newCommandBufferLocked];
-            if (!_currentCommandBuffer) {
+            if (!_renderPassManager.state->currentCommandBuffer) {
                 NSLog(@"MGL ERROR: Failed to create new command buffer for presentation");
                 return;
             }
@@ -7773,10 +7750,10 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                       (unsigned long)_drawable.texture.pixelFormat);
             }
 
-            [_currentCommandBuffer presentDrawable: _drawable];
+            [_renderPassManager.state->currentCommandBuffer presentDrawable: _drawable];
             if (traceSwap) {
                 MGLTraceNSLog(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
-                      (unsigned long long)swapCall, _currentCommandBuffer, _drawable);
+                      (unsigned long long)swapCall, _renderPassManager.state->currentCommandBuffer, _drawable);
             }
 
         } @catch (NSException *exception) {
@@ -7786,8 +7763,8 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             return;
         }
 
-        id<MTLCommandBuffer> commandBufferToCommit = _currentCommandBuffer;
-        _currentCommandBuffer = nil;
+        id<MTLCommandBuffer> commandBufferToCommit =
+            [_renderPassManager detachCurrentCommandBufferForSubmission];
         @try {
             if (traceSwap) {
                 MGLTraceNSLog(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
@@ -7837,9 +7814,9 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                   swapElapsedMs);
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
-                                _currentCommandBuffer,
-                                _currentRenderEncoder,
-                                _renderPassDescriptor,
+                                _renderPassManager.state->currentCommandBuffer,
+                                _renderPassManager.state->currentRenderEncoder,
+                                _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
         } else if (swapElapsedMs >= 25.0) {
             MGLTraceNSLog(@"MGL TRACE swap.slow call=%llu elapsed=%.3fms",
@@ -7923,7 +7900,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                     copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
                     copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-                    id<MTLRenderCommandEncoder> copyEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+                    id<MTLRenderCommandEncoder> copyEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
                     if (copyEncoder) {
                         [copyEncoder setRenderPipelineState:pipeline];
                         [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
@@ -8049,7 +8026,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                     return;
                 }
 
-                id<MTLBlitCommandEncoder> sampleEncoder = [_currentCommandBuffer blitCommandEncoder];
+                id<MTLBlitCommandEncoder> sampleEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
                 if (!sampleEncoder) {
                     NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(create blit encoder)",
                           sampleTag,
@@ -8075,7 +8052,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 NSUInteger sampleOriginX = clampedOriginX;
                 NSUInteger sampleOriginY = clampedOriginY;
                 [sampleBuffer addDebugMarker:@"mgl_swap_sample" range:NSMakeRange(0, sampleBytesPerImage)];
-                [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
+                [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
                     const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
                     if (!p) {
                         MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
@@ -8217,7 +8194,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     if (!glm_ctx->active_state->caps.scissor_test) {
         [self endRenderEncoding];
 
-        if (!_currentCommandBuffer && ![self newCommandBuffer]) {
+        if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
             NSLog(@"MGL ERROR: immediate clear failed to create command buffer");
             return;
         }
@@ -8397,7 +8374,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     }
 
     [self endRenderEncoding];
-    if (!_currentCommandBuffer && ![self newCommandBuffer]) {
+    if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
         NSLog(@"MGL ERROR: scissored clear failed to create command buffer");
         return;
     }
@@ -8437,7 +8414,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         return;
     }
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (!clearEncoder) {
         NSLog(@"MGL ERROR: scissored clear failed to create render encoder");
         return;
@@ -9114,14 +9091,14 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         [self clearStageBindingCopyBacks:copyBacks];
         return true;
     }
-    if (!_currentCommandBuffer ||
-        _currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        _renderPassManager.state->currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
         [self clearStageBindingCopyBacks:copyBacks];
         return false;
     }
 
     if (hasCopies) {
-        id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
         if (!blit) {
             [self clearStageBindingCopyBacks:copyBacks];
             return false;
@@ -9143,8 +9120,8 @@ Buffer *getIndirectBuffer(GLMContext ctx)
     /* Isolated copy-backs must become CPU-visible before another short binding
      * snapshots their destination. TCS also forces this boundary because TES
      * sizing and query accounting currently read its factor buffer on the CPU. */
-    id<MTLCommandBuffer> stageCommandBuffer = _currentCommandBuffer;
-    _currentCommandBuffer = nil;
+    id<MTLCommandBuffer> stageCommandBuffer =
+        [_renderPassManager detachCurrentCommandBufferForSubmission];
     @try {
         [self commitCommandBufferWithAGXRecovery:stageCommandBuffer];
         [stageCommandBuffer waitUntilCompleted];
@@ -9361,12 +9338,12 @@ typedef struct {
     if (!needsInitializationBlit) {
         return true;
     }
-    if (!_currentCommandBuffer ||
-        _currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        _renderPassManager.state->currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
         return false;
     }
 
-    id<MTLBlitCommandEncoder> blit = [_currentCommandBuffer blitCommandEncoder];
+    id<MTLBlitCommandEncoder> blit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
     if (!blit) {
         return false;
     }
@@ -9664,7 +9641,7 @@ typedef struct {
      * encoder on the command buffer, and Metal forbids two encoders
      * on the same command buffer simultaneously.  End any active render
      * encoder first for the same reason. */
-    if (_currentRenderEncoder) {
+    if (_renderPassManager.state->currentRenderEncoder) {
         [self endRenderEncoding];
     }
 
@@ -9672,8 +9649,8 @@ typedef struct {
      * before processGLState() (which normally creates the command buffer),
      * and prior operations (glBufferData, glEndQuery, etc.) may have
      * committed the previous command buffer. */
-    if (!_currentCommandBuffer ||
-        _currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        _renderPassManager.state->currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TCS dispatch");
             return false;
@@ -9716,7 +9693,7 @@ typedef struct {
         return false;
     }
 
-    id<MTLComputeCommandEncoder> computeEncoder = [_currentCommandBuffer computeCommandEncoder];
+    id<MTLComputeCommandEncoder> computeEncoder = [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TCS dispatch");
         [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -9886,21 +9863,21 @@ typedef struct {
         }
     }
     if (tcsOutStride == 0) tcsOutStride = 64;  /* fallback: 4 x float4 */
-    _tcsOutputStride = tcsOutStride;
-    _tcsOutVertices = tcsOutVertices;
+    _tessellation.tcsOutputStride = tcsOutStride;
+    _tessellation.tcsOutVertices = tcsOutVertices;
 
     GLuint patchCountTC = vertexCount / patchVertices;
     if (patchCountTC == 0u) patchCountTC = 1u;
     NSUInteger tcsOutSize = (NSUInteger)patchCountTC * tcsOutVertices * tcsOutStride;
-    _tcsOutputBuffer = [_device newBufferWithLength:tcsOutSize
+    _tessellation.tcsOutputBuffer = [_device newBufferWithLength:tcsOutSize
                                             options:MTLResourceStorageModeShared];
-    if (!_tcsOutputBuffer || !_tcsOutputBuffer.contents) {
+    if (!_tessellation.tcsOutputBuffer || !_tessellation.tcsOutputBuffer.contents) {
         [computeEncoder endEncoding];
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(_tcsOutputBuffer.contents, 0, tcsOutSize);
-    [computeEncoder setBuffer:_tcsOutputBuffer offset:0 atIndex:28];
+    memset(_tessellation.tcsOutputBuffer.contents, 0, tcsOutSize);
+    [computeEncoder setBuffer:_tessellation.tcsOutputBuffer offset:0 atIndex:28];
 
     /* Create TCS per-patch output buffer (buffer 27 = spvPatchOut).
      * TCS writes: spvPatchOut[gl_PrimitiveID].
@@ -9926,15 +9903,15 @@ typedef struct {
     }
     if (tcsPatchStride == 0) tcsPatchStride = 16;  /* fallback: 1 x float4 */
     NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
-    _tcsPatchOutBuffer = [_device newBufferWithLength:tcsPatchSize
+    _tessellation.tcsPatchOutBuffer = [_device newBufferWithLength:tcsPatchSize
                                               options:MTLResourceStorageModeShared];
-    if (!_tcsPatchOutBuffer || !_tcsPatchOutBuffer.contents) {
+    if (!_tessellation.tcsPatchOutBuffer || !_tessellation.tcsPatchOutBuffer.contents) {
         [computeEncoder endEncoding];
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    memset(_tcsPatchOutBuffer.contents, 0, tcsPatchSize);
-    [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
+    memset(_tessellation.tcsPatchOutBuffer.contents, 0, tcsPatchSize);
+    [computeEncoder setBuffer:_tessellation.tcsPatchOutBuffer offset:0 atIndex:27];
 
     GLuint indirectParams[2] = { patchVertices, instanceCount };
     id<MTLBuffer> indirectBuf = [_device newBufferWithBytes:indirectParams
@@ -10003,7 +9980,7 @@ typedef struct {
     }
 
     /* Save tess factor buffer for TES drawPatches path. */
-    _tessFactorBuffer = tessFactorBuf;
+    _tessellation.tessFactorBuffer = tessFactorBuf;
 
     return true;
 }
@@ -10117,13 +10094,13 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
     /* PASS 1: Pre-resolve all Metal textures that the TES kernel needs.
      * Must happen before opening any encoder (same reason as TCS). */
-    if (_currentRenderEncoder) {
+    if (_renderPassManager.state->currentRenderEncoder) {
         [self endRenderEncoding];
     }
 
     /* Ensure a writable command buffer exists (same reason as TCS). */
-    if (!_currentCommandBuffer ||
-        _currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        _renderPassManager.state->currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
         if (![self newCommandBuffer]) {
             NSLog(@"MGL TESS ERROR: failed to create command buffer for TES dispatch");
             return false;
@@ -10166,7 +10143,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         return false;
     }
 
-    id<MTLComputeCommandEncoder> computeEncoder = [_currentCommandBuffer computeCommandEncoder];
+    id<MTLComputeCommandEncoder> computeEncoder = [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
     if (!computeEncoder) {
         NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES dispatch");
         [self clearStageBindingCopyBacks:&stageCopyBacks];
@@ -10304,7 +10281,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * _mgl_patch_info.x = patch vertices (gl_in.size() replacement)
      * _mgl_patch_info.y = TCS output vertices per patch (for per-patch gl_in indexing) */
     {
-        GLuint patchInfo[2] = { patchVertices, _tcsOutVertices };
+        GLuint patchInfo[2] = { patchVertices, _tessellation.tcsOutVertices };
         if (patchInfo[1] == 0) patchInfo[1] = patchVertices;
         [computeEncoder setBytes:patchInfo length:sizeof(patchInfo) atIndex:28];
     }
@@ -10315,8 +10292,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * spvOut[patchID * outputVertices + invocationID], so TES gl_in should
      * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
      * to "device <type> *gl_in [[buffer(30)]]". */
-    if (_tcsOutputBuffer) {
-        [computeEncoder setBuffer:_tcsOutputBuffer offset:0 atIndex:30];
+    if (_tessellation.tcsOutputBuffer) {
+        [computeEncoder setBuffer:_tessellation.tcsOutputBuffer offset:0 atIndex:30];
     }
 
     /* Bind TCS patch output buffer to buffer(27) for TES patchIn.
@@ -10324,8 +10301,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * reads patchIn[...] from buffer(27).  Note: buffer 27 is reused for both
      * TCS spvPatchOut and TES patchIn, which is correct since the data flows
      * TCS → TES. */
-    if (_tcsPatchOutBuffer) {
-        [computeEncoder setBuffer:_tcsPatchOutBuffer offset:0 atIndex:27];
+    if (_tessellation.tcsPatchOutBuffer) {
+        [computeEncoder setBuffer:_tessellation.tcsPatchOutBuffer offset:0 atIndex:27];
     }
 
     /* Compute vertsPerPatch from tessellation factors.
@@ -10333,11 +10310,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * writes one XFB entry.  The vertex count formula matches what the
      * CTS counter program expects (primitive count * vertices-per-primitive). */
     GLuint vertsPerPatch = 1;
-    if (_tessFactorBuffer) {
+    if (_tessellation.tessFactorBuffer) {
         const struct {
             uint16_t edge[4];
             uint16_t inside[2];
-        } __attribute__((packed)) *tf = (const void *)_tessFactorBuffer.contents;
+        } __attribute__((packed)) *tf = (const void *)_tessellation.tessFactorBuffer.contents;
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
         if (patchCount > 0) {
@@ -10513,7 +10490,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
 
     if (xfbCopyBytes > 0u) {
-        id<MTLBlitCommandEncoder> xfbBlit = [_currentCommandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> xfbBlit = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
         if (!xfbBlit) {
             NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
             return false;
@@ -10549,12 +10526,12 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * For triangles: primitives ≈ ceil(inside)² (rough estimate).
      * For quads:      primitives ≈ 2 × ceil(inside0) × ceil(inside1).
      * For isolines:   primitives ≈ ceil(edge[0]). */
-    if (_tessFactorBuffer) {
+    if (_tessellation.tessFactorBuffer) {
         const struct {
             uint16_t edge[4];
             uint16_t inside[2];
         } __attribute__((packed)) *tessFactors =
-            (const void *)_tessFactorBuffer.contents;
+            (const void *)_tessellation.tessFactorBuffer.contents;
 
         GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
         GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
@@ -10846,79 +10823,71 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 - (void) createMGLRendererAndBindToContext: (GLMContext) glm_ctx view: (NSView *) view
 {
     ctx = glm_ctx;
+    _queryManager = [MGLQueryManager new];
+    _renderPassManager = [MGLRenderPassManager new];
 
     /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
-    _dontCareFrameGeneration = 1u;
+    _renderPassManager.state->dontCareFrameGeneration = 1u;
 
     // CRITICAL FIX: Initialize thread synchronization locks.
     // _metalStateLock: NSRecursiveLock (reentrant) — required because the
     //   MGLRenderer call graph has indirect re-entry paths through non-target
     //   helper methods.  A non-reentrant lock deadlocked on first frame.
     // _syncListLock: os_unfair_lock (non-reentrant, value type) - protects
-    //   only _currentCommandBufferSyncList and is acquired after
+    //   only MGLRenderPassManager sync-list access and is acquired after
     //   _metalStateLock when both locks are needed.
     _metalStateLock = [[NSRecursiveLock alloc] init];
     _syncListLock   = OS_UNFAIR_LOCK_INIT;
     NSLog(@"MGL INFO: Metal state lock (NSRecursiveLock) + sync list lock (os_unfair_lock) initialized");
 
     // Initialize AGX GPU error tracking
-    _gpuErrorLock = OS_UNFAIR_LOCK_INIT;
-    _consecutiveGPUErrors = 0;
-    _lastGPUErrorTime = 0;
-    _gpuErrorRecoveryMode = NO;
+    _gpuRecovery.gpuErrorLock = OS_UNFAIR_LOCK_INIT;
+    _gpuRecovery.consecutiveGPUErrors = 0;
+    _gpuRecovery.lastGPUErrorTime = 0;
+    _gpuRecovery.gpuErrorRecoveryMode = NO;
     // Kill-switchable opts: unset = ON, =0/false/no/off = OFF.
-    _mslCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_MSL_CACHE");
+    _resourceFallback.mslCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_MSL_CACHE");
     // Bounded per-Program MSL texture type lookup cache (always on; no env var).
     // Keys include a process-unique Program lifetime ID and link generation.
-    _mslTextureTypeCache = [NSCache new];
-    _mslTextureTypeCache.countLimit = 4096u;
-    // PSO dedup: skip forced _lastPipelineState=nil when encoder+PSO unchanged.
-    _psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
-    _pipelineColor0Format = MTLPixelFormatInvalid;
-    _pipelineDepthFormat = MTLPixelFormatInvalid;
-    _pipelineStencilFormat = MTLPixelFormatInvalid;
-    _pipelineProgramName = 0;
-    _pipelineVertexFunction = nil;
-    _pipelineFragmentFunction = nil;
-    _pipelineStateCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    _pipelineStateCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
-    /* P0-2: Initialize pipeline descriptor cache (two-level caching) */
-    _pipelineDescriptorCache = [[NSMutableDictionary alloc] initWithCapacity:64];
-    _pipelineDescriptorCacheLRU = [[NSMutableOrderedSet alloc] initWithCapacity:64];
-    _dsCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
-    if (_dsCacheEnabled) {
-        _depthStencilStateCache = [NSMutableDictionary new];
-        _depthStencilStateCacheLRU = [NSMutableOrderedSet new];
-    }
+    _resourceFallback.mslTextureTypeCache = [NSCache new];
+    _resourceFallback.mslTextureTypeCache.countLimit = 4096u;
+    BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
+    BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
+    BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
+    _pipelineCache = [[MGLPipelineCache alloc]
+        initWithPSODedupEnabled:psoDedupEnabled
+      depthStencilCacheEnabled:depthStencilCacheEnabled
+           binaryArchiveEnabled:binaryArchiveEnabled];
+    _bindingSync = [MGLBindingSync new];
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
-    _arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
-    if (_arenaSnapshotEnabled) {
-        if (mglInitBatchArena(&_batchArena, 4u * 1024u * 1024u)) {
-            ctx->batch_arena = &_batchArena;
+    _batching.arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
+    if (_batching.arenaSnapshotEnabled) {
+        if (mglInitBatchArena(&_batching.batchArena, 4u * 1024u * 1024u)) {
+            ctx->batch_arena = &_batching.batchArena;
             NSLog(@"MGL INFO: Snapshot arena enabled (initial chunk capacity %zu bytes)",
-                  _batchArena.initial_capacity);
+                  _batching.batchArena.initial_capacity);
         } else {
-            _arenaSnapshotEnabled = NO;
+            _batching.arenaSnapshotEnabled = NO;
             NSLog(@"MGL WARNING: Snapshot arena malloc failed; falling back to per-batch malloc");
         }
     }
-    _skipSameKeyRestoreEnabled = mglEnvFlagEnabledDefaultOn("MGL_SKIP_SAME_KEY_RESTORE");
-    _dirtyKeyDeltaEnabled = mglEnvFlagEnabledDefaultOn("MGL_DIRTY_KEY_DELTA");
+    _batching.skipSameKeyRestoreEnabled = mglEnvFlagEnabledDefaultOn("MGL_SKIP_SAME_KEY_RESTORE");
+    _batching.dirtyKeyDeltaEnabled = mglEnvFlagEnabledDefaultOn("MGL_DIRTY_KEY_DELTA");
     /* Initialize last-bound render encoder dedup state to a clean slate.
-     * _lastBoundValid starts NO so the first bind on the first encoder is
+     * _bindingSync.state->lastBoundValid starts NO so the first bind on the first encoder is
      * never incorrectly skipped. */
     [self invalidateLastBoundState];
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
     NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d msl_cache=%d "
           "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)",
-          _psoDedupEnabled ? 1 : 0,
-          _dsCacheEnabled ? 1 : 0,
-          _arenaSnapshotEnabled ? 1 : 0,
-          _mslCacheEnabled ? 1 : 0,
-          _skipSameKeyRestoreEnabled ? 1 : 0,
-          _dirtyKeyDeltaEnabled ? 1 : 0);
+          _pipelineCache.state->psoDedupEnabled ? 1 : 0,
+          _pipelineCache.state->dsCacheEnabled ? 1 : 0,
+          _batching.arenaSnapshotEnabled ? 1 : 0,
+          _resourceFallback.mslCacheEnabled ? 1 : 0,
+          _batching.skipSameKeyRestoreEnabled ? 1 : 0,
+          _batching.dirtyKeyDeltaEnabled ? 1 : 0);
 
     [self bindObjFuncsToGLMContext: glm_ctx];
 
@@ -10932,9 +10901,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
-        //        fields (_consecutiveGPUErrors/_lastGPUErrorTime/
-        //        _gpuErrorRecoveryMode), _pipeline*Format/_pipelineProgramName,
-        //        _pipelineStateCache, and glm_ctx->mtl_funcs (bound via
+        //        fields (_gpuRecovery.consecutiveGPUErrors/_gpuRecovery.lastGPUErrorTime/
+        //        _gpuRecovery.gpuErrorRecoveryMode), _pipeline*Format/_pipelineCache.state->pipelineProgramName,
+        //        _pipelineCache.state->pipelineStateCache, and glm_ctx->mtl_funcs (bound via
         //        bindObjFuncsToGLMContext, with mtlObj retained).
         //   NIL: _device, _commandQueue, _view.
         // Continuing is pointless without a Metal device — every subsequent
@@ -10943,7 +10912,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     NSLog(@"MGL INFO: Metal device created: %@", _device);
-    [self initializeMTL4CompilerIfAvailable];
+    _pipelineCache.device = _device;
+    [_pipelineCache initializeCompilerIfAvailableUnlessDisabled:
+        mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER")];
 
     /* Initialize AGX Capability Layer (centralized device detection +
      * capability queries + driver bug markers).  Replaces scattered
@@ -10965,7 +10936,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     MTLCommandQueueDescriptor *queueDescriptor = [[MTLCommandQueueDescriptor alloc] init];
     if (isVirtualized) {
         NSLog(@"MGL INFO: VIRTUALIZED AGX - Enabling virtualization-safe command queue settings");
-        queueDescriptor.maxCommandBufferCount = 16;  // Limit concurrent buffers for virtualization safety
+        queueDescriptor.maxCommandBufferCount =
+            MGLCapabilityMaxConcurrentCommandBuffers(&_capability);
     }
 
     _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
@@ -10974,8 +10946,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
         //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
-        //        fields, _pipeline*Format/_pipelineProgramName,
-        //        _pipelineStateCache, glm_ctx->mtl_funcs (bound, mtlObj
+        //        fields, _pipeline*Format/_pipelineCache.state->pipelineProgramName,
+        //        _pipelineCache.state->pipelineStateCache, glm_ctx->mtl_funcs (bound, mtlObj
         //        retained), _device, MTL4 compiler (if available), _capability.
         //   NIL: _commandQueue, _view.
         // Continuing is pointless without a command queue — no encoding or
@@ -10990,12 +10962,11 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * The archive is stored in the user's Caches directory and persists
      * compiled PSO binaries across launches, reducing cold-start PSO
      * compile time from ~10s to ~2s on subsequent launches. */
-    _binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
-    if (_binaryArchiveEnabled) {
+    if (_pipelineCache.state->binaryArchiveEnabled) {
         if (@available(macOS 11.0, *)) {
-            [self loadBinaryArchive];
+            [_pipelineCache loadBinaryArchive];
         } else {
-            _binaryArchiveEnabled = NO;
+            _pipelineCache.state->binaryArchiveEnabled = NO;
         }
     }
 
@@ -11057,13 +11028,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     // Create initial command buffer for AGX safety
     @try {
-        _currentCommandBuffer = [_commandQueue commandBuffer];
-        if (!_currentCommandBuffer) {
+        [_renderPassManager installNewCommandBufferFromQueue:_commandQueue];
+        if (!_renderPassManager.state->currentCommandBuffer) {
             NSLog(@"MGL ERROR: Failed to create initial Metal command buffer");
         }
-        _mdiArgsScratchBuffer = nil;
-        _mdiArgsScratchCapacity = 0;
-        _mdiArgsScratchOffset = 0;
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception creating initial Metal command buffer: %@", exception);
     }
@@ -11183,50 +11151,37 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [self invalidateLastBoundState];
 
         // Cleanup command buffer and encoder
-        if (_currentCommandBuffer) {
+        if (_renderPassManager.state->currentCommandBuffer) {
             NSLog(@"MGL INFO: Releasing current command buffer");
-            _currentCommandBuffer = nil;
+            [_renderPassManager discardCurrentCommandBuffer];
         }
 
-        if (_currentRenderEncoder) {
+        if (_renderPassManager.state->currentRenderEncoder) {
             NSLog(@"MGL INFO: Releasing current render encoder");
-            _currentRenderEncoder = nil;
+            [_renderPassManager clearCurrentRenderEncoder];
         }
 
-        // Cleanup sync objects
-        if (_currentEvent) {
-            NSLog(@"MGL INFO: Releasing current sync event");
-            _currentEvent = nil;
-        }
+        [_renderPassManager shutdown];
+        _renderPassManager = nil;
 
-        // Cleanup pipeline state
-        if (_pipelineState) {
-            NSLog(@"MGL INFO: Releasing pipeline state");
-            _pipelineState = nil;
-        }
-        _pipelineVertexFunction = nil;
-        _pipelineFragmentFunction = nil;
-        if (_pipelineStateCache) {
-            [_pipelineStateCache removeAllObjects];
-            _pipelineStateCache = nil;
-        }
-        [_pipelineStateCacheLRU removeAllObjects];
-        _pipelineStateCacheLRU = nil;
-        [_pipelineDescriptorCache removeAllObjects];
-        _pipelineDescriptorCache = nil;
-        [_pipelineDescriptorCacheLRU removeAllObjects];
-        _pipelineDescriptorCacheLRU = nil;
-        [_depthStencilStateCache removeAllObjects];
-        _depthStencilStateCache = nil;
-        [_depthStencilStateCacheLRU removeAllObjects];
-        _depthStencilStateCacheLRU = nil;
+        [_queryManager shutdown];
+        _queryManager = nil;
 
-        /* Phase 2 #6: Serialize Binary Archive to disk before releasing it.
-         * This persists compiled PSO binaries for the next launch. */
-        if (_binaryArchiveEnabled && _binaryArchive) {
-            [self saveBinaryArchive];
-            _binaryArchive = nil;
+        if (_pipelineCache) {
+            if (_pipelineCache.state->pipelineState) {
+                NSLog(@"MGL INFO: Releasing pipeline state");
+            }
+            [_pipelineCache saveBinaryArchive];
+            [_pipelineCache shutdown];
+            _pipelineCache = nil;
         }
+        for (uint16_t i = 0; i < _resourceFallback.samplerSnapshotCacheCount; i++) {
+            _resourceFallback.samplerSnapshotCacheStates[i] = nil;
+        }
+        _resourceFallback.samplerSnapshotCacheCount = 0;
+        _resourceFallback.samplerSnapshotCacheNext = 0;
+        memset(_resourceFallback.samplerSnapshotCacheIndex, 0,
+               sizeof(_resourceFallback.samplerSnapshotCacheIndex));
 
         // Cleanup drawable and layer
         if (_drawable) {
@@ -11259,7 +11214,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         }
 
         /* Task 4: Release all address-stable snapshot arena chunks. */
-        mglDestroyBatchArena(&_batchArena);
+        mglDestroyBatchArena(&_batching.batchArena);
 
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during dealloc cleanup: %@", exception);
@@ -11293,7 +11248,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         static NSUInteger maxErrorsPerWindow = 3;
 
         // Get current error tracking from command buffer if available
-        if (_currentCommandBuffer && _currentCommandBuffer.error) {
+        if (_renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentCommandBuffer.error) {
             NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
             // Check if this is within the throttle window
@@ -11404,23 +11359,20 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     // PROPER FIX: Safe command buffer cleanup
     @try {
-        if (_currentCommandBuffer) {
-            if (_currentCommandBuffer.status == MTLCommandBufferStatusCommitted) {
+        if (_renderPassManager.state->currentCommandBuffer) {
+            if (_renderPassManager.state->currentCommandBuffer.status == MTLCommandBufferStatusCommitted) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
                 if (kMGLVerboseFrameLoopLogs) {
                     NSLog(@"MGL INFO: cleanupCommandBuffer skipping blocking wait for committed command buffer");
                 }
             }
-            _currentCommandBuffer = nil;
+            [_renderPassManager discardCurrentCommandBuffer];
         }
-        _mdiArgsScratchBuffer = nil;
-        _mdiArgsScratchCapacity = 0;
-        _mdiArgsScratchOffset = 0;
 
-        if (_currentRenderEncoder) {
-            [_currentRenderEncoder endEncoding];
-            _currentRenderEncoder = nil;
+        if (_renderPassManager.state->currentRenderEncoder) {
+            [_renderPassManager.state->currentRenderEncoder endEncoding];
+            [_renderPassManager clearCurrentRenderEncoder];
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception during command buffer cleanup: %@", exception);
@@ -11433,8 +11385,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: Performing full Metal state reset for AGX recovery");
 
     /* P1-1: dispatched from addCompletedHandler on a Metal worker thread.
-     * Must hold _metalStateLock while mutating _commandQueue / _pipelineState
-     * / _pipelineStateCache, otherwise the render thread can observe a
+     * Must hold _metalStateLock while mutating _commandQueue / _pipelineCache.state->pipelineState
+     * / _pipelineCache.state->pipelineStateCache, otherwise the render thread can observe a
      * half-reset state. */
     METAL_LOCK();
 
@@ -11450,16 +11402,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL AGX RECOVERY: Command queue successfully recreated");
     }
 
-    // Reset pipeline state
-    _pipelineState = nil;
-    _pipelineVertexFunction = nil;
-    _pipelineFragmentFunction = nil;
-    [_pipelineStateCache removeAllObjects];
-    [_pipelineStateCacheLRU removeAllObjects];
-    [_pipelineDescriptorCache removeAllObjects];
-    [_pipelineDescriptorCacheLRU removeAllObjects];
-    [_depthStencilStateCache removeAllObjects];
-    [_depthStencilStateCacheLRU removeAllObjects];
+    [_pipelineCache resetCaches];
     // Note: _depthStencilState would be an instance variable if it exists
 
     // Clear all cached objects
@@ -11533,16 +11476,16 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             [blockSelf recordGPUSuccess];
 
             // AGX Recovery: Clear recovery mode on success
-            /* P1-1: guard the ivar read/write with _gpuErrorLock (NOT
-             * _metalStateLock) to avoid deadlock — the completion handler
+            /* P1-1: guard the ivar read/write with _gpuRecovery.gpuErrorLock
+             * (NOT _metalStateLock) to avoid deadlock — the completion handler
              * runs on a Metal worker thread while the render thread may be
              * inside waitUntilCompleted holding _metalStateLock. */
-            os_unfair_lock_lock(&blockSelf->_gpuErrorLock);
-            if (blockSelf->_gpuErrorRecoveryMode) {
+            os_unfair_lock_lock(&blockSelf->_gpuRecovery.gpuErrorLock);
+            if (blockSelf->_gpuRecovery.gpuErrorRecoveryMode) {
                 NSLog(@"MGL AGX RECOVERY: Exiting GPU recovery mode after successful completion");
-                blockSelf->_gpuErrorRecoveryMode = NO;
+                blockSelf->_gpuRecovery.gpuErrorRecoveryMode = NO;
             }
-            os_unfair_lock_unlock(&blockSelf->_gpuErrorLock);
+            os_unfair_lock_unlock(&blockSelf->_gpuRecovery.gpuErrorLock);
         }
     }];
 
@@ -11574,7 +11517,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return;
     }
 
-    if (_isCommittingCommandBuffer) {
+    if (![_renderPassManager beginCommandBufferCommit]) {
         NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
         if (traceCommit) {
             MGLTraceNSLog(@"MGL TRACE commit.skip.nested call=%llu", (unsigned long long)commitCall);
@@ -11582,7 +11525,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         return;
     }
 
-    _isCommittingCommandBuffer = YES;
     @try {
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL AGX: Committing command buffer (status: %ld)", (long)status);
@@ -11604,7 +11546,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             });
         }
     } @finally {
-        _isCommittingCommandBuffer = NO;
+        [_renderPassManager endCommandBufferCommit];
         if (traceCommit) {
             MGLTraceNSLog(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
                   (unsigned long long)commitCall,
@@ -11620,37 +11562,37 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
     BOOL needsClear = NO;
 
-    /* P1-1: protect error-tracking ivars with _gpuErrorLock (same lock as
-     * recordGPUError/recordGPUSuccess) to avoid racing with the completion
-     * handler thread. */
-    os_unfair_lock_lock(&_gpuErrorLock);
+    /* P1-1: protect error-tracking ivars with _gpuRecovery.gpuErrorLock
+     * (same lock as recordGPUError/recordGPUSuccess) to avoid racing with
+     * the completion handler thread. */
+    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
 
     // Recovery window: shorter timeout so essential operations can resume sooner
-    if (currentTime - _lastGPUErrorTime > 3.0) {
-        if (_consecutiveGPUErrors > 0) {
-            NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %lu errors)", (unsigned long)_consecutiveGPUErrors);
+    if (currentTime - _gpuRecovery.lastGPUErrorTime > 3.0) {
+        if (_gpuRecovery.consecutiveGPUErrors > 0) {
+            NSLog(@"MGL AGX: Recovery timeout - attempting GPU operations (had %lu errors)", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
         }
-        _consecutiveGPUErrors = 0;
-        _gpuErrorRecoveryMode = NO;
-        os_unfair_lock_unlock(&_gpuErrorLock);
+        _gpuRecovery.consecutiveGPUErrors = 0;
+        _gpuRecovery.gpuErrorRecoveryMode = NO;
+        os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
         return NO;
     }
 
     // Enter recovery mode after fewer errors to prevent AGX driver from crashing
-    if (_consecutiveGPUErrors >= 8 || _gpuErrorRecoveryMode) {
-        if (!_gpuErrorRecoveryMode) {
-            NSLog(@"MGL AGX: Entering recovery mode after %lu consecutive errors", (unsigned long)_consecutiveGPUErrors);
-            _gpuErrorRecoveryMode = YES;
+    if (_gpuRecovery.consecutiveGPUErrors >= 8 || _gpuRecovery.gpuErrorRecoveryMode) {
+        if (!_gpuRecovery.gpuErrorRecoveryMode) {
+            NSLog(@"MGL AGX: Entering recovery mode after %lu consecutive errors", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
+            _gpuRecovery.gpuErrorRecoveryMode = YES;
             needsClear = YES;
         }
-        os_unfair_lock_unlock(&_gpuErrorLock);
+        os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
         if (needsClear) {
             [self clearProblematicGPUState];
         }
         return YES;
     }
 
-    os_unfair_lock_unlock(&_gpuErrorLock);
+    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
     return NO;
 }
 
@@ -11660,8 +11602,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL AGX: Clearing problematic GPU state for recovery");
 
     // Clear current problematic resources
-    if (_currentCommandBuffer) {
-        _currentCommandBuffer = nil;
+    if (_renderPassManager.state->currentCommandBuffer) {
+        [_renderPassManager discardCurrentCommandBuffer];
     }
 
     // Don't recreate command queue immediately - let it rest
@@ -11688,39 +11630,39 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * os_unfair_lock instead of METAL_LOCK — the completion handler must not
      * block on _metalStateLock because the render thread may be inside
      * waitUntilCompleted (which waits for the handler) while holding it. */
-    os_unfair_lock_lock(&_gpuErrorLock);
-    _consecutiveGPUErrors++;
-    _consecutiveGPUSuccesses = 0;
-    _lastGPUErrorTime = [[NSDate date] timeIntervalSince1970];
-    NSLog(@"MGL AGX: Recorded GPU error (%lu consecutive)", (unsigned long)_consecutiveGPUErrors);
-    os_unfair_lock_unlock(&_gpuErrorLock);
+    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
+    _gpuRecovery.consecutiveGPUErrors++;
+    _gpuRecovery.consecutiveGPUSuccesses = 0;
+    _gpuRecovery.lastGPUErrorTime = [[NSDate date] timeIntervalSince1970];
+    NSLog(@"MGL AGX: Recorded GPU error (%lu consecutive)", (unsigned long)_gpuRecovery.consecutiveGPUErrors);
+    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
 }
 
 - (void)recordGPUSuccess
 {
-    /* P1-1: use _gpuErrorLock (see recordGPUError comment). */
-    os_unfair_lock_lock(&_gpuErrorLock);
-    if (_consecutiveGPUErrors > 0 || _gpuErrorRecoveryMode) {
-        _consecutiveGPUSuccesses++;
+    /* P1-1: use _gpuRecovery.gpuErrorLock (see recordGPUError comment). */
+    os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
+    if (_gpuRecovery.consecutiveGPUErrors > 0 || _gpuRecovery.gpuErrorRecoveryMode) {
+        _gpuRecovery.consecutiveGPUSuccesses++;
         NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
-        NSTimeInterval sinceLastError = now - _lastGPUErrorTime;
+        NSTimeInterval sinceLastError = now - _gpuRecovery.lastGPUErrorTime;
         // Require multiple consecutive successful completions before clearing
         // recovery, otherwise mixed success/error callbacks can flap the state.
-        if (_consecutiveGPUSuccesses >= 4 && sinceLastError > 0.25) {
+        if (_gpuRecovery.consecutiveGPUSuccesses >= 4 && sinceLastError > 0.25) {
             NSLog(@"MGL AGX: Sustained GPU recovery (%lu successes), resetting error count (was %lu)",
-                  (unsigned long)_consecutiveGPUSuccesses,
-                  (unsigned long)_consecutiveGPUErrors);
-            _consecutiveGPUErrors = 0;
-            _gpuErrorRecoveryMode = NO;
-            _consecutiveGPUSuccesses = 0;
+                  (unsigned long)_gpuRecovery.consecutiveGPUSuccesses,
+                  (unsigned long)_gpuRecovery.consecutiveGPUErrors);
+            _gpuRecovery.consecutiveGPUErrors = 0;
+            _gpuRecovery.gpuErrorRecoveryMode = NO;
+            _gpuRecovery.consecutiveGPUSuccesses = 0;
         }
     }
-    os_unfair_lock_unlock(&_gpuErrorLock);
+    os_unfair_lock_unlock(&_gpuRecovery.gpuErrorLock);
 }
 
 /* P1-5: FIFO eviction for auxiliary caches.  NSDictionary enumerates in
  * insertion order on recent macOS runtimes, so removing the first 1/4 of
- * allKeys evicts the oldest entries — matching the _pipelineStateCache
+ * allKeys evicts the oldest entries — matching the _pipelineCache.state->pipelineStateCache
  * strategy.  Called at each insertion site after the new entry is added. */
 - (void)mglCapAuxCache:(NSMutableDictionary *)cache
                  limit:(NSUInteger)limit

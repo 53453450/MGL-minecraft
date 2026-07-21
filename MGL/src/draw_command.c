@@ -30,6 +30,7 @@
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
 #include "mgl_sampler_compat.h"
+#include "spirv_cross_c.h"
 
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
@@ -596,6 +597,55 @@ int mglBindNoFlushEnabled(void)
         atomic_store_explicit(&cached, v, memory_order_release);
     }
     return v != 0;
+}
+
+int mglSamplerSnapshotEnabled(void)
+{
+    static _Atomic int cached = -1;
+    int v = atomic_load_explicit(&cached, memory_order_acquire);
+    if (v < 0) {
+        const char *value = getenv("MGL_DRAW_SAMPLER_SNAPSHOT");
+        if (!value || value[0] == '\0') {
+            v = 1;
+        } else if (strcmp(value, "0") == 0 ||
+                   strcasecmp(value, "false") == 0 ||
+                   strcasecmp(value, "no") == 0 ||
+                   strcasecmp(value, "off") == 0) {
+            v = 0;
+        } else {
+            v = 1;
+        }
+        atomic_store_explicit(&cached, v, memory_order_release);
+    }
+    return v != 0;
+}
+
+static bool mglSamplerSnapshotSupportsParameter(GLenum pname)
+{
+    switch (pname) {
+        case GL_TEXTURE_MIN_FILTER:
+        case GL_TEXTURE_MAG_FILTER:
+        case GL_TEXTURE_WRAP_S:
+        case GL_TEXTURE_WRAP_T:
+        case GL_TEXTURE_WRAP_R:
+        case GL_TEXTURE_MIN_LOD:
+        case GL_TEXTURE_MAX_LOD:
+        case GL_TEXTURE_COMPARE_MODE:
+        case GL_TEXTURE_COMPARE_FUNC:
+        case GL_TEXTURE_BORDER_COLOR:
+        case GL_TEXTURE_MAX_ANISOTROPY:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool mglSamplerSnapshotCanDeferParameter(GLMContext ctx, GLenum pname)
+{
+    return ctx && ctx->draw_defer_enabled &&
+           mglSamplerSnapshotEnabled() &&
+           mglSamplerSnapshotSupportsParameter(pname) &&
+           !ctx->draw_command_buffer.sampler_snapshot_incomplete;
 }
 
 static void mglNormalizeMutationRange(int64_t offset, int64_t size, uint64_t *start, uint64_t *end)
@@ -1203,6 +1253,278 @@ static bool mglStateSamplesTextureUnit(GLMContext ctx, GLuint unit)
     return false;
 }
 
+static Program *mglSamplerSnapshotProgramForStage(GLMContext ctx, int stage)
+{
+    if (!ctx || stage < 0 || stage >= _MAX_SHADER_TYPES) return NULL;
+    if (ctx->active_state->program) return ctx->active_state->program;
+    if (!ctx->active_state->program_pipeline) return NULL;
+    return ctx->active_state->program_pipeline->stage_programs[stage];
+}
+
+static int mglSamplerSnapshotTargetIndex(const SpirvResource *resource)
+{
+    if (!resource) return -1;
+
+    switch ((SpvDim)resource->image_dim) {
+        case SpvDim1D:
+            return resource->image_arrayed ? _TEXTURE_1D_ARRAY : _TEXTURE_1D;
+        case SpvDim2D:
+            if (resource->image_multisampled) {
+                return resource->image_arrayed
+                    ? _TEXTURE_2D_MULTISAMPLE_ARRAY
+                    : _TEXTURE_2D_MULTISAMPLE;
+            }
+            return resource->image_arrayed ? _TEXTURE_2D_ARRAY : _TEXTURE_2D;
+        case SpvDim3D:
+            return _TEXTURE_3D;
+        case SpvDimCube:
+            return resource->image_arrayed
+                ? _TEXTURE_CUBE_MAP_ARRAY
+                : _TEXTURE_CUBE_MAP;
+        case SpvDimRect:
+            return _TEXTURE_RECTANGLE;
+        case SpvDimBuffer:
+            return _TEXTURE_BUFFER_TARGET;
+        default:
+            return -1;
+    }
+}
+
+static void mglBuildSamplerSnapshotKey(const TextureParameter *params,
+                                       GLenum target,
+                                       MGLSamplerSnapshotKey *key)
+{
+    memset(key, 0, sizeof(*key));
+    key->target = target;
+    key->min_filter = params->min_filter;
+    key->mag_filter = params->mag_filter;
+    key->wrap_s = params->wrap_s;
+    key->wrap_t = params->wrap_t;
+    key->wrap_r = params->wrap_r;
+    key->compare_mode = params->compare_mode;
+    key->compare_func = params->compare_func;
+    key->max_anisotropy = params->max_anisotropy;
+    key->min_lod = params->min_lod;
+    key->max_lod = params->max_lod;
+    memcpy(key->border_color, params->border_color, sizeof(key->border_color));
+}
+
+static uint64_t mglSamplerSnapshotHashBytes(const void *data, size_t size)
+{
+    const uint8_t *bytes = (const uint8_t *)data;
+    uint64_t hash = 1469598103934665603ULL;
+    for (size_t i = 0; i < size; i++) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static bool mglInternSamplerSnapshotKey(MGLCommandBuffer *cb,
+                                        const MGLSamplerSnapshotKey *key,
+                                        uint16_t *index_out)
+{
+    if (!cb || !key || !index_out) return false;
+
+    const uint32_t mask = MGL_SAMPLER_SNAPSHOT_KEY_INDEX_SIZE - 1u;
+    uint32_t slot = (uint32_t)mglSamplerSnapshotHashBytes(key, sizeof(*key)) & mask;
+    for (uint32_t probe = 0; probe < MGL_SAMPLER_SNAPSHOT_KEY_INDEX_SIZE;
+         probe++, slot = (slot + 1u) & mask) {
+        uint16_t encoded = cb->sampler_snapshot_key_index[slot];
+        if (encoded == 0u) break;
+        uint16_t index = encoded - 1u;
+        if (index < cb->sampler_snapshot_key_count &&
+            memcmp(&cb->sampler_snapshot_keys[index], key, sizeof(*key)) == 0) {
+            *index_out = index;
+            return true;
+        }
+    }
+    if (cb->sampler_snapshot_key_count >= MGL_MAX_SAMPLER_SNAPSHOT_KEYS) {
+        return false;
+    }
+
+    uint16_t index = cb->sampler_snapshot_key_count++;
+    cb->sampler_snapshot_keys[index] = *key;
+    slot = (uint32_t)mglSamplerSnapshotHashBytes(key, sizeof(*key)) & mask;
+    while (cb->sampler_snapshot_key_index[slot] != 0u) {
+        slot = (slot + 1u) & mask;
+    }
+    cb->sampler_snapshot_key_index[slot] = index + 1u;
+    *index_out = index;
+    return true;
+}
+
+static bool mglAppendSamplerSnapshotEntry(MGLCommandBuffer *cb,
+                                          MGLSamplerSnapshotSet *set,
+                                          int stage,
+                                          GLuint metal_slot,
+                                          GLuint texture_unit,
+                                          int target_index,
+                                          const TextureParameter *params,
+                                          GLenum target)
+{
+    if (!cb || !set ||
+        (stage != _VERTEX_SHADER && stage != _FRAGMENT_SHADER) ||
+        metal_slot >= 16u || texture_unit >= TEXTURE_UNITS ||
+        target_index < 0 || target_index >= _MAX_TEXTURE_TYPES) {
+        return false;
+    }
+
+    uint16_t key_index = MGL_FALLBACK_SAMPLER_KEY_INDEX;
+    if (params) {
+        MGLSamplerSnapshotKey key;
+        mglBuildSamplerSnapshotKey(params, target, &key);
+        if (!mglInternSamplerSnapshotKey(cb, &key, &key_index)) return false;
+    }
+
+    MGLSamplerSnapshotEntry entry = {
+        .key_index = key_index,
+        .stage = (uint8_t)stage,
+        .metal_slot = (uint8_t)metal_slot,
+        .texture_unit = (uint8_t)texture_unit,
+        .target_index = (uint8_t)target_index,
+    };
+    for (uint8_t i = 0; i < set->count; i++) {
+        if (memcmp(&set->entries[i], &entry, sizeof(entry)) == 0) return true;
+    }
+    if (set->count >= MGL_MAX_SAMPLER_SNAPSHOT_ENTRIES) return false;
+    set->entries[set->count++] = entry;
+    return true;
+}
+
+static bool mglCaptureProgramSamplerSnapshots(GLMContext ctx,
+                                              MGLCommandBuffer *cb,
+                                              Program *program,
+                                              int stage,
+                                              MGLSamplerSnapshotSet *set)
+{
+    if (!program) return true;
+
+    SpirvResourceList *separate =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
+    for (GLuint i = 0; separate->list && i < separate->count; i++) {
+        if (separate->list[i].msl_active) return false;
+    }
+
+    SpirvResourceList *sampled =
+        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+    for (GLuint i = 0; sampled->list && i < sampled->count; i++) {
+        SpirvResource *resource = &sampled->list[i];
+        if (!resource->msl_active || !resource->msl_has_combined_sampler) continue;
+        if (resource->is_array || resource->gl_array_size > 1 ||
+            resource->msl_combined_sampler_binding == (GLuint)-1) {
+            return false;
+        }
+
+        GLint unit = mglResolveSamplerResourceUnit(program,
+                                                   resource,
+                                                   stage,
+                                                   SPVC_RESOURCE_TYPE_SAMPLED_IMAGE);
+        int target_index = mglSamplerSnapshotTargetIndex(resource);
+        if (unit < 0 || unit >= TEXTURE_UNITS || target_index < 0) return false;
+
+        Texture *texture =
+            ctx->active_state->texture_units[unit].textures[target_index];
+        if (!texture) {
+            if (!mglAppendSamplerSnapshotEntry(cb,
+                                               set,
+                                               stage,
+                                               resource->msl_combined_sampler_binding,
+                                               (GLuint)unit,
+                                               target_index,
+                                               NULL,
+                                               0u)) {
+                return false;
+            }
+            continue;
+        }
+        if (texture->index != (GLuint)target_index) return false;
+
+        Sampler *sampler = ctx->active_state->texture_samplers[unit];
+        const TextureParameter *params = sampler ? &sampler->params : &texture->params;
+        if (!mglAppendSamplerSnapshotEntry(cb,
+                                           set,
+                                           stage,
+                                           resource->msl_combined_sampler_binding,
+                                           (GLuint)unit,
+                                           target_index,
+                                           params,
+                                           texture->target)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool mglProgramHasUnsupportedStageSamplers(Program *program, int stage)
+{
+    if (!program) return false;
+    const int types[] = {
+        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+    };
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        SpirvResourceList *list = &program->spirv_resources_list[stage][types[t]];
+        for (GLuint i = 0; list->list && i < list->count; i++) {
+            if (list->list[i].msl_active) return true;
+        }
+    }
+    return false;
+}
+
+static bool mglCaptureSamplerSnapshot(GLMContext ctx, uint16_t *snapshot_id)
+{
+    if (!ctx || !snapshot_id) return false;
+    *snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
+
+    MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+    MGLSamplerSnapshotSet candidate;
+    memset(&candidate, 0, sizeof(candidate));
+
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Program *program = mglSamplerSnapshotProgramForStage(ctx, stage);
+        if (stage == _VERTEX_SHADER || stage == _FRAGMENT_SHADER) {
+            if (!mglCaptureProgramSamplerSnapshots(ctx, cb, program, stage, &candidate)) {
+                return false;
+            }
+        } else if (stage != _COMPUTE_SHADER &&
+                   mglProgramHasUnsupportedStageSamplers(program, stage)) {
+            return false;
+        }
+    }
+
+    if (candidate.count == 0) return true;
+    const uint32_t mask = MGL_SAMPLER_SNAPSHOT_SET_INDEX_SIZE - 1u;
+    uint32_t slot =
+        (uint32_t)mglSamplerSnapshotHashBytes(&candidate, sizeof(candidate)) & mask;
+    for (uint32_t probe = 0; probe < MGL_SAMPLER_SNAPSHOT_SET_INDEX_SIZE;
+         probe++, slot = (slot + 1u) & mask) {
+        uint16_t encoded = cb->sampler_snapshot_set_index[slot];
+        if (encoded == 0u) break;
+        uint16_t index = encoded - 1u;
+        if (index < cb->sampler_snapshot_set_count &&
+            memcmp(&cb->sampler_snapshot_sets[index],
+                   &candidate,
+                   sizeof(candidate)) == 0) {
+            *snapshot_id = index;
+            return true;
+        }
+    }
+    if (cb->sampler_snapshot_set_count >= MGL_MAX_SAMPLER_SNAPSHOT_SETS) {
+        return false;
+    }
+
+    uint16_t index = cb->sampler_snapshot_set_count++;
+    cb->sampler_snapshot_sets[index] = candidate;
+    slot = (uint32_t)mglSamplerSnapshotHashBytes(&candidate, sizeof(candidate)) & mask;
+    while (cb->sampler_snapshot_set_index[slot] != 0u) {
+        slot = (slot + 1u) & mask;
+    }
+    cb->sampler_snapshot_set_index[slot] = index + 1u;
+    *snapshot_id = index;
+    return true;
+}
+
 /*
  * mglFlushPendingDrawsForActiveTextures — 活跃纹理单元写后读危害刷新
  *
@@ -1340,6 +1662,18 @@ static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
         }
     }
 
+    return hash;
+}
+
+static uint64_t mglComputeUniformBufferBindingHash(GLMContext ctx)
+{
+    uint64_t hash = 0;
+    const int target = _UNIFORM_BUFFER;
+    for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
+        mglHashBufferBaseBinding(&hash,
+                                 &ctx->active_state->buffer_base[target].buffers[i],
+                                 ((uint64_t)(target + 1) * 131u) + (uint64_t)i);
+    }
     return hash;
 }
 
@@ -1629,6 +1963,7 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
                                  mglComputeDrawBufferBindingHash(ctx) ^
                                  mglRotateLeft64((uint64_t)mode, 21);
     }
+    out->uniform_buffer_hash = mglComputeUniformBufferBindingHash(ctx);
 
     MGL_SIGNPOST_END(ComputeStateKey);
 }
@@ -1637,6 +1972,345 @@ bool mglStateKeysEqual(const MGLStateKey *a, const MGLStateKey *b)
 {
     if (!a || !b) return false;
     return memcmp(a, b, sizeof(MGLStateKey)) == 0;
+}
+
+static bool mglStateKeysEqualIgnoringUniformRanges(const MGLStateKey *a,
+                                                   const MGLStateKey *b)
+{
+    if (!a || !b) return false;
+
+    /* render_state_hash includes the UBO hash for legacy key compatibility.
+     * XOR it back out before comparing the non-UBO render/buffer state. */
+    if ((a->render_state_hash ^ a->uniform_buffer_hash) !=
+        (b->render_state_hash ^ b->uniform_buffer_hash)) {
+        return false;
+    }
+
+    MGLStateKey a_without_ranges = *a;
+    MGLStateKey b_without_ranges = *b;
+    a_without_ranges.render_state_hash = 0;
+    b_without_ranges.render_state_hash = 0;
+    a_without_ranges.uniform_buffer_hash = 0;
+    b_without_ranges.uniform_buffer_hash = 0;
+    return mglStateKeysEqual(&a_without_ranges, &b_without_ranges);
+}
+
+static bool mglCaptureDynamicUniformRanges(GLMContext ctx,
+                                           const MGLDrawBatch *batch,
+                                           MGLDrawCommand *cmd,
+                                           bool capture_all_bound_ranges)
+{
+    if (!ctx || !batch || !batch->state_snapshot || !cmd) return false;
+
+    const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    cmd->dynamic_uniform_binding_count = 0;
+    uint16_t bound_count = 0;
+    for (uint16_t i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
+        const BufferBaseTarget *base =
+            &snapshot->buffer_base[_UNIFORM_BUFFER].buffers[i];
+        const BufferBaseTarget *current =
+            &ctx->active_state->buffer_base[_UNIFORM_BUFFER].buffers[i];
+
+        /* Object changes still use the conservative hazard/flush path. */
+        if (base->buffer != current->buffer || base->buf != current->buf) {
+            return false;
+        }
+        if (current->buf && ++bound_count > MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
+            return false;
+        }
+        if (!capture_all_bound_ranges &&
+            base->offset == current->offset && base->size == current->size) {
+            continue;
+        }
+        if (!current->buf) {
+            continue;
+        }
+        if (cmd->dynamic_uniform_binding_count >= MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
+            return false;
+        }
+
+        MGLDynamicUniformBinding *override =
+            &cmd->dynamic_uniform_bindings[cmd->dynamic_uniform_binding_count++];
+        override->binding_index = i;
+        override->offset = current->offset;
+        override->size = current->size;
+    }
+    return cmd->dynamic_uniform_binding_count > 0;
+}
+
+static const Buffer *mglVertexArrayEffectiveBuffer(const VertexArray *vao,
+                                                   GLuint attrib_index)
+{
+    if (!vao || attrib_index >= MAX_ATTRIBS) return NULL;
+    const VertexAttrib *attrib = &vao->attrib[attrib_index];
+    if (attrib->buffer_bindingindex < MGL_MAX_VERTEX_ATTRIB_BINDINGS) {
+        const BufferBinding *binding =
+            &vao->bindings[attrib->buffer_bindingindex];
+        if (binding->buffer) return binding->buffer;
+    }
+    return attrib->buffer;
+}
+
+static bool mglVertexAttribLayoutsEqual(const VertexAttrib *a,
+                                        const VertexAttrib *b)
+{
+    return a && b &&
+           a->size == b->size &&
+           a->type == b->type &&
+           a->normalized == b->normalized &&
+           a->integer == b->integer &&
+           a->long_attribute == b->long_attribute &&
+           a->stride == b->stride &&
+           a->divisor == b->divisor &&
+           a->relativeoffset == b->relativeoffset &&
+           a->binding_offset == b->binding_offset &&
+           a->buffer_bindingindex == b->buffer_bindingindex;
+}
+
+static bool mglVertexArraysHaveCompatibleBindings(GLMContext ctx,
+                                                  const GLMState *snapshot,
+                                                  const VertexArray *base,
+                                                  const VertexArray *current)
+{
+    if (!ctx || !snapshot || !base || !current ||
+        base->enabled_attribs == 0u ||
+        base->enabled_attribs != current->enabled_attribs) {
+        return false;
+    }
+
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        if (!mglVertexAttribLayoutsEqual(&base->attrib[i], &current->attrib[i])) {
+            return false;
+        }
+        if ((base->enabled_attribs & (1u << i)) == 0u &&
+            memcmp(&snapshot->current_vertex_attrib[i],
+                   &ctx->active_state->current_vertex_attrib[i],
+                   sizeof(CurrentVertexAttrib)) != 0) {
+            return false;
+        }
+    }
+
+    for (GLuint i = 0; i < MGL_MAX_VERTEX_ATTRIB_BINDINGS; i++) {
+        const BufferBinding *a = &base->bindings[i];
+        const BufferBinding *b = &current->bindings[i];
+        if (a->stride != b->stride || a->divisor != b->divisor) {
+            return false;
+        }
+    }
+
+    /* Metal slot assignment groups attributes that share one VBO.  Preserve
+     * that equivalence relation even though the actual buffer objects differ. */
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        if ((base->enabled_attribs & (1u << i)) == 0u) continue;
+        const Buffer *base_i = mglVertexArrayEffectiveBuffer(base, i);
+        const Buffer *current_i = mglVertexArrayEffectiveBuffer(current, i);
+        if (!base_i || !current_i) return false;
+        for (GLuint j = i + 1; j < MAX_ATTRIBS; j++) {
+            if ((base->enabled_attribs & (1u << j)) == 0u) continue;
+            bool base_shared =
+                base_i == mglVertexArrayEffectiveBuffer(base, j);
+            bool current_shared =
+                current_i == mglVertexArrayEffectiveBuffer(current, j);
+            if (base_shared != current_shared) return false;
+        }
+    }
+    return true;
+}
+
+static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
+                                            const MGLDrawBatch *batch,
+                                            MGLDrawCommand *cmd)
+{
+    if (!ctx || !batch || !batch->vao_snapshot || !cmd ||
+        !ctx->active_state->vao) {
+        return false;
+    }
+
+    const VertexArray *base = (const VertexArray *)batch->vao_snapshot;
+    const VertexArray *current = ctx->active_state->vao;
+    const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    if (!mglVertexArraysHaveCompatibleBindings(ctx, snapshot, base, current)) {
+        return false;
+    }
+
+    cmd->dynamic_vertex_binding_count = 0;
+    uint16_t captured_mask = 0u;
+    for (GLuint attrib_index = 0; attrib_index < MAX_ATTRIBS; attrib_index++) {
+        if ((base->enabled_attribs & (1u << attrib_index)) == 0u) continue;
+
+        const VertexAttrib *base_attrib = &base->attrib[attrib_index];
+        const VertexAttrib *current_attrib = &current->attrib[attrib_index];
+        GLuint binding_index = base_attrib->buffer_bindingindex;
+        if (binding_index >= MGL_MAX_VERTEX_ATTRIB_BINDINGS ||
+            binding_index != current_attrib->buffer_bindingindex) {
+            return false;
+        }
+        uint16_t binding_bit = (uint16_t)(1u << binding_index);
+        if ((captured_mask & binding_bit) != 0u) continue;
+
+        const BufferBinding *base_binding = &base->bindings[binding_index];
+        const BufferBinding *current_binding = &current->bindings[binding_index];
+        const Buffer *base_buffer = base_binding->buffer
+            ? base_binding->buffer : base_attrib->buffer;
+        Buffer *current_buffer = current_binding->buffer
+            ? current_binding->buffer : current_attrib->buffer;
+        GLintptr base_offset = base_binding->buffer
+            ? base_binding->offset : base_attrib->binding_offset;
+        GLintptr current_offset = current_binding->buffer
+            ? current_binding->offset : current_attrib->binding_offset;
+        if (!base_buffer || !current_buffer || current_offset < base_offset) {
+            return false;
+        }
+        uint64_t delta = (uint64_t)(current_offset - base_offset);
+        if (delta > UINT32_MAX ||
+            cmd->dynamic_vertex_binding_count >= MGL_MAX_DYNAMIC_VERTEX_BINDINGS) {
+            return false;
+        }
+
+        MGLDynamicVertexBinding *override =
+            &cmd->dynamic_vertex_bindings[cmd->dynamic_vertex_binding_count++];
+        override->buffer = current_buffer;
+        override->offset_delta = (uint32_t)delta;
+        override->binding_index = (uint8_t)binding_index;
+        memset(override->reserved, 0, sizeof(override->reserved));
+        captured_mask |= binding_bit;
+    }
+
+    /* Attributes sharing one Metal slot must move by the same delta. */
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        if ((base->enabled_attribs & (1u << i)) == 0u) continue;
+        for (GLuint j = i + 1; j < MAX_ATTRIBS; j++) {
+            if ((base->enabled_attribs & (1u << j)) == 0u ||
+                mglVertexArrayEffectiveBuffer(base, i) !=
+                    mglVertexArrayEffectiveBuffer(base, j)) {
+                continue;
+            }
+            uint8_t bi = (uint8_t)base->attrib[i].buffer_bindingindex;
+            uint8_t bj = (uint8_t)base->attrib[j].buffer_bindingindex;
+            uint32_t di = 0u, dj = 0u;
+            for (uint8_t k = 0; k < cmd->dynamic_vertex_binding_count; k++) {
+                const MGLDynamicVertexBinding *binding =
+                    &cmd->dynamic_vertex_bindings[k];
+                if (binding->binding_index == bi) di = binding->offset_delta;
+                if (binding->binding_index == bj) dj = binding->offset_delta;
+            }
+            if (di != dj) return false;
+        }
+    }
+    /* Indexed commands already carry an immutable elementBuffer pointer.
+     * Treat an EBO-only VAO hash change as a capturable per-draw binding so
+     * A -> B -> A index-buffer switches can remain in one direct batch. */
+    bool element_binding_changed =
+        cmd->elementBuffer && cmd->elementBuffer != base->element_array.buffer;
+    return cmd->dynamic_vertex_binding_count > 0 || element_binding_changed;
+}
+
+static bool mglStateKeysEqualIgnoringDynamicBindings(const MGLStateKey *a,
+                                                      const MGLStateKey *b)
+{
+    if (!a || !b ||
+        (a->render_state_hash ^ a->uniform_buffer_hash) !=
+        (b->render_state_hash ^ b->uniform_buffer_hash)) {
+        return false;
+    }
+
+    MGLStateKey a_without_vao = *a;
+    MGLStateKey b_without_vao = *b;
+    a_without_vao.vao_name = 0;
+    b_without_vao.vao_name = 0;
+    a_without_vao.vertex_layout_hash = 0;
+    b_without_vao.vertex_layout_hash = 0;
+    a_without_vao.texture_hash = 0;
+    b_without_vao.texture_hash = 0;
+    a_without_vao.render_state_hash = 0;
+    b_without_vao.render_state_hash = 0;
+    a_without_vao.uniform_buffer_hash = 0;
+    b_without_vao.uniform_buffer_hash = 0;
+    return mglStateKeysEqual(&a_without_vao, &b_without_vao);
+}
+
+static bool mglCaptureDynamicTextureBindings(GLMContext ctx,
+                                             const MGLDrawBatch *batch,
+                                             MGLDrawCommand *cmd)
+{
+    if (!ctx || !batch || !cmd || !batch->state_snapshot) return false;
+
+    const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    cmd->dynamic_texture_binding_count = 0;
+
+    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+        if (!mglStateSamplesTextureUnit(ctx, unit)) continue;
+
+        bool snapshot_active =
+            (snapshot->active_texture_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
+        bool current_active =
+            (ctx->active_state->active_texture_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
+        if (snapshot_active != current_active ||
+            snapshot->texture_samplers[unit] !=
+                ctx->active_state->texture_samplers[unit]) {
+            return false;
+        }
+        if (!current_active) continue;
+
+        bool found_active = ctx->active_state->active_textures[unit] == NULL;
+        for (GLuint target = 0; target < _MAX_TEXTURE_TYPES; target++) {
+            Texture *base = snapshot->texture_units[unit].textures[target];
+            Texture *current = ctx->active_state->texture_units[unit].textures[target];
+            if ((base == NULL) != (current == NULL)) return false;
+            if (!current) continue;
+            if (current->index != target || (base && base->index != target) ||
+                current->target != base->target ||
+                cmd->dynamic_texture_binding_count >=
+                    MGL_MAX_DYNAMIC_TEXTURE_BINDINGS) {
+                return false;
+            }
+
+            MGLDynamicTextureBinding *binding =
+                &cmd->dynamic_texture_bindings[
+                    cmd->dynamic_texture_binding_count++];
+            binding->unit = (uint8_t)unit;
+            binding->target_index = (uint8_t)target;
+            binding->is_active =
+                ctx->active_state->active_textures[unit] == current ? 1u : 0u;
+            binding->texture = current;
+            found_active = found_active || binding->is_active != 0u;
+        }
+        if (!found_active) return false;
+    }
+
+    return cmd->dynamic_texture_binding_count > 0;
+}
+
+static bool mglCaptureDynamicDrawBindings(GLMContext ctx,
+                                          const MGLDrawBatch *batch,
+                                          const MGLStateKey *key,
+                                          MGLDrawCommand *cmd)
+{
+    if (!ctx || !batch || !key || !cmd || !batch->state_snapshot) {
+        return false;
+    }
+
+    bool capture_vao = batch->has_dynamic_vertex_bindings ||
+        key->vao_name != batch->key.vao_name ||
+        key->vertex_layout_hash != batch->key.vertex_layout_hash;
+    if (capture_vao) {
+        if (!mglCaptureDynamicVertexBindings(ctx, batch, cmd)) return false;
+    }
+
+    bool capture_uniforms = batch->has_dynamic_uniform_bindings ||
+        key->uniform_buffer_hash != batch->key.uniform_buffer_hash;
+    if (capture_uniforms &&
+        !mglCaptureDynamicUniformRanges(ctx, batch, cmd,
+                                        batch->has_dynamic_uniform_bindings)) {
+        return false;
+    }
+    bool capture_textures = batch->has_dynamic_texture_bindings ||
+        key->texture_hash != batch->key.texture_hash;
+    if (capture_textures &&
+        !mglCaptureDynamicTextureBindings(ctx, batch, cmd)) {
+        return false;
+    }
+    return true;
 }
 
 static bool mglBatchIsMDICompatible(const MGLDrawBatch *batch, const MGLDrawCommand *cmd)
@@ -1662,6 +2336,23 @@ static bool mglBatchIsMDICompatible(const MGLDrawBatch *batch, const MGLDrawComm
     if (mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP) return false;
 
     return true;
+}
+
+static void mglUpdateBatchSamplerSnapshotState(MGLDrawBatch *batch,
+                                               uint16_t snapshot_id)
+{
+    if (!batch) return;
+
+    if (batch->command_count == 0u) {
+        batch->sampler_snapshot_id = snapshot_id;
+    } else if (batch->sampler_snapshot_id != snapshot_id) {
+        batch->sampler_snapshots_mixed = true;
+        batch->mdi_compatible = false;
+    }
+
+    if (snapshot_id != MGL_INVALID_SAMPLER_SNAPSHOT_ID) {
+        batch->has_sampler_snapshots = true;
+    }
 }
 
 static size_t mglCommandIndexSize(GLenum type)
@@ -2659,7 +3350,9 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
     mglMarkTransientBufferWritten(vertexBuffer, batch->stream_vertex_bytes);
     mglMarkTransientBufferWritten(indexBuffer, batch->stream_index_bytes);
 
+    uint16_t sampler_snapshot_id = storedCmd->sampler_snapshot_id;
     *storedCmd = *srcCmd;
+    storedCmd->sampler_snapshot_id = sampler_snapshot_id;
     storedCmd->indexType = GL_UNSIGNED_INT;
     storedCmd->indexBufferOffset = (GLuint)indexWriteOffset;
     storedCmd->elementBuffer = indexBuffer;
@@ -2749,12 +3442,45 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
          cmd->type != MGL_CMD_DRAW_ARRAYS_INSTANCED &&
          cmd->type != MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE);
 
+    /* A short snapshot ID is only valid for the current command buffer.
+     * Avoid a later capacity flush invalidating an ID captured below. */
+    if (cb->batch_count >= maxBatchCount) {
+        MGL_PERF_INC(g_mglFlushReasonCapacitySinceSwap);
+        mglFlushCommandBuffer(ctx);
+    }
+
+    MGLDrawCommand stored_cmd = *cmd;
+    stored_cmd.sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
+    if (mglSamplerSnapshotEnabled() && !cb->sampler_snapshot_incomplete) {
+        bool captured =
+            mglCaptureSamplerSnapshot(ctx, &stored_cmd.sampler_snapshot_id);
+        if (!captured && cb->total_commands > 0) {
+            mglFlushCommandBuffer(ctx);
+            captured =
+                mglCaptureSamplerSnapshot(ctx, &stored_cmd.sampler_snapshot_id);
+        }
+        if (!captured) {
+            cb->sampler_snapshot_incomplete = true;
+            stored_cmd.sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
+        }
+    }
+
     MGLStateKey key;
     mglComputeStateKey(ctx, cmd->mode, cmd_uses_elements, &key);
 
     MGLStreamMergeCandidate streamCandidate;
     bool can_stream_merge =
         mglPrepareStreamMergeCandidate(ctx, cmd, cmd_uses_elements, &streamCandidate);
+    if (can_stream_merge && cb->batch_count > 0) {
+        MGLDrawBatch *last = &cb->batches[cb->batch_count - 1];
+        if (mglStateKeysEqual(&last->key, &key) &&
+            (last->sampler_snapshots_mixed ||
+             last->sampler_snapshot_id != stored_cmd.sampler_snapshot_id)) {
+            /* Once sampler state changes, keep subsequent draws in one mixed
+             * direct batch instead of consuming a stream batch per snapshot. */
+            can_stream_merge = false;
+        }
+    }
     /*
      * Batch reuse is decoupled from stream-merge.  When keys match, non-
      * stream-merged draws can share a batch — each draw keeps its own
@@ -2786,9 +3512,49 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         if (keys_match &&
             last->uses_elements == cmd_uses_elements &&
             last->stream_merged == can_stream_merge &&
-            (!can_stream_merge || last->stream_layout_hash == streamCandidate.layout_hash) &&
-            last->command_count < maxDrawsPerBatch) {
+            (!can_stream_merge ||
+             (last->stream_layout_hash == streamCandidate.layout_hash &&
+              !last->sampler_snapshots_mixed &&
+              last->sampler_snapshot_id == stored_cmd.sampler_snapshot_id)) &&
+            last->command_count < maxDrawsPerBatch &&
+            (!last->has_dynamic_uniform_bindings ||
+             mglCaptureDynamicUniformRanges(ctx, last, &stored_cmd, true)) &&
+            (!last->has_dynamic_texture_bindings ||
+             mglCaptureDynamicTextureBindings(ctx, last, &stored_cmd)) &&
+            (!last->has_dynamic_vertex_bindings ||
+             mglCaptureDynamicVertexBindings(ctx, last, &stored_cmd))) {
             batch = last;
+        } else if (!keys_match && !can_stream_merge && !last->stream_merged &&
+                   last->uses_elements == cmd_uses_elements &&
+                   last->command_count < maxDrawsPerBatch &&
+                   mglStateKeysEqualIgnoringUniformRanges(&last->key, &key) &&
+                   mglCaptureDynamicUniformRanges(
+                       ctx, last, &stored_cmd,
+                       last->has_dynamic_uniform_bindings) &&
+                   (!last->has_dynamic_texture_bindings ||
+                    mglCaptureDynamicTextureBindings(ctx, last, &stored_cmd)) &&
+                   (!last->has_dynamic_vertex_bindings ||
+                    mglCaptureDynamicVertexBindings(ctx, last, &stored_cmd))) {
+            batch = last;
+            batch->has_dynamic_uniform_bindings = true;
+            batch->mdi_compatible = false;
+        } else if (!keys_match && mglBindNoFlushEnabled() &&
+                   !can_stream_merge && !last->stream_merged &&
+                   last->uses_elements == cmd_uses_elements &&
+                   last->command_count < maxDrawsPerBatch &&
+                   mglStateKeysEqualIgnoringDynamicBindings(&last->key, &key) &&
+                   mglCaptureDynamicDrawBindings(ctx, last, &key, &stored_cmd)) {
+            batch = last;
+            if (stored_cmd.dynamic_vertex_binding_count > 0) {
+                batch->has_dynamic_vertex_bindings = true;
+            }
+            if (stored_cmd.dynamic_uniform_binding_count > 0) {
+                batch->has_dynamic_uniform_bindings = true;
+            }
+            if (stored_cmd.dynamic_texture_binding_count > 0) {
+                batch->has_dynamic_texture_bindings = true;
+            }
+            batch->mdi_compatible = false;
         } else if (!keys_match) {
             MGL_PERF_INC(g_mglMergeRejectStateDiffersSinceSwap);
         } else if (last->command_count >= maxDrawsPerBatch) {
@@ -2807,15 +3573,20 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         }
         batch = &cb->batches[cb->batch_count];
         memset(batch, 0, sizeof(*batch));
+        batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
         batch->key = key;
         batch->uses_elements = cmd_uses_elements;
-        batch->mdi_compatible = mglBatchIsMDICompatible(batch, cmd);
+        /* The frontend command is zero-initialized and does not own the
+         * command-buffer-local snapshot ID.  Check the normalized copy so a
+         * draw without a sampler snapshot is not mistaken for snapshot 0. */
+        batch->mdi_compatible = mglBatchIsMDICompatible(batch, &stored_cmd);
 
         if (can_stream_merge) {
             if (!mglInitializeStreamMergedBatch(ctx, batch, &streamCandidate)) {
                 fprintf(stderr, "MGL Warning: stream merged batch init failed; falling back to normal deferred draw\n");
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
+                batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
@@ -2836,7 +3607,6 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         cb->batch_count++;
     }
 
-    MGLDrawCommand stored_cmd = *cmd;
     if (can_stream_merge) {
         if (!mglAppendStreamMergedData(batch, &streamCandidate, cmd, &stored_cmd)) {
             MGL_PERF_INC(g_mglMergeRejectAppendFailedSinceSwap);
@@ -2862,6 +3632,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 }
                 batch = &cb->batches[cb->batch_count];
                 memset(batch, 0, sizeof(*batch));
+                batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
                 batch->key = key;
                 batch->mdi_compatible = false;
                 batch->uses_elements = cmd_uses_elements;
@@ -2874,7 +3645,9 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                 }
                 cb->batch_count++;
             }
+            uint16_t sampler_snapshot_id = stored_cmd.sampler_snapshot_id;
             stored_cmd = *cmd;
+            stored_cmd.sampler_snapshot_id = sampler_snapshot_id;
         }
     }
 
@@ -2916,6 +3689,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         batch->commands = new_cmds;
         batch->command_capacity = newCapacity;
     }
+    mglUpdateBatchSamplerSnapshotState(batch, stored_cmd.sampler_snapshot_id);
     batch->commands[batch->command_count] = stored_cmd;
     batch->command_count++;
     cb->total_commands++;

@@ -15,7 +15,12 @@ void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device)
     memset(cap, 0, sizeof(*cap));
     cap->device = device;
 
-    NSString *name = [device name];
+    NSString *name = [device name] ?: @"Unknown Metal Device";
+    BOOL supportsAppleFamily = NO;
+    if (@available(macOS 10.15, *)) {
+        supportsAppleFamily = [device supportsFamily:MTLGPUFamilyApple1];
+    }
+
     if ([name containsString:@"AGX"]) {
         /* Current AGX detection also implies virtualization in the MGL test
          * environment.  On bare-metal Apple Silicon the device name is
@@ -24,11 +29,7 @@ void MGLCapabilityInit(MGLCapability *cap, id<MTLDevice> device)
         cap->family = MGL_GPU_FAMILY_VIRTUALIZED;
         cap->isVirtualized = YES;
         NSLog(@"MGL CAP: AGX virtualized device detected: %@", name);
-    } else if ([name containsString:@"Apple"] ||
-               [name containsString:@"M1"] ||
-               [name containsString:@"M2"] ||
-               [name containsString:@"M3"] ||
-               [name containsString:@"M4"]) {
+    } else if (supportsAppleFamily || [name hasPrefix:@"Apple "]) {
         cap->family = MGL_GPU_FAMILY_AGX;
         cap->isVirtualized = NO;
         NSLog(@"MGL CAP: Apple Silicon device detected: %@", name);

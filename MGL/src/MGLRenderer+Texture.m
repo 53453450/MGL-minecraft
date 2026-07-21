@@ -38,7 +38,7 @@
             return false;
         }
 
-        id<MTLBlitCommandEncoder> blitEncoder = [_currentCommandBuffer blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blitEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
         if (!blitEncoder) {
             NSLog(@"MGL ERROR: failed to create ordered upload blit encoder for %s",
                   reason ? reason : "texture_upload");
@@ -209,7 +209,7 @@
                   (unsigned long)safeBytesPerImage, (unsigned long)expectedBytesPerImage);
         }
         safeBytesPerImage = expectedBytesPerImage;
-    } else {
+    } else if (!is3DTexture) {
         // Non-array/non-3D uploads should still represent a single image.
         safeBytesPerImage = expectedBytesPerImage;
     }
@@ -280,24 +280,53 @@
      * - 3D uses replaceRegion to work around the AGX driver's copyFromBuffer:toTexture: slice OOB
      *   assertion (triggered even when destinationSlice=0);
      *   Driver bug tracked via MGLCapabilityHasBug(MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB).
-     * - replaceRegion:mipmapLevel:withBytes:bytesPerRow: does not accept bytesPerImage,
-     *   so tightly packed data is required (safeBytesPerImage == bytesPerRow * height, i.e. expectedBytesPerImage);
-     * - Only available for shared storage; if the tight packing condition is not met, fall back to the blit path. */
+     * - Metal requires bytesPerImage for 3D replaceRegion uploads, so padded
+     *   depth planes are repacked and uploaded with the tight image stride.
+     * - Only shared storage supports replaceRegion.  Do not fall back to the
+     *   known-bad copyFromBuffer path while the AGX bug marker is active. */
     if (is3DTexture &&
-        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB) &&
-        texture.storageMode != MTLStorageModePrivate &&
-        safeBytesPerImage == expectedBytesPerImage) {
+        MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB)) {
+        if (texture.storageMode == MTLStorageModePrivate) {
+            NSLog(@"MGL WARNING: Rejecting private 3D upload while AGX copyFromBuffer workaround is required (tex=%u level=%lu)",
+                  (unsigned)texName, (unsigned long)level);
+            return false;
+        }
+
+        const void *replaceBytes = bytes;
+        void *tightlyPackedBytes = NULL;
+        if (safeBytesPerImage != expectedBytesPerImage) {
+            if (copyDepth > NSUIntegerMax / expectedBytesPerImage) {
+                return false;
+            }
+            NSUInteger packedSize = expectedBytesPerImage * copyDepth;
+            tightlyPackedBytes = malloc(packedSize);
+            if (!tightlyPackedBytes) {
+                return false;
+            }
+            for (NSUInteger z = 0; z < copyDepth; z++) {
+                memcpy((uint8_t *)tightlyPackedBytes + z * expectedBytesPerImage,
+                       (const uint8_t *)bytes + z * safeBytesPerImage,
+                       expectedBytesPerImage);
+            }
+            replaceBytes = tightlyPackedBytes;
+        }
+
         @try {
             MTLRegion region = MTLRegionMake3D(0, 0, 0, width, safeHeight, copyDepth);
             [texture replaceRegion:region
                         mipmapLevel:level
-                          withBytes:bytes
-                        bytesPerRow:bytesPerRow];
+                              slice:0
+                          withBytes:replaceBytes
+                        bytesPerRow:bytesPerRow
+                      bytesPerImage:expectedBytesPerImage];
+            free(tightlyPackedBytes);
             return true;
         } @catch (NSException *exception) {
-            NSLog(@"MGL WARNING: 3D texture replaceRegion upload failed, falling back to blit (tex=%u level=%lu): %@",
+            free(tightlyPackedBytes);
+            NSLog(@"MGL WARNING: 3D texture replaceRegion upload failed (tex=%u level=%lu): %@",
                   (unsigned)texName, (unsigned long)level,
                   exception.reason);
+            return false;
         }
     }
 
@@ -515,7 +544,7 @@
                           ctx->state.default_clear_color[2],
                           ctx->state.default_clear_color[3]);
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (clearEncoder) {
         [clearEncoder endEncoding];
         ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -549,7 +578,7 @@
                           attachment->clear_color[2],
                           attachment->clear_color[3]);
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (clearEncoder) {
         [clearEncoder endEncoding];
         attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
@@ -691,7 +720,7 @@
 
     id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
                                                     options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create readback resources for %s",
               reason ? reason : "unknown");
@@ -735,11 +764,11 @@
 
     __block NSError *readbackError = nil;
     dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
         readbackError = cb.error;
         dispatch_semaphore_signal(readbackDone);
     }];
-    [_currentCommandBuffer commit];
+    [_renderPassManager.state->currentCommandBuffer commit];
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
@@ -910,7 +939,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
                                                     options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create depth readback resources for %s",
               reason ? reason : "unknown");
@@ -954,11 +983,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     __block NSError *readbackError = nil;
     dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    [_currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+    [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
         readbackError = cb.error;
         dispatch_semaphore_signal(readbackDone);
     }];
-    [_currentCommandBuffer commit];
+    [_renderPassManager.state->currentCommandBuffer commit];
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
@@ -1216,7 +1245,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
                                                     options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blit = readBuffer ? [_currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBlitCommandEncoder> blit = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
     if (!readBuffer || !blit) {
         mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return NO;
@@ -1248,8 +1277,8 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
    destinationBytesPerRow:srcBytesPerRow
  destinationBytesPerImage:stagingSize];
     [blit endEncoding];
-    [_currentCommandBuffer commit];
-    [_currentCommandBuffer waitUntilCompleted];
+    [_renderPassManager.state->currentCommandBuffer commit];
+    [_renderPassManager.state->currentCommandBuffer waitUntilCompleted];
 
     const uint8_t *src = (const uint8_t *)readBuffer.contents;
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
@@ -1401,7 +1430,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     clearPass.depthAttachment.storeAction = MTLStoreActionStore;
     clearPass.depthAttachment.clearDepth = attachment->clear_color[0];
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (clearEncoder) {
         [clearEncoder endEncoding];
         attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -1424,7 +1453,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     clearPass.depthAttachment.storeAction = MTLStoreActionStore;
     clearPass.depthAttachment.clearDepth = ctx->state.var.depth_clear_value;
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (clearEncoder) {
         [clearEncoder endEncoding];
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
@@ -1796,9 +1825,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
      * reading back. Without this, getBytes may return stale/zero data because
      * the blit encoding the upload is still in the uncommitted command buffer. */
     [self endRenderEncoding];
-    if (_currentCommandBuffer) {
-        id<MTLCommandBuffer> pendingCB = _currentCommandBuffer;
-        _currentCommandBuffer = nil;
+    if (_renderPassManager.state->currentCommandBuffer) {
+        id<MTLCommandBuffer> pendingCB =
+            [_renderPassManager detachCurrentCommandBufferForSubmission];
         @try {
             [pendingCB commit];
             [pendingCB waitUntilCompleted];
@@ -2144,7 +2173,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
-    blitCommandEncoder = [_currentCommandBuffer blitCommandEncoder];
+    blitCommandEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
     if (!blitCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
         return;

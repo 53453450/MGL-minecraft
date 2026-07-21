@@ -810,18 +810,6 @@ void mglBindTexture(GLMContext ctx, GLenum target, GLuint texture)
             MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
         }
         mglFlushPendingDraws(ctx);
-    } else if (binding_changed && mglBindNoFlushEnabled()) {
-        /* Bug C6: hazard-flush old textures being replaced/unbound.
-         * Pending draws sampling the old texture need a barrier before
-         * the binding is cleared or swapped. */
-        if (old_typed_ptr) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-            mglFlushPendingDrawsForTexture(ctx, old_typed_ptr);
-        }
-        if (old_active_ptr && old_active_ptr != old_typed_ptr) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-            mglFlushPendingDrawsForTexture(ctx, old_active_ptr);
-        }
     }
 
     STATE(texture_units[active_texture].textures[index]) = ptr;
@@ -1309,17 +1297,6 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
                     MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
                 }
                 mglFlushPendingDraws(ctx);
-            } else if (binding_changed && mglBindNoFlushEnabled()) {
-                /* Bug C9: hazard-flush old textures being replaced.
-                 * Pending draws sampling the old texture need a barrier. */
-                if (old_typed_ptr) {
-                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                    mglFlushPendingDrawsForTexture(ctx, old_typed_ptr);
-                }
-                if (old_active_ptr && old_active_ptr != old_typed_ptr) {
-                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                    mglFlushPendingDrawsForTexture(ctx, old_active_ptr);
-                }
             }
 
             STATE(texture_units[unit].textures[index]) = ptr;
@@ -1345,22 +1322,6 @@ void mglBindTextures(GLMContext ctx, GLuint first, GLsizei count, const GLuint *
                 if (!mglBindNoFlushEnabled()) {
                     MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
                     mglFlushPendingDraws(ctx);
-                } else {
-                    /* Bug 4: hazard-flush for each texture being unbound.
-                     * Pending draws sampling this unit would lose their
-                     * binding without this barrier. */
-                    for (GLuint ti = 0; ti < _MAX_TEXTURE_TYPES; ti++) {
-                        Texture *utex = STATE(texture_units[unit].textures[ti]);
-                        if (utex) {
-                            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                            mglFlushPendingDrawsForTexture(ctx, utex);
-                        }
-                    }
-                    Texture *active_tex = STATE(active_textures[unit]);
-                    if (active_tex) {
-                        MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                        mglFlushPendingDrawsForTexture(ctx, active_tex);
-                    }
                 }
             } else {
                 continue;
@@ -1410,22 +1371,6 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
             if (!mglBindNoFlushEnabled()) {
                 MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
                 mglFlushPendingDraws(ctx);
-            } else {
-                /* Bug 4: hazard-flush for each texture being unbound.
-                 * Pending draws sampling this unit would lose their
-                 * binding without this barrier. */
-                for (index = 0; index < _MAX_TEXTURE_TYPES; index++) {
-                    Texture *utex = STATE(texture_units[unit].textures[index]);
-                    if (utex) {
-                        MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                        mglFlushPendingDrawsForTexture(ctx, utex);
-                    }
-                }
-                Texture *active_tex = STATE(active_textures[unit]);
-                if (active_tex) {
-                    MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-                    mglFlushPendingDrawsForTexture(ctx, active_tex);
-                }
             }
         }
         for (index = 0; index < _MAX_TEXTURE_TYPES; index++) {
@@ -1468,17 +1413,6 @@ void mglBindTextureUnit(GLMContext ctx, GLuint unit, GLuint texture)
             MGL_PERF_INC(g_mglFlushReasonOtherSinceSwap);
         }
         mglFlushPendingDraws(ctx);
-    } else if (binding_changed && mglBindNoFlushEnabled()) {
-        /* Bug C9: hazard-flush old textures being replaced.
-         * Pending draws sampling the old texture need a barrier. */
-        if (old_typed_ptr) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-            mglFlushPendingDrawsForTexture(ctx, old_typed_ptr);
-        }
-        if (old_active_ptr && old_active_ptr != old_typed_ptr) {
-            MGL_PERF_INC(g_mglFlushReasonBindTextureSinceSwap);
-            mglFlushPendingDrawsForTexture(ctx, old_active_ptr);
-        }
     }
 
     STATE(texture_units[unit].textures[index]) = ptr;

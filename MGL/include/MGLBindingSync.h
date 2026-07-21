@@ -1,0 +1,86 @@
+#ifndef MGLBindingSync_h
+#define MGLBindingSync_h
+
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+#include "glm_context.h"
+
+#ifndef kMGLMaxBufferSlots
+#define kMGLMaxBufferSlots 31
+#endif
+
+typedef struct {
+    id<MTLBuffer> __strong _Nullable buffer;
+    NSUInteger offset;
+} MGLLastBoundBuffer;
+
+typedef struct MGLBindingDedupState_t {
+    MGLLastBoundBuffer lastBoundVertexBuffers[kMGLMaxBufferSlots];
+    MGLLastBoundBuffer lastBoundFragmentBuffers[kMGLMaxBufferSlots];
+    id<MTLTexture> __strong _Nullable lastBoundVertexTextures[TEXTURE_UNITS];
+    id<MTLTexture> __strong _Nullable lastBoundFragmentTextures[TEXTURE_UNITS];
+    id<MTLSamplerState> __strong _Nullable lastBoundVertexSamplers[TEXTURE_UNITS];
+    id<MTLSamplerState> __strong _Nullable lastBoundFragmentSamplers[TEXTURE_UNITS];
+    uint32_t lastBoundVertexBufferMask;
+    uint32_t lastBoundFragmentBufferMask;
+    uint64_t lastBoundTextureSlotMask[2];
+    id<MTLRenderPipelineState> __strong _Nullable lastPipelineState;
+    id<MTLDepthStencilState> __strong _Nullable lastDepthStencilState;
+    MTLViewport lastViewport;
+    MTLScissorRect lastScissorRect;
+    MTLCullMode lastCullMode;
+    MTLWinding lastFrontFacingWinding;
+    MTLTriangleFillMode lastTriangleFillMode;
+    float lastDepthBias;
+    float lastDepthBiasClamp;
+    float lastDepthSlopeScale;
+    BOOL lastBoundValid;
+} MGLBindingDedupState;
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface MGLBindingSync : NSObject {
+@private
+    MGLBindingDedupState _state;
+}
+
+@property(nonatomic, readonly) MGLBindingDedupState *state;
+
+- (void)invalidate;
+- (void)copyStateTo:(MGLBindingDedupState *)destination;
+- (void)restoreStateFrom:(const MGLBindingDedupState *)source;
+
+- (void)recordVertexBuffer:(nullable id<MTLBuffer>)buffer
+                    offset:(NSUInteger)offset
+                   atIndex:(NSUInteger)index;
+- (void)recordFragmentBuffer:(nullable id<MTLBuffer>)buffer
+                      offset:(NSUInteger)offset
+                     atIndex:(NSUInteger)index;
+- (void)invalidateVertexBufferAtIndex:(NSUInteger)index;
+- (void)invalidateFragmentBufferAtIndex:(NSUInteger)index;
+
+- (void)setVertexTextureIfNeeded:(nullable id<MTLTexture>)texture
+                          atIndex:(NSUInteger)index
+                          encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setFragmentTextureIfNeeded:(nullable id<MTLTexture>)texture
+                            atIndex:(NSUInteger)index
+                            encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setVertexSamplerIfNeeded:(nullable id<MTLSamplerState>)sampler
+                         atIndex:(NSUInteger)index
+                         encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setFragmentSamplerIfNeeded:(nullable id<MTLSamplerState>)sampler
+                           atIndex:(NSUInteger)index
+                           encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setViewportIfNeeded:(MTLViewport)viewport
+                     encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setScissorRectIfNeeded:(MTLScissorRect)rect
+                        encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+- (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
+                             encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+
+@end
+
+NS_ASSUME_NONNULL_END
+
+#endif /* MGLBindingSync_h */

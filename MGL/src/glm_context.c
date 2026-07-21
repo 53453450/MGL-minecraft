@@ -701,37 +701,14 @@ void MGLswapBuffers(GLMContext ctx)
 static void mglDestroyContextBuffer(GLuint name, void *data, void *user)
 {
     (void)name;
-    GLMContext ctx = (GLMContext)user;
+    (void)user;
     Buffer *buffer = (Buffer *)data;
 
     if (!buffer) {
         return;
     }
 
-    GLboolean had_mtl_data = buffer->data.mtl_data ? GL_TRUE : GL_FALSE;
-
-    mglSafeReleaseMetalObj((void **)&buffer->data.mtl_data);
-
-    if (buffer->data.buffer_data && buffer->data.buffer_size > 0) {
-        GLboolean release_cpu_backing =
-            !(had_mtl_data && (buffer->storage_flags & GL_CLIENT_STORAGE_BIT));
-
-        if (release_cpu_backing) {
-            kern_return_t kr = vm_deallocate((vm_map_t)mach_task_self(),
-                                             (vm_address_t)buffer->data.buffer_data,
-                                             (vm_size_t)buffer->data.buffer_size);
-            if (kr != KERN_SUCCESS) {
-                fprintf(stderr,
-                        "MGL WARNING: context destroy failed to release buffer CPU backing name=%u ptr=%p size=%zu kr=%d\n",
-                        buffer->name,
-                        (void *)(uintptr_t)buffer->data.buffer_data,
-                        buffer->data.buffer_size,
-                        kr);
-            }
-            buffer->data.buffer_data = 0;
-            buffer->data.buffer_size = 0;
-        }
-    }
+    mglReleaseBufferStorage(buffer);
 
     free(buffer);
 }
