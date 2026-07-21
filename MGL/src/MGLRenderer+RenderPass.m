@@ -806,8 +806,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+    MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
+    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     return true;
 }
 
@@ -2927,14 +2928,15 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     // selected for the draw.
     if (VAO())
     {
-        if ([self bindVertexBuffersToCurrentRenderEncoder] == false)
+        MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+        if ([self bindVertexBuffersToCurrentRenderEncoder:&encCtx] == false)
         {
             DEBUG_PRINT("vertex buffer binding failed\n");
             [self recordGPUError];
             return false;
         }
 
-        if ([self bindFragmentBuffersToCurrentRenderEncoder] == false)
+        if ([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx] == false)
         {
             DEBUG_PRINT("fragment buffer binding failed\n");
             [self recordGPUError];
@@ -4842,19 +4844,20 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     {
         // buffer data can be changed but the bindings remain in place.. so we need to update the data if this is the case
         // like a uniform or buffer sub data call
-        
+        MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+
         if( [self checkForDirtyBufferData: &ctx->active_state->vertex_buffer_map_list])
         {
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
 
-            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
+            RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
         }
-        
+
         if( [self checkForDirtyBufferData: &ctx->active_state->fragment_buffer_map_list])
         {
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
 
-            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+            RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
         }
     }
     return true;

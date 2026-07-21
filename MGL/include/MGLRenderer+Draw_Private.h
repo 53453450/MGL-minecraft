@@ -58,6 +58,12 @@ typedef struct {
     uint32_t traceReplayBatchIndex;
 } MGLWorkerContext;
 
+/* Encode target passed explicitly to the issue and bind methods instead of
+ * read from _renderPassManager.state->currentRenderEncoder. */
+typedef struct {
+    id<MTLRenderCommandEncoder> encoder;
+} MGLEncodeContext;
+
 /* === Resolved vertex-attrib binding === */
 typedef struct MGLResolvedVertexAttribBinding_t {
     const VertexAttrib *attrib;
@@ -219,15 +225,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     replayError:(GLenum *)replayError
                 skippedCommands:(uint32_t *)skippedCommands;
 - (void)recordBatchCommandStats:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch
+                          context:(GLMContext)glm_ctx
+                    encodeContext:(const MGLEncodeContext *)encCtx;
+- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
+                                context:(GLMContext)glm_ctx
+                          encodeContext:(const MGLEncodeContext *)encCtx;
 - (id<MTLBuffer>)mdiArgumentScratchBufferWithLength:(NSUInteger)length
                                              offset:(NSUInteger *)offsetOut;
 
 // === Resource binding sync ===
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx;
-- (bool)bindVertexBuffersToCurrentRenderEncoder;
-- (bool)bindFragmentBuffersToCurrentRenderEncoder;
+- (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
+- (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindActiveTexturesToMTL;
 
 // === Parallel command recording infrastructure ===
@@ -321,11 +331,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                             count:(GLsizei)count;
 
 // === P2-1: Methods defined in MGLRenderer+Draw.m, called from MGLRenderer+Batch.m ===
-- (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
-- (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx;
+- (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+        encodeContext:(const MGLEncodeContext *)encCtx;
+- (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+           encodeContext:(const MGLEncodeContext *)encCtx;
 - (bool)applySamplerSnapshotForCommand:(const MGLDrawCommand *)cmd
-                                context:(GLMContext)glm_ctx;
-- (bool)bindTexturesToCurrentRenderEncoder;
+                                context:(GLMContext)glm_ctx
+                          encodeContext:(const MGLEncodeContext *)encCtx;
+- (bool)bindTexturesToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (BOOL)currentDrawRasterizationIsEmpty;
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode;
 - (void)applyPolygonOffsetForDrawMode:(GLenum)mode;

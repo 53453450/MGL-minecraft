@@ -517,6 +517,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         }
 
         scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
+        /* Source the encode context from the worker's own sub-encoder rather
+         * than the shared currentRenderEncoder, so a worker never encodes onto
+         * another worker's encoder once workers run concurrently. */
+        MGLEncodeContext encCtx = { .encoder = worker->encoder };
         switch (scheduledPath) {
             case MGL_BATCH_PATH_STREAM_MERGE:
                 [self traceReplayBatch:batch
@@ -524,7 +528,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                flushId:flushId
                             batchIndex:batchIndex
                                  phase:"PARALLEL_ISSUE_STREAM_MERGE"];
-                [self issueStreamMergedBatch:batch context:glm_ctx];
+                [self issueStreamMergedBatch:batch context:glm_ctx encodeContext:&encCtx];
                 break;
             case MGL_BATCH_PATH_MDI:
                 [self traceReplayBatch:batch
@@ -532,7 +536,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                flushId:flushId
                             batchIndex:batchIndex
                                  phase:"PARALLEL_ISSUE_MDI"];
-                [self issueMDIBatch:batch context:glm_ctx];
+                [self issueMDIBatch:batch context:glm_ctx encodeContext:&encCtx];
                 break;
             case MGL_BATCH_PATH_ICB:
                 [self traceReplayBatch:batch
@@ -540,7 +544,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                flushId:flushId
                             batchIndex:batchIndex
                                  phase:"PARALLEL_ISSUE_ICB"];
-                [self issueIndirectCommandBufferBatch:batch context:glm_ctx];
+                [self issueIndirectCommandBufferBatch:batch context:glm_ctx encodeContext:&encCtx];
                 break;
             default:
                 [self traceReplayBatch:batch
@@ -548,7 +552,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                flushId:flushId
                             batchIndex:batchIndex
                                  phase:"PARALLEL_ISSUE_DIRECT"];
-                [self issueDirectBatch:batch context:glm_ctx];
+                [self issueDirectBatch:batch context:glm_ctx encodeContext:&encCtx];
                 break;
         }
 
@@ -687,14 +691,17 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
     RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
     RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder]);
+    MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
+    RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
+    RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
     RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
-    if (![self bindTexturesToCurrentRenderEncoder]) {
+    encCtx.encoder = _renderPassManager.state->currentRenderEncoder;
+    if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
         RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-sampled-texture-bind"]);
-        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder]);
+        encCtx.encoder = _renderPassManager.state->currentRenderEncoder;
+        RETURN_FALSE_ON_FAILURE([self bindTexturesToCurrentRenderEncoder:&encCtx]);
     }
     return true;
 }
@@ -1628,6 +1635,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
+            MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
             switch (scheduledPath) {
                 case MGL_BATCH_PATH_STREAM_MERGE:
                     streamMergedBatchCount++;
@@ -1640,7 +1648,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                    flushId:flushHit
                                 batchIndex:b
                                      phase:"ISSUE_STREAM_MERGE"];
-                    [self issueStreamMergedBatch:batch context:glm_ctx];
+                    [self issueStreamMergedBatch:batch context:glm_ctx encodeContext:&encCtx];
                     /* Stream batches bind transient vertex storage that is not
                      * represented by MGLStateKey. Force the next batch to
                      * restore its real VAO even when the GL keys are equal. */
@@ -1654,7 +1662,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                    flushId:flushHit
                                 batchIndex:b
                                      phase:"ISSUE_MDI"];
-                    [self issueMDIBatch:batch context:glm_ctx];
+                    [self issueMDIBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
                 case MGL_BATCH_PATH_ICB:
                     icbBatchCount++;
@@ -1664,7 +1672,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                    flushId:flushHit
                                 batchIndex:b
                                      phase:"ISSUE_ICB"];
-                    [self issueIndirectCommandBufferBatch:batch context:glm_ctx];
+                    [self issueIndirectCommandBufferBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
                 default:
                     directBatchCount++;
@@ -1676,7 +1684,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                    flushId:flushHit
                                 batchIndex:b
                                      phase:"ISSUE_DIRECT"];
-                    [self issueDirectBatch:batch context:glm_ctx];
+                    [self issueDirectBatch:batch context:glm_ctx encodeContext:&encCtx];
                     break;
             }
 
@@ -1992,10 +2000,12 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     /* A stable sampler snapshot is batch state, not per-draw state. Apply it
      * once after texture binding so stream-merge, MDI, ICB and parallel paths
      * remain available. Only genuinely mixed batches rebind per command. */
+    MGLEncodeContext samplerEncCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
     if (!batch->sampler_snapshots_mixed &&
         batch->sampler_snapshot_id != MGL_INVALID_SAMPLER_SNAPSHOT_ID &&
         ![self applySamplerSnapshotForCommand:&batch->commands[0]
-                                      context:glm_ctx]) {
+                                      context:glm_ctx
+                                encodeContext:&samplerEncCtx]) {
         [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                     batchIndex:batchIndex phase:"SKIP_SAMPLER_SNAPSHOT"];
         for (uint32_t i = 0; i < batch->command_count; i++) {
@@ -2076,6 +2086,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 }
 
 - (void)issueStreamMergedBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+                 encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!batch || !batch->stream_merged || batch->stream_index_count == 0) {
         if (batch && batch->command_count > 0) {
@@ -2102,7 +2113,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                phase:"FALLBACK"
                               reason:"stream_unsupported_primitive"];
         }
-        [self issueDirectBatch:batch context:glm_ctx];
+        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
 
@@ -2117,7 +2128,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                phase:"ISSUE"
                               reason:"stream_merge_to_mdi"];
         }
-        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx]) {
+        if ([self issueStreamMergedMDIBatch:batch context:glm_ctx encodeContext:encCtx]) {
             return;
         }
     }
@@ -2134,7 +2145,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                phase:"FALLBACK"
                               reason:"stream_index_buffer"];
         }
-        [self issueDirectBatch:batch context:glm_ctx];
+        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
 
@@ -2150,14 +2161,14 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                phase:"FALLBACK"
                               reason:"stream_no_mtl_index"];
         }
-        [self issueDirectBatch:batch context:glm_ctx];
+        [self issueDirectBatch:batch context:glm_ctx encodeContext:encCtx];
         return;
     }
 
     MGLDrawCommand *firstCmd = &batch->commands[0];
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
 
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primType
+    [encCtx->encoder drawIndexedPrimitives:primType
                                       indexCount:(NSUInteger)batch->stream_index_count
                                        indexType:MTLIndexTypeUInt32
                                      indexBuffer:mtlIndexBuffer
@@ -2176,9 +2187,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 }
 
 - (BOOL)issueStreamMergedMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+                    encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!batch || !batch->stream_merged || batch->command_count == 0 ||
-        batch->stream_index_count == 0 || !_renderPassManager.state->currentRenderEncoder) {
+        batch->stream_index_count == 0 || !encCtx->encoder) {
         return NO;
     }
     if (mglEnvFlagEnabled("MGL_DISABLE_MDI") ||
@@ -2264,7 +2276,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primType
+        [encCtx->encoder drawIndexedPrimitives:primType
                                            indexType:MTLIndexTypeUInt32
                                          indexBuffer:mtlIndexBuffer
                                    indexBufferOffset:(NSUInteger)cmd->indexBufferOffset
@@ -2283,9 +2295,11 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     return YES;
 }
 
-- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
+- (BOOL)issueIndirectCommandBufferBatch:(MGLDrawBatch *)batch
+                                context:(GLMContext)glm_ctx
+                          encodeContext:(const MGLEncodeContext *)encCtx
 {
-    if (!batch || batch->command_count == 0 || !_device || !_renderPassManager.state->currentRenderEncoder) {
+    if (!batch || batch->command_count == 0 || !_device || !encCtx->encoder) {
         if (batch && batch->command_count > 0) {
             [self traceReplayCommand:batch
                              command:&batch->commands[0]
@@ -2433,7 +2447,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                          instanceCount:(NSUInteger)cmd->instanceCount
                                             baseVertex:(NSInteger)cmd->baseVertex
                                           baseInstance:(NSUInteger)cmd->baseInstance];
-                [_renderPassManager.state->currentRenderEncoder useResource:drawIndexBuffer
+                [encCtx->encoder useResource:drawIndexBuffer
                                              usage:MTLResourceUsageRead
                                             stages:MTLRenderStageVertex];
             }
@@ -2460,10 +2474,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             }
         }
 
-        [_renderPassManager.state->currentRenderEncoder useResource:icb
+        [encCtx->encoder useResource:icb
                                      usage:MTLResourceUsageRead
                                     stages:MTLRenderStageVertex];
-        [_renderPassManager.state->currentRenderEncoder executeCommandsInBuffer:icb
+        [encCtx->encoder executeCommandsInBuffer:icb
                                              withRange:NSMakeRange(0, (NSUInteger)batch->command_count)];
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [self traceReplayCommand:batch
