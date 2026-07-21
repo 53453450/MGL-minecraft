@@ -23,11 +23,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <mach/mach.h>
+#include <mach/task_info.h>
 
 #define GL_GLEXT_PROTOTYPES 1
 #include <GL/glcorearb.h>
 
-#include "MGLContext.h"
+#include "draw_command.h"
+#include "glm_context.h"
 #include "MGLRenderer.h"
 
 /* ------------------------------------------------------------------ */
@@ -36,7 +39,120 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 18
+#define MAX_TESTS 31
+#define SOAK_ITERATIONS 100000u
+#define SOAK_SAMPLE_INTERVAL 4096u
+#define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
+#define TEST_RESULT_SKIP 77
+
+typedef struct {
+    uint64_t resident_bytes;
+    uint64_t footprint_bytes;
+} ProcessMemorySample;
+
+static int sample_process_memory(ProcessMemorySample *sample)
+{
+    if (!sample) return -1;
+
+    mach_task_basic_info_data_t basic = {0};
+    mach_msg_type_number_t basic_count = MACH_TASK_BASIC_INFO_COUNT;
+    kern_return_t result = task_info(mach_task_self(),
+                                     MACH_TASK_BASIC_INFO,
+                                     (task_info_t)&basic,
+                                     &basic_count);
+    if (result != KERN_SUCCESS) return -1;
+
+    task_vm_info_data_t vm = {0};
+    mach_msg_type_number_t vm_count = TASK_VM_INFO_COUNT;
+    result = task_info(mach_task_self(),
+                       TASK_VM_INFO,
+                       (task_info_t)&vm,
+                       &vm_count);
+    if (result != KERN_SUCCESS) return -1;
+
+    sample->resident_bytes = (uint64_t)basic.resident_size;
+    sample->footprint_bytes = (uint64_t)vm.phys_footprint;
+    return 0;
+}
+
+static uint64_t positive_growth(uint64_t current, uint64_t baseline)
+{
+    return current > baseline ? current - baseline : 0u;
+}
+
+static uint64_t soak_growth_limit_bytes(void)
+{
+    const char *value = getenv("MGL_SOAK_RSS_LIMIT_MB");
+    if (value && value[0] != '\0') {
+        char *end = NULL;
+        unsigned long long limit_mb = strtoull(value, &end, 10);
+        if (end != value && *end == '\0' && limit_mb > 0u &&
+            limit_mb <= (UINT64_MAX / (1024u * 1024u))) {
+            return (uint64_t)limit_mb * 1024u * 1024u;
+        }
+    }
+    return (uint64_t)SOAK_DEFAULT_GROWTH_LIMIT_MB * 1024u * 1024u;
+}
+
+static int soak_should_checkpoint(uint32_t completed)
+{
+    return completed == 1u || completed == 16u || completed == 256u ||
+           completed == 1024u ||
+           completed % SOAK_SAMPLE_INTERVAL == 0u ||
+           completed == SOAK_ITERATIONS;
+}
+
+static int soak_memory_hard_limit_exceeded(
+    const char *name,
+    const ProcessMemorySample *baseline,
+    const ProcessMemorySample *current,
+    uint64_t hard_limit)
+{
+    uint64_t rss_growth = positive_growth(current->resident_bytes,
+                                          baseline->resident_bytes);
+    uint64_t footprint_growth = positive_growth(current->footprint_bytes,
+                                                baseline->footprint_bytes);
+    if (rss_growth <= hard_limit && footprint_growth <= hard_limit) return 0;
+
+    fprintf(stderr,
+            "%s: hard memory limit exceeded (rss=%.1f MiB footprint=%.1f MiB "
+            "limit=%.1f MiB)\n",
+            name,
+            (double)rss_growth / (1024.0 * 1024.0),
+            (double)footprint_growth / (1024.0 * 1024.0),
+            (double)hard_limit / (1024.0 * 1024.0));
+    return 1;
+}
+
+static int verify_soak_memory_growth(
+    const char *name,
+    const ProcessMemorySample *baseline,
+    const ProcessMemorySample *midpoint,
+    const ProcessMemorySample *final,
+    uint64_t limit)
+{
+    uint64_t rss_growth = positive_growth(final->resident_bytes,
+                                          baseline->resident_bytes);
+    uint64_t footprint_growth = positive_growth(final->footprint_bytes,
+                                                baseline->footprint_bytes);
+    uint64_t rss_tail = positive_growth(final->resident_bytes,
+                                        midpoint->resident_bytes);
+    uint64_t footprint_tail = positive_growth(final->footprint_bytes,
+                                              midpoint->footprint_bytes);
+    uint64_t tail_limit = limit / 2u;
+
+    fprintf(stderr,
+            "%s: rss +%.1f MiB (tail +%.1f), footprint +%.1f MiB "
+            "(tail +%.1f)\n",
+            name,
+            (double)rss_growth / (1024.0 * 1024.0),
+            (double)rss_tail / (1024.0 * 1024.0),
+            (double)footprint_growth / (1024.0 * 1024.0),
+            (double)footprint_tail / (1024.0 * 1024.0));
+
+    return rss_growth > limit || footprint_growth > limit ||
+           rss_tail > tail_limit || footprint_tail > tail_limit;
+}
 
 /* ------------------------------------------------------------------ */
 /* TGA writer (uncompressed BGRA-top-left, 3 or 4 channel)            */
@@ -169,6 +285,7 @@ static void resetGLState(void)
 
     /* --- Pixel store defaults --- */
     glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
     glPixelStorei(GL_UNPACK_SKIP_PIXELS, 0);
     glPixelStorei(GL_UNPACK_SKIP_ROWS, 0);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -372,6 +489,87 @@ static void make_pos2_vao(const void *verts, size_t sz, GLuint *out_vao, GLuint 
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
     if (out_vao) *out_vao = vao;
     if (out_vbo) *out_vbo = vbo;
+}
+
+static GLuint make_rgba8_texture(const unsigned char rgba[4])
+{
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return texture;
+}
+
+static GLuint make_sampler_test_program(int texture_count)
+{
+    static const char *vs =
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
+    static const char *fs_one =
+        "#version 330 core\n"
+        "uniform sampler2D u_tex; out vec4 frag;\n"
+        "void main(){ frag=texture(u_tex,vec2(-1.0,0.5)); }\n";
+    static const char *fs_two =
+        "#version 330 core\n"
+        "uniform sampler2D u_tex0; uniform sampler2D u_tex1; out vec4 frag;\n"
+        "void main(){ frag=(texture(u_tex0,vec2(0.5)) + "
+        "texture(u_tex1,vec2(0.5))) * 0.5; }\n";
+    return link_program(vs, texture_count == 2 ? fs_two : fs_one);
+}
+
+static void make_sampler_switch_vao(GLuint *out_vao, GLuint *out_vbo)
+{
+    static const float verts[] = {
+        -0.95f, -0.80f,  -0.35f, -0.80f,  -0.65f, 0.60f,
+        -0.30f, -0.80f,   0.30f, -0.80f,   0.00f, 0.60f,
+         0.35f, -0.80f,   0.95f, -0.80f,   0.65f, 0.60f,
+    };
+    make_pos2_vao(verts, sizeof(verts), out_vao, out_vbo);
+}
+
+static int verify_sampler_switch_pixels(const unsigned char *pixels,
+                                        const char *test_name)
+{
+    static const int xs[3] = { 22, 64, 106 };
+    static const unsigned char expected[3][3] = {
+        { 255, 255, 255 },
+        { 255,   0,   0 },
+        { 255, 255, 255 },
+    };
+    const int y = 51;
+    for (int i = 0; i < 3; i++) {
+        const unsigned char *actual = &pixels[(y * REG_W + xs[i]) * 4];
+        for (int c = 0; c < 3; c++) {
+            int delta = (int)actual[c] - (int)expected[i][c];
+            if (delta < -2 || delta > 2) {
+                fprintf(stderr,
+                        "%s: pixel %d expected rgb=(%u,%u,%u), got (%u,%u,%u)\n",
+                        test_name, i,
+                        expected[i][0], expected[i][1], expected[i][2],
+                        actual[0], actual[1], actual[2]);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int command_buffer_counts_equal(const MGLCommandBuffer *cb,
+                                       uint32_t total_commands,
+                                       uint32_t batch_count,
+                                       uint16_t key_count,
+                                       uint16_t set_count)
+{
+    return cb &&
+           cb->total_commands == total_commands &&
+           cb->batch_count == batch_count &&
+           cb->sampler_snapshot_key_count == key_count &&
+           cb->sampler_snapshot_set_count == set_count;
 }
 
 /* ------------------------------------------------------------------ */
@@ -689,13 +887,21 @@ static int test_fbo_switch(unsigned char *pixels, const char *out_path)
     fboB = make_fbo(REG_W, REG_H, &texB);
     if (!fboA || !fboB) return 1;
 
-    GLuint prog = link_program(
+    GLuint progRed = link_program(
         "#version 330 core\n"
         "layout(location = 0) in vec2 a_pos;\n"
         "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n",
-        FS_SOLID);
-    if (!prog) return 2;
-    glUseProgram(prog);
+        "#version 330 core\n"
+        "out vec4 frag;\n"
+        "void main() { frag = vec4(1.0, 0.0, 0.0, 1.0); }\n");
+    GLuint progGreen = link_program(
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n",
+        "#version 330 core\n"
+        "out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n");
+    if (!progRed || !progGreen) return 2;
 
     GLuint vao;
     glGenVertexArrays(1, &vao);
@@ -705,17 +911,19 @@ static int test_fbo_switch(unsigned char *pixels, const char *out_path)
     glBindBuffer(GL_ARRAY_BUFFER, vbo);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
 
-    /* Render red full-screen-ish triangle to FBO A */
+    /* Initialize both targets before queuing the cross-FBO draw sequence. */
     glBindFramebuffer(GL_FRAMEBUFFER, fboA);
     clear_color(0.0f, 0.0f, 0.0f);
-    glUniform4f(glGetUniformLocation(prog, "u_color"), 1.0f, 0.0f, 0.0f, 1.0f);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
-
-    /* Switch to FBO B, clear to dark, render green triangle */
     glBindFramebuffer(GL_FRAMEBUFFER, fboB);
     clear_color(0.05f, 0.05f, 0.1f);
-    glUniform4f(glGetUniformLocation(prog, "u_color"), 0.0f, 1.0f, 0.0f, 1.0f);
+
+    /* Queue A then B without an intermediate clear/finish. Deferred replay
+     * must rotate render encoders while retaining one command buffer. */
+    glBindFramebuffer(GL_FRAMEBUFFER, fboA);
+    glUseProgram(progRed);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindFramebuffer(GL_FRAMEBUFFER, fboB);
+    glUseProgram(progGreen);
     glDrawArrays(GL_TRIANGLES, 0, 3);
     glFinish();
 
@@ -723,7 +931,8 @@ static int test_fbo_switch(unsigned char *pixels, const char *out_path)
 
     glDeleteVertexArrays(1, &vao);
     glDeleteBuffers(1, &vbo);
-    glDeleteProgram(prog);
+    glDeleteProgram(progRed);
+    glDeleteProgram(progGreen);
     glDeleteFramebuffers(1, &fboA);
     glDeleteFramebuffers(1, &fboB);
     glDeleteTextures(1, &texA);
@@ -863,7 +1072,41 @@ static int test_conditional_render(unsigned char *pixels, const char *out_path)
     GLuint result = 0;
     glGetQueryObjectuiv(q, GL_QUERY_RESULT, &result);
     if (result == 0) {
-        fprintf(stderr, "  [conditional: query returned 0 samples — unexpected]\n");
+        fprintf(stderr, "conditional: query returned 0 samples\n");
+        glDeleteQueries(1, &q);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteBuffers(1, &vbo_p);
+        glDeleteBuffers(1, &vbo_c);
+        glDeleteProgram(prog);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        return 3;
+    }
+
+    /* A draw that produces no fragments must report zero. This guards both
+     * query ordering and the real Metal visibility-result path. */
+    GLuint q_zero;
+    glGenQueries(1, &q_zero);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 0, 0);
+    glBeginQuery(GL_SAMPLES_PASSED, q_zero);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glEndQuery(GL_SAMPLES_PASSED);
+    glDisable(GL_SCISSOR_TEST);
+    GLuint zero_result = 1;
+    glGetQueryObjectuiv(q_zero, GL_QUERY_RESULT, &zero_result);
+    glDeleteQueries(1, &q_zero);
+    if (zero_result != 0) {
+        fprintf(stderr, "conditional: occluded query returned %u samples\n",
+                zero_result);
+        glDeleteQueries(1, &q);
+        glDeleteVertexArrays(1, &vao);
+        glDeleteBuffers(1, &vbo_p);
+        glDeleteBuffers(1, &vbo_c);
+        glDeleteProgram(prog);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
+        return 4;
     }
 
     /* Conditional draw: should execute (query != 0). Use green triangle offset. */
@@ -889,6 +1132,867 @@ static int test_conditional_render(unsigned char *pixels, const char *out_path)
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &tex);
     return 0;
+}
+
+/* ---- 9. UBO Range Switch ----
+ * Queue three draws that read red, green, then red aligned slices of one UBO.
+ * The middle range also changes size, so deferred replay must retain both the
+ * offset and range before restoring the batch's base range. */
+static int test_ubo_range_switch(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location = 0) in vec2 a_pos;\n"
+        "void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }\n",
+        "#version 330 core\n"
+        "layout(std140) uniform DrawColor { vec4 color; };\n"
+        "out vec4 frag;\n"
+        "void main() { frag = color; }\n");
+    if (!prog) return 2;
+    glUseProgram(prog);
+
+    GLuint block = glGetUniformBlockIndex(prog, "DrawColor");
+    if (block == GL_INVALID_INDEX) return 3;
+    glUniformBlockBinding(prog, block, 0);
+
+    static const float verts[] = {
+        -0.9f, -0.6f,  -0.1f, -0.6f,  -0.5f, 0.6f,
+         0.1f, -0.6f,   0.9f, -0.6f,   0.5f, 0.6f,
+        -0.25f, 0.2f,   0.25f, 0.2f,    0.0f, 0.85f,
+    };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    GLint alignment = 1;
+    glGetIntegerv(GL_UNIFORM_BUFFER_OFFSET_ALIGNMENT, &alignment);
+    size_t stride = alignment > 16 ? (size_t)alignment : 16u;
+    size_t ubo_size = stride + 32u;
+    unsigned char *ubo_data = (unsigned char *)calloc(1, ubo_size);
+    if (!ubo_data) return 4;
+    static const float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    static const float green[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    memcpy(ubo_data, red, sizeof(red));
+    memcpy(ubo_data + stride, green, sizeof(green));
+
+    GLuint ubo;
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, (GLsizeiptr)ubo_size, ubo_data, GL_STATIC_DRAW);
+    free(ubo_data);
+
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, 0, 16);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, (GLintptr)stride, 32);
+    glDrawArrays(GL_TRIANGLES, 3, 3);
+    glBindBufferRange(GL_UNIFORM_BUFFER, 0, ubo, 0, 16);
+    glDrawArrays(GL_TRIANGLES, 6, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteBuffers(1, &ubo);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
+/* ---- 10. Per-draw Vertex Binding Switch ----
+ * Queue A -> B -> A indexed draws by mutating binding 0 on the same VAO.
+ * This matches Minecraft/Sodium's arena-VBO path: deferred replay must keep
+ * an immutable buffer/offset override for each command. */
+static int test_vao_binding_switch(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, tex;
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "layout(location=1) in vec4 c;\n"
+        "out vec4 color;\n"
+        "void main(){ color=c; gl_Position=vec4(p + vec2(float(gl_VertexID) * 0.0),0.0,1.0); }\n",
+        "#version 330 core\n"
+        "in vec4 color; out vec4 frag;\n"
+        "void main(){ frag=color; }\n");
+    if (!prog) return 2;
+    glUseProgram(prog);
+
+    typedef struct {
+        float x, y;
+        uint8_t r, g, b, a;
+    } PackedVertex;
+    static const PackedVertex verts_a[] = {
+        {9.0f, 9.0f, 9, 9, 9, 9}, /* non-zero batch base skips this vertex */
+        {-0.9f, -0.6f, 255, 0, 0, 255}, {-0.1f, -0.6f, 255, 0, 0, 255},
+        {-0.5f,  0.2f, 255, 0, 0, 255}, {-0.25f, 0.25f, 255, 0, 0, 255},
+        { 0.25f, 0.25f, 255, 0, 0, 255}, { 0.0f,  0.85f, 255, 0, 0, 255},
+    };
+    static const PackedVertex verts_b[] = {
+        {9.0f, 9.0f, 9, 9, 9, 9}, /* base offset */
+        {9.0f, 9.0f, 9, 9, 9, 9}, /* per-draw offset delta */
+        {0.1f, -0.6f, 0, 255, 0, 255}, {0.9f, -0.6f, 0, 255, 0, 255},
+        {0.5f,  0.2f, 0, 255, 0, 255}, {0.1f,  0.3f, 0, 255, 0, 255},
+        {0.9f,  0.3f, 0, 255, 0, 255}, {0.5f,  0.9f, 0, 255, 0, 255},
+    };
+    static const unsigned short indices[] = { 0, 1, 2, 3, 4, 5 };
+
+    GLuint vao, ebos[2];
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(2, ebos);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[0]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[1]);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, 3 * sizeof(unsigned short), indices,
+                 GL_STATIC_DRAW);
+
+    GLuint vbos[2];
+    glGenBuffers(2, vbos);
+    const void *vertex_data[] = { verts_a, verts_b };
+    const size_t vertex_bytes[] = { sizeof(verts_a), sizeof(verts_b) };
+    for (int i = 0; i < 2; i++) {
+        glBindBuffer(GL_ARRAY_BUFFER, vbos[i]);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)vertex_bytes[i],
+                     vertex_data[i], GL_STATIC_DRAW);
+    }
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexAttribFormat(1, 4, GL_UNSIGNED_BYTE, GL_TRUE, 2 * sizeof(float));
+    glVertexAttribBinding(0, 0);
+    glVertexAttribBinding(1, 0);
+
+    glBindVertexBuffer(0, vbos[0], sizeof(PackedVertex), sizeof(PackedVertex));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[0]);
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0);
+    glBindVertexBuffer(0, vbos[1], 2 * sizeof(PackedVertex), sizeof(PackedVertex));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[1]);
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT, 0);
+    glBindVertexBuffer(0, vbos[0], sizeof(PackedVertex), sizeof(PackedVertex));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebos[0]);
+    glDrawElements(GL_TRIANGLES, 3, GL_UNSIGNED_SHORT,
+                   (void *)(3 * sizeof(unsigned short)));
+
+    /* Format/enable mutations remain VAO hazards and must flush. */
+    glDisableVertexAttribArray(1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteBuffers(2, vbos);
+    glDeleteBuffers(2, ebos);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &tex);
+    return 0;
+}
+
+/* Exercise the AGX workarounds for padded 3D uploads and non-zero-origin
+ * glCopyImageSubData. The internal authority flag forces the copy source
+ * through Metal readback instead of the otherwise-valid CPU fast path. */
+static int test_agx_3d_texture_workarounds(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint fbo = 0, color_tex = 0, program = 0, vao = 0, vbo = 0;
+    GLuint textures[2] = {0, 0};
+
+    fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.05f, 0.05f, 0.05f);
+
+    program = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "uniform sampler3D u_tex; out vec4 frag;\n"
+        "void main(){ frag=texture(u_tex,vec3(0.75)); }\n");
+    if (!program) {
+        rc = 2;
+        goto cleanup;
+    }
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    static const float verts[] = {
+        -0.95f, -0.80f,  -0.05f, -0.80f,  -0.50f, 0.80f,
+         0.05f, -0.80f,   0.95f, -0.80f,   0.50f, 0.80f,
+    };
+    make_pos2_vao(verts, sizeof(verts), &vao, &vbo);
+
+    enum {
+        texture_width = 2,
+        texture_height = 2,
+        texture_depth = 2,
+        unpack_row_length = 3,
+        unpack_image_height = 3,
+        unpack_texels = unpack_row_length * unpack_image_height * texture_depth
+    };
+    unsigned char padded_source[unpack_texels * 4];
+    unsigned char empty_destination[texture_width * texture_height *
+                                    texture_depth * 4];
+    memset(padded_source, 0, sizeof(padded_source));
+    memset(empty_destination, 0, sizeof(empty_destination));
+
+    /* The sampled corner is red; a different texel in the second depth plane
+     * is blue and becomes the copy source below. */
+    size_t sampled_texel =
+        ((1u * unpack_image_height + 1u) * unpack_row_length + 1u) * 4u;
+    padded_source[sampled_texel + 0] = 255;
+    padded_source[sampled_texel + 3] = 255;
+    size_t copied_texel =
+        ((1u * unpack_image_height + 0u) * unpack_row_length + 0u) * 4u;
+    padded_source[copied_texel + 2] = 255;
+    padded_source[copied_texel + 3] = 255;
+
+    glGenTextures(2, textures);
+    glBindTexture(GL_TEXTURE_3D, textures[0]);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, unpack_row_length);
+    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, unpack_image_height);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8,
+                 texture_width, texture_height, texture_depth, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, padded_source);
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, 0);
+
+    glBindTexture(GL_TEXTURE_3D, textures[1]);
+    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8,
+                 texture_width, texture_height, texture_depth, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, empty_destination);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAX_LEVEL, 0);
+
+    glBindTexture(GL_TEXTURE_3D, textures[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "agx_3d_texture_workarounds: padded upload/draw failed\n");
+        rc = 3;
+        goto cleanup;
+    }
+
+    GLMContext glm_ctx = MGLgetCurrentContext();
+    Texture *internal_source = glm_ctx
+        ? (Texture *)searchHashTable(&glm_ctx->active_state->texture_table,
+                                     textures[0])
+        : NULL;
+    if (!internal_source || !internal_source->faces[0].levels) {
+        fprintf(stderr, "agx_3d_texture_workarounds: source texture lookup failed\n");
+        rc = 4;
+        goto cleanup;
+    }
+    internal_source->metal_data_authoritative = GL_TRUE;
+    internal_source->faces[0].levels[0].metal_data_authoritative = GL_TRUE;
+
+    glCopyImageSubData(textures[0], GL_TEXTURE_3D, 0, 0, 0, 1,
+                       textures[1], GL_TEXTURE_3D, 0, 1, 1, 1,
+                       1, 1, 1);
+    GLenum copy_error = glGetError();
+    if (copy_error != GL_NO_ERROR) {
+        fprintf(stderr,
+                "agx_3d_texture_workarounds: 3D copy failed (error=0x%x)\n",
+                copy_error);
+        rc = 5;
+        goto cleanup;
+    }
+
+    glBindTexture(GL_TEXTURE_3D, textures[1]);
+    glDrawArrays(GL_TRIANGLES, 3, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "agx_3d_texture_workarounds: destination draw/read failed\n");
+        rc = 6;
+        goto cleanup;
+    }
+
+    static const unsigned char expected[2][3] = {
+        {255, 0, 0},
+        {0, 0, 255},
+    };
+    static const int xs[2] = {REG_W / 4, 3 * REG_W / 4};
+    for (int i = 0; i < 2; i++) {
+        const unsigned char *actual =
+            &pixels[((REG_H / 2) * REG_W + xs[i]) * 4];
+        for (int c = 0; c < 3; c++) {
+            int delta = (int)actual[c] - (int)expected[i][c];
+            if (delta < -2 || delta > 2) {
+                fprintf(stderr,
+                        "agx_3d_texture_workarounds: pixel %d expected "
+                        "rgb=(%u,%u,%u), got (%u,%u,%u)\n",
+                        i, expected[i][0], expected[i][1], expected[i][2],
+                        actual[0], actual[1], actual[2]);
+                rc = 7;
+                goto cleanup;
+            }
+        }
+    }
+
+cleanup:
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
+    if (textures[0] || textures[1]) glDeleteTextures(2, textures);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color_tex) glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* ---- 11. Texture + Vertex Binding Switch ----
+ * Queue A -> B -> A sampled draws while advancing one VBO binding per draw.
+ * B is first uploaded during deferred replay, so encoder restoration must not
+ * lose that draw's dynamic vertex offset. Updating B afterwards must still
+ * flush those reads, so the queued B draw remains green while the post-update
+ * B draw observes blue. */
+static int test_texture_binding_switch(unsigned char *pixels, const char *out_path)
+{
+    (void)out_path;
+    GLuint fbo, color_tex;
+    fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.1f, 0.1f, 0.1f);
+
+    GLuint prog = link_program(
+        "#version 330 core\n"
+        "layout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\n"
+        "uniform sampler2D u_tex; out vec4 frag;\n"
+        "void main(){ frag=texture(u_tex,vec2(0.5)); }\n");
+    if (!prog) return 2;
+    glUseProgram(prog);
+    glUniform1i(glGetUniformLocation(prog, "u_tex"), 0);
+
+    static const float verts[] = {
+        -0.95f, -0.90f,  -0.05f, -0.90f,  -0.50f, -0.10f,
+         0.05f, -0.90f,   0.95f, -0.90f,   0.50f, -0.10f,
+        -0.95f,  0.10f,  -0.05f,  0.10f,  -0.50f,  0.90f,
+         0.05f,  0.10f,   0.95f,  0.10f,   0.50f,  0.90f,
+    };
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    GLuint vbo = make_vbo(verts, sizeof(verts));
+    glEnableVertexAttribArray(0);
+    glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexAttribBinding(0, 0);
+
+    enum { switch_tex_size = 16, switch_tex_bytes = 16 * 16 * 4 };
+    unsigned char red[switch_tex_bytes];
+    unsigned char green[switch_tex_bytes];
+    unsigned char blue[switch_tex_bytes];
+    for (size_t i = 0; i < switch_tex_bytes; i += 4) {
+        red[i + 0] = 255; red[i + 1] = 0;   red[i + 2] = 0;   red[i + 3] = 255;
+        green[i + 0] = 0; green[i + 1] = 255; green[i + 2] = 0; green[i + 3] = 255;
+        blue[i + 0] = 0; blue[i + 1] = 0;  blue[i + 2] = 255; blue[i + 3] = 255;
+    }
+    GLuint textures[2];
+    glGenTextures(2, textures);
+    const unsigned char *initial[] = { red, green };
+    for (int i = 0; i < 2; i++) {
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                     switch_tex_size, switch_tex_size, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, initial[i]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+
+    /* Keep B dirty until deferred replay without flushing any queued draw. */
+    glBindTexture(GL_TEXTURE_2D, textures[1]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                    switch_tex_size, switch_tex_size,
+                    GL_RGBA, GL_UNSIGNED_BYTE, green);
+
+    const GLsizei vertex_stride = 2 * (GLsizei)sizeof(float);
+    glBindVertexBuffer(0, vbo, 0, vertex_stride);
+    glBindTexture(GL_TEXTURE_2D, textures[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexBuffer(0, vbo, 3 * vertex_stride, vertex_stride);
+    glBindTexture(GL_TEXTURE_2D, textures[1]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexBuffer(0, vbo, 6 * vertex_stride, vertex_stride);
+    glBindTexture(GL_TEXTURE_2D, textures[0]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    glBindVertexBuffer(0, vbo, 9 * vertex_stride, vertex_stride);
+    glBindTexture(GL_TEXTURE_2D, textures[1]);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0,
+                    switch_tex_size, switch_tex_size,
+                    GL_RGBA, GL_UNSIGNED_BYTE, blue);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    glDeleteTextures(2, textures);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(prog);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return 0;
+}
+
+/* ---- 12. Per-draw texture sampler parameters ----
+ * Queue CLAMP_TO_BORDER -> CLAMP_TO_EDGE -> CLAMP_TO_BORDER on one texture.
+ * The three draws must retain white -> red -> white sampler state without a
+ * parameter mutation flushing the earlier draws. */
+static int test_texture_parameter_switch(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint color_tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.05f, 0.05f, 0.05f);
+
+    GLuint program = make_sampler_test_program(1);
+    if (!program) return 2;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    GLuint vao = 0, vbo = 0;
+    make_sampler_switch_vao(&vao, &vbo);
+
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    GLuint sampled_tex = make_rgba8_texture(red);
+    static const GLfloat white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, white);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glDrawArrays(GL_TRIANGLES, 3, 3);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glDrawArrays(GL_TRIANGLES, 6, 3);
+
+    GLMContext ctx = MGLgetCurrentContext();
+    if (mglSamplerSnapshotEnabled() &&
+        (!ctx || ctx->draw_command_buffer.total_commands != 3u)) {
+        fprintf(stderr,
+                "texture_parameter_switch: parameter mutation flushed queued draws "
+                "(pending=%u)\n",
+                ctx ? ctx->draw_command_buffer.total_commands : 0u);
+        rc = 3;
+    }
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (rc == 0 && verify_sampler_switch_pixels(
+            pixels, "texture_parameter_switch") != 0) {
+        rc = 4;
+    }
+
+    glDeleteTextures(1, &sampled_tex);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* ---- 13. Per-draw sampler-object parameters ----
+ * Mutate one bound sampler object through the same A -> B -> A sequence. The
+ * command snapshot must contain sampler values, not the mutable GL object. */
+static int test_sampler_parameter_switch(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint color_tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.05f, 0.05f, 0.05f);
+
+    GLuint program = make_sampler_test_program(1);
+    if (!program) return 2;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    GLuint vao = 0, vbo = 0;
+    make_sampler_switch_vao(&vao, &vbo);
+
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    GLuint sampled_tex = make_rgba8_texture(red);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+
+    GLuint sampler = 0;
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glSamplerParameteri(sampler, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    static const GLfloat white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    glSamplerParameterfv(sampler, GL_TEXTURE_BORDER_COLOR, white);
+    glBindSampler(0, sampler);
+
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glDrawArrays(GL_TRIANGLES, 3, 3);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glDrawArrays(GL_TRIANGLES, 6, 3);
+
+    GLMContext ctx = MGLgetCurrentContext();
+    if (mglSamplerSnapshotEnabled() &&
+        (!ctx || ctx->draw_command_buffer.total_commands != 3u)) {
+        fprintf(stderr,
+                "sampler_parameter_switch: parameter mutation flushed queued draws "
+                "(pending=%u)\n",
+                ctx ? ctx->draw_command_buffer.total_commands : 0u);
+        rc = 3;
+    }
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (rc == 0 && verify_sampler_switch_pixels(
+            pixels, "sampler_parameter_switch") != 0) {
+        rc = 4;
+    }
+
+    glBindSampler(0, 0);
+    glDeleteSamplers(1, &sampler);
+    glDeleteTextures(1, &sampled_tex);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* ---- 14. Same-value sampler setters ----
+ * Repeating an already-current texture and sampler value is a no-op: it must
+ * neither flush the queued draw nor allocate another snapshot key/set. */
+static int test_sampler_same_value_no_flush(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint color_tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint program = make_sampler_test_program(1);
+    if (!program) return 2;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    GLuint vao = 0, vbo = 0;
+    make_sampler_switch_vao(&vao, &vbo);
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    GLuint sampled_tex = make_rgba8_texture(red);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+
+    GLuint sampler = 0;
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glBindSampler(0, sampler);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx || ctx->draw_command_buffer.total_commands != 1u) {
+        rc = 3;
+    } else {
+        MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+        uint32_t total_commands = cb->total_commands;
+        uint32_t batch_count = cb->batch_count;
+        uint16_t key_count = cb->sampler_snapshot_key_count;
+        uint16_t set_count = cb->sampler_snapshot_set_count;
+
+        for (int i = 0; i < 1000; i++) {
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        }
+
+        Texture *bound_texture =
+            ctx->active_state->texture_units[0].textures[_TEXTURE_2D];
+        Sampler *bound_sampler = ctx->active_state->texture_samplers[0];
+        GLint texture_wrap = bound_texture ? bound_texture->params.wrap_s : 0;
+        GLint sampler_wrap = bound_sampler ? bound_sampler->params.wrap_s : 0;
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR ||
+            texture_wrap != GL_CLAMP_TO_EDGE ||
+            sampler_wrap != GL_CLAMP_TO_EDGE ||
+            !command_buffer_counts_equal(cb, total_commands, batch_count,
+                                         key_count, set_count)) {
+            fprintf(stderr,
+                    "sampler_same_value_no_flush: error=0x%x tex=0x%x sampler=0x%x "
+                    "pending=%u/%u sets=%u/%u\n",
+                    error, texture_wrap, sampler_wrap,
+                    cb->total_commands, total_commands,
+                    cb->sampler_snapshot_set_count, set_count);
+            rc = 4;
+        }
+    }
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindSampler(0, 0);
+    glDeleteSamplers(1, &sampler);
+    glDeleteTextures(1, &sampled_tex);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* ---- 15. Invalid sampler setters ----
+ * Validation happens against a candidate copy. Invalid values must leave both
+ * objects unchanged and must not flush or mutate the snapshot pools. */
+static int test_sampler_invalid_no_flush(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint color_tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint program = make_sampler_test_program(1);
+    if (!program) return 2;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    GLuint vao = 0, vbo = 0;
+    make_sampler_switch_vao(&vao, &vbo);
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    GLuint sampled_tex = make_rgba8_texture(red);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD, 0.75f);
+
+    GLuint sampler = 0;
+    glGenSamplers(1, &sampler);
+    glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameterf(sampler, GL_TEXTURE_MIN_LOD, 0.75f);
+    glBindSampler(0, sampler);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx || ctx->draw_command_buffer.total_commands != 1u) {
+        rc = 3;
+    } else {
+        MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+        uint32_t total_commands = cb->total_commands;
+        uint32_t batch_count = cb->batch_count;
+        uint16_t key_count = cb->sampler_snapshot_key_count;
+        uint16_t set_count = cb->sampler_snapshot_set_count;
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, 0x7fffffff);
+        GLenum texture_error = glGetError();
+
+        glSamplerParameteri(sampler, GL_TEXTURE_WRAP_S, 0x7fffffff);
+        GLenum sampler_error = glGetError();
+
+        GLint queried_texture_wrap = -1;
+        GLint queried_sampler_wrap = -1;
+        GLfloat queried_texture_lod = -1.0f;
+        GLfloat queried_sampler_lod = -1.0f;
+        glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S,
+                            &queried_texture_wrap);
+        glGetSamplerParameteriv(sampler, GL_TEXTURE_WRAP_S,
+                                &queried_sampler_wrap);
+        glGetTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD,
+                            &queried_texture_lod);
+        glGetSamplerParameterfv(sampler, GL_TEXTURE_MIN_LOD,
+                                &queried_sampler_lod);
+        GLenum query_error = glGetError();
+
+        Texture *bound_texture =
+            ctx->active_state->texture_units[0].textures[_TEXTURE_2D];
+        Sampler *bound_sampler = ctx->active_state->texture_samplers[0];
+        GLint texture_wrap = bound_texture ? bound_texture->params.wrap_s : 0;
+        GLint sampler_wrap = bound_sampler ? bound_sampler->params.wrap_s : 0;
+
+        if (texture_error != GL_INVALID_ENUM ||
+            sampler_error != GL_INVALID_ENUM || query_error != GL_NO_ERROR ||
+            texture_wrap != GL_CLAMP_TO_EDGE ||
+            sampler_wrap != GL_CLAMP_TO_EDGE ||
+            queried_texture_wrap != GL_CLAMP_TO_EDGE ||
+            queried_sampler_wrap != GL_CLAMP_TO_EDGE ||
+            queried_texture_lod != 0.75f || queried_sampler_lod != 0.75f ||
+            !command_buffer_counts_equal(cb, total_commands, batch_count,
+                                         key_count, set_count)) {
+            fprintf(stderr,
+                    "sampler_invalid_no_flush: errors=0x%x/0x%x/0x%x "
+                    "tex=0x%x/0x%x sampler=0x%x/0x%x lod=%.2f/%.2f "
+                    "pending=%u/%u sets=%u/%u\n",
+                    texture_error, sampler_error, query_error,
+                    texture_wrap, queried_texture_wrap,
+                    sampler_wrap, queried_sampler_wrap,
+                    queried_texture_lod, queried_sampler_lod,
+                    cb->total_commands, total_commands,
+                    cb->sampler_snapshot_set_count, set_count);
+            rc = 4;
+        }
+    }
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindSampler(0, 0);
+    glDeleteSamplers(1, &sampler);
+    glDeleteTextures(1, &sampled_tex);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* ---- 16. Snapshot-set pool overflow ----
+ * Seventeen values across two active samplers provide 257 unique pairs while
+ * using only 17 unique keys. Draw 257 must flush the full 256-set command
+ * buffer and retry capture into an empty buffer. */
+static int test_sampler_snapshot_overflow(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)out_path;
+    if (!mglSamplerSnapshotEnabled()) {
+        memset(pixels, 0, REG_W * REG_H * 4);
+        return 0;
+    }
+
+    int rc = 0;
+    GLuint color_tex = 0;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    GLuint program = make_sampler_test_program(2);
+    if (!program) return 2;
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex0"), 0);
+    glUniform1i(glGetUniformLocation(program, "u_tex1"), 1);
+
+    static const float fullscreen[] = {
+        -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f,
+    };
+    GLuint vao = 0, vbo = 0;
+    make_pos2_vao(fullscreen, sizeof(fullscreen), &vao, &vbo);
+
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    GLuint textures[2] = { 0, 0 };
+    for (int unit = 0; unit < 2; unit++) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        textures[unit] = make_rgba8_texture(red);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    }
+
+    GLMContext ctx = MGLgetCurrentContext();
+    if (!ctx) {
+        rc = 3;
+    } else {
+        MGLCommandBuffer *cb = &ctx->draw_command_buffer;
+        for (int draw = 0; draw <= MGL_MAX_SAMPLER_SNAPSHOT_SETS; draw++) {
+            int first_value = draw / 16;
+            int second_value = draw % 16;
+            glActiveTexture(GL_TEXTURE0);
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD,
+                            (GLfloat)first_value * 0.01f);
+            glActiveTexture(GL_TEXTURE1);
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD,
+                            (GLfloat)second_value * 0.01f);
+
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            if (draw == MGL_MAX_SAMPLER_SNAPSHOT_SETS - 1 &&
+                (cb->sampler_snapshot_set_count !=
+                     MGL_MAX_SAMPLER_SNAPSHOT_SETS ||
+                 cb->total_commands != MGL_MAX_SAMPLER_SNAPSHOT_SETS ||
+                 cb->sampler_snapshot_key_count != 16u)) {
+                fprintf(stderr,
+                        "sampler_snapshot_overflow: pool did not fill as expected "
+                        "(commands=%u sets=%u keys=%u)\n",
+                        cb->total_commands, cb->sampler_snapshot_set_count,
+                        cb->sampler_snapshot_key_count);
+                rc = 4;
+                break;
+            }
+            if (draw == MGL_MAX_SAMPLER_SNAPSHOT_SETS &&
+                (cb->total_commands != 1u ||
+                 cb->sampler_snapshot_set_count != 1u ||
+                 cb->sampler_snapshot_key_count != 2u ||
+                 cb->sampler_snapshot_incomplete)) {
+                fprintf(stderr,
+                        "sampler_snapshot_overflow: retry did not reset the pool "
+                        "(commands=%u sets=%u keys=%u incomplete=%d)\n",
+                        cb->total_commands, cb->sampler_snapshot_set_count,
+                        cb->sampler_snapshot_key_count,
+                        cb->sampler_snapshot_incomplete ? 1 : 0);
+                rc = 5;
+            }
+        }
+    }
+
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    const unsigned char *center = &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (rc == 0 &&
+        (center[0] < 253 || center[1] > 2 || center[2] > 2)) {
+        fprintf(stderr,
+                "sampler_snapshot_overflow: rendered center is (%u,%u,%u)\n",
+                center[0], center[1], center[2]);
+        rc = 6;
+    }
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDeleteTextures(2, textures);
+    glDeleteBuffers(1, &vbo);
+    glDeleteVertexArrays(1, &vao);
+    glDeleteProgram(program);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &color_tex);
+    return rc;
 }
 
 /* ---- 9. Program switch (PSO cache + rebind) ----
@@ -1668,6 +2772,161 @@ static int test_multibatch_same_fbo(unsigned char *pixels, const char *out_path)
     return 0;
 }
 
+static int test_parallel_subencoder_fallback(unsigned char *pixels,
+                                             const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint fbo = 0, tex = 0, vao = 0, vbo = 0;
+    GLuint programs[3] = {0};
+
+    setenv("MGL_PARALLEL_ENCODE", "1", 1);
+    setenv("MGL_TEST_FAIL_PARALLEL_SUBENCODER_1", "1", 1);
+
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) {
+        rc = 1;
+        goto cleanup;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glViewport(0, 0, REG_W, REG_H);
+
+    static const char *vertexSource =
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
+    static const char *fragmentSources[3] = {
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.2,0.0,0.0,0.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.3,0.0,0.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.0,0.4,0.0); }\n",
+    };
+    for (int i = 0; i < 3; i++) {
+        programs[i] = link_program(vertexSource, fragmentSources[i]);
+        if (!programs[i]) {
+            rc = 2;
+            goto cleanup;
+        }
+    }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE);
+    for (int i = 0; i < 3; i++) {
+        glUseProgram(programs[i]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    const unsigned char *center =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (center[0] < 47 || center[0] > 55 ||
+        center[1] < 72 || center[1] > 82 ||
+        center[2] < 97 || center[2] > 107) {
+        fprintf(stderr,
+                "parallel_subencoder_fallback: center=(%u,%u,%u), expected approximately (51,77,102)\n",
+                center[0], center[1], center[2]);
+        rc = 3;
+    }
+
+cleanup:
+    unsetenv("MGL_TEST_FAIL_PARALLEL_SUBENCODER_1");
+    unsetenv("MGL_PARALLEL_ENCODE");
+    glDisable(GL_BLEND);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    for (int i = 0; i < 3; i++) {
+        if (programs[i]) glDeleteProgram(programs[i]);
+    }
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    return rc;
+}
+
+static int test_parallel_exception_cleanup(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint fbo = 0, tex = 0, vao = 0, vbo = 0;
+    GLuint programs[3] = {0};
+
+    setenv("MGL_PARALLEL_ENCODE", "1", 1);
+    setenv("MGL_TEST_THROW_PARALLEL_WORKER", "1", 1);
+
+    fbo = make_fbo(REG_W, REG_H, &tex);
+    if (!fbo) {
+        rc = 1;
+        goto cleanup;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glViewport(0, 0, REG_W, REG_H);
+
+    static const char *vertexSource =
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
+    static const char *fragmentSources[3] = {
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n",
+    };
+    for (int i = 0; i < 3; i++) {
+        programs[i] = link_program(vertexSource, fragmentSources[i]);
+        if (!programs[i]) {
+            rc = 2;
+            goto cleanup;
+        }
+    }
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+
+    for (int i = 0; i < 3; i++) {
+        glUseProgram(programs[i]);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    glFinish();
+
+    unsetenv("MGL_TEST_THROW_PARALLEL_WORKER");
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(programs[1]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+
+    const unsigned char *center =
+        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+    if (center[0] > 4 || center[1] < 251 || center[2] > 4) {
+        fprintf(stderr,
+                "parallel_exception_cleanup: recovery draw center=(%u,%u,%u), expected green\n",
+                center[0], center[1], center[2]);
+        rc = 3;
+    }
+
+cleanup:
+    unsetenv("MGL_TEST_THROW_PARALLEL_WORKER");
+    unsetenv("MGL_PARALLEL_ENCODE");
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    for (int i = 0; i < 3; i++) {
+        if (programs[i]) glDeleteProgram(programs[i]);
+    }
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (tex) glDeleteTextures(1, &tex);
+    return rc;
+}
+
 /* ---- Read-after-write hazard (Stage 5 safety net) ----
  * Render a red quad to FBO A's color texture T, then bind FBO B and draw a
  * fullscreen quad sampling T. The second draw READS a texture the first draw
@@ -1739,6 +2998,284 @@ static int test_render_to_texture_sample(unsigned char *pixels, const char *out_
     return 0;
 }
 
+/* Explicit-only memory soak: 257 keys force continuous eviction from the
+ * renderer's fixed 256-entry MTLSamplerState cache. */
+static int test_sampler_cache_rss_soak(unsigned char *pixels,
+                                       const char *out_path)
+{
+    (void)out_path;
+    memset(pixels, 0, REG_W * REG_H * 4);
+    if (!mglSamplerSnapshotEnabled()) {
+        fprintf(stderr, "sampler_cache_rss_soak: snapshot path disabled; skipping\n");
+        return TEST_RESULT_SKIP;
+    }
+
+    int rc = 0;
+    GLuint fbo = 0, color_tex = 0, program = 0;
+    GLuint vao = 0, vbo = 0, sampled_tex = 0;
+    ProcessMemorySample baseline = {0}, midpoint = {0}, final = {0};
+    int midpoint_set = 0;
+    const uint64_t limit = soak_growth_limit_bytes();
+    uint64_t hard_limit = limit <= UINT64_MAX / 4u ? limit * 4u : UINT64_MAX;
+    const uint64_t minimum_hard_limit = 256u * 1024u * 1024u;
+    if (hard_limit < minimum_hard_limit) hard_limit = minimum_hard_limit;
+
+    fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(0, 0, 1, 1);
+
+    program = make_sampler_test_program(1);
+    if (!program) {
+        rc = 2;
+        goto cleanup;
+    }
+    glUseProgram(program);
+    glUniform1i(glGetUniformLocation(program, "u_tex"), 0);
+
+    static const float fullscreen[] = {
+        -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f,
+    };
+    make_pos2_vao(fullscreen, sizeof(fullscreen), &vao, &vbo);
+    static const unsigned char red[4] = { 255, 0, 0, 255 };
+    sampled_tex = make_rgba8_texture(red);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+
+    for (uint32_t i = 0; i < 2u * 257u; i++) {
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD,
+                        (GLfloat)(i % 257u) / 256.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+    }
+    glFinish();
+    if (glGetError() != GL_NO_ERROR || sample_process_memory(&baseline) != 0) {
+        fprintf(stderr, "sampler_cache_rss_soak: warmup or memory sample failed\n");
+        rc = 3;
+        goto cleanup;
+    }
+
+    for (uint32_t i = 0; i < SOAK_ITERATIONS; i++) {
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_LOD,
+                        (GLfloat)(i % 257u) / 256.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        if (soak_should_checkpoint(i + 1u)) {
+            ProcessMemorySample current = {0};
+            glFinish();
+            if (glGetError() != GL_NO_ERROR ||
+                sample_process_memory(&current) != 0) {
+                fprintf(stderr,
+                        "sampler_cache_rss_soak: checkpoint %u failed\n",
+                        i + 1u);
+                rc = 4;
+                goto cleanup;
+            }
+            if (!midpoint_set && i + 1u >= SOAK_ITERATIONS / 2u) {
+                midpoint = current;
+                midpoint_set = 1;
+            }
+            if (soak_memory_hard_limit_exceeded(
+                    "sampler_cache_rss_soak", &baseline, &current,
+                    hard_limit)) {
+                rc = 5;
+                goto cleanup;
+            }
+            final = current;
+        }
+    }
+
+    if (!midpoint_set) midpoint = baseline;
+    if (verify_soak_memory_growth("sampler_cache_rss_soak",
+                                  &baseline, &midpoint, &final, limit)) {
+        rc = 6;
+    }
+
+cleanup:
+    glDisable(GL_SCISSOR_TEST);
+    glFinish();
+    if (sampled_tex) glDeleteTextures(1, &sampled_tex);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color_tex) glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* Explicit-only memory soak for Minecraft's persistent mapped arena update
+ * pattern. The no-copy Metal backing must remain stable for every flush. */
+static int test_persistent_map_rss_soak(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)out_path;
+    memset(pixels, 0, REG_W * REG_H * 4);
+
+    enum { BUFFER_BYTES = 1024 * 1024, UPDATE_BYTES = 64, UPDATE_START = 4096 };
+    int rc = 0;
+    GLuint fbo = 0, color_tex = 0, program = 0, vao = 0, buffer_name = 0;
+    unsigned char *mapped = NULL;
+    Buffer *internal = NULL;
+    void *stable_mtl_data = NULL;
+    ProcessMemorySample baseline = {0}, midpoint = {0}, final = {0};
+    int midpoint_set = 0;
+    const uint64_t limit = soak_growth_limit_bytes();
+    uint64_t hard_limit = limit <= UINT64_MAX / 4u ? limit * 4u : UINT64_MAX;
+    const uint64_t minimum_hard_limit = 256u * 1024u * 1024u;
+    if (hard_limit < minimum_hard_limit) hard_limit = minimum_hard_limit;
+
+    fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+
+    program = link_program(
+        "#version 330 core\nlayout(location=0) in vec2 p;\n"
+        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n",
+        "#version 330 core\nout vec4 f;\n"
+        "void main(){ f=vec4(1.0); }\n");
+    if (!program) {
+        rc = 2;
+        goto cleanup;
+    }
+    glUseProgram(program);
+
+    glGenBuffers(1, &buffer_name);
+    glBindBuffer(GL_ARRAY_BUFFER, buffer_name);
+    glBufferStorage(GL_ARRAY_BUFFER, BUFFER_BYTES, NULL,
+                    GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT);
+    mapped = (unsigned char *)glMapBufferRange(
+        GL_ARRAY_BUFFER, 0, BUFFER_BYTES,
+        GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+            GL_MAP_FLUSH_EXPLICIT_BIT);
+    if (!mapped || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "persistent_map_rss_soak: persistent map failed\n");
+        rc = 3;
+        goto cleanup;
+    }
+
+    memset(mapped, 0, BUFFER_BYTES);
+    static const float triangle[] = {
+        -0.5f, -0.5f,  0.5f, -0.5f,  0.0f, 0.5f,
+    };
+    memcpy(mapped, triangle, sizeof(triangle));
+    glFlushMappedBufferRange(GL_ARRAY_BUFFER, 0, BUFFER_BYTES);
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glEnableVertexAttribArray(0);
+    glVertexAttribFormat(0, 2, GL_FLOAT, GL_FALSE, 0);
+    glVertexAttribBinding(0, 0);
+    glBindVertexBuffer(0, buffer_name, 0, 2 * sizeof(float));
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    GLMContext ctx = MGLgetCurrentContext();
+    internal = ctx ? ctx->active_state->buffers[_ARRAY_BUFFER] : NULL;
+    if (!internal || !internal->data.mtl_data ||
+        !internal->data.mtl_owns_buffer_data ||
+        internal->mapped_ptr != mapped) {
+        fprintf(stderr,
+                "persistent_map_rss_soak: no-copy backing not established "
+                "(buffer=%p mtl=%p owns=%u mapped=%p expected=%p)\n",
+                (void *)internal,
+                internal ? internal->data.mtl_data : NULL,
+                internal ? (unsigned)internal->data.mtl_owns_buffer_data : 0u,
+                internal ? internal->mapped_ptr : NULL,
+                mapped);
+        rc = 4;
+        goto cleanup;
+    }
+    stable_mtl_data = internal->data.mtl_data;
+    if (glGetError() != GL_NO_ERROR || sample_process_memory(&baseline) != 0) {
+        fprintf(stderr, "persistent_map_rss_soak: warmup or memory sample failed\n");
+        rc = 5;
+        goto cleanup;
+    }
+
+    const uint32_t update_slots =
+        (BUFFER_BYTES - UPDATE_START) / UPDATE_BYTES;
+    for (uint32_t i = 0; i < SOAK_ITERATIONS; i++) {
+        size_t offset = UPDATE_START +
+            (size_t)(i % update_slots) * UPDATE_BYTES;
+        memcpy(mapped + offset, triangle, sizeof(triangle));
+        memset(mapped + offset + sizeof(triangle), (int)(i & 0xffu),
+               UPDATE_BYTES - sizeof(triangle));
+        glFlushMappedBufferRange(GL_ARRAY_BUFFER,
+                                 (GLintptr)offset, UPDATE_BYTES);
+        glBindVertexBuffer(0, buffer_name, (GLintptr)offset,
+                           2 * sizeof(float));
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        if (internal->data.mtl_data != stable_mtl_data ||
+            !internal->data.mtl_owns_buffer_data) {
+            fprintf(stderr,
+                    "persistent_map_rss_soak: Metal backing changed at %u "
+                    "(%p -> %p owns=%u)\n",
+                    i + 1u, stable_mtl_data, internal->data.mtl_data,
+                    (unsigned)internal->data.mtl_owns_buffer_data);
+            rc = 6;
+            goto cleanup;
+        }
+
+        if (soak_should_checkpoint(i + 1u)) {
+            ProcessMemorySample current = {0};
+            glFinish();
+            if (glGetError() != GL_NO_ERROR ||
+                sample_process_memory(&current) != 0) {
+                fprintf(stderr,
+                        "persistent_map_rss_soak: checkpoint %u failed\n",
+                        i + 1u);
+                rc = 7;
+                goto cleanup;
+            }
+            if (!midpoint_set && i + 1u >= SOAK_ITERATIONS / 2u) {
+                midpoint = current;
+                midpoint_set = 1;
+            }
+            if (soak_memory_hard_limit_exceeded(
+                    "persistent_map_rss_soak", &baseline, &current,
+                    hard_limit)) {
+                rc = 8;
+                goto cleanup;
+            }
+            final = current;
+        }
+    }
+
+    if (!midpoint_set) midpoint = baseline;
+    if (verify_soak_memory_growth("persistent_map_rss_soak",
+                                  &baseline, &midpoint, &final, limit)) {
+        rc = 9;
+    }
+
+cleanup:
+    glFinish();
+    if (vao) {
+        glBindVertexArray(0);
+        glDeleteVertexArrays(1, &vao);
+    }
+    if (buffer_name) {
+        glBindBuffer(GL_ARRAY_BUFFER, buffer_name);
+        if (mapped) {
+            GLboolean unmapped = glUnmapBuffer(GL_ARRAY_BUFFER);
+            GLenum cleanup_error = glGetError();
+            if (rc == 0 && (!unmapped || cleanup_error != GL_NO_ERROR)) {
+                fprintf(stderr,
+                        "persistent_map_rss_soak: cleanup unmap failed "
+                        "(result=%u error=0x%x)\n",
+                        (unsigned)unmapped, cleanup_error);
+                rc = 10;
+            }
+        }
+        glBindBuffer(GL_ARRAY_BUFFER, 0);
+        glDeleteBuffers(1, &buffer_name);
+    }
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color_tex) glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -1746,27 +3283,54 @@ static int test_render_to_texture_sample(unsigned char *pixels, const char *out_
 typedef struct {
     const char *name;
     test_fn fn;
+    int self_check;
+    int explicit_only;
 } TestCase;
 
+#define GOLDEN_TEST(name, fn)              { name, fn, 0, 0 }
+#define SELF_CHECK_TEST(name, fn)          { name, fn, 1, 0 }
+#define EXPLICIT_SELF_CHECK_TEST(name, fn) { name, fn, 1, 1 }
+
 static const TestCase TESTS[] = {
-    { "draw_arrays",          test_draw_arrays },
-    { "draw_elements",        test_draw_elements },
-    { "draw_arrays_instanced",test_draw_arrays_instanced },
-    { "multi_draw_elements",  test_multi_draw_elements },
-    { "draw_arrays_indirect", test_draw_arrays_indirect },
-    { "fbo_switch",           test_fbo_switch },
-    { "transform_feedback",   test_transform_feedback },
-    { "conditional_render",   test_conditional_render },
-    { "program_switch",       test_program_switch },
-    { "blend",                test_blend },
-    { "depth_test",           test_depth_probe },
-    { "stencil",              test_stencil_probe },
-    { "uniform_alias",        test_uniform_alias },
-    { "shared_uniform",       test_shared_uniform },
-    { "multipass_resume",     test_multipass_resume },
-    { "dontcare_fullscreen",  test_dontcare_fullscreen },
-    { "multibatch_same_fbo",  test_multibatch_same_fbo },
-    { "rtt_sample",           test_render_to_texture_sample },
+    GOLDEN_TEST("draw_arrays",            test_draw_arrays),
+    GOLDEN_TEST("draw_elements",          test_draw_elements),
+    GOLDEN_TEST("draw_arrays_instanced",  test_draw_arrays_instanced),
+    GOLDEN_TEST("multi_draw_elements",    test_multi_draw_elements),
+    GOLDEN_TEST("draw_arrays_indirect",   test_draw_arrays_indirect),
+    GOLDEN_TEST("fbo_switch",             test_fbo_switch),
+    GOLDEN_TEST("transform_feedback",     test_transform_feedback),
+    GOLDEN_TEST("conditional_render",     test_conditional_render),
+    GOLDEN_TEST("ubo_range_switch",       test_ubo_range_switch),
+    GOLDEN_TEST("vao_binding_switch",     test_vao_binding_switch),
+    SELF_CHECK_TEST("agx_3d_texture_workarounds",
+                    test_agx_3d_texture_workarounds),
+    GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
+    GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
+    GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),
+    SELF_CHECK_TEST("sampler_same_value_no_flush",
+                    test_sampler_same_value_no_flush),
+    SELF_CHECK_TEST("sampler_invalid_no_flush",
+                    test_sampler_invalid_no_flush),
+    SELF_CHECK_TEST("sampler_snapshot_overflow",
+                    test_sampler_snapshot_overflow),
+    EXPLICIT_SELF_CHECK_TEST("sampler_cache_rss_soak",
+                             test_sampler_cache_rss_soak),
+    EXPLICIT_SELF_CHECK_TEST("persistent_map_rss_soak",
+                             test_persistent_map_rss_soak),
+    GOLDEN_TEST("program_switch",         test_program_switch),
+    GOLDEN_TEST("blend",                  test_blend),
+    GOLDEN_TEST("depth_test",             test_depth_probe),
+    GOLDEN_TEST("stencil",                test_stencil_probe),
+    GOLDEN_TEST("uniform_alias",          test_uniform_alias),
+    GOLDEN_TEST("shared_uniform",         test_shared_uniform),
+    GOLDEN_TEST("multipass_resume",       test_multipass_resume),
+    GOLDEN_TEST("dontcare_fullscreen",    test_dontcare_fullscreen),
+    GOLDEN_TEST("multibatch_same_fbo",    test_multibatch_same_fbo),
+    EXPLICIT_SELF_CHECK_TEST("parallel_subencoder_fallback",
+                             test_parallel_subencoder_fallback),
+    EXPLICIT_SELF_CHECK_TEST("parallel_exception_cleanup",
+                             test_parallel_exception_cleanup),
+    GOLDEN_TEST("rtt_sample",             test_render_to_texture_sample),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.
      * uniform_alias gates the cross-stage uniform-location fix (program.c
@@ -1778,7 +3342,13 @@ static const TestCase TESTS[] = {
      *    same-program-multi-draw-with-changing-uniforms pattern; superseded by
      *    the probe versions above. Kept for reference. */
 };
+#undef GOLDEN_TEST
+#undef SELF_CHECK_TEST
+#undef EXPLICIT_SELF_CHECK_TEST
+
 static const int NUM_TESTS = (int)(sizeof(TESTS) / sizeof(TESTS[0]));
+_Static_assert(sizeof(TESTS) / sizeof(TESTS[0]) == MAX_TESTS,
+               "MAX_TESTS must match the test registry");
 
 /* ------------------------------------------------------------------ */
 /* Main                                                               */
@@ -1803,6 +3373,20 @@ int main(int argc, char **argv)
             /* run all */
         } else {
             only = argv[i];
+        }
+    }
+
+    if (only) {
+        int found = 0;
+        for (int i = 0; i < NUM_TESTS; i++) {
+            if (strcmp(only, TESTS[i].name) == 0) {
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            fprintf(stderr, "Unknown regression test: %s\n", only);
+            return 2;
         }
     }
 
@@ -1840,6 +3424,10 @@ int main(int argc, char **argv)
             n_skip++;
             continue;
         }
+        if (t->explicit_only && !only) {
+            n_skip++;
+            continue;
+        }
 
         char out_path[1024];
         snprintf(out_path, sizeof(out_path), "%s/Reg_%s.tga", out_dir, t->name);
@@ -1872,9 +3460,21 @@ int main(int argc, char **argv)
             /* only warn; some drivers leave harmless errors */
         }
 
+        if (rc == TEST_RESULT_SKIP) {
+            fprintf(stderr, "SKIP\n");
+            n_skip++;
+            continue;
+        }
+
         if (rc != 0) {
             fprintf(stderr, "ERROR (rc=%d)\n", rc);
             n_fail++;
+            continue;
+        }
+
+        if (t->self_check) {
+            fprintf(stderr, "PASS (self-check)\n");
+            n_pass++;
             continue;
         }
 
