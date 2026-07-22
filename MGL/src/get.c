@@ -321,6 +321,18 @@ for(int i=0, counts[]={1,4,4,8};i<__COUNT__; data+=counts[__TYPE__], i++) \
         case kDouble: RET_DOUBLE(ctx->state.var.__VALUE__[i])    \
 }
 
+// set value based on type from a derived GLuint expression
+#define RET_TYPE_VAR_DERIVED(_expr_) \
+do { \
+    GLuint _v = (_expr_); \
+    switch(type) {  \
+        case kBool: RET_BOOL(_v)    \
+        case kInt: RET_INT(_v)    \
+        case kFloat: RET_FLOAT(_v)    \
+        case kDouble: RET_DOUBLE(_v)    \
+    } \
+} while(0)
+
 // set value based on type from ctx->state not ctx->state.var
 #define RET_TYPE(__TYPE__, __VALUE__) \
 switch(type) {  \
@@ -623,7 +635,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8B4B: RET_TYPE_VAR(type, max_varying_floats); break; // GL_MAX_VARYING_FLOATS
         case 0x8B4C: RET_TYPE_VAR(type, max_vertex_texture_image_units); break; // GL_MAX_VERTEX_TEXTURE_IMAGE_UNITS
         case 0x8B4D: RET_TYPE_VAR(type, max_combined_texture_image_units); break; // GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS
-        case 0x8B8D: RET_TYPE_VAR(type, current_program); break; // GL_CURRENT_PROGRAM
+        case 0x8B8D: RET_TYPE_VAR_DERIVED(ctx->state.program_name); break; // GL_CURRENT_PROGRAM
         case 0x8CA3: RET_TYPE_VAR(type, stencil_back_ref); break; // GL_STENCIL_BACK_REF
         case 0x8CA4: RET_TYPE_VAR(type, stencil_back_value_mask); break; // GL_STENCIL_BACK_VALUE_MASK
         case 0x8CA5: RET_TYPE_VAR(type, stencil_back_writemask); break; // GL_STENCIL_BACK_WRITEMASK

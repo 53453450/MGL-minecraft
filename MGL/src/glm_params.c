@@ -243,7 +243,6 @@ void getMacOSDefaults(GLMContext glm_ctx)
     /* Keep the advertised limit aligned with glslang's compile-time resource
      * limit. Metal argument slots are remapped independently from GL units. */
     glm_ctx->state.var.max_combined_texture_image_units = TEXTURE_UNITS < 80 ? TEXTURE_UNITS : 80;
-    glGetIntegerv(GL_CURRENT_PROGRAM,&glm_ctx->state.var.current_program);
     glGetIntegerv(GL_STENCIL_BACK_REF,&glm_ctx->state.var.stencil_back_ref);
     glGetIntegerv(GL_STENCIL_BACK_VALUE_MASK,&glm_ctx->state.var.stencil_back_value_mask);
     glGetIntegerv(GL_STENCIL_BACK_WRITEMASK,&glm_ctx->state.var.stencil_back_writemask);

@@ -44,7 +44,7 @@ static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
 
 static GLuint mglTraceDrawProgram(GLMContext ctx)
 {
-    return ctx ? ctx->state.var.current_program : 0u;
+    return ctx ? ctx->state.program_name : 0u;
 }
 
 static bool mglValidateDrawIndirectCommands(GLMContext ctx,
@@ -460,7 +460,6 @@ bool validate_program(GLMContext ctx)
                     (void *)program);
             ctx->state.program = NULL;
             ctx->state.program_name = 0;
-            ctx->state.var.current_program = 0;
             program = NULL;
         }
     }

@@ -1130,7 +1130,6 @@ void mglUseProgram(GLMContext ctx, GLuint program)
     }
 
     if (ctx->state.program_name == program &&
-        ctx->state.var.current_program == program &&
         ((program == 0u && ctx->state.program == NULL) ||
          (program != 0u && ctx->state.program != NULL))) {
         return;
@@ -1203,8 +1202,7 @@ void mglUseProgram(GLMContext ctx, GLuint program)
 
     bool bindingChanged =
         ctx->state.program != pptr ||
-        ctx->state.program_name != program ||
-        ctx->state.var.current_program != program;
+        ctx->state.program_name != program;
 
     if (bindingChanged)
     {
@@ -1243,7 +1241,6 @@ void mglUseProgram(GLMContext ctx, GLuint program)
      * re-resolve by name if the cached pointer is lost.
      */
     ctx->state.program_name = program;
-    ctx->state.var.current_program = program;
 
     if (MGL_VERBOSE_PROGRAM_LOGS) {
         fprintf(stderr, "MGL UseProgram program=%u resolved=%p\n",

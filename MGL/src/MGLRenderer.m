@@ -323,7 +323,7 @@ Program *mglResolveProgramFromState(GLMContext ctx)
      * state separable pipelines, if any, are resolved per stage below; never
      * resurrect a stale cached program pointer as GL_CURRENT_PROGRAM.
      */
-    if (ctx->active_state->program_name == 0 && ctx->active_state->var.current_program == 0) {
+    if (ctx->active_state->program_name == 0) {
         ctx->active_state->program = NULL;
         return NULL;
     }
@@ -343,7 +343,6 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     if (program) {
         if (ctx->active_state->program_name == 0 || ctx->active_state->program_name != program->name) {
             ctx->active_state->program_name = program->name;
-            ctx->active_state->var.current_program = program->name;
         }
         return program;
     }
@@ -356,7 +355,6 @@ Program *mglResolveProgramFromState(GLMContext ctx)
     if (!resolved) {
         NSLog(@"MGL PROGRAM RESOLVE fail: name=%u missing in table", (unsigned)ctx->active_state->program_name);
         ctx->active_state->program_name = 0;
-        ctx->active_state->var.current_program = 0;
         return NULL;
     }
 
@@ -430,7 +428,6 @@ static Program *mglRestoreMonolithicProgramBinding(GLMContext ctx, GLuint progra
     if (programName == 0u) {
         ctx->active_state->program = NULL;
         ctx->active_state->program_name = 0u;
-        ctx->active_state->var.current_program = 0u;
         return NULL;
     }
 
@@ -446,7 +443,6 @@ static Program *mglRestoreMonolithicProgramBinding(GLMContext ctx, GLuint progra
 
     ctx->active_state->program = program;
     ctx->active_state->program_name = programName;
-    ctx->active_state->var.current_program = programName;
     return program;
 }
 
@@ -503,7 +499,7 @@ Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage)
      * Keep glUseProgram semantics authoritative and only fall back to the
      * per-stage pipeline table for true pipeline draws.
      */
-    if (ctx->active_state->program_name != 0 || ctx->active_state->var.current_program != 0) {
+    if (ctx->active_state->program_name != 0) {
         return NULL;
     }
 
@@ -562,8 +558,7 @@ GLuint mglCurrentRenderProgramKey(GLMContext ctx)
     }
 
     if (!mglRendererContextLikelyValid(ctx) ||
-        ctx->active_state->program_name != 0 ||
-        ctx->active_state->var.current_program != 0) {
+        ctx->active_state->program_name != 0) {
         return ctx ? ctx->active_state->program_name : 0u;
     }
 

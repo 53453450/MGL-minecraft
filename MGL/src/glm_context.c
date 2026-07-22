@@ -585,7 +585,6 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(sync_name) = 1;
     STATE(program_name) = 0;
-    STATE(var.current_program) = 0;
 
     STATE(dirty_bits) = DIRTY_ALL;
 

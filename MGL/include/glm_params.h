@@ -257,7 +257,6 @@ typedef struct GLMParams_t {
     GLuint max_varying_floats;
     GLuint max_vertex_texture_image_units;
     GLuint max_combined_texture_image_units;
-    GLuint current_program;
     GLuint stencil_back_ref;
     GLuint stencil_back_value_mask;
     GLuint stencil_back_writemask;

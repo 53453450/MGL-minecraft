@@ -296,7 +296,6 @@ static Program *mglUniformValidateProgramPointer(GLMContext ctx, Program *progra
         if (ctx->state.program == program) {
             ctx->state.program = NULL;
             ctx->state.program_name = 0;
-            ctx->state.var.current_program = 0;
         }
         return NULL;
     }

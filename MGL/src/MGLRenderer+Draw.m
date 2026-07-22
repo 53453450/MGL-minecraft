@@ -2388,7 +2388,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned long long)bindCall,
                                     sampleProgramName,
                                     (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->var.current_program : 0u),
+                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
                                     (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
@@ -3052,7 +3052,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLog("RT_YFLIP_DECISION stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" decision=%s(%d) authority=0x%x rtVer=%u copyVer=%u hasCopy=%d sampleYFlip=%d",
                         (unsigned)fragmentProgramName,
                         (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                        (unsigned)(ctx ? ctx->active_state->var.current_program : 0u),
+                        (unsigned)(ctx ? ctx->active_state->program_name : 0u),
                         (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
                         (unsigned)vertexProgramName,
                         (unsigned)fragmentProgramName,
@@ -3087,7 +3087,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                     (unsigned)fragmentProgramName,
                                     (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->var.current_program : 0u),
+                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
                                     (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
@@ -8329,24 +8329,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p program=%u",
                 (unsigned)mode, indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -8355,7 +8355,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "drawArraysIndirect")) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8363,7 +8363,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8426,7 +8426,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)cmd.count * (uint64_t)cmd.instanceCount];
             mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x count=%u instances=%u first=%u baseInstance=%u program=%u",
                         (unsigned)mode, cmd.count, cmd.instanceCount, cmd.first, cmd.baseInstance,
-                        (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                        (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         }
         return;
     }
@@ -8435,7 +8435,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: drawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -8444,7 +8444,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -8455,7 +8455,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, indirect, (unsigned long)(NSUInteger)(uintptr_t)indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 }
 
 -(void) mtlDrawElementsIndirect: (GLMContext) glm_ctx mode:(GLenum) mode type:(GLenum) type indirect: (const void *) indirect
@@ -8465,24 +8465,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -8491,7 +8491,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "drawElementsIndirect")) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8500,13 +8500,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type);
         return;
     }
     if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, "drawElementsIndirect")) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8514,7 +8514,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8523,7 +8523,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8607,7 +8607,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x type=0x%x count=%u instances=%u first=%u baseVertex=%d baseInstance=%u program=%u",
                         (unsigned)mode, (unsigned)type, cmd.count, cmd.instanceCount, cmd.first,
                         cmd.baseVertex, cmd.baseInstance,
-                        (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                        (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         }
         return;
     }
@@ -8616,7 +8616,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: drawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -8625,7 +8625,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -8640,7 +8640,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   &drawIndexType);
     if (!drawIndexBuffer) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=prepare_index_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -8655,7 +8655,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
                 (unsigned long)(NSUInteger)(uintptr_t)indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 }
 
 -(void) mtlDrawArraysInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
@@ -9559,24 +9559,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -9585,7 +9585,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "multiDrawArraysIndirect")) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9593,7 +9593,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9680,7 +9680,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x drawcount=%d submittedVertices=%llu program=%u",
                     (unsigned)mode, (int)drawcount,
                     (unsigned long long)submittedVertices,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9688,7 +9688,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: multiDrawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -9697,7 +9697,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -9722,7 +9722,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 }
 
 -(void) mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
@@ -9732,23 +9732,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=fully_culled program=%u mode=0x%x",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u), (unsigned)mode);
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u), (unsigned)mode);
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -9757,7 +9757,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "multiDrawElementsIndirect")) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9766,13 +9766,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type);
         return;
     }
     if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, "multiDrawElementsIndirect")) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9780,7 +9780,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9789,7 +9789,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9900,7 +9900,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x type=0x%x drawcount=%d submittedIndices=%llu program=%u",
                     (unsigned)mode, (unsigned)type, (int)drawcount,
                     (unsigned long long)submittedIndices,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9908,7 +9908,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: multiDrawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -9917,7 +9917,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -9932,7 +9932,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   &drawIndexType);
     if (!drawIndexBuffer) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=prepare_index_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
         return;
     }
 
@@ -9957,7 +9957,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->var.current_program : 0u));
+                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
 }
 
 @end
