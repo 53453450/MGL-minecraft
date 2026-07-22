@@ -290,11 +290,14 @@ _Static_assert(offsetof(GLMState, glsl) - offsetof(GLMState, buffer_base)
                == _MAX_BUFFER_TYPES * sizeof(BufferBase),
                "field inserted between buffer_base and glsl; revisit mglCopyHotStateFields region 5");
 
-/* mglCopyHotStateFields hand-lists 5 hot buffer_base types and
- * mglRestoreColdBufferBase hand-lists the remaining 11; a type-count change
- * must revisit both lists so every slot stays covered exactly once. */
-_Static_assert(_MAX_BUFFER_TYPES == 16,
-               "buffer type count changed; update hot list in mglCopyHotStateFields AND cold list in mglRestoreColdBufferBase");
+/* The hot list (mglCopyHotStateFields) and cold list (mglRestoreColdBufferBase)
+ * are both expanded from the X-macros in mgl_types_buffer.h; this checks that
+ * together they cover every buffer_base type exactly once, so adding a type
+ * without classifying it hot or cold breaks the build. */
+_Static_assert(kMGLSnapshotHotBufferBaseCount + kMGLSnapshotColdBufferBaseCount
+               == _MAX_BUFFER_TYPES,
+               "buffer type added without classifying it hot or cold; update "
+               "MGL_SNAPSHOT_HOT/COLD_BUFFER_BASE_TYPES in mgl_types_buffer.h");
 
 static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
 {
@@ -314,12 +317,11 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
                gap_end - gap_start);
     }
 
-    /* Region 4: copy only the 5 hot buffer_base types read by the encoder. */
-    dst->buffer_base[_UNIFORM_BUFFER]            = src->buffer_base[_UNIFORM_BUFFER];
-    dst->buffer_base[_UNIFORM_CONSTANT]          = src->buffer_base[_UNIFORM_CONSTANT];
-    dst->buffer_base[_SHADER_STORAGE_BUFFER]     = src->buffer_base[_SHADER_STORAGE_BUFFER];
-    dst->buffer_base[_TRANSFORM_FEEDBACK_BUFFER] = src->buffer_base[_TRANSFORM_FEEDBACK_BUFFER];
-    dst->buffer_base[_ATOMIC_COUNTER_BUFFER]     = src->buffer_base[_ATOMIC_COUNTER_BUFFER];
+    /* Region 4: copy only the hot buffer_base types read by the encoder.
+     * The hot set is defined once in mgl_types_buffer.h and expanded here. */
+#define MGL_SNAPSHOT_COPY_HOT(_t_) dst->buffer_base[_t_] = src->buffer_base[_t_];
+    MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT)
+#undef MGL_SNAPSHOT_COPY_HOT
 
     /* Region 5: [glsl, end) — everything after buffer_base. */
     {
@@ -340,17 +342,9 @@ static inline void mglRestoreColdBufferBase(GLMState *dst, const GLMState *saved
 {
     if (!dst || !savedState) return;
 
-    dst->buffer_base[_TEXTURE_BUFFER]            = savedState->buffer_base[_TEXTURE_BUFFER];
-    dst->buffer_base[_ARRAY_BUFFER]              = savedState->buffer_base[_ARRAY_BUFFER];
-    dst->buffer_base[_ELEMENT_ARRAY_BUFFER]      = savedState->buffer_base[_ELEMENT_ARRAY_BUFFER];
-    dst->buffer_base[_QUERY_BUFFER]              = savedState->buffer_base[_QUERY_BUFFER];
-    dst->buffer_base[_PIXEL_PACK_BUFFER]         = savedState->buffer_base[_PIXEL_PACK_BUFFER];
-    dst->buffer_base[_PIXEL_UNPACK_BUFFER]       = savedState->buffer_base[_PIXEL_UNPACK_BUFFER];
-    dst->buffer_base[_COPY_READ_BUFFER]          = savedState->buffer_base[_COPY_READ_BUFFER];
-    dst->buffer_base[_COPY_WRITE_BUFFER]         = savedState->buffer_base[_COPY_WRITE_BUFFER];
-    dst->buffer_base[_DISPATCH_INDIRECT_BUFFER]  = savedState->buffer_base[_DISPATCH_INDIRECT_BUFFER];
-    dst->buffer_base[_DRAW_INDIRECT_BUFFER]      = savedState->buffer_base[_DRAW_INDIRECT_BUFFER];
-    dst->buffer_base[_PARAMETER_BUFFER]          = savedState->buffer_base[_PARAMETER_BUFFER];
+#define MGL_SNAPSHOT_RESTORE_COLD(_t_) dst->buffer_base[_t_] = savedState->buffer_base[_t_];
+    MGL_SNAPSHOT_COLD_BUFFER_BASE_TYPES(MGL_SNAPSHOT_RESTORE_COLD)
+#undef MGL_SNAPSHOT_RESTORE_COLD
 }
 
 #endif /* mgl_types_state_h */

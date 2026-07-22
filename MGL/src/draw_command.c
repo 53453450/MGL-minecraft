@@ -191,8 +191,9 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
  * This array MUST stay in sync with the 5 types in mglCopyHotStateFields
  * Region 4 and mglRestoreColdBufferBase (the complementary cold set). */
 static const int kMGLSnapshotBufferBaseTypes[] = {
-    _UNIFORM_BUFFER, _UNIFORM_CONSTANT, _SHADER_STORAGE_BUFFER,
-    _TRANSFORM_FEEDBACK_BUFFER, _ATOMIC_COUNTER_BUFFER
+#define MGL_SNAPSHOT_LIST_HOT(_t_) _t_,
+    MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_LIST_HOT)
+#undef MGL_SNAPSHOT_LIST_HOT
 };
 static const size_t kMGLSnapshotBufferBaseTypeCount =
     sizeof(kMGLSnapshotBufferBaseTypes) / sizeof(kMGLSnapshotBufferBaseTypes[0]);

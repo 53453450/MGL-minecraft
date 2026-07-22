@@ -45,6 +45,41 @@ enum {
     _MAX_BUFFER_TYPES
 };
 
+/* Single source of truth for the batch-snapshot hot/cold buffer_base split.
+ * Three sites must agree on this partition: mglCopyHotStateFields copies the
+ * hot set into the snapshot, mglRestoreColdBufferBase restores the cold set
+ * from live state, and kMGLSnapshotBufferBaseTypes retains/releases the hot
+ * set.  Expanding these X-macro lists at each site keeps them in lockstep.
+ * See mgl_types_state.h. */
+#define MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(_X_) \
+    _X_(_UNIFORM_BUFFER) \
+    _X_(_UNIFORM_CONSTANT) \
+    _X_(_SHADER_STORAGE_BUFFER) \
+    _X_(_TRANSFORM_FEEDBACK_BUFFER) \
+    _X_(_ATOMIC_COUNTER_BUFFER)
+
+#define MGL_SNAPSHOT_COLD_BUFFER_BASE_TYPES(_X_) \
+    _X_(_TEXTURE_BUFFER) \
+    _X_(_ARRAY_BUFFER) \
+    _X_(_ELEMENT_ARRAY_BUFFER) \
+    _X_(_QUERY_BUFFER) \
+    _X_(_PIXEL_PACK_BUFFER) \
+    _X_(_PIXEL_UNPACK_BUFFER) \
+    _X_(_COPY_READ_BUFFER) \
+    _X_(_COPY_WRITE_BUFFER) \
+    _X_(_DISPATCH_INDIRECT_BUFFER) \
+    _X_(_DRAW_INDIRECT_BUFFER) \
+    _X_(_PARAMETER_BUFFER)
+
+enum {
+    kMGLSnapshotHotBufferBaseCount = 0
+#define MGL_SNAPSHOT_COUNT_ONE(_t_) + 1
+        MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COUNT_ONE),
+    kMGLSnapshotColdBufferBaseCount = 0
+        MGL_SNAPSHOT_COLD_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COUNT_ONE),
+#undef MGL_SNAPSHOT_COUNT_ONE
+};
+
 enum {
     _UNIFORM_BASE = 0,
     _TRANSFORM_FEEDBACK_BASE,
