@@ -299,6 +299,13 @@ static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Progr
     return program;
 }
 
+/* Retain the programs batch replay will dereference: the monolithic program
+ * (a glUseProgram binding covers all stages), or — when a program pipeline is
+ * bound instead — its vertex and fragment stage programs.  These three slots
+ * are the COMPLETE set replay consumes; replay only resolves _VERTEX_SHADER
+ * and _FRAGMENT_SHADER.  If replay is ever extended to dereference a pipeline's
+ * geometry/tess/compute stage program, that stage MUST be retained here too, or
+ * replay will touch a possibly-freed program (use-after-free). */
 static void mglRetainBatchProgramReferences(GLMContext ctx, MGLDrawBatch *batch)
 {
     if (!ctx || !batch) {

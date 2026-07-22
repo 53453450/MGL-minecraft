@@ -67,6 +67,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     }
 
     const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    /* These are the only program slots retained for replay (see
+     * mglRetainBatchProgramReferences): monolithic + pipeline VS/FS.  Resolving
+     * any other stage here would touch an unretained, possibly-freed program. */
     Program *program = (Program *)batch->retained_program;
     Program *vertexProgram = (Program *)batch->retained_vertex_program;
     Program *fragmentProgram = (Program *)batch->retained_fragment_program;
