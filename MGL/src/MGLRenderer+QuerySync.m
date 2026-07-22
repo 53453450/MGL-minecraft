@@ -1,10 +1,10 @@
-// MGLRenderer+Query.m
-// Occlusion query and GPU timer query methods extracted from MGLRenderer.m
+// MGLRenderer+QuerySync.m
+// Occlusion/timer query and GL sync (fence) methods extracted from MGLRenderer.m
 
 #import "MGLRenderer_Private.h"
-#import "MGLRenderer+Query_Private.h"
+#import "MGLRenderer+QuerySync_Private.h"
 
-@implementation MGLRenderer (Query)
+@implementation MGLRenderer (QuerySync)
 #pragma mark Metal visibility result (GL occlusion query)
 
 /* Called from glBeginQuery for GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED.

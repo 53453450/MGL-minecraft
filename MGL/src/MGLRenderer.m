@@ -1978,7 +1978,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
 //
 // Lock macros (METAL_LOCK/METAL_UNLOCK/SYNC_LOCK/SYNC_UNLOCK) and helpers
 // (mglMetalLock/mglMetalUnlock/mglNowSeconds) moved to MGLRenderer_Private.h
-// so that category files (MGLRenderer+Query.m, +Blit.m, +Texture.m) can use
+// so that category files (MGLRenderer+QuerySync.m, +Blit.m, +Texture.m) can use
 // them without redefinition.
 //
 // NSRecursiveLock is reentrant — required because the MGLRenderer call graph

@@ -13,12 +13,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * MGLRenderer+Query_Private.h
+ * MGLRenderer+QuerySync_Private.h
  * MGL
  *
- * Private method declarations for the Query category (MGLRenderer+Query.m).
+ * Private method declarations for the QuerySync category (MGLRenderer+QuerySync.m).
  *
- * Note: The public Query method declarations (mtlGetSync:sync:,
+ * Note: The public QuerySync method declarations (mtlGetSync:sync:,
  * mtlWaitForSync:sync:, mtlGetSyncStatus:sync:, mtlReleaseSync:sync:,
  * mtlBeginSampleQuery:, mtlEndSampleQuery:, mtlBeginTimerQuery:,
  * mtlEndTimerQuery:, mtlGetGPUTimestamp:) are declared in mgl_metal_bridge.h
@@ -29,8 +29,8 @@
  * Imports MGLRenderer_Private.h for ivar access and shared types.
  */
 
-#ifndef MGLRenderer_Query_Private_h
-#define MGLRenderer_Query_Private_h
+#ifndef MGLRenderer_QuerySync_Private_h
+#define MGLRenderer_QuerySync_Private_h
 
 #import "MGLRenderer_Private.h"
 
@@ -38,4 +38,4 @@
 
 @end
 
-#endif /* MGLRenderer_Query_Private_h */
+#endif /* MGLRenderer_QuerySync_Private_h */

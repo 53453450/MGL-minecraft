@@ -242,6 +242,6 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 #import "MGLRenderer+RenderPass_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #import "MGLRenderer+Texture_Private.h"
-#import "MGLRenderer+Query_Private.h"
+#import "MGLRenderer+QuerySync_Private.h"
 
 #endif /* MGLRenderer_Private_h */
