@@ -206,6 +206,23 @@ static GLuint mglCurrentReadFramebufferBinding(GLMContext ctx)
     return name;
 }
 
+static GLuint mglCurrentRenderbufferBinding(GLMContext ctx)
+{
+    return (ctx && ctx->state.renderbuffer) ? ctx->state.renderbuffer->name : 0u;
+}
+
+static GLuint mglCurrentVertexArrayBinding(GLMContext ctx)
+{
+    VertexArray *vao = ctx ? ctx->state.vao : NULL;
+    if (vao &&
+        mglObjectPointerLooksPlausible(vao) &&
+        mglHashTableContainsData(&ctx->state.vao_table, vao) &&
+        mglPointerRangeIsReadable(vao, sizeof(*vao))) {
+        return vao->name;
+    }
+    return 0u;
+}
+
 /* Resolve the Texture backing an FBO attachment.  Returns NULL if the
  * attachment is empty.  Handles both texture-backed and renderbuffer-backed
  * attachments — the latter stores the backing Texture via buf.rbo->tex. */
@@ -641,7 +658,14 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
                 case kDouble: RET_DOUBLE(mglCurrentDrawFramebufferBinding(ctx));
             }
             break;
-        case 0x8CA7: RET_TYPE_VAR(type, renderbuffer_binding); break; // GL_RENDERBUFFER_BINDING
+        case 0x8CA7: // GL_RENDERBUFFER_BINDING
+            switch(type) {
+                case kBool: RET_BOOL(mglCurrentRenderbufferBinding(ctx));
+                case kInt: RET_INT(mglCurrentRenderbufferBinding(ctx));
+                case kFloat: RET_FLOAT(mglCurrentRenderbufferBinding(ctx));
+                case kDouble: RET_DOUBLE(mglCurrentRenderbufferBinding(ctx));
+            }
+            break;
         case 0x8CAA: // GL_READ_FRAMEBUFFER_BINDING
             switch(type) {
                 case kBool: RET_BOOL(mglCurrentReadFramebufferBinding(ctx));
@@ -650,7 +674,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
                 case kDouble: RET_DOUBLE(mglCurrentReadFramebufferBinding(ctx));
             }
             break;
-        case 0x85B5: RET_TYPE_VAR(type, vertex_array_binding); break; // GL_VERTEX_ARRAY_BINDING
+        case 0x85B5: RET_TYPE_VAR_DERIVED(mglCurrentVertexArrayBinding(ctx)); break; // GL_VERTEX_ARRAY_BINDING
         case 0x8C2B: // GL_MAX_TEXTURE_BUFFER_SIZE
             switch(type) {
                 case kBool: RET_BOOL(mglSafeMaxTextureBufferSize(ctx));
