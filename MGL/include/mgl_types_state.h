@@ -272,6 +272,30 @@ static inline void mglClearStateDirtyBitsPreservingHashInvalidation(GLMState *st
  * using the pre-replay live state (savedState).  HashTable restoration is
  * already done at the restore call site. */
 
+/* mglCopyHotStateFields copies GLMState in memcpy regions that identify the
+ * skipped ranges (the embedded HashTable block and the cold buffer_base
+ * slots) purely by offsetof arithmetic.  A field reorder or insertion in
+ * those ranges would silently drop data from the snapshot, so lock the
+ * layout assumptions into compile errors. */
+
+/* The gap [sync_table, shaders) skipped by region 2 must be exactly the 11
+ * embedded HashTables; a hot field inserted there would not be copied. */
+_Static_assert(offsetof(GLMState, shaders) - offsetof(GLMState, sync_table)
+               == 11 * sizeof(HashTable),
+               "GLMState HashTable block changed; revisit mglCopyHotStateFields region boundaries");
+
+/* The gap [buffer_base, glsl) skipped between regions 4 and 5 must be exactly
+ * buffer_base[_MAX_BUFFER_TYPES]; region 5 assumes glsl follows the array. */
+_Static_assert(offsetof(GLMState, glsl) - offsetof(GLMState, buffer_base)
+               == _MAX_BUFFER_TYPES * sizeof(BufferBase),
+               "field inserted between buffer_base and glsl; revisit mglCopyHotStateFields region 5");
+
+/* mglCopyHotStateFields hand-lists 5 hot buffer_base types and
+ * mglRestoreColdBufferBase hand-lists the remaining 11; a type-count change
+ * must revisit both lists so every slot stays covered exactly once. */
+_Static_assert(_MAX_BUFFER_TYPES == 16,
+               "buffer type count changed; update hot list in mglCopyHotStateFields AND cold list in mglRestoreColdBufferBase");
+
 static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
 {
     if (!dst || !src || dst == src) return;
