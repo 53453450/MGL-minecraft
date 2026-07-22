@@ -27,37 +27,6 @@
 #import "MGLRenderer_Private.h"
 #import "msl_patch_pipeline.h"  /* P1-6: mglResolvePassthroughPatchModeForContext moved here */
 
-/* === Per-worker context for parallel command recording ===
- * Each worker thread encodes draws onto its own MTLRenderCommandEncoder
- * obtained from a shared MTLParallelRenderCommandEncoder.  The dedup state
- * must be per-worker to prevent one worker's bindings from causing another
- * to skip a needed bind. */
-typedef struct {
-    id<MTLRenderCommandEncoder> encoder;
-
-    /* Per-worker GLMState snapshot.  During parallel encoding,
-     * ctx->active_state is redirected to point here so that all
-     * ctx->active_state->* accesses in the encoding hot path are
-     * thread-safe.  Heap-allocated to avoid ~83KB stack frame in the
-     * parallel-encode path (3 stack copies = ~250KB+ can overflow
-     * small-stack threads).  Owned by encodeBatchForParallelWorker:
-     * allocated on entry, freed on exit.  NULL when unused. */
-    GLMState *workerState;
-
-    MGLBindingDedupState bindingState;
-
-    id<MTLRenderPipelineState> pipelineState;
-    MTLPixelFormat pipelineColor0Format;
-    MTLPixelFormat pipelineDepthFormat;
-    MTLPixelFormat pipelineStencilFormat;
-    GLuint pipelineProgramName;
-
-    NSUInteger mdiArgsScratchOffset;
-
-    uint64_t traceReplayFlushId;
-    uint32_t traceReplayBatchIndex;
-} MGLWorkerContext;
-
 /* Encode target passed explicitly to the issue and bind methods instead of
  * read from _renderPassManager.state->currentRenderEncoder. */
 typedef struct {
@@ -239,18 +208,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindActiveTexturesToMTL;
-
-// === Parallel command recording infrastructure ===
-- (void)saveDedupStateToWorker:(MGLWorkerContext *)worker;
-- (void)loadDedupStateFromWorker:(const MGLWorkerContext *)worker;
-- (BOOL)parallelEncodeEnabled;
-- (MGLBatchPath)encodeBatchForParallelWorker:(MGLWorkerContext *)worker
-                                       batch:(MGLDrawBatch *)batch
-                                     context:(GLMContext)glm_ctx
-                                     flushId:(uint64_t)flushId
-                                  batchIndex:(uint32_t)batchIndex
-                                  savedState:(const GLMState *)savedState
-                                    executed:(BOOL *)executedOut;
 
 // === Dedup state management ===
 - (void)invalidateLastBoundState;

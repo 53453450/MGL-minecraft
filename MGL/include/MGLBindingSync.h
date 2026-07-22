@@ -45,7 +45,7 @@ NS_ASSUME_NONNULL_BEGIN
     MGLBindingDedupState _state;
 }
 
-@property(nonatomic, readonly) MGLBindingDedupState *state;
+@property(nonatomic, readonly) const MGLBindingDedupState *state;
 
 - (void)invalidate;
 - (void)copyStateTo:(MGLBindingDedupState *)destination;
@@ -78,6 +78,37 @@ NS_ASSUME_NONNULL_BEGIN
                         encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
 - (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
                              encoder:(nullable id<MTLRenderCommandEncoder>)encoder;
+
+/* Low-level dedup-state mutators used by the encoder hot path.  Callers keep
+ * their own encoder calls, dedup comparisons, and perf counters; these only
+ * write the tracked state so the manager owns all writes to _state (no raw
+ * writable state pointer escapes). */
+
+/* Record a slot's resolved buffer+offset WITHOUT touching the presence mask.
+ * Distinct from recordVertexBuffer:offset:atIndex:, which also sets the mask. */
+- (void)updateVertexBufferSlot:(NSUInteger)index
+                        buffer:(nullable id<MTLBuffer>)buffer
+                        offset:(NSUInteger)offset;
+- (void)updateFragmentBufferSlot:(NSUInteger)index
+                          buffer:(nullable id<MTLBuffer>)buffer
+                          offset:(NSUInteger)offset;
+
+/* Clear a slot to (nil, 0) WITHOUT touching the presence mask.  Distinct from
+ * invalidateVertexBufferAtIndex:, which writes offset -1 and sets the mask. */
+- (void)clearVertexBufferSlot:(NSUInteger)index;
+- (void)clearFragmentBufferSlot:(NSUInteger)index;
+
+- (void)orVertexBufferMask:(uint32_t)mask;
+- (void)orFragmentBufferMask:(uint32_t)mask;
+
+- (void)setLastPipelineState:(nullable id<MTLRenderPipelineState>)pipelineState;
+- (void)setLastDepthStencilState:(nullable id<MTLDepthStencilState>)depthStencilState;
+- (void)setLastCullMode:(MTLCullMode)cullMode;
+- (void)setLastFrontFacingWinding:(MTLWinding)winding;
+- (void)setLastDepthBias:(float)bias
+                   clamp:(float)clamp
+              slopeScale:(float)slopeScale;
+- (void)setBoundValid:(BOOL)valid;
 
 @end
 

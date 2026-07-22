@@ -56,10 +56,10 @@
 #define RETURN_NULL_ON_FAILURE(_expr_) if (_expr_ == false) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return NULL; }
 #define RETURN_ON_NULL(_expr_) if (_expr_ == NULL) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return; }
 
-/* STATE() / STATE_VAR() / VAO() redirect through ctx->active_state so that
- * parallel-encoding workers can point at a per-worker GLMState snapshot
- * instead of the shared ctx->state.  In non-parallel mode active_state
- * always equals &ctx->state, so behaviour is identical. */
+/* STATE() / STATE_VAR() / VAO() redirect through ctx->active_state, which
+ * always points at the embedded &ctx->state.  The indirection lets the Metal
+ * encoding layer share one access path with the C GL layer during batch
+ * replay. */
 #define STATE(_VAR_)     ctx->active_state->_VAR_
 #define STATE_VAR(_VAR_) ctx->active_state->var._VAR_
 
@@ -106,12 +106,10 @@ typedef struct GLMContextRec_t {
     struct GLMMetalFuncs mtl_funcs;
 
     GLMState    state;
-    /* Pointer to the currently active GLMState.  In non-parallel mode this
-     * always points to the embedded state above.  During parallel batch
-     * encoding each worker redirects this to its own per-worker
-     * GLMState copy, so that ctx->active_state->* accesses are thread-safe.
-     * STATE() / STATE_VAR() / VAO() macros and all direct accesses in the
-     * Metal encoding layer go through this pointer. */
+    /* Pointer to the currently active GLMState.  Always points to the embedded
+     * state above.  STATE() / STATE_VAR() / VAO() macros and all direct
+     * accesses in the Metal encoding layer go through this pointer so the C GL
+     * layer and the Metal layer share one state access path. */
     GLMState   *active_state;
     GLboolean   assert_on_error;
 

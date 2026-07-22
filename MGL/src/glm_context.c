@@ -209,8 +209,8 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     bzero((void *)ctx, sizeof(GLMContextRec));
 
-    /* active_state defaults to the embedded state; parallel-encoding
-     * workers will redirect this to their per-worker GLMState copy. */
+    /* active_state defaults to the embedded state; batch replay redirects
+     * MGL_STATE reads through it while a snapshot is installed. */
     ctx->active_state = &ctx->state;
 
     _ctx = ctx;

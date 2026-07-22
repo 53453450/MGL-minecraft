@@ -158,7 +158,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return self;
 }
 
-- (MGLPipelineCacheState *)state
+- (const MGLPipelineCacheState *)state
 {
     return &_state;
 }
@@ -429,6 +429,63 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline warning: %@",
               addError.localizedDescription);
     }
+}
+
+- (void)invalidatePipelineState
+{
+    _state.pipelineState = nil;
+    _state.pipelineColor0Format = MTLPixelFormatInvalid;
+    _state.pipelineDepthFormat = MTLPixelFormatInvalid;
+    _state.pipelineStencilFormat = MTLPixelFormatInvalid;
+    _state.pipelineProgramName = 0u;
+    _state.pipelineVertexFunction = nil;
+    _state.pipelineFragmentFunction = nil;
+}
+
+- (void)setPipelineState:(id<MTLRenderPipelineState>)pipelineState
+{
+    _state.pipelineState = pipelineState;
+}
+
+- (void)activatePipelineState:(id<MTLRenderPipelineState>)pipelineState
+                 color0Format:(MTLPixelFormat)color0Format
+                  depthFormat:(MTLPixelFormat)depthFormat
+                stencilFormat:(MTLPixelFormat)stencilFormat
+                  programName:(GLuint)programName
+               vertexFunction:(id<MTLFunction>)vertexFunction
+             fragmentFunction:(id<MTLFunction>)fragmentFunction
+{
+    _state.pipelineState = pipelineState;
+    _state.pipelineColor0Format = color0Format;
+    _state.pipelineDepthFormat = depthFormat;
+    _state.pipelineStencilFormat = stencilFormat;
+    _state.pipelineProgramName = programName;
+    _state.pipelineVertexFunction = vertexFunction;
+    _state.pipelineFragmentFunction = fragmentFunction;
+}
+
+- (void)setBlendFactorsForAttachment:(NSUInteger)index
+                        srcRgbFactor:(MTLBlendFactor)srcRgbFactor
+                      srcAlphaFactor:(MTLBlendFactor)srcAlphaFactor
+                        dstRgbFactor:(MTLBlendFactor)dstRgbFactor
+                      dstAlphaFactor:(MTLBlendFactor)dstAlphaFactor
+                        rgbOperation:(MTLBlendOperation)rgbOperation
+                      alphaOperation:(MTLBlendOperation)alphaOperation
+                           colorMask:(MTLColorWriteMask)colorMask
+{
+    if (index >= MAX_COLOR_ATTACHMENTS) return;
+    _state.src_blend_rgb_factor[index] = srcRgbFactor;
+    _state.src_blend_alpha_factor[index] = srcAlphaFactor;
+    _state.dst_blend_rgb_factor[index] = dstRgbFactor;
+    _state.dst_blend_alpha_factor[index] = dstAlphaFactor;
+    _state.rgb_blend_operation[index] = rgbOperation;
+    _state.alpha_blend_operation[index] = alphaOperation;
+    _state.color_mask[index] = colorMask;
+}
+
+- (void)disableBinaryArchive
+{
+    _state.binaryArchiveEnabled = NO;
 }
 
 - (void)resetCaches

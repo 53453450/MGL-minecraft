@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 31
+#define MAX_TESTS 29
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -2772,161 +2772,6 @@ static int test_multibatch_same_fbo(unsigned char *pixels, const char *out_path)
     return 0;
 }
 
-static int test_parallel_subencoder_fallback(unsigned char *pixels,
-                                             const char *out_path)
-{
-    (void)out_path;
-    int rc = 0;
-    GLuint fbo = 0, tex = 0, vao = 0, vbo = 0;
-    GLuint programs[3] = {0};
-
-    setenv("MGL_PARALLEL_ENCODE", "1", 1);
-    setenv("MGL_TEST_FAIL_PARALLEL_SUBENCODER_1", "1", 1);
-
-    fbo = make_fbo(REG_W, REG_H, &tex);
-    if (!fbo) {
-        rc = 1;
-        goto cleanup;
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    clear_color(0.0f, 0.0f, 0.0f);
-    glViewport(0, 0, REG_W, REG_H);
-
-    static const char *vertexSource =
-        "#version 330 core\nlayout(location=0) in vec2 p;\n"
-        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
-    static const char *fragmentSources[3] = {
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.2,0.0,0.0,0.0); }\n",
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.3,0.0,0.0); }\n",
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.0,0.4,0.0); }\n",
-    };
-    for (int i = 0; i < 3; i++) {
-        programs[i] = link_program(vertexSource, fragmentSources[i]);
-        if (!programs[i]) {
-            rc = 2;
-            goto cleanup;
-        }
-    }
-
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
-
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_ONE, GL_ONE);
-    for (int i = 0; i < 3; i++) {
-        glUseProgram(programs[i]);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-    glFinish();
-    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
-    const unsigned char *center =
-        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
-    if (center[0] < 47 || center[0] > 55 ||
-        center[1] < 72 || center[1] > 82 ||
-        center[2] < 97 || center[2] > 107) {
-        fprintf(stderr,
-                "parallel_subencoder_fallback: center=(%u,%u,%u), expected approximately (51,77,102)\n",
-                center[0], center[1], center[2]);
-        rc = 3;
-    }
-
-cleanup:
-    unsetenv("MGL_TEST_FAIL_PARALLEL_SUBENCODER_1");
-    unsetenv("MGL_PARALLEL_ENCODE");
-    glDisable(GL_BLEND);
-    if (vbo) glDeleteBuffers(1, &vbo);
-    if (vao) glDeleteVertexArrays(1, &vao);
-    for (int i = 0; i < 3; i++) {
-        if (programs[i]) glDeleteProgram(programs[i]);
-    }
-    if (fbo) glDeleteFramebuffers(1, &fbo);
-    if (tex) glDeleteTextures(1, &tex);
-    return rc;
-}
-
-static int test_parallel_exception_cleanup(unsigned char *pixels,
-                                           const char *out_path)
-{
-    (void)out_path;
-    int rc = 0;
-    GLuint fbo = 0, tex = 0, vao = 0, vbo = 0;
-    GLuint programs[3] = {0};
-
-    setenv("MGL_PARALLEL_ENCODE", "1", 1);
-    setenv("MGL_TEST_THROW_PARALLEL_WORKER", "1", 1);
-
-    fbo = make_fbo(REG_W, REG_H, &tex);
-    if (!fbo) {
-        rc = 1;
-        goto cleanup;
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    clear_color(0.0f, 0.0f, 0.0f);
-    glViewport(0, 0, REG_W, REG_H);
-
-    static const char *vertexSource =
-        "#version 330 core\nlayout(location=0) in vec2 p;\n"
-        "void main(){ gl_Position=vec4(p,0.0,1.0); }\n";
-    static const char *fragmentSources[3] = {
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(1.0,0.0,0.0,1.0); }\n",
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,1.0,0.0,1.0); }\n",
-        "#version 330 core\nout vec4 f; void main(){ f=vec4(0.0,0.0,1.0,1.0); }\n",
-    };
-    for (int i = 0; i < 3; i++) {
-        programs[i] = link_program(vertexSource, fragmentSources[i]);
-        if (!programs[i]) {
-            rc = 2;
-            goto cleanup;
-        }
-    }
-
-    glGenVertexArrays(1, &vao);
-    glBindVertexArray(vao);
-    vbo = make_vbo(TRI_VERTS, sizeof(TRI_VERTS));
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ARRAY_BUFFER, vbo);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
-
-    for (int i = 0; i < 3; i++) {
-        glUseProgram(programs[i]);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-    }
-    glFinish();
-
-    unsetenv("MGL_TEST_THROW_PARALLEL_WORKER");
-    clear_color(0.0f, 0.0f, 0.0f);
-    glUseProgram(programs[1]);
-    glDrawArrays(GL_TRIANGLES, 0, 3);
-    glFinish();
-    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-
-    const unsigned char *center =
-        &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
-    if (center[0] > 4 || center[1] < 251 || center[2] > 4) {
-        fprintf(stderr,
-                "parallel_exception_cleanup: recovery draw center=(%u,%u,%u), expected green\n",
-                center[0], center[1], center[2]);
-        rc = 3;
-    }
-
-cleanup:
-    unsetenv("MGL_TEST_THROW_PARALLEL_WORKER");
-    unsetenv("MGL_PARALLEL_ENCODE");
-    if (vbo) glDeleteBuffers(1, &vbo);
-    if (vao) glDeleteVertexArrays(1, &vao);
-    for (int i = 0; i < 3; i++) {
-        if (programs[i]) glDeleteProgram(programs[i]);
-    }
-    if (fbo) glDeleteFramebuffers(1, &fbo);
-    if (tex) glDeleteTextures(1, &tex);
-    return rc;
-}
-
 /* ---- Read-after-write hazard (Stage 5 safety net) ----
  * Render a red quad to FBO A's color texture T, then bind FBO B and draw a
  * fullscreen quad sampling T. The second draw READS a texture the first draw
@@ -3326,10 +3171,6 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("multipass_resume",       test_multipass_resume),
     GOLDEN_TEST("dontcare_fullscreen",    test_dontcare_fullscreen),
     GOLDEN_TEST("multibatch_same_fbo",    test_multibatch_same_fbo),
-    EXPLICIT_SELF_CHECK_TEST("parallel_subencoder_fallback",
-                             test_parallel_subencoder_fallback),
-    EXPLICIT_SELF_CHECK_TEST("parallel_exception_cleanup",
-                             test_parallel_exception_cleanup),
     GOLDEN_TEST("rtt_sample",             test_render_to_texture_sample),
     /* depth_test/stencil use probe-style fns (test_depth_probe /
      * test_stencil_probe): hardcoded per-program values.

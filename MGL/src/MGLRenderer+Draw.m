@@ -282,8 +282,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         if (!ptr) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has invalid/NULL buffer pointer, skipping", i);
             [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearVertexBufferSlot:bindingIndex];
             continue;
         }
 
@@ -291,8 +290,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has negative offset=%lld, skipping",
                   i, (long long)offset);
             [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearVertexBufferSlot:bindingIndex];
             continue;
         }
 
@@ -300,8 +298,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             NSLog(@"MGL WARNING: Vertex buffer %u has invalid size=%lld, skipping",
                   ptr->name, (long long)ptr->size);
             [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearVertexBufferSlot:bindingIndex];
             continue;
         }
 
@@ -346,16 +343,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                       (unsigned long)requiredBindingBytes,
                       (unsigned long)availableBytes);
                 [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = nil;
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+                [_bindingSync clearVertexBufferSlot:bindingIndex];
                 continue;
             }
 
             [encCtx->encoder setVertexBuffer:isolated
                                             offset:0
                                            atIndex:bindingIndex];
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = isolated;
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+            [_bindingSync updateVertexBufferSlot:bindingIndex buffer:isolated offset:0];
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             anyBindingPresent[bindingIndex] = true;
             if (kMGLVerboseBindLogs) {
@@ -393,8 +388,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != buffer ||
             _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != (NSUInteger)offset) {
             [encCtx->encoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = buffer;
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = (NSUInteger)offset;
+            [_bindingSync updateVertexBufferSlot:bindingIndex
+                                   buffer:buffer
+                                   offset:(NSUInteger)offset];
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         } else {
             MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -468,7 +464,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             boundVertexBufferMask |= 1U << i;
         }
     }
-    _bindingSync.state->lastBoundVertexBufferMask |= boundVertexBufferMask;
+    [_bindingSync orVertexBufferMask:boundVertexBufferMask];
 
     if (getenv("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_vbind_trace_count = 0;
@@ -507,7 +503,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
      * binds can be skipped when the resource and offset are unchanged. */
-    _bindingSync.state->lastBoundValid = YES;
+    [_bindingSync setBoundValid:YES];
     return true;
 }
 
@@ -598,8 +594,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [encCtx->encoder setVertexBuffer:currentAttribBuffer
                                                 offset:0
                                                atIndex:bindingIndex];
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = currentAttribBuffer;
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+                [_bindingSync updateVertexBufferSlot:bindingIndex
+                                       buffer:currentAttribBuffer
+                                       offset:0];
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -768,8 +765,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
                 [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+                [_bindingSync updateVertexBufferSlot:bindingIndex
+                                       buffer:convertedBuffer
+                                       offset:0];
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -796,8 +794,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
                 [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+                [_bindingSync updateVertexBufferSlot:bindingIndex
+                                       buffer:convertedBuffer
+                                       offset:0];
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -826,8 +825,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
                 [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = convertedBuffer;
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+                [_bindingSync updateVertexBufferSlot:bindingIndex
+                                       buffer:convertedBuffer
+                                       offset:0];
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -874,8 +874,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != attribMetalBuffer ||
 	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
 	        [encCtx->encoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
-	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer = attribMetalBuffer;
-	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset = 0;
+	        [_bindingSync updateVertexBufferSlot:bindingIndex
+	                               buffer:attribMetalBuffer
+	                               offset:0];
 	        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
 	    } else {
 	        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -988,8 +989,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         _bindingSync.state->lastBoundVertexBuffers[_slot].buffer != fallbackBindingBuffer ||
                         _bindingSync.state->lastBoundVertexBuffers[_slot].offset != 0) {
                         [encCtx->encoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
-                        _bindingSync.state->lastBoundVertexBuffers[_slot].buffer = fallbackBindingBuffer;
-                        _bindingSync.state->lastBoundVertexBuffers[_slot].offset = 0;
+                        [_bindingSync updateVertexBufferSlot:_slot
+                                               buffer:fallbackBindingBuffer
+                                               offset:0];
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -1011,8 +1013,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     _bindingSync.state->lastBoundVertexBuffers[s].buffer != fallbackBindingBuffer ||
                     _bindingSync.state->lastBoundVertexBuffers[s].offset != 0) {
                     [encCtx->encoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:s];
-                    _bindingSync.state->lastBoundVertexBuffers[s].buffer = fallbackBindingBuffer;
-                    _bindingSync.state->lastBoundVertexBuffers[s].offset = 0;
+                    [_bindingSync updateVertexBufferSlot:s
+                                           buffer:fallbackBindingBuffer
+                                           offset:0];
                     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 } else {
                     MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -1139,8 +1142,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             NSLog(@"MGL FBIND skip slot=%u: invalid/NULL candidate=%p", i, map->buf);
             map->buf = NULL;
             [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
             continue;
         }
 
@@ -1148,8 +1150,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: negative offset=%lld",
                   i, ptr->name, (long long)offset);
             [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
             continue;
         }
 
@@ -1167,10 +1168,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
                     [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
                     continue;
                 }
 
@@ -1180,10 +1179,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: offset=%lu bufferSize=%lu",
                           ptr->name, i, (unsigned long)bindOffset, (unsigned long)bufferSize);
                     [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
                     continue;
                 }
 
@@ -1204,10 +1201,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: suspicious mtl_data pointer=%p",
                           ptr->name, i, ptr->data.mtl_data);
                     [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
                     continue;
                 }
                 id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
@@ -1218,10 +1213,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: offset=%lu length=%lu",
                               ptr->name, i, (unsigned long)bindOffset, (unsigned long)metalLen);
                         [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
                         continue;
                     }
 
@@ -1229,8 +1222,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer != fallbackBuffer ||
                         _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
                         [encCtx->encoder setFragmentBuffer:fallbackBuffer offset:offset atIndex:bindingIndex];
-                        _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = fallbackBuffer;
-                        _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = (NSUInteger)offset;
+                        [_bindingSync updateFragmentBufferSlot:bindingIndex
+                                               buffer:fallbackBuffer
+                                               offset:(NSUInteger)offset];
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1247,8 +1241,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 }
             } else {
                 [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-            _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+            [_bindingSync clearFragmentBufferSlot:bindingIndex];
             }
             
             // clear buffer data dirty bits
@@ -1299,16 +1292,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     [encCtx->encoder setFragmentBuffer:nil
                                                       offset:0
                                                      atIndex:bindingIndex];
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = nil;
-                    _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
                     continue;
                 }
 
                 [encCtx->encoder setFragmentBuffer:isolated
                                                   offset:0
                                                  atIndex:bindingIndex];
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = isolated;
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = 0;
+                [_bindingSync updateFragmentBufferSlot:bindingIndex
+                                       buffer:isolated
+                                       offset:0];
                 MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 anyBindingPresent[bindingIndex] = true;
                 if (kMGLVerboseBindLogs) {
@@ -1352,8 +1345,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer != buffer ||
                 _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
                 [encCtx->encoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer = buffer;
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset = (NSUInteger)offset;
+                [_bindingSync updateFragmentBufferSlot:bindingIndex
+                                       buffer:buffer
+                                       offset:(NSUInteger)offset];
                 MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1423,7 +1417,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             boundFragmentBufferMask |= 1U << i;
         }
     }
-    _bindingSync.state->lastBoundFragmentBufferMask |= boundFragmentBufferMask;
+    [_bindingSync orFragmentBufferMask:boundFragmentBufferMask];
 
     if (getenv("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_fbind_trace_count = 0;
@@ -1458,7 +1452,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
      * binds can be skipped when the resource and offset are unchanged. */
-    _bindingSync.state->lastBoundValid = YES;
+    [_bindingSync setBoundValid:YES];
     return true;
 }
 
@@ -1516,8 +1510,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                         _bindingSync.state->lastBoundFragmentBuffers[_slot].buffer != fallbackBindingBuffer ||
                         _bindingSync.state->lastBoundFragmentBuffers[_slot].offset != 0) {
                         [encCtx->encoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
-                        _bindingSync.state->lastBoundFragmentBuffers[_slot].buffer = fallbackBindingBuffer;
-                        _bindingSync.state->lastBoundFragmentBuffers[_slot].offset = 0;
+                        [_bindingSync updateFragmentBufferSlot:_slot
+                                               buffer:fallbackBindingBuffer
+                                               offset:0];
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1536,8 +1531,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     _bindingSync.state->lastBoundFragmentBuffers[s].buffer != fallbackBindingBuffer ||
                     _bindingSync.state->lastBoundFragmentBuffers[s].offset != 0) {
                     [encCtx->encoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:s];
-                    _bindingSync.state->lastBoundFragmentBuffers[s].buffer = fallbackBindingBuffer;
-                    _bindingSync.state->lastBoundFragmentBuffers[s].offset = 0;
+                    [_bindingSync updateFragmentBufferSlot:s
+                                           buffer:fallbackBindingBuffer
+                                           offset:0];
                     MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 } else {
                     MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -3921,8 +3917,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 [encCtx->encoder setVertexBuffer:metal_buffer
                                                 offset:dynamic_offset
                                                atIndex:metal_slot];
-                _bindingSync.state->lastBoundVertexBuffers[metal_slot].buffer = metal_buffer;
-                _bindingSync.state->lastBoundVertexBuffers[metal_slot].offset = dynamic_offset;
+                [_bindingSync updateVertexBufferSlot:metal_slot
+                                       buffer:metal_buffer
+                                       offset:dynamic_offset];
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -4004,8 +4001,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         [encCtx->encoder setVertexBuffer:metal_buffer
                                                         offset:(NSUInteger)start
                                                        atIndex:metal_slot];
-                        _bindingSync.state->lastBoundVertexBuffers[metal_slot].buffer = metal_buffer;
-                        _bindingSync.state->lastBoundVertexBuffers[metal_slot].offset = (NSUInteger)start;
+                        [_bindingSync updateVertexBufferSlot:metal_slot
+                                               buffer:metal_buffer
+                                               offset:(NSUInteger)start];
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -4017,8 +4015,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         [encCtx->encoder setFragmentBuffer:metal_buffer
                                                           offset:(NSUInteger)start
                                                          atIndex:metal_slot];
-                        _bindingSync.state->lastBoundFragmentBuffers[metal_slot].buffer = metal_buffer;
-                        _bindingSync.state->lastBoundFragmentBuffers[metal_slot].offset = (NSUInteger)start;
+                        [_bindingSync updateFragmentBufferSlot:metal_slot
+                                               buffer:metal_buffer
+                                               offset:(NSUInteger)start];
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -4260,7 +4259,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
 - (bool)applyDynamicBindingsForCommand:(const MGLDrawCommand *)cmd
                                 context:(GLMContext)glm_ctx
-                          encodeContext:(const MGLEncodeContext *)encCtx
+                          encodeContext:(MGLEncodeContext *)encCtx
 {
     if (!cmd || (cmd->dynamic_vertex_binding_count == 0 &&
                  cmd->dynamic_uniform_binding_count == 0 &&
@@ -4343,8 +4342,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         return false;
     }
 
-    /* Texture materialization may replace the render encoder and restore the
-     * batch VAO. Apply per-draw buffer overrides only after that completes. */
+    /* Texture materialization may have ended and recreated the render encoder
+     * (RT-sampled-copy path). The cached encoder is now stale; refresh it so
+     * per-draw buffer overrides and the draw itself target the live encoder. */
+    encCtx->encoder = _renderPassManager.state->currentRenderEncoder;
+
     bool direct_vertex_ok = cmd->dynamic_vertex_binding_count == 0 ||
         [self bindDynamicVertexArrayBuffersDirectly:draw_vao
                                             command:cmd
@@ -4375,9 +4377,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
              encodeContext:(const MGLEncodeContext *)encCtx
 {
+    /* Mutable working copy: applyDynamicBindingsForCommand: may rotate the
+     * encoder (RT-sampled-copy path) and refresh liveEncCtx.encoder in place,
+     * so the per-command draw dispatch below targets the live encoder. */
+    MGLEncodeContext liveEncCtx = *encCtx;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:encCtx]) {
+        if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
@@ -4390,7 +4396,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         if ((batch->sampler_snapshots_mixed ||
              batch->has_dynamic_texture_bindings) &&
-            ![self applySamplerSnapshotForCommand:cmd context:glm_ctx encodeContext:encCtx]) {
+            ![self applySamplerSnapshotForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
@@ -4441,7 +4447,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                  emulateLineLoop:emulateLineLoop
                                    emulateQuads:emulateQuads
                                         primType:primType
-                                   encodeContext:encCtx];
+                                   encodeContext:&liveEncCtx];
                 break;
 
             case MGL_CMD_DRAW_ARRAYS_INSTANCED:
@@ -4457,7 +4463,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                  emulateLineLoop:emulateLineLoop
                                    emulateQuads:emulateQuads
                                         primType:primType
-                                   encodeContext:encCtx];
+                                   encodeContext:&liveEncCtx];
                 break;
 
             case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
@@ -4473,7 +4479,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                      emulateLineLoop:emulateLineLoop
                                                        emulateQuads:emulateQuads
                                                             primType:primType
-                                                       encodeContext:encCtx];
+                                                       encodeContext:&liveEncCtx];
                 break;
 
             default:
@@ -4489,7 +4495,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                  emulateLineLoop:emulateLineLoop
                                    emulateQuads:emulateQuads
                                         primType:primType
-                                   encodeContext:encCtx];
+                                   encodeContext:&liveEncCtx];
                 break;
         }
     }
@@ -5669,17 +5675,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             [_renderPassManager.state->currentRenderEncoder setDepthBias:_bias
                                      slopeScale:_slope
                                           clamp:_clamp];
-            _bindingSync.state->lastDepthBias = _bias;
-            _bindingSync.state->lastDepthBiasClamp = _clamp;
-            _bindingSync.state->lastDepthSlopeScale = _slope;
+            [_bindingSync setLastDepthBias:_bias clamp:_clamp slopeScale:_slope];
         }
     } else {
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != 0.0f ||
             _bindingSync.state->lastDepthBiasClamp != 0.0f || _bindingSync.state->lastDepthSlopeScale != 0.0f) {
             [_renderPassManager.state->currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-            _bindingSync.state->lastDepthBias = 0.0f;
-            _bindingSync.state->lastDepthBiasClamp = 0.0f;
-            _bindingSync.state->lastDepthSlopeScale = 0.0f;
+            [_bindingSync setLastDepthBias:0.0f clamp:0.0f slopeScale:0.0f];
         }
     }
 }
@@ -6080,7 +6082,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         @try {
             [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-            _bindingSync.state->lastPipelineState = _pipelineCache.state->pipelineState;
+            [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays - setRenderPipelineState failed after recovery: %@", exception);

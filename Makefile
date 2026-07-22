@@ -204,13 +204,6 @@ EXT_DIRS = ./external/OpenGL-Registry \
            ./external/glslang \
            ./external/ezxml
 
-REPOS = https://github.com/KhronosGroup/OpenGL-Registry.git \
-        https://github.com/KhronosGroup/SPIRV-Cross.git \
-        https://github.com/KhronosGroup/SPIRV-Headers.git \
-        https://github.com/KhronosGroup/SPIRV-Tools.git \
-        https://github.com/KhronosGroup/glslang.git \
-        https://github.com/lxfontes/ezxml.git
-
 # Simplified index_of function - find position of directory in EXT_DIRS
 define index_of
 $(strip $(1))
@@ -220,7 +213,7 @@ endef
 # Simplified mapping for common directories
 define get_repo_url
 $(if $(filter $(1),./external/OpenGL-Registry),https://github.com/KhronosGroup/OpenGL-Registry.git, \
-$(if $(filter $(1),./external/SPIRV-Cross),https://github.com/KhronosGroup/SPIRV-Cross.git, \
+$(if $(filter $(1),./external/SPIRV-Cross),https://github.com/r58Playz/SPIRV-Cross.git, \
 $(if $(filter $(1),./external/SPIRV-Headers),https://github.com/KhronosGroup/SPIRV-Headers.git, \
 $(if $(filter $(1),./external/SPIRV-Tools),https://github.com/KhronosGroup/SPIRV-Tools.git, \
 $(if $(filter $(1),./external/glslang),https://github.com/KhronosGroup/glslang.git, \
@@ -236,7 +229,12 @@ define check_and_clone
 	echo "REPO resolved: $$REPO"; \
 	if [ ! -d $(1) ]; then \
 		echo "Cloning from $$REPO into $(1)..."; \
-		git clone $$REPO $(1) --depth 1; \
+		if [ "$(1)" = "./external/SPIRV-Cross" ]; then \
+			git clone $$REPO -b uniform-constants $(1) --depth 1; \
+			echo "SPIRV-Cross pinned to r58Playz fork @ uniform-constants (MSL text-patch compatibility)"; \
+		else \
+			git clone $$REPO $(1) --depth 1; \
+		fi; \
 	else \
 		echo "$(1) already exists, skipping."; \
 	fi

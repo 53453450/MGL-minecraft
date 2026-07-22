@@ -141,30 +141,16 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
  *                                (the default / post-teardown mode; both
  *                                conceptually refer to &ctx->state)
  *   (B) _activeState != NULL  -> _activeState MUST equal ctx->active_state
- *                                (the redirected mode used during parallel-
- *                                worker encode and batch replay)
+ *                                (the redirected mode used during batch replay)
  *
  * Enforcement: all writes to either proxy MUST go through the centralized
  * helpers declared below this macro:
- *   - mglSetActiveStateForContext:state:      -> config (B)
  *   - mglRestoreLiveActiveStateForContext:     -> config (A)
  *   - mglAssertDualProxyInSyncForContext:      -> debug-mode checkpoint
- * These prevent the desync that previously occurred when callers wrote one
- * proxy without the other (e.g., the old encodeBatchForParallelWorker wrote
- * only ctx->active_state = workerState, leaving _activeState stale until
- * restoreStateForBatch synced it — a window in which any MGL_STATE() read
- * would have returned the wrong state).
+ * These prevent proxy desync — a caller writing one proxy without the other.
  *
  * Checkpoints (NSCAssert, compiled out in release): flushDrawBuffer entry,
- * encodeBatchForParallelWorker entry/exit, restoreStateForBatch entry,
- * teardownBatchReplayForContext entry/exit.
- *
- * NOTE on multi-threaded encode: the helpers make the existing sequential
- * parallel-encode path safe, but true multi-threaded encode on a single
- * GLMContext is still blocked by the shared ctx->active_state pointer itself
- * (see the Bug D10 CONCURRENCY NOTE in encodeBatchForParallelWorker).
- * Enabling true concurrency requires per-worker GLMContext or copy-on-write
- * state, which is a separate, larger refactor.
+ * restoreStateForBatch entry, teardownBatchReplayForContext entry/exit.
  *
  * A desync causes STATE() and MGL_STATE() to read different GLMState objects,
  * producing wrong binds/dirty bits — intermittent render errors that are
@@ -217,16 +203,11 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
  * above MGL_STATE() for the invariant definition.
  *
  * Use these instead of writing either proxy directly:
- *   - mglSetActiveStateForContext:state:    parallel-worker redirect or any
- *                                          case where both proxies must point
- *                                          to the same non-default GLMState
  *   - mglRestoreLiveActiveStateForContext:  batch replay teardown (revert to
  *                                          live ctx->state, ivar = NULL)
  *   - mglAssertDualProxyInSyncForContext:   debug-mode checkpoint
  *                                          (NSCAssert compiled out in release)
  */
-- (void)mglSetActiveStateForContext:(GLMContext)glm_ctx
-                               state:(GLMState *)state;
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
 - (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 

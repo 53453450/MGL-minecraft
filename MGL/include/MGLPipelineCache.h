@@ -54,7 +54,7 @@ NS_ASSUME_NONNULL_BEGIN
     id<MTLDevice> _device;
 }
 
-@property(nonatomic, readonly) MGLPipelineCacheState *state;
+@property(nonatomic, readonly) const MGLPipelineCacheState *state;
 @property(nonatomic, strong, nullable) id<MTLDevice> device;
 
 - (instancetype)initWithPSODedupEnabled:(BOOL)psoDedupEnabled
@@ -83,6 +83,28 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (void)resetCaches;
 - (void)shutdown;
+
+/* Low-level pipeline-state mutators used by the PSO build path. These write
+ * the tracked state so the manager owns all writes to _state (no raw writable
+ * state pointer escapes). */
+- (void)invalidatePipelineState;
+- (void)setPipelineState:(nullable id<MTLRenderPipelineState>)pipelineState;
+- (void)activatePipelineState:(nullable id<MTLRenderPipelineState>)pipelineState
+                 color0Format:(MTLPixelFormat)color0Format
+                  depthFormat:(MTLPixelFormat)depthFormat
+                stencilFormat:(MTLPixelFormat)stencilFormat
+                  programName:(GLuint)programName
+               vertexFunction:(nullable id<MTLFunction>)vertexFunction
+             fragmentFunction:(nullable id<MTLFunction>)fragmentFunction;
+- (void)setBlendFactorsForAttachment:(NSUInteger)index
+                        srcRgbFactor:(MTLBlendFactor)srcRgbFactor
+                      srcAlphaFactor:(MTLBlendFactor)srcAlphaFactor
+                        dstRgbFactor:(MTLBlendFactor)dstRgbFactor
+                      dstAlphaFactor:(MTLBlendFactor)dstAlphaFactor
+                        rgbOperation:(MTLBlendOperation)rgbOperation
+                      alphaOperation:(MTLBlendOperation)alphaOperation
+                           colorMask:(MTLColorWriteMask)colorMask;
+- (void)disableBinaryArchive;
 
 @end
 

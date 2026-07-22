@@ -129,10 +129,6 @@ _Atomic uint64_t g_mglSetFragmentBufferSkipsSinceSwap  = 0;
 _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap = 0;
 _Atomic uint64_t g_mglEncoderCreationsSinceSwap        = 0;
 _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap     = 0;
-_Atomic uint64_t g_mglParallelGroupsSinceSwap          = 0;
-_Atomic uint64_t g_mglParallelGroupBatchesSinceSwap     = 0;
-_Atomic uint64_t g_mglLargestParallelGroupSinceSwap     = 0;
-_Atomic uint64_t g_mglParallelEncodeEligibleBatchesSinceSwap = 0;
 _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap   = 0;
 _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap   = 0;
 _Atomic uint64_t g_mglMergeRejectUnsafeBuiltinSinceSwap  = 0;
@@ -185,7 +181,6 @@ void mglPrintPerfSummary(double frame_interval_ms)
           @"batches: d=%llu m=%llu sm=%llu | pipe: hit=%llu miss=%llu evict=%llu | "
           @"shaders: %llu/%.1fms | enc: vb=%llu(%llu skip) fb=%llu(%llu skip) ps=%llu(%llu skip) | "
           @"encoder: new=%llu fboRot=%llu | "
-          @"pgrp: g=%llu batches=%llu max=%llu elig=%llu | "
           @"merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu | "
           @"lock: wait=%.1fms hold=%.1fms | "
           @"ds: creates=%llu skips=%llu | "
@@ -202,8 +197,6 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.set_fragment_buffer_calls, c.set_fragment_buffer_skips,
           c.set_render_pipeline_state_calls, c.set_render_pipeline_state_skips,
           c.encoder_creations, c.encoder_fbo_rotations,
-          c.parallel_groups, c.parallel_group_batches, c.largest_parallel_group,
-          c.parallel_encode_eligible_batches,
           c.merge_reject_state_differs, c.merge_reject_buffer_hazard,
           c.merge_reject_unsafe_builtin, c.merge_reject_excluded_layout,
           c.merge_reject_append_failed,

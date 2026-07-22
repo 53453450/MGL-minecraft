@@ -2339,13 +2339,13 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
 
     if (src_buf == dst_buf)
     {
-        /* Per GL 4.6 spec, when src and dst are the same buffer and the
-         * read/write ranges overlap, the error is GL_INVALID_OPERATION
-         * (not GL_INVALID_VALUE).  Identical offsets with size > 0 means
-         * the ranges fully overlap. */
+        /* Per GL 4.6 spec §6.6, when src and dst are the same buffer and the
+         * ranges [readOffset, readOffset+size) and [writeOffset, writeOffset+size)
+         * overlap, the error is GL_INVALID_VALUE.  Identical offsets with
+         * size > 0 means the ranges fully overlap. */
         if (readOffset == writeOffset)
         {
-            ERROR_RETURN(GL_INVALID_OPERATION);
+            ERROR_RETURN(GL_INVALID_VALUE);
             return;
         }
 
@@ -2357,7 +2357,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         {
             if (r0 + usize > w0)
             {
-                ERROR_RETURN(GL_INVALID_OPERATION);
+                ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
         }
@@ -2365,7 +2365,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         {
             if (w0 + usize > r0)
             {
-                ERROR_RETURN(GL_INVALID_OPERATION);
+                ERROR_RETURN(GL_INVALID_VALUE);
                 return;
             }
         }

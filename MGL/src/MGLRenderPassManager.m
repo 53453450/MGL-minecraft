@@ -13,7 +13,7 @@
     return self;
 }
 
-- (MGLCommandState *)state
+- (const MGLCommandState *)state
 {
     return &_state;
 }
@@ -178,21 +178,6 @@
     _state.currentRenderEncoder = nil;
 }
 
-- (void)beginParallelEncoding
-{
-    _state.parallelEncodeActive = YES;
-}
-
-- (void)endParallelEncoding
-{
-    _state.parallelEncodeActive = NO;
-}
-
-- (BOOL)isParallelEncodingActive
-{
-    return _state.parallelEncodeActive;
-}
-
 - (BOOL)beginCommandBufferCommit
 {
     if (_state.isCommittingCommandBuffer) {
@@ -266,6 +251,48 @@
     _state.mdiArgsScratchOffset = 0;
 }
 
+- (void)installNewRenderPassDescriptor
+{
+    _state.renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+}
+
+- (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex
+{
+    _state.traceReplayFlushId = flushId;
+    _state.traceReplayBatchIndex = batchIndex;
+}
+
+- (void)setTransientDepthTexture:(nullable id<MTLTexture>)texture
+                           width:(NSUInteger)width
+                          height:(NSUInteger)height
+{
+    _state.transientDepthTexture = texture;
+    _state.transientDepthTextureWidth = width;
+    _state.transientDepthTextureHeight = height;
+}
+
+- (void)setFallbackRenderTargetTexture:(nullable id<MTLTexture>)texture
+{
+    _state.fallbackRenderTargetTexture = texture;
+}
+
+- (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy
+{
+    _state.currentDrawUsesRTSampledCopy = usesRTSampledCopy;
+}
+
+- (void)setDontCareFrameGeneration:(GLuint)generation
+{
+    _state.dontCareFrameGeneration = generation;
+}
+
+- (void)incrementDontCareFrameGenerationWithWrap
+{
+    if (++_state.dontCareFrameGeneration == 0u) {
+        _state.dontCareFrameGeneration = 2u;  /* skip 0 (texture stamp init) and wrap sentinel */
+    }
+}
+
 - (void)shutdown
 {
     _state.renderPassDescriptor = nil;
@@ -282,7 +309,6 @@
     _state.fallbackRenderTargetTexture = nil;
     _state.transientDepthTexture = nil;
     [self clearPendingEvent];
-    [self endParallelEncoding];
     _state.currentDrawUsesRTSampledCopy = NO;
     [self endCommandBufferCommit];
 }

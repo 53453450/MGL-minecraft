@@ -28,7 +28,6 @@ typedef struct MGLCommandState_t {
     NSUInteger mdiArgsScratchCapacity;
     NSUInteger mdiArgsScratchOffset;
     id<MTLRenderCommandEncoder> __strong _Nullable currentRenderEncoder;
-    BOOL parallelEncodeActive;
     id<MTLTexture> __strong _Nullable fallbackRenderTargetTexture;
     id<MTLTexture> __strong _Nullable transientDepthTexture;
     NSUInteger transientDepthTextureWidth;
@@ -47,7 +46,7 @@ NS_ASSUME_NONNULL_BEGIN
     MGLCommandState _state;
 }
 
-@property(nonatomic, readonly) MGLCommandState *state;
+@property(nonatomic, readonly) const MGLCommandState *state;
 
 - (void)updateRenderPassIdentityForContext:(GLMContext)context;
 - (void)clearRenderPassIdentity;
@@ -62,15 +61,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)clearPendingEvent;
 - (void)installRenderEncoder:(nullable id<MTLRenderCommandEncoder>)renderEncoder;
 - (void)clearCurrentRenderEncoder;
-- (void)beginParallelEncoding;
-- (void)endParallelEncoding;
-- (BOOL)isParallelEncodingActive;
 - (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;
 - (nullable id<MTLBuffer>)mdiArgumentScratchBufferWithDevice:(id<MTLDevice>)device
                                                       length:(NSUInteger)length
                                                       offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;
+- (void)installNewRenderPassDescriptor;
+- (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex;
+- (void)setTransientDepthTexture:(nullable id<MTLTexture>)texture
+                           width:(NSUInteger)width
+                          height:(NSUInteger)height;
+- (void)setFallbackRenderTargetTexture:(nullable id<MTLTexture>)texture;
+- (void)setCurrentDrawUsesRTSampledCopy:(BOOL)usesRTSampledCopy;
+- (void)setDontCareFrameGeneration:(GLuint)generation;
+- (void)incrementDontCareFrameGenerationWithWrap;
 - (void)shutdown;
 
 @end

@@ -7305,50 +7305,6 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
  * by the dedup fast path. */
 /* invalidateLastBoundState moved to MGLRenderer+Draw.m */
 
-#pragma mark - Parallel Command Recording Infrastructure
-
-/* Save the renderer's dedup ivars into a worker context.
- * Called before dispatching batch encode to a background thread so the
- * worker starts with the current dedup state (e.g. pipeline already bound
- * by a previous batch in the same render pass). */
-/* saveDedupStateToWorker:(MGLWorkerContext *)worker moved to MGLRenderer+Draw.m */
-
-/* Load dedup state back from a worker context into the renderer's ivars.
- * Called after the background thread finishes encoding to restore the
- * dedup state to reflect what the worker bound. */
-/* loadDedupStateFromWorker:(const MGLWorkerContext *)worker moved to MGLRenderer+Draw.m */
-
-/* Check whether parallel encode is enabled via environment variable.
- * When enabled, flushDrawBuffer will attempt to use MTLParallelRenderCommandEncoder
- * for parallel groups with ≥2 batches.  Disabled by default.
- *
- * The parallel encoder path is validated in headless FBO mode (regression
- * tests).  In windowed mode with sampled render targets, endRenderEncodingLocked
- * triggers Y-flip copy encoders that conflict with parallel encoder creation on
- * the AGX driver.  Future work will handle sampled RT deferral to enable
- * parallel encoding in windowed mode. */
-/* parallelEncodeEnabled moved to MGLRenderer+Draw.m */
-
-/* Encode a single batch onto the encoder referenced by the worker context.
- *
- * This method implements the per-worker batch processing that will eventually
- * run on background threads via MTLParallelRenderCommandEncoder sub-encoders.
- * Currently called sequentially from flushDrawBuffer to verify that each
- * batch can set up its full state independently (no reliance on the previous
- * batch's dedup cache).
- *
- * The dedup swap sequence is:
- *   1. loadDedupStateFromWorker: install the worker's pre-batch dedup state
- *   2. invalidateLastBoundState: clear dedup (sub-encoder is fresh)
- *   3. restoreStateForBatch: copy batch's GL state snapshot into GLMContext
- *   4. checkBatchShouldExecute: runs processGLStateLocked (syncs to encoder)
- *   5. scheduleDrawBatch + issue: encode the draw
- *   6. saveDedupStateToWorker: capture post-batch dedup state
- *
- * Returns the scheduled MGLBatchPath (or MGL_BATCH_PATH_DIRECT if skipped).
- * *executedOut is set to NO if the batch was skipped/failed. */
-/* encodeBatchForParallelWorker:(MGLWorkerContext *)worker moved to MGLRenderer+Draw.m */
-
 /* recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
 
 /* recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index moved to MGLRenderer+Draw.m */
@@ -7516,9 +7472,7 @@ static BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
      * written before this point belongs to the previous frame, so its next
      * write this frame is a "first use" that may skip loading prior contents.
      * Skips 0 so a zero-initialized texture stamp never matches. */
-    if (++_renderPassManager.state->dontCareFrameGeneration == 0u) {
-        _renderPassManager.state->dontCareFrameGeneration = 2u;  /* skip 0 (texture stamp init) and wrap sentinel */
-    }
+    [_renderPassManager incrementDontCareFrameGenerationWithWrap];
     MGL_FRAME_STORE(g_mglLastSwapSeconds, swapStartSeconds);
     if (swapCall <= 20ull || (swapCall % 60ull) == 0ull) {
         mglTraceLog("SWAP_RENDERER_ENTRY call=%llu drawArraysSinceSwap=%llu drawElementsSinceSwap=%llu processDrawCallsSinceSwap=%llu",
@@ -10829,7 +10783,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     /* start the DontCare frame generation at 1 so it never matches a
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
-    _renderPassManager.state->dontCareFrameGeneration = 1u;
+    [_renderPassManager setDontCareFrameGeneration:1u];
 
     // CRITICAL FIX: Initialize thread synchronization locks.
     // _metalStateLock: NSRecursiveLock (reentrant) — required because the
@@ -10966,7 +10920,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         if (@available(macOS 11.0, *)) {
             [_pipelineCache loadBinaryArchive];
         } else {
-            _pipelineCache.state->binaryArchiveEnabled = NO;
+            [_pipelineCache disableBinaryArchive];
         }
     }
 

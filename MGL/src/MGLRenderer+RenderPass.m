@@ -794,7 +794,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     @try {
         [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-        _bindingSync.state->lastPipelineState = _pipelineCache.state->pipelineState;
+        [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
         MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %@",
@@ -842,13 +842,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                   (unsigned long long)hit);
         }
     }
-    _pipelineCache.state->pipelineState = nil;
-    _pipelineCache.state->pipelineColor0Format = MTLPixelFormatInvalid;
-    _pipelineCache.state->pipelineDepthFormat = MTLPixelFormatInvalid;
-    _pipelineCache.state->pipelineStencilFormat = MTLPixelFormatInvalid;
-    _pipelineCache.state->pipelineProgramName = 0u;
-    _pipelineCache.state->pipelineVertexFunction = nil;
-    _pipelineCache.state->pipelineFragmentFunction = nil;
+    [_pipelineCache invalidatePipelineState];
 }
 
 -(bool)bindMTLProgram:(Program *)ptr
@@ -1227,7 +1221,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthStencilState != dsState) {
             [_renderPassManager.state->currentRenderEncoder setDepthStencilState: dsState];
-            _bindingSync.state->lastDepthStencilState = dsState;
+            [_bindingSync setLastDepthStencilState:dsState];
         } else {
             MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
         }
@@ -1247,7 +1241,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (disabledDSState) {
             if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthStencilState != disabledDSState) {
                 [_renderPassManager.state->currentRenderEncoder setDepthStencilState:disabledDSState];
-                _bindingSync.state->lastDepthStencilState = disabledDSState;
+                [_bindingSync setLastDepthStencilState:disabledDSState];
             } else {
                 MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
             }
@@ -1292,28 +1286,28 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastCullMode != cull_mode) {
             [_renderPassManager.state->currentRenderEncoder setCullMode:cull_mode];
-            _bindingSync.state->lastCullMode = cull_mode;
+            [_bindingSync setLastCullMode:cull_mode];
         }
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastFrontFacingWinding != _winding) {
             [_renderPassManager.state->currentRenderEncoder setFrontFacingWinding:_winding];
-            _bindingSync.state->lastFrontFacingWinding = _winding;
+            [_bindingSync setLastFrontFacingWinding:_winding];
         }
     }
     else
     {
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastCullMode != MTLCullModeNone) {
             [_renderPassManager.state->currentRenderEncoder setCullMode:MTLCullModeNone];
-            _bindingSync.state->lastCullMode = MTLCullModeNone;
+            [_bindingSync setLastCullMode:MTLCullModeNone];
         }
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastFrontFacingWinding != _winding) {
             [_renderPassManager.state->currentRenderEncoder setFrontFacingWinding:_winding];
-            _bindingSync.state->lastFrontFacingWinding = _winding;
+            [_bindingSync setLastFrontFacingWinding:_winding];
         }
 
         if (state->caps.cull_face && defaultFramebufferSampledPass) {
@@ -1363,9 +1357,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             [_renderPassManager.state->currentRenderEncoder setDepthBias:_bias
                                      slopeScale:_slope
                                           clamp:_clamp];
-            _bindingSync.state->lastDepthBias = _bias;
-            _bindingSync.state->lastDepthBiasClamp = _clamp;
-            _bindingSync.state->lastDepthSlopeScale = _slope;
+            [_bindingSync setLastDepthBias:_bias clamp:_clamp slopeScale:_slope];
         }
     }
     else
@@ -1373,9 +1365,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != 0.0f ||
             _bindingSync.state->lastDepthBiasClamp != 0.0f || _bindingSync.state->lastDepthSlopeScale != 0.0f) {
             [_renderPassManager.state->currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-            _bindingSync.state->lastDepthBias = 0.0f;
-            _bindingSync.state->lastDepthBiasClamp = 0.0f;
-            _bindingSync.state->lastDepthSlopeScale = 0.0f;
+            [_bindingSync setLastDepthBias:0.0f clamp:0.0f slopeScale:0.0f];
         }
     }
 
@@ -2118,9 +2108,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                    mipmapped:NO];
                 depthDesc.usage = MTLTextureUsageRenderTarget;
                 depthDesc.storageMode = MTLStorageModePrivate;
-                _renderPassManager.state->transientDepthTexture = [_device newTextureWithDescriptor:depthDesc];
-                _renderPassManager.state->transientDepthTextureWidth = depthWidth;
-                _renderPassManager.state->transientDepthTextureHeight = depthHeight;
+                id<MTLTexture> transientDepth = [_device newTextureWithDescriptor:depthDesc];
+                [_renderPassManager setTransientDepthTexture:transientDepth width:depthWidth height:depthHeight];
 
                 if (_renderPassManager.state->transientDepthTexture) {
                     static uint64_t s_transientDepthCreateCount = 0;
@@ -2501,7 +2490,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            _renderPassManager.state->fallbackRenderTargetTexture = [_device newTextureWithDescriptor:fbDesc];
+            [_renderPassManager setFallbackRenderTargetTexture:[_device newTextureWithDescriptor:fbDesc]];
         }
 
         if (_renderPassManager.state->fallbackRenderTargetTexture) {
@@ -2552,7 +2541,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            _renderPassManager.state->fallbackRenderTargetTexture = [_device newTextureWithDescriptor:fbDesc];
+            [_renderPassManager setFallbackRenderTargetTexture:[_device newTextureWithDescriptor:fbDesc]];
         }
         if (_renderPassManager.state->fallbackRenderTargetTexture) {
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding 1x1 fallback");
@@ -2873,7 +2862,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         ctx->active_state->var.scissor_box[3] = (GLint)drawableHeight;
     }
 
-    _renderPassManager.state->renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    [_renderPassManager installNewRenderPassDescriptor];
     if (!_renderPassManager.state->renderPassDescriptor) {
         NSLog(@"MGL RENDERPASS ERROR: failed to allocate render pass descriptor");
         return false;
@@ -3847,32 +3836,24 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             repairedState = true;
         }
 
-        _pipelineCache.state->src_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_src_rgb[i]];
-        _pipelineCache.state->src_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_src_alpha[i]];
-
-        _pipelineCache.state->dst_blend_rgb_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_dst_rgb[i]];
-        _pipelineCache.state->dst_blend_alpha_factor[i] = [self blendFactorFromGL:ctx->active_state->var.blend_dst_alpha[i]];
-
-        _pipelineCache.state->rgb_blend_operation[i] = [self blendOperationFromGL: ctx->active_state->var.blend_equation_rgb[i]];
-        _pipelineCache.state->alpha_blend_operation[i] = [self blendOperationFromGL: ctx->active_state->var.blend_equation_alpha[i]];
-
+        MTLColorWriteMask colorMask_i;
         if (!ctx->active_state->caps.use_color_mask[i]) {
-            _pipelineCache.state->color_mask[i] = MTLColorWriteMaskAll;
+            colorMask_i = MTLColorWriteMaskAll;
         } else {
-            _pipelineCache.state->color_mask[i] = MTLColorWriteMaskNone;
-
-            if (ctx->active_state->var.color_writemask[i][0])
-                _pipelineCache.state->color_mask[i] |= MTLColorWriteMaskRed;
-
-            if (ctx->active_state->var.color_writemask[i][1])
-                _pipelineCache.state->color_mask[i] |= MTLColorWriteMaskGreen;
-
-            if (ctx->active_state->var.color_writemask[i][2])
-                _pipelineCache.state->color_mask[i] |= MTLColorWriteMaskBlue;
-
-            if (ctx->active_state->var.color_writemask[i][3])
-                _pipelineCache.state->color_mask[i] |= MTLColorWriteMaskAlpha;
+            colorMask_i = MTLColorWriteMaskNone;
+            if (ctx->active_state->var.color_writemask[i][0]) colorMask_i |= MTLColorWriteMaskRed;
+            if (ctx->active_state->var.color_writemask[i][1]) colorMask_i |= MTLColorWriteMaskGreen;
+            if (ctx->active_state->var.color_writemask[i][2]) colorMask_i |= MTLColorWriteMaskBlue;
+            if (ctx->active_state->var.color_writemask[i][3]) colorMask_i |= MTLColorWriteMaskAlpha;
         }
+        [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
+                                        srcRgbFactor:[self blendFactorFromGL:ctx->active_state->var.blend_src_rgb[i]]
+                                      srcAlphaFactor:[self blendFactorFromGL:ctx->active_state->var.blend_src_alpha[i]]
+                                        dstRgbFactor:[self blendFactorFromGL:ctx->active_state->var.blend_dst_rgb[i]]
+                                      dstAlphaFactor:[self blendFactorFromGL:ctx->active_state->var.blend_dst_alpha[i]]
+                                        rgbOperation:[self blendOperationFromGL: ctx->active_state->var.blend_equation_rgb[i]]
+                                      alphaOperation:[self blendOperationFromGL: ctx->active_state->var.blend_equation_alpha[i]]
+                                           colorMask:colorMask_i];
     }
     if (repairedState)
         mglMarkStateDirtyBits(ctx->active_state,
@@ -4319,7 +4300,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
          * binding.  Clear it before any early render-state refresh so the
          * previous draw cannot disable culling while DIRTY_VAO/FBO is handled.
          */
-        _renderPassManager.state->currentDrawUsesRTSampledCopy = NO;
+        [_renderPassManager setCurrentDrawUsesRTSampledCopy:NO];
         MGL_FRAME_INC(g_mglProcessDrawCallsSinceSwap);
     }
 
@@ -4463,10 +4444,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
-    // Skip this in parallel-encode mode — the caller owns the command buffer
-    // and sub-encoder lifecycle.
-    if (![_renderPassManager isParallelEncodingActive] &&
-        _renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentRenderEncoder == NULL) {
+    if (_renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentRenderEncoder == NULL) {
         MTLCommandBufferStatus preStatus = _renderPassManager.state->currentCommandBuffer.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld)", (long)preStatus);
@@ -4504,9 +4482,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command]);
 
     // Ensure a render encoder exists for draw commands.
-    // Skip nil-encoder recovery in parallel-encode mode — the sub-encoder
-    // is managed by encodeBatchForParallelWorker.
-    if (![_renderPassManager isParallelEncodingActive] && !_renderPassManager.state->currentRenderEncoder) {
+    if (!_renderPassManager.state->currentRenderEncoder) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
         NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
@@ -4541,13 +4517,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     if (draw_command) {
-        /* Skip FBO-mismatch rebuild in parallel-encode mode —
-         * encodeBatchForParallelWorker already syncs _renderPassManager.state->renderPassFramebuffer*
-         * ivars and clears DIRTY_FBO, so a mismatch here would be a false
-         * positive that destroys the sub-encoder. */
-        if (![_renderPassManager isParallelEncodingActive]) {
-            RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
-        }
+        RETURN_FALSE_ON_FAILURE([self ensureCurrentRenderPassMatchesFramebufferForDraw]);
         [self updateCurrentRenderEncoder];
     }
 
@@ -4603,7 +4573,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     @try {
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastPipelineState != _pipelineCache.state->pipelineState) {
             [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-            _bindingSync.state->lastPipelineState = _pipelineCache.state->pipelineState;
+            [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } else {
             MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
@@ -4667,7 +4637,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (draw_command &&
         mglFragmentTextureTraceBindingsUseRTSampledCopy(
             _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS)) {
-        _renderPassManager.state->currentDrawUsesRTSampledCopy = YES;
+        [_renderPassManager setCurrentDrawUsesRTSampledCopy:YES];
         [self updateCurrentRenderEncoder];
     }
 
@@ -5025,7 +4995,7 @@ stencil_format_ok:;
             if (_pipelineCache.state->psoDedupEnabled && _bindingSync.state->lastBoundValid && (_pipelineCache.state->pipelineState == _bindingSync.state->lastPipelineState)) {
                 MGL_PERF_INC(g_mglPSODedupHitsSinceSwap);
             } else {
-                _bindingSync.state->lastPipelineState = nil;
+                [_bindingSync setLastPipelineState:nil];
                 MGL_PERF_INC(g_mglPSODedupMissesSinceSwap);
             }
             static CFTimeInterval s_pipelineRetryAfter = 0.0;
@@ -5237,16 +5207,16 @@ stencil_format_ok:;
                               pipelineCacheKey);
                     }
 
-                    _pipelineCache.state->pipelineState = cachedPipeline;
+                    [_pipelineCache activatePipelineState:cachedPipeline
+                                           color0Format:builtColor0Format
+                                            depthFormat:builtDepthFormat
+                                          stencilFormat:builtStencilFormat
+                                            programName:currentProgramName
+                                         vertexFunction:cachedFunctionMetadataPresent
+                                             ? cachedVertexFunction : pipelineStateDescriptor.vertexFunction
+                                       fragmentFunction:cachedFunctionMetadataPresent
+                                             ? cachedFragmentFunction : pipelineStateDescriptor.fragmentFunction];
                     pipelineResolvedFromCache = true;
-                    _pipelineCache.state->pipelineColor0Format = builtColor0Format;
-                    _pipelineCache.state->pipelineDepthFormat = builtDepthFormat;
-                    _pipelineCache.state->pipelineStencilFormat = builtStencilFormat;
-                    _pipelineCache.state->pipelineProgramName = currentProgramName;
-                    _pipelineCache.state->pipelineVertexFunction = cachedFunctionMetadataPresent
-                        ? cachedVertexFunction : pipelineStateDescriptor.vertexFunction;
-                    _pipelineCache.state->pipelineFragmentFunction = cachedFunctionMetadataPresent
-                        ? cachedFragmentFunction : pipelineStateDescriptor.fragmentFunction;
                     [_pipelineCache markPipelineEntryUsedForKey:pipelineCacheKey];
 
 	                    // Mirror successful compile-side breaker resets.
@@ -5331,7 +5301,7 @@ stencil_format_ok:;
                 }
 
                 [_pipelineCache applyBinaryArchiveToDescriptor:finalDescriptor];
-                _pipelineCache.state->pipelineState = [_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error];
+                [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error]];
                 if (_pipelineCache.state->pipelineState) {
                     successfulDescriptor = finalDescriptor;
                 }
@@ -5371,7 +5341,7 @@ stencil_format_ok:;
                         if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
                             NSLog(@"MGL WARNING: Interface mismatch for program %u; reusing previous compatible pipeline once",
                                   (unsigned)currentProgramName);
-                            _pipelineCache.state->pipelineState = previousPipelineState;
+                            [_pipelineCache setPipelineState:previousPipelineState];
                             pipelineReusedPrevious = true;
                             s_interfaceMismatchProgramName = currentProgramName;
                             s_interfaceMismatchColor0Format = builtColor0Format;
@@ -5490,7 +5460,7 @@ stencil_format_ok:;
                             mglEnableIndirectCommandBuffersForPipeline(simpleDescriptor);
 
                             [_pipelineCache applyBinaryArchiveToDescriptor:simpleDescriptor];
-                            _pipelineCache.state->pipelineState = [_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error];
+                            [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error]];
                             if (_pipelineCache.state->pipelineState) {
                                 successfulDescriptor = simpleDescriptor;
                                 builtColor0Format = simpleDescriptor.colorAttachments[0].pixelFormat;
@@ -5556,7 +5526,7 @@ stencil_format_ok:;
                         safeDescriptor.fragmentFunction = [fragLibrary newFunctionWithName:@"main"];
 
                         [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                        _pipelineCache.state->pipelineState = [_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error];
+                        [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error]];
                         if (_pipelineCache.state->pipelineState) {
                             successfulDescriptor = safeDescriptor;
                             builtColor0Format = safeDescriptor.colorAttachments[0].pixelFormat;
@@ -5602,12 +5572,13 @@ stencil_format_ok:;
                     s_interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
                     s_interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
                     s_interfaceMismatchRetryAfter = 0.0;
-                    _pipelineCache.state->pipelineColor0Format = builtColor0Format;
-                    _pipelineCache.state->pipelineDepthFormat = builtDepthFormat;
-                    _pipelineCache.state->pipelineStencilFormat = builtStencilFormat;
-                    _pipelineCache.state->pipelineProgramName = currentProgramName;
-                    _pipelineCache.state->pipelineVertexFunction = successfulDescriptor.vertexFunction;
-                    _pipelineCache.state->pipelineFragmentFunction = successfulDescriptor.fragmentFunction;
+                    [_pipelineCache activatePipelineState:_pipelineCache.state->pipelineState
+                                           color0Format:builtColor0Format
+                                            depthFormat:builtDepthFormat
+                                          stencilFormat:builtStencilFormat
+                                            programName:currentProgramName
+                                         vertexFunction:successfulDescriptor.vertexFunction
+                                       fragmentFunction:successfulDescriptor.fragmentFunction];
                     [_pipelineCache addPipelineToBinaryArchive:successfulDescriptor];
                     if (s_programMismatchProgramName == currentProgramName) {
                         s_programMismatchProgramName = 0;

@@ -309,34 +309,6 @@ const char *mglDrawCommandTypeName(MGLDrawCommandType type);
  * false for array (glDrawArrays*) variants or NULL cmd. */
 bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd);
 
-/* Parallel-group planning.
- *
- * A parallel group is a maximal run of consecutive batches in the command
- * buffer that share the same FBO (key.fbo_name) and have no inter-batch
- * resource hazard. The Hazard Tracker already splits read-after-write hazards
- * into separate flushes, so within one command buffer two batches sharing an
- * FBO are candidate members of one group. This pure function fills `groups`
- * (start index + length for each group) without touching ctx state; the
- * renderer decides whether to actually parallelize.
- *
- * Pure data in/out — no Metal, no ctx side effects (core principle 3). */
-
-#define MGL_MAX_PARALLEL_GROUPS  (MGL_MAX_BATCHES)
-
-typedef struct {
-    uint32_t start_batch;   /* index into cb->batches where the group starts */
-    uint32_t batch_count;   /* number of consecutive batches in this group  */
-} MGLParallelGroup;
-
-/* Compute parallel groups for the batches currently in `cb`. Returns the
- * number of groups written to `out_groups` (<= max_groups). Batches with
- * command_count == 0 are skipped (they are not replayed). `out_groups` is
- * capped at max_groups entries; the caller passes at least
- * MGL_MAX_PARALLEL_GROUPS. */
-uint32_t mglComputeParallelGroups(const MGLCommandBuffer *cb,
-                                  MGLParallelGroup *out_groups,
-                                  uint32_t max_groups);
-
 #ifdef __cplusplus
 }
 #endif

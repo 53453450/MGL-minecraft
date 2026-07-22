@@ -18,7 +18,7 @@ static inline void MGLMarkTextureSlot(uint64_t mask[2], NSUInteger index)
     return self;
 }
 
-- (MGLBindingDedupState *)state
+- (const MGLBindingDedupState *)state
 {
     return &_state;
 }
@@ -308,6 +308,82 @@ static inline void MGLMarkTextureSlot(uint64_t mask[2], NSUInteger index)
         [encoder setTriangleFillMode:mode];
         _state.lastTriangleFillMode = mode;
     }
+}
+
+- (void)updateVertexBufferSlot:(NSUInteger)index
+                        buffer:(id<MTLBuffer>)buffer
+                        offset:(NSUInteger)offset
+{
+    if (index >= kMGLMaxBufferSlots) return;
+    _state.lastBoundVertexBuffers[index].buffer = buffer;
+    _state.lastBoundVertexBuffers[index].offset = offset;
+}
+
+- (void)updateFragmentBufferSlot:(NSUInteger)index
+                          buffer:(id<MTLBuffer>)buffer
+                          offset:(NSUInteger)offset
+{
+    if (index >= kMGLMaxBufferSlots) return;
+    _state.lastBoundFragmentBuffers[index].buffer = buffer;
+    _state.lastBoundFragmentBuffers[index].offset = offset;
+}
+
+- (void)clearVertexBufferSlot:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) return;
+    _state.lastBoundVertexBuffers[index].buffer = nil;
+    _state.lastBoundVertexBuffers[index].offset = 0;
+}
+
+- (void)clearFragmentBufferSlot:(NSUInteger)index
+{
+    if (index >= kMGLMaxBufferSlots) return;
+    _state.lastBoundFragmentBuffers[index].buffer = nil;
+    _state.lastBoundFragmentBuffers[index].offset = 0;
+}
+
+- (void)orVertexBufferMask:(uint32_t)mask
+{
+    _state.lastBoundVertexBufferMask |= mask;
+}
+
+- (void)orFragmentBufferMask:(uint32_t)mask
+{
+    _state.lastBoundFragmentBufferMask |= mask;
+}
+
+- (void)setLastPipelineState:(id<MTLRenderPipelineState>)pipelineState
+{
+    _state.lastPipelineState = pipelineState;
+}
+
+- (void)setLastDepthStencilState:(id<MTLDepthStencilState>)depthStencilState
+{
+    _state.lastDepthStencilState = depthStencilState;
+}
+
+- (void)setLastCullMode:(MTLCullMode)cullMode
+{
+    _state.lastCullMode = cullMode;
+}
+
+- (void)setLastFrontFacingWinding:(MTLWinding)winding
+{
+    _state.lastFrontFacingWinding = winding;
+}
+
+- (void)setLastDepthBias:(float)bias
+                   clamp:(float)clamp
+              slopeScale:(float)slopeScale
+{
+    _state.lastDepthBias = bias;
+    _state.lastDepthBiasClamp = clamp;
+    _state.lastDepthSlopeScale = slopeScale;
+}
+
+- (void)setBoundValid:(BOOL)valid
+{
+    _state.lastBoundValid = valid;
 }
 
 @end
