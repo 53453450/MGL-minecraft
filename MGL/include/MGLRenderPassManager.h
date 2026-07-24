@@ -37,6 +37,18 @@ typedef struct MGLCommandState_t {
     id<MTLEvent> __strong _Nullable currentEvent;
     GLsizei currentSyncName;
     BOOL isCommittingCommandBuffer;
+    /* P1-10: Cache for currentRenderPassMatchesCurrentFramebuffer.
+     * lastFboMatchFboName == 0 means "invalid cache, recompute".
+     * Valid only for non-default FBOs (fbo != NULL && fboName != 0);
+     * the default-framebuffer path is never cached because its inputs
+     * (drawable, depth/stencil caps, _drawBuffers) change independently
+     * of fbo_attachment_generation.
+     * Invalidated on encoder install/clear, descriptor install, and
+     * render-pass identity update/clear — all signals that the render
+     * pass configuration may have changed. */
+    GLuint lastFboMatchFboName;
+    uint64_t lastFboMatchFboGeneration;
+    BOOL lastFboMatchResult;
 } MGLCommandState;
 
 NS_ASSUME_NONNULL_BEGIN
@@ -68,6 +80,13 @@ NS_ASSUME_NONNULL_BEGIN
                                                       offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;
 - (void)installNewRenderPassDescriptor;
+/* P1-10: Store/clear the FBO-match cache used by
+ * currentRenderPassMatchesCurrentFramebuffer.  Pass fboName=0 to
+ * invalidate (equivalent to clearFboMatchCache). */
+- (void)setFboMatchCacheResult:(BOOL)result
+                       fboName:(GLuint)fboName
+                     generation:(uint64_t)generation;
+- (void)clearFboMatchCache;
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex;
 - (void)setTransientDepthTexture:(nullable id<MTLTexture>)texture
                            width:(NSUInteger)width

@@ -20,6 +20,8 @@
 
 - (void)updateRenderPassIdentityForContext:(GLMContext)context
 {
+    /* P1-10: render pass identity changed — invalidate FBO match cache. */
+    [self clearFboMatchCache];
     GLMState *activeState = context ? context->active_state : NULL;
     _state.renderPassFramebuffer = activeState ? activeState->framebuffer : NULL;
     _state.renderPassFramebufferName = _state.renderPassFramebuffer
@@ -37,6 +39,8 @@
 
 - (void)clearRenderPassIdentity
 {
+    /* P1-10: render pass ended — invalidate FBO match cache. */
+    [self clearFboMatchCache];
     _state.renderPassFramebuffer = NULL;
     _state.renderPassFramebufferName = 0u;
     _state.renderPassDrawBuffer = 0u;
@@ -170,11 +174,15 @@
 
 - (void)installRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
 {
+    /* P1-10: new encoder — invalidate FBO match cache. */
+    [self clearFboMatchCache];
     _state.currentRenderEncoder = renderEncoder;
 }
 
 - (void)clearCurrentRenderEncoder
 {
+    /* P1-10: encoder ended — invalidate FBO match cache. */
+    [self clearFboMatchCache];
     _state.currentRenderEncoder = nil;
 }
 
@@ -253,7 +261,23 @@
 
 - (void)installNewRenderPassDescriptor
 {
+    /* P1-10: new descriptor — invalidate FBO match cache. */
+    [self clearFboMatchCache];
     _state.renderPassDescriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+}
+
+- (void)setFboMatchCacheResult:(BOOL)result
+                       fboName:(GLuint)fboName
+                     generation:(uint64_t)generation
+{
+    _state.lastFboMatchFboName = fboName;
+    _state.lastFboMatchFboGeneration = generation;
+    _state.lastFboMatchResult = result;
+}
+
+- (void)clearFboMatchCache
+{
+    _state.lastFboMatchFboName = 0u;
 }
 
 - (void)setTraceReplayFlushId:(uint64_t)flushId batchIndex:(uint32_t)batchIndex

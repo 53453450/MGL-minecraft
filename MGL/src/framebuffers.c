@@ -2065,6 +2065,7 @@ void framebufferTexture(GLMContext ctx, GLenum target, GLenum attachment_type, G
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
+    fbo->fbo_attachment_generation++;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
@@ -2241,6 +2242,7 @@ void mglFramebufferRenderbuffer(GLMContext ctx, GLenum target, GLenum attachment
     }
 
     fbo->dirty_bits |= DIRTY_FBO_BINDING;
+    fbo->fbo_attachment_generation++;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO);
 }
 
@@ -3341,6 +3343,7 @@ void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei 
 
     if (fbo) {
         fbo->dirty_bits |= DIRTY_FBO_BINDING;
+        fbo->fbo_attachment_generation++;
     }
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_FBO | DIRTY_STATE | DIRTY_RENDER_STATE);
 }

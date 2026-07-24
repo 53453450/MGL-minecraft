@@ -272,6 +272,38 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     Framebuffer *fbo = ctx->active_state->framebuffer;
     GLuint fboName = fbo ? fbo->name : 0u;
+
+    /* P1-10: Fast path — for non-default FBOs, return the cached result
+     * when neither the FBO's attachment configuration nor the render pass
+     * has changed since the last call.  The cache is invalidated by
+     * MGLRenderPassManager on encoder install/clear, descriptor install,
+     * and render-pass identity update/clear.  The default framebuffer
+     * (fbo == NULL or fboName == 0) is never cached because its inputs
+     * (drawable, depth/stencil caps, _drawBuffers) change independently
+     * of fbo_attachment_generation. */
+    if (fbo != NULL && fboName != 0u &&
+        _renderPassManager.state->lastFboMatchFboName == fboName &&
+        _renderPassManager.state->lastFboMatchFboGeneration == fbo->fbo_attachment_generation) {
+        return _renderPassManager.state->lastFboMatchResult;
+    }
+
+    bool result = [self mglRenderPassMatchesFramebufferImpl:fbo name:fboName];
+
+    /* P1-10: store cache for non-default FBOs only. */
+    if (fbo != NULL && fboName != 0u) {
+        [_renderPassManager setFboMatchCacheResult:result
+                                           fboName:fboName
+                                        generation:fbo->fbo_attachment_generation];
+    }
+
+    return result;
+}
+
+- (bool)mglRenderPassMatchesFramebufferImpl:(Framebuffer *)fbo name:(GLuint)fboName
+{
+    if (!ctx || !_renderPassManager.state->renderPassDescriptor) {
+        return true;
+    }
     if (_renderPassManager.state->renderPassFramebuffer != fbo ||
         _renderPassManager.state->renderPassFramebufferName != fboName ||
         _renderPassManager.state->renderPassDrawBuffer != ctx->active_state->draw_buffer ||
