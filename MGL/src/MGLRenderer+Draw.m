@@ -576,21 +576,43 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             static const NSUInteger kMGLCurrentAttribRepeatCount = 4096u;
-            NSMutableData *repeated = [NSMutableData dataWithLength:kMGLCurrentAttribRepeatCount * attribStride];
-            if (!repeated) {
-                NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib stream", attrib);
-                continue;
+            NSUInteger totalByteCount = kMGLCurrentAttribRepeatCount * attribStride;
+
+            /* Reuse the cached MTLBuffer when the current vertex attrib value
+             * and stride haven't changed since the last draw.  This avoids the
+             * per-draw NSMutableData allocation + newBufferWithBytes + 4096×
+             * memcpy loop. */
+            id<MTLBuffer> currentAttribBuffer = nil;
+            if (_currentAttribCacheValid[attrib] &&
+                _currentAttribCacheStride[attrib] == attribStride &&
+                memcmp(_currentAttribCacheBytes[attrib], attribBytes, attribStride) == 0 &&
+                _currentAttribBuffers[attrib] != nil) {
+                currentAttribBuffer = _currentAttribBuffers[attrib];
             }
-            uint8_t *dst = (uint8_t *)repeated.mutableBytes;
-            for (NSUInteger v = 0; v < kMGLCurrentAttribRepeatCount; v++) {
-                memcpy(dst + v * attribStride, attribBytes, MIN((NSUInteger)16u, attribStride));
-            }
-            id<MTLBuffer> currentAttribBuffer = [_device newBufferWithBytes:repeated.bytes
-                                                                      length:repeated.length
-                                                                     options:MTLResourceStorageModeShared];
-            if (!currentAttribBuffer) {
-                NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
-                continue;
+
+            if (currentAttribBuffer == nil) {
+                /* Cache miss — rebuild the repeated buffer. */
+                NSMutableData *repeated = [NSMutableData dataWithLength:totalByteCount];
+                if (!repeated) {
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib stream", attrib);
+                    continue;
+                }
+                uint8_t *dst = (uint8_t *)repeated.mutableBytes;
+                for (NSUInteger v = 0; v < kMGLCurrentAttribRepeatCount; v++) {
+                    memcpy(dst + v * attribStride, attribBytes, MIN((NSUInteger)16u, attribStride));
+                }
+                currentAttribBuffer = [_device newBufferWithBytes:repeated.bytes
+                                                            length:repeated.length
+                                                           options:MTLResourceStorageModeShared];
+                if (!currentAttribBuffer) {
+                    NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
+                    continue;
+                }
+                /* Store in cache. */
+                _currentAttribBuffers[attrib] = currentAttribBuffer;
+                memcpy(_currentAttribCacheBytes[attrib], attribBytes, attribStride);
+                _currentAttribCacheStride[attrib] = attribStride;
+                _currentAttribCacheValid[attrib] = YES;
             }
             if (!_bindingSync.state->lastBoundValid ||
                 _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != currentAttribBuffer ||
@@ -1608,9 +1630,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                              TEXTURE_UNITS,
                                              ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
                                              _pipelineCache.state->pipelineProgramName);
+        /* Full clear when trace is active — trace consumers read all fields. */
+        memset(_resourceFallback.fragmentTextureTraceBindings, 0,
+               sizeof(_resourceFallback.fragmentTextureTraceBindings));
+    } else {
+        /* When trace is disabled, only clear the functional flag fields read
+         * by non-trace consumers (~384 bytes vs ~12 KB). */
+        mglClearFragmentTextureTraceFunctionalFlags(
+            _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
     }
-    memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-           sizeof(_resourceFallback.fragmentTextureTraceBindings));
 
 
     vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
@@ -1620,13 +1648,41 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     id<MTLSamplerState> defaultSampler = [self fallbackSamplerState];
     if (defaultSampler) {
+        /* Only warmup sampler slots the program actually samples, using the
+         * sampled_texture_unit_mask bitmap to skip unused slots, instead of
+         * blindly setting all TEXTURE_UNITS. */
+        uint32_t activeMask[4] = {0, 0, 0, 0};
+        if (vertexProgram) {
+            (void)mglProgramSamplesTextureUnit(vertexProgram, 0); /* trigger lazy build */
+            for (int i = 0; i < 4; i++)
+                activeMask[i] |= vertexProgram->sampled_texture_unit_mask[i];
+        }
+        if (fragmentProgram && fragmentProgram != vertexProgram) {
+            (void)mglProgramSamplesTextureUnit(fragmentProgram, 0);
+            for (int i = 0; i < 4; i++)
+                activeMask[i] |= fragmentProgram->sampled_texture_unit_mask[i];
+        }
+
         NSUInteger warmupCount = TEXTURE_UNITS;
         if (warmupCount > kMaxFragmentSamplerSlots) {
             warmupCount = kMaxFragmentSamplerSlots;
         }
-        for (NSUInteger s = 0; s < warmupCount; s++) {
-            [self setVertexSamplerStateIfNeeded:defaultSampler atIndex:s];
-            [self setFragmentSamplerStateIfNeeded:defaultSampler atIndex:s];
+        /* If no program is bound (both NULL), fall back to warming all slots
+         * to avoid Metal assertions on stale sampler state. */
+        bool hasActiveProgram = (vertexProgram != nil || fragmentProgram != nil);
+        bool maskEmpty = (activeMask[0] | activeMask[1] |
+                          activeMask[2] | activeMask[3]) == 0u;
+        if (hasActiveProgram && !maskEmpty) {
+            for (NSUInteger s = 0; s < warmupCount; s++) {
+                if ((activeMask[s >> 5] & (1u << (s & 31u))) == 0u) continue;
+                [self setVertexSamplerStateIfNeeded:defaultSampler atIndex:s];
+                [self setFragmentSamplerStateIfNeeded:defaultSampler atIndex:s];
+            }
+        } else {
+            for (NSUInteger s = 0; s < warmupCount; s++) {
+                [self setVertexSamplerStateIfNeeded:defaultSampler atIndex:s];
+                [self setFragmentSamplerStateIfNeeded:defaultSampler atIndex:s];
+            }
         }
     }
 

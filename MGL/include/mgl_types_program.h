@@ -210,6 +210,16 @@ typedef struct SpirvResourceList_t {
     SpirvResource   *list;
 } SpirvResourceList;
 
+/* Entry in the cached active-uniform list.  Pointers are into the Program's
+ * own spirv_resources_list and are valid for the program's link lifetime.
+ * Defined here (before Program) because Program holds a pointer to it. */
+typedef struct MGLActiveUniformEntry_t {
+    SpirvResource *res;
+    int stage;
+    int res_type;
+    const SpirvUBOMember *ubo_member;  /* NULL for non-member uniforms */
+} MGLActiveUniformEntry;
+
 #define MAX_ATTACHED_SHADERS_PER_STAGE 8
 #define MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY 64u
 
@@ -281,6 +291,12 @@ typedef struct Program_t {
     uint32_t vertexAttribUsageMask;  /* VS: bit N set => [[attribute(N)]] */
     GLboolean uses_point_size_params; /* VS/TES/GS: _mgl_point_size_params in MSL */
     GLboolean uses_cull_distance;     /* VS: mgl_CullDistance in MSL */
+    /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
+     * Computed lazily on first call during link-time resource binding, then
+     * reused for all subsequent slot checks.  Invalidated at link start. */
+    GLboolean ir_cache_valid;
+    GLboolean ir_uses_cull_distance;
+    GLboolean ir_uses_frag_coord;
     MGLMSLNamedArgumentCacheEntry
         msl_named_argument_cache[MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY];
     uint8_t msl_named_argument_cache_next;
@@ -317,12 +333,29 @@ typedef struct Program_t {
     /* Cached buffer binding plan (per-stage).  NULL until first build.
      * See mgl_buffer_plan.h for the lifecycle and cache contract. */
     MGLBufferBindingPlan *buffer_binding_plan;
+    /* Cached deduplicated active-uniform list, built at link time.
+     * Eliminates the O(N³) enumeration in mglProgramActiveUniformCount /
+     * mglProgramActiveUniformAt / mglProgramActiveUniformIndexByName /
+     * mglProgramActiveUniformMaxNameLength.  Invalidated at link start,
+     * populated on successful link.  active_uniform_cache_valid gates
+     * readers; GL_FALSE = fall back to original O(N³) path. */
+    MGLActiveUniformEntry *active_uniform_cache;
+    GLuint active_uniform_cache_count;
+    GLint active_uniform_cache_max_name_length;
+    GLboolean active_uniform_cache_valid;
     void *mtl_data;
 } Program;
 
 GLint mglProgramActiveUniformCount(Program *program);
 GLint mglProgramActiveUniformMaxNameLength(Program *program);
 SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out);
+/* Build the deduplicated active-uniform cache.  Called at link end.
+ * Frees any previous cache.  After this, mglProgramActiveUniformCount /
+ * mglProgramActiveUniformAt / mglProgramActiveUniformIndexByName /
+ * mglProgramActiveUniformMaxNameLength run in O(1) / O(1) / O(N) / O(1). */
+void mglBuildActiveUniformCache(Program *program);
+/* Free the active-uniform cache.  Called at link start and program free. */
+void mglFreeActiveUniformCache(Program *program);
 GLint mglProgramActiveUniformIndexByName(Program *program, const GLchar *name);
 GLint mglProgramActiveUniformGLType(const SpirvResource *res, int res_type);
 GLint mglProgramActiveUniformSize(const SpirvResource *res, int res_type);

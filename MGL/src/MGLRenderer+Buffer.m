@@ -1038,24 +1038,25 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
 - (bool)mapShaderBufferResourcesToBufferMap:(BufferMapList *)buffer_map stage:(int)stage
 {
+    /* Resolve the active program once and reuse it across both the fast path
+     * and the reflection fallback, avoiding repeated per-resource re-resolves. */
+    Program *program = mglResolveProgramForStageFromState(ctx, stage);
+
     /* Fast path: try the cached buffer binding plan first.  If the plan
      * is valid, this skips all per-draw name lookups, program resolution,
      * and MSL argument scans for resources that haven't changed since
      * link.  Falls through to the original reflection-based path if the
      * plan is unavailable (NULL program, plan not yet built, or stage
      * invalid after a binding mutation). */
-    {
-        Program *fastProgram = mglResolveProgramForStageFromState(ctx, stage);
-        if (fastProgram) {
-            const MGLBufferBindingPlan *plan =
-                mglBufferBindingPlanEnsureBuilt(fastProgram);
-            const MGLStageBufferPlan *stagePlan = mglStageBufferPlan(plan, stage);
-            if (stagePlan && stagePlan->valid) {
-                return [self mapShaderBufferResourcesViaPlan:buffer_map
-                                                        stage:stage
-                                                      program:fastProgram
-                                                    stagePlan:stagePlan];
-            }
+    if (program) {
+        const MGLBufferBindingPlan *plan =
+            mglBufferBindingPlanEnsureBuilt(program);
+        const MGLStageBufferPlan *stagePlan = mglStageBufferPlan(plan, stage);
+        if (stagePlan && stagePlan->valid) {
+            return [self mapShaderBufferResourcesViaPlan:buffer_map
+                                                    stage:stage
+                                                  program:program
+                                                stagePlan:stagePlan];
         }
     }
 
@@ -1083,21 +1084,24 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
         spvc_type = mapped_types[type].spvc_type;
         gl_buffer_type = mapped_types[type].gl_buffer_type;
-        
-        count = [self getProgramBindingCount: stage type: spvc_type];
+
+        /* Read count directly from the already-resolved program instead of
+         * getProgramBindingCount:, which would re-resolve the program. */
+        count = (program && spvc_type >= 0 && spvc_type < _MAX_SPIRV_RES)
+                  ? (int)program->spirv_resources_list[stage][spvc_type].count
+                  : 0;
 
 #if DEBUG_MAPPED_TYPES
         DEBUG_PRINT("Checking mapped_types: %s count:%d for stage: %s\n", mapped_types[type].name, count, stages[stage]);
 #endif
-        
+
         if (count)
         {
             BufferBaseTarget *buffers;
             BufferBaseTarget *fallbackBuffers = NULL;
 
-            Program *activeProgram = mglResolveProgramForStageFromState(ctx, stage);
-            if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT && activeProgram) {
-                buffers = activeProgram->plain_uniform_buffers;
+            if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT && program) {
+                buffers = program->plain_uniform_buffers;
                 fallbackBuffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
             } else {
                 buffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
@@ -1112,7 +1116,6 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 // Use the GL binding point to locate the client's buffer base.
                 // The resource's `binding` may already have been rewritten to the
                 // Metal [[buffer(n)]] slot parsed from generated MSL.
-                Program *program = mglResolveProgramForStageFromState(ctx, stage);
                 if (!program || spvc_type < 0 || spvc_type >= _MAX_SPIRV_RES ||
                     i >= (int)program->spirv_resources_list[stage][spvc_type].count) {
                     continue;
@@ -1367,8 +1370,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 	                    }
 	                }
 
-                NSUInteger reflectedRequiredSize =
-                    [self getProgramBindingRequiredSize:stage type:spvc_type index:i];
+                /* Read required_size directly from the already-resolved
+                 * resource instead of getProgramBindingRequiredSize:, which
+                 * would re-resolve the program. */
+                NSUInteger reflectedRequiredSize = (NSUInteger)resource->required_size;
 
 	                if (buf)
 	                {

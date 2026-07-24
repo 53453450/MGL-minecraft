@@ -12,6 +12,26 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Allocate the MTLBuffer up front and write indices directly into its
+ * .contents pointer, avoiding the calloc + newBufferWithBytes + free
+ * triple-step (one fewer malloc/free/memcpy per call) on the per-draw
+ * primitive-emulation path (triangle-fan / line-loop / quad expansion). */
+static id<MTLBuffer> mglNewUninitializedIndexBuffer(id<MTLDevice> device,
+                                                    NSUInteger byteCount,
+                                                    void **outContents)
+{
+    if (!device || byteCount == 0u || !outContents) {
+        return nil;
+    }
+    id<MTLBuffer> buffer = [device newBufferWithLength:byteCount
+                                              options:MTLResourceStorageModeShared];
+    if (!buffer) {
+        return nil;
+    }
+    *outContents = buffer.contents;
+    return buffer;
+}
+
 id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
                                                 NSUInteger vertexCount,
                                                 NSUInteger *outIndexCount)
@@ -30,8 +50,11 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -41,12 +64,7 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -72,26 +90,23 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = vertexCount + 1u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
     for (NSUInteger i = 0; i < vertexCount; i++) {
         if (i > UINT32_MAX) {
-            free(indices);
             return nil;
         }
         indices[i] = (uint32_t)(firstVertex + i);
     }
     indices[vertexCount] = (uint32_t)firstVertex;
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -116,8 +131,11 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -127,12 +145,7 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -159,8 +172,11 @@ id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -171,12 +187,7 @@ id<MTLBuffer> mglNewTriangleFanElementIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -203,8 +214,11 @@ id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -214,12 +228,7 @@ id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -244,8 +253,11 @@ id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = sourceIndexCount + 1u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -254,12 +266,7 @@ id<MTLBuffer> mglNewLineLoopElementIndexBuffer(id<MTLDevice> device,
     }
     indices[sourceIndexCount] = indices[0];
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -282,8 +289,11 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -292,7 +302,6 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
         NSUInteger src = quad * 4u;
         NSUInteger dst = quad * 6u;
         if ((src + 3u) > UINT32_MAX) {
-            free(indices);
             return nil;
         }
         indices[dst + 0u] = (uint32_t)(src + 0u);
@@ -303,12 +312,7 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
         indices[dst + 5u] = (uint32_t)(src + 3u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -333,8 +337,11 @@ id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -354,12 +361,7 @@ id<MTLBuffer> mglNewQuadElementIndexBuffer(id<MTLDevice> device,
         indices[dst + 5u] = i3;
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -380,8 +382,11 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = quadCount * 8u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -389,7 +394,6 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
         NSUInteger src = quad * 4u;
         NSUInteger dst = quad * 8u;
         if ((src + 3u) > UINT32_MAX) {
-            free(indices);
             return nil;
         }
         indices[dst + 0u] = (uint32_t)(src + 0u);
@@ -402,12 +406,7 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
         indices[dst + 7u] = (uint32_t)(src + 0u);
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -430,8 +429,11 @@ id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = quadCount * 8u;
-    uint32_t *indices = (uint32_t *)calloc(indexCount, sizeof(uint32_t));
-    if (!indices) {
+    uint32_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          indexCount * sizeof(uint32_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
 
@@ -452,12 +454,7 @@ id<MTLBuffer> mglNewQuadElementLineIndexBuffer(id<MTLDevice> device,
         indices[dst + 7u] = i0;
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(indexCount * sizeof(uint32_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
-
-    if (outIndexCount && buffer) {
+    if (outIndexCount) {
         *outIndexCount = indexCount;
     }
 
@@ -478,18 +475,17 @@ id<MTLBuffer> mglNewUInt16IndexBufferFromUInt8(id<MTLDevice> device,
         return nil;
     }
 
-    uint16_t *indices = (uint16_t *)calloc(sourceIndexCount, sizeof(uint16_t));
-    if (!indices) {
+    uint16_t *indices = NULL;
+    id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
+                                                          sourceIndexCount * sizeof(uint16_t),
+                                                          (void **)&indices);
+    if (!buffer) {
         return nil;
     }
     for (NSUInteger i = 0; i < sourceIndexCount; i++) {
         indices[i] = (uint16_t)sourceIndexBytes[i];
     }
 
-    id<MTLBuffer> buffer = [device newBufferWithBytes:indices
-                                               length:(sourceIndexCount * sizeof(uint16_t))
-                                              options:MTLResourceStorageModeShared];
-    free(indices);
     return buffer;
 }
 

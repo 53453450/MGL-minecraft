@@ -922,6 +922,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         return;
     }
 
+    /* Draws are about to be encoded into the current CB. */
+    _currentCBHasWork = YES;
+
     static uint64_t s_flushDrawBufferLogCount = 0;
     uint64_t flushHit = ++s_flushDrawBufferLogCount;
     BOOL traceFlush = kMGLDiagnosticStateLogs &&

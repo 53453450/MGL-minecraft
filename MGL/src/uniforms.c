@@ -326,86 +326,65 @@ static GLint mglKnownPlainUniformLocation(const char *name)
         return -1;
     }
 
+    /* Validate the input pointer once; the string literals below are
+     * compile-time constants and inherently trusted, so plain strcmp is
+     * safe (no need to re-validate them with mglSafeCStringEquals). */
     if (!mglSafeCStringLength(name, NULL)) {
         return -1;
     }
 
-    if (mglSafeCStringEquals(name, "ModelViewMat")) {
-        return 0;
+    /* First-letter switch dispatch bounds each lookup to the comparisons in
+     * one first-letter bucket instead of a linear chain over all names. */
+    switch (name[0]) {
+        case 'C':
+            if (strcmp(name, "ColorModulator") == 0) return 3;
+            if (strcmp(name, "CameraBlockPos") == 0) return 13;
+            if (strcmp(name, "ChunkOffset") == 0) return 12;
+            if (strcmp(name, "ChunkVisibility") == 0) return 16;
+            if (strcmp(name, "CameraOffset") == 0) return 14;
+            return -1;
+        case 'F':
+            if (strcmp(name, "FogStart") == 0) return 4;
+            if (strcmp(name, "FogEnd") == 0) return 5;
+            if (strcmp(name, "FogColor") == 0) return 6;
+            if (strcmp(name, "FogShape") == 0) return 7;
+            return -1;
+        case 'G':
+            if (strcmp(name, "GameTime") == 0) return 8;
+            return -1;
+        case 'I':
+            if (strcmp(name, "IViewRotMat") == 0) return 11;
+            return -1;
+        case 'L':
+            if (strcmp(name, "LineWidth") == 0) return 10;
+            return -1;
+        case 'M':
+            if (strcmp(name, "ModelViewMat") == 0) return 0;
+            return -1;
+        case 'P':
+            if (strcmp(name, "ProjMat") == 0) return 1;
+            return -1;
+        case 'S':
+            if (strcmp(name, "ScreenSize") == 0) return 9;
+            return -1;
+        case 'T':
+            if (strcmp(name, "TextureMat") == 0) return 2;
+            return -1;
+        case 'U':
+            if (strcmp(name, "UseRgss") == 0) return 15;
+            return -1;
+        case 'u':
+            if (strcmp(name, "u_ProjectionMatrix") == 0) return 0;
+            if (strcmp(name, "u_ModelViewMatrix") == 0) return 1;
+            if (strcmp(name, "u_RegionOffset") == 0) return 2;
+            if (strcmp(name, "u_TexCoordShrink") == 0) return 3;
+            if (strcmp(name, "u_FogColor") == 0) return 4;
+            if (strcmp(name, "u_EnvironmentFog") == 0) return 5;
+            if (strcmp(name, "u_RenderFog") == 0) return 6;
+            return -1;
+        default:
+            return -1;
     }
-    if (mglSafeCStringEquals(name, "ProjMat")) {
-        return 1;
-    }
-    if (mglSafeCStringEquals(name, "TextureMat")) {
-        return 2;
-    }
-    if (mglSafeCStringEquals(name, "ColorModulator")) {
-        return 3;
-    }
-    if (mglSafeCStringEquals(name, "FogStart")) {
-        return 4;
-    }
-    if (mglSafeCStringEquals(name, "FogEnd")) {
-        return 5;
-    }
-    if (mglSafeCStringEquals(name, "FogColor")) {
-        return 6;
-    }
-    if (mglSafeCStringEquals(name, "FogShape")) {
-        return 7;
-    }
-    if (mglSafeCStringEquals(name, "GameTime")) {
-        return 8;
-    }
-    if (mglSafeCStringEquals(name, "ScreenSize")) {
-        return 9;
-    }
-    if (mglSafeCStringEquals(name, "LineWidth")) {
-        return 10;
-    }
-    if (mglSafeCStringEquals(name, "IViewRotMat")) {
-        return 11;
-    }
-    if (mglSafeCStringEquals(name, "ChunkOffset")) {
-        return 12;
-    }
-    if (mglSafeCStringEquals(name, "u_ProjectionMatrix")) {
-        return 0;
-    }
-    if (mglSafeCStringEquals(name, "u_ModelViewMatrix")) {
-        return 1;
-    }
-    if (mglSafeCStringEquals(name, "u_RegionOffset")) {
-        return 2;
-    }
-    if (mglSafeCStringEquals(name, "u_TexCoordShrink")) {
-        return 3;
-    }
-    if (mglSafeCStringEquals(name, "u_FogColor")) {
-        return 4;
-    }
-    if (mglSafeCStringEquals(name, "u_EnvironmentFog")) {
-        return 5;
-    }
-    if (mglSafeCStringEquals(name, "u_RenderFog")) {
-        return 6;
-    }
-
-    /* 1.21.11 new plain uniforms */
-    if (mglSafeCStringEquals(name, "CameraBlockPos")) {
-        return 13;
-    }
-    if (mglSafeCStringEquals(name, "CameraOffset")) {
-        return 14;
-    }
-    if (mglSafeCStringEquals(name, "UseRgss")) {
-        return 15;
-    }
-    if (mglSafeCStringEquals(name, "ChunkVisibility")) {
-        return 16;
-    }
-
-    return -1;
 }
 
 static GLboolean mglUniformNameLooksSamplerLike(const char *name)
@@ -590,9 +569,264 @@ static GLboolean mglActiveUniformNameSeenBefore(Program *program,
     return GL_FALSE;
 }
 
-/* Forward declaration — defined later in this file. */
-static GLboolean mglUniformBlockNameSeenBefore(Program *program, int block_stage,
-                                                GLuint block_index, const char *name);
+/* Open-addressing hash set for UBO block name deduplication.
+ *
+ * The caller walks blocks in forward order, inserting each accepted
+ * (non-duplicate) name, so "seen before?" is a set membership test rather
+ * than a linear re-scan of all earlier blocks.
+ *
+ * The set is stack-allocated (no malloc) and scoped to a single forward
+ * enumeration pass.  Capacity is a power of two so modulo reduces to a
+ * bitmask; 128 slots is ample for real-world UBO block counts.  Empty slots
+ * are NULL; collision resolution is linear probing.  Key equality is by
+ * string content (strcmp). */
+#define MGL_UBO_NAME_SET_CAPACITY 128u
+
+typedef struct MGLUBOBlockNameSet_t {
+    const char *slots[MGL_UBO_NAME_SET_CAPACITY];
+    uint32_t count;
+} MGLUBOBlockNameSet;
+
+static void mglUBOBlockNameSetInit(MGLUBOBlockNameSet *set)
+{
+    if (!set) {
+        return;
+    }
+    for (uint32_t i = 0u; i < MGL_UBO_NAME_SET_CAPACITY; i++) {
+        set->slots[i] = NULL;
+    }
+    set->count = 0u;
+}
+
+/* FNV-1a string hash. */
+static uint32_t mglUBOBlockNameHash(const char *str, size_t len)
+{
+    uint32_t h = 2166136261u;
+    for (size_t i = 0u; i < len; i++) {
+        h ^= (uint32_t)(unsigned char)str[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+/* Returns GL_TRUE if name was already present in the set (duplicate).
+ * Otherwise inserts name and returns GL_FALSE (first occurrence).
+ * GL_FALSE is also returned for invalid/empty input so callers that rely on
+ * a separate mglSafeCStringLength validation before this call are
+ * unaffected; callers without a pre-check treat unreadable names as
+ * "not seen" (matching the original mglUniformBlockNameSeenBefore behavior,
+ * which also returned GL_FALSE for unreadable names). */
+static GLboolean mglUBOBlockNameSetContainsOrInsert(MGLUBOBlockNameSet *set,
+                                                    const char *name)
+{
+    if (!set || !name) {
+        return GL_FALSE;
+    }
+    size_t len = 0u;
+    if (!mglSafeCStringLength(name, &len) || len == 0u) {
+        return GL_FALSE;
+    }
+
+    uint32_t h = mglUBOBlockNameHash(name, len);
+    uint32_t mask = MGL_UBO_NAME_SET_CAPACITY - 1u;
+    uint32_t startIdx = h & mask;
+
+    int32_t emptySlot = -1;
+    for (uint32_t probe = 0u; probe < MGL_UBO_NAME_SET_CAPACITY; probe++) {
+        uint32_t idx = (startIdx + probe) & mask;
+        const char *existing = set->slots[idx];
+        if (existing == NULL) {
+            if (emptySlot < 0) {
+                emptySlot = (int32_t)idx;
+            }
+            break;
+        }
+        /* Existing entries were validated when inserted; strcmp is safe and
+         * matches the content-equality semantics of mglSafeCStringEquals. */
+        if (strcmp(existing, name) == 0) {
+            return GL_TRUE;  /* duplicate — already seen */
+        }
+    }
+
+    if (emptySlot >= 0) {
+        set->slots[emptySlot] = name;
+        set->count++;
+    }
+    /* If the table is full (extremely unlikely for UBO blocks), fall back to
+     * "not seen" — worst case the caller reports a duplicate block, which is
+     * non-fatal over-reporting. */
+    return GL_FALSE;
+}
+
+/* Build the deduplicated active-uniform cache.  This runs the same
+ * enumeration logic as mglProgramActiveUniformAt but in a single pass,
+ * collecting all entries into a heap array.  After this, the 4 query
+ * functions run in O(1)/O(1)/O(N)/O(1) instead of O(N³)/O(N²)/O(N³)/O(N³). */
+void mglBuildActiveUniformCache(Program *program)
+{
+    if (!program) {
+        return;
+    }
+
+    /* Free any previous cache. */
+    mglFreeActiveUniformCache(program);
+
+    /* First pass: count total entries to size the array. */
+    GLuint total = 0u;
+    const size_t type_count = sizeof(mglActiveUniformResourceTypes) / sizeof(mglActiveUniformResourceTypes[0]);
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) continue;
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (res->ubo_members && res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (res->ubo_members[mem_i].query_name) {
+                            total++;
+                        }
+                    }
+                } else {
+                    total++;
+                }
+            }
+        }
+    }
+    /* UBO members.  The name set is built forward as we accept blocks, so
+     * each "already seen?" check is O(1) average. */
+    MGLUBOBlockNameSet ubo_seen_1;
+    mglUBOBlockNameSetInit(&ubo_seen_1);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!ubo_list) continue;
+        for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
+            SpirvResource *ubo = &ubo_list->list[ubo_i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_1, ubo->name)) continue;
+            if (!ubo->ubo_members) continue;
+            for (GLuint mem_i = 0; mem_i < ubo->ubo_member_count; mem_i++) {
+                if (ubo->ubo_members[mem_i].name) {
+                    total++;
+                }
+            }
+        }
+    }
+
+    if (total == 0u) {
+        program->active_uniform_cache = NULL;
+        program->active_uniform_cache_count = 0u;
+        program->active_uniform_cache_max_name_length = 0;
+        program->active_uniform_cache_valid = GL_TRUE;
+        return;
+    }
+
+    /* Second pass: fill the array. */
+    MGLActiveUniformEntry *cache = (MGLActiveUniformEntry *)calloc(total, sizeof(MGLActiveUniformEntry));
+    if (!cache) {
+        program->active_uniform_cache_valid = GL_FALSE;
+        return;
+    }
+
+    GLuint idx = 0u;
+    for (size_t type_ordinal = 0; type_ordinal < type_count; type_ordinal++) {
+        int res_type = mglActiveUniformResourceTypes[type_ordinal];
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, res_type, __FUNCTION__);
+            if (!resources) continue;
+            for (GLuint i = 0; i < resources->count; i++) {
+                SpirvResource *res = &resources->list[i];
+                /* Clear stale ubo_member from resource (same as original At). */
+                res->ubo_member = NULL;
+                if (!mglActiveUniformResourceHasName(res) ||
+                    mglActiveUniformNameSeenBefore(program, (GLint)type_ordinal, stage, i, res->name)) {
+                    continue;
+                }
+                if (res->ubo_members && res_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+                    for (GLuint mem_i = 0; mem_i < res->ubo_member_count; mem_i++) {
+                        if (!res->ubo_members[mem_i].query_name) continue;
+                        if (idx < total) {
+                            cache[idx].res = res;
+                            cache[idx].stage = stage;
+                            cache[idx].res_type = res_type;
+                            cache[idx].ubo_member = &res->ubo_members[mem_i];
+                        }
+                        idx++;
+                    }
+                    continue;
+                }
+                if (idx < total) {
+                    cache[idx].res = res;
+                    cache[idx].stage = stage;
+                    cache[idx].res_type = res_type;
+                    cache[idx].ubo_member = NULL;
+                }
+                idx++;
+            }
+        }
+    }
+    /* UBO members */
+    /* Same name set as pass 1 — both passes walk blocks in the same forward
+     * order, so the set contents at each position match. */
+    MGLUBOBlockNameSet ubo_seen_2;
+    mglUBOBlockNameSetInit(&ubo_seen_2);
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *ubo_list = mglUniformSafeResourceList(
+            program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
+        if (!ubo_list) continue;
+        for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
+            SpirvResource *ubo = &ubo_list->list[ubo_i];
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_2, ubo->name)) continue;
+            if (!ubo->ubo_members) continue;
+            for (GLuint mem_i = 0; mem_i < ubo->ubo_member_count; mem_i++) {
+                if (!ubo->ubo_members[mem_i].name) continue;
+                if (idx < total) {
+                    cache[idx].res = ubo;
+                    cache[idx].stage = stage;
+                    cache[idx].res_type = SPVC_RESOURCE_TYPE_UNIFORM_BUFFER;
+                    cache[idx].ubo_member = &ubo->ubo_members[mem_i];
+                }
+                idx++;
+            }
+        }
+    }
+
+    program->active_uniform_cache = cache;
+    program->active_uniform_cache_count = (idx <= total) ? idx : total;
+
+    /* Compute max name length. */
+    GLint max_len = 0;
+    for (GLuint i = 0; i < program->active_uniform_cache_count; i++) {
+        SpirvResource *res = cache[i].res;
+        /* Temporarily set ubo_member so mglProgramActiveUniformNameLength
+         * computes the right length for member entries. */
+        const SpirvUBOMember *saved = res->ubo_member;
+        res->ubo_member = cache[i].ubo_member;
+        GLsizei len = mglProgramActiveUniformNameLength(res);
+        res->ubo_member = saved;
+        if ((GLint)len + 1 > max_len) {
+            max_len = (GLint)len + 1;
+        }
+    }
+    program->active_uniform_cache_max_name_length = max_len;
+    program->active_uniform_cache_valid = GL_TRUE;
+}
+
+void mglFreeActiveUniformCache(Program *program)
+{
+    if (!program) return;
+    if (program->active_uniform_cache) {
+        free(program->active_uniform_cache);
+        program->active_uniform_cache = NULL;
+    }
+    program->active_uniform_cache_count = 0u;
+    program->active_uniform_cache_max_name_length = 0;
+    program->active_uniform_cache_valid = GL_FALSE;
+}
 
 SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *stage_out, int *res_type_out)
 {
@@ -606,6 +840,24 @@ SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *st
         return NULL;
     }
 
+    /* Fast path — index into the cached deduplicated list (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        if (index >= program->active_uniform_cache_count) {
+            return NULL;
+        }
+        MGLActiveUniformEntry *entry = &program->active_uniform_cache[index];
+        if (stage_out) {
+            *stage_out = entry->stage;
+        }
+        if (res_type_out) {
+            *res_type_out = entry->res_type;
+        }
+        /* Set ubo_member side effect (same as the original code). */
+        entry->res->ubo_member = entry->ubo_member;
+        return entry->res;
+    }
+
+    /* Fallback: original O(N²) path (cache not built yet, e.g. pre-link). */
     GLuint ordinal = 0u;
 
     /* Pass 1: Enumerate visible uniforms from non-UBO resource lists. */
@@ -666,6 +918,8 @@ SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *st
      * Members are visible through glGetActiveUniform and friends.  The owning
      * UBO resource is returned with ubo_member set so that callers can
      * retrieve member-specific properties (type, offset, strides, block index). */
+    MGLUBOBlockNameSet ubo_seen_fallback;
+    mglUBOBlockNameSetInit(&ubo_seen_fallback);
     GLuint ubo_block_idx = 0;
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         SpirvResourceList *ubo_list = mglUniformSafeResourceList(
@@ -676,7 +930,7 @@ SpirvResource *mglProgramActiveUniformAt(Program *program, GLuint index, int *st
         for (GLuint ubo_i = 0; ubo_i < ubo_list->count; ubo_i++) {
             SpirvResource *ubo = &ubo_list->list[ubo_i];
             /* De-duplicate across stages (same block name seen before). */
-            if (mglUniformBlockNameSeenBefore(program, stage, ubo_i, ubo->name)) {
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_fallback, ubo->name)) {
                 ubo_block_idx++;
                 continue;
             }
@@ -713,6 +967,11 @@ GLint mglProgramActiveUniformCount(Program *program)
 {
     if (!program) {
         return 0;
+    }
+
+    /* Fast path — return the cached deduplicated count (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        return (GLint)program->active_uniform_cache_count;
     }
 
     GLint count = 0;
@@ -875,6 +1134,15 @@ GLsizei mglProgramActiveUniformNameLength(const SpirvResource *res)
 
 GLint mglProgramActiveUniformMaxNameLength(Program *program)
 {
+    if (!program) {
+        return 0;
+    }
+
+    /* Fast path — return the cached max name length (O(1)). */
+    if (program->active_uniform_cache_valid && program->active_uniform_cache) {
+        return program->active_uniform_cache_max_name_length;
+    }
+
     GLint max_len = 0;
     GLint count = mglProgramActiveUniformCount(program);
     for (GLint i = 0; i < count; i++) {
@@ -934,6 +1202,8 @@ GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *r
     }
 
     GLuint block_idx = 0;
+    MGLUBOBlockNameSet ubo_seen_bi;
+    mglUBOBlockNameSetInit(&ubo_seen_bi);
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         SpirvResourceList *ubo_list = mglUniformSafeResourceList(
             program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
@@ -942,10 +1212,9 @@ GLint mglProgramActiveUniformBlockIndex(Program *program, const SpirvResource *r
         }
         for (GLuint i = 0; i < ubo_list->count; i++) {
             SpirvResource *ubo = &ubo_list->list[i];
-            if (mglUniformBlockNameSeenBefore(program, stage, i, ubo->name)) {
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_bi, ubo->name)) {
                 continue;
             }
-            /* Check if 'res' points to this UBO (the owning block). */
             if (ubo == res || ubo->ubo_members == res->ubo_member) {
                 /* Quick check: if res->ubo_member points into ubo->ubo_members array. */
                 return (GLint)block_idx;
@@ -1432,31 +1701,6 @@ static GLsizei mglUniformBlockElementName(const SpirvResource *block,
     return len;
 }
 
-static GLboolean mglUniformBlockNameSeenBefore(Program *program, int block_stage, GLuint block_index, const char *name)
-{
-    if (!program || !mglSafeCStringLength(name, NULL)) {
-        return GL_FALSE;
-    }
-
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
-        SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
-        if (!resources) {
-            continue;
-        }
-
-        for (GLuint i = 0; i < resources->count; i++) {
-            if (stage > block_stage || (stage == block_stage && i >= block_index)) {
-                return GL_FALSE;
-            }
-            if (mglSafeCStringEquals(name, resources->list[i].name)) {
-                return GL_TRUE;
-            }
-        }
-    }
-
-    return GL_FALSE;
-}
-
 static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint uniformBlockIndex, int *stage_out)
 {
     GLuint ordinal = 0;
@@ -1465,6 +1709,8 @@ static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint unifor
         return NULL;
     }
 
+    MGLUBOBlockNameSet ubo_seen_fbi;
+    mglUBOBlockNameSetInit(&ubo_seen_fbi);
     for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
         SpirvResourceList *resources = mglUniformSafeResourceList(program, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
         if (!resources) {
@@ -1472,7 +1718,7 @@ static SpirvResource *mglFindUniformBlockByIndex(Program *program, GLuint unifor
         }
         for (GLuint i = 0; i < resources->count; i++) {
             SpirvResource *res = &resources->list[i];
-            if (mglUniformBlockNameSeenBefore(program, stage, i, res->name)) {
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_fbi, res->name)) {
                 continue;
             }
             GLuint element_count = mglUniformBlockArraySize(res);
@@ -1536,11 +1782,16 @@ static GLboolean mglUniformBlockReferencedByStage(Program *program, const SpirvR
 
 GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
 {
+    /* Capture the query-name length once so the inner loops can reuse it
+     * instead of calling strlen(name) on every iteration (the query string
+     * never changes during this function). */
+    size_t query_name_len = 0u;
+
     if (!ctx) {
         return -1;
     }
 
-    if (!name || !mglSafeCStringLength(name, NULL)) {
+    if (!name || !mglSafeCStringLength(name, &query_name_len)) {
         ERROR_RETURN_VALUE(GL_INVALID_VALUE, -1);
     }
 
@@ -1579,7 +1830,11 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
             {
                 SpirvResource *list = resources->list;
                 const char *str = list[i].name;
-                if (!mglSafeCStringLength(str, NULL)) {
+                /* Capture the resource-name length during validation so the
+                 * array-suffix matching below can reuse it without calling
+                 * strlen(str) again. */
+                size_t resource_name_len = 0u;
+                if (!mglSafeCStringLength(str, &resource_name_len)) {
                     continue;
                 }
 
@@ -1600,8 +1855,13 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                              * "[N]" suffix) and add the parsed index to the
                              * member's location_offset. */
                             if (mqn && member->size > 1) {
-                                size_t mqn_len = strlen(mqn);
-                                size_t q_len = strlen(name);
+                                /* Validate mqn and obtain its length in one
+                                 * pass; reuse the precomputed query_name_len. */
+                                size_t mqn_len = 0u;
+                                if (!mglSafeCStringLength(mqn, &mqn_len)) {
+                                    continue;
+                                }
+                                size_t q_len = query_name_len;
                                 if (mqn_len >= 3u &&
                                     mqn[mqn_len - 3u] == '[' &&
                                     mqn[mqn_len - 2u] == '0' &&
@@ -1623,8 +1883,6 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
                     }
                 }
 
-                size_t resource_name_len = strlen(str);
-                size_t query_name_len = strlen(name);
                 GLint array_element = 0;
                 GLboolean name_matches = mglSafeCStringEquals(str, name);
                 if (!name_matches && list[i].gl_array_size > 0 &&
@@ -1913,6 +2171,8 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
     }
 
     GLuint block_index = 0;
+    MGLUBOBlockNameSet ubo_seen_gubi;
+    mglUBOBlockNameSetInit(&ubo_seen_gubi);
     for (int stage=_VERTEX_SHADER; stage<_MAX_SHADER_TYPES; stage++)
     {
         SpirvResourceList *resources = mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_BUFFER, __FUNCTION__);
@@ -1927,7 +2187,7 @@ GLuint  mglGetUniformBlockIndex(GLMContext ctx, GLuint program, const GLchar *un
             if (!mglSafeCStringLength(str, NULL)) {
                 continue;
             }
-            if (mglUniformBlockNameSeenBefore(ptr, stage, i, str)) {
+            if (mglUBOBlockNameSetContainsOrInsert(&ubo_seen_gubi, str)) {
                 continue;
             }
 

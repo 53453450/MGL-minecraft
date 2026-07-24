@@ -95,6 +95,15 @@ void mglTraceFragmentTextureTraceBindings(const char *tag,
                                           GLuint program,
                                           GLuint pipelineProgram);
 
+/* Clears only the functional flag fields (used_sampled_copy,
+ * rt_write_version, used_fallback) that non-trace consumers read —
+ * mglFragmentTextureTraceBindingsUseRTSampledCopy and the batch-replay
+ * early-exit check.  Use this instead of a full-struct memset when trace
+ * logging is disabled: it touches ~384 bytes (3 fields × 128 slots) vs
+ * ~12 KB for the full array zero. */
+void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
+                                                  NSUInteger count);
+
 /* === Program trace gating === */
 
 /* Returns true if programName appears in the MGL_TRACE_LOG_PROGRAMS env var

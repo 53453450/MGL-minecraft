@@ -1612,6 +1612,18 @@ void invalidateTexture(GLMContext ctx, Texture *tex)
         tex->params.mtl_data = NULL;
     }
 
+    /* release cached base-level texture view */
+    if (tex->mtl_base_level_view)
+    {
+        if (ctx->mtl_funcs.mtlDeleteMTLObj) {
+            ctx->mtl_funcs.mtlDeleteMTLObj(ctx, tex->mtl_base_level_view);
+        }
+        tex->mtl_base_level_view = NULL;
+        tex->mtl_base_level_view_source = NULL;
+        tex->mtl_base_level_view_base = 0u;
+        tex->mtl_base_level_view_max = 0u;
+    }
+
     for(int face=0; face<_CUBE_MAP_MAX_FACE; face++)
     {
         TextureLevel *levels = tex->faces[face].levels;
@@ -3750,31 +3762,41 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         upload_dst = (const uint8_t *)texture_data + upload_dst_offset;
     }
 
-    uint64_t dst_hash = upload_rect_valid
-        ? mglHashTextureRect(upload_dst,
-                             dst_pitch,
-                             dst_image_pitch,
-                             compact_upload_row_bytes,
-                             (size_t)MAX(height, 1),
-                             (size_t)MAX(depth, 1))
-        : mglHashBytesSampled(texture_data, compact_upload_bytes);
-    bool upload_rect_zero = upload_rect_valid
-        ? mglTextureRectLooksAllZero(upload_dst,
-                                     dst_pitch,
-                                     dst_image_pitch,
-                                     compact_upload_row_bytes,
-                                     (size_t)MAX(height, 1),
-                                     (size_t)MAX(depth, 1))
-        : mglLooksAllZeroSampled((const uint8_t *)texture_data, compact_upload_bytes);
-    /*
-     * Tiny transparent updates are normal for atlases and mip tails. Keep the
-     * zero-upload probe for large CPU uploads where an all-zero rectangle would
-     * indicate a real unpack/source lifetime problem.
-     */
-    bool suspicious_zero_cpu_upload =
+    /* Gate the expensive per-byte scans behind their actual consumers.
+     * dst_hash is only read by the trace_upload fprintf below; upload_rect_zero
+     * is only read by the suspicious-zero check, which itself requires
+     * !resolved_unpack_buf and a trace-or-large-size gate.  Compute them lazily
+     * so small/typical uploads skip the multi-KB to multi-MB CPU scans. */
+    uint64_t dst_hash = 0ull;
+    bool upload_rect_zero = false;
+    bool suspicious_zero_cpu_upload = false;
+    const bool need_zero_probe =
         !resolved_unpack_buf &&
-        upload_rect_zero &&
         (trace_upload || compact_upload_bytes >= (256u * 1024u));
+    if (trace_upload || need_zero_probe) {
+        if (upload_rect_valid) {
+            upload_rect_zero = mglTextureRectLooksAllZero(upload_dst,
+                                                          dst_pitch,
+                                                          dst_image_pitch,
+                                                          compact_upload_row_bytes,
+                                                          (size_t)MAX(height, 1),
+                                                          (size_t)MAX(depth, 1));
+        } else {
+            upload_rect_zero = mglLooksAllZeroSampled((const uint8_t *)texture_data,
+                                                     compact_upload_bytes);
+        }
+        suspicious_zero_cpu_upload = upload_rect_zero; /* zero-probe already gated above */
+    }
+    if (trace_upload) {
+        dst_hash = upload_rect_valid
+            ? mglHashTextureRect(upload_dst,
+                                 dst_pitch,
+                                 dst_image_pitch,
+                                 compact_upload_row_bytes,
+                                 (size_t)MAX(height, 1),
+                                 (size_t)MAX(depth, 1))
+            : mglHashBytesSampled(texture_data, compact_upload_bytes);
+    }
     if (suspicious_zero_cpu_upload) {
         static uint64_t s_cpu_zero_upload_warning_count = 0u;
         uint64_t zero_warning_id = ++s_cpu_zero_upload_warning_count;

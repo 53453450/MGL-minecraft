@@ -338,30 +338,33 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return 0;
     }
 
+    /* Resolve the program once and read spirv_resources_list directly. */
+    Program *program = mglResolveProgramForStageFromState(ctx, stage);
+    if (!program) {
+        return 0;
+    }
+
     NSUInteger required = 0;
     for (size_t t = 0; t < (sizeof(resourceTypes) / sizeof(resourceTypes[0])); t++) {
         int type = resourceTypes[t];
-        int count = [self getProgramBindingCount:stage type:type];
-        for (int i = 0; i < count; i++) {
-            Program *program = mglResolveProgramForStageFromState(ctx, stage);
-            if (!program || type < 0 || type >= _MAX_SPIRV_RES ||
-                i < 0 || i >= (int)program->spirv_resources_list[stage][type].count) {
-                continue;
-            }
+        if (type < 0 || type >= _MAX_SPIRV_RES) {
+            continue;
+        }
 
-            SpirvResource *resource = &program->spirv_resources_list[stage][type].list[i];
+        SpirvResourceList *list = &program->spirv_resources_list[stage][type];
+        for (GLuint i = 0; i < list->count; i++) {
+            SpirvResource *resource = &list->list[i];
             if (mglShouldSkipStageBufferResource(program, stage, type, resource)) {
                 continue;
             }
 
             GLuint resourceClientBinding =
-                mglClientBufferBindingForResource(type,
-                                                  resource);
+                mglClientBufferBindingForResource(type, resource);
             if (resourceClientBinding != clientBinding) {
                 continue;
             }
 
-            NSUInteger candidate = [self getProgramBindingRequiredSize:stage type:type index:i];
+            NSUInteger candidate = (NSUInteger)resource->required_size;
             if (candidate > required) {
                 required = candidate;
             }

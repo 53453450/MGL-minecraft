@@ -92,12 +92,15 @@ static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
                                              NSError **error)
 {
     if (mglPerfSummaryEnabled()) {
+        /* mach_timebase_info is constant for the process lifetime. */
+        static mach_timebase_info_data_t s_tb;
+        static dispatch_once_t s_tbOnce;
+        dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
+
         uint64_t compile_start = mach_absolute_time();
         id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:error];
         uint64_t compile_end = mach_absolute_time();
-        mach_timebase_info_data_t tb;
-        mach_timebase_info(&tb);
-        double elapsed = (double)(compile_end - compile_start) * tb.numer / tb.denom / 1e9;
+        double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
         MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
         MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
         return library;
@@ -157,12 +160,15 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
 
                 id<MTLLibrary> library = nil;
                 if (mglPerfSummaryEnabled()) {
+                    /* mach_timebase_info is constant for the process lifetime. */
+                    static mach_timebase_info_data_t s_tb;
+                    static dispatch_once_t s_tbOnce;
+                    dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
+
                     uint64_t compile_start = mach_absolute_time();
                     library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
                     uint64_t compile_end = mach_absolute_time();
-                    mach_timebase_info_data_t tb;
-                    mach_timebase_info(&tb);
-                    double elapsed = (double)(compile_end - compile_start) * tb.numer / tb.denom / 1e9;
+                    double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
                     MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
                     MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
                 } else {

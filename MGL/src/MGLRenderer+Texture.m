@@ -773,6 +773,7 @@
         dispatch_semaphore_signal(readbackDone);
     }];
     [_renderPassManager.state->currentCommandBuffer commit];
+    _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
@@ -992,6 +993,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         dispatch_semaphore_signal(readbackDone);
     }];
     [_renderPassManager.state->currentCommandBuffer commit];
+    _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
@@ -1282,6 +1284,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
  destinationBytesPerImage:stagingSize];
     [blit endEncoding];
     [_renderPassManager.state->currentCommandBuffer commit];
+    _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
     [_renderPassManager.state->currentCommandBuffer waitUntilCompleted];
 
     const uint8_t *src = (const uint8_t *)readBuffer.contents;
@@ -1834,6 +1837,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             [_renderPassManager detachCurrentCommandBufferForSubmission];
         @try {
             [pendingCB commit];
+            _lastCommittedCB = pendingCB;
             [pendingCB waitUntilCompleted];
         } @catch (NSException *e) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);

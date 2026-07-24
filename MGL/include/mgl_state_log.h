@@ -21,9 +21,13 @@ extern "C" {
 #endif
 
 /* Appends "|name" (or "name" when *first is true) to the NUL-terminated
- * string in `dst` (capacity `dstSize`).  Updates *first to false on a
- * successful append.  No-op if dst/name is NULL or the buffer is full. */
-void mglAppendFlagName(char *dst, size_t dstSize, const char *name, bool *first);
+ * string in `dst` (capacity `dstSize`).  *used tracks the current logical
+ * length of dst (including NUL) to avoid O(n^2) strlen on repeated appends;
+ * the caller initializes it to strlen(dst)+1 (or 1 for an empty string).
+ * Updates *first to false and *used to the new length on a successful
+ * append.  No-op if dst/name is NULL or the buffer is full. */
+void mglAppendFlagName(char *dst, size_t dstSize, size_t *used,
+                       const char *name, bool *first);
 
 /* Formats a dirty-bits mask into a pipe-separated string of flag names
  * ("VAO|STATE|TEX").  Writes "none" for 0 and "0x%x" if no known bits

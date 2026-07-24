@@ -156,6 +156,7 @@
 
         @try {
             [self commitCommandBufferWithAGXRecovery:cbToCommit];
+            _lastCommittedCB = cbToCommit;
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Failed to commit fence command buffer: %@", exception);
             [self recordGPUError];

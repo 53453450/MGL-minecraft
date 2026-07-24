@@ -185,6 +185,16 @@ typedef struct Texture_t {
     GLubyte *rgb10a2_shadow;
     GLuint rgb10a2_shadow_width;
     GLuint rgb10a2_shadow_height;
+    /* Cached base-level texture view.  newTextureViewWithPixelFormat:
+     * is expensive and called per-draw when base_level != 0 (common in
+     * Minecraft).  Cache the view keyed on (source texture, base_level,
+     * max_level); self-invalidating via comparison in
+     * mglSampledTextureViewForBaseLevel.  Released via CFRelease in
+     * texture cleanup.  void* for pure-C header compatibility. */
+    void      *mtl_base_level_view;          /* id<MTLTexture> retained via CFRetain */
+    void      *mtl_base_level_view_source;   /* source id<MTLTexture> (weak ref for identity check) */
+    GLuint     mtl_base_level_view_base;
+    GLuint     mtl_base_level_view_max;
     char debug_label[128];
 } Texture;
 

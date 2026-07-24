@@ -61,6 +61,25 @@ BOOL mglFragmentTextureTraceBindingsUseRTSampledCopy(const MGLFragmentTextureTra
     return NO;
 }
 
+void mglClearFragmentTextureTraceFunctionalFlags(MGLFragmentTextureTraceBinding *bindings,
+                                                  NSUInteger count)
+{
+    if (!bindings || count == 0) {
+        return;
+    }
+    /* Only clear the three fields that non-trace consumers read.
+     * used_sampled_copy — checked by mglFragmentTextureTraceBindingsUseRTSampledCopy.
+     * rt_write_version  — checked by the batch-replay early-exit (slots 0..3).
+     * used_fallback     — checked by mglFragmentTextureTraceBindingIsInteresting
+     *                     (only called from trace-gated paths, but clearing it
+     *                     here keeps the early-exit fast path consistent). */
+    for (NSUInteger i = 0; i < count; i++) {
+        bindings[i].used_sampled_copy = 0u;
+        bindings[i].rt_write_version = 0u;
+        bindings[i].used_fallback = 0u;
+    }
+}
+
 void mglTraceFragmentTextureTraceBindings(const char *tag,
                                           const char *reason,
                                           const MGLFragmentTextureTraceBinding *bindings,

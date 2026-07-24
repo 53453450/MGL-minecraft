@@ -806,14 +806,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return false;
     }
     _renderPassManager.state->currentRenderEncoder.label = @"GL Render Encoder";
-    mglTraceFragmentTextureTraceBindings("CLEAR",
-                                         reason ? reason : "restore_render_encoder_after_texture_upload",
-                                         _resourceFallback.fragmentTextureTraceBindings,
-                                         TEXTURE_UNITS,
-                                         ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                         _pipelineCache.state->pipelineProgramName);
-    memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-           sizeof(_resourceFallback.fragmentTextureTraceBindings));
+    /* When trace is disabled, skip the full-struct memset and trace call
+     * and clear only the functional flag fields. */
+    if (mglTraceLogIsEnabled()) {
+        mglTraceFragmentTextureTraceBindings("CLEAR",
+                                             reason ? reason : "restore_render_encoder_after_texture_upload",
+                                             _resourceFallback.fragmentTextureTraceBindings,
+                                             TEXTURE_UNITS,
+                                             ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                             _pipelineCache.state->pipelineProgramName);
+        memset(_resourceFallback.fragmentTextureTraceBindings, 0,
+               sizeof(_resourceFallback.fragmentTextureTraceBindings));
+    } else {
+        mglClearFragmentTextureTraceFunctionalFlags(
+            _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
+    }
     [_renderPassManager updateRenderPassIdentityForContext:ctx];
     [self updateCurrentRenderEncoder];
 
@@ -2752,14 +2759,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
          * writes 1 to the buffer if any samples pass per-fragment tests. */
         [_queryManager configureRenderEncoder:_renderPassManager.state->currentRenderEncoder];
         [_renderPassManager updateRenderPassIdentityForContext:ctx];
-        mglTraceFragmentTextureTraceBindings("CLEAR",
-                                             "new_render_encoder",
-                                             _resourceFallback.fragmentTextureTraceBindings,
-                                             TEXTURE_UNITS,
-                                             ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                             _pipelineCache.state->pipelineProgramName);
-        memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-               sizeof(_resourceFallback.fragmentTextureTraceBindings));
+        /* When trace is disabled, skip the full-struct memset and trace
+         * call and clear only the functional flag fields. */
+        if (mglTraceLogIsEnabled()) {
+            mglTraceFragmentTextureTraceBindings("CLEAR",
+                                                 "new_render_encoder",
+                                                 _resourceFallback.fragmentTextureTraceBindings,
+                                                 TEXTURE_UNITS,
+                                                 ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                                 _pipelineCache.state->pipelineProgramName);
+            memset(_resourceFallback.fragmentTextureTraceBindings, 0,
+                   sizeof(_resourceFallback.fragmentTextureTraceBindings));
+        } else {
+            mglClearFragmentTextureTraceFunctionalFlags(
+                _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
+        }
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL INFO: Successfully created Metal render encoder");
         }
@@ -3063,6 +3077,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             [self resetMetalState];
             return false;
         }
+
+        _currentCBHasWork = NO;
 
         // AGX Driver Validation: Check if the command buffer is immediately invalid
         if (_renderPassManager.state->currentCommandBuffer.error) {
@@ -4117,6 +4133,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     if (_renderPassManager.state->currentRenderEncoder)
     {
+        /* An active render encoder means work was encoded into the current
+         * CB, so flushCommandBufferLocked: must not skip the commit. */
+        _currentCBHasWork = YES;
+
         Framebuffer *endedFramebuffer = _renderPassManager.state->renderPassFramebuffer;
         GLsizei endedDrawBufferCount = _renderPassManager.state->renderPassDrawBufferCount;
         GLenum endedDrawBuffers[MAX_COLOR_ATTACHMENTS];
@@ -4145,14 +4165,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
             [_renderPassManager.state->currentRenderEncoder endEncoding];
             [_renderPassManager clearCurrentRenderEncoder];
-            mglTraceFragmentTextureTraceBindings("CLEAR",
-                                                 "end_render_encoding",
-                                                 _resourceFallback.fragmentTextureTraceBindings,
-                                                 TEXTURE_UNITS,
-                                                 ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                                 _pipelineCache.state->pipelineProgramName);
-            memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-                   sizeof(_resourceFallback.fragmentTextureTraceBindings));
+            /* When trace is disabled, skip the full-struct memset and
+             * trace call and clear only the functional flag fields. */
+            if (mglTraceLogIsEnabled()) {
+                mglTraceFragmentTextureTraceBindings("CLEAR",
+                                                     "end_render_encoding",
+                                                     _resourceFallback.fragmentTextureTraceBindings,
+                                                     TEXTURE_UNITS,
+                                                     ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                                     _pipelineCache.state->pipelineProgramName);
+                memset(_resourceFallback.fragmentTextureTraceBindings, 0,
+                       sizeof(_resourceFallback.fragmentTextureTraceBindings));
+            } else {
+                mglClearFragmentTextureTraceFunctionalFlags(
+                    _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
+            }
             [_renderPassManager clearRenderPassIdentity];
             if (kMGLVerboseFrameLoopLogs) {
                 NSLog(@"MGL DEBUG: Render encoder ended successfully");
@@ -4161,14 +4188,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             NSLog(@"MGL ERROR: Exception ending render encoder: %@ - ignoring", exception.reason);
             // Force clear the encoder even if ending failed
             [_renderPassManager clearCurrentRenderEncoder];
-            mglTraceFragmentTextureTraceBindings("CLEAR",
-                                                 "end_render_encoding_exception",
-                                                 _resourceFallback.fragmentTextureTraceBindings,
-                                                 TEXTURE_UNITS,
-                                                 ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
-                                                 _pipelineCache.state->pipelineProgramName);
-            memset(_resourceFallback.fragmentTextureTraceBindings, 0,
-                   sizeof(_resourceFallback.fragmentTextureTraceBindings));
+            /* When trace is disabled, skip the full-struct memset and
+             * trace call and clear only the functional flag fields. */
+            if (mglTraceLogIsEnabled()) {
+                mglTraceFragmentTextureTraceBindings("CLEAR",
+                                                     "end_render_encoding_exception",
+                                                     _resourceFallback.fragmentTextureTraceBindings,
+                                                     TEXTURE_UNITS,
+                                                     ctx ? mglCurrentRenderProgramKey(ctx) : 0u,
+                                                     _pipelineCache.state->pipelineProgramName);
+                memset(_resourceFallback.fragmentTextureTraceBindings, 0,
+                       sizeof(_resourceFallback.fragmentTextureTraceBindings));
+            } else {
+                mglClearFragmentTextureTraceFunctionalFlags(
+                    _resourceFallback.fragmentTextureTraceBindings, TEXTURE_UNITS);
+            }
             [_renderPassManager clearRenderPassIdentity];
         }
 
@@ -4236,6 +4270,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     @try {
         [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+        _lastCommittedCB = commandBufferToCommit;
         [commandBufferToCommit waitUntilCompleted];
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
@@ -5712,9 +5747,6 @@ stencil_format_ok:;
         return true;
     }
 
-    static __strong id<MTLBuffer> s_vertexSizeBuffer = nil;
-    static __strong id<MTLBuffer> s_fragmentSizeBuffer = nil;
-
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     if (vertexProgram && vertexProgram->spirv[_VERTEX_SHADER].needs_buffer_size_buffer)
     {
@@ -5735,12 +5767,22 @@ stencil_format_ok:;
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
         }
 
-        s_vertexSizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                   length:sizeof(sizeConstants)
-                                                  options:MTLResourceStorageModeShared];
-        if (s_vertexSizeBuffer) {
-            [_renderPassManager.state->currentRenderEncoder setVertexBuffer:s_vertexSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
-            [self recordLastBoundVertexBuffer:s_vertexSizeBuffer
+        /* Reuse the cached MTLBuffer when size constants are unchanged.  When
+         * they differ we must allocate a new buffer: Metal records only a
+         * reference at setVertexBuffer time and the GPU reads contents at
+         * command-buffer execution, so overwriting a buffer that earlier
+         * draws in the same CB reference would corrupt them. */
+        if (!_vertexSizeConstantsValid ||
+            memcmp(_vertexSizeConstantsCache, sizeConstants, sizeof(sizeConstants)) != 0) {
+            _vertexSizeBuffer = [_device newBufferWithBytes:sizeConstants
+                                                     length:sizeof(sizeConstants)
+                                                    options:MTLResourceStorageModeShared];
+            memcpy(_vertexSizeConstantsCache, sizeConstants, sizeof(sizeConstants));
+            _vertexSizeConstantsValid = YES;
+        }
+        if (_vertexSizeBuffer) {
+            [_renderPassManager.state->currentRenderEncoder setVertexBuffer:_vertexSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            [self recordLastBoundVertexBuffer:_vertexSizeBuffer
                                        offset:0
                                       atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
@@ -5767,12 +5809,18 @@ stencil_format_ok:;
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
         }
 
-        s_fragmentSizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                     length:sizeof(sizeConstants)
-                                                    options:MTLResourceStorageModeShared];
-        if (s_fragmentSizeBuffer) {
-            [_renderPassManager.state->currentRenderEncoder setFragmentBuffer:s_fragmentSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
-            [self recordLastBoundFragmentBuffer:s_fragmentSizeBuffer
+        /* Content-comparison cache (see vertex note above). */
+        if (!_fragmentSizeConstantsValid ||
+            memcmp(_fragmentSizeConstantsCache, sizeConstants, sizeof(sizeConstants)) != 0) {
+            _fragmentSizeBuffer = [_device newBufferWithBytes:sizeConstants
+                                                       length:sizeof(sizeConstants)
+                                                      options:MTLResourceStorageModeShared];
+            memcpy(_fragmentSizeConstantsCache, sizeConstants, sizeof(sizeConstants));
+            _fragmentSizeConstantsValid = YES;
+        }
+        if (_fragmentSizeBuffer) {
+            [_renderPassManager.state->currentRenderEncoder setFragmentBuffer:_fragmentSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            [self recordLastBoundFragmentBuffer:_fragmentSizeBuffer
                                          offset:0
                                         atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
             MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
@@ -5787,6 +5835,21 @@ stencil_format_ok:;
     METAL_LOCK();
     [self flushCommandBufferLocked:finish];
     METAL_UNLOCK();
+
+    /* waitUntilCompleted is outside METAL_LOCK to avoid blocking other
+     * threads that need the lock while the GPU finishes.  The CB was already
+     * committed inside the lock; waiting outside is safe because the CB
+     * retains itself until completion. */
+    if (finish && _pendingFinishCB != nil) {
+        @try {
+            if (_pendingFinishCB.status != MTLCommandBufferStatusNotEnqueued) {
+                [_pendingFinishCB waitUntilCompleted];
+            }
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: waitUntilCompleted failed outside lock: %@", exception);
+        }
+        _pendingFinishCB = nil;
+    }
 }
 
 -(void) flushCommandBufferLocked: (bool) finish
@@ -5802,7 +5865,35 @@ stencil_format_ok:;
         NSLog(@"MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup");
     }
 
+    /* If processGLStateLocked: left a render encoder active, mark the CB as
+     * having work so the commit below is not skipped. */
+    if (_renderPassManager.state->currentRenderEncoder) {
+        _currentCBHasWork = YES;
+    }
+
     [self endRenderEncodingLocked];
+
+    /* When finish=true and the current CB has no encoded work, skip
+     * committing an empty CB.  Instead, wait on _lastCommittedCB — Metal
+     * CBs on the same queue execute serially, so waiting on the last
+     * committed CB guarantees all prior GPU work is done.  This avoids a
+     * kernel-level commit + wait for redundant sync calls.
+     *
+     * _currentCBHasWork is set by flushDrawBufferLocked (draw batches),
+     * endRenderEncodingLocked (render encoders), and any path that encodes
+     * blit/compute work before calling flushCommandBuffer:YES (e.g.
+     * readTextureRegionViaBlit).  If a path encodes blit/compute work into
+     * the current CB and then calls flushCommandBuffer:YES without setting
+     * this flag, the skip will incorrectly drop the uncommitted work. */
+    if (finish && !_currentCBHasWork && _lastCommittedCB != nil) {
+        _pendingFinishCB = _lastCommittedCB;
+        return;
+    }
+    if (finish && !_currentCBHasWork && _lastCommittedCB == nil) {
+        /* No CB was ever committed — nothing to wait for. */
+        _pendingFinishCB = nil;
+        return;
+    }
 
     if (![self ensureWritableCommandBufferLocked:"flushCommandBuffer"]) {
         NSLog(@"MGL ERROR: Unable to obtain writable command buffer in flushCommandBuffer");
@@ -5840,8 +5931,11 @@ stencil_format_ok:;
 
     @try {
         [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
-        if (finish && commandBufferToCommit.status != MTLCommandBufferStatusNotEnqueued) {
-            [commandBufferToCommit waitUntilCompleted];
+        _lastCommittedCB = commandBufferToCommit;
+        /* Don't waitUntilCompleted inside the lock — save the CB for the
+         * caller (flushCommandBuffer:) to wait on after unlock. */
+        if (finish) {
+            _pendingFinishCB = commandBufferToCommit;
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Command buffer commit failed in flushCommandBuffer: %@", exception);
@@ -6233,6 +6327,9 @@ stencil_format_ok:;
             NSLog(@"MGL AGX: Committing command buffer (status: %ld)", (long)status);
         }
         [commandBuffer commit];
+        /* Centralized tracking of the most recently committed CB, covering
+         * every commit routed through this function. */
+        _lastCommittedCB = commandBuffer;
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL AGX: Command buffer committed successfully");
         }

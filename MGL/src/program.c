@@ -310,6 +310,9 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
      * (not pointers to SpirvResource), so order doesn't strictly matter,
      * but freeing here keeps the cleanup grouped with other caches. */
     mglBufferBindingPlanDestroy(ptr);
+    /* Free the active-uniform cache (pointers into spirv_resources_list,
+     * so no owned allocations beyond the array itself). */
+    mglFreeActiveUniformCache(ptr);
 
     mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
@@ -845,6 +848,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * freshly reflected spirv_resources_list after a successful link. */
     pptr->sampler_binding_shared_valid = 0u;
     memset(pptr->sampler_binding_shared, 0, sizeof(pptr->sampler_binding_shared));
+    /* Invalidate the active-uniform cache; rebuilt from the freshly
+     * reflected spirv_resources_list after a successful link. */
+    mglFreeActiveUniformCache(pptr);
+    /* Invalidate the IR-level reflection cache for buffer slot
+     * conflict detection.  Lazily recomputed on first
+     * mglBufferSlotConflictsForProgram call during resource binding. */
+    pptr->ir_cache_valid = GL_FALSE;
     /* Bump the per-Program MSL texture type cache generation so the renderer
      * (_mslTextureTypeCache) invalidates any entries cached against the
      * previous MSL; the key includes this generation value. */
@@ -1204,6 +1214,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * can skip repeated name lookups and program resolution.  See
      * mgl_buffer_plan.h for the full cache contract. */
     mglBufferBindingPlanBuild(pptr);
+
+    /* Build the deduplicated active-uniform cache from the finalized
+     * spirv_resources_list.  Eliminates O(N^3) dedup-on-every-query in
+     * mglProgramActiveUniformCount / At / IndexByName / MaxNameLength. */
+    mglBuildActiveUniformCache(pptr);
 
     /* Only call mtlBindProgram if Metal functions are initialized */
     if (ctx->mtl_funcs.mtlBindProgram) {

@@ -68,15 +68,19 @@ uint64_t mglPerfSummaryInterval(void)
 
 os_log_t mglSignpostLog = OS_LOG_DEFAULT;
 
-static int _signpostEnabledCache = -1;
+/* _Atomic to prevent a data race when multiple threads hit the first
+ * cold miss concurrently. */
+static _Atomic int _signpostEnabledCache = -1;
 
 int mglSignpostEnabled(void)
 {
-    if (_signpostEnabledCache < 0) {
+    int cached = atomic_load_explicit(&_signpostEnabledCache, memory_order_acquire);
+    if (cached < 0) {
         const char *env = getenv("MGL_SIGNPOST");
-        _signpostEnabledCache = (env && atoi(env) == 1) ? 1 : 0;
+        cached = (env && atoi(env) == 1) ? 1 : 0;
+        atomic_store_explicit(&_signpostEnabledCache, cached, memory_order_release);
     }
-    return _signpostEnabledCache;
+    return cached;
 }
 
 /* === Last draw-call metadata === */
@@ -134,8 +138,10 @@ _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap   = 0;
 _Atomic uint64_t g_mglMergeRejectUnsafeBuiltinSinceSwap  = 0;
 _Atomic uint64_t g_mglMergeRejectExcludedLayoutSinceSwap = 0;
 _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap   = 0;
-_Atomic double   g_mglLockWaitTimeSinceSwap   = 0.0;
-_Atomic double   g_mglLockHoldTimeSinceSwap   = 0.0;
+/* _Atomic uint64_t (nanoseconds) allows a lock-free fetch_add on all
+ * platforms, unlike _Atomic double which falls back to a CAS loop. */
+_Atomic uint64_t g_mglLockWaitTimeSinceSwap   = 0;
+_Atomic uint64_t g_mglLockHoldTimeSinceSwap   = 0;
 
 /* === CPU audit counters === */
 

@@ -135,6 +135,16 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
     NSUInteger levelCount = maxLevel - baseLevel + 1u;
     if (levelCount == 0u) return texture;
 
+    /* Cache hit — return the cached view when source texture, base_level,
+     * and max_level all match.  This avoids per-draw newTextureViewWithPixelFormat:
+     * allocation when the texture params haven't changed (common case). */
+    if (ptr->mtl_base_level_view != NULL &&
+        ptr->mtl_base_level_view_source == (__bridge void *)texture &&
+        ptr->mtl_base_level_view_base == baseLevel &&
+        ptr->mtl_base_level_view_max == maxLevel) {
+        return (__bridge id<MTLTexture>)ptr->mtl_base_level_view;
+    }
+
     NSUInteger sliceCount = texture.arrayLength;
     if (texture.textureType == MTLTextureTypeCube ||
         texture.textureType == MTLTextureTypeCubeArray) {
@@ -146,6 +156,15 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                                                                 levels:NSMakeRange(baseLevel, levelCount)
                                                                 slices:NSMakeRange(0, sliceCount)];
     if (levelView) {
+        /* Store in cache, releasing the old view if any. */
+        if (ptr->mtl_base_level_view) {
+            CFRelease(ptr->mtl_base_level_view);
+        }
+        CFRetain((__bridge CFTypeRef)levelView);
+        ptr->mtl_base_level_view = (__bridge void *)levelView;
+        ptr->mtl_base_level_view_source = (__bridge void *)texture;
+        ptr->mtl_base_level_view_base = baseLevel;
+        ptr->mtl_base_level_view_max = maxLevel;
         static uint64_t s_sampledBaseViewTraceCount = 0;
         uint64_t hit = ++s_sampledBaseViewTraceCount;
         if (hit <= 256ull || (hit % 1024ull) == 0ull) {

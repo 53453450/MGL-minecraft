@@ -1875,7 +1875,18 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
         MGL_SIGNPOST_END(ComputeStateKey);
         return;
     }
-    memset(out, 0, sizeof(*out));
+
+    /* Every other field is written unconditionally below.  These are only
+     * written conditionally (program names when a pipeline is bound without a
+     * direct program; scissor[] only when scissor is enabled), so zero them
+     * explicitly to keep memcmp-based equality correct without a full-struct
+     * memset. */
+    out->vertex_program_name = 0;
+    out->fragment_program_name = 0;
+    out->scissor[0] = 0;
+    out->scissor[1] = 0;
+    out->scissor[2] = 0;
+    out->scissor[3] = 0;
 
     out->program_name = ctx->active_state->program_name;
     out->program_pipeline_name = ctx->active_state->var.program_pipeline_binding;
@@ -2008,13 +2019,28 @@ static bool mglStateKeysEqualIgnoringUniformRanges(const MGLStateKey *a,
         return false;
     }
 
-    MGLStateKey a_without_ranges = *a;
-    MGLStateKey b_without_ranges = *b;
-    a_without_ranges.render_state_hash = 0;
-    b_without_ranges.render_state_hash = 0;
-    a_without_ranges.uniform_buffer_hash = 0;
-    b_without_ranges.uniform_buffer_hash = 0;
-    return mglStateKeysEqual(&a_without_ranges, &b_without_ranges);
+    /* Compare fields directly instead of copying both keys to the stack,
+     * zeroing the two range-hash fields, and running a full-struct memcmp.
+     * The range hashes are intentionally excluded from this comparison. */
+    return a->program_name == b->program_name &&
+           a->program_pipeline_name == b->program_pipeline_name &&
+           a->vertex_program_name == b->vertex_program_name &&
+           a->fragment_program_name == b->fragment_program_name &&
+           a->vao_name == b->vao_name &&
+           a->fbo_name == b->fbo_name &&
+           a->viewport[0] == b->viewport[0] &&
+           a->viewport[1] == b->viewport[1] &&
+           a->viewport[2] == b->viewport[2] &&
+           a->viewport[3] == b->viewport[3] &&
+           a->scissor[0] == b->scissor[0] &&
+           a->scissor[1] == b->scissor[1] &&
+           a->scissor[2] == b->scissor[2] &&
+           a->scissor[3] == b->scissor[3] &&
+           a->scissor_enabled == b->scissor_enabled &&
+           a->primitive_type == b->primitive_type &&
+           a->caps_flags == b->caps_flags &&
+           a->texture_hash == b->texture_hash &&
+           a->vertex_layout_hash == b->vertex_layout_hash;
 }
 
 static bool mglCaptureDynamicUniformRanges(GLMContext ctx,
@@ -2025,37 +2051,67 @@ static bool mglCaptureDynamicUniformRanges(GLMContext ctx,
     if (!ctx || !batch || !batch->state_snapshot || !cmd) return false;
 
     const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
+    const BufferBase *base_ubo = &snapshot->buffer_base[_UNIFORM_BUFFER];
+    const BufferBase *current_ubo = &ctx->active_state->buffer_base[_UNIFORM_BUFFER];
+
     cmd->dynamic_uniform_binding_count = 0;
-    uint16_t bound_count = 0;
-    for (uint16_t i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
-        const BufferBaseTarget *base =
-            &snapshot->buffer_base[_UNIFORM_BUFFER].buffers[i];
-        const BufferBaseTarget *current =
-            &ctx->active_state->buffer_base[_UNIFORM_BUFFER].buffers[i];
 
-        /* Object changes still use the conservative hazard/flush path. */
-        if (base->buffer != current->buffer || base->buf != current->buf) {
-            return false;
-        }
-        if (current->buf && ++bound_count > MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
-            return false;
-        }
-        if (!capture_all_bound_ranges &&
-            base->offset == current->offset && base->size == current->size) {
-            continue;
-        }
-        if (!current->buf) {
-            continue;
-        }
-        if (cmd->dynamic_uniform_binding_count >= MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
-            return false;
-        }
+    /* The active_mask bitmap mirrors buf != NULL (maintained by
+     * mglBufferBaseSetActive / ClearActive at bind/unbind/delete time), so:
+     *   - Bits set only in `current` (added) or only in `base` (removed)
+     *     mean an object was bound/unbound since snapshot — fall back to
+     *     the conservative hazard/flush path by returning false.
+     *   - Bits set in both are the only slots we need to inspect for
+     *     offset/size overrides.
+     *   - Bits set in neither are skipped: both buf are NULL, and the
+     *     bind/unbind contract keeps buffer names 0 when buf is NULL. */
+    uint64_t base_mask[2]  = { base_ubo->active_mask[0],  base_ubo->active_mask[1] };
+    uint64_t curr_mask[2]  = { current_ubo->active_mask[0], current_ubo->active_mask[1] };
 
-        MGLDynamicUniformBinding *override =
-            &cmd->dynamic_uniform_bindings[cmd->dynamic_uniform_binding_count++];
-        override->binding_index = i;
-        override->offset = current->offset;
-        override->size = current->size;
+    /* Object additions or removals since snapshot => cannot capture
+     * dynamic overrides, fall back to hazard path. */
+    if ((base_mask[0] ^ curr_mask[0]) != 0u ||
+        (base_mask[1] ^ curr_mask[1]) != 0u) {
+        return false;
+    }
+
+    /* Early bound-count check (replaces the per-slot ++bound_count). */
+    uint16_t bound_count = (uint16_t)(__builtin_popcountll(curr_mask[0]) +
+                                      __builtin_popcountll(curr_mask[1]));
+    if (bound_count > MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
+        return false;
+    }
+
+    /* Iterate only the active slots. */
+    for (uint32_t w = 0; w < MGL_BUFFER_BASE_ACTIVE_WORDS; w++) {
+        uint64_t bits = curr_mask[w];
+        while (bits) {
+            int i = __builtin_ctzll(bits);
+            bits &= bits - 1;
+            uint16_t slot = (uint16_t)((w << 6) + i);
+
+            const BufferBaseTarget *base = &base_ubo->buffers[slot];
+            const BufferBaseTarget *current = &current_ubo->buffers[slot];
+
+            /* Both slots are active per the mask check above, but verify
+             * the underlying pointers/names match (cheap pointer compare). */
+            if (base->buffer != current->buffer || base->buf != current->buf) {
+                return false;
+            }
+            if (!capture_all_bound_ranges &&
+                base->offset == current->offset && base->size == current->size) {
+                continue;
+            }
+            if (cmd->dynamic_uniform_binding_count >= MGL_MAX_DYNAMIC_UNIFORM_BINDINGS) {
+                return false;
+            }
+
+            MGLDynamicUniformBinding *override =
+                &cmd->dynamic_uniform_bindings[cmd->dynamic_uniform_binding_count++];
+            override->binding_index = slot;
+            override->offset = current->offset;
+            override->size = current->size;
+        }
     }
     return cmd->dynamic_uniform_binding_count > 0;
 }
@@ -2121,20 +2177,40 @@ static bool mglVertexArraysHaveCompatibleBindings(GLMContext ctx,
     }
 
     /* Metal slot assignment groups attributes that share one VBO.  Preserve
-     * that equivalence relation even though the actual buffer objects differ. */
+     * that equivalence relation even though the actual buffer objects differ
+     * between base and current.
+     *
+     * Cache the effective buffer per attribute once, then give each attribute
+     * a canonical partition label: the smallest enabled index sharing the same
+     * buffer.  Two partitions are equal iff the canonical labels match
+     * element-wise. */
+    const Buffer *base_bufs[MAX_ATTRIBS];
+    const Buffer *current_bufs[MAX_ATTRIBS];
+    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+        base_bufs[i] = NULL;
+        current_bufs[i] = NULL;
+        if ((base->enabled_attribs & (1u << i)) == 0u) continue;
+        base_bufs[i] = mglVertexArrayEffectiveBuffer(base, i);
+        current_bufs[i] = mglVertexArrayEffectiveBuffer(current, i);
+        if (!base_bufs[i] || !current_bufs[i]) return false;
+    }
+
     for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
         if ((base->enabled_attribs & (1u << i)) == 0u) continue;
-        const Buffer *base_i = mglVertexArrayEffectiveBuffer(base, i);
-        const Buffer *current_i = mglVertexArrayEffectiveBuffer(current, i);
-        if (!base_i || !current_i) return false;
-        for (GLuint j = i + 1; j < MAX_ATTRIBS; j++) {
+        /* Find smallest enabled j < i with the same buffer on each side. */
+        GLuint base_lbl = i;
+        GLuint current_lbl = i;
+        for (GLuint j = 0; j < i; j++) {
             if ((base->enabled_attribs & (1u << j)) == 0u) continue;
-            bool base_shared =
-                base_i == mglVertexArrayEffectiveBuffer(base, j);
-            bool current_shared =
-                current_i == mglVertexArrayEffectiveBuffer(current, j);
-            if (base_shared != current_shared) return false;
+            if (base_lbl == i && base_bufs[j] == base_bufs[i]) {
+                base_lbl = j;
+            }
+            if (current_lbl == i && current_bufs[j] == current_bufs[i]) {
+                current_lbl = j;
+            }
+            if (base_lbl != i && current_lbl != i) break;
         }
+        if (base_lbl != current_lbl) return false;
     }
     return true;
 }

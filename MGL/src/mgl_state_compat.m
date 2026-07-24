@@ -159,15 +159,44 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
         GLuint glName;
         GLsizeiptr rangeSize;
         NSUInteger reflectedSize;
-        uint64_t hits;
+        uint64_t hits;  /* 0 == empty slot; >=1 == occupied */
     } MGLSmallBaseBindingLogKey;
 
-    static MGLSmallBaseBindingLogKey s_keys[128];
+    /* Open-addressing hash table with linear probing. The table size is a
+     * power of two so modulo reduces to a bitmask; the empty-slot sentinel is
+     * hits==0, which is impossible for an occupied entry because hits starts
+     * at 1 and only increments. */
+    enum { kMGLSmallBaseLogTableSize = 128 };
+    static MGLSmallBaseBindingLogKey s_keys[kMGLSmallBaseLogTableSize];
     static uint32_t s_keyCount = 0;
     static uint64_t s_overflowHits = 0;
 
-    for (uint32_t i = 0; i < s_keyCount; i++) {
-        MGLSmallBaseBindingLogKey *key = &s_keys[i];
+    /* Mix the seven key fields into a 64-bit hash.  Each multiplier is a
+     * distinct odd constant (Fibonacci/golden-ratio derived) so that
+     * correlated inputs (e.g. binding==glName) still disperse. */
+    uint64_t h = (uint64_t)programName
+               ^ ((uint64_t)(uint32_t)stage * 0x9E3779B97F4A7C15ULL)
+               ^ ((uint64_t)(uint32_t)resourceType * 0xC2B2AE3D27D4EB4FULL)
+               ^ ((uint64_t)binding * 0x165667B19E3779F9ULL)
+               ^ ((uint64_t)glName * 0x9E3779B185EBCA87ULL)
+               ^ ((uint64_t)rangeSize * 0xD1B54A32D192ED03ULL)
+               ^ (reflectedSize * 0xA24BAED4963EE407ULL);
+    uint32_t startIdx = (uint32_t)(h & (kMGLSmallBaseLogTableSize - 1u));
+
+    /* Probe for a matching key or an empty slot.  Remember the first
+     * empty slot seen so we can insert without re-probing. */
+    int32_t emptySlotIdx = -1;
+    for (uint32_t probe = 0; probe < kMGLSmallBaseLogTableSize; probe++) {
+        uint32_t idx = (startIdx + probe) & (kMGLSmallBaseLogTableSize - 1u);
+        MGLSmallBaseBindingLogKey *key = &s_keys[idx];
+
+        if (key->hits == 0u) {
+            if (emptySlotIdx < 0) {
+                emptySlotIdx = (int32_t)idx;
+            }
+            break;
+        }
+
         if (key->programName == programName &&
             key->stage == stage &&
             key->resourceType == resourceType &&
@@ -176,27 +205,28 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
             key->rangeSize == rangeSize &&
             key->reflectedSize == reflectedSize) {
             key->hits++;
-            return key->hits <= 1 || (key->hits % 4096) == 0;
+            return key->hits <= 1u || (key->hits % 4096u) == 0u;
         }
     }
 
-    if (s_keyCount < (uint32_t)(sizeof(s_keys) / sizeof(s_keys[0]))) {
-        if (s_keyCount >= 32 && (s_keyCount % 16) != 0) {
+    /* Key not found — try to insert into the empty slot we recorded. */
+    if (s_keyCount < kMGLSmallBaseLogTableSize && emptySlotIdx >= 0) {
+        if (s_keyCount >= 32u && (s_keyCount % 16u) != 0u) {
             return NO;
         }
-        s_keys[s_keyCount++] = (MGLSmallBaseBindingLogKey){
-            .programName = programName,
-            .stage = stage,
-            .resourceType = resourceType,
-            .binding = binding,
-            .glName = glName,
-            .rangeSize = rangeSize,
-            .reflectedSize = reflectedSize,
-            .hits = 1
-        };
+        MGLSmallBaseBindingLogKey *key = &s_keys[emptySlotIdx];
+        key->programName = programName;
+        key->stage = stage;
+        key->resourceType = resourceType;
+        key->binding = binding;
+        key->glName = glName;
+        key->rangeSize = rangeSize;
+        key->reflectedSize = reflectedSize;
+        key->hits = 1u;
+        s_keyCount++;
         return YES;
     }
 
     s_overflowHits++;
-    return s_overflowHits <= 8 || (s_overflowHits % 2048) == 0;
+    return s_overflowHits <= 8u || (s_overflowHits % 2048u) == 0u;
 }

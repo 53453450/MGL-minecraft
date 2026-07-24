@@ -220,36 +220,70 @@ NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPo
 // a skipped draw instead.
 /* kMGLValidateDrawArraysVboRange, kMGLValidateDrawElementsVboRange moved to MGLRenderer_Private.h */
 
+/* Env var names are always string literals (stable addresses), so we cache by
+ * pointer.  GL is single-threaded so no locking needed; the worst race case is
+ * a few extra getenv calls during startup before the cache fills. */
+#define MGL_ENV_CACHE_CAPACITY 32
+static struct {
+    const char *name;   /* string literal address — key */
+    BOOL value;
+    BOOL default_on;    /* distinguishes mglEnvFlagEnabled vs DefaultOn */
+    BOOL valid;
+} s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
+
+static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
+{
+    if (!name) {
+        return default_on;
+    }
+
+    /* Cache lookup by pointer (string literals have stable addresses). */
+    for (int i = 0; i < MGL_ENV_CACHE_CAPACITY; i++) {
+        if (s_mglEnvCache[i].valid &&
+            s_mglEnvCache[i].name == name &&
+            s_mglEnvCache[i].default_on == default_on) {
+            return s_mglEnvCache[i].value;
+        }
+    }
+
+    /* Cache miss: compute. */
+    const char *value = getenv(name);
+    BOOL result;
+    if (!value || value[0] == '\0') {
+        result = default_on;
+    } else if (strcmp(value, "0") == 0 ||
+               strcasecmp(value, "false") == 0 ||
+               strcasecmp(value, "no") == 0 ||
+               strcasecmp(value, "off") == 0) {
+        result = NO;
+    } else {
+        result = YES;
+    }
+
+    /* Store in cache (find first empty slot). */
+    for (int i = 0; i < MGL_ENV_CACHE_CAPACITY; i++) {
+        if (!s_mglEnvCache[i].valid) {
+            s_mglEnvCache[i].name = name;
+            s_mglEnvCache[i].value = result;
+            s_mglEnvCache[i].default_on = default_on;
+            s_mglEnvCache[i].valid = YES;
+            break;
+        }
+    }
+
+    return result;
+}
+
 BOOL mglEnvFlagEnabled(const char *name)
 {
-    const char *value = name ? getenv(name) : NULL;
-    if (!value || value[0] == '\0') {
-        return NO;
-    }
-    if (strcmp(value, "0") == 0 ||
-        strcasecmp(value, "false") == 0 ||
-        strcasecmp(value, "no") == 0 ||
-        strcasecmp(value, "off") == 0) {
-        return NO;
-    }
-    return YES;
+    return mglEnvFlagEnabledCached(name, NO);
 }
 
 /* Unset/empty → YES (default ON); "0"/"false"/"no"/"off" → NO; other non-empty → YES.
  * Use for kill-switchable optimizations that should ship enabled. */
 BOOL mglEnvFlagEnabledDefaultOn(const char *name)
 {
-    const char *value = name ? getenv(name) : NULL;
-    if (!value || value[0] == '\0') {
-        return YES;
-    }
-    if (strcmp(value, "0") == 0 ||
-        strcasecmp(value, "false") == 0 ||
-        strcasecmp(value, "no") == 0 ||
-        strcasecmp(value, "off") == 0) {
-        return NO;
-    }
-    return YES;
+    return mglEnvFlagEnabledCached(name, YES);
 }
 
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
@@ -3572,6 +3606,7 @@ void logDirtyBits(GLMContext ctx)
                       commandBufferToCommit ? (commandBufferToCommit.label ?: @"(no-label)") : @"(nil)");
             }
             [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+            _lastCommittedCB = commandBufferToCommit;
             if (traceSwap) {
                 MGLTraceNSLog(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
             }
@@ -4591,6 +4626,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         [_renderPassManager detachCurrentCommandBufferForSubmission];
     @try {
         [self commitCommandBufferWithAGXRecovery:stageCommandBuffer];
+        _lastCommittedCB = stageCommandBuffer;
         [stageCommandBuffer waitUntilCompleted];
     } @catch (NSException *exception) {
         NSLog(@"MGL BUFFER RANGE: stage synchronization failed: %@",

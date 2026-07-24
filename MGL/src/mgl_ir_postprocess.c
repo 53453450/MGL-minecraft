@@ -171,6 +171,16 @@ GLboolean mglBufferSlotConflictsForProgram(Program *pptr, int stage, GLuint slot
         return GL_TRUE;
     }
 
+    /* Cache the reflection-based flags: mglVSUsesCullDistance /
+     * mglFSUsesFragCoord re-scan SPIR-V reflection + GLSL source, and this
+     * runs per slot check (31 slots × 6 stages per link).  The cache is
+     * invalidated at link start. */
+    if (!pptr->ir_cache_valid) {
+        pptr->ir_uses_cull_distance = mglVSUsesCullDistance(pptr);
+        pptr->ir_uses_frag_coord = mglFSUsesFragCoord(pptr);
+        pptr->ir_cache_valid = GL_TRUE;
+    }
+
     /* Conservative "any stage" check + stage-specific check. */
     GLboolean slot_conflicts = mglBufferSlotIsReserved(slot);
     if (!slot_conflicts && mglBufferSlotIsReservedForStage(slot, stage)) {
@@ -187,14 +197,14 @@ GLboolean mglBufferSlotConflictsForProgram(Program *pptr, int stage, GLuint slot
     /* CullDistance slots 28-29: reserved when VS uses cull distance. */
     if (!slot_conflicts &&
         mglBufferSlotIsReservedForCullDistance(slot) &&
-        mglVSUsesCullDistance(pptr)) {
+        pptr->ir_uses_cull_distance) {
         slot_conflicts = GL_TRUE;
     }
 
     /* FragCoord slot 30: reserved (cross-stage) when FS uses gl_FragCoord. */
     if (!slot_conflicts &&
         mglBufferSlotIsReservedForFragCoordFixup(slot) &&
-        mglFSUsesFragCoord(pptr)) {
+        pptr->ir_uses_frag_coord) {
         slot_conflicts = GL_TRUE;
     }
 

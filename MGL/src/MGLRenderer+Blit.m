@@ -2907,6 +2907,9 @@ typedef struct MGLBlitColorState {
     if (!readEncoder) {
         return NO;
     }
+    /* A blit encoder is now active on the current CB.  Mark it as having
+     * work so flushCommandBuffer:YES below does not skip the commit. */
+    _currentCBHasWork = YES;
 
     @try {
         [readEncoder copyFromTexture:texture
@@ -3659,6 +3662,7 @@ typedef struct MGLBlitColorState {
                             mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                             return YES;
                         }
+                        _currentCBHasWork = YES;
                         [readEncoder copyFromTexture:srcTexture
                                           sourceSlice:srcSlice
                                           sourceLevel:(NSUInteger)srcLevel

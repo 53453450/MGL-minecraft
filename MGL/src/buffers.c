@@ -1788,12 +1788,16 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
                     memcpy((void *)ptr->data.buffer_data, data, size);
                     
                     ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                    /* Hash only feeds the element-array index cache or trace logging. */
+                    const uint64_t init_hash =
+                        (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+                        ? mglTraceHashBytes(data, (size_t)size) : 0ull;
                     mglBufferMarkWrite(ptr,
                                        kInitBufferDataCopy,
                                        0,
                                        size,
                                        data,
-                                       mglTraceHashBytes(data, (size_t)size));
+                                       init_hash);
                 }
                 else
                 {
@@ -1831,12 +1835,16 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
         memcpy((void *)ptr->data.buffer_data, data, size);
 
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        /* Hash only feeds the element-array index cache or trace logging. */
+        const uint64_t init_hash =
+            (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+            ? mglTraceHashBytes(data, (size_t)size) : 0ull;
         mglBufferMarkWrite(ptr,
                            kInitBufferDataCopy,
                            0,
                            size,
                            data,
-                           mglTraceHashBytes(data, (size_t)size));
+                           init_hash);
     }
     else
     {
@@ -2034,7 +2042,14 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         ERROR_RETURN(GL_INVALID_OPERATION);
     }
 
-    src_hash_for_meta = mglTraceHashBytes(data, (size_t)size);
+    /* The source hash feeds last_write_src_hash via mglBufferMarkWrite.  Only
+     * element array buffers consume it functionally (the index cache in
+     * mgl_index_buffer.m compares last_write_src_hash to detect content
+     * changes).  For other targets it's pure trace metadata, so skip the
+     * (up to 2048-byte) FNV-1a walk when trace logging is disabled. */
+    src_hash_for_meta = (target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
+        ? mglTraceHashBytes(data, (size_t)size)
+        : 0ull;
 
     if (offset < 0 || size < 0)
     {
@@ -2263,7 +2278,12 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
-    src_hash_for_meta = (size > 0 && data) ? mglTraceHashBytes(data, (size_t)size) : 0ull;
+    /* Same guard as mglBufferSubData — only element array buffers need the
+     * hash functionally (the index cache); others use it only for trace. */
+    src_hash_for_meta = (size > 0 && data &&
+                         (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled()))
+        ? mglTraceHashBytes(data, (size_t)size)
+        : 0ull;
 
     if (ptr->storage_flags & (GL_CLIENT_STORAGE_BIT | GL_DYNAMIC_STORAGE_BIT))
     {
@@ -2666,19 +2686,25 @@ void *mglMapBuffer(GLMContext ctx, GLenum target, GLenum access)
         mapped_ptr = (void *)(uintptr_t)ptr->data.buffer_data;
     }
 
-    char head[64];
-    mglTraceFormatBytes(mapped_ptr, (ptr->size > 0) ? (size_t)ptr->size : 0u, head, sizeof(head));
-    fprintf(stderr,
-            "MGL TRACE MapBuffer.full target=0x%x buffer=%u size=%lld access=0x%x mappedPtr=%p baseData=%p head=%s\n",
-            target,
-            ptr->name,
-            (long long)ptr->size,
-            access,
-            mapped_ptr,
-            (void *)(uintptr_t)ptr->data.buffer_data,
-            head);
-
     ptr->mapped_ptr = mapped_ptr;
+
+    /* Gate the per-call MapBuffer trace fprintf behind MGL_VERBOSE_BUFFER_MAP_LOGS
+     * (same gate used by mglUnmapBuffer) to avoid per-call stderr I/O on the
+     * buffer-map hot path when tracing is disabled. */
+    if (MGL_VERBOSE_BUFFER_MAP_LOGS) {
+        char head[64];
+        mglTraceFormatBytes(mapped_ptr, (ptr->size > 0) ? (size_t)ptr->size : 0u, head, sizeof(head));
+        fprintf(stderr,
+                "MGL TRACE MapBuffer.full target=0x%x buffer=%u size=%lld access=0x%x mappedPtr=%p baseData=%p head=%s\n",
+                target,
+                ptr->name,
+                (long long)ptr->size,
+                access,
+                mapped_ptr,
+                (void *)(uintptr_t)ptr->data.buffer_data,
+                head);
+    }
+
     return mapped_ptr;
 }
 

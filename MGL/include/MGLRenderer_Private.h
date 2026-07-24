@@ -103,7 +103,7 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
         double _mlw = mglNowSeconds(); \
         [_metalStateLock lock]; \
         double _mln = mglNowSeconds(); \
-        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, _mln - _mlw); \
+        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, (uint64_t)((_mln - _mlw) * 1e9)); \
         if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
             _metalLockHoldStartStack[_metalLockHoldDepth] = _mln; \
         } \
@@ -118,7 +118,7 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
         if (_metalLockHoldDepth > 0) { \
             _metalLockHoldDepth--; \
             if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
-                MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, _mln - _metalLockHoldStartStack[_metalLockHoldDepth]); \
+                MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, (uint64_t)((_mln - _metalLockHoldStartStack[_metalLockHoldDepth]) * 1e9)); \
             } \
         } \
     } \
@@ -171,6 +171,44 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     MGLBindingSync *_bindingSync;
     MGLTessellationState _tessellation;
     MGLBatchingState _batching;
+    /* Command buffer that needs waitUntilCompleted after METAL_UNLOCK.
+     * Set by flushCommandBufferLocked: when finish=true, consumed by
+     * flushCommandBuffer: after unlock.  GL is single-threaded so no race. */
+    id<MTLCommandBuffer> _pendingFinishCB;
+    /* Cached current-vertex-attrib MTLBuffers.
+     * Each slot caches the repeated (4096×) MTLBuffer built from
+     * current_vertex_attrib[attrib], keyed on (attribBytes, stride).
+     * Avoids per-draw NSMutableData + newBufferWithBytes when the
+     * current value hasn't changed (common in Minecraft GUI/item pass). */
+    id<MTLBuffer> _currentAttribBuffers[MAX_ATTRIBS];
+    uint8_t       _currentAttribCacheBytes[MAX_ATTRIBS][16];
+    NSUInteger    _currentAttribCacheStride[MAX_ATTRIBS];
+    BOOL          _currentAttribCacheValid[MAX_ATTRIBS];
+    /* Cached spvBufferSizeConstants MTLBuffers.
+     * Each stage's size-constants buffer is a fixed 124-byte (31×uint32)
+     * buffer bound at MGL_BUFFER_SIZE_BUFFER_INDEX when a shader uses
+     * .length() on unsized SSBO arrays.  Cache the last buffer + its
+     * contents and reuse it when the size constants are unchanged (the
+     * common case — buffer sizes rarely change between draws in the same
+     * frame).  When contents differ we allocate a new buffer so each draw
+     * gets its own snapshot: the GPU reads buffer contents at command
+     * buffer execution time, not at setVertexBuffer time, so we cannot
+     * overwrite a buffer that earlier draws in the same CB still reference. */
+    id<MTLBuffer> _vertexSizeBuffer;
+    uint32_t      _vertexSizeConstantsCache[31];
+    BOOL          _vertexSizeConstantsValid;
+    id<MTLBuffer> _fragmentSizeBuffer;
+    uint32_t      _fragmentSizeConstantsCache[31];
+    BOOL          _fragmentSizeConstantsValid;
+    /* Track whether the current command buffer has any encoded work
+     * and the most recently committed CB.  When mtlFlush(ctx, true) is
+     * called and the current CB has no work, we can wait on _lastCommittedCB
+     * instead of committing an empty CB — Metal CBs on the same queue
+     * execute serially, so waiting on the last committed CB guarantees all
+     * prior GPU work is done.  This avoids a kernel-level commit + wait
+     * for redundant sync calls (e.g., repeated glFinish, buffer read maps). */
+    id<MTLCommandBuffer> _lastCommittedCB;
+    BOOL                 _currentCBHasWork;
 }
 
 /* P1-5: cap an auxiliary cache at `limit` entries with FIFO eviction of

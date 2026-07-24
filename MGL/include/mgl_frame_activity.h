@@ -109,8 +109,11 @@ extern _Atomic uint64_t g_mglMergeRejectExcludedLayoutSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap;
 
 /* Lock timing (seconds) */
-extern _Atomic double   g_mglLockWaitTimeSinceSwap;   /* time waiting to acquire lock */
-extern _Atomic double   g_mglLockHoldTimeSinceSwap;   /* time holding lock */
+/* Stored as _Atomic uint64_t nanoseconds (lock-free on all platforms)
+ * instead of _Atomic double (non-lock-free CAS loop).  Snapshot converts
+ * to double seconds for display. */
+extern _Atomic uint64_t g_mglLockWaitTimeSinceSwap;   /* ns waiting to acquire lock */
+extern _Atomic uint64_t g_mglLockHoldTimeSinceSwap;   /* ns holding lock */
 
 /* Depth/stencil state */
 extern _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap;  /* newDepthStencilStateWithDescriptor: calls */
@@ -330,8 +333,8 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.merge_reject_unsafe_builtin  = MGL_FRAME_LOAD(g_mglMergeRejectUnsafeBuiltinSinceSwap);
     c.merge_reject_excluded_layout = MGL_FRAME_LOAD(g_mglMergeRejectExcludedLayoutSinceSwap);
     c.merge_reject_append_failed   = MGL_FRAME_LOAD(g_mglMergeRejectAppendFailedSinceSwap);
-    c.lock_wait_time          = MGL_FRAME_LOAD(g_mglLockWaitTimeSinceSwap);
-    c.lock_hold_time          = MGL_FRAME_LOAD(g_mglLockHoldTimeSinceSwap);
+    c.lock_wait_time          = (double)MGL_FRAME_LOAD(g_mglLockWaitTimeSinceSwap) / 1e9;
+    c.lock_hold_time          = (double)MGL_FRAME_LOAD(g_mglLockHoldTimeSinceSwap) / 1e9;
     c.ds_state_creates        = MGL_FRAME_LOAD(g_mglDepthStencilStateCreatesSinceSwap);
     c.ds_state_skips          = MGL_FRAME_LOAD(g_mglDepthStencilStateSkipsSinceSwap);
     c.snapshot_bytes_allocated = MGL_FRAME_LOAD(g_mglSnapshotBytesAllocatedSinceSwap);
@@ -384,8 +387,8 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglMergeRejectUnsafeBuiltinSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectExcludedLayoutSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectAppendFailedSinceSwap, 0);
-    MGL_FRAME_STORE(g_mglLockWaitTimeSinceSwap, 0.0);
-    MGL_FRAME_STORE(g_mglLockHoldTimeSinceSwap, 0.0);
+    MGL_FRAME_STORE(g_mglLockWaitTimeSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglLockHoldTimeSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDepthStencilStateCreatesSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDepthStencilStateSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSnapshotBytesAllocatedSinceSwap, 0);
