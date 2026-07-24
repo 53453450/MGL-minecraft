@@ -367,6 +367,11 @@ void mglReleaseBufferStorage(Buffer *buf)
         }
     }
 
+    /* P1-12: release cached UInt16 expanded index buffer */
+    mglSafeReleaseMetalObj(&buf->mtl_uint16_expanded_data);
+    buf->mtl_uint16_expanded_src_hash = 0ull;
+    buf->mtl_uint16_expanded_byte_count = 0u;
+
     /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
      * Its deallocator owns the old VM range after this point. */
     buf->data.buffer_data = 0;

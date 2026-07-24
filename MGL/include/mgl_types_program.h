@@ -260,6 +260,14 @@ typedef struct Program_t {
      * unit in the 3 hazard-scan call sites. */
     uint32_t sampled_texture_unit_mask[4];  /* 128 bits */
     uint8_t  sampled_texture_unit_mask_valid;
+    /* P1-6: Precomputed table of which Metal sampler slots are shared across
+     * multiple sampler-like resources (across all stages and the 5 sampler
+     * resource types).  Built at link time so mglMetalSamplerSlotSharedAcross-
+     * Resources can answer in O(1) instead of a full stage×resource scan.
+     * sampler_binding_shared_valid gates readers; 0 = not yet built (fall
+     * back to full scan).  Invalidated at link start, populated at link end. */
+    uint8_t  sampler_binding_shared[TEXTURE_UNITS];
+    uint8_t  sampler_binding_shared_valid;
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
     /* MSL query result cache (env-gated by MGL_MSL_CACHE, default ON; =0 off).

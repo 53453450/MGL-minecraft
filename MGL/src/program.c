@@ -42,6 +42,7 @@
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_spirv_compile.h"
+#include "mgl_sampler_compat.h"
 #include "mgl_buffer_plan.h"
 
 
@@ -840,6 +841,10 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * is rebuilt below, so the cached mapping from texture units to sampled
      * resources is stale until the next query rebuilds it. */
     pptr->sampled_texture_unit_mask_valid = 0u;
+    /* P1-6: Invalidate the sampler-binding-shared table; rebuilt from the
+     * freshly reflected spirv_resources_list after a successful link. */
+    pptr->sampler_binding_shared_valid = 0u;
+    memset(pptr->sampler_binding_shared, 0, sizeof(pptr->sampler_binding_shared));
     /* Bump the per-Program MSL texture type cache generation so the renderer
      * (_mslTextureTypeCache) invalidates any entries cached against the
      * previous MSL; the key includes this generation value. */
@@ -1147,6 +1152,50 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
 
         pptr->mslCacheValid = GL_TRUE;
+    }
+
+    /* P1-6: Precompute the sampler-binding-shared table.
+     * For each Metal binding slot, count how many sampler-like resources
+     * (across all stages and the 5 sampler resource types) map to it.  If
+     * more than one resource shares a slot, mark sampler_binding_shared[slot]
+     * = 1 so mglMetalSamplerSlotSharedAcrossResources can answer in O(1). */
+    {
+        static const int sampler_res_types[] = {
+            SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+            SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+            SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+            SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+            SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+        };
+        unsigned slot_hits[TEXTURE_UNITS];
+        memset(slot_hits, 0, sizeof(slot_hits));
+
+        for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+            for (size_t rt = 0; rt < sizeof(sampler_res_types) / sizeof(sampler_res_types[0]); rt++) {
+                int res_type = sampler_res_types[rt];
+                if (res_type < 0 || res_type >= _MAX_SPIRV_RES) {
+                    continue;
+                }
+                SpirvResourceList *resources = &pptr->spirv_resources_list[stage][res_type];
+                if (!resources) {
+                    continue;
+                }
+                for (GLuint i = 0; i < resources->count; i++) {
+                    SpirvResource *res = &resources->list[i];
+                    if (!mglRendererResourceLooksSamplerLike(res, res_type)) {
+                        continue;
+                    }
+                    if (res->binding < TEXTURE_UNITS) {
+                        slot_hits[res->binding]++;
+                    }
+                }
+            }
+        }
+
+        for (GLuint slot = 0; slot < TEXTURE_UNITS; slot++) {
+            pptr->sampler_binding_shared[slot] = (slot_hits[slot] > 1u) ? 1u : 0u;
+        }
+        pptr->sampler_binding_shared_valid = 1u;
     }
 
     /* Build the buffer binding plan from the finalized spirv_resources_list.

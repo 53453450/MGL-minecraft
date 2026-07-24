@@ -634,12 +634,53 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
+    /* P1-12: determine cache eligibility.
+     * Cache is safe only when:
+     * - glElementBuffer has CPU-side backing (buffer_data): source bytes are
+     *   GL-tracked and last_write_src_hash reflects their contents.
+     * - Buffer is not persistent-mapped: app cannot modify contents without
+     *   a GL call that updates last_write_src_hash. */
+    BOOL cache_eligible = (glElementBuffer != NULL &&
+                           glElementBuffer->data.buffer_data != 0 &&
+                           !(glElementBuffer->storage_flags & GL_MAP_PERSISTENT_BIT));
+
+    /* P1-12: check cached UInt16 expansion */
+    if (cache_eligible &&
+        glElementBuffer->mtl_uint16_expanded_data != NULL &&
+        glElementBuffer->mtl_uint16_expanded_src_hash != 0ull &&
+        glElementBuffer->mtl_uint16_expanded_src_hash == glElementBuffer->last_write_src_hash &&
+        glElementBuffer->mtl_uint16_expanded_byte_count == sourceByteCount) {
+        /* Cache hit — return the cached expanded buffer */
+        id<MTLBuffer> cached = (__bridge id<MTLBuffer>)glElementBuffer->mtl_uint16_expanded_data;
+        if (ioIndexBufferOffset) {
+            if (sourceOffset > (NSUIntegerMax / sizeof(uint16_t))) {
+                return nil;
+            }
+            *ioIndexBufferOffset = sourceOffset * sizeof(uint16_t);
+        }
+        if (outMetalIndexType) {
+            *outMetalIndexType = MTLIndexTypeUInt16;
+        }
+        return cached;
+    }
+
     id<MTLBuffer> expanded = mglNewUInt16IndexBufferFromUInt8(device, sourceBytes, sourceByteCount);
     if (!expanded) {
         NSLog(@"MGL WARNING: failed to allocate expanded UInt16 element buffer for GL_UNSIGNED_BYTE gl=%u bytes=%lu",
               glElementBuffer ? glElementBuffer->name : 0u,
               (unsigned long)sourceByteCount);
         return nil;
+    }
+
+    /* P1-12: store expanded buffer in cache for subsequent draws */
+    if (cache_eligible) {
+        if (glElementBuffer->mtl_uint16_expanded_data) {
+            CFRelease(glElementBuffer->mtl_uint16_expanded_data);
+        }
+        CFRetain((__bridge CFTypeRef)expanded);
+        glElementBuffer->mtl_uint16_expanded_data = (__bridge void *)expanded;
+        glElementBuffer->mtl_uint16_expanded_src_hash = glElementBuffer->last_write_src_hash;
+        glElementBuffer->mtl_uint16_expanded_byte_count = sourceByteCount;
     }
 
     if (ioIndexBufferOffset) {

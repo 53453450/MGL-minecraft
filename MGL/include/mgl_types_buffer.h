@@ -151,6 +151,33 @@ typedef struct Buffer_t {
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
+    /* P1-12: Cached UInt8→UInt16 expanded index buffer.
+     *
+     * Metal does not support GL_UNSIGNED_BYTE indices, so the element buffer
+     * must be expanded to UInt16 per draw.  This cache stores the expanded
+     * MTLBuffer keyed on (last_write_src_hash, sourceByteCount) so that
+     * unchanged EBOs skip the calloc + newBufferWithBytes + free on subsequent
+     * draws.
+     *
+     * Invalidation: every GL write path (glBufferData, glBufferSubData,
+     * glCopyBufferSubData, glMapBuffer unmap, glFlushMappedBufferRange) calls
+     * mglBufferMarkWrite which updates last_write_src_hash.  The cache-hit
+     * check compares the stored hash against the current last_write_src_hash.
+     *
+     * Safety exclusions (skip cache, always rebuild):
+     * - Persistent-mapped buffers (storage_flags & GL_MAP_PERSISTENT_BIT):
+     *   the app can modify contents through the persistent pointer without
+     *   any GL call, so last_write_src_hash would not update.
+     * - Buffers without CPU-side buffer_data: the source bytes come from a
+     *   Metal MTLBuffer whose contents may be modified by the GPU without
+     *   updating the hash.
+     *
+     * The stored pointer is retained via CFRetain (not CFBridgingRetain) so
+     * that ARC retains its own reference in the .m file; released via
+     * mglSafeReleaseMetalObj in the .c file (CFRelease under non-ARC). */
+    void       *mtl_uint16_expanded_data;       /* id<MTLBuffer> retained via CFRetain */
+    uint64_t    mtl_uint16_expanded_src_hash;
+    size_t      mtl_uint16_expanded_byte_count;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
     /* P0-4A: reference count for deferred buffer lifetime management.
