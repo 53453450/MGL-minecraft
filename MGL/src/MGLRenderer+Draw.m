@@ -1728,11 +1728,6 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     for (GLuint i = 0; i < vertexSampledCount; i++)
     {
-        GLuint spirvBinding = [self getProgramBinding:_VERTEX_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index:(int)i];
-        GLuint glBinding = [self getProgramGLBinding:_VERTEX_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index:(int)i];
-        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
-            continue;
-        }
         Program *currentProgram = vertexProgram;
         SpirvResource *sampledResource = NULL;
         const char *sampledName = "";
@@ -1741,6 +1736,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             sampledResource = &currentProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
             sampledName = sampledResource->name;
         }
+        /* P1-8: read binding/gl_binding directly from the already-resolved
+         * SpirvResource instead of re-resolving the program per query. When
+         * sampledResource is NULL (no program / index OOR), mirror the
+         * query-method semantics of returning 0. */
+        GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
+        GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
+        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
+            continue;
+        }
         if (mglShouldSkipStageTextureResource(currentProgram,
                                               _VERTEX_SHADER,
                                               SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
@@ -1748,21 +1752,19 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
+                                                        program:currentProgram
                                                     metalBinding:spirvBinding
                                                            stage:_VERTEX_SHADER];
-        MTLTextureType expectedType = [self getProgramExpectedTextureType:_VERTEX_SHADER
-                                                                      type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                     index:(int)i];
-        MTLTextureType lookupType = [self getProgramDeclaredTextureType:_VERTEX_SHADER
-                                                                    type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                   index:(int)i];
-        MGLTextureDataKind expectedKind = [self getProgramExpectedTextureDataKind:_VERTEX_SHADER
-                                                                             type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                            index:(int)i];
+        /* P1-8: derive texture types/data kind directly from sampledResource
+         * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
+        MTLTextureType expectedType = mglExpectedTextureTypeForResource(currentProgram, _VERTEX_SHADER, sampledResource);
+        MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
+        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(currentProgram, _VERTEX_SHADER, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
                                                   stage:_VERTEX_SHADER
-                                           expectedType:(lookupType ? lookupType : expectedType)];
+                                           expectedType:(lookupType ? lookupType : expectedType)
+                                          textureUnit:textureUnit];
         id<MTLTexture> texture = nil;
         id<MTLSamplerState> sampler = defaultSampler;
         BOOL usedTypeFallback = NO;
@@ -2196,11 +2198,6 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     *sampledCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
     for (GLuint i = 0; i < *sampledCount; i++)
     {
-        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index:(int)i];
-        GLuint glBinding = [self getProgramGLBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE index:(int)i];
-        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
-            continue;
-        }
         Program *sampleProgram = fragmentProgram;
         SpirvResource *sampledResource = NULL;
         const char *sampledName = "";
@@ -2209,6 +2206,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             sampledResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
             sampledName = sampledResource->name;
         }
+        /* P1-8: read binding/gl_binding directly from the already-resolved
+         * SpirvResource instead of re-resolving the program per query. */
+        GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
+        GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
+        if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
+            continue;
+        }
         if (mglShouldSkipStageTextureResource(sampleProgram,
                                               _FRAGMENT_SHADER,
                                               SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
@@ -2216,22 +2220,20 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
+                                                        program:sampleProgram
                                                     metalBinding:spirvBinding
                                                            stage:_FRAGMENT_SHADER];
 
-        MTLTextureType expectedType = [self getProgramExpectedTextureType:_FRAGMENT_SHADER
-                                                                      type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                     index:(int)i];
-        MTLTextureType lookupType = [self getProgramDeclaredTextureType:_FRAGMENT_SHADER
-                                                                    type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                   index:(int)i];
-        MGLTextureDataKind expectedKind = [self getProgramExpectedTextureDataKind:_FRAGMENT_SHADER
-                                                                             type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
-                                                                            index:(int)i];
+        /* P1-8: derive texture types/data kind directly from sampledResource
+         * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
+        MTLTextureType expectedType = mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
+        MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
+        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
                                                   stage:_FRAGMENT_SHADER
-                                           expectedType:(lookupType ? lookupType : expectedType)];
+                                           expectedType:(lookupType ? lookupType : expectedType)
+                                          textureUnit:textureUnit];
         id<MTLTexture> texture = nil;
         id<MTLSamplerState> sampler = nil;
         id<MTLTexture> directTextureForTrace = nil;

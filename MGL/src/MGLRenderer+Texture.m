@@ -6280,9 +6280,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 }
 
-- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
+- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
+                                program:(Program *)program
+                           metalBinding:(GLuint)metalBinding
+                                  stage:(int)stage
 {
-    Program *program = mglResolveProgramForStageFromState(ctx, stage);
     if (!program) {
         GLuint candidate = sampledResource &&
                            sampledResource->sampler_unit >= 0 &&
@@ -6363,6 +6365,15 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     return 0u;
 }
 
+- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource metalBinding:(GLuint)metalBinding stage:(int)stage
+{
+    Program *program = mglResolveProgramForStageFromState(ctx, stage);
+    return [self textureUnitForSampledResource:sampledResource
+                                      program:program
+                                 metalBinding:metalBinding
+                                        stage:stage];
+}
+
 - (GLuint)textureUnitForSampledBinding:(GLuint)metalBinding stage:(int)stage
 {
     return [self textureUnitForSampledResource:NULL metalBinding:metalBinding stage:stage];
@@ -6372,14 +6383,12 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType
+                          textureUnit:(GLuint)textureUnit
 {
     if (!ctx || metalBinding >= TEXTURE_UNITS) {
         return NULL;
     }
 
-    GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
-                                                metalBinding:metalBinding
-                                                       stage:stage];
     if (textureUnit >= TEXTURE_UNITS) {
         return NULL;
     }
@@ -6460,6 +6469,24 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 
     return STATE(active_textures[textureUnit]);
+}
+
+- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+                          metalBinding:(GLuint)metalBinding
+                                  stage:(int)stage
+                           expectedType:(MTLTextureType)expectedType
+{
+    if (!ctx || metalBinding >= TEXTURE_UNITS) {
+        return NULL;
+    }
+    GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
+                                                metalBinding:metalBinding
+                                                       stage:stage];
+    return [self textureForSampledResource:sampledResource
+                              metalBinding:metalBinding
+                                      stage:stage
+                               expectedType:expectedType
+                              textureUnit:textureUnit];
 }
 
 - (Texture *)textureForSampledBinding:(GLuint)metalBinding stage:(int)stage expectedType:(MTLTextureType)expectedType

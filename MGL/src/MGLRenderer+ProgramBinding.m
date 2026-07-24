@@ -7,6 +7,90 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+ProgramBinding_Private.h"
 
+/* === P1-8: program-resolved texture type / data kind helpers ===
+ *
+ * Extracted from the ObjC query methods below so the hot sampled-texture
+ * binding loops can pass an already-resolved Program pointer and skip the
+ * per-call mglResolveProgramForStageFromState.  Caching, MSL fallback, and
+ * rate-limited override logging are preserved. */
+MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res)
+{
+    if (!res) {
+        return 0;
+    }
+    switch ((SpvDim)res->image_dim) {
+        case SpvDim1D:
+            return res->image_arrayed ? MTLTextureType1DArray : MTLTextureType1D;
+        case SpvDim2D:
+            if (res->image_multisampled) {
+                return res->image_arrayed ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
+            }
+            return res->image_arrayed ? MTLTextureType2DArray : MTLTextureType2D;
+        case SpvDim3D:
+            return MTLTextureType3D;
+        case SpvDimCube:
+            return res->image_arrayed ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
+        case SpvDimBuffer:
+            return MTLTextureTypeTextureBuffer;
+        default:
+            return 0;
+    }
+}
+
+MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, SpirvResource *res)
+{
+    if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return 0;
+    }
+
+    MTLTextureType mslType;
+    if (res->cached_msl_texture_type_valid) {
+        mslType = (MTLTextureType)res->cached_msl_texture_type;
+    } else {
+        mslType = mglExpectedTextureTypeFromMSL(program->spirv[stage].msl_str, res->binding);
+        res->cached_msl_texture_type = (uint32_t)mslType;
+        res->cached_msl_texture_type_valid = 1u;
+    }
+
+    MTLTextureType spirvType = mglDeclaredTextureTypeFromResource(res);
+
+    if (mslType != 0 && mslType != spirvType) {
+        static uint64_t s_mslTextureTypeOverrideCount = 0;
+        uint64_t hit = ++s_mslTextureTypeOverrideCount;
+        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
+            NSLog(@"MGL TEX EXPECT override from MSL stage=%d binding=%u name=%s spirvType=%lu mslType=%lu imageDim=%u hit=%llu",
+                  stage,
+                  (unsigned)res->binding,
+                  res->name ? res->name : "(null)",
+                  (unsigned long)spirvType,
+                  (unsigned long)mslType,
+                  (unsigned)res->image_dim,
+                  (unsigned long long)hit);
+        }
+        return mslType;
+    }
+
+    return mslType ? mslType : spirvType;
+}
+
+MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, SpirvResource *res)
+{
+    if (!program || !res || stage < 0 || stage >= _MAX_SHADER_TYPES) {
+        return MGLTextureDataKindUnknown;
+    }
+
+    if (res->cached_msl_data_kind != 0u) {
+        return (MGLTextureDataKind)res->cached_msl_data_kind;
+    }
+
+    MGLTextureDataKind mslKind =
+        mglExpectedTextureDataKindFromMSL(program->spirv[stage].msl_str, res->binding);
+    MGLTextureDataKind resolvedKind =
+        mslKind != MGLTextureDataKindUnknown ? mslKind : MGLTextureDataKindFloat;
+    res->cached_msl_data_kind = (uint32_t)resolvedKind;
+    return resolvedKind;
+}
+
 @implementation MGLRenderer (ProgramBinding)
 
 #pragma mark programs
@@ -193,23 +277,7 @@
     }
 
     SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
-    switch ((SpvDim)res->image_dim) {
-        case SpvDim1D:
-            return res->image_arrayed ? MTLTextureType1DArray : MTLTextureType1D;
-        case SpvDim2D:
-            if (res->image_multisampled) {
-                return res->image_arrayed ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
-            }
-            return res->image_arrayed ? MTLTextureType2DArray : MTLTextureType2D;
-        case SpvDim3D:
-            return MTLTextureType3D;
-        case SpvDimCube:
-            return res->image_arrayed ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
-        case SpvDimBuffer:
-            return MTLTextureTypeTextureBuffer;
-        default:
-            return 0;
-    }
+    return mglDeclaredTextureTypeFromResource(res);
 }
 
 - (MTLTextureType)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index
@@ -232,65 +300,7 @@
     }
 
     SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
-    /* Per-resource cache: the MSL string is immutable post-link, so the
-     * texture type for a given resource never changes between relinks.
-     * Stored directly on SpirvResource to avoid per-draw stringWithFormat
-     * + NSDictionary lookup.  Uses a separate valid flag because
-     * MTLTextureType1D == 0 on this SDK. */
-    MTLTextureType mslType;
-    if (res->cached_msl_texture_type_valid) {
-        mslType = (MTLTextureType)res->cached_msl_texture_type;
-    } else {
-        mslType = mglExpectedTextureTypeFromMSL(ptr->spirv[stage].msl_str, res->binding);
-        res->cached_msl_texture_type = (uint32_t)mslType;
-        res->cached_msl_texture_type_valid = 1u;
-    }
-
-    MTLTextureType spirvType = 0;
-    switch ((SpvDim)res->image_dim) {
-        case SpvDim1D:
-            spirvType = res->image_arrayed ? MTLTextureType1DArray : MTLTextureType1D;
-            break;
-        case SpvDim2D:
-            if (res->image_multisampled) {
-                spirvType = res->image_arrayed ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
-            } else {
-                spirvType = res->image_arrayed ? MTLTextureType2DArray : MTLTextureType2D;
-            }
-            break;
-        case SpvDim3D:
-            spirvType = MTLTextureType3D;
-            break;
-        case SpvDimCube:
-            spirvType = res->image_arrayed ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
-            break;
-        case SpvDimBuffer:
-            spirvType = MTLTextureTypeTextureBuffer;
-            break;
-        default:
-            spirvType = 0;
-            break;
-    }
-
-    if (mslType != 0 && mslType != spirvType) {
-        static uint64_t s_mslTextureTypeOverrideCount = 0;
-        uint64_t hit = ++s_mslTextureTypeOverrideCount;
-        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
-            NSLog(@"MGL TEX EXPECT override from MSL stage=%d type=%d index=%d binding=%u name=%s spirvType=%lu mslType=%lu imageDim=%u hit=%llu",
-                  stage,
-                  type,
-                  index,
-                  (unsigned)res->binding,
-                  res->name ? res->name : "(null)",
-                  (unsigned long)spirvType,
-                  (unsigned long)mslType,
-                  (unsigned)res->image_dim,
-                  (unsigned long long)hit);
-        }
-        return mslType;
-    }
-
-    return mslType ? mslType : spirvType;
+    return mglExpectedTextureTypeForResource(ptr, stage, res);
 }
 
 - (MGLTextureDataKind)getProgramExpectedTextureDataKind:(int)stage type:(int)type index:(int)index
@@ -311,19 +321,7 @@
     }
 
     SpirvResource *res = &ptr->spirv_resources_list[stage][type].list[index];
-    /* Per-resource cache: 0 = uncached (MGLTextureDataKindUnknown == 0,
-     * but we cache the *resolved* kind, which is never Unknown — see
-     * fallback below — so 0 reliably means "not yet cached"). */
-    if (res->cached_msl_data_kind != 0u) {
-        return (MGLTextureDataKind)res->cached_msl_data_kind;
-    }
-
-    MGLTextureDataKind mslKind =
-        mglExpectedTextureDataKindFromMSL(ptr->spirv[stage].msl_str, res->binding);
-    MGLTextureDataKind resolvedKind =
-        mslKind != MGLTextureDataKindUnknown ? mslKind : MGLTextureDataKindFloat;
-    res->cached_msl_data_kind = (uint32_t)resolvedKind;
-    return resolvedKind;
+    return mglExpectedTextureDataKindForResource(ptr, stage, res);
 }
 
 - (NSUInteger)getProgramBindingRequiredSizeForStage:(int)stage clientBinding:(GLuint)clientBinding

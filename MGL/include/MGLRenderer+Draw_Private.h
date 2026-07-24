@@ -238,10 +238,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
                             metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
+/* P1-8: program-resolved variant — skips mglResolveProgramForStageFromState. */
+- (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
+                                program:(Program *)program
+                           metalBinding:(GLuint)metalBinding
+                                  stage:(int)stage;
 - (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType;
+/* P1-8: textureUnit-resolved variant — caller passes the already-computed
+ * texture unit, skipping the internal textureUnitForSampledResource: call. */
+- (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
+                          metalBinding:(GLuint)metalBinding
+                                  stage:(int)stage
+                           expectedType:(MTLTextureType)expectedType
+                          textureUnit:(GLuint)textureUnit;
 - (id<MTLTexture>)fallbackSampledTextureForExpectedType:(MTLTextureType)expectedType
                                                dataKind:(MGLTextureDataKind)dataKind;
 - (int)textureIndexForExpectedMetalType:(MTLTextureType)expectedType;

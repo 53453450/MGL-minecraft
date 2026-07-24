@@ -49,4 +49,16 @@
 
 @end
 
+/* === P1-8: program-resolved texture type / data kind helpers ===
+ *
+ * These C helpers accept an already-resolved Program pointer and a
+ * SpirvResource pointer, skipping the per-call mglResolveProgramForStageFromState
+ * that the ObjC query methods perform.  Used by the hot sampled-texture binding
+ * loops in MGLRenderer+Draw.m to eliminate 3-5 redundant program re-resolves per
+ * resource.  Behavior matches the ObjC query methods (caching + MSL fallback +
+ * rate-limited override logging). */
+MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res);
+MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, SpirvResource *res);
+MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, SpirvResource *res);
+
 #endif /* MGLRenderer_ProgramBinding_Private_h */
