@@ -211,6 +211,11 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
 - (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 
+/* P1-11: Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
+ * Defined in MGLRenderer+Batch.m, called from already-locked callers
+ * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
+- (void)flushDrawBufferLocked:(GLMContext)glm_ctx;
+
 @end
 
 /* Temporary compatibility aliases for the state-container migration.

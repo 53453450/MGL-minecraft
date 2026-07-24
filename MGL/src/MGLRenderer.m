@@ -3398,7 +3398,7 @@ void logDirtyBits(GLMContext ctx)
 
     if (shouldPresent)
     {
-        [self flushDrawBuffer:activeCtx];
+        [self flushDrawBufferLocked:activeCtx];
 
         if (![self processGLStateLocked: false]) {
             static uint64_t s_swapProcessStateFailCount = 0;

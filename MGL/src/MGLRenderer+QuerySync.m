@@ -134,12 +134,12 @@
 
     // Flush pending draws into the current command buffer so the CB captures
     // all GL commands issued before the fence insertion point.
-    if (![self processGLState: false]) {
+    if (![self processGLStateLocked: false]) {
         NSLog(@"MGL WARNING: processGLState failed in mtlGetSync");
     }
 
     // End any open render encoder so the command buffer can be committed.
-    [self endRenderEncoding];
+    [self endRenderEncodingLocked];
 
     // CB-wait mechanism: retain the current command buffer (which now contains
     // exactly the commands issued before the fence), commit it to the GPU, and
@@ -169,7 +169,7 @@
 
     // Always provide a fresh command buffer for subsequent GL commands so they
     // are not encoded into the already-committed fence command buffer.
-    [self newCommandBuffer];
+    [self newCommandBufferLocked];
 
     // Legacy shared-event path. Gated by kMGLDisableSharedEventSync; when
     // disabled, mtl_event stays NULL and the CB-wait above is the sole wait

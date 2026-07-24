@@ -897,16 +897,20 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)flushDrawBuffer:(GLMContext)glm_ctx
 {
-    ctx = glm_ctx;
-
-    /* P2-2: This method is reachable from both locked callers
-     * (mtlSwapBuffersLocked:, flushCommandBufferLocked:) and unlocked callers
-     * (mtlFlushDrawBuffer via mgl_metal_bridge.m, mtlInvalidateRenderPass:).
-     * It calls Locked methods (endRenderEncodingLocked, newCommandBufferLocked,
-     * newRenderEncoderLocked) which assume the Metal lock is held.  Acquire
-     * METAL_LOCK here unconditionally — NSRecursiveLock makes re-entrant
-     * acquisition from already-locked callers a no-op. */
+    /* Unlocked entry point: acquire METAL_LOCK and delegate to Locked variant.
+     * Locked callers (mtlSwapBuffersLocked:, flushCommandBufferLocked:) call
+     * flushDrawBufferLocked: directly to avoid recursive lock re-entry. */
     METAL_LOCK();
+    @try {
+        [self flushDrawBufferLocked:glm_ctx];
+    } @finally {
+        METAL_UNLOCK();
+    }
+}
+
+- (void)flushDrawBufferLocked:(GLMContext)glm_ctx
+{
+    ctx = glm_ctx;
 
     /* DUAL-PROXY INVARIANT checkpoint: entering flushDrawBuffer.  All
      * subsequent batch replay / teardown paths assume the proxies start in
@@ -915,7 +919,6 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
     MGLCommandBuffer *cb = &glm_ctx->draw_command_buffer;
     if (cb->batch_count == 0) {
-        METAL_UNLOCK();
         return;
     }
 
@@ -1086,12 +1089,8 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     }
     } @finally {
         [_renderPassManager setTraceReplayFlushId:0 batchIndex:0];
-        @try {
-            [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
-                                    savedError:savedError replayError:replayError];
-        } @finally {
-            METAL_UNLOCK();
-        }
+        [self teardownBatchReplayForContext:glm_ctx savedState:&savedState
+                                savedError:savedError replayError:replayError];
     }
 }
 

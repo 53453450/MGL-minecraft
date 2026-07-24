@@ -596,12 +596,56 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
         return MGLPrimitiveRestartEncodeFailed;
     }
 
+    /* P1-9: Single type-specialized scan replaces the original two-pass
+     * approach (detect + segment).  Type-specialized pointer access
+     * eliminates the per-element switch+memcpy overhead of
+     * mglReadGLIndexValue, and collecting restart positions in a stack
+     * array avoids re-scanning the index buffer during segment encoding.
+     * The 256-entry array covers virtually all real draws; the rare
+     * overflow case falls back to a type-specialized re-scan. */
+    NSUInteger restartPositions[256];
+    NSUInteger restartPositionCount = 0;  /* total count, may exceed 256 */
     BOOL sawRestart = NO;
-    for (GLsizei i = 0; i < count; i++) {
-        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) == restartIndex) {
-            sawRestart = YES;
+
+    switch (glIndexType) {
+        case GL_UNSIGNED_BYTE: {
+            const uint8_t *typedSrc = (const uint8_t *)source;
+            for (GLsizei i = 0; i < count; i++) {
+                if (typedSrc[i] == (uint8_t)restartIndex) {
+                    sawRestart = YES;
+                    if (restartPositionCount < 256)
+                        restartPositions[restartPositionCount] = (NSUInteger)i;
+                    restartPositionCount++;
+                }
+            }
             break;
         }
+        case GL_UNSIGNED_SHORT: {
+            const uint16_t *typedSrc = (const uint16_t *)source;
+            for (GLsizei i = 0; i < count; i++) {
+                if (typedSrc[i] == (uint16_t)restartIndex) {
+                    sawRestart = YES;
+                    if (restartPositionCount < 256)
+                        restartPositions[restartPositionCount] = (NSUInteger)i;
+                    restartPositionCount++;
+                }
+            }
+            break;
+        }
+        case GL_UNSIGNED_INT: {
+            const uint32_t *typedSrc = (const uint32_t *)source;
+            for (GLsizei i = 0; i < count; i++) {
+                if (typedSrc[i] == restartIndex) {
+                    sawRestart = YES;
+                    if (restartPositionCount < 256)
+                        restartPositions[restartPositionCount] = (NSUInteger)i;
+                    restartPositionCount++;
+                }
+            }
+            break;
+        }
+        default:
+            break;
     }
     if (!sawRestart) {
         return MGLPrimitiveRestartEncodeNotNeeded;
@@ -628,33 +672,97 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
 
     NSUInteger segmentStart = 0u;
     BOOL encodedAllSegments = YES;
-    for (GLsizei i = 0; i < count; i++) {
-        if (mglReadGLIndexValue(source, glIndexType, (NSUInteger)i) != restartIndex) {
-            continue;
-        }
 
-        NSUInteger segmentCount = (NSUInteger)i - segmentStart;
-        if (!mglEncodeRestartSegment(encoder,
-                                     device,
-                                     glElementBuffer,
-                                     metalElementBuffer,
-                                     preparedIndexBuffer,
-                                     mode,
-                                     primitiveType,
-                                     glIndexType,
-                                     preparedIndexType,
-                                     indexOffset,
-                                     segmentStart,
-                                     segmentCount,
-                                     instanceCount,
-                                     baseVertex,
-                                     baseInstance,
-                                     mglPolygonModeLineForDrawMode(ctx, mode),
-                                     label)) {
-            encodedAllSegments = NO;
-            break;
+    if (restartPositionCount <= 256) {
+        /* Common path: use collected positions — no re-scan needed. */
+        for (NSUInteger rp = 0; rp < restartPositionCount; rp++) {
+            NSUInteger restartAt = restartPositions[rp];
+            NSUInteger segmentCount = restartAt - segmentStart;
+            if (!mglEncodeRestartSegment(encoder,
+                                         device,
+                                         glElementBuffer,
+                                         metalElementBuffer,
+                                         preparedIndexBuffer,
+                                         mode,
+                                         primitiveType,
+                                         glIndexType,
+                                         preparedIndexType,
+                                         indexOffset,
+                                         segmentStart,
+                                         segmentCount,
+                                         instanceCount,
+                                         baseVertex,
+                                         baseInstance,
+                                         mglPolygonModeLineForDrawMode(ctx, mode),
+                                         label)) {
+                encodedAllSegments = NO;
+                break;
+            }
+            segmentStart = restartAt + 1u;
         }
-        segmentStart = (NSUInteger)i + 1u;
+    } else {
+        /* Fallback: too many restarts for stack array, type-specialized re-scan. */
+        switch (glIndexType) {
+            case GL_UNSIGNED_BYTE: {
+                const uint8_t *typedSrc = (const uint8_t *)source;
+                for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
+                    if (typedSrc[i] != (uint8_t)restartIndex) continue;
+                    NSUInteger segmentCount = (NSUInteger)i - segmentStart;
+                    if (!mglEncodeRestartSegment(encoder,
+                                                 device, glElementBuffer, metalElementBuffer,
+                                                 preparedIndexBuffer, mode, primitiveType,
+                                                 glIndexType, preparedIndexType, indexOffset,
+                                                 segmentStart, segmentCount, instanceCount,
+                                                 baseVertex, baseInstance,
+                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                        encodedAllSegments = NO;
+                        break;
+                    }
+                    segmentStart = (NSUInteger)i + 1u;
+                }
+                break;
+            }
+            case GL_UNSIGNED_SHORT: {
+                const uint16_t *typedSrc = (const uint16_t *)source;
+                for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
+                    if (typedSrc[i] != (uint16_t)restartIndex) continue;
+                    NSUInteger segmentCount = (NSUInteger)i - segmentStart;
+                    if (!mglEncodeRestartSegment(encoder,
+                                                 device, glElementBuffer, metalElementBuffer,
+                                                 preparedIndexBuffer, mode, primitiveType,
+                                                 glIndexType, preparedIndexType, indexOffset,
+                                                 segmentStart, segmentCount, instanceCount,
+                                                 baseVertex, baseInstance,
+                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                        encodedAllSegments = NO;
+                        break;
+                    }
+                    segmentStart = (NSUInteger)i + 1u;
+                }
+                break;
+            }
+            case GL_UNSIGNED_INT: {
+                const uint32_t *typedSrc = (const uint32_t *)source;
+                for (GLsizei i = 0; i < count && encodedAllSegments; i++) {
+                    if (typedSrc[i] != restartIndex) continue;
+                    NSUInteger segmentCount = (NSUInteger)i - segmentStart;
+                    if (!mglEncodeRestartSegment(encoder,
+                                                 device, glElementBuffer, metalElementBuffer,
+                                                 preparedIndexBuffer, mode, primitiveType,
+                                                 glIndexType, preparedIndexType, indexOffset,
+                                                 segmentStart, segmentCount, instanceCount,
+                                                 baseVertex, baseInstance,
+                                                 mglPolygonModeLineForDrawMode(ctx, mode), label)) {
+                        encodedAllSegments = NO;
+                        break;
+                    }
+                    segmentStart = (NSUInteger)i + 1u;
+                }
+                break;
+            }
+            default:
+                break;
+        }
     }
 
     if (encodedAllSegments) {

@@ -823,6 +823,8 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     pptr->mslCacheValid = GL_FALSE;
     pptr->usesFragCoordParams = GL_FALSE;
     pptr->vertexAttribUsageMask = 0u;
+    pptr->uses_point_size_params = GL_FALSE;
+    pptr->uses_cull_distance = GL_FALSE;
     memset(pptr->msl_named_argument_cache, 0, sizeof(pptr->msl_named_argument_cache));
     pptr->msl_named_argument_cache_next = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
@@ -1123,6 +1125,27 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             }
         }
         pptr->vertexAttribUsageMask = attr_mask;
+
+        /* P1-7: Cache point_size_params / cull_distance presence to avoid
+         * per-draw strstr() over the full MSL source.  Same contract as
+         * usesFragCoordParams: valid only when mslCacheValid == GL_TRUE. */
+        pptr->uses_point_size_params = GL_FALSE;
+        {
+            int ps_stages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
+            for (size_t si = 0; si < sizeof(ps_stages)/sizeof(ps_stages[0]); si++) {
+                const char *ps_msl = pptr->spirv[ps_stages[si]].msl_str;
+                if (ps_msl && strstr(ps_msl, "_mgl_point_size_params")) {
+                    pptr->uses_point_size_params = GL_TRUE;
+                    break;
+                }
+            }
+        }
+        {
+            const char *vs_msl_cull = pptr->spirv[_VERTEX_SHADER].msl_str;
+            pptr->uses_cull_distance = (vs_msl_cull && strstr(vs_msl_cull, "mgl_CullDistance"))
+                ? GL_TRUE : GL_FALSE;
+        }
+
         pptr->mslCacheValid = GL_TRUE;
     }
 

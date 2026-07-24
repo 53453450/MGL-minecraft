@@ -1041,10 +1041,19 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     int pointSizeStages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
     for (NSUInteger ps = 0; ps < sizeof(pointSizeStages) / sizeof(pointSizeStages[0]); ps++) {
         Program *pointProgram = mglResolveProgramForStageFromState(ctx, pointSizeStages[ps]);
-        const char *pointMsl = pointProgram ? pointProgram->spirv[pointSizeStages[ps]].msl_str : NULL;
-        if (pointMsl && strstr(pointMsl, "_mgl_point_size_params")) {
-            needsPointSizeParams = YES;
-            break;
+        if (!pointProgram) continue;
+        /* P1-7: use cached scan result when mslCacheValid; fall back to strstr. */
+        if (pointProgram->mslCacheValid) {
+            if (pointProgram->uses_point_size_params) {
+                needsPointSizeParams = YES;
+                break;
+            }
+        } else {
+            const char *pointMsl = pointProgram->spirv[pointSizeStages[ps]].msl_str;
+            if (pointMsl && strstr(pointMsl, "_mgl_point_size_params")) {
+                needsPointSizeParams = YES;
+                break;
+            }
         }
     }
     if (needsPointSizeParams) {
@@ -4649,8 +4658,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+            if (batchProgram && (batchProgram->mslCacheValid
+                    ? batchProgram->uses_cull_distance
+                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
                 [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
             }
         }
@@ -4800,8 +4811,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+            if (batchProgram && (batchProgram->mslCacheValid
+                    ? batchProgram->uses_cull_distance
+                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
                 [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
             }
         }
@@ -4952,8 +4965,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+            if (batchProgram && (batchProgram->mslCacheValid
+                    ? batchProgram->uses_cull_distance
+                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
+                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
                 [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
             }
         }
@@ -6262,8 +6277,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     /* Cull distance emulation: if the active vertex shader uses
      * mgl_CullDistance, bind the vertex buffer and params so the injected
      * shader code can read sibling-vertex cull distance values. */
-    if (activeProgram && activeProgram->spirv[_VERTEX_SHADER].msl_str &&
-        strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")) {
+    if (activeProgram && (activeProgram->mslCacheValid
+            ? activeProgram->uses_cull_distance
+            : (activeProgram->spirv[_VERTEX_SHADER].msl_str &&
+               strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
         MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
         [self bindCullDistanceEmulationBuffers:mode encodeContext:&encCtx];
     }

@@ -4233,7 +4233,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     @try {
         // Force cleanup of all Metal objects
-        [self endRenderEncoding];
+        [self endRenderEncodingLocked];
 
         [_renderPassManager discardCurrentCommandBuffer];
         [_renderPassManager clearCurrentRenderEncoder];
@@ -5764,7 +5764,7 @@ stencil_format_ok:;
         return;
     }
 
-    [self flushDrawBuffer:ctx];
+    [self flushDrawBufferLocked:ctx];
 
     if (![self processGLStateLocked: false]) {
         NSLog(@"MGL WARNING: processGLState failed in flushCommandBuffer, continuing with cleanup");
