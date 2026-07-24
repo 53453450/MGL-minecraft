@@ -135,7 +135,8 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (void)flushCommandBuffer:(bool)finish;
 
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+RenderPass.m ===
-- (bool)mapBuffersToMTL;
+// mapBuffersToMTL, updateDirtyBaseBufferList:, checkForDirtyBufferData: are
+// now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
 - (id<MTLTexture>)createMTLTextureFromGLTexture:(Texture *)tex;
 - (id<MTLTexture>)createFallbackMTLTexture:(Texture *)tex;
 - (id<MTLSamplerState>)createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target;
@@ -150,11 +151,8 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (id)newDrawBufferWithCustomSize:(MTLPixelFormat)pixelFormat
                      isDepthStencil:(bool)depthStencil
                         customSize:(CGSize)size;
-- (int)getProgramBindingCount:(int)stage type:(int)type;
 - (MTLBlendFactor)blendFactorFromGL:(GLenum)gl_blend;
 - (MTLBlendOperation)blendOperationFromGL:(GLenum)gl_blend_op;
-- (bool)updateDirtyBaseBufferList:(BufferMapList *)buffer_map_list;
-- (bool)checkForDirtyBufferData:(BufferMapList *)buffer_map_list;
 
 // === Private method declarations (defined in MGLRenderer.m, called from categories) ===
 - (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source

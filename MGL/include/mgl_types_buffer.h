@@ -183,9 +183,46 @@ typedef struct BufferBaseTarget_t {
 #define MAX_BINDABLE_BUFFERS    84
 #define MGL_MAX_VERTEX_ATTRIB_BINDINGS MAX_VERTEX_BUFFER_BINDINGS
 #define MGL_BUFFER_SIZE_BUFFER_INDEX 25u  /* Metal buffer slot for spvBufferSizeConstants */
+
+/* Active-binding bitmap: 84 bits fit in 2 × uint64_t.  Bit i is set iff
+ * buffers[i].buf != NULL.  Maintained at bind/unbind/delete time so that
+ * mglTrackPendingBaseBufferReads can skip the ~84-slot scan per target and
+ * only visit active slots (typically single digits in Minecraft). */
+#define MGL_BUFFER_BASE_ACTIVE_WORDS 2u
+
 typedef struct BufferBase_t {
     BufferBaseTarget    buffers[MAX_BINDABLE_BUFFERS];
+    uint64_t            active_mask[MGL_BUFFER_BASE_ACTIVE_WORDS];
 } BufferBase;
+
+/* Active-binding bitmap helpers.  Called at bind/unbind/delete time to keep
+ * active_mask in sync with which slots have buf != NULL.  mglTrackPending-
+ * BaseBufferReads uses the bitmap to skip empty slots without scanning. */
+static inline void mglBufferBaseSetActive(BufferBase *base, GLuint index)
+{
+    if (!base || index >= MAX_BINDABLE_BUFFERS) return;
+    base->active_mask[index >> 6] |= (uint64_t)1u << (index & 63u);
+}
+
+static inline void mglBufferBaseClearActive(BufferBase *base, GLuint index)
+{
+    if (!base || index >= MAX_BINDABLE_BUFFERS) return;
+    base->active_mask[index >> 6] &= ~((uint64_t)1u << (index & 63u));
+}
+
+/* Rebuild the bitmap from scratch by scanning buffers[].  Used after bulk
+ * operations (e.g. delete cleanup) that may clear multiple slots. */
+static inline void mglBufferBaseRebuildActiveMask(BufferBase *base)
+{
+    if (!base) return;
+    base->active_mask[0] = 0u;
+    base->active_mask[1] = 0u;
+    for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
+        if (base->buffers[i].buf) {
+            mglBufferBaseSetActive(base, i);
+        }
+    }
+}
 
 typedef struct BufferMap_t {
     GLuint      buffer_base_index;

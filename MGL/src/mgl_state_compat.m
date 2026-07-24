@@ -176,7 +176,7 @@ BOOL mglShouldLogSmallBaseBinding(GLuint programName,
             key->rangeSize == rangeSize &&
             key->reflectedSize == reflectedSize) {
             key->hits++;
-            return key->hits <= 4 || (key->hits % 1024) == 0;
+            return key->hits <= 1 || (key->hits % 4096) == 0;
         }
     }
 

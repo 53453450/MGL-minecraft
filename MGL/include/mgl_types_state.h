@@ -209,10 +209,12 @@ typedef struct {
     uint64_t cached_texture_hash;
     uint64_t cached_vertex_layout_hash;
     uint64_t cached_render_state_hash;
+    uint64_t cached_uniform_buffer_hash;
     uint8_t  texture_dirty;
     uint8_t  vertex_layout_dirty;
     uint8_t  render_state_dirty;
-    uint8_t  _hash_cache_padding;
+    uint8_t  uniform_buffer_dirty;
+    uint8_t  _hash_cache_padding[3];
 
     // put at end, big chunk of yuck
     GLMParams   var;
@@ -229,8 +231,15 @@ static inline void mglInvalidateStateHashCachesForDirtyBits(GLMState *state,
         state->texture_dirty = 1;
     if ((dirty_bits & MGL_VERTEX_LAYOUT_HASH_DIRTY_BITS) != 0u)
         state->vertex_layout_dirty = 1;
-    if ((dirty_bits & MGL_RENDER_STATE_HASH_DIRTY_BITS) != 0u)
+    if ((dirty_bits & MGL_RENDER_STATE_HASH_DIRTY_BITS) != 0u) {
         state->render_state_dirty = 1;
+        /* uniform_buffer_hash inputs (buffer_base[_UNIFORM_BUFFER]) are a
+         * strict subset of render_state_hash inputs, so the same dirty bits
+         * invalidate both.  Kept as a separate cache field because
+         * mglStateKeysEqualIgnoringUniformRanges XORs it back out of
+         * render_state_hash during batch merge comparisons. */
+        state->uniform_buffer_dirty = 1;
+    }
 }
 
 static inline void mglMarkRendererDirtyBits(GLMState *state, GLuint dirty_bits)

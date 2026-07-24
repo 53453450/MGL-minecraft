@@ -1289,13 +1289,18 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
             // remove any dangling references in indexed buffer-base bindings
             for (GLuint idx = 0; idx < _MAX_BUFFER_TYPES; idx++)
             {
+                GLboolean cleared = GL_FALSE;
                 for (GLuint i = 0; i < MAX_BINDABLE_BUFFERS; i++)
                 {
                     if (ctx->state.buffer_base[idx].buffers[i].buf == ptr ||
                         ctx->state.buffer_base[idx].buffers[i].buffer == buffer)
                     {
                         bzero(&ctx->state.buffer_base[idx].buffers[i], sizeof(BufferBaseTarget));
+                        cleared = GL_TRUE;
                     }
+                }
+                if (cleared) {
+                    mglBufferBaseRebuildActiveMask(&ctx->state.buffer_base[idx]);
                 }
             }
 
@@ -1516,6 +1521,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
          * query/state sentinel meaning "the whole buffer at time of use". */
         base_slot->size = 0;
         base_slot->buf = ptr;
+        mglBufferBaseSetActive(&ctx->state.buffer_base[buffer_index], index);
         /* Indexed buffer binds also update the generic binding for target.
          * CTS allocates SSBO storage through glBindBufferBase followed by
          * glBufferData(GL_SHADER_STORAGE_BUFFER, ...), so keep both views in
@@ -1540,6 +1546,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
             }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
+        mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
         STATE(buffers[buffer_index]) = NULL;
         mglSetGenericBufferBinding(ctx, target, 0u);
     }
@@ -1626,6 +1633,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
             }
         }
         bzero(base_slot, sizeof(BufferBaseTarget));
+        mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
         /* Keep indexed and generic target bindings in sync.  CTS exercises
          * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = NULL;
@@ -1722,6 +1730,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         base_slot->offset = offset;
         base_slot->size = size;
         base_slot->buf = ptr;
+        mglBufferBaseSetActive(&ctx->state.buffer_base[buffer_index], index);
         /* Keep indexed and generic target bindings in sync.  CTS exercises
          * glBindBufferRange/Base followed by target-based buffer operations. */
         STATE(buffers[buffer_index]) = ptr;
@@ -2761,7 +2770,17 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
 
     if (ctx->mtl_funcs.mtlMapUnmapBuffer)
     {
-        ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, unmap_offset, unmap_length, unmap_access, false);
+        /* GL_MAP_FLUSH_EXPLICIT_BIT (GL 4.6 §6.3.2.1): when set, the app is
+         * contractually responsible for flushing modified subranges via
+         * glFlushMappedBufferRange before unmap — unmap must NOT auto-flush.
+         * mglFlushMappedBufferRange already calls didModifyRange for each
+         * explicit subrange, so a full-range didModifyRange here is redundant
+         * (and re-notifies Metal of already-flushed or never-modified regions,
+         * wasting CPU→GPU bandwidth on MTLStorageModeManaged buffers).
+         * Regions the app forgot to flush are undefined per spec. */
+        if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
+            ctx->mtl_funcs.mtlMapUnmapBuffer(ctx, ptr, unmap_offset, unmap_length, unmap_access, false);
+        }
     }
 
     mglBufferMarkMapWrite(ptr);
@@ -2811,12 +2830,17 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
 
     if (!(ptr->storage_flags & GL_MAP_PERSISTENT_BIT) && ctx->mtl_funcs.mtlMapUnmapBuffer)
     {
-        ctx->mtl_funcs.mtlMapUnmapBuffer(ctx,
-                                         ptr,
-                                         ptr->mapped_offset,
-                                         ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size,
-                                         ptr->access_flags ? ptr->access_flags : ptr->access,
-                                         false);
+        /* GL_MAP_FLUSH_EXPLICIT_BIT: see the comment in mglUnmapBuffer above.
+         * The app flushes via glFlushMappedBufferRange; unmap must not
+         * auto-flush the full range. */
+        if (!(ptr->access_flags & GL_MAP_FLUSH_EXPLICIT_BIT)) {
+            ctx->mtl_funcs.mtlMapUnmapBuffer(ctx,
+                                             ptr,
+                                             ptr->mapped_offset,
+                                             ptr->mapped_length > 0 ? ptr->mapped_length : ptr->size,
+                                             ptr->access_flags ? ptr->access_flags : ptr->access,
+                                             false);
+        }
     }
 
     mglBufferMarkMapWrite(ptr);
@@ -3363,6 +3387,7 @@ void mglBindBuffersRange(GLMContext ctx, GLenum target, GLuint first, GLsizei co
                 mglFlushPendingDraws(ctx);
             }
             bzero(base_slot, sizeof(BufferBaseTarget));
+            mglBufferBaseClearActive(&ctx->state.buffer_base[buffer_index], index);
             STATE(buffers[buffer_index]) = NULL;
             mglSetGenericBufferBinding(ctx, target, 0u);
             mglMarkStateDirtyBits(&ctx->state, (DIRTY_BUFFER | DIRTY_BUFFER_BASE_STATE));

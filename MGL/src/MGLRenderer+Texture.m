@@ -215,18 +215,22 @@
     }
 
     if (textureType == MTLTextureTypeCube || textureType == MTLTextureTypeCubeArray) {
-        NSLog(@"MGL CUBE UPLOAD tex=%u glTarget=0x%x face=%lu slice=%lu level=%lu origin=(0,0,0) size=%lux%lux%lu bpr=%lu bpi=%lu ptr=%p",
-              texName,
-              texTarget,
-              (unsigned long)slice,
-              (unsigned long)slice,
-              (unsigned long)level,
-              (unsigned long)width,
-              (unsigned long)safeHeight,
-              (unsigned long)copyDepth,
-              (unsigned long)bytesPerRow,
-              (unsigned long)safeBytesPerImage,
-              bytes);
+        static uint64_t s_cubeUploadLogs = 0;
+        uint64_t hit = ++s_cubeUploadLogs;
+        if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+            NSLog(@"MGL CUBE UPLOAD tex=%u glTarget=0x%x face=%lu slice=%lu level=%lu origin=(0,0,0) size=%lux%lux%lu bpr=%lu bpi=%lu ptr=%p",
+                  texName,
+                  texTarget,
+                  (unsigned long)slice,
+                  (unsigned long)slice,
+                  (unsigned long)level,
+                  (unsigned long)width,
+                  (unsigned long)safeHeight,
+                  (unsigned long)copyDepth,
+                  (unsigned long)bytesPerRow,
+                  (unsigned long)safeBytesPerImage,
+                  bytes);
+        }
     }
 
     /* 1D texture upload via replaceRegion branch:
@@ -3451,7 +3455,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             if (!mglTextureLevelHasUploadableCPUData(uploadLevel)) {
                 static uint64_t s_skipStaleUploadLogs = 0;
                 uint64_t hit = ++s_skipStaleUploadLogs;
-                if (hit <= 64ull || (hit % 512ull) == 0ull) {
+                if (hit <= 8ull || (hit % 2048ull) == 0ull) {
                     NSLog(@"MGL TEXTURE SKIP stale CPU upload tex=%u face=%d level=%d source=%u ever=%u init=%u hit=%llu",
                           (unsigned)tex->name,
                           face,
@@ -5074,7 +5078,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         } else if (tex->is_render_target || mglMetalPixelFormatIsDepthOrStencil(pixelFormat)) {
             static uint64_t s_skipRenderTargetFillLogs = 0;
             uint64_t hit = ++s_skipRenderTargetFillLogs;
-            if (hit <= 64ull || (hit % 512ull) == 0ull) {
+            if (hit <= 8ull || (hit % 2048ull) == 0ull) {
                 NSLog(@"MGL TEXTURE SKIP implicit fill tex=%u renderTarget=%u format=%lu sourceSafe=0 hit=%llu",
                       (unsigned)tex->name,
                       (unsigned)tex->is_render_target,
@@ -5106,7 +5110,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     if (cpuUploadRequired && !cpuUploadVerified) {
         static uint64_t s_createTextureCPUUploadIncompleteLogs = 0;
         uint64_t hit = ++s_createTextureCPUUploadIncompleteLogs;
-        if (hit <= 64ull || (hit % 512ull) == 0ull) {
+        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
             TextureLevel *level0 = mglTraceTextureBaseLevel(tex);
             NSLog(@"MGL TEXTURE CREATE CPU-UPLOAD INCOMPLETE tex=%u target=0x%x dirtyBefore=0x%x level0=%ux%u source=%u upload=%lu hit=%llu",
                   (unsigned)tex->name,
@@ -5377,23 +5381,29 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         mglTraceFormatBytes(readbackData.bytes, (size_t)MIN(packedBytes, (NSUInteger)64), readbackHead, sizeof(readbackHead));
     }
 
-    NSLog(@"MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x mtlFormat=%lu texels=%lu packed=%lux%lu rowBytes=%lu bytes=%lld offset=%lld as=texture2d sourceHash=0x%016llx uploadHash=0x%016llx readbackHash=0x%016llx sourceHead=%s uploadHead=%s readbackHead=%s",
-          tex->name,
-          sourceBuffer->name,
-          tex->internalformat,
-          (unsigned long)bufferPixelFormat,
-          (unsigned long)texelCount,
-          (unsigned long)texWidth,
-          (unsigned long)texHeight,
-          (unsigned long)bytesPerRow,
-          (long long)tex->texture_buffer_size,
-          (long long)tex->texture_buffer_offset,
-          (unsigned long long)sourceHash,
-          (unsigned long long)uploadHash,
-          (unsigned long long)readbackHash,
-          sourceHead,
-          uploadHead,
-          readbackHead);
+    {
+        static uint64_t s_texBufferCreateLogs = 0;
+        uint64_t hit = ++s_texBufferCreateLogs;
+        if (hit <= 2ull || (hit % 4096ull) == 0ull) {
+            NSLog(@"MGL TEXBUFFER CREATE tex=%u buffer=%u internal=0x%x mtlFormat=%lu texels=%lu packed=%lux%lu rowBytes=%lu bytes=%lld offset=%lld as=texture2d sourceHash=0x%016llx uploadHash=0x%016llx readbackHash=0x%016llx sourceHead=%s uploadHead=%s readbackHead=%s",
+                  tex->name,
+                  sourceBuffer->name,
+                  tex->internalformat,
+                  (unsigned long)bufferPixelFormat,
+                  (unsigned long)texelCount,
+                  (unsigned long)texWidth,
+                  (unsigned long)texHeight,
+                  (unsigned long)bytesPerRow,
+                  (long long)tex->texture_buffer_size,
+                  (long long)tex->texture_buffer_offset,
+                  (unsigned long long)sourceHash,
+                  (unsigned long long)uploadHash,
+                  (unsigned long long)readbackHash,
+                  sourceHead,
+                  uploadHead,
+                  readbackHead);
+        }
+    }
 
     [self recordGPUSuccess];
     return bufferTexture;
@@ -5436,7 +5446,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         if (!tex->is_render_target && tex->num_levels < effective_mipmap_levels)
         {
             static uint64_t s_mipmap_count_mismatch_logs = 0;
-            if (++s_mipmap_count_mismatch_logs <= 32 || (s_mipmap_count_mismatch_logs % 512) == 0) {
+            if (++s_mipmap_count_mismatch_logs <= 8 || (s_mipmap_count_mismatch_logs % 2048) == 0) {
                 NSLog(@"MGL TEXTURE MIP COMPAT: tex=%u target=0x%x size=%ux%u num_levels=%u mipmap_levels=%u effective=%u base=%u max=%u immutable=%u isRT=%u; capping Metal mip count to uploaded levels hit=%llu",
                       tex->name,
                       tex->target,

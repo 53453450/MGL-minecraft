@@ -42,6 +42,7 @@
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
 #include "mgl_spirv_compile.h"
+#include "mgl_buffer_plan.h"
 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
@@ -302,6 +303,12 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
      * mglLinkProgram.  Do NOT call glslang_program_delete here — it would
      * dereference the marker as if it were a glslang object. */
     ptr->linked_glsl_program = NULL;
+
+    /* Free the buffer binding plan cache before releasing the spirv
+     * resources it was built from.  The plan copies reflection values
+     * (not pointers to SpirvResource), so order doesn't strictly matter,
+     * but freeing here keeps the cleanup grouped with other caches. */
+    mglBufferBindingPlanDestroy(ptr);
 
     mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
@@ -811,7 +818,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     pptr->uses_vertex_id = GL_FALSE;
     pptr->uses_primitive_id = GL_FALSE;
-    /* Invalidate MSL query cache; repopulated from the freshly generated MSL
+    /* Invalidate MSL query result cache; repopulated from the freshly generated MSL
      * after the stage compile loop succeeds. */
     pptr->mslCacheValid = GL_FALSE;
     pptr->usesFragCoordParams = GL_FALSE;
@@ -821,6 +828,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
     memset(pptr->validated_resource_list_storage, 0, sizeof(pptr->validated_resource_list_storage));
     memset(pptr->validated_resource_list_counts, 0, sizeof(pptr->validated_resource_list_counts));
+    /* Invalidate the buffer binding plan cache: the old plan reflects the
+     * pre-link resource list and must not be reused.  The new plan is built
+     * from the freshly reflected spirv_resources_list at the end of a
+     * successful link.  Destroy (rather than just mark invalid) so the
+     * stale entries don't linger through a failed link. */
+    mglBufferBindingPlanDestroy(pptr);
+    /* Invalidate the sampled-texture-unit bitmap: the SPIR-V resource list
+     * is rebuilt below, so the cached mapping from texture units to sampled
+     * resources is stale until the next query rebuilds it. */
+    pptr->sampled_texture_unit_mask_valid = 0u;
     /* Bump the per-Program MSL texture type cache generation so the renderer
      * (_mslTextureTypeCache) invalidates any entries cached against the
      * previous MSL; the key includes this generation value. */
@@ -1108,6 +1125,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->vertexAttribUsageMask = attr_mask;
         pptr->mslCacheValid = GL_TRUE;
     }
+
+    /* Build the buffer binding plan from the finalized spirv_resources_list.
+     * The plan caches reflection-derived data (metal slots, client bindings,
+     * struct packing metadata) so per-draw mapGLBuffersToMTLBufferMap paths
+     * can skip repeated name lookups and program resolution.  See
+     * mgl_buffer_plan.h for the full cache contract. */
+    mglBufferBindingPlanBuild(pptr);
 
     /* Only call mtlBindProgram if Metal functions are initialized */
     if (ctx->mtl_funcs.mtlBindProgram) {

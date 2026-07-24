@@ -592,9 +592,11 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     STATE(texture_dirty) = 1;
     STATE(vertex_layout_dirty) = 1;
     STATE(render_state_dirty) = 1;
+    STATE(uniform_buffer_dirty) = 1;
     STATE(cached_texture_hash) = 0;
     STATE(cached_vertex_layout_hash) = 0;
     STATE(cached_render_state_hash) = 0;
+    STATE(cached_uniform_buffer_hash) = 0;
 
     initHashTable(&STATE(vao_table), 32);
     initHashTable(&STATE(buffer_table), 32);

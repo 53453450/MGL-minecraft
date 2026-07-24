@@ -1389,7 +1389,7 @@ void mglHandleProxyTexImageQuery(GLMContext ctx,
     proxy_state->depth = ok ? depth : 0;
     proxy_state->internalformat = ok ? internalformat : 0;
 
-    if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS || target == GL_PROXY_TEXTURE_2D) {
+    if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS) {
         fprintf(stderr,
                 "MGL PROXY TEX query target=0x%x ok=%d req=%dx%dx%d level=%d border=%d max=%d\n",
                 target,

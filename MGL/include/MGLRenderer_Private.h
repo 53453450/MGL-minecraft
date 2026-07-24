@@ -180,8 +180,8 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 - (void)mglCapAuxCache:(NSMutableDictionary *)cache
                  limit:(NSUInteger)limit;
 
-/* P2-1: Methods called from MGLRenderer+Compute.m */
-- (bool)mapGLBuffersToMTLBufferMap:(BufferMapList *)buffer_map stage:(int)stage;
+/* P2-1: Methods called from MGLRenderer+Compute.m.
+ * mapGLBuffersToMTLBufferMap:stage: now declared in MGLRenderer+Buffer_Private.h. */
 - (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map
                                            source:(id<MTLBuffer>)source
                                    requiredLength:(NSUInteger)requiredLength;
@@ -245,5 +245,8 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 #import "MGLRenderer+QuerySync_Private.h"
 #import "MGLRenderer+Tessellation_Private.h"
 #import "MGLRenderer+Lifecycle_Private.h"
+#import "MGLRenderer+Buffer_Private.h"
+#import "MGLRenderer+ProgramBinding_Private.h"
+#import "MGLRenderer+SwapDiagnostics_Private.h"
 
 #endif /* MGLRenderer_Private_h */

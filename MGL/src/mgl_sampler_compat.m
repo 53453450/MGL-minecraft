@@ -263,31 +263,44 @@ GLint mglResolveSamplerResourceUnit(Program *program,
 bool mglProgramSamplesTextureUnit(Program *program, GLuint unit)
 {
     if (!program) return false;
+    if (unit >= TEXTURE_UNITS) return false;
 
-    static const int samplerResourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
-    };
+    /* Cached bitmap: built once per program and invalidated when sampler
+     * bindings change (glUniform1i, relink).  Turns the per-unit
+     * O(stages * resources) scan into an O(1) bit test.  The 3 hazard-scan
+     * call sites iterate up to 128 units each, so this avoids ~19200
+     * resource resolutions per draw in the worst case. */
+    if (!program->sampled_texture_unit_mask_valid) {
+        memset(program->sampled_texture_unit_mask, 0,
+               sizeof(program->sampled_texture_unit_mask));
 
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-        for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
-            int resType = samplerResourceTypes[rt];
-            if (resType < 0 || resType >= _MAX_SPIRV_RES) continue;
-            SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
-            for (GLuint i = 0; resources->list && i < resources->count; i++) {
-                GLint resolved = mglResolveSamplerResourceUnit(program,
-                                                               &resources->list[i],
-                                                               stage,
-                                                               resType);
-                if (resolved >= 0 && (GLuint)resolved == unit) {
-                    return true;
+        static const int samplerResourceTypes[] = {
+            SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
+            SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+            SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
+            SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+            SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+        };
+
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            for (size_t rt = 0; rt < sizeof(samplerResourceTypes) / sizeof(samplerResourceTypes[0]); rt++) {
+                int resType = samplerResourceTypes[rt];
+                if (resType < 0 || resType >= _MAX_SPIRV_RES) continue;
+                SpirvResourceList *resources = &program->spirv_resources_list[stage][resType];
+                for (GLuint i = 0; resources->list && i < resources->count; i++) {
+                    GLint resolved = mglResolveSamplerResourceUnit(program,
+                                                                   &resources->list[i],
+                                                                   stage,
+                                                                   resType);
+                    if (resolved >= 0 && (GLuint)resolved < TEXTURE_UNITS) {
+                        program->sampled_texture_unit_mask[resolved >> 5] |=
+                            (1u << (resolved & 31u));
+                    }
                 }
             }
         }
+        program->sampled_texture_unit_mask_valid = 1u;
     }
 
-    return false;
+    return (program->sampled_texture_unit_mask[unit >> 5] & (1u << (unit & 31u))) != 0u;
 }

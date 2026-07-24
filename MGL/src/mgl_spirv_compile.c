@@ -4267,8 +4267,14 @@ void applyMSLUniformBufferPacking(Program *pptr, int stage)
 
         out[out_len] = '\0';
         if (pad_count > 0) {
-            fprintf(stderr, "MGL MSL STd140 PAD: program=%u stage=%d %u pad(s)\n",
-                    pptr->name, stage, pad_count);
+            {
+                static uint64_t s_stdPadLogs = 0;
+                uint64_t hit = ++s_stdPadLogs;
+                if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+                    fprintf(stderr, "MGL MSL STd140 PAD: program=%u stage=%d %u pad(s)\n",
+                            pptr->name, stage, pad_count);
+                }
+            }
             free(pptr->spirv[stage].msl_str);
             pptr->spirv[stage].msl_str = out;
         } else {
@@ -6530,12 +6536,18 @@ void applyVertexInputLocations(Program *pptr)
                  vs_in->name, (unsigned)desiredLocation);
 
         if (strstr(pptr->spirv[_VERTEX_SHADER].msl_str, from)) {
-            fprintf(stderr,
-                    "MGL ATTRIB FIX: program=%u vertex input %s loc %u -> %d\n",
-                    pptr->name,
-                    vs_in->name,
-                    (unsigned)vs_in->location,
-                    desiredLocation);
+            {
+                static uint64_t s_attribFixLogs = 0;
+                uint64_t hit = ++s_attribFixLogs;
+                if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+                    fprintf(stderr,
+                            "MGL ATTRIB FIX: program=%u vertex input %s loc %u -> %d\n",
+                            pptr->name,
+                            vs_in->name,
+                            (unsigned)vs_in->location,
+                            desiredLocation);
+                }
+            }
             replace_all_substr(&pptr->spirv[_VERTEX_SHADER].msl_str, from, to);
             vs_in->location = (GLuint)desiredLocation;
         } else {

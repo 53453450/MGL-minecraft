@@ -143,8 +143,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     mapCount = ctx->active_state->vertex_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: VBIND mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
-              mapCount, MAX_MAPPED_BUFFERS);
+        static uint64_t s_vbindMapCountOverflow = 0;
+        uint64_t hit = ++s_vbindMapCountOverflow;
+        if (hit <= 16ull || (hit % 4096ull) == 0ull) {
+            NSLog(@"MGL WARNING: VBIND mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping (hit=%llu)",
+                  mapCount, MAX_MAPPED_BUFFERS, (unsigned long long)hit);
+        }
         mapCount = MAX_MAPPED_BUFFERS;
     }
 
@@ -1094,8 +1098,12 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     mapCount = ctx->active_state->fragment_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
-        NSLog(@"MGL WARNING: FBIND mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping",
-              mapCount, MAX_MAPPED_BUFFERS);
+        static uint64_t s_fbindMapCountOverflow = 0;
+        uint64_t hit = ++s_fbindMapCountOverflow;
+        if (hit <= 16ull || (hit % 4096ull) == 0ull) {
+            NSLog(@"MGL WARNING: FBIND mapCount=%u exceeds MAX_MAPPED_BUFFERS=%d, clamping (hit=%llu)",
+                  mapCount, MAX_MAPPED_BUFFERS, (unsigned long long)hit);
+        }
         mapCount = MAX_MAPPED_BUFFERS;
     }
 
@@ -2064,7 +2072,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (ptr && ptr->target == GL_TEXTURE_BUFFER) {
             static uint64_t s_vertexTexelBufferBindLogs = 0;
             uint64_t hit = ++s_vertexTexelBufferBindLogs;
-            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+            if (hit <= 8ull || (hit % 2048ull) == 0ull) {
                 Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
                 Texture *unitBuffer = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_BUFFER_TARGET]) : NULL;
                 NSLog(@"MGL TEXBUFFER BIND vertex hit=%llu program=%u binding=%u unit=%u ptrTex=%u active=%u bufferSlot=%u expectedType=%lu lookupType=%lu mtlTex=%p mtlType=%lu size=%lux%lu format=%lu sampler=%p",

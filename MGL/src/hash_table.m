@@ -441,14 +441,20 @@ static int ensureHashTableCapacity(HashTable *table, GLuint name)
         return 0;
     }
 
-    fprintf(stderr,
-            "MGL HASH grow table=%p oldCap=%zu newCap=%zu count=%zu key=%u load=%.2f\n",
-            (void *)table,
-            old_cap,
-            new_cap,
-            table->count,
-            name,
-            old_cap ? ((double)table->count / (double)old_cap) : 0.0);
+    {
+        static uint64_t s_hashGrowLogs = 0;
+        uint64_t hit = ++s_hashGrowLogs;
+        if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL HASH grow table=%p oldCap=%zu newCap=%zu count=%zu key=%u load=%.2f\n",
+                    (void *)table,
+                    old_cap,
+                    new_cap,
+                    table->count,
+                    name,
+                    old_cap ? ((double)table->count / (double)old_cap) : 0.0);
+        }
+    }
 
     return mglRehash(table, new_cap);
 }

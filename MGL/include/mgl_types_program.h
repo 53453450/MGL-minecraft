@@ -189,6 +189,20 @@ typedef struct SpirvResource_t {
     /* When this resource is used as a placeholder during active-uniform
      * enumeration of UBO members, this points to the specific member. */
     const SpirvUBOMember *ubo_member;
+    /* Per-resource MSL texture type / data kind cache.  The MSL string is
+     * immutable post-link, so the type for a given resource never changes
+     * between relinks.  Stored on the resource itself (rather than an
+     * external NSString→NSNumber NSCache) to eliminate per-draw
+     * stringWithFormat + NSDictionary lookup cost.
+     *
+     * cached_msl_texture_type_valid: 0 = uncached, 1 = cached.
+     * MTLTextureType1D == 0 on this SDK, so a separate valid flag is needed
+     * for the texture type.  MGLTextureDataKindUnknown == 0, but the cached
+     * value is always the *resolved* kind (>= 1), so 0 reliably means
+     * uncached for the data kind. */
+    uint32_t cached_msl_texture_type;
+    uint8_t  cached_msl_texture_type_valid;
+    uint32_t cached_msl_data_kind;
 } SpirvResource;
 
 typedef struct SpirvResourceList_t {
@@ -206,6 +220,13 @@ typedef struct {
     uint8_t attribute_kind;
     GLboolean result;
 } MGLMSLNamedArgumentCacheEntry;
+
+/* Forward declaration: full type defined in mgl_buffer_plan.h.  The plan
+ * caches static reflection-derived buffer binding data (metal slots, client
+ * bindings, struct packing metadata) so per-draw paths can skip repeated name
+ * lookups and program resolution.  Built at link end, invalidated on relink
+ * and binding mutations, freed at program deletion. */
+typedef struct MGLBufferBindingPlan MGLBufferBindingPlan;
 
 typedef struct Program_t {
     GLuint dirty_bits;
@@ -232,6 +253,13 @@ typedef struct Program_t {
     GLint sampler_units_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
     GLboolean sampler_units_explicit[TEXTURE_UNITS];
     GLboolean sampler_units_explicit_by_stage[_MAX_SHADER_TYPES][TEXTURE_UNITS];
+    /* Cached bitmap of texture units the program actually samples.
+     * Lazily built by mglProgramSamplesTextureUnit on first query and
+     * invalidated whenever sampler_units* are modified (glUniform1i,
+     * relink).  Eliminates the O(stages * resources) scan per texture
+     * unit in the 3 hazard-scan call sites. */
+    uint32_t sampled_texture_unit_mask[4];  /* 128 bits */
+    uint8_t  sampled_texture_unit_mask_valid;
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
     /* MSL query result cache (env-gated by MGL_MSL_CACHE, default ON; =0 off).
@@ -276,6 +304,9 @@ typedef struct Program_t {
     GLuint builtin_program_input_count[_MAX_SHADER_TYPES];
     SpirvResource builtin_program_outputs[_MAX_SHADER_TYPES][16];
     GLuint builtin_program_output_count[_MAX_SHADER_TYPES];
+    /* Cached buffer binding plan (per-stage).  NULL until first build.
+     * See mgl_buffer_plan.h for the lifecycle and cache contract. */
+    MGLBufferBindingPlan *buffer_binding_plan;
     void *mtl_data;
 } Program;
 

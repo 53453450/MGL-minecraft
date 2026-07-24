@@ -2596,7 +2596,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         static uint64_t s_zero_tail_mip_logs = 0;
         uint64_t hit = ++s_zero_tail_mip_logs;
 
-        if (hit <= 64ull || (hit % 1024ull) == 0ull)
+        if (hit <= 8ull || (hit % 2048ull) == 0ull)
         {
             fprintf(stderr,
                     "MGL TRACE createTextureLevel skip zero-sized tail mip tex=%u target=0x%x face=%u level=%d size=%dx%dx%d base=%ux%ux%u numLevels=%u mipmapLevels=%u hit=%llu\n",
@@ -3469,7 +3469,6 @@ void mglTexImage3DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GL
 bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, void *pixels)
 {
     static uint64_t s_tex_sub_image_calls = 0u;
-    static int s_dumped_tex13_upload_source = 0;
     uint64_t call_id = ++s_tex_sub_image_calls;
     double start_ms = mglTextureNowMs();
     const void *pixels_raw = pixels;
@@ -3678,38 +3677,10 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         }
     }
 
-    if (tex->name == 13u && s_dumped_tex13_upload_source == 0 && resolved_src && resolved_unpack_buf) {
-        size_t row_bytes = src_pitch > 0 ? src_pitch : (size_t)(width * pixel_size);
-        size_t level_image_bytes = row_bytes * (size_t)MAX(height, 1);
-        size_t dump_len = level_image_bytes;
-        if (dump_len > 256u) {
-            dump_len = 256u;
-        }
-
-        fprintf(stderr,
-                "MGL DUMP tex13.texSubImage.src.begin tex=%u face=%u level=%d target=0x%x fmt=0x%x type=0x%x "
-                "dims=%dx%dx%d off=(%d,%d,%d) pixelSize=%zu srcPitch=%zu dumpLen=%zu ptr=%p\n",
-                tex->name,
-                face,
-                level,
-                tex->target,
-                format,
-                type,
-                width,
-                height,
-                depth,
-                xoffset,
-                yoffset,
-                zoffset,
-                pixel_size,
-                src_pitch,
-                dump_len,
-                resolved_src);
-
-        mglDumpBytesToStderr("tex13.texSubImage.src", resolved_src, dump_len, 0u);
-        fprintf(stderr, "MGL DUMP tex13.texSubImage.src.end tex=%u\n", tex->name);
-        s_dumped_tex13_upload_source = 1;
-    }
+    /* Debug-only tex13 dump removed: hardcoded texture-name sniffing
+     * belongs in a targeted debugger, not production stderr.  The
+     * zero-CPU-upload diagnostic path above already captures the
+     * relevant backtrace and state when a real problem occurs. */
 
     void *texture_data;
     TextureLevel *lvl = &tex->faces[face].levels[level];
@@ -3886,38 +3857,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
         }
     }
 
-    if (tex->name == 13u && s_dumped_tex13_upload_source == 0) {
-        size_t dump_len = compact_upload_bytes;
-        if (dump_len > 256u) {
-            dump_len = 256u;
-        }
-
-        fprintf(stderr,
-                "MGL DUMP tex13.texSubImage.dst.begin tex=%u face=%u level=%d target=0x%x fmt=0x%x type=0x%x "
-                "dims=%dx%dx%d off=(%d,%d,%d) pixelSize=%zu srcPitch=%zu dumpLen=%zu src=%p dst=%p srcClass=%s\n",
-                tex->name,
-                face,
-                level,
-                tex->target,
-                format,
-                type,
-                width,
-                height,
-                depth,
-                xoffset,
-                yoffset,
-                zoffset,
-                pixel_size,
-                src_pitch,
-                dump_len,
-                resolved_src,
-                texture_data,
-                resolved_unpack_buf ? "PBO" : "CPU");
-
-        mglDumpBytesToStderr("tex13.texSubImage.dst", (const uint8_t *)texture_data, dump_len, 0u);
-        fprintf(stderr, "MGL DUMP tex13.texSubImage.dst.end tex=%u\n", tex->name);
-        s_dumped_tex13_upload_source = 1;
-    }
+    /* Debug-only tex13 dump removed (see comment above). */
 
     if (trace_upload) {
         fprintf(stderr,
@@ -6152,7 +6092,7 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
 
         static uint64_t s_texBufferUnchangedLogs = 0;
         uint64_t hit = ++s_texBufferUnchangedLogs;
-        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
             fprintf(stderr,
                     "MGL TRACE TexBuffer unchanged hit=%llu texture=%u internal=0x%x buffer=%u offset=%lld size=%lld texels=%u bpt=%zu dirty=0x%x bufferDirty=0x%x\n",
                     (unsigned long long)hit,
@@ -6189,15 +6129,21 @@ static void mglTextureBufferRangeImpl(GLMContext ctx, GLuint texture, GLenum int
     tex->dirty_bits |= DIRTY_TEXTURE_LEVEL | DIRTY_TEXTURE_DATA;
     mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX | DIRTY_TEX_BINDING);
 
-    fprintf(stderr,
-            "MGL TRACE TexBuffer texture=%u internal=0x%x buffer=%u offset=%lld size=%lld texels=%u bpt=%zu\n",
-            texture,
-            internalformat,
-            buffer,
-            (long long)offset,
-            (long long)attach_size,
-            tex->width,
-            bytes_per_texel);
+    {
+        static uint64_t s_texBufferCreateLogs = 0;
+        uint64_t hit = ++s_texBufferCreateLogs;
+        if (hit <= 4ull || (hit % 2048ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL TRACE TexBuffer texture=%u internal=0x%x buffer=%u offset=%lld size=%lld texels=%u bpt=%zu\n",
+                    texture,
+                    internalformat,
+                    buffer,
+                    (long long)offset,
+                    (long long)attach_size,
+                    tex->width,
+                    bytes_per_texel);
+        }
+    }
 }
 
 void mglCompressedTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint xoffset, GLsizei width, GLenum format, GLsizei imageSize, const void *data)

@@ -1963,6 +1963,20 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
         }
         out->render_state_hash = ctx->active_state->cached_render_state_hash ^
                                  mglRotateLeft64((uint64_t)mode, 21);
+
+        /* uniform_buffer_hash is cached like the other hash domains instead
+         * of being recomputed every draw.  Its inputs (buffer_base[_UNIFORM_
+         * BUFFER]) are a strict subset of render_state_hash inputs, so it
+         * shares the same dirty bits (DIRTY_BUFFER_BASE_STATE |
+         * DIRTY_PROGRAM).  Kept as a separate field because
+         * mglStateKeysEqualIgnoringUniformRanges XORs it back out of
+         * render_state_hash during batch merge comparisons. */
+        if (ctx->active_state->uniform_buffer_dirty) {
+            ctx->active_state->cached_uniform_buffer_hash =
+                mglComputeUniformBufferBindingHash(ctx);
+            ctx->active_state->uniform_buffer_dirty = 0;
+        }
+        out->uniform_buffer_hash = ctx->active_state->cached_uniform_buffer_hash;
     } else {
         /* Legacy path: unconditional hash computation */
         out->texture_hash = mglComputeTextureHash(ctx);
@@ -1970,8 +1984,8 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
         out->render_state_hash = mglComputeRenderStateHash(ctx) ^
                                  mglComputeDrawBufferBindingHash(ctx) ^
                                  mglRotateLeft64((uint64_t)mode, 21);
+        out->uniform_buffer_hash = mglComputeUniformBufferBindingHash(ctx);
     }
-    out->uniform_buffer_hash = mglComputeUniformBufferBindingHash(ctx);
 
     MGL_SIGNPOST_END(ComputeStateKey);
 }
@@ -2649,19 +2663,31 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
         _TEXTURE_BUFFER
     };
 
+    /* Use the per-target active_mask bitmap to skip the ~84-slot linear
+     * scan.  Typical Minecraft draws have only a handful of active bindings,
+     * so visiting only set bits turns ~420 empty-slot checks into ~5-10
+     * iterations.  plain_uniform_buffers (below) stays a linear scan
+     * because it is a bare BufferBaseTarget[] without a BufferBase wrapper
+     * and has few active slots in practice. */
     for (size_t t = 0; t < sizeof(trackedTargets) / sizeof(trackedTargets[0]); t++) {
         int target = trackedTargets[t];
-        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
-            BufferBaseTarget *binding = &ctx->active_state->buffer_base[target].buffers[i];
-            if (!binding->buf) continue;
-            activeCount++;
-            if (binding->size > 0 && binding->offset >= 0) {
-                mglTrackPendingReadBytes(ctx,
-                                         binding->buf,
-                                         (uint64_t)binding->offset,
-                                         (uint64_t)binding->size);
-            } else {
-                mglTrackPendingReadWholeBuffer(ctx, binding->buf);
+        BufferBase *base = &ctx->active_state->buffer_base[target];
+        for (uint32_t w = 0; w < MGL_BUFFER_BASE_ACTIVE_WORDS; w++) {
+            uint64_t bits = base->active_mask[w];
+            while (bits) {
+                int i = __builtin_ctzll(bits);
+                bits &= bits - 1;
+                BufferBaseTarget *binding = &base->buffers[(w << 6) + i];
+                if (!binding->buf) continue;
+                activeCount++;
+                if (binding->size > 0 && binding->offset >= 0) {
+                    mglTrackPendingReadBytes(ctx,
+                                             binding->buf,
+                                             (uint64_t)binding->offset,
+                                             (uint64_t)binding->size);
+                } else {
+                    mglTrackPendingReadWholeBuffer(ctx, binding->buf);
+                }
             }
         }
     }
@@ -3591,7 +3617,12 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
 
         if (can_stream_merge) {
             if (!mglInitializeStreamMergedBatch(ctx, batch, &streamCandidate)) {
-                fprintf(stderr, "MGL Warning: stream merged batch init failed; falling back to normal deferred draw\n");
+                static unsigned long long s_streamMergeInitFailCount = 0;
+                unsigned long long smInitHit = ++s_streamMergeInitFailCount;
+                if (smInitHit <= 64ull || (smInitHit % 512ull) == 0ull) {
+                    fprintf(stderr, "MGL Warning: stream merged batch init failed; falling back to normal deferred draw (hit=%llu)\n",
+                            smInitHit);
+                }
                 mglReleaseBatch(ctx, batch);
                 memset(batch, 0, sizeof(*batch));
                 batch->sampler_snapshot_id = MGL_INVALID_SAMPLER_SNAPSHOT_ID;
@@ -3618,7 +3649,12 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     if (can_stream_merge) {
         if (!mglAppendStreamMergedData(batch, &streamCandidate, cmd, &stored_cmd)) {
             MGL_PERF_INC(g_mglMergeRejectAppendFailedSinceSwap);
-            fprintf(stderr, "MGL Warning: stream merged append failed; falling back to normal deferred draw\n");
+            static unsigned long long s_streamMergeAppendFailCount = 0;
+            unsigned long long smAppendHit = ++s_streamMergeAppendFailCount;
+            if (smAppendHit <= 64ull || (smAppendHit % 512ull) == 0ull) {
+                fprintf(stderr, "MGL Warning: stream merged append failed; falling back to normal deferred draw (hit=%llu)\n",
+                        smAppendHit);
+            }
             if (batch->command_count == 0 &&
                 cb->batch_count > 0 &&
                 batch == &cb->batches[cb->batch_count - 1]) {

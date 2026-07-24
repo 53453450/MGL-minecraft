@@ -731,7 +731,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     static uint64_t s_restoreAfterTextureUploadCount = 0;
     uint64_t hit = ++s_restoreAfterTextureUploadCount;
-    if (hit <= 64ull || (hit % 512ull) == 0ull) {
+    if (hit <= 16ull || (hit % 2048ull) == 0ull) {
         NSLog(@"MGL TEXTURE UPLOAD closed render encoder; restoring for draw reason=%s hit=%llu",
               reason ? reason : "(null)",
               (unsigned long long)hit);
@@ -1427,8 +1427,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                     passHeight = passTexture.height;
                     _renderPassManager.state->renderPassDescriptor.renderTargetWidth = passWidth;
                     _renderPassManager.state->renderPassDescriptor.renderTargetHeight = passHeight;
-                    NSLog(@"MGL INFO: Resolved render pass size from attachment %lux%lu (rtw/rth were unset)",
-                          (unsigned long)passWidth, (unsigned long)passHeight);
+                    if (kMGLVerboseFrameLoopLogs) {
+                        NSLog(@"MGL INFO: Resolved render pass size from attachment %lux%lu (rtw/rth were unset)",
+                              (unsigned long)passWidth, (unsigned long)passHeight);
+                    }
                 }
             }
         }
@@ -2584,11 +2586,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 _renderPassManager.state->renderPassDescriptor.renderTargetHeight == 0 ||
                 _renderPassManager.state->renderPassDescriptor.renderTargetWidth > texWidth ||
                 _renderPassManager.state->renderPassDescriptor.renderTargetHeight > texHeight) {
-                NSLog(@"MGL INFO: Normalizing renderTarget size from %lux%lu to %lux%lu",
-                      (unsigned long)_renderPassManager.state->renderPassDescriptor.renderTargetWidth,
-                      (unsigned long)_renderPassManager.state->renderPassDescriptor.renderTargetHeight,
-                      (unsigned long)texWidth,
-                      (unsigned long)texHeight);
+                if (kMGLVerboseFrameLoopLogs) {
+                    NSLog(@"MGL INFO: Normalizing renderTarget size from %lux%lu to %lux%lu",
+                          (unsigned long)_renderPassManager.state->renderPassDescriptor.renderTargetWidth,
+                          (unsigned long)_renderPassManager.state->renderPassDescriptor.renderTargetHeight,
+                          (unsigned long)texWidth,
+                          (unsigned long)texHeight);
+                }
                 _renderPassManager.state->renderPassDescriptor.renderTargetWidth = texWidth;
                 _renderPassManager.state->renderPassDescriptor.renderTargetHeight = texHeight;
             }
@@ -4447,7 +4451,12 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (_renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentRenderEncoder == NULL) {
         MTLCommandBufferStatus preStatus = _renderPassManager.state->currentCommandBuffer.status;
         if (preStatus >= MTLCommandBufferStatusCommitted) {
-            NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld)", (long)preStatus);
+            static uint64_t s_rotateFinalizedCount = 0;
+            uint64_t rotateHit = ++s_rotateFinalizedCount;
+            if (rotateHit <= 16ull || (rotateHit % 500ull) == 0ull) {
+                NSLog(@"MGL INFO: processGLState rotating finalized command buffer (status: %ld) hit=%llu",
+                      (long)preStatus, (unsigned long long)rotateHit);
+            }
             if (![self newCommandBufferLocked]) {
                 NSLog(@"MGL ERROR: processGLState failed to create a fresh command buffer");
                 if (traceProcess) {
@@ -4485,9 +4494,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (!_renderPassManager.state->currentRenderEncoder) {
         static uint64_t s_nilEncoderRecoveryCount = 0;
         uint64_t nilHit = ++s_nilEncoderRecoveryCount;
-        NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
-              (unsigned long long)nilHit);
-        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
+        if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
+            NSLog(@"MGL WARNING: processGLState - current render encoder is nil, attempting recovery hit=%llu",
+                  (unsigned long long)nilHit);
             mglLogRenderPassLifecycle("nil-encoder-before-recovery",
                                       nilHit,
                                       ctx,
@@ -4501,7 +4510,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                       _renderPassManager.state->renderPassDrawBufferCount);
         }
         RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
-        if (nilHit <= 128ull || (nilHit % 512ull) == 0ull) {
+        if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
             mglLogRenderPassLifecycle("nil-encoder-after-recovery",
                                       nilHit,
                                       ctx,
@@ -4939,8 +4948,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (!pipelineHasDepth && !passHasDepth) {
             goto depth_format_ok;
 	        }
-	        NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	              (unsigned long)_pipelineCache.state->pipelineDepthFormat, (unsigned long)currentDepthFormat);
+	        {
+	            static uint64_t s_depthFormatMismatchCount = 0;
+	            s_depthFormatMismatchCount++;
+	            if (s_depthFormatMismatchCount <= 16 || (s_depthFormatMismatchCount % 250) == 0) {
+	                NSLog(@"MGL WARNING: Pipeline/pass depth format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
+	                      (unsigned long)_pipelineCache.state->pipelineDepthFormat, (unsigned long)currentDepthFormat);
+	            }
+	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass depth format mismatch"];
 	        mglMarkRendererDirtyBits(ctx->active_state,
 	                                 DIRTY_PROGRAM | DIRTY_VAO |
@@ -4955,8 +4970,14 @@ depth_format_ok:;
         if (!pipelineHasStencil && !passHasStencil) {
             goto stencil_format_ok;
 	        }
-	        NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
-	              (unsigned long)_pipelineCache.state->pipelineStencilFormat, (unsigned long)currentStencilFormat);
+	        {
+	            static uint64_t s_stencilFormatMismatchCount = 0;
+	            s_stencilFormatMismatchCount++;
+	            if (s_stencilFormatMismatchCount <= 16 || (s_stencilFormatMismatchCount % 250) == 0) {
+	                NSLog(@"MGL WARNING: Pipeline/pass stencil format mismatch (pipeline=%lu pass=%lu), forcing pipeline rebuild",
+	                      (unsigned long)_pipelineCache.state->pipelineStencilFormat, (unsigned long)currentStencilFormat);
+	            }
+	        }
 	        [self invalidateCurrentPipelineStateForReason:@"pipeline/pass stencil format mismatch"];
 	        mglMarkRendererDirtyBits(ctx->active_state,
 	                                 DIRTY_PROGRAM | DIRTY_VAO |

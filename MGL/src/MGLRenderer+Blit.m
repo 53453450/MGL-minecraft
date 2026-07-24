@@ -2244,7 +2244,7 @@ typedef struct MGLBlitColorState {
             needsFormatConversionBlit = YES;
             static uint64_t s_rgbaBgraBlitLogCount = 0;
             uint64_t hit = ++s_rgbaBgraBlitLogCount;
-            if (hit <= 8ull || (hit % 512ull) == 0ull) {
+            if (hit <= 4ull || (hit % 2048ull) == 0ull) {
                 NSLog(@"MGL INFO: mtlBlitFramebuffer using shader conversion for RGBA/BGRA pair (src=%lu dst=%lu hit=%llu)",
                       (unsigned long)readtexid.pixelFormat,
                       (unsigned long)drawtexid.pixelFormat,

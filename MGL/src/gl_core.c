@@ -111,12 +111,6 @@ void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei widt
 {
     GLMContext ctx = GET_CONTEXT();
 
-    if (target == GL_PROXY_TEXTURE_2D) {
-        fprintf(stderr,
-                "MGL ABI TRACE glTexImage2D target=%x level=%d internal=%x width=%d height=%d border=%d format=%x type=%x pixels=%p\n",
-                target, level, internalformat, width, height, border, format, type, pixels);
-    }
-
     ctx->dispatch.tex_image2D(ctx, target, level, internalformat, width, height, border, format, type, pixels);
 }
 

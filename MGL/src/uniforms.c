@@ -32,6 +32,7 @@
 #include "glm_context.h"
 #include "mgl_safety.h"
 #include "draw_command.h"
+#include "mgl_buffer_plan.h"
 
 #pragma mark uniforms
 
@@ -1343,6 +1344,10 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                             changed ? 1 : 0,
                             explicit_changed ? 1 : 0,
                             hit);
+        /* Invalidate the sampled-texture-unit bitmap so the next
+         * mglProgramSamplesTextureUnit query rebuilds it with the new
+         * sampler binding. */
+        program->sampled_texture_unit_mask_valid = 0u;
         mglMarkRendererDirtyBits(&ctx->state,
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
@@ -2153,6 +2158,15 @@ void mglUniformBlockBinding(GLMContext ctx, GLuint program, GLuint uniformBlockI
     }
 
     mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM);
+
+    /* Invalidate the buffer binding plan: the cached client_binding_base
+     * reflects the pre-call gl_binding, which glUniformBlockBinding just
+     * mutated.  The next draw rebuilds the plan lazily.  For UBO arrays
+     * with a live bindings table (MGL_BP_FLAG_UBO_ARRAY_TABLE) the draw
+     * path reads ubo_array_bindings[element] directly, but non-array UBOs
+     * and UBO arrays without the table still use gl_binding, so the full
+     * invalidation is required for correctness. */
+    mglBufferBindingPlanInvalidate(ptr);
 }
 
 bool checkUniformParams(GLMContext ctx, GLint location)

@@ -228,35 +228,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (void)mtlDrawElementsLocked:(GLMContext)glm_ctx mode:(GLenum)mode count:(GLsizei)count type:(GLenum)type indices:(const void *)indices;
 
 // === Methods defined in MGLRenderer.m, called from MGLRenderer+Draw.m ===
-- (int)getVertexBufferIndexWithAttributeSet:(int)attribute;
-- (NSUInteger)getProgramBindingRequiredSize:(int)stage type:(int)type index:(int)index;
-- (NSUInteger)getProgramBindingRequiredSizeForStage:(int)stage clientBinding:(GLuint)clientBinding;
-- (NSInteger)getProgramMetalBufferIndexForStage:(int)stage clientBinding:(GLuint)clientBinding;
-- (id<MTLBuffer>)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
-                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                             size:(GLuint)componentCount
-                                         outStride:(NSUInteger *)outStride;
-- (id<MTLBuffer>)floatVertexBufferForIntAttrib:(Buffer *)sourceBuffer
-                                      resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                          size:(GLuint)componentCount
-                                    normalized:(GLboolean)normalized
-                                          type:(GLenum)type
-                                     outStride:(NSUInteger *)outStride;
-- (id<MTLBuffer>)integerVertexBufferForAttrib:(Buffer *)sourceBuffer
-                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
-                                         size:(GLuint)componentCount
-                                       srcType:(GLenum)srcType
-                                     dstIsInt:(BOOL)dstIsInt
-                                    outStride:(NSUInteger *)outStride;
+// getVertexBufferIndexWithAttributeSet: and floatVertexBufferFor*Attrib: are
+// now declared in MGLRenderer+Buffer_Private.h (implemented in +Buffer.m).
+// getProgramBinding* / getProgramMetalBufferIndexForStage: /
+// getProgramBindingRequiredSize* / getProgramExpectedTexture* /
+// getProgramDeclaredTextureType: are now declared in
+// MGLRenderer+ProgramBinding_Private.h (implemented in +ProgramBinding.m).
 - (id<MTLSamplerState>)fallbackSamplerState;
-- (int)getProgramBinding:(int)stage type:(int)type index:(int)index;
-- (int)getProgramGLBinding:(int)stage type:(int)type index:(int)index;
 - (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
                             metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
-- (MTLTextureType)getProgramExpectedTextureType:(int)stage type:(int)type index:(int)index;
-- (MTLTextureType)getProgramDeclaredTextureType:(int)stage type:(int)type index:(int)index;
-- (MGLTextureDataKind)getProgramExpectedTextureDataKind:(int)stage type:(int)type index:(int)index;
 - (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage

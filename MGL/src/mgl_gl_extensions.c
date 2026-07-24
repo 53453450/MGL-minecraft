@@ -16,6 +16,7 @@
 #include "pixel_utils.h"
 
 #include "mgl_trace_log.h"
+#include "mgl_buffer_plan.h"
 
 #ifndef MGL_VERBOSE_TEXBUFFER_LOGS
 #define MGL_VERBOSE_TEXBUFFER_LOGS 0
@@ -5920,6 +5921,12 @@ void mglShaderStorageBlockBinding(GLMContext ctx, GLuint program, GLuint storage
 	}
 
 	mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE | DIRTY_PROGRAM);
+
+	/* Invalidate the buffer binding plan: glShaderStorageBlockBinding
+	 * mutates res->gl_binding, which the cached client_binding_base
+	 * reflects.  The next draw rebuilds the plan lazily.  See
+	 * mglBufferBindingPlanInvalidate for details. */
+	mglBufferBindingPlanInvalidate(pptr);
 }
 
 void mglSpecializeShader(GLMContext ctx, GLuint shader, const GLchar *pEntryPoint, GLuint numSpecializationConstants, const GLuint *pConstantIndex, const GLuint *pConstantValue)
