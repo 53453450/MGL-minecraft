@@ -635,6 +635,22 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
     mglLogProgramResourceInterface(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_SEPARATE_IMAGE);
     mglLogProgramResourceInterface(program, _FRAGMENT_SHADER, SPVC_RESOURCE_TYPE_SEPARATE_IMAGE);
 
+    /* P1-5: Defer MSL file writes to a background serial queue.
+     *
+     * mglWriteProgramMSLDump is called from traceReplayCommand: inside
+     * the METAL_LOCK (via flushDrawBufferLocked:).  The writeToFile:
+     * atomically: call is synchronous disk I/O that blocks the Metal
+     * lock for the duration of the write.
+     *
+     * MSL strings are immutable post-link, so we copy all needed data
+     * (MSL source, entry point, path) to NSStrings synchronously while
+     * the program is still alive, then dispatch only the file write to
+     * a background queue.  The program struct is never touched from the
+     * background block.
+     *
+     * The dedup check and resource-interface logging stay synchronous
+     * (they're fast and use the trace-log mutex). */
+    NSMutableArray *pendingMSLDumps = [NSMutableArray array];
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         const char *msl = program->spirv[stage].msl_str;
         if (!msl || !program->shader_slots[stage]) {
@@ -646,18 +662,44 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
                                                    mglShaderStageName(stage),
                                                    (unsigned)s_dumpGeneration];
         NSString *source = [NSString stringWithUTF8String:msl];
-        NSError *writeError = nil;
-        BOOL ok = [source writeToFile:path
-                           atomically:YES
-                             encoding:NSUTF8StringEncoding
-                                error:&writeError];
-        MGLTraceNSLog(@"MGL IFACE DUMP msl program=%u stage=%s entry=%s path=%@ ok=%d error=%@",
-                      (unsigned)program->name,
-                      mglShaderStageName(stage),
-                      program->shader_slots[stage]->entry_point ? program->shader_slots[stage]->entry_point : "(null)",
-                      path,
-                      ok ? 1 : 0,
-                      writeError);
+        const char *entryRaw = program->shader_slots[stage]->entry_point;
+        NSString *entryPoint = [NSString stringWithUTF8String:entryRaw ? entryRaw : "(null)"];
+        [pendingMSLDumps addObject:@{
+            @"path": path,
+            @"source": source,
+            @"programName": @(program->name),
+            @"stageName": [NSString stringWithUTF8String:mglShaderStageName(stage)],
+            @"entry": entryPoint
+        }];
+    }
+
+    if (pendingMSLDumps.count > 0) {
+        static dispatch_queue_t s_mslDumpQueue;
+        static dispatch_once_t onceToken;
+        dispatch_once(&onceToken, ^{
+            s_mslDumpQueue = dispatch_queue_create("mgl.msl-dump", DISPATCH_QUEUE_SERIAL);
+        });
+        NSUInteger dumpCount = pendingMSLDumps.count;
+        GLuint programName = program->name;
+        dispatch_async(s_mslDumpQueue, ^{
+            for (NSUInteger i = 0; i < dumpCount; i++) {
+                NSDictionary *dump = pendingMSLDumps[i];
+                NSString *path = dump[@"path"];
+                NSString *source = dump[@"source"];
+                NSError *writeError = nil;
+                BOOL ok = [source writeToFile:path
+                                   atomically:YES
+                                     encoding:NSUTF8StringEncoding
+                                        error:&writeError];
+                MGLTraceNSLog(@"MGL IFACE DUMP msl program=%u stage=%s entry=%@ path=%@ ok=%d error=%@",
+                              (unsigned)programName,
+                              [dump[@"stageName"] UTF8String],
+                              dump[@"entry"],
+                              path,
+                              ok ? 1 : 0,
+                              writeError);
+            }
+        });
     }
 }
 
