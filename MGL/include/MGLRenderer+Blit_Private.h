@@ -101,6 +101,7 @@ void mglMarkTextureLevelRenderTargetWrittenImpl(Texture *tex,
 
 // === Blit pipeline caches ===
 - (id<MTLRenderPipelineState>)scaledBlitPipelineForPixelFormat:(MTLPixelFormat)pixelFormat;
+- (id<MTLComputePipelineState>)scaledBlitComputePipelineForPixelFormat:(MTLPixelFormat)pixelFormat;
 - (id<MTLSamplerState>)scaledBlitSamplerForFilter:(GLuint)filter;
 - (id<MTLRenderPipelineState>)clearRectPipelineForColorFormat:(MTLPixelFormat)colorFormat
                                                   depthFormat:(MTLPixelFormat)depthFormat

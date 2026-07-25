@@ -441,7 +441,7 @@ static void mglRecordLastSampled2DTexture(GLMContext ctx, GLuint unit, Texture *
 
 static void mglRecordBoundSampled2DTextureIfReady(GLMContext ctx, Texture *tex)
 {
-    if (!ctx || !tex) {
+    if (!ctx || !tex || tex->index != _TEXTURE_2D) {
         return;
     }
 

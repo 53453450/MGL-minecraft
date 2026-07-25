@@ -1,6 +1,5 @@
 // MGLRenderer+Compute.m
 // Compute dispatch methods extracted from MGLRenderer.m.
-// P2-1: Split from MGLRenderer.m to reduce file size.
 // These methods do not depend on any file-scope static functions in MGLRenderer.m.
 
 #import "MGLRenderer_Private.h"
@@ -672,7 +671,7 @@
         }
     }
 
-    /* P2-6: Fine-grained dirty bits instead of DIRTY_ALL.  Compute dispatch
+    /* Fine-grained dirty bits instead of DIRTY_ALL.  Compute dispatch
      * ends the render encoder, so the next draw must rebuild it.  DIRTY_STATE
      * triggers newRenderEncoderLocked; DIRTY_FBO re-syncs the render pass;
      * the remaining bits (matching kMGLFullReplayDirtyBits in MGLRenderer+Draw.m)
@@ -800,7 +799,7 @@
         return;
     }
 
-    /* P2-6: Fine-grained dirty bits — see mtlDispatchCompute for rationale. */
+    /* Fine-grained dirty bits — see mtlDispatchCompute for rationale. */
     mglMarkRendererDirtyBits(
         glm_ctx->active_state,
         DIRTY_STATE | DIRTY_FBO | DIRTY_PROGRAM | DIRTY_VAO |

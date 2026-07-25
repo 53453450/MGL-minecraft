@@ -1405,7 +1405,7 @@ static GLboolean mglMetalSamplerSlotSharedAcrossResources(Program *program, GLui
         return GL_FALSE;
     }
 
-    /* P1-6: Fast path — use the precomputed shared-binding table built at
+    /* Fast path — use the precomputed shared-binding table built at
      * link time.  O(1) lookup instead of a full stage×resource scan. */
     if (program->sampler_binding_shared_valid) {
         return program->sampler_binding_shared[metal_binding] ? GL_TRUE : GL_FALSE;
@@ -1458,11 +1458,21 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
         return GL_FALSE;
     }
 
-    /* P1-6: Stack array to collect matched resources, merging the former
-     * 3-pass scan (find-primary / count+needs_update / write) into 2 full
-     * scans (find-primary / collect+needs_update) + a small array iteration
-     * for the write.  64 entries covers all practical cases (typical match
-     * count is 1-4). */
+    /* Fast reject: if the link-time bitmap says this location is not a
+     * sampler, skip the full 6-stage × 5-type resource scan entirely.
+     * This is the common case — MC uploads many plain int uniforms
+     * (FogShape, etc.) via glUniform1i, none of which are samplers. */
+    if (program->sampler_location_bitmap_valid &&
+        location >= 0 && location < 128) {
+        if (!((program->sampler_location_bitmap[(GLuint)location >> 6] >>
+               ((GLuint)location & 63u)) & 1ull)) {
+            return GL_FALSE;
+        }
+    }
+
+    /* Stack array collecting matched resources, merging the former 3-pass
+     * scan into 2 scans + a small write iteration.  64 entries covers all
+     * practical cases (typical match count is 1-4). */
     typedef struct {
         SpirvResource *res;
         int stage;
@@ -2469,23 +2479,6 @@ bool checkUniformParams(GLMContext ctx, GLint location)
     return true;
 }
 
-static GLboolean mglUniformBufferDataWouldChange(Buffer *buf, GLsizeiptr size, const void *data)
-{
-    if (!buf) {
-        return GL_FALSE;
-    }
-    if (buf->size != size) {
-        return GL_TRUE;
-    }
-    if (size <= 0) {
-        return GL_FALSE;
-    }
-    if (!buf->data.buffer_data || !data) {
-        return GL_TRUE;
-    }
-    return memcmp((const void *)(uintptr_t)buf->data.buffer_data, data, (size_t)size) != 0;
-}
-
 static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void *ptr, GLsizei count, size_t element_size, GLsizeiptr *size_out)
 {
     if (!checkUniformParams(ctx, location)) {
@@ -2612,10 +2605,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
-    if (mglUniformBufferDataWouldChange(buf, size, ptr)) {
-        mglFlushPendingDrawsForBuffer(ctx, buf);
-    }
-    
+
     if(buf == NULL)
     {
         GLuint internalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
@@ -2627,7 +2617,10 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
             insertHashElement(&ctx->state.buffer_table, internalName, buf);
         }
     }
-    
+
+    /* initBufferData(isUniformConstant=true) internally memcmps and flushes
+     * pending draws only when data actually changes — no need for the
+     * redundant mglUniformBufferDataWouldChange pre-check here. */
     initBufferData(ctx, buf, size, ptr, true);
     uniformSlot->buffer = buf ? buf->name : 0u;
     uniformSlot->offset = 0;
@@ -2650,9 +2643,6 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         }
     }
     if (globalSlot->buf) {
-        if (mglUniformBufferDataWouldChange(globalSlot->buf, size, ptr)) {
-            mglFlushPendingDrawsForBuffer(ctx, globalSlot->buf);
-        }
         initBufferData(ctx, globalSlot->buf, size, ptr, true);
         globalSlot->buffer = globalSlot->buf->name;
         globalSlot->offset = 0;

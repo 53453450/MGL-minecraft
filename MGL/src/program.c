@@ -844,10 +844,14 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * is rebuilt below, so the cached mapping from texture units to sampled
      * resources is stale until the next query rebuilds it. */
     pptr->sampled_texture_unit_mask_valid = 0u;
-    /* P1-6: Invalidate the sampler-binding-shared table; rebuilt from the
+    /* Invalidate the sampler-binding-shared table; rebuilt from the
      * freshly reflected spirv_resources_list after a successful link. */
     pptr->sampler_binding_shared_valid = 0u;
     memset(pptr->sampler_binding_shared, 0, sizeof(pptr->sampler_binding_shared));
+    /* Invalidate the sampler-location bitmap; rebuilt at link end. */
+    pptr->sampler_location_bitmap_valid = 0u;
+    pptr->sampler_location_bitmap[0] = 0u;
+    pptr->sampler_location_bitmap[1] = 0u;
     /* Invalidate the active-uniform cache; rebuilt from the freshly
      * reflected spirv_resources_list after a successful link. */
     mglFreeActiveUniformCache(pptr);
@@ -1141,7 +1145,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
         pptr->vertexAttribUsageMask = attr_mask;
 
-        /* P1-7: Cache point_size_params / cull_distance presence to avoid
+        /* Cache point_size_params / cull_distance presence to avoid
          * per-draw strstr() over the full MSL source.  Same contract as
          * usesFragCoordParams: valid only when mslCacheValid == GL_TRUE. */
         pptr->uses_point_size_params = GL_FALSE;
@@ -1164,7 +1168,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         pptr->mslCacheValid = GL_TRUE;
     }
 
-    /* P1-6: Precompute the sampler-binding-shared table.
+    /* Precompute the sampler-binding-shared table.
      * For each Metal binding slot, count how many sampler-like resources
      * (across all stages and the 5 sampler resource types) map to it.  If
      * more than one resource shares a slot, mark sampler_binding_shared[slot]
@@ -1179,6 +1183,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         };
         unsigned slot_hits[TEXTURE_UNITS];
         memset(slot_hits, 0, sizeof(slot_hits));
+        uint64_t loc_bitmap[2] = {0u, 0u};
 
         for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
             for (size_t rt = 0; rt < sizeof(sampler_res_types) / sizeof(sampler_res_types[0]); rt++) {
@@ -1198,6 +1203,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     if (res->binding < TEXTURE_UNITS) {
                         slot_hits[res->binding]++;
                     }
+                    /* Set bitmap bits for [uniform_location, uniform_location+array_size). */
+                    if (res->uniform_location >= 0) {
+                        GLint array_size = res->gl_array_size > 0 ? res->gl_array_size : 1;
+                        for (GLint off = 0; off < array_size; off++) {
+                            GLint loc = res->uniform_location + off;
+                            if (loc >= 0 && loc < 128) {
+                                loc_bitmap[(GLuint)loc >> 6] |= (1ull << ((GLuint)loc & 63u));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1206,6 +1221,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             pptr->sampler_binding_shared[slot] = (slot_hits[slot] > 1u) ? 1u : 0u;
         }
         pptr->sampler_binding_shared_valid = 1u;
+        pptr->sampler_location_bitmap[0] = loc_bitmap[0];
+        pptr->sampler_location_bitmap[1] = loc_bitmap[1];
+        pptr->sampler_location_bitmap_valid = 1u;
     }
 
     /* Build the buffer binding plan from the finalized spirv_resources_list.

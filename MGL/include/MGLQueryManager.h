@@ -12,6 +12,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (BOOL)beginSampleQueryWithDevice:(id<MTLDevice>)device;
 - (void)endSampleQuery;
+- (BOOL)isSampleQueryActive;
 - (BOOL)hasSampleQueryResultBuffer;
 - (uint64_t)sampleQueryResult;
 - (void)configureRenderPassDescriptor:(MTLRenderPassDescriptor *)descriptor;

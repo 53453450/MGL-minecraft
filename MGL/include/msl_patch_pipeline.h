@@ -31,13 +31,13 @@
 #include "glm_context.h"
 
 #include <stdbool.h>
-#include <stddef.h>   /* size_t (P1-6: TCS stage-in parsing uses standard C types) */
+#include <stddef.h>   /* size_t */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* === TCS stage-in struct parsing (P1-6: migrated from MGLRenderer.m) ===
+/* === TCS stage-in struct parsing ===
  *
  * SPIRV-Cross lowers GL tessellation-control per-vertex inputs to an MSL
  * struct named <entry>_in.  These helpers parse that struct from the MSL
@@ -73,7 +73,7 @@ void mglWriteTCSStageInComponent(uint8_t *dst,
                                  size_t component,
                                  double value);
 
-/* === Tessellation passthrough detection (P1-6: migrated from MGLRenderer.m) ===
+/* === Tessellation passthrough detection ===
  *
  * Detects whether the TCS/TES shader source is a "unit passthrough" for a
  * given patch size.  If so, the draw can be redirected to the equivalent

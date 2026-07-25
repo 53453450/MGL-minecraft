@@ -37,7 +37,7 @@ typedef struct MGLCommandState_t {
     id<MTLEvent> __strong _Nullable currentEvent;
     GLsizei currentSyncName;
     BOOL isCommittingCommandBuffer;
-    /* P1-10: Cache for currentRenderPassMatchesCurrentFramebuffer.
+    /* Cache for currentRenderPassMatchesCurrentFramebuffer.
      * lastFboMatchFboName == 0 means "invalid cache, recompute".
      * Valid only for non-default FBOs (fbo != NULL && fboName != 0);
      * the default-framebuffer path is never cached because its inputs
@@ -80,7 +80,7 @@ NS_ASSUME_NONNULL_BEGIN
                                                       offset:(nullable NSUInteger *)offsetOut;
 - (void)resetMDIScratch;
 - (void)installNewRenderPassDescriptor;
-/* P1-10: Store/clear the FBO-match cache used by
+/* Store/clear the FBO-match cache used by
  * currentRenderPassMatchesCurrentFramebuffer.  Pass fboName=0 to
  * invalidate (equivalent to clearFboMatchCache). */
 - (void)setFboMatchCacheResult:(BOOL)result

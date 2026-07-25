@@ -320,7 +320,7 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     ptr->written_min = -1;
     ptr->written_max = -1;
 
-    // P0-4A: initial reference owned by the caller (hash table / binding site).
+    // initial reference owned by the caller (hash table / binding site).
     ptr->refcount = 1;
     ptr->delete_status = GL_FALSE;
 
@@ -333,12 +333,10 @@ Buffer *newBuffer(GLMContext ctx, GLenum target, GLuint name)
     return ptr;
 }
 
-/* P0-4A: Buffer reference counting. Mirrors the Program refcount pattern
- * (program.c:441-475).  Batch snapshots retain the 5 hot buffer_base types
- * so a glDeleteBuffers during deferred replay cannot free backing storage
- * out from under the encoder.  mglDeleteBuffers sets delete_status and
- * releases the caller's reference; if refcount>0 the shell survives as a
- * tombstone until the last release frees it. */
+/* Buffer reference counting (mirrors Program refcount pattern).
+ * Batch snapshots retain hot buffer_base types so glDeleteBuffers during
+ * deferred replay cannot free backing storage.  If refcount>0 after delete,
+ * the shell survives as a tombstone until the last release frees it. */
 void mglRetainBufferReference(Buffer *buf)
 {
     if (!buf) return;
@@ -367,7 +365,7 @@ void mglReleaseBufferStorage(Buffer *buf)
         }
     }
 
-    /* P1-12: release cached UInt16 expanded index buffer */
+    /* release cached UInt16 expanded index buffer */
     mglSafeReleaseMetalObj(&buf->mtl_uint16_expanded_data);
     buf->mtl_uint16_expanded_src_hash = 0ull;
     buf->mtl_uint16_expanded_byte_count = 0u;
@@ -1313,16 +1311,11 @@ void mglDeleteBuffers(GLMContext ctx, GLsizei n, const GLuint *buffers)
             mglClearBufferMapReferences(&ctx->state.fragment_buffer_map_list, ptr, buffer);
             mglClearBufferMapReferences(&ctx->state.compute_buffer_map_list, ptr, buffer);
 
-            /*
-             * P0-4A: GL buffer deletion is name deletion, not necessarily
-             * immediate object destruction.  Mark delete_status and release
-             * the caller's reference.  If a batch snapshot still holds a
-             * reference (refcount>0), the shell survives as a tombstone
-             * until mglReleaseBufferReference frees it when refcount hits 0.
-             * mtl_data is NOT released here — it is released only in
-             * mglReleaseBufferReference (or mglDestroyContextBuffer for
-             * never-deleted buffers at context destroy time).
-             */
+            /* Name deletion, not immediate destruction: mark delete_status
+             * and release the caller's reference.  mtl_data is released only
+             * in mglReleaseBufferReference (or mglDestroyContextBuffer at
+             * context destroy).  If refcount>0, the shell survives as a
+             * tombstone until the last release frees it. */
             ptr->delete_status = GL_TRUE;
             deleteHashElement(&STATE(buffer_table), buffer);
 

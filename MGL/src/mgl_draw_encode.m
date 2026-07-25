@@ -596,7 +596,7 @@ MGLPrimitiveRestartEncodeResult mglEncodePrimitiveRestartedElementDraw(id<MTLRen
         return MGLPrimitiveRestartEncodeFailed;
     }
 
-    /* P1-9: Single type-specialized scan replaces the original two-pass
+    /* Single type-specialized scan replaces the original two-pass
      * approach (detect + segment).  Type-specialized pointer access
      * eliminates the per-element switch+memcpy overhead of
      * mglReadGLIndexValue, and collecting restart positions in a stack

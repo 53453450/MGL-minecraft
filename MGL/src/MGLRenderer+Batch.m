@@ -1,6 +1,5 @@
 // MGLRenderer+Batch.m
 // Batch scheduling and execution methods extracted from MGLRenderer+Draw.m.
-// P2-1: Split from MGLRenderer+Draw.m to reduce file size (11722 -> ~9392 lines).
 // These methods do not depend on any file-scope static functions in Draw.m.
 
 #import "MGLRenderer_Private.h"
@@ -628,7 +627,6 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         return;
     }
 
-    Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
     MGLFragmentTextureTraceBinding *fs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
     MGLFragmentTextureTraceBinding *fs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
@@ -643,6 +641,14 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         fs1->used_sampled_copy ||
         fs2->used_sampled_copy ||
         fs3->used_sampled_copy;
+    /* Cheap early exit: if trace is off and no FS slot has RT/copy state,
+     * skip the program resolve entirely (saves up to 5 resolves per
+     * replay command when trace is disabled — the common case). */
+    if (!earlyFsSlotHasRT && !earlyFsSlotUsedCopy && !mglTraceLogIsEnabled()) {
+        return;
+    }
+
+    Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
         !earlyFsSlotHasRT &&
         !earlyFsSlotUsedCopy) {

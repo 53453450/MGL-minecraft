@@ -32,7 +32,7 @@ typedef struct __GLsync {
      * fence insertion point. mtlWaitForSync blocks on its completion. Stored as
      * void* (CFBridgingRetain/Release) since this struct is used from plain C. */
     void *mtl_command_buffer;
-    /* P1-2: reference count for deferred sync lifetime management.
+    /* reference count for deferred sync lifetime management.
      * - newSync sets refcount=1 (caller's GLsync handle)
      * - mglClientWaitSync/mglWaitSync retain at entry, release at exit, so a
      *   glDeleteSync during a concurrent wait cannot free the sync out from

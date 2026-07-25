@@ -39,14 +39,14 @@ Sync *newSync(GLMContext ctx)
 
     ptr->name = STATE(sync_name)++;
 
-    /* P1-2: initial reference owned by the caller's GLsync handle. */
+    /* initial reference owned by the caller's GLsync handle. */
     atomic_store_explicit(&ptr->refcount, 1, memory_order_relaxed);
     ptr->delete_status = GL_FALSE;
 
     return ptr;
 }
 
-/* P1-2: Sync reference counting.  Prevents use-after-free when glDeleteSync
+/* Sync reference counting.  Prevents use-after-free when glDeleteSync
  * races with an in-progress mglClientWaitSync/mglWaitSync on another thread. */
 static void mglRetainSyncReference(Sync *sync)
 {
@@ -109,7 +109,7 @@ GLsync mglFenceSync(GLMContext ctx, GLenum condition, GLbitfield flags)
 
     ctx->mtl_funcs.mtlGetSync(ctx, ptr);
 
-    /* P0-4B: register in sync_table so destroyGLMContext can release
+    /* register in sync_table so destroyGLMContext can release
      * Metal resources. mglDeleteSync removes the entry on explicit free. */
     insertHashElement(&STATE(sync_table), ptr->name, ptr);
 
@@ -136,10 +136,10 @@ void mglDeleteSync(GLMContext ctx, GLsync sync)
         return;
     }
 
-    /* P0-4B: remove from sync_table before releasing resources. */
+    /* remove from sync_table before releasing resources. */
     deleteHashElement(&STATE(sync_table), sync->name);
 
-    /* P1-2: mark for deletion and release the caller's reference. If a
+    /* mark for deletion and release the caller's reference. If a
      * concurrent mglClientWaitSync/mglWaitSync holds a reference, the shell
      * survives until the last release frees it. mtl_data is released only in
      * mglReleaseSyncReference (or mglDestroyContextSync for never-deleted
@@ -168,7 +168,7 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
         return GL_INVALID_VALUE;
     }
 
-    /* P1-2: retain so a concurrent glDeleteSync cannot free the sync while
+    /* retain so a concurrent glDeleteSync cannot free the sync while
      * we access its mtl_command_buffer/mtl_event below. */
     mglRetainSyncReference(sync);
 
@@ -252,7 +252,7 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
         // Continue with GL_TIMEOUT_IGNORED behavior
     }
 
-    /* P1-2: retain so a concurrent glDeleteSync cannot free the sync while
+    /* retain so a concurrent glDeleteSync cannot free the sync while
      * mtlWaitForSync blocks on sync->mtl_command_buffer. */
     mglRetainSyncReference(sync);
 
@@ -290,7 +290,7 @@ void mglGetSynciv(GLMContext ctx, GLsync sync, GLenum pname, GLsizei count, GLsi
         return;
     }
 
-    /* P1-2: retain so a concurrent glDeleteSync cannot free the sync while
+    /* retain so a concurrent glDeleteSync cannot free the sync while
      * we read its mtl_command_buffer/mtl_event below. */
     mglRetainSyncReference(sync);
 

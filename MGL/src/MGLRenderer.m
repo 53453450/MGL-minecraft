@@ -50,7 +50,7 @@
 #import "mgl_msl_compiler.h"
 #import "mgl_compute_pipeline_cache.h"
 #import "mgl_metal_bridge.h"
-#import "msl_patch_pipeline.h"  /* P1-6: TCS stage-in + tessellation passthrough helpers */
+#import "msl_patch_pipeline.h"
 
 #define TRACE_FUNCTION()    DEBUG_PRINT("%s\n", __FUNCTION__);
 
@@ -669,7 +669,7 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
     mglLogProgramResourceInterface(program, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_SEPARATE_IMAGE);
     mglLogProgramResourceInterface(program, _FRAGMENT_SHADER, SPVC_RESOURCE_TYPE_SEPARATE_IMAGE);
 
-    /* P1-5: Defer MSL file writes to a background serial queue.
+    /* Defer MSL file writes to a background serial queue.
      *
      * mglWriteProgramMSLDump is called from traceReplayCommand: inside
      * the METAL_LOCK (via flushDrawBufferLocked:).  The writeToFile:
@@ -1845,14 +1845,6 @@ NSUInteger mglRendererBuildCurrentVertexAttribBytes(GLMContext ctx,
     }
 }
 
-/* P1-6: MGLTCSStageInBaseType / MGLTCSStageInMember migrated to
- * msl_patch_pipeline.h. */
-
-
-/* P1-6: TCS stage-in parsing helpers (mglTCSStageInParseAttributeMarker,
- * mglTCSStageInDescribeMember, mglParseTCSStageInMembers,
- * mglWriteTCSStageInComponent) migrated to msl_patch_pipeline.c. */
-
 void mglLogSkippedGLSampledRenderTargetCopy(GLMContext glctx,
                                                    Program *program,
                                                    Texture *tex,
@@ -2784,11 +2776,6 @@ void logDirtyBits(GLMContext ctx)
 /* bindMTLProgram: moved to MGLRenderer+RenderPass.m */
 
 /* mglGeometryShaderIsPassthrough moved to MGLRenderer+RenderPass.m (static helper) */
-
-/* P1-6: Tessellation passthrough helpers (mglShaderSourceContainsAny,
- * mglTessControlUnitPassthroughForPatchSize, mglTessEvalUnitPassthroughForPatchSize,
- * mglTessellationShadersArePassthrough, mglResolvePassthroughPatchModeForContext)
- * migrated to msl_patch_pipeline.c. */
 
 /* bindMTLProgramLocked: moved to MGLRenderer+RenderPass.m */
 
@@ -3875,6 +3862,120 @@ void logDirtyBits(GLMContext ctx)
         }
     }
 
+    MTLPixelFormat colorFormat = colorTexture ? colorTexture.pixelFormat : MTLPixelFormatInvalid;
+    MTLPixelFormat depthFormat = depthTexture ? depthTexture.pixelFormat : MTLPixelFormatInvalid;
+    id<MTLRenderPipelineState> pipeline = [self clearRectPipelineForColorFormat:colorFormat
+                                                                    depthFormat:depthFormat
+                                                                    writesColor:wantsColor
+                                                                    writesDepth:wantsDepth];
+    if (!pipeline) {
+        NSLog(@"MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu wantsColor=%d wantsDepth=%d",
+              (unsigned long)colorFormat,
+              (unsigned long)depthFormat,
+              wantsColor ? 1 : 0,
+              wantsDepth ? 1 : 0);
+        return;
+    }
+
+    MGLClearRectParams params;
+    params.color = (vector_float4){
+        glm_ctx->active_state->color_clear_value[0],
+        glm_ctx->active_state->color_clear_value[1],
+        glm_ctx->active_state->color_clear_value[2],
+        glm_ctx->active_state->color_clear_value[3]
+    };
+    params.depth = (float)glm_ctx->active_state->var.depth_clear_value;
+    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+    MTLViewport viewport = {
+        0.0, 0.0,
+        (double)passWidth, (double)passHeight,
+        0.0, 1.0
+    };
+    MTLScissorRect scissor = {
+        (NSUInteger)x0,
+        (NSUInteger)metalY,
+        (NSUInteger)clearW,
+        (NSUInteger)clearH
+    };
+
+    /* Optimization: reuse the current render encoder when it targets the same
+     * framebuffer attachments we're about to clear.  This avoids ending the
+     * current encoder + creating a new MTLRenderPassDescriptor + new encoder
+     * for every scissored clear (3-8 times per frame in MC).
+     *
+     * Conditions: an encoder is active, the render pass matches the current
+     * FBO, no visibility query is active (which would require an encoder
+     * rebuild to attach the visibility buffer), and the render pass's color
+     * attachment 0 / depth attachment textures match the ones we resolved
+     * from the FBO.  When any condition fails, fall back to the original
+     * endRenderEncoding + new-encoder path. */
+    BOOL canReuseCurrentEncoder = NO;
+    if (_renderPassManager.state->currentRenderEncoder &&
+        [self currentRenderPassMatchesCurrentFramebuffer] &&
+        ![_queryManager isSampleQueryActive]) {
+        MTLRenderPassDescriptor *rpDesc = _renderPassManager.state->renderPassDescriptor;
+        if (rpDesc) {
+            BOOL colorMatches = !wantsColor;
+            if (wantsColor) {
+                colorMatches = (rpDesc.colorAttachments[0].texture == colorTexture &&
+                                rpDesc.colorAttachments[0].level == colorSubresource.level &&
+                                rpDesc.colorAttachments[0].slice == colorSubresource.slice);
+            }
+            BOOL depthMatches = !wantsDepth;
+            if (wantsDepth) {
+                depthMatches = (rpDesc.depthAttachment.texture == depthTexture &&
+                                rpDesc.depthAttachment.level == depthSubresource.level &&
+                                rpDesc.depthAttachment.slice == depthSubresource.slice);
+            }
+            canReuseCurrentEncoder = colorMatches && depthMatches;
+        }
+    }
+
+    if (canReuseCurrentEncoder) {
+        /* Reuse the current encoder: set scissor + pipeline + params, draw
+         * the clear quad.  No encoder creation/destruction overhead.
+         *
+         * After the clear draw, invalidateLastBoundState is needed because
+         * the clear pipeline/scissor/viewport differ from what the next draw
+         * expects — without invalidation, the dedup fast path would skip
+         * re-binding the draw pipeline, causing corruption. */
+        id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
+
+        [encoder setViewport:viewport];
+        [encoder setScissorRect:scissor];
+        [encoder setRenderPipelineState:pipeline];
+        if (wantsDepth) {
+            id<MTLDepthStencilState> depthState = [self clearRectDepthState];
+            if (depthState) {
+                [encoder setDepthStencilState:depthState];
+            }
+        }
+        [encoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+        if (wantsColor) {
+            [encoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+        }
+        [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+
+        [self invalidateLastBoundState];
+
+        if (wantsColor && colorTexObj && colorAttachment) {
+            colorAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+            mglMarkTextureLevelRenderTargetWritten(colorTexObj, colorAttachment->level);
+        }
+        if (wantsDepth && depthTexObj && depthAttachment) {
+            depthAttachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+            mglMarkTextureLevelRenderTargetWritten(depthTexObj, depthAttachment->level);
+        }
+
+        mglMarkRendererDirtyBits(glm_ctx->active_state,
+                                 DIRTY_FBO | DIRTY_RENDER_STATE);
+        return;
+    }
+
+    /* Fallback: end the current encoder and create a dedicated clear encoder.
+     * Used when no encoder is active, the FBO doesn't match, a visibility
+     * query is active, or the attachment textures don't match. */
     [self endRenderEncoding];
     if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
         NSLog(@"MGL ERROR: scissored clear failed to create command buffer");
@@ -3901,48 +4002,11 @@ void logDirtyBits(GLMContext ctx)
     clearPass.renderTargetWidth = passWidth;
     clearPass.renderTargetHeight = passHeight;
 
-    MTLPixelFormat colorFormat = colorTexture ? colorTexture.pixelFormat : MTLPixelFormatInvalid;
-    MTLPixelFormat depthFormat = depthTexture ? depthTexture.pixelFormat : MTLPixelFormatInvalid;
-    id<MTLRenderPipelineState> pipeline = [self clearRectPipelineForColorFormat:colorFormat
-                                                                    depthFormat:depthFormat
-                                                                    writesColor:wantsColor
-                                                                    writesDepth:wantsDepth];
-    if (!pipeline) {
-        NSLog(@"MGL ERROR: scissored clear missing pipeline color=%lu depth=%lu wantsColor=%d wantsDepth=%d",
-              (unsigned long)colorFormat,
-              (unsigned long)depthFormat,
-              wantsColor ? 1 : 0,
-              wantsDepth ? 1 : 0);
-        return;
-    }
-
     id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
     if (!clearEncoder) {
         NSLog(@"MGL ERROR: scissored clear failed to create render encoder");
         return;
     }
-
-    MTLViewport viewport = {
-        0.0, 0.0,
-        (double)passWidth, (double)passHeight,
-        0.0, 1.0
-    };
-    MTLScissorRect scissor = {
-        (NSUInteger)x0,
-        (NSUInteger)metalY,
-        (NSUInteger)clearW,
-        (NSUInteger)clearH
-    };
-
-    MGLClearRectParams params;
-    params.color = (vector_float4){
-        glm_ctx->active_state->color_clear_value[0],
-        glm_ctx->active_state->color_clear_value[1],
-        glm_ctx->active_state->color_clear_value[2],
-        glm_ctx->active_state->color_clear_value[3]
-    };
-    params.depth = (float)glm_ctx->active_state->var.depth_clear_value;
-    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
     [clearEncoder setViewport:viewport];
     [clearEncoder setScissorRect:scissor];
@@ -4756,7 +4820,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
 
 /* mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride moved to MGLRenderer+Draw.m */
 
-/* P1-5: FIFO eviction for auxiliary caches.  NSDictionary enumerates in
+/* FIFO eviction for auxiliary caches.  NSDictionary enumerates in
  * insertion order on recent macOS runtimes, so removing the first 1/4 of
  * allKeys evicts the oldest entries — matching the _pipelineCache.state->pipelineStateCache
  * strategy.  Called at each insertion site after the new entry is added. */

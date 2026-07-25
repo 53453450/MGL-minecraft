@@ -151,7 +151,7 @@ typedef struct {
 
     GLsizei sync_name;
 
-    /* P0-4B: tracks live Sync objects so destroyGLMContext can release
+    /* tracks live Sync objects so destroyGLMContext can release
      * their Metal resources. Placed in the HashTable block (skipped by
      * mglCopyHotStateFields) because internal keys/states arrays may be
      * reallocated, making shallow snapshot copies unsafe. */

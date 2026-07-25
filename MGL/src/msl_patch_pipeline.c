@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* P1-6: extern declaration — mglResolveProgramForStageFromState is defined
+/* extern declaration — mglResolveProgramForStageFromState is defined
  * in MGLRenderer.m (declared in MGLRenderer+RenderPass_Private.h).  We
  * avoid pulling in that ObjC header here to keep this translation unit C-only. */
 extern Program *mglResolveProgramForStageFromState(GLMContext ctx, int stage);
@@ -235,7 +235,7 @@ GLboolean mslPipelinePostLinkRun(MSLPatchPipelinePostLink *pipeline)
             continue;
         }
 
-        /* P2-10: Snapshot all stages' MSL strings before the step for
+        /* Snapshot all stages' MSL strings before the step for
          * rollback.  Post-link patches may touch multiple stages' MSL;
          * if a step fails, restore the snapshots so subsequent steps see
          * the pre-failure MSL (matching per-stage pipeline semantics).
@@ -308,7 +308,7 @@ void mslPipelinePostLinkDestroy(MSLPatchPipelinePostLink *pipeline)
     pipeline->failed_step = -1;
 }
 
-/* === TCS stage-in struct parsing (P1-6: migrated from MGLRenderer.m) === */
+/* === TCS stage-in struct parsing === */
 
 static bool mglTCSStageInParseAttributeMarker(const char *member, GLuint *outAttribute)
 {
@@ -546,7 +546,7 @@ void mglWriteTCSStageInComponent(uint8_t *dst,
     }
 }
 
-/* === Tessellation passthrough detection (P1-6: migrated from MGLRenderer.m) === */
+/* === Tessellation passthrough detection === */
 
 static bool mglShaderSourceContainsAny(const char *src, const char *const *needles, size_t count)
 {

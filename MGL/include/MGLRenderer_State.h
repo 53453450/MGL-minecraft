@@ -133,8 +133,9 @@ typedef struct MGLBlitState_t {
     id<MTLSamplerState> __strong scaledBlitLinearSampler;
     NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *__strong scaledDepthBlitPipelineCache;
     NSMutableDictionary<NSNumber *, id<MTLComputePipelineState>> *__strong msaaIntegerResolvePipelineCache;
-    NSMutableDictionary<NSString *, id<MTLRenderPipelineState>> *__strong clearRectPipelineCache;
+    NSMutableDictionary<NSNumber *, id<MTLRenderPipelineState>> *__strong clearRectPipelineCache;
     id<MTLDepthStencilState> __strong clearRectDepthState;
+    NSMutableDictionary<NSNumber *, id<MTLComputePipelineState>> *__strong scaledBlitComputePipelineCache;
 } MGLBlitState;
 
 typedef struct MGLTessellationState_t {

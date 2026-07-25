@@ -178,18 +178,11 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
     free(buffer);
 }
 
-/* P0-4A: Buffer_base types that batch snapshots must retain/release.
- *
- * Only the 5 "hot" buffer_base types are copied into the snapshot by
- * mglCopyHotStateFields (mgl_types_state.h Region 4).  The other 11 "cold"
- * types are NOT in the snapshot — their slots contain recycled arena garbage.
- * Cold types are restored from savedState (a full memcpy of live state taken
- * at replay start, MGLRenderer+Batch.m:1247) via mglRestoreColdBufferBase,
- * so they always point to valid live-state buffers.  Retaining/releasing
- * the 11 cold types would dereference stale arena pointers → SIGSEGV.
- *
- * This array MUST stay in sync with the 5 types in mglCopyHotStateFields
- * Region 4 and mglRestoreColdBufferBase (the complementary cold set). */
+/* Buffer_base types that batch snapshots must retain/release.
+ * Only the 5 "hot" types are in the snapshot (mglCopyHotStateFields Region 4);
+ * the 11 cold types are restored from savedState via mglRestoreColdBufferBase.
+ * Retaining cold types would dereference stale arena pointers → SIGSEGV.
+ * MUST stay in sync with mglCopyHotStateFields Region 4 and mglRestoreColdBufferBase. */
 static const int kMGLSnapshotBufferBaseTypes[] = {
 #define MGL_SNAPSHOT_LIST_HOT(_t_) _t_,
     MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_LIST_HOT)
@@ -228,7 +221,7 @@ static void mglReleaseBatch(GLMContext ctx, MGLDrawBatch *batch)
 {
     if (!batch) return;
 
-    /* P0-4A: release buffer references BEFORE freeing state_snapshot, since
+    /* release buffer references BEFORE freeing state_snapshot, since
      * we need to read buf pointers from the snapshot. */
     mglReleaseBatchBufferReferences(ctx, batch);
 
@@ -415,7 +408,7 @@ static inline uint64_t mglRotateLeft64(uint64_t x, int n)
     return (x << n) | (x >> (64 - n));
 }
 
-/* P0-1: SIMD-accelerated hash for 16+ byte data.
+/* SIMD-accelerated hash for 16+ byte data.
  * Uses ARM NEON to process 16 bytes per iteration (~2x speedup on large data).
  * Falls back to scalar for small data (<16 bytes). */
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
@@ -503,7 +496,7 @@ static uint64_t mglHashBytes64(const void *data, size_t size, uint64_t seed)
 
     if (!bytes) return hash;
 
-    /* P1-4: chunked FNV-1a — process 8-byte words, then a 4-byte word, then
+    /* chunked FNV-1a — process 8-byte words, then a 4-byte word, then
      * the byte tail.  Same FNV prime/mix as the byte loop but ~8× fewer
      * multiply iterations on aligned-ish data.  memcpy avoids UB on
      * unaligned access and is optimized to a single load on arm64. */
@@ -764,7 +757,7 @@ static void mglTrackPendingTextureWrite(GLMContext ctx, Texture *texture)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
 
-    /* P1-3: O(1) dedup via hash-set index instead of O(n) linear scan. */
+    /* O(1) dedup via hash-set index instead of O(n) linear scan. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
     for (;;) {
         uint32_t entry = cb->texture_write_index[slot];
@@ -790,7 +783,7 @@ static void mglTrackPendingTextureRead(GLMContext ctx, Texture *texture)
 
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
 
-    /* P1-3: O(1) dedup via hash-set index. */
+    /* O(1) dedup via hash-set index. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
     for (;;) {
         uint32_t entry = cb->texture_read_index[slot];
@@ -1030,7 +1023,7 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
         return true;
     }
 
-    /* P1-3: O(1) membership via hash-set index instead of O(n) scan. */
+    /* O(1) membership via hash-set index instead of O(n) scan. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
     uint32_t start_slot = slot;
     uint32_t probes = 0;
@@ -1066,7 +1059,7 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
         return true;
     }
 
-    /* P1-3: O(1) membership via hash-set index instead of O(n) scan. */
+    /* O(1) membership via hash-set index instead of O(n) scan. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
     uint32_t start_slot = slot;
     uint32_t probes = 0;

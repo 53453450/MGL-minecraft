@@ -17,7 +17,7 @@
  * MGL
  *
  * GLMMetalFuncs function-pointer table split from glm_context.h.
- * P2-3: Decouple the Metal backend callback table from the god header.
+ * Decouple the Metal backend callback table from the god header.
  * The struct only uses GLMContext (opaque pointer), Buffer*, Texture*,
  * Program*, and Sync* — all available via the mgl_types_*.h headers —
  * so it can be safely separated.

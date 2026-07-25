@@ -7,7 +7,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+ProgramBinding_Private.h"
 
-/* === P1-8: program-resolved texture type / data kind helpers ===
+/* === program-resolved texture type / data kind helpers ===
  *
  * Extracted from the ObjC query methods below so the hot sampled-texture
  * binding loops can pass an already-resolved Program pointer and skip the

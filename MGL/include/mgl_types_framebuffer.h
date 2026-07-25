@@ -69,7 +69,7 @@ typedef struct Framebuffer_t {
     GLint default_layers;
     GLint default_samples;
     GLboolean default_fixed_sample_locations;
-    /* P1-10: Incremented whenever FBO attachment configuration changes
+    /* Incremented whenever FBO attachment configuration changes
      * (texture attach/detach, renderbuffer attach/detach, draw buffers
      * reconfiguration).  Used by currentRenderPassMatchesCurrentFramebuffer
      * as a cache key to skip the O(attachments) texture-by-texture

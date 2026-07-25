@@ -27,6 +27,11 @@
     _sampleQueryActive = NO;
 }
 
+- (BOOL)isSampleQueryActive
+{
+    return _sampleQueryActive;
+}
+
 - (BOOL)hasSampleQueryResultBuffer
 {
     return _visibilityResultBuffer != nil;
@@ -42,11 +47,22 @@
 
 - (void)configureRenderPassDescriptor:(MTLRenderPassDescriptor *)descriptor
 {
-    if (!_sampleQueryActive || !descriptor || !_visibilityResultBuffer) {
+    if (!descriptor || !_visibilityResultBuffer) {
         return;
     }
+    /* Always attach the visibility result buffer (when it exists) so that
+     * mtlBeginSampleQuery: can enable visibility counting on an existing
+     * encoder via setVisibilityResultMode: without ending the encoder.
+     * The buffer is only 8 bytes, so attaching it to every encoder has
+     * negligible cost. The GPU only writes to it when
+     * setVisibilityResultMode is enabled (default disabled). */
     descriptor.visibilityResultBuffer = _visibilityResultBuffer;
-    memset(_visibilityResultBuffer.contents, 0, _visibilityResultBuffer.length);
+    /* Zero the buffer only when a query is active, so the GPU accumulates
+     * a fresh count for this pass. When no query is active, the buffer
+     * contents are stale but unused. */
+    if (_sampleQueryActive) {
+        memset(_visibilityResultBuffer.contents, 0, _visibilityResultBuffer.length);
+    }
 }
 
 - (void)configureRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder

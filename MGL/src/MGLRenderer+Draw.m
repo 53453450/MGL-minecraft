@@ -6,7 +6,7 @@
 #import "mgl_frame_activity.h"
 
 /* === C helpers used by Draw and Batch methods === */
-/* P2-1: mglRendererProgramHasSampledResourceNamed is non-static so
+/* mglRendererProgramHasSampledResourceNamed is non-static so
  * MGLRenderer+Batch.m can also call it.  Declared in MGLRenderer+Draw_Private.h. */
 
 bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *name)
@@ -191,18 +191,18 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         attribBindingReserved[mappedIndex] = true;
     }
 
-    for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
-        BOOL enabled = attribsEnabledByApp && ((vao->enabled_attribs >> i) & 0x1u) != 0;
-        MGLResolvedVertexAttribBinding resolved = {0};
-        Buffer *attribBuffer = mglRendererResolveVertexAttribBinding(ctx,
-                                                                     vao,
-                                                                     i,
-                                                                     __FUNCTION__,
-                                                                     &resolved)
-            ? resolved.buffer
-            : NULL;
-        GLuint attribBufferName = attribBuffer ? attribBuffer->name : 0;
-        if (kMGLVerboseBindLogs) {
+    if (kMGLVerboseBindLogs) {
+        for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
+            BOOL enabled = attribsEnabledByApp && ((vao->enabled_attribs >> i) & 0x1u) != 0;
+            MGLResolvedVertexAttribBinding resolved = {0};
+            Buffer *attribBuffer = mglRendererResolveVertexAttribBinding(ctx,
+                                                                         vao,
+                                                                         i,
+                                                                         __FUNCTION__,
+                                                                         &resolved)
+                ? resolved.buffer
+                : NULL;
+            GLuint attribBufferName = attribBuffer ? attribBuffer->name : 0;
             NSLog(@"MGL VBIND attrib=%u enabled=%d buf=%p bufName=%u bindOffset=%lld ptr=0x%llx stride=%u size=%u type=0x%x normalized=%u divisor=%u binding=%u table=%d",
                   i,
                   enabled ? 1 : 0,
@@ -217,24 +217,24 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                   (unsigned)(attribBuffer ? resolved.divisor : vao->attrib[i].divisor),
                   (unsigned)vao->attrib[i].buffer_bindingindex,
                   attribBuffer && resolved.uses_binding_table ? 1 : 0);
-        }
 
-        if (kMGLVerboseBindLogs && enabled && attribBuffer) {
-            NSLog(@"MGL VBIND buffer detail attrib=%u name=%u size=%lld mtl=%p data=%p init(ever=%u full=%u range=[%lld,%lld) source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
-                  i,
-                  attribBuffer->name,
-                  (long long)attribBuffer->size,
-                  attribBuffer->data.mtl_data,
-                  (void *)attribBuffer->data.buffer_data,
-                  (unsigned)attribBuffer->ever_written,
-                  (unsigned)attribBuffer->has_initialized_data,
-                  (long long)attribBuffer->written_min,
-                  (long long)attribBuffer->written_max,
-                  (unsigned)attribBuffer->last_init_source,
-                  (long long)attribBuffer->last_write_offset,
-                  (long long)attribBuffer->last_write_size,
-                  attribBuffer->last_write_src_ptr,
-                  (unsigned long long)attribBuffer->last_write_src_hash);
+            if (enabled && attribBuffer) {
+                NSLog(@"MGL VBIND buffer detail attrib=%u name=%u size=%lld mtl=%p data=%p init(ever=%u full=%u range=[%lld,%lld) source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
+                      i,
+                      attribBuffer->name,
+                      (long long)attribBuffer->size,
+                      attribBuffer->data.mtl_data,
+                      (void *)attribBuffer->data.buffer_data,
+                      (unsigned)attribBuffer->ever_written,
+                      (unsigned)attribBuffer->has_initialized_data,
+                      (long long)attribBuffer->written_min,
+                      (long long)attribBuffer->written_max,
+                      (unsigned)attribBuffer->last_init_source,
+                      (long long)attribBuffer->last_write_offset,
+                      (long long)attribBuffer->last_write_size,
+                      attribBuffer->last_write_src_ptr,
+                      (unsigned long long)attribBuffer->last_write_src_hash);
+            }
         }
     }
 
@@ -470,7 +470,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     [_bindingSync orVertexBufferMask:boundVertexBufferMask];
 
-    if (getenv("MGL_TRACE_SPARSE_BINDING")) {
+    if (mglEnvFlagEnabled("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_vbind_trace_count = 0;
         if ((++s_vbind_trace_count % 500) == 1) {
             NSLog(@"MGL SPARSE VBIND: mask=0x%x activeSlots=%d/31",
@@ -1064,7 +1064,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     for (NSUInteger ps = 0; ps < sizeof(pointSizeStages) / sizeof(pointSizeStages[0]); ps++) {
         Program *pointProgram = mglResolveProgramForStageFromState(ctx, pointSizeStages[ps]);
         if (!pointProgram) continue;
-        /* P1-7: use cached scan result when mslCacheValid; fall back to strstr. */
+        /* use cached scan result when mslCacheValid; fall back to strstr. */
         if (pointProgram->mslCacheValid) {
             if (pointProgram->uses_point_size_params) {
                 needsPointSizeParams = YES;
@@ -1458,7 +1458,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     [_bindingSync orFragmentBufferMask:boundFragmentBufferMask];
 
-    if (getenv("MGL_TRACE_SPARSE_BINDING")) {
+    if (mglEnvFlagEnabled("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_fbind_trace_count = 0;
         if ((++s_fbind_trace_count % 500) == 1) {
             int textureSlotCount = __builtin_popcountll(_bindingSync.state->lastBoundTextureSlotMask[0]) +
@@ -1792,7 +1792,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             sampledResource = &currentProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
             sampledName = sampledResource->name;
         }
-        /* P1-8: read binding/gl_binding directly from the already-resolved
+        /* read binding/gl_binding directly from the already-resolved
          * SpirvResource instead of re-resolving the program per query. When
          * sampledResource is NULL (no program / index OOR), mirror the
          * query-method semantics of returning 0. */
@@ -1811,7 +1811,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                         program:currentProgram
                                                     metalBinding:spirvBinding
                                                            stage:_VERTEX_SHADER];
-        /* P1-8: derive texture types/data kind directly from sampledResource
+        /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
         MTLTextureType expectedType = mglExpectedTextureTypeForResource(currentProgram, _VERTEX_SHADER, sampledResource);
         MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
@@ -2262,7 +2262,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             sampledResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
             sampledName = sampledResource->name;
         }
-        /* P1-8: read binding/gl_binding directly from the already-resolved
+        /* read binding/gl_binding directly from the already-resolved
          * SpirvResource instead of re-resolving the program per query. */
         GLuint spirvBinding = sampledResource ? sampledResource->binding : 0u;
         GLuint glBinding = sampledResource ? sampledResource->gl_binding : 0u;
@@ -2280,7 +2280,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                     metalBinding:spirvBinding
                                                            stage:_FRAGMENT_SHADER];
 
-        /* P1-8: derive texture types/data kind directly from sampledResource
+        /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
         MTLTextureType expectedType = mglExpectedTextureTypeForResource(sampleProgram, _FRAGMENT_SHADER, sampledResource);
         MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);

@@ -25,7 +25,7 @@
 #define MGLRenderer_Draw_Private_h
 
 #import "MGLRenderer_Private.h"
-#import "msl_patch_pipeline.h"  /* P1-6: mglResolvePassthroughPatchModeForContext moved here */
+#import "msl_patch_pipeline.h"
 
 /* Encode target passed explicitly to the issue and bind methods instead of
  * read from _renderPassManager.state->currentRenderEncoder. */
@@ -177,9 +177,7 @@ void mglTraceReplayCommandVertexAttribSamples(GLMContext traceCtx,
                                                      uint32_t commandIndex,
                                                      bool forceTrace);
 
-/* P1-6: mglResolvePassthroughPatchModeForContext moved to msl_patch_pipeline.h. */
-
-/* P2-1: mglRendererProgramHasSampledResourceNamed is defined in
+/* mglRendererProgramHasSampledResourceNamed is defined in
  * MGLRenderer+Draw.m, also called from MGLRenderer+Batch.m. */
 bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *name);
 
@@ -238,7 +236,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 - (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
                             metalBinding:(GLuint)metalBinding
                                   stage:(int)stage;
-/* P1-8: program-resolved variant — skips mglResolveProgramForStageFromState. */
+/* program-resolved variant — skips mglResolveProgramForStageFromState. */
 - (GLuint)textureUnitForSampledResource:(SpirvResource *)sampledResource
                                 program:(Program *)program
                            metalBinding:(GLuint)metalBinding
@@ -247,7 +245,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                           metalBinding:(GLuint)metalBinding
                                   stage:(int)stage
                            expectedType:(MTLTextureType)expectedType;
-/* P1-8: textureUnit-resolved variant — caller passes the already-computed
+/* textureUnit-resolved variant — caller passes the already-computed
  * texture unit, skipping the internal textureUnitForSampledResource: call. */
 - (Texture *)textureForSampledResource:(SpirvResource *)sampledResource
                           metalBinding:(GLuint)metalBinding
@@ -280,7 +278,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                               first:(GLint)first
                             count:(GLsizei)count;
 
-// === P2-1: Methods defined in MGLRenderer+Draw.m, called from MGLRenderer+Batch.m ===
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
         encodeContext:(const MGLEncodeContext *)encCtx;
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
@@ -298,7 +295,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                glBuffer:(Buffer **)glBufferOut
                               mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
 
-// === P2-1: Methods defined in MGLRenderer+Batch.m, called from MGLRenderer+Draw.m ===
 - (void)traceReplayCommand:(MGLDrawBatch *)batch
                    command:(MGLDrawCommand *)cmd
                    context:(GLMContext)glm_ctx

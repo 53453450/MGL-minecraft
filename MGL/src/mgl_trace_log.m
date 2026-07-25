@@ -137,7 +137,7 @@ static void mglTraceLogV(const char *fmt, va_list args)
 
     pthread_mutex_lock(&g_mglTraceLogMutex);
     if (g_mglTraceLogFile) {
-        /* P1-5: The trace log file is opened with _IOLBF (line-buffered),
+        /* The trace log file is opened with _IOLBF (line-buffered),
          * so fputc('\n') already triggers a kernel-level flush.  The
          * explicit fflush was redundant and added a syscall-equivalent
          * overhead per trace line inside the METAL_LOCK. */

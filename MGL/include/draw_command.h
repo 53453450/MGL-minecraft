@@ -49,7 +49,7 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_INVALID_SAMPLER_SNAPSHOT_ID UINT16_MAX
 #define MGL_FALLBACK_SAMPLER_KEY_INDEX UINT16_MAX
 
-/* P1-3: open-addressing hash-set index sizes (2× the array capacity, rounded
+/* open-addressing hash-set index sizes (2× the array capacity, rounded
  * up to a power of two, so load factor stays ≤ 0.5 for O(1) probe length).
  * Each slot stores (array_index + 1); 0 means empty.  The backing object
  * arrays remain the source of truth for iteration — the index only accelerates
@@ -248,13 +248,13 @@ typedef struct {
     void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
     uint32_t     texture_write_count;
     bool         texture_write_overflow;
-    /* P1-3: hash-set index for O(1) dedup/membership on texture_write_objects.
+    /* hash-set index for O(1) dedup/membership on texture_write_objects.
      * Slot value is (array_index + 1); 0 = empty. Zeroed by memset in reset. */
     uint32_t     texture_write_index[MGL_TEX_WRITE_INDEX_SIZE];
     void        *texture_read_objects[MGL_MAX_PENDING_TEXTURE_READS];
     uint32_t     texture_read_count;
     bool         texture_read_overflow;
-    /* P1-3: hash-set index for O(1) dedup/membership on texture_read_objects. */
+    /* hash-set index for O(1) dedup/membership on texture_read_objects. */
     uint32_t     texture_read_index[MGL_TEX_READ_INDEX_SIZE];
 } MGLCommandBuffer;
 

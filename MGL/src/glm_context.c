@@ -824,7 +824,7 @@ static void mglDestroyContextTransformFeedback(GLuint name, void *data, void *us
     free(tf);
 }
 
-/* P0-4B: release Sync objects left in sync_table at context destroy time.
+/* release Sync objects left in sync_table at context destroy time.
  * Mirrors mglDeleteSync's release logic — non-blocking path preferred,
  * blocking wait as fallback. */
 static void mglDestroyContextSync(GLuint name, void *data, void *user)
@@ -910,7 +910,7 @@ void destroyGLMContext(GLMContext ctx)
 
     #undef MGL_FREE_HASH_TABLE
 
-    /* P2-11: mtlView/mtlObj are retained via CFBridgingRetain in
+    /* mtlView/mtlObj are retained via CFBridgingRetain in
      * MGLRenderer.m:bindObjFuncsToGLMContext: (ARC ObjC TU).  This TU is
      * plain C, where CFBridgingRelease is not declared — CFRelease is the
      * correct plain-C counterpart (CFBridgingRelease is macro-equivalent to

@@ -273,14 +273,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     Framebuffer *fbo = ctx->active_state->framebuffer;
     GLuint fboName = fbo ? fbo->name : 0u;
 
-    /* P1-10: Fast path — for non-default FBOs, return the cached result
-     * when neither the FBO's attachment configuration nor the render pass
-     * has changed since the last call.  The cache is invalidated by
-     * MGLRenderPassManager on encoder install/clear, descriptor install,
-     * and render-pass identity update/clear.  The default framebuffer
-     * (fbo == NULL or fboName == 0) is never cached because its inputs
-     * (drawable, depth/stencil caps, _drawBuffers) change independently
-     * of fbo_attachment_generation. */
+    /* Fast path — cached result for non-default FBOs when attachment config
+     * and render pass are unchanged.  Invalidated by MGLRenderPassManager on
+     * encoder/descriptor/identity changes.  Default framebuffer is never
+     * cached (its inputs change independently of fbo_attachment_generation). */
     if (fbo != NULL && fboName != 0u &&
         _renderPassManager.state->lastFboMatchFboName == fboName &&
         _renderPassManager.state->lastFboMatchFboGeneration == fbo->fbo_attachment_generation) {
@@ -289,7 +285,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     bool result = [self mglRenderPassMatchesFramebufferImpl:fbo name:fboName];
 
-    /* P1-10: store cache for non-default FBOs only. */
+    /* store cache for non-default FBOs only. */
     if (fbo != NULL && fboName != 0u) {
         [_renderPassManager setFboMatchCacheResult:result
                                            fboName:fboName
@@ -5250,7 +5246,7 @@ stencil_format_ok:;
                                    (unsigned long long)pipelineSig,
                                    (unsigned long long)vertexSig];
 
-                /* P0-2: Two-level cache lookup:
+                /* Two-level cache lookup:
                  * Level 1: PSO cache (fastest - compiled pipeline ready to use)
                  * Level 2: Descriptor cache (fast - skip expensive descriptor regeneration)
                  * On double miss: regenerate descriptor + compile PSO */
@@ -5329,13 +5325,11 @@ stencil_format_ok:;
 
 	            // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
 	            if (!pipelineResolvedFromCache) {
-            /* P0-2: Two-level descriptor caching */
+            /* Two-level descriptor caching */
             MTLRenderPipelineDescriptor *finalDescriptor = pipelineStateDescriptor;
             BOOL descriptorFromCache = NO;
 
-            /* Check descriptor cache on PSO cache miss.
-             * If descriptor is cached, reuse it to avoid expensive regeneration.
-             * If not, cache the newly generated descriptor for future use. */
+            /* Check descriptor cache on PSO miss; cache new descriptors for reuse. */
             if (pipelineCacheKey) {
                 MTLRenderPipelineDescriptor *cachedDescriptor =
                     [_pipelineCache pipelineDescriptorForKey:pipelineCacheKey];
@@ -5725,7 +5719,7 @@ stencil_format_ok:;
             };
             [_pipelineCache storePipelineEntry:entry forKey:pipelineCacheKey];
 
-            /* P0-2: Cache the descriptor for future PSO cache misses.
+            /* Cache the descriptor for future PSO cache misses.
              * Only cache if descriptor was generated (not from cache).
              * This avoids redundant descriptor generation on next miss. */
             if (!descriptorFromCache && descriptor) {
@@ -5873,18 +5867,11 @@ stencil_format_ok:;
 
     [self endRenderEncodingLocked];
 
-    /* When finish=true and the current CB has no encoded work, skip
-     * committing an empty CB.  Instead, wait on _lastCommittedCB — Metal
-     * CBs on the same queue execute serially, so waiting on the last
-     * committed CB guarantees all prior GPU work is done.  This avoids a
-     * kernel-level commit + wait for redundant sync calls.
-     *
-     * _currentCBHasWork is set by flushDrawBufferLocked (draw batches),
-     * endRenderEncodingLocked (render encoders), and any path that encodes
-     * blit/compute work before calling flushCommandBuffer:YES (e.g.
-     * readTextureRegionViaBlit).  If a path encodes blit/compute work into
-     * the current CB and then calls flushCommandBuffer:YES without setting
-     * this flag, the skip will incorrectly drop the uncommitted work. */
+    /* Skip empty-CB commit when finish=true: wait on _lastCommittedCB
+     * instead (Metal CBs execute serially on the same queue).  Any path
+     * that encodes work (draws/render/blit/compute) into the current CB
+     * MUST set _currentCBHasWork before calling flushCommandBuffer:YES,
+     * else the skip drops uncommitted work. */
     if (finish && !_currentCBHasWork && _lastCommittedCB != nil) {
         _pendingFinishCB = _lastCommittedCB;
         return;
@@ -6181,10 +6168,9 @@ stencil_format_ok:;
     // PROPER FIX: Full Metal state reset for AGX driver recovery
     NSLog(@"MGL INFO: Performing full Metal state reset for AGX recovery");
 
-    /* P1-1: dispatched from addCompletedHandler on a Metal worker thread.
-     * Must hold _metalStateLock while mutating _commandQueue / _pipelineCache.state->pipelineState
-     * / _pipelineCache.state->pipelineStateCache, otherwise the render thread can observe a
-     * half-reset state. */
+    /* Runs from addCompletedHandler (Metal worker thread).  Hold
+     * _metalStateLock to prevent the render thread observing a half-reset
+     * state. */
     METAL_LOCK();
 
     [self cleanupCommandBuffer];
@@ -6273,7 +6259,7 @@ stencil_format_ok:;
             [blockSelf recordGPUSuccess];
 
             // AGX Recovery: Clear recovery mode on success
-            /* P1-1: guard the ivar read/write with _gpuRecovery.gpuErrorLock
+            /* guard the ivar read/write with _gpuRecovery.gpuErrorLock
              * (NOT _metalStateLock) to avoid deadlock — the completion handler
              * runs on a Metal worker thread while the render thread may be
              * inside waitUntilCompleted holding _metalStateLock. */
@@ -6362,7 +6348,7 @@ stencil_format_ok:;
     NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
     BOOL needsClear = NO;
 
-    /* P1-1: protect error-tracking ivars with _gpuRecovery.gpuErrorLock
+    /* protect error-tracking ivars with _gpuRecovery.gpuErrorLock
      * (same lock as recordGPUError/recordGPUSuccess) to avoid racing with
      * the completion handler thread. */
     os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
@@ -6425,11 +6411,9 @@ stencil_format_ok:;
 
 - (void)recordGPUError
 {
-    /* P1-1: addCompletedHandler runs on a Metal worker thread, concurrent
-     * with the render thread which reads these same ivars.  Use a dedicated
-     * os_unfair_lock instead of METAL_LOCK — the completion handler must not
-     * block on _metalStateLock because the render thread may be inside
-     * waitUntilCompleted (which waits for the handler) while holding it. */
+    /* Use _gpuRecovery.gpuErrorLock (not METAL_LOCK): addCompletedHandler
+     * runs on a Metal worker thread; blocking on _metalStateLock here
+     * deadlocks if the render thread holds it inside waitUntilCompleted. */
     os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
     _gpuRecovery.consecutiveGPUErrors++;
     _gpuRecovery.consecutiveGPUSuccesses = 0;
@@ -6440,7 +6424,7 @@ stencil_format_ok:;
 
 - (void)recordGPUSuccess
 {
-    /* P1-1: use _gpuRecovery.gpuErrorLock (see recordGPUError comment). */
+    /* use _gpuRecovery.gpuErrorLock (see recordGPUError comment). */
     os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
     if (_gpuRecovery.consecutiveGPUErrors > 0 || _gpuRecovery.gpuErrorRecoveryMode) {
         _gpuRecovery.consecutiveGPUSuccesses++;

@@ -49,7 +49,7 @@
 
 @end
 
-/* === P1-8: program-resolved texture type / data kind helpers ===
+/* === program-resolved texture type / data kind helpers ===
  *
  * These C helpers accept an already-resolved Program pointer and a
  * SpirvResource pointer, skipping the per-call mglResolveProgramForStageFromState

@@ -151,7 +151,7 @@ typedef struct Buffer_t {
     GLsizeiptr last_write_size;
     const void *last_write_src_ptr;
     uint64_t last_write_src_hash;
-    /* P1-12: Cached UInt8→UInt16 expanded index buffer.
+    /* Cached UInt8→UInt16 expanded index buffer.
      *
      * Metal does not support GL_UNSIGNED_BYTE indices, so the element buffer
      * must be expanded to UInt16 per draw.  This cache stores the expanded
@@ -180,7 +180,7 @@ typedef struct Buffer_t {
     size_t      mtl_uint16_expanded_byte_count;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
-    /* P0-4A: reference count for deferred buffer lifetime management.
+    /* reference count for deferred buffer lifetime management.
      * Follows the Program refcount pattern (program.c:441-475).
      * - newBuffer sets refcount=1 (caller holds initial reference)
      * - mglRetainBufferReference increments
@@ -193,7 +193,7 @@ typedef struct Buffer_t {
     GLboolean delete_status;
 } Buffer;
 
-/* P0-4A: Buffer reference counting (mirrors Program refcount pattern).
+/* Buffer reference counting (mirrors Program refcount pattern).
  * Declared here alongside the Buffer type, matching how Program refcount
  * helpers are declared in mgl_types_program.h. */
 void mglRetainBufferReference(Buffer *buf);

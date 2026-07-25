@@ -8,8 +8,9 @@
 #pragma mark Metal visibility result (GL occlusion query)
 
 /* Called from glBeginQuery for GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED.
- * Ends the current render encoder so the next draw creates a fresh encoder
- * with the visibility result buffer attached and boolean mode enabled. */
+ * Enables visibility counting on the current render encoder when possible,
+ * avoiding a render encoder rebuild. Falls back to ending the encoder when
+ * the visibility result buffer isn't pre-attached to the current pass. */
 -(void)mtlBeginSampleQuery:(GLMContext)glm_ctx
 {
     (void)glm_ctx;
@@ -17,9 +18,35 @@
         NSLog(@"MGL ERROR: Failed to allocate visibility result buffer");
         return;
     }
-    /* End the current render encoder so the next draw creates a new one with
-     * the visibility result buffer attached. */
-    [self endRenderEncoding];
+    /* Try to reuse the current render encoder by enabling visibility
+     * counting on it directly via setVisibilityResultMode:. This avoids
+     * a render encoder rebuild (saves ~1 encoder per query pair, 5-10
+     * per frame in Minecraft).
+     *
+     * Requires the encoder's render pass descriptor to already have the
+     * visibility result buffer attached (configured by
+     * configureRenderPassDescriptor:, which always attaches it once the
+     * buffer has been allocated). If the buffer isn't attached (e.g. the
+     * current encoder was created before the first query allocated the
+     * buffer), fall back to ending the encoder so the next draw creates
+     * a fresh one with the buffer attached and mode enabled.
+     *
+     * beginSampleQueryWithDevice: already zeroed the buffer, so the GPU
+     * accumulates a fresh count from the next draw onward. Draws already
+     * encoded before this point are not counted (mode was disabled when
+     * they were encoded), matching GL semantics. */
+    METAL_LOCK();
+    @try {
+        id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
+        MTLRenderPassDescriptor *rpDesc = _renderPassManager.state->renderPassDescriptor;
+        if (encoder && rpDesc && rpDesc.visibilityResultBuffer) {
+            [_queryManager configureRenderEncoder:encoder];
+        } else {
+            [self endRenderEncodingLocked];
+        }
+    } @finally {
+        METAL_UNLOCK();
+    }
 }
 
 /* Called from glEndQuery for GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED.

@@ -270,7 +270,7 @@ typedef struct Program_t {
      * unit in the 3 hazard-scan call sites. */
     uint32_t sampled_texture_unit_mask[4];  /* 128 bits */
     uint8_t  sampled_texture_unit_mask_valid;
-    /* P1-6: Precomputed table of which Metal sampler slots are shared across
+    /* Precomputed table of which Metal sampler slots are shared across
      * multiple sampler-like resources (across all stages and the 5 sampler
      * resource types).  Built at link time so mglMetalSamplerSlotSharedAcross-
      * Resources can answer in O(1) instead of a full stage×resource scan.
@@ -278,6 +278,13 @@ typedef struct Program_t {
      * back to full scan).  Invalidated at link start, populated at link end. */
     uint8_t  sampler_binding_shared[TEXTURE_UNITS];
     uint8_t  sampler_binding_shared_valid;
+    /* Bitmap of uniform locations that are sampler-like resources.
+     * Built at link time so mglSetSamplerUniformUnit can O(1) reject
+     * non-sampler locations (the common case for glUniform1i uploading
+     * plain ints like FogShape).  Covers locations 0–127; locations
+     * outside this range fall back to the full scan. */
+    uint64_t sampler_location_bitmap[2];  /* 128 bits */
+    uint8_t  sampler_location_bitmap_valid;
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
     /* MSL query result cache (env-gated by MGL_MSL_CACHE, default ON; =0 off).

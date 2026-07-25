@@ -211,14 +211,14 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     BOOL                 _currentCBHasWork;
 }
 
-/* P1-5: cap an auxiliary cache at `limit` entries with FIFO eviction of
+/* cap an auxiliary cache at `limit` entries with FIFO eviction of
  * the oldest 1/4 on overflow.  Mirrors the pipeline state cache eviction
  * strategy.  Keeps unbounded auxiliary caches (blit/clear/resolve pipelines,
  * fallback textures, double-vertex buffers) from growing without bound. */
 - (void)mglCapAuxCache:(NSMutableDictionary *)cache
                  limit:(NSUInteger)limit;
 
-/* P2-1: Methods called from MGLRenderer+Compute.m.
+/* Methods called from MGLRenderer+Compute.m.
  * mapGLBuffersToMTLBufferMap:stage: now declared in MGLRenderer+Buffer_Private.h. */
 - (id<MTLBuffer>)isolatedStageBindingBufferForMap:(const BufferMap *)map
                                            source:(id<MTLBuffer>)source
@@ -249,7 +249,7 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 - (void)mglRestoreLiveActiveStateForContext:(GLMContext)glm_ctx;
 - (void)mglAssertDualProxyInSyncForContext:(GLMContext)glm_ctx;
 
-/* P1-11: Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
+/* Locked variant of flushDrawBuffer: — caller must hold METAL_LOCK.
  * Defined in MGLRenderer+Batch.m, called from already-locked callers
  * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx;

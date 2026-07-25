@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <os/lock.h>
 
 /* Allocate the MTLBuffer up front and write indices directly into its
  * .contents pointer, avoiding the calloc + newBufferWithBytes + free
@@ -32,6 +33,23 @@ static id<MTLBuffer> mglNewUninitializedIndexBuffer(id<MTLDevice> device,
     return buffer;
 }
 
+/* Persistent index buffer cache for array-variant primitive emulation.
+ * Array-variant indices are 0-based, monotonic, and prefix-compatible:
+ * a buffer built for a larger vertexCount contains the exact prefix for
+ * any smaller vertexCount.  Cache the largest buffer per primitive type;
+ * smaller requests reuse it with a reduced indexCount — no allocation
+ * or O(N) fill on cache hit.  MC's GUI/font/particle paths issue hundreds
+ * of GL_QUADS draws per frame, all hitting this cache after warmup. */
+static os_unfair_lock s_arrayIndexCacheLock = OS_UNFAIR_LOCK_INIT;
+static id<MTLBuffer> s_cachedFanArrayBuffer = nil;
+static NSUInteger     s_cachedFanArrayVertexCount = 0;
+static id<MTLBuffer> s_cachedStripArrayBuffer = nil;
+static NSUInteger     s_cachedStripArrayVertexCount = 0;
+static id<MTLBuffer> s_cachedQuadArrayBuffer = nil;
+static NSUInteger     s_cachedQuadArrayVertexCount = 0;
+static id<MTLBuffer> s_cachedQuadLineArrayBuffer = nil;
+static NSUInteger     s_cachedQuadLineArrayVertexCount = 0;
+
 id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
                                                 NSUInteger vertexCount,
                                                 NSUInteger *outIndexCount)
@@ -50,6 +68,18 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    if (s_cachedFanArrayBuffer && vertexCount <= s_cachedFanArrayVertexCount) {
+        id<MTLBuffer> cached = s_cachedFanArrayBuffer;
+        os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+        if (outIndexCount) {
+            *outIndexCount = indexCount;
+        }
+        return cached;
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+
     uint32_t *indices = NULL;
     id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
@@ -63,6 +93,11 @@ id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
         indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
     }
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    s_cachedFanArrayBuffer = buffer;
+    s_cachedFanArrayVertexCount = vertexCount;
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     if (outIndexCount) {
         *outIndexCount = indexCount;
@@ -131,6 +166,18 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = triangleCount * 3u;
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    if (s_cachedStripArrayBuffer && vertexCount <= s_cachedStripArrayVertexCount) {
+        id<MTLBuffer> cached = s_cachedStripArrayBuffer;
+        os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+        if (outIndexCount) {
+            *outIndexCount = indexCount;
+        }
+        return cached;
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+
     uint32_t *indices = NULL;
     id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
@@ -144,6 +191,11 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
         indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
         indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
     }
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    s_cachedStripArrayBuffer = buffer;
+    s_cachedStripArrayVertexCount = vertexCount;
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     if (outIndexCount) {
         *outIndexCount = indexCount;
@@ -289,6 +341,17 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    if (s_cachedQuadArrayBuffer && vertexCount <= s_cachedQuadArrayVertexCount) {
+        id<MTLBuffer> cached = s_cachedQuadArrayBuffer;
+        os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+        if (outIndexCount) {
+            *outIndexCount = indexCount;
+        }
+        return cached;
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+
     uint32_t *indices = NULL;
     id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
@@ -311,6 +374,11 @@ id<MTLBuffer> mglNewQuadArrayIndexBuffer(id<MTLDevice> device,
         indices[dst + 4u] = (uint32_t)(src + 2u);
         indices[dst + 5u] = (uint32_t)(src + 3u);
     }
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    s_cachedQuadArrayBuffer = buffer;
+    s_cachedQuadArrayVertexCount = vertexCount;
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     if (outIndexCount) {
         *outIndexCount = indexCount;
@@ -382,6 +450,18 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = quadCount * 8u;
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    if (s_cachedQuadLineArrayBuffer && vertexCount <= s_cachedQuadLineArrayVertexCount) {
+        id<MTLBuffer> cached = s_cachedQuadLineArrayBuffer;
+        os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+        if (outIndexCount) {
+            *outIndexCount = indexCount;
+        }
+        return cached;
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+
     uint32_t *indices = NULL;
     id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
@@ -405,6 +485,11 @@ id<MTLBuffer> mglNewQuadArrayLineIndexBuffer(id<MTLDevice> device,
         indices[dst + 6u] = (uint32_t)(src + 3u);
         indices[dst + 7u] = (uint32_t)(src + 0u);
     }
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    s_cachedQuadLineArrayBuffer = buffer;
+    s_cachedQuadLineArrayVertexCount = vertexCount;
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     if (outIndexCount) {
         *outIndexCount = indexCount;
@@ -630,7 +715,7 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
-    /* P1-12: determine cache eligibility.
+    /* determine cache eligibility.
      * Cache is safe only when:
      * - glElementBuffer has CPU-side backing (buffer_data): source bytes are
      *   GL-tracked and last_write_src_hash reflects their contents.
@@ -640,7 +725,7 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
                            glElementBuffer->data.buffer_data != 0 &&
                            !(glElementBuffer->storage_flags & GL_MAP_PERSISTENT_BIT));
 
-    /* P1-12: check cached UInt16 expansion */
+    /* check cached UInt16 expansion */
     if (cache_eligible &&
         glElementBuffer->mtl_uint16_expanded_data != NULL &&
         glElementBuffer->mtl_uint16_expanded_src_hash != 0ull &&
@@ -668,7 +753,7 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         return nil;
     }
 
-    /* P1-12: store expanded buffer in cache for subsequent draws */
+    /* store expanded buffer in cache for subsequent draws */
     if (cache_eligible) {
         if (glElementBuffer->mtl_uint16_expanded_data) {
             CFRelease(glElementBuffer->mtl_uint16_expanded_data);

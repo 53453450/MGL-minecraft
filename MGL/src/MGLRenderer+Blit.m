@@ -143,6 +143,79 @@ typedef struct MGLBlitColorState {
     return pipeline;
 }
 
+/* Compute-based Y-flip blit pipeline.  Used by
+ * updateGLSampledRenderTargetCopyForTexture to batch all dirty mip levels of
+ * a sampled render-target copy into a single MTLComputeCommandEncoder, instead
+ * of creating one MTLRenderCommandEncoder per mip level.  This eliminates the
+ * per-mip render-encoder creation overhead that dominated the CPU-bound frame
+ * (42 render encoders/frame, ~60ms CPU).
+ *
+ * The kernel samples the source texture at an explicit level (so the full
+ * mipmap source can be bound once) and writes to the destination at an
+ * explicit level (so the full mipmap destination can be bound once).  Y-flip
+ * is baked into the UV calculation: destination Metal row 0 (top) receives
+ * the source's bottom row, restoring GL lower-left sampling semantics. */
+- (id<MTLComputePipelineState>)scaledBlitComputePipelineForPixelFormat:(MTLPixelFormat)pixelFormat
+{
+    if (pixelFormat == MTLPixelFormatInvalid || pixelFormat == 0) {
+        pixelFormat = MTLPixelFormatBGRA8Unorm;
+    }
+
+    if (!_blit.scaledBlitComputePipelineCache) {
+        _blit.scaledBlitComputePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    }
+
+    NSNumber *key = @((NSUInteger)pixelFormat);
+    id<MTLComputePipelineState> cached = _blit.scaledBlitComputePipelineCache[key];
+    if (cached) {
+        return cached;
+    }
+
+    static NSString *source =
+        @"#include <metal_stdlib>\n"
+         "using namespace metal;\n"
+         "struct MGLScaledBlitComputeParams { uint2 dstSize; uint srcLevel; uint dstLevel; };\n"
+         "kernel void mgl_scaled_blit_cs(uint2 gid [[thread_position_in_grid]],\n"
+         "                               constant MGLScaledBlitComputeParams& p [[buffer(0)]],\n"
+         "                               texture2d<float, access::read> src [[texture(0)]],\n"
+         "                               texture2d<float, access::write> dst [[texture(1)]]) {\n"
+         "    if (gid.x >= p.dstSize.x || gid.y >= p.dstSize.y) return;\n"
+         "    uint2 srcCoord = uint2(gid.x, p.dstSize.y - 1u - gid.y);\n"
+         "    float4 color = src.read(srcCoord, p.srcLevel);\n"
+         "    dst.write(color, gid, p.dstLevel);\n"
+         "}\n";
+
+    NSError *error = nil;
+    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
+                                                     options:nil
+                                                       label:@"MGL scaled blit compute"
+                                                       error:&error];
+    if (!library) {
+        NSLog(@"MGL ERROR: scaled blit compute shader compile failed: %@", error);
+        return nil;
+    }
+
+    id<MTLFunction> function = [library newFunctionWithName:@"mgl_scaled_blit_cs"];
+    if (!function) {
+        NSLog(@"MGL ERROR: scaled blit compute shader function missing");
+        return nil;
+    }
+
+    id<MTLComputePipelineState> pipeline = [_device newComputePipelineStateWithFunction:function
+                                                                                 error:&error];
+    if (!pipeline) {
+        NSLog(@"MGL ERROR: scaled blit compute pipeline create failed pixelFormat=%lu error=%@",
+              (unsigned long)pixelFormat,
+              error);
+        return nil;
+    }
+
+    _blit.scaledBlitComputePipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.scaledBlitComputePipelineCache limit:16];
+    NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu", (unsigned long)pixelFormat);
+    return pipeline;
+}
+
 - (id<MTLRenderPipelineState>)scaledDepthBlitPipelineForPixelFormat:(MTLPixelFormat)pixelFormat
 {
     if (pixelFormat == MTLPixelFormatInvalid || pixelFormat == 0) {
@@ -816,7 +889,7 @@ typedef struct MGLBlitColorState {
         if (copyMipmapped) {
             desc.mipmapLevelCount = copyLevelCount;
         }
-        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+        desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget | MTLTextureUsageShaderWrite;
         desc.storageMode = MTLStorageModePrivate;
 
         id<MTLTexture> copy = [_device newTextureWithDescriptor:desc];
@@ -843,65 +916,20 @@ typedef struct MGLBlitColorState {
     }
 
     id<MTLTexture> destination = (__bridge id<MTLTexture>)(tex->mtl_gl_sampled_data);
-    id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:destination.pixelFormat];
     id<MTLSamplerState> sampler = [self scaledBlitSamplerForFilter:GL_NEAREST];
-    if (!destination || !pipeline || !sampler) {
+    if (!destination || !sampler) {
         static uint64_t s_copySetupFailCount = 0;
         uint64_t hit = ++s_copySetupFailCount;
         if (hit <= 32ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL RT-SAMPLE-COPY setup failed tex=%u dst=%p pipeline=%p sampler=%p reason=%s hit=%llu",
+            NSLog(@"MGL RT-SAMPLE-COPY setup failed tex=%u dst=%p sampler=%p reason=%s hit=%llu",
                   (unsigned)tex->name,
                   destination,
-                  pipeline,
                   sampler,
                   reason ? reason : "(null)",
                   (unsigned long long)hit);
         }
         return NO;
     }
-
-    if (![self ensureWritableCommandBuffer:reason ? reason : "rt_sample_copy"]) {
-        return NO;
-    }
-
-    // Sampled render-target copy: flip rows once so that Metal row 0 (top, which
-    // is what Metal's texture::sample sees at v=0) holds GL row 0 (bottom).
-    //
-    // Metal and GL disagree on the texture Y origin: Metal's clip space puts
-    // gl_Position.y=+1 at the TOP (Metal row 0), and Metal's sampler reads v=0
-    // at the TOP (row 0) too — so render and sample are internally consistent
-    // in Metal and NO flip would be needed if a GL app sampled with v=0 meaning
-    // "top".  But GL apps sample with v=0 meaning "bottom" (GL lower-left
-    // origin), so a render target rendered by a GL shader then sampled by a GL
-    // shader comes out Y-inverted: the GL sampler's "bottom" (v≈0) hits the
-    // Metal "top" (row 0), which the GL renderer wrote at its "top".
-    //
-    // Flipping the copy once makes Metal row 0 hold the GL renderer's "bottom",
-    // restoring GL sampling semantics for every consumer.  This applies to ALL
-    // sampled 2D float render targets — the lightmap (16x16, sampled by
-    // block.vsh's texture(Sampler2, UV2/256+0.5/16)), the screen/GUI targets
-    // (sampled by the post chain), etc.
-    //
-    // The previous size-based gating (small RT -> "no flip", large RT -> "flip")
-    // was a Minecraft-specific heuristic whose polarity was inverted relative to
-    // its own comment: uvRect={0,1,1,0} (the "large RT" path) actually FLIPS
-    // rows, and uvRect={0,0,1,1} (the "small RT" lightmap path) is IDENTITY —
-    // so the lightmap was never flipped, inverting its brightness.  MC 1.21.8+
-    // renders the lightmap on the GPU (so it's now a render target and hits
-    // this path), which is why the symptom appears only there.
-    //
-    // uvRect={0,1,1,0} with the blit VS below:
-    //   pos[0]=(-1,-1)[dest row 15] -> uv=(0,0)[src row 0, top]
-    //   pos[2]=(-1,+1)[dest row 0]  -> uv=(0,1)[src row 15, bottom]
-    // i.e. dest row 0 = src row 15 -> one row flip.
-    BOOL yFlipCopy = YES;
-
-    MGLScaledBlitParams params;
-    params.uvRect = yFlipCopy
-        ? (vector_float4){0.0f, 1.0f, 1.0f, 0.0f}
-        : (vector_float4){0.0f, 0.0f, 1.0f, 1.0f};
-    params.forceOpaqueAlpha = 0.0f;
-    params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
     /* Y-flip blit each mip level independently.  MC 1.21.11's terrain atlas
      * is a 5-level mipmapped RT whose mip 1-4 are NOT box-filtered downscales
@@ -911,9 +939,20 @@ typedef struct MGLBlitColorState {
      * for cutout alpha coverage on leaves etc.).  generateMipmapsForTexture
      * would box-filter the flipped level 0 and overwrite those custom mip
      * levels, corrupting them.  Instead, blit each source mip level into the
-     * matching destination mip level with a Y-flipped uvRect, using level
-     * views so the fragment shader's auto-mip sampler reads exactly the
-     * intended source level. */
+     * matching destination mip level with a Y-flipped uvRect.
+     *
+     * Optimization: when the destination supports MTLTextureUsageShaderWrite,
+     * use a single MTLComputeCommandEncoder to dispatch all dirty mip levels
+     * (one dispatchThreads per level).  This avoids creating one
+     * MTLRenderCommandEncoder + MTLRenderPassDescriptor + 2 texture views per
+     * mip level — the dominant CPU cost when the frame had 42 render encoders
+     * and ~60ms of render-encoder CPU time.  The compute kernel samples the
+     * source at an explicit level and writes the destination at an explicit
+     * level, so no per-level texture views are needed.
+     *
+     * Fallback: destinations created before MTLTextureUsageShaderWrite was
+     * added (or compute pipeline creation failure) use the original
+     * per-mip-render-encoder path. */
     NSUInteger mipLevels = MAX(copyLevelCount, 1u);
     if (mipLevels > destination.mipmapLevelCount) {
         mipLevels = destination.mipmapLevelCount;
@@ -931,80 +970,196 @@ typedef struct MGLBlitColorState {
         tex->mtl_gl_sampled_write_version != tex->mtl_render_target_write_version) {
         copyMask = mipMask;
     }
+
+    if (![self ensureWritableCommandBuffer:reason ? reason : "rt_sample_copy"]) {
+        return NO;
+    }
+
+    // Sampled render-target copy: flip rows once so that Metal row 0 (top, which
+    // is what Metal's texture::sample sees at v=0) holds GL row 0 (bottom).
+    // See the longer comment block in the fallback render path below for the
+    // full Metal-vs-GL Y-origin rationale.
+    BOOL yFlipCopy = YES;
+
     uint32_t copiedMask = 0u;
-    for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
-        if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
-            continue;
+
+    /* Prefer compute path: single MTLComputeCommandEncoder dispatches all dirty
+     * mip levels, avoiding per-mip render-encoder creation overhead. */
+    BOOL useComputePath = (destination.usage & MTLTextureUsageShaderWrite) != 0;
+    id<MTLComputePipelineState> computePipeline = nil;
+    if (useComputePath) {
+        computePipeline = [self scaledBlitComputePipelineForPixelFormat:destination.pixelFormat];
+        if (!computePipeline) {
+            useComputePath = NO;
         }
-        @autoreleasepool {
-            id<MTLTexture> srcLvl = source;
-            id<MTLTexture> dstLvl = destination;
-            if (mipLevels > 1u) {
-                srcLvl = [source newTextureViewWithPixelFormat:source.pixelFormat
-                                                   textureType:MTLTextureType2D
-	                                                    levels:NSMakeRange(lvl, 1u)
-	                                                    slices:NSMakeRange(0, 1u)];
-                dstLvl = [destination newTextureViewWithPixelFormat:destination.pixelFormat
-                                                        textureType:MTLTextureType2D
-                                                             levels:NSMakeRange(lvl, 1u)
-                                                             slices:NSMakeRange(0, 1u)];
-                if (!srcLvl || !dstLvl) {
-                    static uint64_t s_levelViewFailCount = 0;
-                    uint64_t hit = ++s_levelViewFailCount;
+    }
+
+    if (useComputePath) {
+        id<MTLComputeCommandEncoder> computeEncoder =
+            [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
+        if (!computeEncoder) {
+            static uint64_t s_computeEncoderFailCount = 0;
+            uint64_t hit = ++s_computeEncoderFailCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY compute encoder failed tex=%u reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
+            }
+            useComputePath = NO;
+        } else {
+            typedef struct {
+                vector_uint2 dstSize;
+                uint32_t srcLevel;
+                uint32_t dstLevel;
+            } MGLScaledBlitComputeParams;
+
+            [computeEncoder setComputePipelineState:computePipeline];
+            [computeEncoder setTexture:source atIndex:0];
+            [computeEncoder setTexture:destination atIndex:1];
+
+            NSUInteger tgW = MIN((NSUInteger)16u, computePipeline.maxTotalThreadsPerThreadgroup);
+            NSUInteger tgH = MAX((NSUInteger)1u,
+                                 MIN((NSUInteger)16u,
+                                     computePipeline.maxTotalThreadsPerThreadgroup / tgW));
+            MTLSize threadgroup = MTLSizeMake(tgW, tgH, 1u);
+
+            for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
+                if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
+                    continue;
+                }
+
+                NSUInteger mipW = MAX(1u, source.width >> lvl);
+                NSUInteger mipH = MAX(1u, source.height >> lvl);
+
+                MGLScaledBlitComputeParams params;
+                params.dstSize = (vector_uint2){(uint32_t)mipW, (uint32_t)mipH};
+                params.srcLevel = (uint32_t)lvl;
+                params.dstLevel = (uint32_t)lvl;
+
+                [computeEncoder setBytes:&params length:sizeof(params) atIndex:0];
+
+                MTLSize threads = MTLSizeMake(mipW, mipH, 1u);
+                [computeEncoder dispatchThreads:threads threadsPerThreadgroup:threadgroup];
+
+                copiedMask |= (uint32_t)1u << lvl;
+            }
+            [computeEncoder endEncoding];
+        }
+    }
+
+    if (!useComputePath) {
+        /* Fallback: per-mip render-encoder path.  Used when the destination
+         * texture lacks MTLTextureUsageShaderWrite (created before the compute
+         * path was added) or the compute pipeline failed to initialize.
+         *
+         * Y-flip rationale: Metal and GL disagree on the texture Y origin.
+         * Metal's clip space puts gl_Position.y=+1 at the TOP (Metal row 0),
+         * and Metal's sampler reads v=0 at the TOP (row 0) too — so render and
+         * sample are internally consistent in Metal.  But GL apps sample with
+         * v=0 meaning "bottom" (GL lower-left origin), so a render target
+         * rendered by a GL shader then sampled by a GL shader comes out
+         * Y-inverted.  Flipping the copy once makes Metal row 0 hold the GL
+         * renderer's "bottom", restoring GL sampling semantics.
+         *
+         * uvRect={0,1,1,0} with the blit VS:
+         *   pos[0]=(-1,-1)[dest row max] -> uv=(0,0)[src row 0, top]
+         *   pos[2]=(-1,+1)[dest row 0]    -> uv=(0,1)[src row max, bottom]
+         * i.e. dest row 0 = src row max -> one row flip. */
+        id<MTLRenderPipelineState> pipeline = [self scaledBlitPipelineForPixelFormat:destination.pixelFormat];
+        if (!pipeline) {
+            static uint64_t s_copySetupFailCount = 0;
+            uint64_t hit = ++s_copySetupFailCount;
+            if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                NSLog(@"MGL RT-SAMPLE-COPY render pipeline setup failed tex=%u reason=%s hit=%llu",
+                      (unsigned)tex->name,
+                      reason ? reason : "(null)",
+                      (unsigned long long)hit);
+            }
+            return NO;
+        }
+
+        MGLScaledBlitParams params;
+        params.uvRect = yFlipCopy
+            ? (vector_float4){0.0f, 1.0f, 1.0f, 0.0f}
+            : (vector_float4){0.0f, 0.0f, 1.0f, 1.0f};
+        params.forceOpaqueAlpha = 0.0f;
+        params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
+
+        for (NSUInteger lvl = 0u; lvl < mipLevels; lvl++) {
+            if ((copyMask & ((uint32_t)1u << lvl)) == 0u) {
+                continue;
+            }
+            @autoreleasepool {
+                id<MTLTexture> srcLvl = source;
+                id<MTLTexture> dstLvl = destination;
+                if (mipLevels > 1u) {
+                    srcLvl = [source newTextureViewWithPixelFormat:source.pixelFormat
+                                                       textureType:MTLTextureType2D
+                                                            levels:NSMakeRange(lvl, 1u)
+                                                            slices:NSMakeRange(0, 1u)];
+                    dstLvl = [destination newTextureViewWithPixelFormat:destination.pixelFormat
+                                                            textureType:MTLTextureType2D
+                                                                 levels:NSMakeRange(lvl, 1u)
+                                                                 slices:NSMakeRange(0, 1u)];
+                    if (!srcLvl || !dstLvl) {
+                        static uint64_t s_levelViewFailCount = 0;
+                        uint64_t hit = ++s_levelViewFailCount;
+                        if (hit <= 32ull || (hit % 512ull) == 0ull) {
+                            NSLog(@"MGL RT-SAMPLE-COPY level view failed tex=%u lvl=%lu hit=%llu",
+                                  (unsigned)tex->name,
+                                  (unsigned long)lvl,
+                                  (unsigned long long)hit);
+                        }
+                        continue;
+                    }
+                }
+
+                MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
+                copyPass.colorAttachments[0].texture = dstLvl;
+                copyPass.colorAttachments[0].level = 0u;
+                copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+                copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
+                copyPass.renderTargetWidth = dstLvl.width;
+                copyPass.renderTargetHeight = dstLvl.height;
+
+                id<MTLRenderCommandEncoder> copyEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+                if (!copyEncoder) {
+                    static uint64_t s_copyEncoderFailCount = 0;
+                    uint64_t hit = ++s_copyEncoderFailCount;
                     if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                        NSLog(@"MGL RT-SAMPLE-COPY level view failed tex=%u lvl=%lu hit=%llu",
+                        NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u lvl=%lu reason=%s hit=%llu",
                               (unsigned)tex->name,
                               (unsigned long)lvl,
+                              reason ? reason : "(null)",
                               (unsigned long long)hit);
                     }
                     continue;
                 }
+
+                [copyEncoder setRenderPipelineState:pipeline];
+                [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+                [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+                [copyEncoder setFragmentTexture:srcLvl atIndex:0];
+                [copyEncoder setFragmentSamplerState:sampler atIndex:0];
+                [copyEncoder setViewport:(MTLViewport){
+                    .originX = 0.0,
+                    .originY = 0.0,
+                    .width = (double)dstLvl.width,
+                    .height = (double)dstLvl.height,
+                    .znear = 0.0,
+                    .zfar = 1.0
+                }];
+                [copyEncoder setScissorRect:(MTLScissorRect){
+                    .x = 0,
+                    .y = 0,
+                    .width = dstLvl.width,
+                    .height = dstLvl.height
+                }];
+                [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+                [copyEncoder endEncoding];
+                copiedMask |= (uint32_t)1u << lvl;
             }
-
-            MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
-            copyPass.colorAttachments[0].texture = dstLvl;
-            copyPass.colorAttachments[0].level = 0u;
-            copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-            copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-            copyPass.renderTargetWidth = dstLvl.width;
-            copyPass.renderTargetHeight = dstLvl.height;
-
-            id<MTLRenderCommandEncoder> copyEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
-            if (!copyEncoder) {
-                static uint64_t s_copyEncoderFailCount = 0;
-                uint64_t hit = ++s_copyEncoderFailCount;
-                if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                    NSLog(@"MGL RT-SAMPLE-COPY encoder failed tex=%u lvl=%lu reason=%s hit=%llu",
-                          (unsigned)tex->name,
-                          (unsigned long)lvl,
-                          reason ? reason : "(null)",
-                          (unsigned long long)hit);
-                }
-                continue;
-            }
-
-            [copyEncoder setRenderPipelineState:pipeline];
-            [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
-            [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
-            [copyEncoder setFragmentTexture:srcLvl atIndex:0];
-            [copyEncoder setFragmentSamplerState:sampler atIndex:0];
-            [copyEncoder setViewport:(MTLViewport){
-                .originX = 0.0,
-                .originY = 0.0,
-                .width = (double)dstLvl.width,
-                .height = (double)dstLvl.height,
-                .znear = 0.0,
-                .zfar = 1.0
-            }];
-            [copyEncoder setScissorRect:(MTLScissorRect){
-                .x = 0,
-                .y = 0,
-                .width = dstLvl.width,
-                .height = dstLvl.height
-            }];
-            [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-            [copyEncoder endEncoding];
-            copiedMask |= (uint32_t)1u << lvl;
         }
     }
 
@@ -1014,7 +1169,7 @@ typedef struct MGLBlitColorState {
     }
 
     if (mglTraceLogIsEnabled()) {
-        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u reason=%s",
+        mglTraceLog("RT_SAMPLE_COPY_UPDATED tex=%u label=\"%s\" lightmap=%d yFlip=%d src=%p dst=%p size=%lux%lu fmt=%lu srcLevels=%lu dstLevels=%lu glLevels=%u mips=%u base=%u max=%u writeVersion=%u reason=%s compute=%d",
                     (unsigned)tex->name,
                     mglTraceTextureLabel(tex),
                     0,
@@ -1031,7 +1186,8 @@ typedef struct MGLBlitColorState {
                     (unsigned)tex->params.base_level,
                     (unsigned)tex->params.max_level,
                     (unsigned)tex->mtl_gl_sampled_write_version,
-                    reason ? reason : "(null)");
+                    reason ? reason : "(null)",
+                    useComputePath ? 1 : 0);
     }
 
     return YES;
