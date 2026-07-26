@@ -1633,7 +1633,36 @@ static void mglHashBufferBaseBinding(uint64_t *hash,
     *hash ^= mglRotateLeft64((uint64_t)binding->size, (salt + 37u) & 63);
 }
 
-static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
+/* Hash one buffer_base target.  Empty slots are fully zeroed at
+ * unbind/delete time, so their contribution is 0 and iterating only
+ * active_mask bits is bit-identical to scanning all 84 slots (the
+ * DEBUG sampled assert below verifies this). */
+static void mglHashBufferBaseTarget(uint64_t *hash,
+                                    const BufferBase *base,
+                                    int target,
+                                    bool use_mask)
+{
+    if (use_mask) {
+        for (unsigned w = 0; w < MGL_BUFFER_BASE_ACTIVE_WORDS; w++) {
+            uint64_t mask = base->active_mask[w];
+            while (mask) {
+                int i = (int)(w * 64u) + __builtin_ctzll(mask);
+                mask &= mask - 1;
+                mglHashBufferBaseBinding(hash,
+                                         &base->buffers[i],
+                                         ((uint64_t)(target + 1) * 131u) + (uint64_t)i);
+            }
+        }
+    } else {
+        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
+            mglHashBufferBaseBinding(hash,
+                                     &base->buffers[i],
+                                     ((uint64_t)(target + 1) * 131u) + (uint64_t)i);
+        }
+    }
+}
+
+static uint64_t mglComputeDrawBufferBindingHashScan(GLMContext ctx, bool use_mask)
 {
     uint64_t hash = 0;
 
@@ -1649,15 +1678,15 @@ static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
 
     for (size_t t = 0; t < sizeof(draw_buffer_targets) / sizeof(draw_buffer_targets[0]); t++) {
         int target = draw_buffer_targets[t];
-        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
-            mglHashBufferBaseBinding(&hash,
-                                     &ctx->active_state->buffer_base[target].buffers[i],
-                                     ((uint64_t)(target + 1) * 131u) + (uint64_t)i);
-        }
+        mglHashBufferBaseTarget(&hash,
+                                &ctx->active_state->buffer_base[target],
+                                target,
+                                use_mask);
     }
 
     Program *program = ctx->active_state->program;
     if (program) {
+        /* plain_uniform_buffers has no active_mask; keep the linear scan. */
         for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
             mglHashBufferBaseBinding(&hash,
                                      &program->plain_uniform_buffers[i],
@@ -1668,15 +1697,25 @@ static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
     return hash;
 }
 
+static uint64_t mglComputeDrawBufferBindingHash(GLMContext ctx)
+{
+    uint64_t hash = mglComputeDrawBufferBindingHashScan(ctx, true);
+#ifdef DEBUG
+    static uint32_t s_maskCheck = 0;
+    if ((++s_maskCheck & 0xFFu) == 0u) {
+        assert(hash == mglComputeDrawBufferBindingHashScan(ctx, false));
+    }
+#endif
+    return hash;
+}
+
 static uint64_t mglComputeUniformBufferBindingHash(GLMContext ctx)
 {
     uint64_t hash = 0;
-    const int target = _UNIFORM_BUFFER;
-    for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
-        mglHashBufferBaseBinding(&hash,
-                                 &ctx->active_state->buffer_base[target].buffers[i],
-                                 ((uint64_t)(target + 1) * 131u) + (uint64_t)i);
-    }
+    mglHashBufferBaseTarget(&hash,
+                            &ctx->active_state->buffer_base[_UNIFORM_BUFFER],
+                            _UNIFORM_BUFFER,
+                            true);
     return hash;
 }
 
