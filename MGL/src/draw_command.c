@@ -2857,6 +2857,7 @@ typedef struct {
     size_t       vertex_stride;
     size_t       max_attrib_end;
     uint64_t     source_first_index;
+    uint64_t     source_last_index;
     GLintptr     binding_offset;
     uint32_t     attrib_mask;
     uint64_t     layout_hash;
@@ -3347,6 +3348,7 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
     out->vertex_stride = vertexStride;
     out->max_attrib_end = maxAttribEnd;
     out->source_first_index = minSourceIndex;
+    out->source_last_index = maxSourceIndex;
     out->binding_offset = bindingOffset;
     out->attrib_mask = attribMask;
     out->layout_hash = layoutHash ^
@@ -3465,21 +3467,13 @@ static bool mglAppendStreamMergedData(MGLDrawBatch *batch,
     size_t indexBytesToAppend = (size_t)srcCmd->count * sizeof(uint32_t);
     size_t newIndexBytes = indexWriteOffset + indexBytesToAppend;
 
-    for (GLsizei i = 0; i < srcCmd->count; i++) {
-        uint64_t rawIndex = (uint64_t)srcCmd->first + (uint64_t)i;
-        if (candidate->uses_elements &&
-            !mglCommandReadIndexValue(candidate->index_bytes, srcCmd->indexType, i, &rawIndex)) {
-            return false;
-        }
-        int64_t sourceIndex = candidate->uses_elements
-            ? (int64_t)rawIndex + (int64_t)srcCmd->baseVertex
-            : (int64_t)rawIndex;
-        if (sourceIndex < 0) return false;
-        uint64_t sourceIndexU = (uint64_t)sourceIndex;
-        if (sourceIndexU < candidate->source_first_index) return false;
-        uint64_t mergedIndex = vertexBase + (sourceIndexU - candidate->source_first_index);
-        if (mergedIndex > UINT32_MAX) return false;
-    }
+    /* mglPrepareStreamMergeCandidate already walked these same indices in
+     * this record call (readability, sign, min/max), so the per-index
+     * re-validation reduces to bounding the largest merged index. */
+    if (candidate->source_last_index < candidate->source_first_index) return false;
+    uint64_t maxMergedIndex = vertexBase +
+        (candidate->source_last_index - candidate->source_first_index);
+    if (maxMergedIndex > UINT32_MAX) return false;
 
     if (!mglEnsureTransientBufferCapacity(vertexBuffer, newVertexBytes) ||
         !mglEnsureTransientBufferCapacity(indexBuffer, newIndexBytes)) {
