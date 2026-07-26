@@ -1738,7 +1738,13 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
 {
     id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
     const void *cpuData = ptr ? (const void *)(uintptr_t)ptr->data.buffer_data : NULL;
-    if (!device || !ptr || !buffer || buffer.storageMode != MTLStorageModeShared ||
+    /* Transient batch buffers need no snapshot: their MTLBuffer is created
+     * with newBufferWithBytes from the merged CPU data at bind time and the
+     * CPU data is immutable once the batch is recorded — the
+     * cpuData != contents check below would otherwise allocate and copy a
+     * second MTLBuffer per stream batch just to discard the first. */
+    if (!device || !ptr || !buffer || ptr->transient_batch_buffer ||
+        buffer.storageMode != MTLStorageModeShared ||
         !cpuData || (uintptr_t)cpuData < 0x1000u ||
         (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents) {
         return YES;
@@ -1784,7 +1790,9 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 {
     id<MTLBuffer> buffer = bufferPtr ? *bufferPtr : nil;
     const uint8_t *cpuData = ptr ? (const uint8_t *)(uintptr_t)ptr->data.buffer_data : NULL;
-    if (!device || !ptr || !buffer || buffer.storageMode != MTLStorageModeShared ||
+    /* Same transient early-out as mglSnapshotSharedDirtyBuffer above. */
+    if (!device || !ptr || !buffer || ptr->transient_batch_buffer ||
+        buffer.storageMode != MTLStorageModeShared ||
         !cpuData || (uintptr_t)cpuData < 0x1000u ||
         (ptr->storage_flags & GL_CLIENT_STORAGE_BIT) || cpuData == buffer.contents ||
         offset > buffer.length || length > buffer.length - offset) {
