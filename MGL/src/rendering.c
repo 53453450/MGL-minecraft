@@ -79,6 +79,13 @@ static GLboolean mglEnsureDepthShadow(Texture *texture)
 static GLboolean mglEnsureRGB10A2Shadow(Texture *texture)
 {
     if (!texture || texture->width == 0u || texture->height == 0u) return GL_FALSE;
+    /* The only consumer (glReadPixels BGRA repack) reads the shadow solely
+     * for RGB10 formats; allocating and filling it for anything else is
+     * dead work on every clear.  Keeps the invariant that only RGB10
+     * textures ever carry a color shadow. */
+    if (texture->internalformat != GL_RGB10 &&
+        texture->internalformat != GL_RGB10_A2 &&
+        texture->internalformat != GL_RGB10_A2UI) return GL_FALSE;
     if (texture->rgb10a2_shadow &&
         texture->rgb10a2_shadow_width == texture->width &&
         texture->rgb10a2_shadow_height == texture->height) return GL_TRUE;
@@ -93,7 +100,11 @@ static void mglUpdateDepthShadowForClear(GLMContext ctx)
 {
     Framebuffer *fbo = ctx ? ctx->state.framebuffer : NULL;
     Texture *texture = fbo ? mglStencilAttachmentTexture(&fbo->depth) : NULL;
-    if (!texture || !mglEnsureDepthShadow(texture)) return;
+    /* Readers only consult depth_shadow for non-render-target textures
+     * (see the glReadPixels depth path); render-target attachments read
+     * back via the GPU, so filling their shadow on every clear is dead
+     * work. */
+    if (!texture || texture->is_render_target || !mglEnsureDepthShadow(texture)) return;
     GLint x0 = 0, y0 = 0, x1 = (GLint)texture->width, y1 = (GLint)texture->height;
     if (ctx->state.caps.scissor_test) {
         if (x0 < ctx->state.var.scissor_box[0]) x0 = ctx->state.var.scissor_box[0];
