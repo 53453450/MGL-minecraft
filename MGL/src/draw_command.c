@@ -275,19 +275,21 @@ static Program *mglRetainBatchProgram(GLMContext ctx, MGLDrawBatch *batch, Progr
         return NULL;
     }
 
-    if (!mglObjectPointerLooksPlausible(program) ||
-        !mglPointerRangeIsReadable(program, sizeof(*program))) {
-        return NULL;
-    }
-
     if (expectedName == 0u) {
+        /* Name unknown: probe before dereferencing to read it. */
+        if (!mglObjectPointerLooksPlausible(program) ||
+            !mglPointerRangeIsReadable(program, sizeof(*program))) {
+            return NULL;
+        }
         expectedName = program->name;
     }
     if (!mglProgramPointerUsableForName(ctx, program, expectedName)) {
         return NULL;
     }
 
-    mglRetainProgramReference(ctx, program);
+    /* UsableForName just proved the pointer live and matching; retain
+     * directly rather than re-validating via mglRetainProgramReference. */
+    program->refcount++;
     *slot = program;
     return program;
 }
