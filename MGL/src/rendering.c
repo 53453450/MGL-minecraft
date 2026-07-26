@@ -117,8 +117,19 @@ void mglBlitDepthShadow(GLMContext ctx,
     Framebuffer *drawFBO = ctx ? ctx->state.framebuffer : NULL;
     Texture *source = readFBO ? mglStencilAttachmentTexture(&readFBO->depth) : NULL;
     Texture *destination = drawFBO ? mglStencilAttachmentTexture(&drawFBO->depth) : NULL;
-    if (!source || !destination || !source->depth_shadow || !mglEnsureDepthShadow(destination) ||
+    if (!source || !destination ||
         srcX1 <= srcX0 || srcY1 <= srcY0 || dstX1 <= dstX0 || dstY1 <= dstY0) return;
+    if (!source->depth_shadow || source->is_render_target) {
+        /* No trustworthy CPU source (shadow missing, or stale because draws
+         * never update render-target shadows): drop the destination shadow
+         * so readers fall back to the GPU path instead of stale data. */
+        free(destination->depth_shadow);
+        destination->depth_shadow = NULL;
+        destination->depth_shadow_width = 0u;
+        destination->depth_shadow_height = 0u;
+        return;
+    }
+    if (!mglEnsureDepthShadow(destination)) return;
     GLint srcW = srcX1 - srcX0, srcH = srcY1 - srcY0;
     GLint dstW = dstX1 - dstX0, dstH = dstY1 - dstY0;
     for (GLint y = dstY0; y < dstY1; y++) {
@@ -221,7 +232,7 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
 
     GLuint sourceIndex = ctx->state.read_buffer - GL_COLOR_ATTACHMENT0;
     Texture *source = mglStencilAttachmentTexture(&readFBO->color_attachments[sourceIndex]);
-    if (!source || !source->rgb10a2_shadow) return;
+    GLboolean sourceUsable = (source && source->rgb10a2_shadow) ? GL_TRUE : GL_FALSE;
 
     GLsizei drawBufferCount = ctx->state.draw_buffer_count;
     if (drawBufferCount > MAX_COLOR_ATTACHMENTS) drawBufferCount = MAX_COLOR_ATTACHMENTS;
@@ -231,6 +242,17 @@ void mglBlitRGB10A2Shadow(GLMContext ctx,
             drawBuffer >= GL_COLOR_ATTACHMENT0 + MAX_COLOR_ATTACHMENTS) continue;
         Texture *destination =
             mglStencilAttachmentTexture(&drawFBO->color_attachments[drawBuffer - GL_COLOR_ATTACHMENT0]);
+        if (!sourceUsable) {
+            /* Cannot mirror the blit on the CPU: drop the destination shadow
+             * so readers fall back to the GPU path instead of stale data. */
+            if (destination && destination->rgb10a2_shadow) {
+                free(destination->rgb10a2_shadow);
+                destination->rgb10a2_shadow = NULL;
+                destination->rgb10a2_shadow_width = 0u;
+                destination->rgb10a2_shadow_height = 0u;
+            }
+            continue;
+        }
         if (!mglEnsureRGB10A2Shadow(destination)) continue;
 
         GLint srcW = srcX1 - srcX0, srcH = srcY1 - srcY0;
