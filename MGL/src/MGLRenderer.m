@@ -3936,28 +3936,31 @@ void logDirtyBits(GLMContext ctx)
         /* Reuse the current encoder: set scissor + pipeline + params, draw
          * the clear quad.  No encoder creation/destruction overhead.
          *
-         * After the clear draw, invalidateLastBoundState is needed because
-         * the clear pipeline/scissor/viewport differ from what the next draw
-         * expects — without invalidation, the dedup fast path would skip
-         * re-binding the draw pipeline, causing corruption. */
+         * The clear draw touches exactly viewport, scissor, pipeline,
+         * depth-stencil (when clearing depth) and VS/FS buffer slot 0 —
+         * record those real values / invalidate those slots in the bind
+         * cache instead of invalidating everything, so textures, samplers
+         * and the other buffer slots keep their dedup state. */
         id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
 
-        [encoder setViewport:viewport];
-        [encoder setScissorRect:scissor];
+        [_bindingSync setViewportIfNeeded:viewport encoder:encoder];
+        [_bindingSync setScissorRectIfNeeded:scissor encoder:encoder];
         [encoder setRenderPipelineState:pipeline];
+        [_bindingSync setLastPipelineState:pipeline];
         if (wantsDepth) {
             id<MTLDepthStencilState> depthState = [self clearRectDepthState];
             if (depthState) {
                 [encoder setDepthStencilState:depthState];
+                [_bindingSync setLastDepthStencilState:depthState];
             }
         }
         [encoder setVertexBytes:&params length:sizeof(params) atIndex:0];
+        [_bindingSync invalidateVertexBufferAtIndex:0];
         if (wantsColor) {
             [encoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
+            [_bindingSync invalidateFragmentBufferAtIndex:0];
         }
         [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-
-        [self invalidateLastBoundState];
 
         if (wantsColor && colorTexObj && colorAttachment) {
             colorAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
