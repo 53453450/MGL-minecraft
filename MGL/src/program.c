@@ -432,14 +432,17 @@ GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuin
         return GL_FALSE;
     }
 
+    /* Fast path: hashtable membership implies the object is live (programs
+     * are removed from the table before free), so the memory is readable and
+     * the name can be compared without the vm_region_64 syscall. */
+    if (mglHashTableContainsData(&STATE(program_table), program)) {
+        return program->name == expectedName;
+    }
+
     if (!mglObjectPointerLooksPlausible(program) ||
         !mglPointerRangeIsReadable(program, sizeof(*program)) ||
         program->name != expectedName) {
         return GL_FALSE;
-    }
-
-    if (mglHashTableContainsData(&STATE(program_table), program)) {
-        return GL_TRUE;
     }
 
     /*
