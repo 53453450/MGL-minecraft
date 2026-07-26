@@ -507,6 +507,12 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         return;
     }
 
+    /* Pure diagnostics: with the trace log disabled every downstream sink is
+     * a no-op, so exit before the program resolve. */
+    if (!mglTraceLogIsEnabled()) {
+        return;
+    }
+
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     MGLFragmentTextureTraceBinding *earlyFs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
     MGLFragmentTextureTraceBinding *earlyFs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
@@ -627,6 +633,12 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         return;
     }
 
+    /* Pure diagnostics: with the trace log disabled every downstream sink is
+     * a no-op, so exit before any resolves or string formatting. */
+    if (!mglTraceLogIsEnabled()) {
+        return;
+    }
+
     MGLFragmentTextureTraceBinding *fs0 = &_resourceFallback.fragmentTextureTraceBindings[0];
     MGLFragmentTextureTraceBinding *fs1 = &_resourceFallback.fragmentTextureTraceBindings[1];
     MGLFragmentTextureTraceBinding *fs2 = &_resourceFallback.fragmentTextureTraceBindings[2];
@@ -641,13 +653,6 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         fs1->used_sampled_copy ||
         fs2->used_sampled_copy ||
         fs3->used_sampled_copy;
-    /* Cheap early exit: if trace is off and no FS slot has RT/copy state,
-     * skip the program resolve entirely (saves up to 5 resolves per
-     * replay command when trace is disabled — the common case). */
-    if (!earlyFsSlotHasRT && !earlyFsSlotUsedCopy && !mglTraceLogIsEnabled()) {
-        return;
-    }
-
     Program *drawProgram = mglTraceResolveDrawProgram(glm_ctx);
     if (!mglTraceShouldLogReplay(glm_ctx, drawProgram) &&
         !earlyFsSlotHasRT &&
