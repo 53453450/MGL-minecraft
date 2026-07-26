@@ -2683,6 +2683,9 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->buffer = globalSlot->buf->name;
         globalSlot->offset = 0;
         globalSlot->size = size;
+        /* This is the only write point for _UNIFORM_CONSTANT slots; keep the
+         * active_mask in sync like the glBindBufferBase/Range paths do. */
+        mglBufferBaseSetActive(&ctx->state.buffer_base[_UNIFORM_CONSTANT], (GLuint)location);
     }
 
     /* The binding hashes only see slot identity ({buf, name, offset, size};
