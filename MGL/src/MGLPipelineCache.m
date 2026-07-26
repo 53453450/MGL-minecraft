@@ -5,6 +5,53 @@
 #import "mgl_frame_activity.h"
 #import "mgl_msl_compiler.h"
 
+@implementation MGLPipelineCacheKey {
+    uint64_t _words[MGL_PIPELINE_CACHE_KEY_WORDS];
+}
+
+- (instancetype)initWithWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
+{
+    self = [super init];
+    if (self) {
+        memcpy(_words, words, sizeof(_words));
+    }
+    return self;
+}
+
+- (BOOL)isEqual:(id)object
+{
+    if (self == object) return YES;
+    if (![object isKindOfClass:[MGLPipelineCacheKey class]]) return NO;
+    MGLPipelineCacheKey *other = object;
+    return memcmp(_words, other->_words, sizeof(_words)) == 0;
+}
+
+- (NSUInteger)hash
+{
+    uint64_t hash = 0x9e3779b97f4a7c15ull;
+    for (unsigned i = 0; i < MGL_PIPELINE_CACHE_KEY_WORDS; i++) {
+        hash ^= _words[i];
+        hash *= 0x100000001b3ull;
+    }
+    return (NSUInteger)hash;
+}
+
+- (id)copyWithZone:(NSZone *)zone
+{
+    return self;  /* immutable */
+}
+
+- (NSString *)description
+{
+    return [NSString stringWithFormat:@"%016llx-%016llx-%016llx-%016llx-%016llx-%016llx-%016llx",
+            (unsigned long long)_words[0], (unsigned long long)_words[1],
+            (unsigned long long)_words[2], (unsigned long long)_words[3],
+            (unsigned long long)_words[4], (unsigned long long)_words[5],
+            (unsigned long long)_words[6]];
+}
+
+@end
+
 @interface MGLDepthStencilCacheKey : NSObject <NSCopying>
 @property(nonatomic) MTLCompareFunction depthCompareFunction;
 @property(nonatomic) BOOL depthWriteEnabled;
@@ -219,26 +266,26 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return state;
 }
 
-- (id)pipelineEntryForKey:(NSString *)key
+- (id)pipelineEntryForKey:(MGLPipelineCacheKey *)key
 {
     return _state.pipelineStateCache[key];
 }
 
-- (void)markPipelineEntryUsedForKey:(NSString *)key
+- (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key
 {
     if (_state.pipelineStateCache[key]) {
         MGLTouchLRU(_state.pipelineStateCacheLRU, key);
     }
 }
 
-- (MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(NSString *)key
+- (MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key
 {
     MTLRenderPipelineDescriptor *descriptor = _state.pipelineDescriptorCache[key];
     if (descriptor) MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
     return descriptor;
 }
 
-- (NSUInteger)storePipelineEntry:(id)entry forKey:(NSString *)key
+- (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key
 {
     if (!entry || !key) return 0;
     NSUInteger removed = 0;
@@ -256,7 +303,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 }
 
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                         forKey:(NSString *)key
+                         forKey:(MGLPipelineCacheKey *)key
 {
     if (!descriptor || !key) return;
     _state.pipelineDescriptorCache[key] = [descriptor copy];

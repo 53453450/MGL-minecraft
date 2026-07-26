@@ -16,6 +16,21 @@
 
 #include "glm_context.h"
 
+NS_ASSUME_NONNULL_BEGIN
+
+#define MGL_PIPELINE_CACHE_KEY_WORDS 7u
+
+/* Immutable value key for the PSO/descriptor caches: {primaryKey, vertex MSL
+ * instance/generation, fragment MSL instance/generation, pipeline descriptor
+ * signature, vertex descriptor signature}.  Replaces the hex NSString key so
+ * lookups hash/compare 7 words instead of formatting and comparing a
+ * 118-char string on every pipeline resolve. */
+@interface MGLPipelineCacheKey : NSObject <NSCopying>
+- (instancetype)initWithWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
+@end
+
+NS_ASSUME_NONNULL_END
+
 typedef struct MGLPipelineCacheState_t {
     MTLBlendFactor src_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
     MTLBlendFactor dst_blend_rgb_factor[MAX_COLOR_ATTACHMENTS];
@@ -31,10 +46,10 @@ typedef struct MGLPipelineCacheState_t {
     GLuint pipelineProgramName;
     id<MTLFunction> __strong _Nullable pipelineVertexFunction;
     id<MTLFunction> __strong _Nullable pipelineFragmentFunction;
-    NSMutableDictionary<NSString *, id> *__strong _Nullable pipelineStateCache;
-    NSMutableOrderedSet<NSString *> *__strong _Nullable pipelineStateCacheLRU;
-    NSMutableDictionary<NSString *, MTLRenderPipelineDescriptor *> *__strong _Nullable pipelineDescriptorCache;
-    NSMutableOrderedSet<NSString *> *__strong _Nullable pipelineDescriptorCacheLRU;
+    NSMutableDictionary<MGLPipelineCacheKey *, id> *__strong _Nullable pipelineStateCache;
+    NSMutableOrderedSet<MGLPipelineCacheKey *> *__strong _Nullable pipelineStateCacheLRU;
+    NSMutableDictionary<MGLPipelineCacheKey *, MTLRenderPipelineDescriptor *> *__strong _Nullable pipelineDescriptorCache;
+    NSMutableOrderedSet<MGLPipelineCacheKey *> *__strong _Nullable pipelineDescriptorCacheLRU;
     NSMutableDictionary *__strong _Nullable depthStencilStateCache;
     NSMutableOrderedSet *__strong _Nullable depthStencilStateCacheLRU;
     BOOL dsCacheEnabled;
@@ -63,12 +78,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 - (nullable id<MTLDepthStencilState>)depthStencilStateForDescriptor:
     (MTLDepthStencilDescriptor *)descriptor;
-- (nullable id)pipelineEntryForKey:(NSString *)key;
-- (void)markPipelineEntryUsedForKey:(NSString *)key;
-- (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(NSString *)key;
-- (NSUInteger)storePipelineEntry:(id)entry forKey:(NSString *)key;
+- (nullable id)pipelineEntryForKey:(MGLPipelineCacheKey *)key;
+- (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key;
+- (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key;
+- (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key;
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
-                         forKey:(NSString *)key;
+                         forKey:(MGLPipelineCacheKey *)key;
 
 - (void)initializeCompilerIfAvailableUnlessDisabled:(BOOL)disabled;
 - (nullable id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source

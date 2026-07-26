@@ -5213,7 +5213,7 @@ stencil_format_ok:;
             }
 
 	            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
-	            NSString *pipelineCacheKey = nil;
+	            MGLPipelineCacheKey *pipelineCacheKey = nil;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
             uint64_t vertexSig = 0;
@@ -5236,15 +5236,16 @@ stencil_format_ok:;
                     ? currentFragmentProgram->msl_texture_cache_instance_id : 0u;
                 uint64_t fragmentGeneration = currentFragmentProgram
                     ? currentFragmentProgram->msl_texture_cache_generation : 0u;
-                pipelineCacheKey = [NSString stringWithFormat:
-                                   @"%016llx-%016llx-%016llx-%016llx-%016llx-%016llx-%016llx",
-                                   (unsigned long long)primaryKey,
-                                   (unsigned long long)vertexInstance,
-                                   (unsigned long long)vertexGeneration,
-                                   (unsigned long long)fragmentInstance,
-                                   (unsigned long long)fragmentGeneration,
-                                   (unsigned long long)pipelineSig,
-                                   (unsigned long long)vertexSig];
+                const uint64_t keyWords[MGL_PIPELINE_CACHE_KEY_WORDS] = {
+                    primaryKey,
+                    vertexInstance,
+                    vertexGeneration,
+                    fragmentInstance,
+                    fragmentGeneration,
+                    pipelineSig,
+                    vertexSig,
+                };
+                pipelineCacheKey = [[MGLPipelineCacheKey alloc] initWithWords:keyWords];
 
                 /* Two-level cache lookup:
                  * Level 1: PSO cache (fastest - compiled pipeline ready to use)
@@ -5697,7 +5698,7 @@ stencil_format_ok:;
  * Pipeline cache insertion with LRU eviction, extracted from
  * syncPipelineStateWithDeferredBufferMap:.
  */
-- (void)insertPipelineIntoCacheWithKey:(NSString *)pipelineCacheKey
+- (void)insertPipelineIntoCacheWithKey:(MGLPipelineCacheKey *)pipelineCacheKey
                            pipelineSig:(uint64_t)pipelineSig
                              vertexSig:(uint64_t)vertexSig
                             descriptor:(MTLRenderPipelineDescriptor *)descriptor
