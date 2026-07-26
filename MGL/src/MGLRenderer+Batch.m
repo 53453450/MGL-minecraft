@@ -1062,9 +1062,12 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                      phase:"ISSUE_STREAM_MERGE"];
                     [self issueStreamMergedBatch:batch context:glm_ctx encodeContext:&encCtx];
                     /* Stream batches bind transient vertex storage that is not
-                     * represented by MGLStateKey. Force the next batch to
-                     * restore its real VAO even when the GL keys are equal. */
-                    [self invalidateLastBoundState];
+                     * represented by MGLStateKey, so the next batch must do a
+                     * real restore even when the GL keys are equal.  The
+                     * transient binds went through the recorded bindingSync
+                     * path, so the bind cache stays truthful - only the
+                     * same-key skip needs to be disabled, not the cache. */
+                    lastKeyValid = NO;
                     break;
                 case MGL_BATCH_PATH_MDI:
                     mdiBatchCount++;
