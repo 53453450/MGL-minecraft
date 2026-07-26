@@ -98,6 +98,18 @@ static bool mglUniformValueProbeSkipped(void)
     return cached == 1;
 }
 
+/* Kill switch for skipping state-hash invalidation when a glUniform upload
+ * leaves the plain-uniform slot identity unchanged.  Set
+ * MGL_UNIFORM_IDENTITY_GATE=0 to restore unconditional invalidation. */
+static bool mglUniformIdentityGateEnabled(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = mglEnvFlagEnabledDefaultOn("MGL_UNIFORM_IDENTITY_GATE") ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 #define MGL_SAFE_CSTRING_MAX 4096u
 
 static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
@@ -2625,6 +2637,8 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      */
     BufferBaseTarget *uniformSlot = &program->plain_uniform_buffers[location];
     Buffer *buf = uniformSlot->buf;
+    Buffer *prevUniformBuf = uniformSlot->buf;
+    GLsizeiptr prevUniformSize = uniformSlot->size;
 
     if(buf == NULL)
     {
@@ -2653,6 +2667,8 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
      * still preferring the per-program storage above when it exists.
      */
     BufferBaseTarget *globalSlot = &ctx->state.buffer_base[_UNIFORM_CONSTANT].buffers[location];
+    Buffer *prevGlobalBuf = globalSlot->buf;
+    GLsizeiptr prevGlobalSize = globalSlot->size;
     if (!globalSlot->buf) {
         GLuint globalName = MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE |
                             0x00fff000u |
@@ -2669,7 +2685,20 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         globalSlot->size = size;
     }
 
-    mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+    /* The binding hashes only see slot identity ({buf, name, offset, size};
+     * offset is always 0 here), not buffer contents.  A repeat upload to the
+     * same location with the same size leaves that identity untouched, so
+     * invalidating the state-hash caches would just force a full per-draw
+     * binding-hash recompute for an identical result.  Contents changes are
+     * handled by initBufferData's own memcmp+flush above; the renderer bit
+     * still triggers the buffer remap. */
+    if (!mglUniformIdentityGateEnabled() ||
+        uniformSlot->buf != prevUniformBuf || uniformSlot->size != prevUniformSize ||
+        globalSlot->buf != prevGlobalBuf || globalSlot->size != prevGlobalSize) {
+        mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+    } else {
+        mglMarkRendererDirtyBits(&ctx->state, DIRTY_BUFFER_BASE_STATE);
+    }
 }
 
 static void mglUniformDoubleVectorAsFloat(GLMContext ctx,
