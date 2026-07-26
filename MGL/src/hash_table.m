@@ -49,16 +49,118 @@
 #define MGL_HASH_COOKIE_STATES 0x53544154455f4d47ULL
 
 static int mglRehash(HashTable *table, size_t new_capacity);
+static size_t mglNextPow2(size_t v);
 
-static void mglInvalidateContainsDataCache(HashTable *table)
+#define MGL_HASH_PTR_SET_MIN_CAPACITY 256u
+
+static inline size_t mglHashPtrSetSlot(const void *ptr)
 {
-    if (!table) {
-        return;
-    }
+    uintptr_t h = (uintptr_t)ptr;
+    h >>= 4u;
+    h ^= h >> 17u;
+    h *= UINT64_C(0x9e3779b97f4a7c15);
+    h ^= h >> 29u;
+    return (size_t)h;
+}
 
-    memset(table->cached_valid_ptrs, 0, sizeof(table->cached_valid_ptrs));
-    memset(table->cached_valid_gens, 0, sizeof(table->cached_valid_gens));
-    table->cached_valid_next = 0u;
+static void mglHashPtrSetReset(HashTable *table)
+{
+    if (!table) return;
+    if (table->ptr_set && table->ptr_set_capacity) {
+        memset(table->ptr_set, 0, table->ptr_set_capacity * sizeof(const void *));
+    }
+    table->ptr_set_count = 0u;
+}
+
+/* Detach without freeing — used on corruption repair, where the pointer
+ * itself may be damaged (same leak-on-corruption policy as keys/states). */
+static void mglHashPtrSetDetach(HashTable *table)
+{
+    if (!table) return;
+    table->ptr_set = NULL;
+    table->ptr_set_capacity = 0u;
+    table->ptr_set_count = 0u;
+}
+
+static void mglHashPtrSetAdd(HashTable *table, const void *ptr);
+
+/* Returns 1 when an insert is possible after the call (either the grow
+ * succeeded or the existing set still has room). */
+static int mglHashPtrSetGrow(HashTable *table, size_t new_capacity)
+{
+    new_capacity = mglNextPow2(new_capacity);
+    const void **fresh = (const void **)calloc(new_capacity, sizeof(const void *));
+    if (!fresh) {
+        return table->ptr_set != NULL &&
+               table->ptr_set_count < table->ptr_set_capacity;
+    }
+    const void **old = table->ptr_set;
+    size_t old_capacity = table->ptr_set_capacity;
+    table->ptr_set = fresh;
+    table->ptr_set_capacity = new_capacity;
+    table->ptr_set_count = 0u;
+    if (old) {
+        for (size_t i = 0; i < old_capacity; i++) {
+            if (old[i]) mglHashPtrSetAdd(table, old[i]);
+        }
+        free(old);
+    }
+    return 1;
+}
+
+static void mglHashPtrSetAdd(HashTable *table, const void *ptr)
+{
+    if (!table || !ptr) return;
+    if (!table->ptr_set ||
+        (table->ptr_set_count + 1u) * 10u >= table->ptr_set_capacity * 7u) {
+        size_t want = table->ptr_set_capacity ? table->ptr_set_capacity * 2u
+                                              : MGL_HASH_PTR_SET_MIN_CAPACITY;
+        if (!mglHashPtrSetGrow(table, want)) return;  /* dropped entry: scan fallback covers it */
+    }
+    size_t mask = table->ptr_set_capacity - 1u;
+    size_t i = mglHashPtrSetSlot(ptr) & mask;
+    for (size_t probe = 0; probe <= mask; probe++) {
+        if (table->ptr_set[i] == ptr) return;
+        if (!table->ptr_set[i]) {
+            table->ptr_set[i] = ptr;
+            table->ptr_set_count++;
+            return;
+        }
+        i = (i + 1u) & mask;
+    }
+}
+
+static void mglHashPtrSetRemove(HashTable *table, const void *ptr)
+{
+    if (!table || !ptr || !table->ptr_set || table->ptr_set_capacity == 0u) return;
+    size_t mask = table->ptr_set_capacity - 1u;
+    size_t i = mglHashPtrSetSlot(ptr) & mask;
+    size_t probe = 0u;
+    while (table->ptr_set[i] != ptr) {
+        if (!table->ptr_set[i] || probe++ >= mask) return;  /* not present */
+        i = (i + 1u) & mask;
+    }
+    /* Backward-shift deletion keeps probe chains intact without tombstones. */
+    size_t j = i;
+    for (;;) {
+        table->ptr_set[j] = NULL;
+        size_t k = j;
+        for (;;) {
+            k = (k + 1u) & mask;
+            const void *q = table->ptr_set[k];
+            if (!q) goto done;
+            size_t home = mglHashPtrSetSlot(q) & mask;
+            int movable = (j <= k) ? (home <= j || home > k)
+                                   : (home <= j && home > k);
+            if (movable) {
+                table->ptr_set[j] = q;
+                j = k;
+                break;
+            }
+        }
+    }
+done:
+    if (table->ptr_set_count > 0u) table->ptr_set_count--;
 }
 
 static inline uintptr_t mglMakeCookie(const void *ptr, uintptr_t salt)
@@ -137,7 +239,7 @@ static int mglRepairHashTableIfNeeded(HashTable *table, const char *where)
     table->count = 0u;
     table->current_name = saved_name;
     table->deletion_generation = 0u;
-    mglInvalidateContainsDataCache(table);
+    mglHashPtrSetDetach(table);
 
     return mglRehash(table, MGL_HASH_MIN_CAPACITY);
 }
@@ -157,19 +259,35 @@ int mglHashTableContainsData(HashTable *table, const void *data)
         return 0;
     }
 
-    /* Direct-mapped pointer cache. Minecraft rotates through more than eight
-     * arena/section buffers per frame, so the old linear 8-entry ring thrashed
-     * and repeatedly fell back to scanning the full object table. */
-    uintptr_t cache_hash = (uintptr_t)data;
-    cache_hash >>= 4u;
-    cache_hash ^= cache_hash >> 17u;
-    cache_hash *= UINT64_C(0x9e3779b97f4a7c15);
-    cache_hash ^= cache_hash >> 29u;
-    size_t cache_index =
-        (size_t)cache_hash & (MGL_HASH_VALID_CACHE_CAPACITY - 1u);
-    if (data == table->cached_valid_ptrs[cache_index] &&
-        table->deletion_generation == table->cached_valid_gens[cache_index]) {
-        return 1;
+    /* Exact-positive membership set: a hit proves the pointer is in the
+     * table in O(1).  A miss falls back to the scan, which covers set-alloc
+     * failure and conservatively dropped entries. */
+    if (table->ptr_set && table->ptr_set_capacity) {
+        size_t mask = table->ptr_set_capacity - 1u;
+        size_t i = mglHashPtrSetSlot(data) & mask;
+        for (size_t probe = 0; probe <= mask; probe++) {
+            if (table->ptr_set[i] == data) {
+#ifdef DEBUG
+                static uint32_t s_setCheck = 0;
+                if ((++s_setCheck & 0x3Fu) == 0u) {
+                    int scanned = 0;
+                    for (size_t s = 0; s < table->size; s++) {
+                        if (table->states[s] == MGL_HASH_STATE_OCCUPIED &&
+                            table->keys[s].data == data) {
+                            scanned = 1;
+                            break;
+                        }
+                    }
+                    assert(scanned && "ptr_set false positive");
+                }
+#endif
+                return 1;
+            }
+            if (!table->ptr_set[i]) {
+                break;
+            }
+            i = (i + 1u) & mask;
+        }
     }
 
     for (size_t i = 0; i < table->size; i++) {
@@ -177,8 +295,8 @@ int mglHashTableContainsData(HashTable *table, const void *data)
             continue;
         }
         if (table->keys[i].data == data) {
-            table->cached_valid_ptrs[cache_index] = data;
-            table->cached_valid_gens[cache_index] = table->deletion_generation;
+            /* Repopulate the set so the next query is O(1). */
+            mglHashPtrSetAdd(table, data);
             return 1;
         }
     }
@@ -474,7 +592,7 @@ void initHashTable(HashTable *ptr, GLuint size)
     ptr->size = 0;
     ptr->count = 0;
     ptr->deletion_generation = 0u;
-    mglInvalidateContainsDataCache(ptr);
+    mglHashPtrSetDetach(ptr);
 
     if (size > 0) {
         size_t desired = (size_t)size * 2u;
@@ -523,7 +641,8 @@ void destroyHashTable(HashTable *ptr)
     ptr->count = 0u;
     ptr->current_name = 0u;
     ptr->deletion_generation = 0u;
-    mglInvalidateContainsDataCache(ptr);
+    free(ptr->ptr_set);
+    mglHashPtrSetDetach(ptr);
 }
 
 GLuint getNewName(HashTable *table)
@@ -597,18 +716,24 @@ void insertHashElement(HashTable *table, GLuint name, void *data)
         return;
     }
 
+    const void *replaced_data = NULL;
     if (!found) {
         table->count++;
     } else {
         /* Replacing an existing name removes its old data pointer from the
-         * table, so cached membership for that pointer is no longer valid. */
+         * table, so its membership entry must go too. */
+        replaced_data = table->keys[slot].data;
         table->deletion_generation++;
-        mglInvalidateContainsDataCache(table);
     }
 
     table->keys[slot].name = name;
     table->keys[slot].data = data;
     table->states[slot] = MGL_HASH_STATE_OCCUPIED;
+
+    if (replaced_data && replaced_data != data) {
+        mglHashPtrSetRemove(table, replaced_data);
+    }
+    mglHashPtrSetAdd(table, data);
 
     if (MGL_VERBOSE_HASH_LOGS) {
         fprintf(stderr,
@@ -658,15 +783,17 @@ void deleteHashElement(HashTable *table, GLuint name)
      *   - Samplers:  caller releases mtl_data after deleteHashElement.
      */
 
+    const void *removed_data = table->keys[slot].data;
     table->keys[slot].name = 0;
     table->keys[slot].data = NULL;
     table->states[slot] = MGL_HASH_STATE_DELETED;
     if (table->count > 0u) {
         table->count--;
     }
-    /* Bump generation so cached pointer validations fall back to full scan. */
+    /* Bump generation for external staleness snapshots; drop only the
+     * removed pointer from the membership set. */
     table->deletion_generation++;
-    mglInvalidateContainsDataCache(table);
+    mglHashPtrSetRemove(table, removed_data);
 
     if (table->count == 0u && table->states) {
         memset(table->states, MGL_HASH_STATE_EMPTY, table->size * sizeof(unsigned char));
@@ -708,7 +835,7 @@ void mglHashTableClearEntries(HashTable *table)
         table->states[i] = MGL_HASH_STATE_EMPTY;
     }
     table->count = 0u;
-    /* Bump generation and invalidate cache on bulk clear. */
+    /* Bump generation and reset the membership set on bulk clear. */
     table->deletion_generation++;
-    mglInvalidateContainsDataCache(table);
+    mglHashPtrSetReset(table);
 }

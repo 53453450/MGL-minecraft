@@ -29,8 +29,6 @@ typedef struct {
     void *data;
 } HashObj;
 
-#define MGL_HASH_VALID_CACHE_CAPACITY 64u
-
 typedef struct {
     size_t size;
     size_t count;
@@ -43,10 +41,15 @@ typedef struct {
      * that cache a pointer + generation pair can skip the O(N) contains-data
      * scan when the generation hasn't changed. */
     uint64_t deletion_generation;
-    /* Direct-mapped working set for repeatedly validated bound objects. */
-    const void *cached_valid_ptrs[MGL_HASH_VALID_CACHE_CAPACITY];
-    uint64_t cached_valid_gens[MGL_HASH_VALID_CACHE_CAPACITY];
-    uint8_t cached_valid_next;
+    /* Exact-positive pointer membership set (open addressing, linear probe,
+     * backward-shift delete), maintained at insert/delete/replace/clear.
+     * A hit proves table membership in O(1); a miss falls back to the
+     * O(size) scan in mglHashTableContainsData, so the set may safely lose
+     * entries (alloc failure, conservative removal) but must never contain
+     * a pointer that is not in the table. */
+    const void **ptr_set;
+    size_t ptr_set_capacity;   /* power of two; 0 until first insert */
+    size_t ptr_set_count;
 } HashTable;
 
 HashTable *createHashTable(GLuint size);
