@@ -44,12 +44,13 @@
 
 static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
 {
+    /* The thread-local current context stays live from lazy init to context
+     * destruction, so a NULL check suffices - no readability probe needed. */
     GLMContext current = MGLgetCurrentContext();
-    if (!current || !mglPointerRangeIsReadable(current, sizeof(*current))) {
+    if (!current) {
         fprintf(stderr,
-                "MGL WARNING: dropping uniform update in %s with invalid current ctx=%p arg=%p\n",
+                "MGL WARNING: dropping uniform update in %s with no current ctx arg=%p\n",
                 func ? func : "(null)",
-                (void *)current,
                 (void *)ctx);
         return NULL;
     }
@@ -72,7 +73,7 @@ static GLMContext mglUniformResolveContext(GLMContext ctx, const char *func)
 
 static void mglUniformSetError(GLMContext ctx, GLenum error)
 {
-    if (!ctx || !mglPointerRangeIsReadable(ctx, sizeof(*ctx))) {
+    if (!ctx) {
         return;
     }
     if (ctx->state.error == GL_NO_ERROR) {
