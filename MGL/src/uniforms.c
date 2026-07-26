@@ -81,6 +81,23 @@ static void mglUniformSetError(GLMContext ctx, GLenum error)
     }
 }
 
+/* Defined in MGLRenderer.m (ObjC BOOL == bool on arm64); declared extern here
+ * so this C TU can query the kill switch, same pattern as mgl_msl_compiler.m. */
+extern bool mglEnvFlagEnabledDefaultOn(const char *name);
+
+/* Kill switch for the vm_region readability probes on client value pointers.
+ * Skipped by default; set MGL_SKIP_VALUE_PROBE=0 to restore the probes (bad
+ * pointers are then dropped with a warning instead of faulting, at the cost
+ * of a syscall per upload). */
+static bool mglUniformValueProbeSkipped(void)
+{
+    static int cached = -1;
+    if (cached < 0) {
+        cached = mglEnvFlagEnabledDefaultOn("MGL_SKIP_VALUE_PROBE") ? 1 : 0;
+    }
+    return cached == 1;
+}
+
 #define MGL_SAFE_CSTRING_MAX 4096u
 
 static size_t mglSafeCStringReadableChunkSize(const char *str, size_t remaining)
@@ -2506,7 +2523,8 @@ static bool checkUniformUploadParams(GLMContext ctx, GLint location, const void 
         return false;
     }
 
-    if (total > 0 && !mglPointerRangeIsReadable(ptr, total)) {
+    if (total > 0 && !mglUniformValueProbeSkipped() &&
+        !mglPointerRangeIsReadable(ptr, total)) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update location=%d count=%d bytes=%zu unreadable value=%p\n",
                 location,
@@ -2579,7 +2597,8 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         mglUniformSetError(ctx, GL_INVALID_VALUE);
         return;
     }
-    if (size > 0 && !mglPointerRangeIsReadable(ptr, (size_t)size)) {
+    if (size > 0 && !mglUniformValueProbeSkipped() &&
+        !mglPointerRangeIsReadable(ptr, (size_t)size)) {
         fprintf(stderr,
                 "MGL WARNING: dropping uniform update location=%d bytes=%lld unreadable value=%p\n",
                 location,
@@ -2736,7 +2755,8 @@ void mglUniform1i(GLMContext ctx, GLint location, GLint v0)
 
 void mglUniform1iv(GLMContext ctx, GLint location, GLsizei count, const GLint *value)
 {
-    if (count > 0 && value && mglPointerRangeIsReadable(value, sizeof(*value)) &&
+    if (count > 0 && value &&
+        (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         mglSetSamplerUniformUnit(ctx, location, value[0])) {
         return;
     }
@@ -2755,7 +2775,8 @@ void mglUniform1ui(GLMContext ctx, GLint location, GLuint v0)
 
 void mglUniform1uiv(GLMContext ctx, GLint location, GLsizei count, const GLuint *value)
 {
-    if (count > 0 && value && mglPointerRangeIsReadable(value, sizeof(*value)) &&
+    if (count > 0 && value &&
+        (mglUniformValueProbeSkipped() || mglPointerRangeIsReadable(value, sizeof(*value))) &&
         value[0] <= (GLuint)INT_MAX &&
         mglSetSamplerUniformUnit(ctx, location, (GLint)value[0])) {
         return;
