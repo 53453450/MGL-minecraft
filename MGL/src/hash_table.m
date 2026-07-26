@@ -295,8 +295,15 @@ int mglHashTableContainsData(HashTable *table, const void *data)
             continue;
         }
         if (table->keys[i].data == data) {
-            /* Repopulate the set so the next query is O(1). */
-            mglHashPtrSetAdd(table, data);
+            /* Repopulate the set so the next query is O(1) — but only when
+             * no grow is needed: queries must stay allocation-free, because
+             * batch replay bitwise-copies GLMState (and the embedded table
+             * structs) around flushes, and a ptr_set realloc inside that
+             * window would be restored as a dangling pointer. */
+            if (table->ptr_set &&
+                (table->ptr_set_count + 1u) * 10u < table->ptr_set_capacity * 7u) {
+                mglHashPtrSetAdd(table, data);
+            }
             return 1;
         }
     }
