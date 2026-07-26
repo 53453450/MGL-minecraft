@@ -277,9 +277,9 @@ static inline void mglClearStateDirtyBitsPreservingHashInvalidation(GLMState *st
  * Using mglCopyHotStateFields instead of full sizeof(GLMState) memcpy saves
  * ~37.5% (31.6KB) per snapshot creation and per restore.
  *
- * Cold fields must be restored via mglRestoreColdBufferBase after restore,
- * using the pre-replay live state (savedState).  HashTable restoration is
- * already done at the restore call site. */
+ * Cold buffer_base types need no restore: the hot copy skips them and
+ * nothing in replay writes them, so active_state keeps the live values.
+ * Only the HashTables are fixed up at the restore call site. */
 
 /* mglCopyHotStateFields copies GLMState in memcpy regions that identify the
  * skipped ranges (the embedded HashTable block and the cold buffer_base
@@ -299,10 +299,10 @@ _Static_assert(offsetof(GLMState, glsl) - offsetof(GLMState, buffer_base)
                == _MAX_BUFFER_TYPES * sizeof(BufferBase),
                "field inserted between buffer_base and glsl; revisit mglCopyHotStateFields region 5");
 
-/* The hot list (mglCopyHotStateFields) and cold list (mglRestoreColdBufferBase)
- * are both expanded from the X-macros in mgl_types_buffer.h; this checks that
- * together they cover every buffer_base type exactly once, so adding a type
- * without classifying it hot or cold breaks the build. */
+/* The hot list (mglCopyHotStateFields) and cold list are both expanded from
+ * the X-macros in mgl_types_buffer.h; this checks that together they cover
+ * every buffer_base type exactly once, so adding a type without classifying
+ * it hot or cold breaks the build. */
 _Static_assert(kMGLSnapshotHotBufferBaseCount + kMGLSnapshotColdBufferBaseCount
                == _MAX_BUFFER_TYPES,
                "buffer type added without classifying it hot or cold; update "
@@ -340,20 +340,6 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
                (char *)src + post_start,
                post_size);
     }
-}
-
-/* Restore the 11 cold buffer_base types from savedState.  Called after
- * mglCopyHotStateFields during batch replay restore, alongside the existing
- * HashTable fixup.  Without this, the cold buffer_base slots in active_state
- * retain whatever values were present before restore (live state from prior
- * replay iteration), which may differ from the draw-time state. */
-static inline void mglRestoreColdBufferBase(GLMState *dst, const GLMState *savedState)
-{
-    if (!dst || !savedState) return;
-
-#define MGL_SNAPSHOT_RESTORE_COLD(_t_) dst->buffer_base[_t_] = savedState->buffer_base[_t_];
-    MGL_SNAPSHOT_COLD_BUFFER_BASE_TYPES(MGL_SNAPSHOT_RESTORE_COLD)
-#undef MGL_SNAPSHOT_RESTORE_COLD
 }
 
 #endif /* mgl_types_state_h */

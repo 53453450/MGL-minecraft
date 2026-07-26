@@ -48,8 +48,6 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) const MGLBindingDedupState *state;
 
 - (void)invalidate;
-- (void)copyStateTo:(MGLBindingDedupState *)destination;
-- (void)restoreStateFrom:(const MGLBindingDedupState *)source;
 
 - (void)recordVertexBuffer:(nullable id<MTLBuffer>)buffer
                     offset:(NSUInteger)offset

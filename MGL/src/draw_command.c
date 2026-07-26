@@ -180,9 +180,9 @@ static void mglDestroyTransientBuffer(GLMContext ctx, Buffer *buffer)
 
 /* Buffer_base types that batch snapshots must retain/release.
  * Only the 5 "hot" types are in the snapshot (mglCopyHotStateFields Region 4);
- * the 11 cold types are restored from savedState via mglRestoreColdBufferBase.
+ * the 11 cold types stay live in active_state through replay (never written).
  * Retaining cold types would dereference stale arena pointers → SIGSEGV.
- * MUST stay in sync with mglCopyHotStateFields Region 4 and mglRestoreColdBufferBase. */
+ * MUST stay in sync with mglCopyHotStateFields Region 4. */
 static const int kMGLSnapshotBufferBaseTypes[] = {
 #define MGL_SNAPSHOT_LIST_HOT(_t_) _t_,
     MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_LIST_HOT)

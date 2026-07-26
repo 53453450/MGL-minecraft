@@ -1208,9 +1208,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         glm_ctx->active_state->renderbuffer_table        = savedState->renderbuffer_table;
         glm_ctx->active_state->framebuffer_table         = savedState->framebuffer_table;
         glm_ctx->active_state->sampler_table             = savedState->sampler_table;
-        /* Restore the 11 cold buffer_base types from savedState (the snapshot
-         * only captured the 5 hot types read by the encoder). */
-        mglRestoreColdBufferBase(glm_ctx->active_state, savedState);
+        /* The 11 cold buffer_base types need no restore: the hot copy above
+         * skips them and nothing in replay writes them, so active_state still
+         * holds the pre-flush live values (== savedState). */
         mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
                                      glm_ctx->active_state->var.program_pipeline_binding);
     } else {
