@@ -1264,7 +1264,21 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             memcmp(a->viewport, b->viewport, sizeof(a->viewport)) != 0 ||
             memcmp(a->scissor, b->scissor, sizeof(a->scissor)) != 0) {
             replayDirtyBits |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
-            MGL_PERF_INC(g_mglDeltaDomainRenderStateSinceSwap);
+            /* Distinguish pure UBO-offset noise (per-draw dynamic-transforms
+             * rebinds change render_state_hash via uniform_buffer_hash alone)
+             * from real render-state churn, so this counter stays readable
+             * under the MC 1.21.11 workload. */
+            if ((a->render_state_hash ^ a->uniform_buffer_hash) ==
+                    (b->render_state_hash ^ b->uniform_buffer_hash) &&
+                a->caps_flags == b->caps_flags &&
+                a->scissor_enabled == b->scissor_enabled &&
+                a->primitive_type == b->primitive_type &&
+                memcmp(a->viewport, b->viewport, sizeof(a->viewport)) == 0 &&
+                memcmp(a->scissor, b->scissor, sizeof(a->scissor)) == 0) {
+                MGL_PERF_INC(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglDeltaDomainRenderStateSinceSwap);
+            }
         }
         if (replayDirtyBits != kMGLFullReplayDirtyBits) {
             MGL_PERF_INC(g_mglDirtyKeyDeltaNarrowSinceSwap);

@@ -159,6 +159,10 @@ extern _Atomic uint64_t g_mglDeltaDomainProgramSinceSwap;
 extern _Atomic uint64_t g_mglDeltaDomainVAOSinceSwap;
 extern _Atomic uint64_t g_mglDeltaDomainTextureSinceSwap;
 extern _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap;  /* render pass != current FBO */
+/* rs-domain delta where the difference vanishes after XOR-ing out
+ * uniform_buffer_hash and all other rs sub-fields match: pure per-draw UBO
+ * offset noise (MC 1.21.11 dynamic transforms), not real render-state churn. */
+extern _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -322,6 +326,7 @@ typedef struct MGLPerfCounters {
     uint64_t delta_domain_vao;
     uint64_t delta_domain_texture;
     uint64_t delta_domain_render_state;
+    uint64_t delta_domain_render_state_ubo_only;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -384,6 +389,7 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.delta_domain_vao        = MGL_FRAME_LOAD(g_mglDeltaDomainVAOSinceSwap);
     c.delta_domain_texture    = MGL_FRAME_LOAD(g_mglDeltaDomainTextureSinceSwap);
     c.delta_domain_render_state = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateSinceSwap);
+    c.delta_domain_render_state_ubo_only = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
     return c;
 }
 
@@ -446,6 +452,7 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglDeltaDomainVAOSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDeltaDomainTextureSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDeltaDomainRenderStateSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDeltaDomainRenderStateUboOnlySinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is
