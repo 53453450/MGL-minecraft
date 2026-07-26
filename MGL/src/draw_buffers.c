@@ -247,9 +247,10 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx, const char *caller)
     if (!vao)
         return NULL;
 
+    /* Table membership implies live memory (VAOs leave the table before
+     * free), so no readability probe is needed on the hit path. */
     if (!mglObjectPointerLooksPlausible(vao) ||
-        !mglHashTableContainsData(&STATE(vao_table), vao) ||
-        !mglPointerRangeIsReadable(vao, sizeof(*vao)))
+        !mglHashTableContainsData(&STATE(vao_table), vao))
     {
         static uint64_t invalid_vao_count = 0;
         if (should_log_throttled(&invalid_vao_count, 8, 1000)) {
@@ -446,15 +447,16 @@ bool validate_program(GLMContext ctx)
     Program *program = ctx ? ctx->state.program : NULL;
 
     if (program) {
-        GLuint expectedName = 0u;
-        GLboolean pointerReadable =
+        GLuint expectedName = ctx->state.program_name;
+        if (expectedName == 0u &&
             mglObjectPointerLooksPlausible(program) &&
-            mglPointerRangeIsReadable(program, sizeof(*program));
-        if (pointerReadable) {
-            expectedName = ctx->state.program_name ? ctx->state.program_name : program->name;
+            mglPointerRangeIsReadable(program, sizeof(*program))) {
+            /* Name unknown: probe before dereferencing to read it.  With a
+             * known name, UsableForName's table fast path needs no probe. */
+            expectedName = program->name;
         }
 
-        if (!pointerReadable ||
+        if (expectedName == 0u ||
             !mglProgramPointerUsableForName(ctx, program, expectedName)) {
             fprintf(stderr, "MGL WARNING: validate_program dropping invalid cached program pointer %p\n",
                     (void *)program);

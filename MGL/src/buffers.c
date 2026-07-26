@@ -785,9 +785,10 @@ static VertexArray *mglGetSafeCurrentVAO(GLMContext ctx)
     if (!vao)
         return NULL;
 
+    /* Table membership implies live memory (VAOs leave the table before
+     * free), so no readability probe is needed on the hit path. */
     if (!mglObjectPointerLooksPlausible(vao) ||
-        !mglHashTableContainsData(&STATE(vao_table), vao) ||
-        !mglPointerRangeIsReadable(vao, sizeof(*vao)))
+        !mglHashTableContainsData(&STATE(vao_table), vao))
     {
         fprintf(stderr, "MGL WARNING: current VAO pointer %p is not in a sane VAO table; resetting to VAO 0\n", (void *)vao);
         ctx->state.vao = NULL;

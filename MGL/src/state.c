@@ -78,9 +78,10 @@ static Framebuffer *mglGetSafeDrawFramebuffer(GLMContext ctx, const char *where)
     if (!fbo)
         return NULL;
 
+    /* Table membership implies live memory (framebuffers leave the table
+     * before free), so no readability probe is needed on the hit path. */
     if (!mglObjectPointerLooksPlausible(fbo) ||
-        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo) ||
-        !mglPointerRangeIsReadable(fbo, sizeof(*fbo)))
+        !mglHashTableContainsData(&ctx->state.framebuffer_table, fbo))
     {
         fprintf(stderr, "MGL WARNING: %s dropping invalid draw framebuffer pointer %p\n",
                 where ? where : "state",

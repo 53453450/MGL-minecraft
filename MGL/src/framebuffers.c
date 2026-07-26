@@ -810,10 +810,11 @@ void mglBindFramebuffer(GLMContext ctx, GLenum target, GLuint framebuffer)
     oldReadFbo = ctx->state.readbuffer;
 
     VertexArray *currentVAO = ctx->state.vao;
+    /* Table membership implies live memory (VAOs leave the table before
+     * free), so no readability probe is needed on the hit path. */
     if (currentVAO &&
         (!mglObjectPointerLooksPlausible(currentVAO) ||
-         !mglHashTableContainsData(&ctx->state.vao_table, currentVAO) ||
-         !mglPointerRangeIsReadable(currentVAO, sizeof(*currentVAO))))
+         !mglHashTableContainsData(&ctx->state.vao_table, currentVAO)))
     {
         fprintf(stderr, "MGL WARNING: VAO pointer polluted before BindFramebuffer: vao=%p not in sane VAO table, resetting\n",
                 (void *)currentVAO);
