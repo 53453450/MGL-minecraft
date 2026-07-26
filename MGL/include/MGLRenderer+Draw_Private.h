@@ -202,7 +202,17 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                              offset:(NSUInteger *)offsetOut;
 
 // === Resource binding sync ===
-- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx;
+/* Work already performed by processDirtyStateDomainsLocked within the same
+ * processGLState invocation; syncResourceBindingsForContext skips these
+ * steps instead of repeating the full rebind (which used to run twice per
+ * draw). */
+typedef struct {
+    bool mappedBuffers;
+    bool updatedBaseLists;
+    bool boundActiveTextures;
+} MGLResourceSyncWork;
+- (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
+                           alreadyDone:(const MGLResourceSyncWork *)done;
 - (bool)bindVertexBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindFragmentBuffersToCurrentRenderEncoder:(const MGLEncodeContext *)encCtx;
 - (bool)bindActiveTexturesToMTL;

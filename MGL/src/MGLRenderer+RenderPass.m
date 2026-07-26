@@ -4551,7 +4551,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
     }
 
-    RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command]);
+    MGLResourceSyncWork resourceSyncWork = {false, false, false};
+    RETURN_FALSE_ON_FAILURE([self processDirtyStateDomainsLocked:draw_command
+                                                            work:&resourceSyncWork]);
 
     // Ensure a render encoder exists for draw commands.
     if (!_renderPassManager.state->currentRenderEncoder) {
@@ -4668,8 +4670,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     // Resource Sync domain (Resource Sync domain): stability rebind before draw. The logic was moved to
-    // syncResourceBindingsForContext:, only the dispatch remains here.
-    RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx]);
+    // syncResourceBindingsForContext:, only the dispatch remains here; steps
+    // the dirty-domain pass already ran this invocation are skipped.
+    RETURN_FALSE_ON_FAILURE([self syncResourceBindingsForContext:ctx
+                                                     alreadyDone:&resourceSyncWork]);
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     BOOL useFragCoordParams;
@@ -4737,6 +4741,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
  * draw), true on success.
  */
 - (bool)processDirtyStateDomainsLocked:(bool)draw_command
+                                  work:(MGLResourceSyncWork *)work
 {
     bool deferredBufferMapForPipelineBuild = false;
     if (ctx->active_state->dirty_bits)
@@ -4805,6 +4810,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
                 // figure out vertex shader uniforms / buffer mappings
                 RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+                if (work) work->mappedBuffers = true;
             }
 
             ctx->active_state->dirty_bits &= ~DIRTY_BUFFER_BASE_STATE;
@@ -4816,6 +4822,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (ctx->active_state->dirty_bits & (DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER))
         {
             RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+            if (work) work->boundActiveTextures = true;
 
             // textures / active textures and samplers are all handled in bindActiveTexturesToMTL
             ctx->active_state->dirty_bits &= ~(DIRTY_TEX | DIRTY_TEX_PARAM | DIRTY_TEX_BINDING | DIRTY_SAMPLER);
@@ -4830,6 +4837,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
+            if (work) work->updatedBaseLists = true;
 
             if (!_renderPassManager.state->currentRenderEncoder) {
                 RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
@@ -4845,6 +4853,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->vertex_buffer_map_list]);
             RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList: &ctx->active_state->fragment_buffer_map_list]);
+            if (work) work->updatedBaseLists = true;
 
             ctx->active_state->dirty_bits &= ~DIRTY_BUFFER;
         }

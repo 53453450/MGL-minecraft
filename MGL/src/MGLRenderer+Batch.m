@@ -430,16 +430,23 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 }
 
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
+                           alreadyDone:(const MGLResourceSyncWork *)done
 {
     GLMState *state = MGL_STATE(glm_ctx);
-    RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
-    RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
+    if (!done || !done->mappedBuffers) {
+        RETURN_FALSE_ON_FAILURE([self mapBuffersToMTL]);
+    }
+    if (!done || !done->updatedBaseLists) {
+        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->vertex_buffer_map_list]);
+        RETURN_FALSE_ON_FAILURE([self updateDirtyBaseBufferList:&state->fragment_buffer_map_list]);
+    }
     MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
     RETURN_FALSE_ON_FAILURE([self bindVertexBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindFragmentBuffersToCurrentRenderEncoder:&encCtx]);
     RETURN_FALSE_ON_FAILURE([self bindBufferSizeConstantsForRenderEncoder]);
-    RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+    if (!done || !done->boundActiveTextures) {
+        RETURN_FALSE_ON_FAILURE([self bindActiveTexturesToMTL]);
+    }
     RETURN_FALSE_ON_FAILURE([self restoreRenderEncoderAfterTextureUploadForDraw:"final-active-texture-bind"]);
     encCtx.encoder = _renderPassManager.state->currentRenderEncoder;
     if (![self bindTexturesToCurrentRenderEncoder:&encCtx]) {
