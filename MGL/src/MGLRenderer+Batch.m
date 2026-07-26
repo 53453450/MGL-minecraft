@@ -974,6 +974,11 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     MGLStateKey lastKey;
     BOOL lastKeyValid = NO;
     BOOL lastExecuteOk = NO;
+    /* The previous batch was stream-merged: its transient vertex storage is
+     * still reflected in active_state, so the next batch must not skip its
+     * restore and must at least re-run the VAO/buffer domains — but lastKey
+     * stays valid so the other delta domains keep narrowing. */
+    BOOL lastWasStreamBatch = NO;
     memset(&lastKey, 0, sizeof(lastKey));
 
     for (uint32_t b = 0; b < cb->batch_count; b++) {
@@ -990,13 +995,14 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             if (_batching.skipSameKeyRestoreEnabled &&
                 lastKeyValid &&
                 lastExecuteOk &&
+                !lastWasStreamBatch &&
                 _renderPassManager.state->currentRenderEncoder != nil &&
                 _bindingSync.state->lastBoundValid &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 [self currentRenderPassMatchesCurrentFramebuffer]) {
                 canSkipRestore = YES;
             } else if (_batching.skipSameKeyRestoreEnabled &&
-                       lastKeyValid && lastExecuteOk) {
+                       lastKeyValid && lastExecuteOk && !lastWasStreamBatch) {
                 /* Attribute the skip failure to its first breaking condition
                  * (in evaluation order) so Plan-B can target the real cause. */
                 if (_renderPassManager.state->currentRenderEncoder == nil) {
@@ -1035,7 +1041,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 [self restoreStateForBatch:batch
                                    context:glm_ctx
                                 savedState:&savedState
-                                   prevKey:(lastKeyValid ? &lastKey : NULL)];
+                                   prevKey:(lastKeyValid ? &lastKey : NULL)
+                           forcedDirtyBits:(lastWasStreamBatch
+                                            ? (DIRTY_VAO | DIRTY_BUFFER) : 0u)];
             }
 
             if (![self checkBatchShouldExecute:batch
@@ -1051,6 +1059,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             lastExecuteOk = YES;
             lastKey = batch->key;
             lastKeyValid = YES;
+            lastWasStreamBatch = NO;
             MGL_PERF_INC(g_mglBatchesReplayedSinceSwap);
 
             MGLBatchPath scheduledPath = [self scheduleDrawBatch:batch context:glm_ctx];
@@ -1072,9 +1081,11 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                      * represented by MGLStateKey, so the next batch must do a
                      * real restore even when the GL keys are equal.  The
                      * transient binds went through the recorded bindingSync
-                     * path, so the bind cache stays truthful - only the
-                     * same-key skip needs to be disabled, not the cache. */
-                    lastKeyValid = NO;
+                     * path (cache stays truthful) and only the VAO/buffer
+                     * domains are polluted — keep lastKey for delta narrowing
+                     * and force those domains on the next restore instead of
+                     * dropping the key entirely. */
+                    lastWasStreamBatch = YES;
                     break;
                 case MGL_BATCH_PATH_MDI:
                     mdiBatchCount++;
@@ -1182,13 +1193,15 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                      context:(GLMContext)glm_ctx
                   savedState:(const GLMState *)savedState
 {
-    [self restoreStateForBatch:batch context:glm_ctx savedState:savedState prevKey:NULL];
+    [self restoreStateForBatch:batch context:glm_ctx savedState:savedState
+                       prevKey:NULL forcedDirtyBits:0u];
 }
 
 - (void)restoreStateForBatch:(MGLDrawBatch *)batch
                      context:(GLMContext)glm_ctx
                   savedState:(const GLMState *)savedState
                      prevKey:(const MGLStateKey *)prevKey
+             forcedDirtyBits:(GLuint)forcedDirtyBits
 {
     MGL_SIGNPOST_BEGIN(RestoreStateForBatch);
     /* DUAL-PROXY INVARIANT checkpoint: entering batch replay state restore.
@@ -1291,6 +1304,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             MGL_PERF_INC(g_mglDirtyKeyDeltaNarrowSinceSwap);
         }
     }
+    replayDirtyBits |= forcedDirtyBits;
 
     Framebuffer *replayFBO = glm_ctx->active_state->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
