@@ -163,6 +163,10 @@ extern _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap;  /* render pass !=
  * uniform_buffer_hash and all other rs sub-fields match: pure per-draw UBO
  * offset noise (MC 1.21.11 dynamic transforms), not real render-state churn. */
 extern _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap;
+/* Stream-merge candidates demoted to direct draws because their key differs
+ * from the last batch only by uniform-range identity — the tolerant merge
+ * path can absorb them, a stream batch cannot. */
+extern _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap;
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -327,6 +331,7 @@ typedef struct MGLPerfCounters {
     uint64_t delta_domain_texture;
     uint64_t delta_domain_render_state;
     uint64_t delta_domain_render_state_ubo_only;
+    uint64_t stream_demoted_to_direct;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -390,6 +395,7 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.delta_domain_texture    = MGL_FRAME_LOAD(g_mglDeltaDomainTextureSinceSwap);
     c.delta_domain_render_state = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateSinceSwap);
     c.delta_domain_render_state_ubo_only = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateUboOnlySinceSwap);
+    c.stream_demoted_to_direct = MGL_FRAME_LOAD(g_mglStreamDemotedToDirectSinceSwap);
     return c;
 }
 
@@ -453,6 +459,7 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglDeltaDomainTextureSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDeltaDomainRenderStateSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDeltaDomainRenderStateUboOnlySinceSwap, 0);
+    MGL_FRAME_STORE(g_mglStreamDemotedToDirectSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is

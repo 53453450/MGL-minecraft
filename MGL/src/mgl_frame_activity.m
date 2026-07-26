@@ -176,6 +176,7 @@ _Atomic uint64_t g_mglDeltaDomainVAOSinceSwap             = 0;
 _Atomic uint64_t g_mglDeltaDomainTextureSinceSwap         = 0;
 _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap     = 0;
 _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap = 0;
+_Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap      = 0;
 
 #include <mach/mach_time.h>
 
@@ -227,14 +228,15 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.flush_buffer_range, c.flush_active_tex_war, c.flush_capacity, c.flush_other);
     NSLog(@"MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
           @"deltaNarrow=%llu batchesReplayed=%llu | "
-          @"deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu",
+          @"deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu rsUboOnly=%llu | smDemote=%llu",
           c.same_key_restore_skips,
           c.skip_fail_key_differ, c.skip_fail_bind_invalid,
           c.skip_fail_no_encoder, c.skip_fail_pass_mismatch,
           c.dirty_key_delta_narrow, c.batches_replayed,
           c.delta_domain_program, c.delta_domain_vao,
           c.delta_domain_texture, c.delta_domain_render_state,
-          c.delta_domain_render_state_ubo_only);
+          c.delta_domain_render_state_ubo_only,
+          c.stream_demoted_to_direct);
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

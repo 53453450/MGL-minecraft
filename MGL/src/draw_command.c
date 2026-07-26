@@ -3637,6 +3637,17 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
             /* Once sampler state changes, keep subsequent draws in one mixed
              * direct batch instead of consuming a stream batch per snapshot. */
             can_stream_merge = false;
+        } else if (!mglStateKeysEqual(&last->key, &key) &&
+                   mglStateKeysEqualIgnoringUniformRanges(&last->key, &key)) {
+            /* Keys differ only in uniform-range identity (per-draw UBO offset
+             * rebinds — MC 1.21.11 dynamic transforms).  A stream batch cannot
+             * express per-sub-draw uniform overrides, so as a stream candidate
+             * this draw would open a single-draw stream batch and also block
+             * the tolerant merge branches below (they require
+             * !can_stream_merge).  Demote to a direct draw so the
+             * uniform-range capture path can merge it instead. */
+            can_stream_merge = false;
+            MGL_PERF_INC(g_mglStreamDemotedToDirectSinceSwap);
         }
     }
     /*
