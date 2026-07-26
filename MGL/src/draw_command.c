@@ -674,13 +674,28 @@ static void mglNormalizeMutationRange(int64_t offset, int64_t size, uint64_t *st
     }
 }
 
+static inline uint32_t mglBufferRangeBucket(const void *buffer)
+{
+    uintptr_t h = (uintptr_t)buffer;
+    h >>= 4u;
+    h ^= h >> 17u;
+    h *= UINT64_C(0x9e3779b97f4a7c15);
+    h ^= h >> 29u;
+    return (uint32_t)h & MGL_BUFFER_RANGE_BUCKET_MASK;
+}
+
 static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t start, uint64_t end)
 {
     if (!ctx || !buffer || end <= start) return;
 
+    /* Walk only this buffer's bucket chain instead of every recorded range —
+     * the previous full scan made a flush window with N ranges cost O(N)
+     * per insert (O(N²) total). */
     MGLCommandBuffer *cb = &ctx->draw_command_buffer;
-    for (uint32_t i = 0; i < cb->buffer_read_range_count; i++) {
-        MGLBufferReadRange *range = &cb->buffer_read_ranges[i];
+    uint32_t bucket = mglBufferRangeBucket(buffer);
+    for (uint32_t link = cb->buffer_read_range_bucket[bucket]; link;
+         link = cb->buffer_read_range_next[link - 1u]) {
+        MGLBufferReadRange *range = &cb->buffer_read_ranges[link - 1u];
         if (range->buffer == buffer && mglRangesOverlap(range->start, range->end, start, end)) {
             if (start < range->start) range->start = start;
             if (end > range->end) range->end = end;
@@ -693,10 +708,13 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
         return;
     }
 
-    MGLBufferReadRange *range = &cb->buffer_read_ranges[cb->buffer_read_range_count++];
+    uint32_t index = cb->buffer_read_range_count++;
+    MGLBufferReadRange *range = &cb->buffer_read_ranges[index];
     range->buffer = buffer;
     range->start = start;
     range->end = end;
+    cb->buffer_read_range_next[index] = cb->buffer_read_range_bucket[bucket];
+    cb->buffer_read_range_bucket[bucket] = index + 1u;
 
     MGL_PERF_INC(g_mglHazardRangeCountSinceSwap);
 }
@@ -996,8 +1014,10 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
     uint64_t end = 0;
     mglNormalizeMutationRange(offset, size, &start, &end);
 
-    for (uint32_t i = 0; i < cb->buffer_read_range_count; i++) {
-        MGLBufferReadRange *range = &cb->buffer_read_ranges[i];
+    uint32_t bucket = mglBufferRangeBucket(buffer);
+    for (uint32_t link = cb->buffer_read_range_bucket[bucket]; link;
+         link = cb->buffer_read_range_next[link - 1u]) {
+        MGLBufferReadRange *range = &cb->buffer_read_ranges[link - 1u];
         if (range->buffer == buffer && mglRangesOverlap(range->start, range->end, start, end)) {
             return true;
         }

@@ -36,6 +36,8 @@ typedef struct GLMContextRec_t *GLMContext;
 #define MGL_MAX_BATCHES           128
 #define MGL_MDI_MIN_BATCH_SIZE    2
 #define MGL_MAX_PENDING_BUFFER_RANGES 4096
+#define MGL_BUFFER_RANGE_BUCKET_SIZE  1024  /* power of two; chains per buffer-ptr hash */
+#define MGL_BUFFER_RANGE_BUCKET_MASK  (MGL_BUFFER_RANGE_BUCKET_SIZE - 1)
 #define MGL_MAX_PENDING_TEXTURE_WRITES 256
 #define MGL_MAX_PENDING_TEXTURE_READS 512
 #define MGL_MAX_DYNAMIC_UNIFORM_BINDINGS 8
@@ -245,6 +247,13 @@ typedef struct {
     MGLBufferReadRange buffer_read_ranges[MGL_MAX_PENDING_BUFFER_RANGES];
     uint32_t     buffer_read_range_count;
     bool         buffer_read_range_overflow;
+    /* Hash index over buffer_read_ranges bucketed by buffer pointer so
+     * insert/query walk only that buffer's ranges instead of all of them.
+     * bucket holds (range_index + 1) of the newest entry, 0 = empty; entries
+     * chain via buffer_read_range_next (same +1 encoding).  Zeroed by the
+     * whole-struct memset in reset. */
+    uint32_t     buffer_read_range_bucket[MGL_BUFFER_RANGE_BUCKET_SIZE];
+    uint32_t     buffer_read_range_next[MGL_MAX_PENDING_BUFFER_RANGES];
     void        *texture_write_objects[MGL_MAX_PENDING_TEXTURE_WRITES];
     uint32_t     texture_write_count;
     bool         texture_write_overflow;
