@@ -148,6 +148,17 @@ extern _Atomic uint64_t g_mglSameKeyRestoreSkipsSinceSwap;
 extern _Atomic uint64_t g_mglSameKeyOracleWouldSkipSinceSwap;
 extern _Atomic uint64_t g_mglDirtyKeyDeltaNarrowSinceSwap;
 extern _Atomic uint64_t g_mglBatchesReplayedSinceSwap;
+/* Same-key-skip failure attribution: which condition broke first, blocking
+ * the bind-cache reuse.  Only counted when lastKeyValid && lastExecuteOk (a
+ * skip was otherwise possible). */
+extern _Atomic uint64_t g_mglSkipFailKeyDifferSinceSwap;     /* state keys not equal */
+extern _Atomic uint64_t g_mglSkipFailBindInvalidSinceSwap;   /* lastBoundValid == NO */
+extern _Atomic uint64_t g_mglSkipFailNoEncoderSinceSwap;     /* currentRenderEncoder == nil */
+extern _Atomic uint64_t g_mglSkipFailPassMismatchSinceSwap;
+extern _Atomic uint64_t g_mglDeltaDomainProgramSinceSwap;
+extern _Atomic uint64_t g_mglDeltaDomainVAOSinceSwap;
+extern _Atomic uint64_t g_mglDeltaDomainTextureSinceSwap;
+extern _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap;  /* render pass != current FBO */
 
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
@@ -303,6 +314,14 @@ typedef struct MGLPerfCounters {
     uint64_t same_key_oracle_would_skip;
     uint64_t dirty_key_delta_narrow;
     uint64_t batches_replayed;
+    uint64_t skip_fail_key_differ;
+    uint64_t skip_fail_bind_invalid;
+    uint64_t skip_fail_no_encoder;
+    uint64_t skip_fail_pass_mismatch;
+    uint64_t delta_domain_program;
+    uint64_t delta_domain_vao;
+    uint64_t delta_domain_texture;
+    uint64_t delta_domain_render_state;
 } MGLPerfCounters;
 
 static inline MGLPerfCounters mglSnapshotPerfCounters(void)
@@ -357,6 +376,14 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.same_key_oracle_would_skip = MGL_FRAME_LOAD(g_mglSameKeyOracleWouldSkipSinceSwap);
     c.dirty_key_delta_narrow  = MGL_FRAME_LOAD(g_mglDirtyKeyDeltaNarrowSinceSwap);
     c.batches_replayed        = MGL_FRAME_LOAD(g_mglBatchesReplayedSinceSwap);
+    c.skip_fail_key_differ    = MGL_FRAME_LOAD(g_mglSkipFailKeyDifferSinceSwap);
+    c.skip_fail_bind_invalid  = MGL_FRAME_LOAD(g_mglSkipFailBindInvalidSinceSwap);
+    c.skip_fail_no_encoder    = MGL_FRAME_LOAD(g_mglSkipFailNoEncoderSinceSwap);
+    c.skip_fail_pass_mismatch = MGL_FRAME_LOAD(g_mglSkipFailPassMismatchSinceSwap);
+    c.delta_domain_program    = MGL_FRAME_LOAD(g_mglDeltaDomainProgramSinceSwap);
+    c.delta_domain_vao        = MGL_FRAME_LOAD(g_mglDeltaDomainVAOSinceSwap);
+    c.delta_domain_texture    = MGL_FRAME_LOAD(g_mglDeltaDomainTextureSinceSwap);
+    c.delta_domain_render_state = MGL_FRAME_LOAD(g_mglDeltaDomainRenderStateSinceSwap);
     return c;
 }
 
@@ -411,6 +438,14 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglSameKeyOracleWouldSkipSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDirtyKeyDeltaNarrowSinceSwap, 0);
     MGL_FRAME_STORE(g_mglBatchesReplayedSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSkipFailKeyDifferSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSkipFailBindInvalidSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSkipFailNoEncoderSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglSkipFailPassMismatchSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDeltaDomainProgramSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDeltaDomainVAOSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDeltaDomainTextureSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglDeltaDomainRenderStateSinceSwap, 0);
 }
 
 /* Print per-frame perf summary if MGL_PERF_SUMMARY=1.  frame_interval_ms is

@@ -696,7 +696,7 @@ static void mglTrackPendingReadRange(GLMContext ctx, Buffer *buffer, uint64_t st
     range->start = start;
     range->end = end;
 
-    MGL_PERF_ADD(g_mglHazardRangeCountSinceSwap, cb->buffer_read_range_count);
+    MGL_PERF_INC(g_mglHazardRangeCountSinceSwap);
 }
 
 static void mglTrackPendingReadBytes(GLMContext ctx, Buffer *buffer, uint64_t start, uint64_t size)

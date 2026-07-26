@@ -167,6 +167,14 @@ _Atomic uint64_t g_mglSameKeyRestoreSkipsSinceSwap        = 0;
 _Atomic uint64_t g_mglSameKeyOracleWouldSkipSinceSwap     = 0;
 _Atomic uint64_t g_mglDirtyKeyDeltaNarrowSinceSwap        = 0;
 _Atomic uint64_t g_mglBatchesReplayedSinceSwap            = 0;
+_Atomic uint64_t g_mglSkipFailKeyDifferSinceSwap          = 0;
+_Atomic uint64_t g_mglSkipFailBindInvalidSinceSwap        = 0;
+_Atomic uint64_t g_mglSkipFailNoEncoderSinceSwap          = 0;
+_Atomic uint64_t g_mglSkipFailPassMismatchSinceSwap       = 0;
+_Atomic uint64_t g_mglDeltaDomainProgramSinceSwap         = 0;
+_Atomic uint64_t g_mglDeltaDomainVAOSinceSwap             = 0;
+_Atomic uint64_t g_mglDeltaDomainTextureSinceSwap         = 0;
+_Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap     = 0;
 
 #include <mach/mach_time.h>
 
@@ -216,6 +224,15 @@ void mglPrintPerfSummary(double frame_interval_ms)
     NSLog(@"MGL PERF2: flush: total=%llu bindTex=%llu bindBuf=%llu texW=%llu bufR=%llu war=%llu cap=%llu other=%llu",
           c.flush_total, c.flush_bind_texture, c.flush_bind_buffer, c.flush_tex_write,
           c.flush_buffer_range, c.flush_active_tex_war, c.flush_capacity, c.flush_other);
+    NSLog(@"MGL PERF3: skip=%llu skipFail: keyDiffer=%llu bindInvalid=%llu noEncoder=%llu passMismatch=%llu | "
+          @"deltaNarrow=%llu batchesReplayed=%llu | "
+          @"deltaDomain: prog=%llu vao=%llu tex=%llu rs=%llu",
+          c.same_key_restore_skips,
+          c.skip_fail_key_differ, c.skip_fail_bind_invalid,
+          c.skip_fail_no_encoder, c.skip_fail_pass_mismatch,
+          c.dirty_key_delta_narrow, c.batches_replayed,
+          c.delta_domain_program, c.delta_domain_vao,
+          c.delta_domain_texture, c.delta_domain_render_state);
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

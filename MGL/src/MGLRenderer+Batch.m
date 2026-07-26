@@ -983,7 +983,22 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 [self currentRenderPassMatchesCurrentFramebuffer]) {
                 canSkipRestore = YES;
-            } else if (!_batching.skipSameKeyRestoreEnabled &&
+            } else if (_batching.skipSameKeyRestoreEnabled &&
+                       lastKeyValid && lastExecuteOk) {
+                /* Attribute the skip failure to its first breaking condition
+                 * (in evaluation order) so Plan-B can target the real cause. */
+                if (_renderPassManager.state->currentRenderEncoder == nil) {
+                    MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
+                } else if (!_bindingSync.state->lastBoundValid) {
+                    MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
+                } else if (!mglStateKeysEqual(&batch->key, &lastKey)) {
+                    MGL_PERF_INC(g_mglSkipFailKeyDifferSinceSwap);
+                } else {
+                    MGL_PERF_INC(g_mglSkipFailPassMismatchSinceSwap);
+                }
+            }
+
+            if (!_batching.skipSameKeyRestoreEnabled &&
                        lastKeyValid &&
                        lastExecuteOk &&
                        mglStateKeysEqual(&batch->key, &lastKey) &&
@@ -1223,13 +1238,16 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             a->vertex_program_name != b->vertex_program_name ||
             a->fragment_program_name != b->fragment_program_name) {
             replayDirtyBits |= DIRTY_PROGRAM | DIRTY_BUFFER_BASE_STATE | DIRTY_BUFFER;
+            MGL_PERF_INC(g_mglDeltaDomainProgramSinceSwap);
         }
         if (a->vao_name != b->vao_name ||
             a->vertex_layout_hash != b->vertex_layout_hash) {
             replayDirtyBits |= DIRTY_VAO | DIRTY_BUFFER;
+            MGL_PERF_INC(g_mglDeltaDomainVAOSinceSwap);
         }
         if (a->texture_hash != b->texture_hash) {
             replayDirtyBits |= DIRTY_TEX | DIRTY_TEX_BINDING | DIRTY_TEX_PARAM | DIRTY_SAMPLER;
+            MGL_PERF_INC(g_mglDeltaDomainTextureSinceSwap);
         }
         if (a->render_state_hash != b->render_state_hash ||
             a->caps_flags != b->caps_flags ||
@@ -1238,6 +1256,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             memcmp(a->viewport, b->viewport, sizeof(a->viewport)) != 0 ||
             memcmp(a->scissor, b->scissor, sizeof(a->scissor)) != 0) {
             replayDirtyBits |= DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE;
+            MGL_PERF_INC(g_mglDeltaDomainRenderStateSinceSwap);
         }
         if (replayDirtyBits != kMGLFullReplayDirtyBits) {
             MGL_PERF_INC(g_mglDirtyKeyDeltaNarrowSinceSwap);
