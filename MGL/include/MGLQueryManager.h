@@ -10,7 +10,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface MGLQueryManager : NSObject
 
-- (BOOL)beginSampleQueryWithDevice:(id<MTLDevice>)device;
+- (BOOL)beginSampleQueryWithDevice:(id<MTLDevice>)device counting:(BOOL)counting;
 - (void)endSampleQuery;
 - (BOOL)isSampleQueryActive;
 - (BOOL)hasSampleQueryResultBuffer;

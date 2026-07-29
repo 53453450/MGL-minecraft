@@ -375,13 +375,13 @@ GLuint64 mtlGetGPUTimestamp(GLMContext glm_ctx) {
     return [target mtlGetGPUTimestamp: glm_ctx];
 }
 
-void mtlBeginSampleQuery(GLMContext glm_ctx) {
+void mtlBeginSampleQuery(GLMContext glm_ctx, GLenum queryTarget) {
     /* Fix #4: NULL-guard the bridged target before dispatching. */
     id<MGLMetalBridgeTarget> target = mglBridgeTarget(glm_ctx, __func__);
     if (!target) {
         return;
     }
-    [target mtlBeginSampleQuery: glm_ctx];
+    [target mtlBeginSampleQuery: glm_ctx target: queryTarget];
 }
 
 GLuint64 mtlEndSampleQuery(GLMContext glm_ctx) {

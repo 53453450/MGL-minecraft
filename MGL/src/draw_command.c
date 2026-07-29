@@ -2186,6 +2186,9 @@ static const Buffer *mglVertexArrayEffectiveBuffer(const VertexArray *vao,
 static bool mglVertexAttribLayoutsEqual(const VertexAttrib *a,
                                         const VertexAttrib *b)
 {
+    /* Format + binding-index identity only. VERTEX_BINDING_OFFSET belongs to
+     * BindVertexBuffer state (GL 4.6 Table 23.4) and is captured as a per-draw
+     * absolute override — do not treat offset as layout incompatibility. */
     return a && b &&
            a->size == b->size &&
            a->type == b->type &&
@@ -2195,7 +2198,6 @@ static bool mglVertexAttribLayoutsEqual(const VertexAttrib *a,
            a->stride == b->stride &&
            a->divisor == b->divisor &&
            a->relativeoffset == b->relativeoffset &&
-           a->binding_offset == b->binding_offset &&
            a->buffer_bindingindex == b->buffer_bindingindex;
 }
 
@@ -2310,11 +2312,13 @@ static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
             ? base_binding->offset : base_attrib->binding_offset;
         GLintptr current_offset = current_binding->buffer
             ? current_binding->offset : current_attrib->binding_offset;
-        if (!base_buffer || !current_buffer || current_offset < base_offset) {
+        /* Absolute VERTEX_BINDING_OFFSET — VAO rotation may wrap to a smaller
+         * slice than the batch base; that is still a valid rebind. */
+        if (!base_buffer || !current_buffer ||
+            current_offset < 0 || base_offset < 0) {
             return false;
         }
-        uint64_t delta = (uint64_t)(current_offset - base_offset);
-        if (delta > UINT32_MAX ||
+        if ((uint64_t)current_offset > UINT32_MAX ||
             cmd->dynamic_vertex_binding_count >= MGL_MAX_DYNAMIC_VERTEX_BINDINGS) {
             return false;
         }
@@ -2322,13 +2326,14 @@ static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
         MGLDynamicVertexBinding *override =
             &cmd->dynamic_vertex_bindings[cmd->dynamic_vertex_binding_count++];
         override->buffer = current_buffer;
-        override->offset_delta = (uint32_t)delta;
+        override->offset = (uint32_t)current_offset;
         override->binding_index = (uint8_t)binding_index;
         memset(override->reserved, 0, sizeof(override->reserved));
         captured_mask |= binding_bit;
     }
 
-    /* Attributes sharing one Metal slot must move by the same delta. */
+    /* Attributes sharing one Metal slot must slide by the same signed delta
+     * relative to the batch base VAO (absolute offsets themselves may differ). */
     for (GLuint i = 0; i < MAX_ATTRIBS; i++) {
         if ((base->enabled_attribs & (1u << i)) == 0u) continue;
         for (GLuint j = i + 1; j < MAX_ATTRIBS; j++) {
@@ -2339,14 +2344,25 @@ static bool mglCaptureDynamicVertexBindings(GLMContext ctx,
             }
             uint8_t bi = (uint8_t)base->attrib[i].buffer_bindingindex;
             uint8_t bj = (uint8_t)base->attrib[j].buffer_bindingindex;
-            uint32_t di = 0u, dj = 0u;
+            uint32_t abs_i = 0u, abs_j = 0u;
+            GLintptr base_i = 0, base_j = 0;
             for (uint8_t k = 0; k < cmd->dynamic_vertex_binding_count; k++) {
                 const MGLDynamicVertexBinding *binding =
                     &cmd->dynamic_vertex_bindings[k];
-                if (binding->binding_index == bi) di = binding->offset_delta;
-                if (binding->binding_index == bj) dj = binding->offset_delta;
+                if (binding->binding_index == bi) abs_i = binding->offset;
+                if (binding->binding_index == bj) abs_j = binding->offset;
             }
-            if (di != dj) return false;
+            {
+                const BufferBinding *bb = &base->bindings[bi];
+                const BufferBinding *bjb = &base->bindings[bj];
+                base_i = bb->buffer ? bb->offset : base->attrib[i].binding_offset;
+                base_j = bjb->buffer ? bjb->offset : base->attrib[j].binding_offset;
+            }
+            int64_t delta_i = (int64_t)abs_i - (int64_t)base_i;
+            int64_t delta_j = (int64_t)abs_j - (int64_t)base_j;
+            if (delta_i != delta_j) {
+                return false;
+            }
         }
     }
     /* Indexed commands already carry an immutable elementBuffer pointer.
@@ -3711,19 +3727,24 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
                    !can_stream_merge && !last->stream_merged &&
                    last->uses_elements == cmd_uses_elements &&
                    last->command_count < maxDrawsPerBatch &&
-                   mglStateKeysEqualIgnoringDynamicBindings(&last->key, &key) &&
-                   mglCaptureDynamicDrawBindings(ctx, last, &key, &stored_cmd)) {
-            batch = last;
-            if (stored_cmd.dynamic_vertex_binding_count > 0) {
-                batch->has_dynamic_vertex_bindings = true;
+                   mglStateKeysEqualIgnoringDynamicBindings(&last->key, &key)) {
+            if (mglCaptureDynamicDrawBindings(ctx, last, &key, &stored_cmd)) {
+                batch = last;
+                if (stored_cmd.dynamic_vertex_binding_count > 0) {
+                    batch->has_dynamic_vertex_bindings = true;
+                }
+                if (stored_cmd.dynamic_uniform_binding_count > 0) {
+                    batch->has_dynamic_uniform_bindings = true;
+                }
+                if (stored_cmd.dynamic_texture_binding_count > 0) {
+                    batch->has_dynamic_texture_bindings = true;
+                }
+                batch->mdi_compatible = false;
+            } else {
+                /* Compatible except VAO/UBO/texture bindings, but capture
+                 * could not materialize a safe per-draw override. */
+                MGL_PERF_INC(g_mglMergeRejectDynamicCaptureSinceSwap);
             }
-            if (stored_cmd.dynamic_uniform_binding_count > 0) {
-                batch->has_dynamic_uniform_bindings = true;
-            }
-            if (stored_cmd.dynamic_texture_binding_count > 0) {
-                batch->has_dynamic_texture_bindings = true;
-            }
-            batch->mdi_compatible = false;
         } else if (!keys_match) {
             MGL_PERF_INC(g_mglMergeRejectStateDiffersSinceSwap);
         } else if (last->command_count >= maxDrawsPerBatch) {

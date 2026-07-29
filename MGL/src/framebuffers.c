@@ -46,6 +46,7 @@ extern Texture *newTexObj(GLMContext ctx, GLenum target);
 extern Texture *findTexture(GLMContext ctx, GLuint texture);
 extern Texture *newTexture(GLMContext ctx, GLenum target, GLuint texture);
 extern void mglClearLastSampled2DTextureIfMatches(GLMContext ctx, Texture *tex);
+extern void invalidateTexture(GLMContext ctx, Texture *tex);
 bool isCubeMapTarget(GLMContext ctx, GLuint textarget);
 void mglNamedFramebufferDrawBuffers(GLMContext ctx, GLuint framebuffer, GLsizei n, const GLenum *bufs);
 extern void mglClearBufferiv(GLMContext ctx, GLenum buffer, GLint drawbuffer, const GLint *value);
@@ -1584,6 +1585,51 @@ void mglBindRenderbuffer(GLMContext ctx, GLenum target, GLuint renderbuffer)
     // no dirty state
 }
 
+/* Detach a deleted renderbuffer from every FBO attachment that still holds a
+ * raw Renderbuffer*.  GL 4.6 §9.2.7 requires this for currently-bound FBOs
+ * (as if FramebufferRenderbuffer(..., 0)); clearing unbound FBOs as well
+ * matches DeleteTextures and prevents use-after-free on later attachment
+ * walks (buf.rbo->tex).  Must run before free(rbo). */
+static void mglDetachRenderbufferFromFramebuffers(GLuint name, void *data, void *user)
+{
+    (void)name;
+    Framebuffer *fbo = (Framebuffer *)data;
+    Renderbuffer *deleted = (Renderbuffer *)user;
+    GLboolean changed = GL_FALSE;
+
+    if (!fbo || !deleted) {
+        return;
+    }
+
+    for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        FBOAttachment *att = &fbo->color_attachments[i];
+        if (att->textarget == GL_RENDERBUFFER && att->buf.rbo == deleted) {
+            att->buf.rbo = NULL;
+            att->texture = 0u;
+            att->textarget = 0u;
+            fbo->color_attachment_bitfield &= ~(0x1u << i);
+            changed = GL_TRUE;
+        }
+    }
+    if (fbo->depth.textarget == GL_RENDERBUFFER && fbo->depth.buf.rbo == deleted) {
+        fbo->depth.buf.rbo = NULL;
+        fbo->depth.texture = 0u;
+        fbo->depth.textarget = 0u;
+        changed = GL_TRUE;
+    }
+    if (fbo->stencil.textarget == GL_RENDERBUFFER && fbo->stencil.buf.rbo == deleted) {
+        fbo->stencil.buf.rbo = NULL;
+        fbo->stencil.texture = 0u;
+        fbo->stencil.textarget = 0u;
+        changed = GL_TRUE;
+    }
+
+    if (changed) {
+        fbo->dirty_bits |= DIRTY_FBO_BINDING;
+        fbo->fbo_attachment_generation++;
+    }
+}
+
 void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffers)
 {
     if (n < 0) {
@@ -1610,6 +1656,15 @@ void mglDeleteRenderbuffers(GLMContext ctx, GLsizei n, const GLuint *renderbuffe
 
         if (ctx->state.renderbuffer == rbo) {
             ctx->state.renderbuffer = NULL;
+        }
+
+        mglHashTableForEach(&STATE(framebuffer_table),
+                            mglDetachRenderbufferFromFramebuffers, rbo);
+
+        if (rbo->tex) {
+            invalidateTexture(ctx, rbo->tex);
+            free(rbo->tex);
+            rbo->tex = NULL;
         }
 
         deleteHashElement(&STATE(renderbuffer_table), name);

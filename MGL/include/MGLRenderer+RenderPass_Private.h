@@ -99,8 +99,10 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                           replayError:(GLenum *)replayError;
 
 // === Render encoder lifecycle ===
-- (bool)newRenderEncoder;
-- (bool)newRenderEncoderLocked;
+- (bool)newRenderEncoderWithReason:(MGLEncoderCreateReason)reason;
+- (bool)newRenderEncoderLockedWithReason:(MGLEncoderCreateReason)reason;
+- (bool)newRenderEncoder; /* OTHER — prefer WithReason: */
+- (bool)newRenderEncoderLocked; /* OTHER — prefer WithReason: */
 - (void)endRenderEncoding;
 - (void)endRenderEncodingLocked;
 - (bool)currentRenderPassMatchesCurrentFramebuffer;

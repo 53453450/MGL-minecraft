@@ -101,12 +101,14 @@ typedef struct {
     void   *texture;
 } MGLDynamicTextureBinding;
 
-/* Per-draw vertex binding override relative to the batch VAO snapshot.
- * Keeping the offset as a 32-bit delta makes the common Minecraft/Sodium
- * case (one arena VBO binding per draw) 16 bytes per captured binding. */
+/* Per-draw vertex binding override for BindNoFlush merges.
+ * `offset` is the absolute VERTEX_BINDING_OFFSET (GL 4.6 Table 23.4) for
+ * this draw — not a delta vs the batch VAO snapshot. Storing absolute
+ * offsets keeps BuildDynamicVertexArray and the direct Metal rebind path
+ * consistent when the batch base slice is non-zero. */
 typedef struct {
     void    *buffer;
-    uint32_t offset_delta;
+    uint32_t offset;
     uint8_t  binding_index;
     uint8_t  reserved[3];
 } MGLDynamicVertexBinding;

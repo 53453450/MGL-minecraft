@@ -133,11 +133,15 @@ _Atomic uint64_t g_mglSetFragmentBufferSkipsSinceSwap  = 0;
 _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap = 0;
 _Atomic uint64_t g_mglEncoderCreationsSinceSwap        = 0;
 _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap     = 0;
+_Atomic uint64_t g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_COUNT] = {0};
+_Atomic uint64_t g_mglEncoderFboRotDefaultSinceSwap    = 0;
+_Atomic uint64_t g_mglEncoderFboRotNamedSinceSwap      = 0;
 _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap   = 0;
 _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap   = 0;
 _Atomic uint64_t g_mglMergeRejectUnsafeBuiltinSinceSwap  = 0;
 _Atomic uint64_t g_mglMergeRejectExcludedLayoutSinceSwap = 0;
 _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap   = 0;
+_Atomic uint64_t g_mglMergeRejectDynamicCaptureSinceSwap = 0;
 /* _Atomic uint64_t (nanoseconds) allows a lock-free fetch_add on all
  * platforms, unlike _Atomic double which falls back to a CAS loop. */
 _Atomic uint64_t g_mglLockWaitTimeSinceSwap   = 0;
@@ -197,7 +201,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           @"batches: d=%llu m=%llu sm=%llu | pipe: hit=%llu miss=%llu evict=%llu | "
           @"shaders: %llu/%.1fms | enc: vb=%llu(%llu skip) fb=%llu(%llu skip) ps=%llu(%llu skip) | "
           @"encoder: new=%llu fboRot=%llu | "
-          @"merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu | "
+          @"merge rej: sd=%llu bh=%llu ub=%llu el=%llu af=%llu dc=%llu | "
           @"lock: wait=%.1fms hold=%.1fms | "
           @"ds: creates=%llu skips=%llu | "
           @"snap: bytes=%llu allocs=%llu | "
@@ -215,7 +219,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.encoder_creations, c.encoder_fbo_rotations,
           c.merge_reject_state_differs, c.merge_reject_buffer_hazard,
           c.merge_reject_unsafe_builtin, c.merge_reject_excluded_layout,
-          c.merge_reject_append_failed,
+          c.merge_reject_append_failed, c.merge_reject_dynamic_capture,
           c.lock_wait_time * 1000.0, c.lock_hold_time * 1000.0,
           c.ds_state_creates, c.ds_state_skips,
           c.snapshot_bytes_allocated, c.snapshot_allocation_count,
@@ -237,6 +241,12 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.delta_domain_texture, c.delta_domain_render_state,
           c.delta_domain_render_state_ubo_only,
           c.stream_demoted_to_direct);
+    NSLog(@"MGL PERF4: encReason: fbo=%llu nil=%llu clear=%llu draw=%llu vao=%llu rs=%llu cmd=%llu other=%llu | "
+          @"fboRotKind: def=%llu named=%llu",
+          c.encoder_reason_fbo, c.encoder_reason_nil, c.encoder_reason_clear,
+          c.encoder_reason_draw, c.encoder_reason_vao, c.encoder_reason_rs,
+          c.encoder_reason_cmd, c.encoder_reason_other,
+          c.encoder_fbo_rot_default, c.encoder_fbo_rot_named);
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

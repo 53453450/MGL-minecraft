@@ -819,6 +819,21 @@ typedef struct {
         [computeEncoder setBuffer:tcsStageInBuffer
                             offset:0
                            atIndex:kMGLTCSStageInReplBufferIndex];
+
+        /* SPIRV-Cross emits `threadgroup <in_type>* gl_in [[threadgroup(0)]]`
+         * for TCS with per-vertex inputs; Metal requires the host to size it
+         * via setThreadgroupMemoryLength or the whole command buffer faults
+         * ("missing Threadgroup Memory binding") and every later dispatch's
+         * writes are dropped.  gl_in is indexed up to
+         * max(patchVertices, tcsOutVertices) with the stage_in element
+         * layout, so tcsInStride is the element size. */
+        if (strstr(tcsMsl, "[[threadgroup(0)]]")) {
+            NSUInteger tgElems = MAX((NSUInteger)patchVertices,
+                                     (NSUInteger)tcsOutVertices);
+            NSUInteger tgStride = tcsInStride ? tcsInStride : 64u;
+            NSUInteger tgLength = (tgElems * tgStride + 15u) & ~(NSUInteger)15u;
+            [computeEncoder setThreadgroupMemoryLength:tgLength atIndex:0];
+        }
     }
 
     /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
@@ -1338,6 +1353,10 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
                      threadsPerThreadgroup:threadsPerTG];
 
     [computeEncoder endEncoding];
+    /* Without this, a TES dispatch with no copy-backs stays in the current
+     * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
+     * glFinish then never executes the TES writes (SSBO stores vanish). */
+    _currentCBHasWork = YES;
 
     if (![self flushStageBindingCopyBacks:&stageCopyBacks
                      requireCPUVisibility:NO]) {

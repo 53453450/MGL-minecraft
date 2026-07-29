@@ -1912,6 +1912,8 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 ptr->data.dirty_bits = DIRTY_BUFFER_DATA;
             } else {
                 ptr->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+                /* Shadow is now uploaded; read-maps may refresh from Metal. */
+                ptr->cpu_shadow_pending = GL_FALSE;
             }
 
             return true;
@@ -2028,6 +2030,8 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
             }
 
             ptr->data.dirty_bits = 0;
+            /* Shadow is now uploaded; read-maps may refresh from Metal again. */
+            ptr->cpu_shadow_pending = GL_FALSE;
         }
     }
     else

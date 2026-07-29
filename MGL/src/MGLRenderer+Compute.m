@@ -648,6 +648,10 @@
     }
 
     [computeCommandEncoder endEncoding];
+    /* Without this, a dispatch with no copy-backs stays in the current
+     * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
+     * glFinish then never executes the compute writes (SSBO stores vanish). */
+    _currentCBHasWork = YES;
 
     if (![self flushStageBindingCopyBacks:&copyBacks
                      requireCPUVisibility:NO]) {
@@ -791,6 +795,9 @@
                                             threadsPerThreadgroup:threadsPerThreadgroup];
 
     [computeCommandEncoder endEncoding];
+    /* See mtlDispatchCompute — the empty-CB commit skip must not drop this
+     * dispatch when it is the only work in the current command buffer. */
+    _currentCBHasWork = YES;
 
     if (![self flushStageBindingCopyBacks:&copyBacks
                      requireCPUVisibility:NO]) {

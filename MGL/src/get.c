@@ -352,6 +352,37 @@ for(int i=0, counts[]={1,4,4,8};i<__COUNT__; data+=counts[__TYPE__], i++) \
         case kDouble: RET_DOUBLE(ctx->state.__VALUE__[i])    \
 }
 
+/* GL 4.6 §22.5: GetIntegerv with TEXTURE_BINDING_* returns the texture bound
+ * to the ACTIVE texture unit.  The state.var.texture_binding_* defaults table
+ * is write-once at context creation and never tracks glBindTexture, so these
+ * pnames must be resolved live, mirroring the indexed path in
+ * mglGetIntegeri_v. */
+static GLuint mglActiveUnitTextureBinding(GLMContext ctx, GLenum pname)
+{
+    GLuint texIndex;
+
+    switch (pname) {
+        case GL_TEXTURE_BINDING_1D: texIndex = _TEXTURE_1D; break;
+        case GL_TEXTURE_BINDING_1D_ARRAY: texIndex = _TEXTURE_1D_ARRAY; break;
+        case GL_TEXTURE_BINDING_2D: texIndex = _TEXTURE_2D; break;
+        case GL_TEXTURE_BINDING_2D_ARRAY: texIndex = _TEXTURE_2D_ARRAY; break;
+        case GL_TEXTURE_BINDING_3D: texIndex = _TEXTURE_3D; break;
+        case GL_TEXTURE_BINDING_BUFFER: texIndex = _TEXTURE_BUFFER_TARGET; break;
+        case GL_TEXTURE_BINDING_CUBE_MAP: texIndex = _TEXTURE_CUBE_MAP; break;
+        case GL_TEXTURE_BINDING_CUBE_MAP_ARRAY: texIndex = _TEXTURE_CUBE_MAP_ARRAY; break;
+        case GL_TEXTURE_BINDING_RECTANGLE: texIndex = _TEXTURE_RECTANGLE; break;
+        case GL_TEXTURE_BINDING_2D_MULTISAMPLE: texIndex = _TEXTURE_2D_MULTISAMPLE; break;
+        case GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY: texIndex = _TEXTURE_2D_MULTISAMPLE_ARRAY; break;
+        default: return 0;
+    }
+
+    if (!ctx || ctx->state.active_texture >= TEXTURE_UNITS)
+        return 0;
+
+    Texture *tex = ctx->state.texture_units[ctx->state.active_texture].textures[texIndex];
+    return tex ? tex->name : 0;
+}
+
 static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 {
     if (pname >= GL_DRAW_BUFFER0 &&
@@ -535,8 +566,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x0DD3: RET_TYPE_VAR(type, map2_grid_segments); break; // GL_MAP2_GRID_SEGMENTS
         case 0x2A00: RET_TYPE_VAR(type, polygon_offset_units); break; // GL_POLYGON_OFFSET_UNITS
         case 0x8038: RET_TYPE_VAR(type, polygon_offset_factor); break; // GL_POLYGON_OFFSET_FACTOR
-        case 0x8068: RET_TYPE_VAR(type, texture_binding_1d); break; // GL_TEXTURE_BINDING_1D
-        case 0x8069: RET_TYPE_VAR(type, texture_binding_2d); break; // GL_TEXTURE_BINDING_2D
+        case 0x8068: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_1D
+        case 0x8069: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_2D
         case 0x0BB1: RET_TYPE_VAR(type, client_attrib_stack_depth); break; // GL_CLIENT_ATTRIB_STACK_DEPTH
         case 0x0D3B: RET_TYPE_VAR(type, max_client_attrib_stack_depth); break; // GL_MAX_CLIENT_ATTRIB_STACK_DEPTH
         case 0x0DF1: RET_TYPE_VAR(type, feedback_buffer_size); break; // GL_FEEDBACK_BUFFER_SIZE
@@ -556,7 +587,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x8089: RET_TYPE_VAR(type, texture_coord_array_type); break; // GL_TEXTURE_COORD_ARRAY_TYPE
         case 0x808A: RET_TYPE_VAR(type, texture_coord_array_stride); break; // GL_TEXTURE_COORD_ARRAY_STRIDE
         case 0x808C: RET_TYPE_VAR(type, edge_flag_array_stride); break; // GL_EDGE_FLAG_ARRAY_STRIDE
-        case 0x806A: RET_TYPE_VAR(type, texture_binding_3d); break; // GL_TEXTURE_BINDING_3D
+        case 0x806A: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_3D
         case 0x8073: RET_TYPE_VAR(type, max_3d_texture_size); break; // GL_MAX_3D_TEXTURE_SIZE
         case 0x80E8: RET_TYPE_VAR(type, max_elements_vertices); break; // GL_MAX_ELEMENTS_VERTICES
         case 0x80E9: RET_TYPE_VAR(type, max_elements_indices); break; // GL_MAX_ELEMENTS_INDICES
@@ -574,7 +605,7 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         }
         case 0x80AA: RET_TYPE_VAR(type, sample_coverage_value); break; // GL_SAMPLE_COVERAGE_VALUE
         case 0x80AB: RET_TYPE_VAR(type, sample_coverage_invert); break; // GL_SAMPLE_COVERAGE_INVERT
-        case 0x8514: RET_TYPE_VAR(type, texture_binding_cube_map); break; // GL_TEXTURE_BINDING_CUBE_MAP
+        case 0x8514: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_CUBE_MAP
         case 0x851C: RET_TYPE_VAR(type, max_cube_map_texture_size); break; // GL_MAX_CUBE_MAP_TEXTURE_SIZE
         case 0x86A2: RET_TYPE_VAR(type, num_compressed_texture_formats); break; // GL_NUM_COMPRESSED_TEXTURE_FORMATS
         case 0x86A3: RET_TYPE_VAR(type, compressed_texture_formats); break; // GL_COMPRESSED_TEXTURE_FORMATS
@@ -659,8 +690,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x88FF: RET_TYPE_VAR(type, max_array_texture_layers); break; // GL_MAX_ARRAY_TEXTURE_LAYERS
         case 0x8904: RET_TYPE_VAR(type, min_program_texel_offset); break; // GL_MIN_PROGRAM_TEXEL_OFFSET
         case 0x8905: RET_TYPE_VAR(type, max_program_texel_offset); break; // GL_MAX_PROGRAM_TEXEL_OFFSET
-        case 0x8C1C: RET_TYPE_VAR(type, texture_binding_1d_array); break; // GL_TEXTURE_BINDING_1D_ARRAY
-        case 0x8C1D: RET_TYPE_VAR(type, texture_binding_2d_array); break; // GL_TEXTURE_BINDING_2D_ARRAY
+        case 0x8C1C: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_1D_ARRAY
+        case 0x8C1D: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_2D_ARRAY
         case 0x84E8: RET_TYPE_VAR(type, max_renderbuffer_size); break; // GL_MAX_RENDERBUFFER_SIZE
         case 0x8CA6: // GL_DRAW_FRAMEBUFFER_BINDING / GL_FRAMEBUFFER_BINDING
             switch(type) {
@@ -695,8 +726,8 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
                 case kDouble: RET_DOUBLE(mglSafeMaxTextureBufferSize(ctx));
             }
             break;
-        case 0x8C2C: RET_TYPE_VAR(type, texture_binding_buffer); break; // GL_TEXTURE_BINDING_BUFFER
-        case 0x84F6: RET_TYPE_VAR(type, texture_binding_rectangle); break; // GL_TEXTURE_BINDING_RECTANGLE
+        case 0x8C2C: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_BUFFER
+        case 0x84F6: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_RECTANGLE
         case 0x84F8: RET_TYPE_VAR(type, max_rectangle_texture_size); break; // GL_MAX_RECTANGLE_TEXTURE_SIZE
         case 0x8F9E: RET_TYPE_VAR(type, primitive_restart_index); break; // GL_PRIMITIVE_RESTART_INDEX
         case 0x8A28: { // GL_UNIFORM_BUFFER_BINDING
@@ -771,8 +802,9 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
         case 0x90CD: RET_TYPE_VAR(type, max_geometry_image_uniforms); break; // GL_MAX_GEOMETRY_IMAGE_UNIFORMS
         case 0x90CE: RET_TYPE_VAR(type, max_fragment_image_uniforms); break; // GL_MAX_FRAGMENT_IMAGE_UNIFORMS
         case 0x8F39: RET_TYPE_VAR(type, max_combined_shader_output_resources); break; // GL_MAX_COMBINED_SHADER_OUTPUT_RESOURCES
-        case 0x9104: RET_TYPE_VAR(type, texture_binding_2d_multisample); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE
-        case 0x9105: RET_TYPE_VAR(type, texture_binding_2d_multisample_array); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY
+        case 0x9104: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE
+        case 0x9105: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_2D_MULTISAMPLE_ARRAY
+        case 0x900A: RET_TYPE_VAR_DERIVED(mglActiveUnitTextureBinding(ctx, pname)); break; // GL_TEXTURE_BINDING_CUBE_MAP_ARRAY
         case 0x910E: RET_TYPE_VAR(type, max_color_texture_samples); break; // GL_MAX_COLOR_TEXTURE_SAMPLES
         case 0x910F: RET_TYPE_VAR(type, max_depth_texture_samples); break; // GL_MAX_DEPTH_TEXTURE_SAMPLES
         case 0x9110: RET_TYPE_VAR(type, max_integer_samples); break; // GL_MAX_INTEGER_SAMPLES

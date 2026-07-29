@@ -462,6 +462,96 @@ done:
     return failed;
 }
 
+static int verify_compute_finish_visibility(void)
+{
+    static const char *compute_source =
+        "#version 430 core\n"
+        "layout(local_size_x=1) in;\n"
+        "layout(std430, binding=0) buffer Data { uint values[4]; } data;\n"
+        "void main() {\n"
+        "  data.values[gl_WorkGroupID.x] = 0xC0DE0000u + gl_WorkGroupID.x;\n"
+        "}\n";
+    const GLuint initial[4] = {0u, 0u, 0u, 0u};
+    GLuint observed[4] = {0u, 0u, 0u, 0u};
+    GLint saved_program = 0;
+    GLuint shader = 0;
+    GLuint program = 0;
+    GLuint buffer = 0;
+    int failed = 1;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &saved_program);
+    while (glGetError() != GL_NO_ERROR) {}
+
+    shader = compile_shader(GL_COMPUTE_SHADER, compute_source);
+    if (!shader) {
+        goto done;
+    }
+    program = glCreateProgram();
+    glAttachShader(program, shader);
+    glLinkProgram(program);
+    glDeleteShader(shader);
+    shader = 0;
+
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[2048] = {0};
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "dirty-hash: compute finish program link failed: %s\n", log);
+        goto done;
+    }
+
+    glGenBuffers(1, &buffer);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(initial), initial, GL_DYNAMIC_COPY);
+
+    /* Full-buffer base binding: no short-range isolation, so the dispatch
+       encodes no copy-back blit. The compute write is then the only work in
+       the current command buffer when the finish-semantics flush runs, which
+       is exactly what the empty-CB commit skip must not drop. */
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+    glUseProgram(program);
+    glDispatchCompute(4, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT);
+    glFinish();
+
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+    const void *mapped = glMapBufferRange(GL_SHADER_STORAGE_BUFFER,
+                                          0,
+                                          sizeof(observed),
+                                          GL_MAP_READ_BIT);
+    if (mapped) memcpy(observed, mapped, sizeof(observed));
+    if (mapped) glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+
+    GLenum error = glGetError();
+    size_t written_values = 0;
+    for (size_t i = 0; i < 4; i++) {
+        if (observed[i] == 0xC0DE0000u + (GLuint)i) {
+            written_values++;
+        }
+    }
+    if (!mapped || error != GL_NO_ERROR || written_values != 4u) {
+        fprintf(stderr,
+                "dirty-hash: compute dispatch lost across glFinish "
+                "(error=0x%x written_values=%zu first=0x%08x)\n",
+                (unsigned)error,
+                written_values,
+                observed[0]);
+        goto done;
+    }
+
+    failed = 0;
+
+done:
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glUseProgram((GLuint)saved_program);
+    if (buffer) glDeleteBuffers(1, &buffer);
+    if (program) glDeleteProgram(program);
+    if (shader) glDeleteShader(shader);
+    return failed;
+}
+
 static int verify_tcs_to_tes_short_range_visibility(void)
 {
     static const char *vertex_source =
@@ -1032,6 +1122,9 @@ int main(void)
         return 1;
     }
     if (verify_compute_short_range_copyback() != 0) {
+        return 1;
+    }
+    if (verify_compute_finish_visibility() != 0) {
         return 1;
     }
     if (verify_tcs_to_tes_short_range_visibility() != 0) {

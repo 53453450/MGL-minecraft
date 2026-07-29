@@ -144,6 +144,11 @@ typedef struct Buffer_t {
     BufferData data;
     GLboolean has_initialized_data;
     GLboolean ever_written;
+    /* CPU shadow holds map-write bytes not yet uploaded to the Metal buffer.
+     * Set on unmap after a writable map; cleared when encoding uploads the
+     * shadow or a GPU write is copied back into it.  Read-map refresh from
+     * Metal is skipped while set (GL 4.6 §6.3). */
+    GLboolean cpu_shadow_pending;
     GLintptr written_min;
     GLintptr written_max; // exclusive byte offset, -1 when unknown/unwritten
     MGLBufferInitSource last_init_source;

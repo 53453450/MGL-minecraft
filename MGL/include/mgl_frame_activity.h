@@ -101,12 +101,34 @@ extern _Atomic uint64_t g_mglSetRenderPipelineStateSkipsSinceSwap;
 extern _Atomic uint64_t g_mglEncoderCreationsSinceSwap;   /* newRenderEncoderLocked calls */
 extern _Atomic uint64_t g_mglEncoderFBORotationsSinceSwap; /* FBO-change driven rotations */
 
+/* Why newRenderEncoderLocked ran. Sum of reasons == encoder_creations.
+ * fboRot is a subset of reason_fbo (rotate path); reason_fbo may also
+ * include other FBO-driven rebuilds that call newRenderEncoder directly. */
+typedef enum MGLEncoderCreateReason {
+    MGL_ENC_REASON_FBO = 0,       /* rotateRenderEncoder / FBO mismatch rebuild */
+    MGL_ENC_REASON_NIL,           /* processGLState nil-encoder recovery */
+    MGL_ENC_REASON_CLEAR,         /* clear / no-VAO dirty-state path */
+    MGL_ENC_REASON_DRAW,          /* draw-time missing-encoder recovery */
+    MGL_ENC_REASON_VAO,           /* DIRTY_VAO with nil encoder */
+    MGL_ENC_REASON_RS,            /* DIRTY_RENDER_STATE with nil encoder */
+    MGL_ENC_REASON_CMD,           /* newCommandBufferAndRenderEncoder */
+    MGL_ENC_REASON_OTHER,
+    MGL_ENC_REASON_COUNT
+} MGLEncoderCreateReason;
+
+extern _Atomic uint64_t g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_COUNT];
+/* FBO rotate attachment identity (subset of fboRot). */
+extern _Atomic uint64_t g_mglEncoderFboRotDefaultSinceSwap; /* draw FBO name == 0 */
+extern _Atomic uint64_t g_mglEncoderFboRotNamedSinceSwap;   /* draw FBO name != 0 */
+
 /* Batch merge rejection reasons */
 extern _Atomic uint64_t g_mglMergeRejectStateDiffersSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectBufferHazardSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectUnsafeBuiltinSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectExcludedLayoutSinceSwap;
 extern _Atomic uint64_t g_mglMergeRejectAppendFailedSinceSwap;
+/* BindNoFlush path: IgnoringDynamicBindings matched but capture failed. */
+extern _Atomic uint64_t g_mglMergeRejectDynamicCaptureSinceSwap;
 
 /* Lock timing (seconds) */
 /* Stored as _Atomic uint64_t nanoseconds (lock-free on all platforms)
@@ -285,12 +307,23 @@ typedef struct MGLPerfCounters {
     /* Render encoder lifecycle */
     uint64_t encoder_creations;
     uint64_t encoder_fbo_rotations;
+    uint64_t encoder_reason_fbo;
+    uint64_t encoder_reason_nil;
+    uint64_t encoder_reason_clear;
+    uint64_t encoder_reason_draw;
+    uint64_t encoder_reason_vao;
+    uint64_t encoder_reason_rs;
+    uint64_t encoder_reason_cmd;
+    uint64_t encoder_reason_other;
+    uint64_t encoder_fbo_rot_default;
+    uint64_t encoder_fbo_rot_named;
     /* Merge rejections */
     uint64_t merge_reject_state_differs;
     uint64_t merge_reject_buffer_hazard;
     uint64_t merge_reject_unsafe_builtin;
     uint64_t merge_reject_excluded_layout;
     uint64_t merge_reject_append_failed;
+    uint64_t merge_reject_dynamic_capture;
     /* Lock timing */
     double   lock_wait_time;
     double   lock_hold_time;
@@ -357,11 +390,22 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.set_render_pipeline_state_skips = MGL_FRAME_LOAD(g_mglSetRenderPipelineStateSkipsSinceSwap);
     c.encoder_creations     = MGL_FRAME_LOAD(g_mglEncoderCreationsSinceSwap);
     c.encoder_fbo_rotations = MGL_FRAME_LOAD(g_mglEncoderFBORotationsSinceSwap);
+    c.encoder_reason_fbo    = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_FBO]);
+    c.encoder_reason_nil    = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_NIL]);
+    c.encoder_reason_clear  = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_CLEAR]);
+    c.encoder_reason_draw   = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_DRAW]);
+    c.encoder_reason_vao    = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_VAO]);
+    c.encoder_reason_rs     = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_RS]);
+    c.encoder_reason_cmd    = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_CMD]);
+    c.encoder_reason_other  = MGL_FRAME_LOAD(g_mglEncoderCreateReasonSinceSwap[MGL_ENC_REASON_OTHER]);
+    c.encoder_fbo_rot_default = MGL_FRAME_LOAD(g_mglEncoderFboRotDefaultSinceSwap);
+    c.encoder_fbo_rot_named   = MGL_FRAME_LOAD(g_mglEncoderFboRotNamedSinceSwap);
     c.merge_reject_state_differs   = MGL_FRAME_LOAD(g_mglMergeRejectStateDiffersSinceSwap);
     c.merge_reject_buffer_hazard   = MGL_FRAME_LOAD(g_mglMergeRejectBufferHazardSinceSwap);
     c.merge_reject_unsafe_builtin  = MGL_FRAME_LOAD(g_mglMergeRejectUnsafeBuiltinSinceSwap);
     c.merge_reject_excluded_layout = MGL_FRAME_LOAD(g_mglMergeRejectExcludedLayoutSinceSwap);
     c.merge_reject_append_failed   = MGL_FRAME_LOAD(g_mglMergeRejectAppendFailedSinceSwap);
+    c.merge_reject_dynamic_capture = MGL_FRAME_LOAD(g_mglMergeRejectDynamicCaptureSinceSwap);
     c.lock_wait_time          = (double)MGL_FRAME_LOAD(g_mglLockWaitTimeSinceSwap) / 1e9;
     c.lock_hold_time          = (double)MGL_FRAME_LOAD(g_mglLockHoldTimeSinceSwap) / 1e9;
     c.ds_state_creates        = MGL_FRAME_LOAD(g_mglDepthStencilStateCreatesSinceSwap);
@@ -421,11 +465,17 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglSetRenderPipelineStateSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglEncoderCreationsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglEncoderFBORotationsSinceSwap, 0);
+    for (unsigned i = 0; i < (unsigned)MGL_ENC_REASON_COUNT; i++) {
+        MGL_FRAME_STORE(g_mglEncoderCreateReasonSinceSwap[i], 0);
+    }
+    MGL_FRAME_STORE(g_mglEncoderFboRotDefaultSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglEncoderFboRotNamedSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectStateDiffersSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectBufferHazardSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectUnsafeBuiltinSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectExcludedLayoutSinceSwap, 0);
     MGL_FRAME_STORE(g_mglMergeRejectAppendFailedSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglMergeRejectDynamicCaptureSinceSwap, 0);
     MGL_FRAME_STORE(g_mglLockWaitTimeSinceSwap, 0);
     MGL_FRAME_STORE(g_mglLockHoldTimeSinceSwap, 0);
     MGL_FRAME_STORE(g_mglDepthStencilStateCreatesSinceSwap, 0);

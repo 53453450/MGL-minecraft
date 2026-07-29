@@ -1,16 +1,26 @@
 #import "MGLQueryManager.h"
 
+/* One 8-byte visibility slot per render pass participating in a query.
+ * Metal accumulates the visibility counter across draws only within one
+ * encoder; at pass end it OVERWRITES the value at the slot's offset, so a
+ * query spanning multiple passes must give each pass its own slot and sum
+ * them at readback. */
+enum { kMGLVisibilitySlots = 256 };
+
 @implementation MGLQueryManager {
     id<MTLBuffer> _visibilityResultBuffer;
     BOOL _sampleQueryActive;
+    BOOL _sampleQueryCounting;
+    NSUInteger _sampleQuerySlot;
     uint64_t _timerQueryBeginGPU;
 }
 
-- (BOOL)beginSampleQueryWithDevice:(id<MTLDevice>)device
+- (BOOL)beginSampleQueryWithDevice:(id<MTLDevice>)device counting:(BOOL)counting
 {
     if (!_visibilityResultBuffer) {
-        _visibilityResultBuffer = [device newBufferWithLength:8
-                                                      options:MTLResourceStorageModeShared];
+        _visibilityResultBuffer =
+            [device newBufferWithLength:kMGLVisibilitySlots * sizeof(uint64_t)
+                                options:MTLResourceStorageModeShared];
         if (!_visibilityResultBuffer) {
             return NO;
         }
@@ -19,11 +29,15 @@
 
     memset(_visibilityResultBuffer.contents, 0, _visibilityResultBuffer.length);
     _sampleQueryActive = YES;
+    _sampleQueryCounting = counting;
+    _sampleQuerySlot = 0;
     return YES;
 }
 
 - (void)endSampleQuery
 {
+    /* _sampleQuerySlot is intentionally kept: sampleQueryResult reads it
+     * to know how many slots to sum.  It is reset at the next begin. */
     _sampleQueryActive = NO;
 }
 
@@ -42,7 +56,14 @@
     if (!_visibilityResultBuffer) {
         return 0;
     }
-    return *(const uint64_t *)_visibilityResultBuffer.contents;
+    const uint64_t *slots = (const uint64_t *)_visibilityResultBuffer.contents;
+    uint64_t sum = 0;
+    NSUInteger used = _sampleQuerySlot < kMGLVisibilitySlots ? _sampleQuerySlot
+                                                             : kMGLVisibilitySlots;
+    for (NSUInteger i = 0; i < used; i++) {
+        sum += slots[i];
+    }
+    return sum;
 }
 
 - (void)configureRenderPassDescriptor:(MTLRenderPassDescriptor *)descriptor
@@ -53,22 +74,27 @@
     /* Always attach the visibility result buffer (when it exists) so that
      * mtlBeginSampleQuery: can enable visibility counting on an existing
      * encoder via setVisibilityResultMode: without ending the encoder.
-     * The buffer is only 8 bytes, so attaching it to every encoder has
-     * negligible cost. The GPU only writes to it when
-     * setVisibilityResultMode is enabled (default disabled). */
+     * The GPU only writes to it when setVisibilityResultMode is enabled
+     * (default disabled).  The buffer is zeroed once at query begin; passes
+     * write distinct slots, so no per-pass clear is needed (a clear here
+     * would wipe results already written by earlier passes of the same
+     * query). */
     descriptor.visibilityResultBuffer = _visibilityResultBuffer;
-    /* Zero the buffer only when a query is active, so the GPU accumulates
-     * a fresh count for this pass. When no query is active, the buffer
-     * contents are stale but unused. */
-    if (_sampleQueryActive) {
-        memset(_visibilityResultBuffer.contents, 0, _visibilityResultBuffer.length);
-    }
 }
 
 - (void)configureRenderEncoder:(id<MTLRenderCommandEncoder>)renderEncoder
 {
     if (_sampleQueryActive && renderEncoder) {
-        [renderEncoder setVisibilityResultMode:MTLVisibilityResultModeBoolean offset:0];
+        NSUInteger slot = _sampleQuerySlot;
+        if (slot >= kMGLVisibilitySlots) {
+            slot = kMGLVisibilitySlots - 1;  /* degrade: reuse last slot */
+        } else {
+            _sampleQuerySlot++;
+        }
+        [renderEncoder setVisibilityResultMode:(_sampleQueryCounting
+                                                    ? MTLVisibilityResultModeCounting
+                                                    : MTLVisibilityResultModeBoolean)
+                                        offset:slot * sizeof(uint64_t)];
     }
 }
 

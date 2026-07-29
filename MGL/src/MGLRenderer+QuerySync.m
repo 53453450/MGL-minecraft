@@ -11,10 +11,14 @@
  * Enables visibility counting on the current render encoder when possible,
  * avoiding a render encoder rebuild. Falls back to ending the encoder when
  * the visibility result buffer isn't pre-attached to the current pass. */
--(void)mtlBeginSampleQuery:(GLMContext)glm_ctx
+-(void)mtlBeginSampleQuery:(GLMContext)glm_ctx target:(GLenum)target
 {
     (void)glm_ctx;
-    if (![_queryManager beginSampleQueryWithDevice:_device]) {
+    /* GL 4.6 §17.3.5: SAMPLES_PASSED counts passing samples, so it needs
+     * Metal's Counting visibility mode; ANY_SAMPLES_PASSED* only needs the
+     * cheaper Boolean mode. */
+    if (![_queryManager beginSampleQueryWithDevice:_device
+                                          counting:(target == GL_SAMPLES_PASSED)]) {
         NSLog(@"MGL ERROR: Failed to allocate visibility result buffer");
         return;
     }

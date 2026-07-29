@@ -498,7 +498,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     mglMarkRendererDirtyBits(ctx->active_state,
                              DIRTY_FBO | DIRTY_PROGRAM |
                              DIRTY_RENDER_STATE | DIRTY_VAO);
-    return [self newRenderEncoder];
+    return [self newRenderEncoderWithReason:MGL_ENC_REASON_FBO];
 }
 
 - (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall
@@ -1806,8 +1806,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool) newRenderEncoder
 {
+    return [self newRenderEncoderWithReason:MGL_ENC_REASON_OTHER];
+}
+
+- (bool) newRenderEncoderWithReason:(MGLEncoderCreateReason)reason
+{
     METAL_LOCK();
-    bool result = [self newRenderEncoderLocked];
+    bool result = [self newRenderEncoderLockedWithReason:reason];
     METAL_UNLOCK();
     return result;
 }
@@ -2844,8 +2849,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool) newRenderEncoderLocked
 {
-    /* instrumentation: count every render encoder (re)creation. */
+    return [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_OTHER];
+}
+
+- (bool) newRenderEncoderLockedWithReason:(MGLEncoderCreateReason)reason
+{
+    /* instrumentation: count every render encoder (re)creation + reason. */
     MGL_PERF_INC(g_mglEncoderCreationsSinceSwap);
+    if ((unsigned)reason >= (unsigned)MGL_ENC_REASON_COUNT) {
+        reason = MGL_ENC_REASON_OTHER;
+    }
+    MGL_PERF_INC(g_mglEncoderCreateReasonSinceSwap[reason]);
     // I can't remember why this is here...
     @autoreleasepool {
     /* Invalidate last-bound render encoder state — the new encoder must
@@ -3244,7 +3258,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             return false;
         }
 
-        if ([self newRenderEncoder] == false) {
+        if ([self newRenderEncoderWithReason:MGL_ENC_REASON_CMD] == false) {
             NSLog(@"MGL ERROR: newCommandBufferAndRenderEncoder - newRenderEncoder failed");
             return false;
         }
@@ -4445,7 +4459,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
 
             @try {
-                [self newRenderEncoderLocked];
+                [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_CLEAR];
             } @catch (NSException *exception) {
                 NSLog(@"MGL ERROR: Render encoder creation failed: %@", exception);
             }
@@ -4574,7 +4588,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                       _renderPassManager.state->renderPassDrawBuffer,
                                       _renderPassManager.state->renderPassDrawBufferCount);
         }
-        RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+        RETURN_FALSE_ON_FAILURE(
+            [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_NIL]);
         if (nilHit <= 16ull || (nilHit % 2048ull) == 0ull) {
             mglLogRenderPassLifecycle("nil-encoder-after-recovery",
                                       nilHit,
@@ -4840,7 +4855,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             if (work) work->updatedBaseLists = true;
 
             if (!_renderPassManager.state->currentRenderEncoder) {
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+                RETURN_FALSE_ON_FAILURE(
+                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_VAO]);
             }
 
             [self updateCurrentRenderEncoder];
@@ -4861,7 +4877,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         {
             if (_renderPassManager.state->currentRenderEncoder == NULL)
             {
-                RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+                RETURN_FALSE_ON_FAILURE(
+                    [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_RS]);
             }
 
             // a dirty render state may just be something like alpha changes which don't require a new renderbuffer
@@ -5994,8 +6011,19 @@ stencil_format_ok:;
 - (bool)rotateRenderEncoderForCurrentFramebufferLocked
 {
     MGL_PERF_INC(g_mglEncoderFBORotationsSinceSwap);
+    GLMContext glm_ctx = ctx;
+    GLuint fbo_name = 0u;
+    if (glm_ctx && glm_ctx->active_state && glm_ctx->active_state->framebuffer) {
+        fbo_name = glm_ctx->active_state->framebuffer->name;
+    }
+    if (fbo_name == 0u) {
+        MGL_PERF_INC(g_mglEncoderFboRotDefaultSinceSwap);
+    } else {
+        MGL_PERF_INC(g_mglEncoderFboRotNamedSinceSwap);
+    }
     [self endRenderEncodingLocked];
-    RETURN_FALSE_ON_FAILURE([self newRenderEncoderLocked]);
+    RETURN_FALSE_ON_FAILURE(
+        [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_FBO]);
     return true;
 }
 

@@ -50,11 +50,19 @@ static bool mglBuildDynamicVertexArray(const VertexArray *base,
             return false;
         }
         BufferBinding *binding = &out->bindings[override->binding_index];
-        if (binding->offset > INTPTR_MAX - (GLintptr)override->offset_delta) {
-            return false;
-        }
         binding->buffer = (Buffer *)override->buffer;
-        binding->offset += (GLintptr)override->offset_delta;
+        binding->offset = (GLintptr)override->offset;
+        /* Keep classic VertexAttribPointer mirror fields in sync so resolve
+         * stays correct if a path still reads attrib.binding_offset. */
+        for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
+            if ((out->enabled_attribs & (1u << attrib)) == 0u ||
+                out->attrib[attrib].buffer_bindingindex !=
+                    override->binding_index) {
+                continue;
+            }
+            out->attrib[attrib].buffer = (Buffer *)override->buffer;
+            out->attrib[attrib].binding_offset = (GLintptr)override->offset;
+        }
     }
     return true;
 }
@@ -3959,7 +3967,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         Buffer *draw_buffer = (Buffer *)override->buffer;
-        NSUInteger dynamic_offset = (NSUInteger)override->offset_delta;
+        NSUInteger dynamic_offset = (NSUInteger)override->offset;
         if (draw_buffer->data.dirty_bits) {
             BufferMapList upload = {0};
             upload.count = 1;
@@ -3979,6 +3987,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         id<MTLBuffer> metal_buffer =
             (__bridge id<MTLBuffer>)(draw_buffer->data.mtl_data);
         if (binding->offset < 0 ||
+            (uint64_t)binding->offset != (uint64_t)dynamic_offset ||
             (uint64_t)binding->offset >= (uint64_t)metal_buffer.length ||
             dynamic_offset >= metal_buffer.length) {
             return false;
@@ -6094,7 +6103,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     // Additional safety check after processGLState
     if (!_renderPassManager.state->currentRenderEncoder) {
         // One recovery attempt to avoid persistent "No current render encoder" failure loops.
-        [self newRenderEncoderLocked];
+        [self newRenderEncoderLockedWithReason:MGL_ENC_REASON_DRAW];
         if (!_renderPassManager.state->currentRenderEncoder) {
             no_render_encoder_count++;
             if (no_render_encoder_count <= 8 || (no_render_encoder_count % 1000) == 0) {

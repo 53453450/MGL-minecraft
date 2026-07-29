@@ -1964,9 +1964,127 @@ GLint  mglGetUniformLocation(GLMContext ctx, GLuint program, const GLchar *name)
     return -1;
 }
 
+/* Map a plain-uniform GL type to (component count, float-ness). */
+static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
+{
+    *is_float = GL_TRUE;
+    switch (gl_type) {
+        case GL_FLOAT: case GL_DOUBLE: return 1;
+        case GL_FLOAT_VEC2: return 2;
+        case GL_FLOAT_VEC3: return 3;
+        case GL_FLOAT_VEC4: return 4;
+        case GL_FLOAT_MAT2: return 4;
+        case GL_FLOAT_MAT3: return 9;
+        case GL_FLOAT_MAT4: return 16;
+        case GL_FLOAT_MAT2x3: case GL_FLOAT_MAT3x2: return 6;
+        case GL_FLOAT_MAT2x4: case GL_FLOAT_MAT4x2: return 8;
+        case GL_FLOAT_MAT3x4: case GL_FLOAT_MAT4x3: return 12;
+        case GL_INT: case GL_UNSIGNED_INT: case GL_BOOL: *is_float = GL_FALSE; return 1;
+        case GL_INT_VEC2: case GL_UNSIGNED_INT_VEC2: case GL_BOOL_VEC2: *is_float = GL_FALSE; return 2;
+        case GL_INT_VEC3: case GL_UNSIGNED_INT_VEC3: case GL_BOOL_VEC3: *is_float = GL_FALSE; return 3;
+        case GL_INT_VEC4: case GL_UNSIGNED_INT_VEC4: case GL_BOOL_VEC4: *is_float = GL_FALSE; return 4;
+        default: return 0;
+    }
+}
+
+/* Read back one element of a plain (non-sampler) default-block uniform from
+ * the per-program CPU store (plain_uniform_buffers).  Returns the component
+ * count (0 = location does not name a plain uniform).  out[] receives raw
+ * 32-bit words; *is_float_out tells the caller whether they are float or
+ * integer bits.  Slots never uploaded read as zero (GL initial value; shader
+ * initializers are seeded into the slots at link time). */
+static GLuint mglReadPlainUniform(Program *ptr, GLint location,
+                                  uint32_t out[16], GLboolean *is_float_out)
+{
+    if (!ptr || location < 0) {
+        return 0;
+    }
+
+    GLint slot_loc = -1, element = 0;
+    GLuint gl_type = 0;
+
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES && slot_loc < 0; stage++) {
+        SpirvResourceList *resources =
+            mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, __FUNCTION__);
+        if (!resources) {
+            continue;
+        }
+        for (GLuint i = 0; i < resources->count && slot_loc < 0; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
+                continue;
+            }
+            GLint base = mglPlainUniformResourceLocation(res);
+            if (base < 0) {
+                continue;
+            }
+            if (res->ubo_members && res->ubo_member_count > 0) {
+                /* Struct leaves: one location per leaf element, data stored
+                 * per member base location. */
+                for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                    const SpirvUBOMember *member = &res->ubo_members[m];
+                    GLint mbase = base + member->location_offset;
+                    GLint msize = member->size > 1 ? member->size : 1;
+                    if (location >= mbase && location < mbase + msize) {
+                        slot_loc = mbase;
+                        element = location - mbase;
+                        gl_type = member->gl_type;
+                        break;
+                    }
+                }
+            } else {
+                GLint arr = res->gl_array_size > 1 ? res->gl_array_size : 1;
+                if (location >= base && location < base + arr) {
+                    slot_loc = base;
+                    element = location - base;
+                    gl_type = res->gl_type;
+                }
+            }
+        }
+    }
+
+    if (slot_loc < 0 || slot_loc >= MAX_BINDABLE_BUFFERS) {
+        return 0;
+    }
+
+    GLuint comps = mglPlainUniformTypeInfo(gl_type, is_float_out);
+    if (comps == 0) {
+        return 0;
+    }
+
+    /* GL_FLOAT_MAT3 is stored Metal-packed: 3 columns x float4 (12 words). */
+    GLuint stored_words = (gl_type == GL_FLOAT_MAT3) ? 12u : comps;
+
+    memset(out, 0, comps * sizeof(uint32_t));
+    Buffer *buf = ptr->plain_uniform_buffers[slot_loc].buf;
+    if (buf && buf->data.buffer_data && buf->size > 0) {
+        const uint32_t *src = (const uint32_t *)(uintptr_t)buf->data.buffer_data;
+        size_t avail_words = (size_t)buf->size / sizeof(uint32_t);
+        size_t first = (size_t)element * stored_words;
+        uint32_t tmp[16];
+        memset(tmp, 0, sizeof(tmp));
+        for (GLuint w = 0; w < stored_words && w < 16u; w++) {
+            if (first + w < avail_words) {
+                tmp[w] = src[first + w];
+            }
+        }
+        if (gl_type == GL_FLOAT_MAT3) {
+            for (GLuint col = 0; col < 3u; col++) {
+                for (GLuint row = 0; row < 3u; row++) {
+                    out[col * 3u + row] = tmp[col * 4u + row];
+                }
+            }
+        } else {
+            memcpy(out, tmp, comps * sizeof(uint32_t));
+        }
+    }
+    return comps;
+}
+
+void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *params);
+
 void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *params)
 {
-    (void)location;
     if (!ctx) {
         return;
     }
@@ -1974,8 +2092,37 @@ void mglGetUniformfv(GLMContext ctx, GLuint program, GLint location, GLfloat *pa
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (params) {
-        *params = 0.0f;
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!params) {
+        return;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    if (comps == 0) {
+        /* Sampler uniforms are valid GetUniform targets: return the unit. */
+        if (mglFindSamplerUniformResource(ptr, location, NULL, NULL)) {
+            GLint unit = 0;
+            mglGetUniformiv(ctx, program, location, &unit);
+            *params = (GLfloat)unit;
+            return;
+        }
+        ERROR_RETURN(GL_INVALID_OPERATION);  /* location not an active uniform */
+        return;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            params[i] = f;
+        } else {
+            params[i] = (GLfloat)(GLint)bits[i];
+        }
     }
 }
 
@@ -1988,24 +2135,50 @@ void mglGetUniformiv(GLMContext ctx, GLuint program, GLint location, GLint *para
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (params) {
-        Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
-        GLuint metal_binding = 0;
-        int stage = -1;
-        SpirvResource *res =
-            ptr ? mglFindSamplerUniformResource(ptr, location, &stage, &metal_binding) : NULL;
-        if (res && res->sampler_unit >= 0 && res->sampler_unit < TEXTURE_UNITS) {
+    Program *ptr = mglUniformGetNamedProgram(ctx, program, __FUNCTION__);
+    if (!ptr || ptr->linked_glsl_program == NULL) {
+        ERROR_RETURN(GL_INVALID_OPERATION);
+        return;
+    }
+    if (!params) {
+        return;
+    }
+
+    GLuint metal_binding = 0;
+    int stage = -1;
+    SpirvResource *res = mglFindSamplerUniformResource(ptr, location, &stage, &metal_binding);
+    if (res) {
+        if (res->sampler_unit >= 0 && res->sampler_unit < TEXTURE_UNITS) {
             GLint array_element = location - res->uniform_location;
             *params = res->sampler_unit + (array_element > 0 ? array_element : 0);
-        } else if (ptr && metal_binding < TEXTURE_UNITS &&
+        } else if (metal_binding < TEXTURE_UNITS &&
                    stage >= 0 && stage < _MAX_SHADER_TYPES &&
                    ptr->sampler_units_by_stage[stage][metal_binding] >= 0) {
             *params = ptr->sampler_units_by_stage[stage][metal_binding];
-        } else if (ptr && metal_binding < TEXTURE_UNITS &&
+        } else if (metal_binding < TEXTURE_UNITS &&
                    ptr->sampler_units[metal_binding] >= 0) {
             *params = ptr->sampler_units[metal_binding];
         } else {
             *params = 0;
+        }
+        return;
+    }
+
+    uint32_t bits[16];
+    GLboolean is_float = GL_TRUE;
+    GLuint comps = mglReadPlainUniform(ptr, location, bits, &is_float);
+    if (comps == 0) {
+        ERROR_RETURN(GL_INVALID_OPERATION);  /* location not an active uniform */
+        return;
+    }
+    for (GLuint i = 0; i < comps; i++) {
+        if (is_float) {
+            GLfloat f;
+            memcpy(&f, &bits[i], sizeof(f));
+            /* Spec 2.2.2: float -> int converts by rounding to nearest. */
+            params[i] = (GLint)(f >= 0.0f ? f + 0.5f : f - 0.5f);
+        } else {
+            params[i] = (GLint)bits[i];
         }
     }
 }

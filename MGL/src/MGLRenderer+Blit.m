@@ -827,6 +827,11 @@ typedef struct MGLBlitColorState {
         return NO;
     }
 
+    /* Copy the full GL mip chain of the RT (capped to source.mipmapLevelCount),
+     * not the transient GpuTextureView BASE/MAX_LEVEL window.  Shrinking the
+     * Y-flip copy to that window left higher mips stale and re-broke the
+     * ced1a99 stripe fix (mipmapped sampling fell back to the un-flipped RT).
+     * Sampling windows are applied later via mglSampledTextureViewForBaseLevel. */
     NSUInteger copyLevelCount = 1u;
     if (source.mipmapLevelCount > 1u) {
         GLuint highestGLLevel = tex->num_levels > 0u ? tex->num_levels - 1u : 0u;
@@ -834,16 +839,7 @@ typedef struct MGLBlitColorState {
             highestGLLevel = tex->mipmap_levels - 1u;
         }
 
-        GLuint maxParamLevel = tex->params.max_level;
-        if (maxParamLevel != 1000u && maxParamLevel < highestGLLevel) {
-            highestGLLevel = maxParamLevel;
-        }
-
         NSUInteger highestSourceLevel = source.mipmapLevelCount - 1u;
-        if (tex->params.base_level > highestGLLevel &&
-            (NSUInteger)tex->params.base_level <= highestSourceLevel) {
-            highestGLLevel = tex->params.base_level;
-        }
         if ((NSUInteger)highestGLLevel > highestSourceLevel) {
             highestGLLevel = (GLuint)highestSourceLevel;
         }
@@ -870,22 +866,15 @@ typedef struct MGLBlitColorState {
     if (needsNewCopy) {
         [self releaseGLSampledRenderTargetCopyForTexture:tex];
 
-        /* Mirror the GL-visible mip window, not the whole Metal backing
-         * allocation.  MC 1.21.11 can attach a render target with full mip
-         * backing while sampling a view with MAX_LEVEL=0; copying every
-         * backing level on each end_render_pass is needlessly expensive.
-         * Mipmapped RT atlases that really expose levels 0..N still get an
-         * N+1-level copy so textureLod / auto-mip sampling stay flipped. */
+        /* Mirror the source RT's GL mip chain so textureLod / auto-mip
+         * sampling stay Y-flipped (ced1a99).  Cap to source.mipmapLevelCount
+         * — Metal may derive more levels from dimensions than the atlas has. */
         BOOL copyMipmapped = (copyLevelCount > 1u);
         MTLTextureDescriptor *desc =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
                                                                width:source.width
                                                               height:source.height
                                                            mipmapped:copyMipmapped];
-        /* When mipmapped, Metal derives mipmapLevelCount from the dimensions
-         * (e.g. 12 for a 2048x2048 texture).  Pin it to the GL copy window so
-         * texture views keep absolute mip indices without forcing every
-         * backing level through the Y-flip pass. */
         if (copyMipmapped) {
             desc.mipmapLevelCount = copyLevelCount;
         }

@@ -120,15 +120,17 @@ const char *mglTextureDataKindName(MGLTextureDataKind kind);
  * explicitly when blitting/uploading. */
 NSUInteger mglMetalTextureLevelDimension(NSUInteger base, NSUInteger level);
 
-/* === Sampled texture view for base_level > 0 ===
+/* === Sampled texture view for BASE/MAX_LEVEL windows ===
  *
- * GL spec 8.14.2: TEXTURE_BASE_LEVEL selects the lowest mipmap level that
- * is sampled.  Metal has no base level concept — the entire texture is
- * always addressable.  To honor GL semantics, create a texture view that
- * starts at `base_level` and spans `[base_level, max_level]`.
+ * GL spec 8.14.2: TEXTURE_BASE_LEVEL / TEXTURE_MAX_LEVEL select the mip
+ * window that is sampled.  Metal has no BASE/MAX level concept — the entire
+ * texture is always addressable.  To honor GL semantics, create a texture
+ * view spanning `[base_level, max_level]` when that window is narrower than
+ * the full mip chain (including base_level==0 with a restricted MAX_LEVEL,
+ * which Minecraft uses for GpuTextureView).
  *
- * Returns `texture` unchanged if no view is needed (base_level == 0 or
- * invalid range).  Returns a new autoreleased view otherwise. */
+ * Returns `texture` unchanged if no view is needed (full window or invalid
+ * range).  Returns a cached/new view otherwise. */
 id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                                                  id<MTLTexture> texture);
 

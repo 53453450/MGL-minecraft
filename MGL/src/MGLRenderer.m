@@ -2676,13 +2676,13 @@ void logDirtyBits(GLMContext ctx)
 
 
 /*
- * GL_TEXTURE_BASE_LEVEL selects the lowest mipmap level used for sampling.
- * Metal textures always start at level 0, so when base_level > 0 a texture
- * view is created whose level 0 corresponds to the GL base_level.  This lets
- * the Metal sampler's lodMinClamp/lodMaxClamp operate in the same coordinate
- * space as GL (relative to base_level).  GL_TEXTURE_MAX_LEVEL caps the
- * highest level.  When base_level == 0 the original texture is returned
- * unchanged so the common case has no overhead.
+ * GL_TEXTURE_BASE_LEVEL / MAX_LEVEL select the mip window used for sampling.
+ * Metal textures always start at level 0, so when that window is narrower
+ * than the full mip chain a texture view is created spanning
+ * [base_level, max_level] (including base_level==0 with a restricted
+ * MAX_LEVEL).  This lets Metal sampler lod clamps operate in the same
+ * coordinate space as GL (relative to the view's level 0).  When the window
+ * covers the whole texture the original is returned (no overhead).
  */
 /* mglSampledTextureViewForBaseLevel now lives in mgl_texture_compat.m — see
  * mgl_texture_compat.h. */
@@ -3694,7 +3694,7 @@ void logDirtyBits(GLMContext ctx)
             fbo->dirty_bits &= ~DIRTY_FBO_BINDING;
         }
 
-        RETURN_ON_FAILURE([self newRenderEncoder]);
+        RETURN_ON_FAILURE([self newRenderEncoderWithReason:MGL_ENC_REASON_CLEAR]);
         [self endRenderEncoding];
         mglMarkRendererDirtyBits(glm_ctx->active_state,
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
@@ -4212,7 +4212,14 @@ void logDirtyBits(GLMContext ctx)
                      (access & GL_MAP_READ_BIT) != 0;
         if (cpuBase) {
             uint8_t *cpuPtr = cpuBase + offset;
-            if (reads && mtlBase && mtlBase != cpuBase && safeLen > 0) {
+            /* cpu_shadow_pending: the shadow holds map-write bytes not yet
+             * uploaded to the Metal buffer; refreshing from Metal here would
+             * clobber them with stale data (GL 4.6 §6.3: unmapped writes
+             * must stay visible).  The flag is cleared once encoding uploads
+             * the shadow or a GPU write is copied back into it, so GPU
+             * readback (SSBO/XFB writes) still refreshes from Metal. */
+            if (reads && mtlBase && mtlBase != cpuBase && safeLen > 0 &&
+                !buf->cpu_shadow_pending) {
                 memcpy(cpuPtr, mtlBase + offset, (size_t)safeLen);
             }
 
@@ -4740,6 +4747,7 @@ Buffer *getIndirectBuffer(GLMContext ctx)
                             metalBytes + entry->destination_offset,
                             entry->length);
                 }
+                buffer->cpu_shadow_pending = GL_FALSE;
             }
         }
     }

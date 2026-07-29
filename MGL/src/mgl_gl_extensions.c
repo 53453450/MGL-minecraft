@@ -1551,7 +1551,7 @@ void mglBeginQuery(GLMContext ctx, GLenum target, GLuint id)
 		/* Deferred draws issued before glBeginQuery must be encoded before the
 		 * visibility query starts or they would be counted by this query. */
 		mglFlushCommandBuffer(ctx);
-		ctx->mtl_funcs.mtlBeginSampleQuery(ctx);
+		ctx->mtl_funcs.mtlBeginSampleQuery(ctx, target);
 	}
 
 	/* For GL_TIME_ELAPSED, flush pending GPU work and sample the GPU
@@ -2691,7 +2691,10 @@ void mglEndQuery(GLMContext ctx, GLenum target)
 		 * buffer. Replay them while the Metal visibility query is active. */
 		mglFlushCommandBuffer(ctx);
 		GLuint64 gpuResult = ctx->mtl_funcs.mtlEndSampleQuery(ctx);
-		q->result = gpuResult;
+		/* §17.3.5: ANY_SAMPLES_PASSED* results are booleans; the Metal
+		 * Boolean visibility mode only guarantees "nonzero". */
+		q->result = (target == GL_SAMPLES_PASSED) ? gpuResult
+		                                          : (gpuResult ? 1u : 0u);
 		q->sample_result_known = GL_TRUE;
 	}
 

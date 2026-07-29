@@ -80,7 +80,7 @@
 - (void)mtlBeginTimerQuery:(GLMContext)glm_ctx;
 - (GLuint64)mtlEndTimerQuery:(GLMContext)glm_ctx;
 - (GLuint64)mtlGetGPUTimestamp:(GLMContext)glm_ctx;
-- (void)mtlBeginSampleQuery:(GLMContext)glm_ctx;
+- (void)mtlBeginSampleQuery:(GLMContext)glm_ctx target:(GLenum)target;
 - (GLuint64)mtlEndSampleQuery:(GLMContext)glm_ctx;
 - (void)mtlDrawArrays:(GLMContext)glm_ctx mode:(GLenum)mode first:(GLint)first count:(GLsizei)count;
 - (void)mtlDrawElements:(GLMContext)glm_ctx mode:(GLenum)mode count:(GLsizei)count type:(GLenum)type indices:(const void *)indices;
@@ -156,7 +156,7 @@ void mtlDispatchComputeIndirect(GLMContext glm_ctx, GLintptr indirect);
 void mtlBeginTimerQuery(GLMContext glm_ctx);
 GLuint64 mtlEndTimerQuery(GLMContext glm_ctx);
 GLuint64 mtlGetGPUTimestamp(GLMContext glm_ctx);
-void mtlBeginSampleQuery(GLMContext glm_ctx);
+void mtlBeginSampleQuery(GLMContext glm_ctx, GLenum target);
 GLuint64 mtlEndSampleQuery(GLMContext glm_ctx);
 
 /* Draw */

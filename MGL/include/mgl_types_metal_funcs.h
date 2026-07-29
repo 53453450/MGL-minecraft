@@ -122,7 +122,7 @@ struct GLMMetalFuncs {
      * visibility result mode. mtlEndSampleQuery flushes the current pass,
      * reads back the result, and returns the sample-pass count (0 if no
      * samples passed). */
-    void (*mtlBeginSampleQuery)(GLMContext ctx);
+    void (*mtlBeginSampleQuery)(GLMContext ctx, GLenum target);
     GLuint64 (*mtlEndSampleQuery)(GLMContext ctx);
 
     /* GPU timer query support (GL_TIME_ELAPSED / GL_TIMESTAMP).

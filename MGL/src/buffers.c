@@ -2811,6 +2811,7 @@ GLboolean mglUnmapBuffer(GLMContext ctx, GLenum target)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        ptr->cpu_shadow_pending = GL_TRUE;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 
@@ -2871,6 +2872,7 @@ GLboolean mglUnmapNamedBuffer(GLMContext ctx, GLuint buffer)
     mglBufferMarkMapWrite(ptr);
     if (mglBufferMapAllowsWrite(ptr)) {
         ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+        ptr->cpu_shadow_pending = GL_TRUE;
         mglMarkStateDirtyBits(&ctx->state, DIRTY_BUFFER);
     }
 

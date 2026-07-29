@@ -116,11 +116,10 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
                                                  id<MTLTexture> texture)
 {
     if (!ptr || !texture) return texture;
-    if (ptr->params.base_level == 0u) return texture;
     if (ptr->mipmap_levels == 0u) return texture;
-    if (ptr->params.base_level >= ptr->mipmap_levels) return texture;
 
     GLuint baseLevel = ptr->params.base_level;
+    if (baseLevel >= ptr->mipmap_levels) return texture;
     if ((NSUInteger)baseLevel >= texture.mipmapLevelCount) {
         return texture;
     }
@@ -134,6 +133,14 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
 
     NSUInteger levelCount = maxLevel - baseLevel + 1u;
     if (levelCount == 0u) return texture;
+
+    /* Fast path: no BASE/MAX window — common case for full-atlas sampling.
+     * Still build a view when base==0 but MAX_LEVEL restricts (MC GpuTextureView
+     * often uses MAX_LEVEL=0 while the Y-flip copy keeps the full mip chain). */
+    if (baseLevel == 0u &&
+        (NSUInteger)levelCount >= texture.mipmapLevelCount) {
+        return texture;
+    }
 
     /* Cache hit — return the cached view when source texture, base_level,
      * and max_level all match.  This avoids per-draw newTextureViewWithPixelFormat:
