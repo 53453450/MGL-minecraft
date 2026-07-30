@@ -795,6 +795,85 @@ GLboolean mglValidateFinalMSLResourceBindings(Program *pptr,
         return GL_FALSE;
     }
 
+    /* Metal allows buffer indices 0..30 only. Reject MSL that already
+     * exceeds this so we fail closed at link time instead of SIGSEGV after
+     * a failed Metal library compile. */
+    for (const char *p = msl; (p = strstr(p, "[[buffer(")) != NULL; ) {
+        p += strlen("[[buffer(");
+        char *end = NULL;
+        long idx = strtol(p, &end, 10);
+        if (end != p && idx > (long)kMGLMaxMetalVertexBufferIndex) {
+            fprintf(stderr,
+                    "MGL MSL RESOURCE VALIDATION FAIL: buffer index %ld exceeds "
+                    "Metal limit %u (program=%u stage=%d)\n",
+                    idx,
+                    (unsigned)kMGLMaxMetalVertexBufferIndex,
+                    pptr->name,
+                    stage);
+            return GL_FALSE;
+        }
+    }
+
+    /* Same Metal 0..30 bound for [[attribute(N)]] (stage_in). */
+    for (const char *p = msl; (p = strstr(p, "[[attribute(")) != NULL; ) {
+        p += strlen("[[attribute(");
+        char *end = NULL;
+        long idx = strtol(p, &end, 10);
+        if (end != p && idx > (long)kMGLMaxMetalVertexBufferIndex) {
+            fprintf(stderr,
+                    "MGL MSL RESOURCE VALIDATION FAIL: attribute index %ld exceeds "
+                    "Metal limit %u (program=%u stage=%d)\n",
+                    idx,
+                    (unsigned)kMGLMaxMetalVertexBufferIndex,
+                    pptr->name,
+                    stage);
+            return GL_FALSE;
+        }
+    }
+
+    /* texture2d_ms / depth2d_ms only support access::read on Metal. */
+    {
+        static const char *kMsTypes[] = {
+            "texture2d_ms<",
+            "texture2d_ms_array<",
+            "depth2d_ms<",
+            "depth2d_ms_array<",
+        };
+        for (size_t ti = 0; ti < sizeof(kMsTypes) / sizeof(kMsTypes[0]); ti++) {
+            for (const char *p = msl; (p = strstr(p, kMsTypes[ti])) != NULL; ) {
+                const char *gt = strchr(p, '>');
+                if (!gt) {
+                    break;
+                }
+                GLboolean bad_access = GL_FALSE;
+                size_t span = (size_t)(gt - p);
+                for (size_t i = 0; i + 13 <= span; i++) {
+                    if (!memcmp(p + i, "access::write", 13)) {
+                        bad_access = GL_TRUE;
+                        break;
+                    }
+                }
+                if (!bad_access) {
+                    for (size_t i = 0; i + 18 <= span; i++) {
+                        if (!memcmp(p + i, "access::read_write", 18)) {
+                            bad_access = GL_TRUE;
+                            break;
+                        }
+                    }
+                }
+                if (bad_access) {
+                    fprintf(stderr,
+                            "MGL MSL RESOURCE VALIDATION FAIL: multisample texture "
+                            "write unsupported on Metal (program=%u stage=%d)\n",
+                            pptr->name,
+                            stage);
+                    return GL_FALSE;
+                }
+                p = gt + 1;
+            }
+        }
+    }
+
     MGLMSLBindingMap binding_map;
     mglBuildMSLBindingMap(msl, &binding_map);
 
@@ -1685,6 +1764,13 @@ GLboolean mglInjectMSLPointSizeParams(char **msl_ptr)
         return GL_TRUE;
     }
 
+    /* Slot 15 is reserved for point-size params. If a user UBO already
+     * occupies [[buffer(15)]], skip the dynamic param buffer and let the
+     * caller fall back to a literal point size (avoids Metal slot clash). */
+    if (strstr(*msl_ptr, "[[buffer(15)]]")) {
+        return GL_FALSE;
+    }
+
     const char *param_open = mglFindMSLEntryParameterOpen(*msl_ptr);
     const char *param_close = mglFindMSLEntryParameterClose(*msl_ptr);
     if (!param_open || !param_close || param_open >= param_close) {
@@ -1771,9 +1857,10 @@ void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
         }
     }
 
+    GLboolean use_point_size_params = GL_TRUE;
     if (dynamic_vertex_point_size &&
         !mglInjectMSLPointSizeParams(msl_ptr)) {
-        return;
+        use_point_size_params = GL_FALSE;
     }
 
     /* SPIRV-Cross consistently names the output variable `out` and uses
@@ -1785,11 +1872,11 @@ void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr)
     while ((cursor = strstr(cursor, return_pattern)) != NULL) {
         cursor_offset = (size_t)(cursor - *msl_ptr);
         char point_size_assign[256];
-        if (dynamic_vertex_point_size && has_point_size) {
+        if (dynamic_vertex_point_size && use_point_size_params && has_point_size) {
             snprintf(point_size_assign, sizeof(point_size_assign),
                      "if (_mgl_point_size_params.y == 0.0) { out.%s = _mgl_point_size_params.x; } ",
                      point_size_name);
-        } else if (dynamic_vertex_point_size) {
+        } else if (dynamic_vertex_point_size && use_point_size_params) {
             snprintf(point_size_assign, sizeof(point_size_assign),
                      "out.%s = _mgl_point_size_params.x; ",
                      point_size_name);
@@ -3296,6 +3383,93 @@ const char *mglFindMSLEntryParameterClose(const char *msl)
     }
     return NULL;
 }
+
+/* Append arg_name to every call of fn_name(...), skipping the definition
+ * (the site whose ')' is followed by '{'). Idempotent if arg already present. */
+void mglAppendArgToMSLCallSites(char **msl_ptr, const char *fn_name, const char *arg_name)
+{
+    if (!msl_ptr || !*msl_ptr || !fn_name || !arg_name || !fn_name[0] || !arg_name[0]) {
+        return;
+    }
+
+    size_t fn_len = strlen(fn_name);
+    size_t pos = 0;
+    while ((*msl_ptr)[pos]) {
+        char *base = *msl_ptr;
+        char *found = strstr(base + pos, fn_name);
+        if (!found) {
+            return;
+        }
+        if ((found > base && mglMSLIdentifierChar(found[-1])) ||
+            mglMSLIdentifierChar(found[fn_len])) {
+            pos = (size_t)(found - base) + fn_len;
+            continue;
+        }
+
+        char *paren = found + fn_len;
+        while (*paren && isspace((unsigned char)*paren)) {
+            paren++;
+        }
+        if (*paren != '(') {
+            pos = (size_t)(found - base) + fn_len;
+            continue;
+        }
+
+        int depth = 0;
+        char *close = NULL;
+        for (char *p = paren; *p; p++) {
+            if (*p == '(') {
+                depth++;
+            } else if (*p == ')') {
+                depth--;
+                if (depth == 0) {
+                    close = p;
+                    break;
+                }
+            }
+        }
+        if (!close) {
+            return;
+        }
+
+        char *after = close + 1;
+        while (*after && isspace((unsigned char)*after)) {
+            after++;
+        }
+        if (*after == '{') {
+            /* Function definition — do not rewrite. */
+            pos = (size_t)(close - base) + 1;
+            continue;
+        }
+
+        size_t args_len = (size_t)(close - (paren + 1));
+        if (mglSegmentContainsIdentifier(paren + 1, args_len, arg_name)) {
+            pos = (size_t)(close - base) + 1;
+            continue;
+        }
+
+        GLboolean empty = GL_TRUE;
+        for (char *q = paren + 1; q < close; q++) {
+            if (!isspace((unsigned char)*q)) {
+                empty = GL_FALSE;
+                break;
+            }
+        }
+
+        char inject[192];
+        int written = snprintf(inject, sizeof(inject), "%s%s",
+                               empty ? "" : ", ", arg_name);
+        if (written <= 0 || (size_t)written >= sizeof(inject)) {
+            return;
+        }
+        size_t insert_at = (size_t)(close - base);
+        if (!mglInsertStringAt(msl_ptr, *msl_ptr + insert_at, inject)) {
+            return;
+        }
+        pos = insert_at + (size_t)written + 1;
+    }
+}
+
 void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_ptr)
 {
     if (!program || !msl_ptr || !*msl_ptr ||
@@ -3359,6 +3533,20 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
          * (non-array) counters use a reference (&) so `&counters` yields
          * `device atomic_uint*` as SPIRV-Cross expects. */
         GLboolean is_array = (res->gl_array_size > 1);
+        /* SPIRV-Cross often emits counters[i] even for array_size==1 helpers. */
+        if (!is_array && msl_name && *msl_ptr) {
+            size_t nlen = strlen(msl_name);
+            for (const char *p = *msl_ptr; (p = strstr(p, msl_name)) != NULL; p += nlen) {
+                if ((p > *msl_ptr && mglMSLIdentifierChar(p[-1])) ||
+                    mglMSLIdentifierChar(p[nlen])) {
+                    continue;
+                }
+                if (p[nlen] == '[') {
+                    is_array = GL_TRUE;
+                    break;
+                }
+            }
+        }
         int written = snprintf(injected_parameter,
                                sizeof(injected_parameter),
                                "%sdevice atomic_uint%s %s [[buffer(%u)]]",
@@ -3382,6 +3570,188 @@ void mglInjectMSLAtomicCounterArguments(Program *program, int stage, char **msl_
     }
 
     replace_all_substr(msl_ptr, "(thread atomic_uint*)&", "(device atomic_uint*)&");
+
+    /* SPIRV-Cross may emit helpers (e.g. accumulate) that reference atomic
+     * counter buffers as bare names. Metal only has those names as entry
+     * parameters — thread them into helpers that use them. */
+    for (GLuint i = 0; i < atomics->count; i++) {
+        SpirvResource *res = &atomics->list[i];
+        const char *msl_name = res->msl_name;
+        if (!res->msl_active || !msl_name || msl_name[0] == '\0') {
+            continue;
+        }
+        if (!strstr(*msl_ptr, msl_name)) {
+            continue;
+        }
+
+        /* Ensure entry uses pointer form when body indexes the counter. */
+        {
+            char from[128], to[128];
+            snprintf(from, sizeof(from), "device atomic_uint& %s [[buffer(", msl_name);
+            snprintf(to, sizeof(to), "device atomic_uint* %s [[buffer(", msl_name);
+            if (strstr(*msl_ptr, from)) {
+                size_t nlen = strlen(msl_name);
+                GLboolean indexed = GL_FALSE;
+                for (const char *p = *msl_ptr; (p = strstr(p, msl_name)) != NULL; p += nlen) {
+                    if ((p > *msl_ptr && mglMSLIdentifierChar(p[-1])) ||
+                        mglMSLIdentifierChar(p[nlen])) {
+                        continue;
+                    }
+                    if (p[nlen] == '[') {
+                        indexed = GL_TRUE;
+                        break;
+                    }
+                }
+                if (indexed) {
+                    replace_all_substr(msl_ptr, from, to);
+                }
+            }
+        }
+
+        /* Patch static inline helpers that reference msl_name. */
+        const char *search = *msl_ptr;
+        while ((search = strstr(search, "static inline")) != NULL) {
+            const char *fn_sig = strchr(search, '\n');
+            if (!fn_sig) {
+                break;
+            }
+            fn_sig++;
+            /* function name line like: float accumulate() */
+            const char *paren = strchr(fn_sig, '(');
+            const char *brace = strchr(fn_sig, '{');
+            if (!paren || !brace || paren > brace) {
+                search = fn_sig;
+                continue;
+            }
+            const char *body_end = NULL;
+            {
+                int depth = 0;
+                for (const char *p = brace; *p; p++) {
+                    if (*p == '{') {
+                        depth++;
+                    } else if (*p == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            body_end = p;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!body_end) {
+                search = brace + 1;
+                continue;
+            }
+
+            /* Does body reference msl_name as a bare identifier? */
+            GLboolean body_uses = GL_FALSE;
+            size_t nlen = strlen(msl_name);
+            for (const char *p = brace; p < body_end; p++) {
+                p = strstr(p, msl_name);
+                if (!p || p >= body_end) {
+                    break;
+                }
+                if ((p > brace && mglMSLIdentifierChar(p[-1])) ||
+                    mglMSLIdentifierChar(p[nlen])) {
+                    continue;
+                }
+                body_uses = GL_TRUE;
+                break;
+            }
+            if (!body_uses) {
+                search = body_end;
+                continue;
+            }
+
+            /* Already has this parameter? */
+            GLboolean has_param = GL_FALSE;
+            for (const char *p = paren; p < brace; p++) {
+                if (!strncmp(p, msl_name, nlen) &&
+                    !mglMSLIdentifierChar(p[nlen]) &&
+                    (p == paren || !mglMSLIdentifierChar(p[-1]))) {
+                    has_param = GL_TRUE;
+                    break;
+                }
+            }
+            if (has_param) {
+                search = body_end;
+                continue;
+            }
+
+            /* Extract function identifier. */
+            const char *name_end = paren;
+            while (name_end > fn_sig && isspace((unsigned char)name_end[-1])) {
+                name_end--;
+            }
+            const char *name_begin = name_end;
+            while (name_begin > fn_sig && mglMSLIdentifierChar(name_begin[-1])) {
+                name_begin--;
+            }
+            if (name_begin >= name_end || (size_t)(name_end - name_begin) >= 128) {
+                search = body_end;
+                continue;
+            }
+            char fn_name[128];
+            memcpy(fn_name, name_begin, (size_t)(name_end - name_begin));
+            fn_name[name_end - name_begin] = '\0';
+
+            GLboolean empty_params = GL_TRUE;
+            for (const char *p = paren + 1; p < brace && *p != ')'; p++) {
+                if (!isspace((unsigned char)*p)) {
+                    empty_params = GL_FALSE;
+                    break;
+                }
+            }
+
+            /* Prefer reference params: SPIRV-Cross bodies use
+             * `(device atomic_uint*)&name`. Pointer params would make that
+             * a pointer-to-pointer. Use `*` only when the body indexes name. */
+            GLboolean body_indexes = GL_FALSE;
+            for (const char *p = brace; p < body_end; p++) {
+                p = strstr(p, msl_name);
+                if (!p || p >= body_end) {
+                    break;
+                }
+                if ((p > brace && mglMSLIdentifierChar(p[-1])) ||
+                    mglMSLIdentifierChar(p[nlen])) {
+                    continue;
+                }
+                if (p[nlen] == '[') {
+                    body_indexes = GL_TRUE;
+                    break;
+                }
+            }
+
+            char inject[192];
+            snprintf(inject, sizeof(inject),
+                     "%sdevice atomic_uint%s %s",
+                     empty_params ? "" : ", ",
+                     body_indexes ? "*" : "&",
+                     msl_name);
+            const char *close_paren = paren;
+            while (close_paren < brace && *close_paren != ')') {
+                close_paren++;
+            }
+            if (*close_paren != ')') {
+                search = body_end;
+                continue;
+            }
+
+            size_t insert_at = (size_t)(close_paren - *msl_ptr);
+            if (!mglInsertStringAt(msl_ptr, *msl_ptr + insert_at, inject)) {
+                return;
+            }
+
+            /* Append msl_name to every call site, including non-empty
+             * argument lists (e.g. Add(g_index) -> Add(g_index, counter)). */
+            mglAppendArgToMSLCallSites(msl_ptr, fn_name, msl_name);
+
+            search = *msl_ptr;
+            /* continue scanning from start to catch multiple helpers; break
+             * after one rewrite per name to avoid infinite loops. */
+            break;
+        }
+    }
 }
 
 size_t count_substr(const char *str, const char *needle)
@@ -4333,6 +4703,7 @@ void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, int stag
         if (!slot->buf) {
             continue;
         }
+        slot->buf->plain_uniform_slot = GL_TRUE;
         insertHashElement(&ctx->state.buffer_table, internalName, slot->buf);
         initBufferData(ctx, slot->buf, size, value, true);
         slot->buffer = slot->buf->name;
@@ -4526,7 +4897,294 @@ GLboolean mglPatchFixUnknownTextureType(MSLPatchContext *ctx, char **msl_ptr)
      * rectangle texture object; MGL stores GL_TEXTURE_RECTANGLE as a 2D Metal
      * texture and binds a non-normalized Metal sampler for rectangle targets. */
     replace_all_substr(msl_ptr, "unknown_texture_type<", "texture2d<");
+    /* sampler2DRectShadow -> unknown_depth_texture_type; same mapping to depth2d. */
+    replace_all_substr(msl_ptr, "unknown_depth_texture_type<", "depth2d<");
+
+    /* depth2d::sample_compare wants float2; SPIRV-Cross may pass float3(...) for
+     * rect shadow. Append .xy when the coord arg is a bare float3(...). */
+    if (msl_ptr && *msl_ptr && strstr(*msl_ptr, ".sample_compare(")) {
+        size_t pos = 0;
+        while ((*msl_ptr)[pos]) {
+            char *base = *msl_ptr;
+            char *call = strstr(base + pos, ".sample_compare(");
+            if (!call) {
+                break;
+            }
+            char *args = call + strlen(".sample_compare(");
+            /* skip sampler arg */
+            int depth = 1;
+            char *comma = NULL;
+            for (char *p = args; *p; p++) {
+                if (*p == '(') {
+                    depth++;
+                } else if (*p == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        break;
+                    }
+                } else if (*p == ',' && depth == 1) {
+                    comma = p;
+                    break;
+                }
+            }
+            if (!comma) {
+                pos = (size_t)(args - base);
+                continue;
+            }
+            char *coord = comma + 1;
+            while (*coord && isspace((unsigned char)*coord)) {
+                coord++;
+            }
+            if (strncmp(coord, "float3(", 7) != 0) {
+                pos = (size_t)(coord - base);
+                continue;
+            }
+            /* find end of float3(...) */
+            depth = 0;
+            char *coord_end = NULL;
+            for (char *p = coord; *p; p++) {
+                if (*p == '(') {
+                    depth++;
+                } else if (*p == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        coord_end = p + 1;
+                        break;
+                    }
+                }
+            }
+            if (!coord_end) {
+                break;
+            }
+            if (!strncmp(coord_end, ".xy", 3)) {
+                pos = (size_t)(coord_end - base);
+                continue;
+            }
+            size_t insert_at = (size_t)(coord_end - base);
+            if (!mglInsertStringAt(msl_ptr, *msl_ptr + insert_at, ".xy")) {
+                return GL_TRUE;
+            }
+            pos = insert_at + 3;
+        }
+    }
+
     (void)ctx;
+    return GL_TRUE;
+}
+
+GLboolean mglPatchFixTexture2DProjSample(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross textureProj on sampler2DRect (after unknown_texture_type ->
+     * texture2d) emits `.sample(s, _N / _N.x, ...)` with a float3 coord.
+     * Metal texture2d::sample requires float2; projective divide uses .z. */
+    (void)ctx;
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_TRUE;
+    }
+
+    size_t pos = 0;
+    while ((*msl_ptr)[pos]) {
+        char *base = *msl_ptr;
+        char *div = strstr(base + pos, " / ");
+        if (!div) {
+            break;
+        }
+        /* Match: IDENT / IDENT.x  (same IDENT on both sides) */
+        char *rhs = div + 3;
+        while (*rhs && isspace((unsigned char)*rhs)) {
+            rhs++;
+        }
+        char *id2 = rhs;
+        if (!mglMSLIdentifierChar(*id2)) {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+        char *id2_end = id2;
+        while (mglMSLIdentifierChar(*id2_end)) {
+            id2_end++;
+        }
+        if (id2_end[0] != '.' || id2_end[1] != 'x' ||
+            mglMSLIdentifierChar(id2_end[2])) {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+
+        size_t id_len = (size_t)(id2_end - id2);
+        char *id1_end = div;
+        while (id1_end > base && isspace((unsigned char)id1_end[-1])) {
+            id1_end--;
+        }
+        char *id1 = id1_end;
+        while (id1 > base && mglMSLIdentifierChar(id1[-1])) {
+            id1--;
+        }
+        if ((size_t)(id1_end - id1) != id_len || memcmp(id1, id2, id_len) != 0) {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+        /* Avoid matching already-swizzled numerators like `_N.xyz /`. */
+        if (id1 > base && id1[-1] == '.') {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+
+        /* Rewrite IDENT / IDENT.x  ->  (IDENT / IDENT.z).xy */
+        char rebuilt[256];
+        if (id_len >= 64) {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+        char ident[64];
+        memcpy(ident, id1, id_len);
+        ident[id_len] = '\0';
+        int written = snprintf(rebuilt, sizeof(rebuilt),
+                               "(%s / %s.z).xy", ident, ident);
+        if (written <= 0 || (size_t)written >= sizeof(rebuilt)) {
+            pos = (size_t)(div - base) + 3;
+            continue;
+        }
+
+        size_t old_from = (size_t)(id1 - base);
+        size_t old_len = (size_t)((id2_end + 2) - id1); /* through ".x" */
+        size_t new_len = (size_t)written;
+        size_t total = strlen(base);
+        char *grown = (char *)malloc(total - old_len + new_len + 1);
+        if (!grown) {
+            return GL_TRUE;
+        }
+        memcpy(grown, base, old_from);
+        memcpy(grown + old_from, rebuilt, new_len);
+        memcpy(grown + old_from + new_len, base + old_from + old_len,
+               total - old_from - old_len + 1);
+        free(base);
+        *msl_ptr = grown;
+        pos = old_from + new_len;
+    }
+    return GL_TRUE;
+}
+
+GLboolean mglPatchFixSpvArrayCopyUnsafeArray(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross may pass spvUnsafeArray values to spvArrayCopy* helpers that
+     * expect raw T[A] references. Append .elements to args that end in a
+     * member/value without it (e.g. g_shared[id].v -> g_shared[id].v.elements). */
+    (void)ctx;
+    if (!msl_ptr || !*msl_ptr || !strstr(*msl_ptr, "spvArrayCopy")) {
+        return GL_TRUE;
+    }
+
+    size_t pos = 0;
+    while ((*msl_ptr)[pos]) {
+        char *base = *msl_ptr;
+        char *found = strstr(base + pos, "spvArrayCopy");
+        if (!found) {
+            break;
+        }
+        char *paren = strchr(found, '(');
+        if (!paren) {
+            break;
+        }
+        int depth = 0;
+        char *close = NULL;
+        for (char *p = paren; *p; p++) {
+            if (*p == '(') {
+                depth++;
+            } else if (*p == ')') {
+                depth--;
+                if (depth == 0) {
+                    close = p;
+                    break;
+                }
+            }
+        }
+        if (!close) {
+            break;
+        }
+
+        /* Walk top-level args; for each, if it does not already end with
+         * .elements, and it looks like a whole spvUnsafeArray (no trailing
+         * [index]), append .elements. */
+        char *arg_start = paren + 1;
+        depth = 1;
+        for (char *p = paren + 1; p <= close; p++) {
+            int at_sep = (p == close) || (*p == ',' && depth == 1);
+            if (*p == '(' || *p == '[') {
+                depth++;
+            } else if (*p == ')' || *p == ']') {
+                depth--;
+            }
+            if (!at_sep) {
+                continue;
+            }
+
+            char *arg_end = p;
+            while (arg_start < arg_end && isspace((unsigned char)*arg_start)) {
+                arg_start++;
+            }
+            while (arg_end > arg_start && isspace((unsigned char)arg_end[-1])) {
+                arg_end--;
+            }
+            if (arg_end > arg_start) {
+                const char kElements[] = ".elements";
+                size_t elen = sizeof(kElements) - 1;
+                size_t alen = (size_t)(arg_end - arg_start);
+                GLboolean has_elements =
+                    (alen >= elen &&
+                     memcmp(arg_end - elen, kElements, elen) == 0);
+                /* Skip if already .elements or ends with [subscript]. */
+                GLboolean ends_index = (arg_end[-1] == ']');
+                if (!has_elements && !ends_index) {
+                    /* Only rewrite when the arg references a likely
+                     * spvUnsafeArray whole value: contains '.' (member) or
+                     * matches a constant declared as spvUnsafeArray. */
+                    GLboolean looks_unsafe = GL_FALSE;
+                    for (char *q = arg_start; q < arg_end; q++) {
+                        if (*q == '.') {
+                            looks_unsafe = GL_TRUE;
+                            break;
+                        }
+                    }
+                    if (!looks_unsafe && alen < 64) {
+                        char id[64];
+                        memcpy(id, arg_start, alen);
+                        id[alen] = '\0';
+                        /* Search "spvUnsafeArray<...> ID" */
+                        char *scan = base;
+                        while ((scan = strstr(scan, "spvUnsafeArray<")) != NULL) {
+                            char *gt = strchr(scan, '>');
+                            if (!gt) {
+                                break;
+                            }
+                            char *name = gt + 1;
+                            while (*name && isspace((unsigned char)*name)) {
+                                name++;
+                            }
+                            if (!strncmp(name, id, alen) &&
+                                !mglMSLIdentifierChar(name[alen])) {
+                                looks_unsafe = GL_TRUE;
+                                break;
+                            }
+                            scan = gt + 1;
+                        }
+                    }
+                    if (looks_unsafe) {
+                        size_t insert_at = (size_t)(arg_end - base);
+                        if (!mglInsertStringAt(msl_ptr, *msl_ptr + insert_at,
+                                               ".elements")) {
+                            return GL_TRUE;
+                        }
+                        /* Restart from this call — offsets invalidated. */
+                        pos = (size_t)(found - base);
+                        goto next_search;
+                    }
+                }
+            }
+            arg_start = p + 1;
+        }
+        pos = (size_t)(close - base) + 1;
+    next_search:
+        continue;
+    }
     return GL_TRUE;
 }
 
@@ -4560,6 +5218,599 @@ GLboolean mglPatchRenameLengthSquared(MSLPatchContext *ctx, char **msl_ptr)
      * generated helper function and all call sites to avoid the conflict. */
     mglReplaceMSLIdentifier(msl_ptr, "length_squared", "_mgl_length_squared");
     (void)ctx;
+    return GL_TRUE;
+}
+
+static int mglMSLIsUintBuiltinId(const char *s, size_t n)
+{
+    static const char *kIds[] = { "gl_VertexID", "gl_InstanceID" };
+    for (size_t i = 0; i < sizeof(kIds) / sizeof(kIds[0]); i++) {
+        size_t len = strlen(kIds[i]);
+        if (n == len && memcmp(s, kIds[i], len) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const char *mglMSLSkipSpaces(const char *s, const char *end)
+{
+    while (s < end && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) {
+        s++;
+    }
+    return s;
+}
+
+static const char *mglMSLSkipSpacesBack(const char *s, const char *begin)
+{
+    while (s > begin && (s[-1] == ' ' || s[-1] == '\t' || s[-1] == '\n' || s[-1] == '\r')) {
+        s--;
+    }
+    return s;
+}
+
+GLboolean mglPatchFixAmbiguousIntUintMinMax(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* Metal overloads min/max separately for int and uint. SPIRV-Cross can
+     * emit min(4, gl_VertexID) where the literal is signed int and the
+     * builtin is uint, which fails MSL compile and previously crashed the
+     * draw path. Promote unsuffixed decimal literals paired with those
+     * builtins to unsigned (append 'u'). */
+    char *src;
+    size_t src_len;
+    size_t insert_count = 0;
+    char *out;
+    char *w;
+    const char *r;
+    (void)ctx;
+
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_TRUE;
+    }
+    src = *msl_ptr;
+    if (!strstr(src, "gl_VertexID") && !strstr(src, "gl_InstanceID")) {
+        return GL_TRUE;
+    }
+    if (!strstr(src, "min(") && !strstr(src, "max(")) {
+        return GL_TRUE;
+    }
+
+    src_len = strlen(src);
+    for (size_t i = 0; i + 4 < src_len; i++) {
+        int is_min = (src[i] == 'm' && src[i + 1] == 'i' && src[i + 2] == 'n' && src[i + 3] == '(');
+        int is_max = (src[i] == 'm' && src[i + 1] == 'a' && src[i + 2] == 'x' && src[i + 3] == '(');
+        const char *args_begin;
+        const char *args_end;
+        const char *comma = NULL;
+        int depth;
+        const char *a0_b;
+        const char *a0_e;
+        const char *a1_b;
+        const char *a1_e;
+        int a0_lit = 0, a1_lit = 0, a0_id = 0, a1_id = 0;
+        const char *lit_end = NULL;
+
+        if (!(is_min || is_max)) {
+            continue;
+        }
+        if (i > 0 && mglMSLIdentifierChar(src[i - 1])) {
+            continue;
+        }
+
+        args_begin = src + i + 4;
+        depth = 1;
+        for (args_end = args_begin; *args_end; args_end++) {
+            if (*args_end == '(') {
+                depth++;
+            } else if (*args_end == ')') {
+                depth--;
+                if (depth == 0) {
+                    break;
+                }
+            } else if (*args_end == ',' && depth == 1 && comma == NULL) {
+                comma = args_end;
+            }
+        }
+        if (!args_end || *args_end != ')' || !comma) {
+            continue;
+        }
+
+        a0_b = mglMSLSkipSpaces(args_begin, comma);
+        a0_e = mglMSLSkipSpacesBack(comma, args_begin);
+        a1_b = mglMSLSkipSpaces(comma + 1, args_end);
+        a1_e = mglMSLSkipSpacesBack(args_end, comma + 1);
+        if (a0_b >= a0_e || a1_b >= a1_e) {
+            continue;
+        }
+
+        if (a0_e > a0_b && a0_b[0] >= '0' && a0_b[0] <= '9') {
+            const char *p = a0_b;
+            while (p < a0_e && *p >= '0' && *p <= '9') {
+                p++;
+            }
+            if (p == a0_e) {
+                a0_lit = 1;
+                lit_end = p;
+            }
+        }
+        if (a1_e > a1_b && a1_b[0] >= '0' && a1_b[0] <= '9') {
+            const char *p = a1_b;
+            while (p < a1_e && *p >= '0' && *p <= '9') {
+                p++;
+            }
+            if (p == a1_e) {
+                a1_lit = 1;
+                lit_end = p;
+            }
+        }
+        a0_id = mglMSLIsUintBuiltinId(a0_b, (size_t)(a0_e - a0_b));
+        a1_id = mglMSLIsUintBuiltinId(a1_b, (size_t)(a1_e - a1_b));
+
+        if ((a0_lit && a1_id) || (a1_lit && a0_id)) {
+            insert_count++;
+            (void)lit_end;
+        }
+        i = (size_t)(args_end - src);
+    }
+
+    if (insert_count == 0) {
+        return GL_TRUE;
+    }
+    if (insert_count > (SIZE_MAX - src_len)) {
+        return GL_TRUE;
+    }
+
+    out = (char *)malloc(src_len + insert_count + 1);
+    if (!out) {
+        fprintf(stderr,
+                "MGL MSL PATCH FAIL: fix_ambiguous_int_uint_minmax allocation "
+                "failed; original MSL preserved\n");
+        return GL_TRUE;
+    }
+
+    w = out;
+    r = src;
+    while (*r) {
+        size_t off = (size_t)(r - src);
+        int is_min = (r[0] == 'm' && r[1] == 'i' && r[2] == 'n' && r[3] == '(');
+        int is_max = (r[0] == 'm' && r[1] == 'a' && r[2] == 'x' && r[3] == '(');
+        const char *args_begin;
+        const char *args_end;
+        const char *comma = NULL;
+        int depth;
+        const char *a0_b;
+        const char *a0_e;
+        const char *a1_b;
+        const char *a1_e;
+        int a0_lit = 0, a1_lit = 0, a0_id = 0, a1_id = 0;
+        const char *lit_end = NULL;
+
+        if (!(is_min || is_max) || (off > 0 && mglMSLIdentifierChar(r[-1]))) {
+            *w++ = *r++;
+            continue;
+        }
+
+        args_begin = r + 4;
+        depth = 1;
+        for (args_end = args_begin; *args_end; args_end++) {
+            if (*args_end == '(') {
+                depth++;
+            } else if (*args_end == ')') {
+                depth--;
+                if (depth == 0) {
+                    break;
+                }
+            } else if (*args_end == ',' && depth == 1 && comma == NULL) {
+                comma = args_end;
+            }
+        }
+        if (!args_end || *args_end != ')' || !comma) {
+            *w++ = *r++;
+            continue;
+        }
+
+        a0_b = mglMSLSkipSpaces(args_begin, comma);
+        a0_e = mglMSLSkipSpacesBack(comma, args_begin);
+        a1_b = mglMSLSkipSpaces(comma + 1, args_end);
+        a1_e = mglMSLSkipSpacesBack(args_end, comma + 1);
+
+        if (a0_e > a0_b && a0_b[0] >= '0' && a0_b[0] <= '9') {
+            const char *p = a0_b;
+            while (p < a0_e && *p >= '0' && *p <= '9') {
+                p++;
+            }
+            if (p == a0_e) {
+                a0_lit = 1;
+                lit_end = p;
+            }
+        }
+        if (a1_e > a1_b && a1_b[0] >= '0' && a1_b[0] <= '9') {
+            const char *p = a1_b;
+            while (p < a1_e && *p >= '0' && *p <= '9') {
+                p++;
+            }
+            if (p == a1_e) {
+                a1_lit = 1;
+                lit_end = p;
+            }
+        }
+        a0_id = mglMSLIsUintBuiltinId(a0_b, (size_t)(a0_e - a0_b));
+        a1_id = mglMSLIsUintBuiltinId(a1_b, (size_t)(a1_e - a1_b));
+
+        if (((a0_lit && a1_id) || (a1_lit && a0_id)) && lit_end) {
+            while (r < lit_end) {
+                *w++ = *r++;
+            }
+            *w++ = 'u';
+            while (r <= args_end) {
+                *w++ = *r++;
+            }
+            continue;
+        }
+
+        *w++ = *r++;
+    }
+    *w = '\0';
+    free(*msl_ptr);
+    *msl_ptr = out;
+    return GL_TRUE;
+}
+
+GLboolean mglPatchFixShaderGroupVote(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* GL_ARB_shader_group_vote builtins can survive into MSL as GLSL names
+     * (allInvocationsARB / anyInvocationARB / allInvocationsEqualARB) when
+     * SPIR-V retained them as calls. Map to Metal SIMD-group ops. */
+    static const char kHelper[] =
+        "\nstatic inline bool _mgl_group_vote_all_equal(bool v)\n"
+        "{\n"
+        "    return simd_all(v) || !simd_any(v);\n"
+        "}\n";
+    (void)ctx;
+
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_TRUE;
+    }
+    if (!strstr(*msl_ptr, "allInvocationsARB") &&
+        !strstr(*msl_ptr, "anyInvocationARB") &&
+        !strstr(*msl_ptr, "allInvocationsEqualARB")) {
+        return GL_TRUE;
+    }
+
+    /* Replace equal first, and use a helper name that does not contain the
+     * original token as a substring (so replace_all cannot re-prefix it). */
+    if (strstr(*msl_ptr, "allInvocationsEqualARB(")) {
+        replace_all_substr(msl_ptr, "allInvocationsEqualARB(",
+                           "_mgl_group_vote_all_equal(");
+        if (!strstr(*msl_ptr, "_mgl_group_vote_all_equal(bool")) {
+            const char *anchor = "using namespace metal;";
+            char *pos = strstr(*msl_ptr, anchor);
+            if (pos) {
+                size_t insert_at = (size_t)(pos - *msl_ptr) + strlen(anchor);
+                size_t old_len = strlen(*msl_ptr);
+                size_t helper_len = strlen(kHelper);
+                char *grown = (char *)malloc(old_len + helper_len + 1);
+                if (!grown) {
+                    fprintf(stderr,
+                            "MGL MSL PATCH FAIL: fix_shader_group_vote helper "
+                            "allocation failed; original MSL preserved\n");
+                    return GL_TRUE;
+                }
+                memcpy(grown, *msl_ptr, insert_at);
+                memcpy(grown + insert_at, kHelper, helper_len);
+                memcpy(grown + insert_at + helper_len, *msl_ptr + insert_at,
+                       old_len - insert_at + 1);
+                free(*msl_ptr);
+                *msl_ptr = grown;
+            }
+        }
+    }
+
+    /* allInvocationsARB is a prefix of allInvocationsEqualARB; equal was
+     * already rewritten above, so this only hits the remaining calls. */
+    replace_all_substr(msl_ptr, "allInvocationsARB(", "simd_all(");
+    replace_all_substr(msl_ptr, "anyInvocationARB(", "simd_any(");
+    return GL_TRUE;
+}
+
+static const char *mglMSLMatchingBracket(const char *open, char open_ch, char close_ch)
+{
+    int depth = 0;
+    for (const char *p = open; *p; p++) {
+        if (*p == open_ch) {
+            depth++;
+        } else if (*p == close_ch) {
+            depth--;
+            if (depth == 0) {
+                return p;
+            }
+        }
+    }
+    return NULL;
+}
+
+GLboolean mglPatchFixImageAtomicCoords(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross only emits spvImage2DAtomicCoord for Dim2D. 3D/cube/1D-array
+     * and texture-rectangle atomics keep vector indices on device atomic_int*,
+     * which Metal rejects ("array subscript is not an integer"). Also fix
+     * texture2d.read/write(int2) for rectangle targets. */
+    static const char kMacro2D[] =
+        "#define spvImage2DAtomicCoord(tc, tex) (((((tex).get_width() +  "
+        "spvLinearTextureAlignment / 4 - 1) & ~( spvLinearTextureAlignment / 4 - "
+        "1)) * (tc).y) + (tc).x)\n";
+    static const char kMacro3D[] =
+        "#define spvImage3DAtomicCoord(tc, tex) (((((tex).get_width() +  "
+        "spvLinearTextureAlignment / 4 - 1) & ~( spvLinearTextureAlignment / 4 - "
+        "1)) * ((tex).get_height() * (tc).z + (tc).y)) + (tc).x)\n";
+    static const char kAlignConsts[] =
+        "constant uint spvLinearTextureAlignmentOverride [[function_constant(65535)]];\n"
+        "constant uint spvLinearTextureAlignment = "
+        "is_function_constant_defined(spvLinearTextureAlignmentOverride) ? "
+        "spvLinearTextureAlignmentOverride : 4;\n";
+    (void)ctx;
+
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_TRUE;
+    }
+
+    /* Cheap rectangle int2 cast fixes (load/store allTargets). */
+    replace_all_substr(msl_ptr, ".read(coord)", ".read(uint2(coord))");
+    replace_all_substr(msl_ptr, ", coord);", ", uint2(coord));");
+
+    if (!strstr(*msl_ptr, "_atomic[")) {
+        return GL_TRUE;
+    }
+
+    /* Rebuild when vector/rect atomic indices are present. */
+    {
+        int needs = 0;
+        const char *scan = *msl_ptr;
+        while ((scan = strstr(scan, "_atomic[")) != NULL) {
+            const char *idx = scan + 8;
+            if (!strncmp(idx, "int2(", 5) || !strncmp(idx, "int3(", 5) ||
+                !strncmp(idx, "int4(", 5) ||
+                (!strncmp(idx, "coord]", 6) /* rare */)) {
+                needs = 1;
+                break;
+            }
+            /* 2drect_atomic[coord] */
+            if (!strncmp(idx, "coord]", 6)) {
+                needs = 1;
+                break;
+            }
+            scan = idx;
+        }
+        if (!needs) {
+            /* Still check 2drect_atomic[coord] without early intN */
+            if (strstr(*msl_ptr, "_2drect_atomic[coord]")) {
+                needs = 1;
+            }
+        }
+        if (!needs && !strstr(*msl_ptr, "_2drect_atomic[coord]")) {
+            return GL_TRUE;
+        }
+    }
+
+    if (!strstr(*msl_ptr, "spvLinearTextureAlignment")) {
+        const char *anchor = "using namespace metal;";
+        char *pos = strstr(*msl_ptr, anchor);
+        if (pos) {
+            size_t insert_at = (size_t)(pos - *msl_ptr) + strlen(anchor);
+            size_t old_len = strlen(*msl_ptr);
+            size_t add_len = 1 + strlen(kAlignConsts); /* leading \n */
+            char *grown = (char *)malloc(old_len + add_len + 1);
+            if (!grown) {
+                return GL_TRUE;
+            }
+            memcpy(grown, *msl_ptr, insert_at);
+            grown[insert_at] = '\n';
+            memcpy(grown + insert_at + 1, kAlignConsts, strlen(kAlignConsts));
+            memcpy(grown + insert_at + add_len, *msl_ptr + insert_at,
+                   old_len - insert_at + 1);
+            free(*msl_ptr);
+            *msl_ptr = grown;
+        }
+    }
+    if (!strstr(*msl_ptr, "#define spvImage2DAtomicCoord")) {
+        const char *after = strstr(*msl_ptr, "spvLinearTextureAlignment =");
+        char *insert_pos = NULL;
+        if (after) {
+            insert_pos = strchr(after, '\n');
+            if (insert_pos) {
+                insert_pos++;
+            }
+        }
+        if (!insert_pos) {
+            char *ns = strstr(*msl_ptr, "using namespace metal;");
+            if (ns) {
+                insert_pos = ns + strlen("using namespace metal;");
+                if (*insert_pos == '\n') {
+                    insert_pos++;
+                }
+            }
+        }
+        if (insert_pos) {
+            size_t insert_at = (size_t)(insert_pos - *msl_ptr);
+            size_t old_len = strlen(*msl_ptr);
+            size_t add_len = strlen(kMacro2D);
+            char *grown = (char *)malloc(old_len + add_len + 1);
+            if (!grown) {
+                return GL_TRUE;
+            }
+            memcpy(grown, *msl_ptr, insert_at);
+            memcpy(grown + insert_at, kMacro2D, add_len);
+            memcpy(grown + insert_at + add_len, *msl_ptr + insert_at,
+                   old_len - insert_at + 1);
+            free(*msl_ptr);
+            *msl_ptr = grown;
+        }
+    }
+    if (!strstr(*msl_ptr, "#define spvImage3DAtomicCoord")) {
+        const char *after2 = strstr(*msl_ptr, "#define spvImage2DAtomicCoord");
+        char *insert_pos = after2 ? strchr(after2, '\n') : NULL;
+        if (insert_pos) {
+            insert_pos++;
+            size_t insert_at = (size_t)(insert_pos - *msl_ptr);
+            size_t old_len = strlen(*msl_ptr);
+            size_t add_len = strlen(kMacro3D);
+            char *grown = (char *)malloc(old_len + add_len + 1);
+            if (!grown) {
+                return GL_TRUE;
+            }
+            memcpy(grown, *msl_ptr, insert_at);
+            memcpy(grown + insert_at, kMacro3D, add_len);
+            memcpy(grown + insert_at + add_len, *msl_ptr + insert_at,
+                   old_len - insert_at + 1);
+            free(*msl_ptr);
+            *msl_ptr = grown;
+        }
+    }
+
+    /* Rewrite NAME_atomic[VECTOR] indices. Multi-pass via rebuild. */
+    {
+        const char *src = *msl_ptr;
+        size_t src_len = strlen(src);
+        size_t cap = src_len * 2 + 64;
+        char *out = (char *)malloc(cap);
+        size_t out_len = 0;
+        const char *r = src;
+        if (!out) {
+            return GL_TRUE;
+        }
+
+        while (*r) {
+            const char *hit = strstr(r, "_atomic[");
+            if (!hit) {
+                size_t rem = strlen(r);
+                if (out_len + rem + 1 > cap) {
+                    free(out);
+                    return GL_TRUE;
+                }
+                memcpy(out + out_len, r, rem + 1);
+                out_len += rem;
+                break;
+            }
+
+            /* Copy through base name start: find identifier beginning. */
+            const char *name_end = hit; /* points at _atomic */
+            const char *name_begin = name_end;
+            while (name_begin > r && mglMSLIdentifierChar(name_begin[-1])) {
+                name_begin--;
+            }
+            /* Copy [r, name_begin) */
+            {
+                size_t n = (size_t)(name_begin - r);
+                if (out_len + n + 256 > cap) {
+                    char *grown = (char *)realloc(out, cap * 2);
+                    if (!grown) {
+                        free(out);
+                        return GL_TRUE;
+                    }
+                    out = grown;
+                    cap *= 2;
+                }
+                memcpy(out + out_len, r, n);
+                out_len += n;
+            }
+
+            {
+                size_t name_len = (size_t)(name_end - name_begin);
+                const char *idx = hit + 8; /* after _atomic[ */
+                const char *idx_end = NULL;
+                const char *helper = NULL;
+                char name_buf[256];
+
+                if (name_len == 0 || name_len >= sizeof(name_buf)) {
+                    /* copy through hit and continue */
+                    size_t n = (size_t)(hit + 8 - name_begin);
+                    memcpy(out + out_len, name_begin, n);
+                    out_len += n;
+                    r = hit + 8;
+                    continue;
+                }
+                memcpy(name_buf, name_begin, name_len);
+                name_buf[name_len] = '\0';
+
+                if (!strncmp(idx, "int3(", 5) || !strncmp(idx, "int4(", 5)) {
+                    helper = "spvImage3DAtomicCoord";
+                    idx_end = mglMSLMatchingBracket(idx + 4, '(', ')');
+                    if (idx_end) {
+                        idx_end++; /* include ')' */
+                    }
+                } else if (!strncmp(idx, "int2(", 5)) {
+                    helper = "spvImage2DAtomicCoord";
+                    idx_end = mglMSLMatchingBracket(idx + 4, '(', ')');
+                    if (idx_end) {
+                        idx_end++;
+                    }
+                } else if (!strncmp(idx, "coord]", 6) &&
+                           strstr(name_buf, "2drect")) {
+                    helper = "spvImage2DAtomicCoord";
+                    idx_end = idx + 5; /* points at 'd' of coord; need full "coord" */
+                    /* idx is "coord]" so idx_end should be idx+5 pointing to ']'
+                     * and index text is "coord" */
+                    idx_end = idx + 5; /* ']' */
+                }
+
+                if (helper && idx_end && *idx_end == ']') {
+                    size_t idx_len = (size_t)(idx_end - idx);
+                    int n = snprintf(out + out_len, cap - out_len,
+                                     "%s_atomic[%s(%.*s, %s)]",
+                                     name_buf, helper, (int)idx_len, idx,
+                                     name_buf);
+                    if (n < 0 || (size_t)n >= cap - out_len) {
+                        char *grown = (char *)realloc(out, cap * 2 + (size_t)n + 64);
+                        if (!grown) {
+                            free(out);
+                            return GL_TRUE;
+                        }
+                        out = grown;
+                        cap = cap * 2 + (size_t)n + 64;
+                        n = snprintf(out + out_len, cap - out_len,
+                                     "%s_atomic[%s(%.*s, %s)]",
+                                     name_buf, helper, (int)idx_len, idx,
+                                     name_buf);
+                    }
+                    if (n > 0) {
+                        out_len += (size_t)n;
+                    }
+                    r = idx_end + 1; /* after ']' */
+                    continue;
+                }
+
+                /* No rewrite — copy NAME_atomic[ and continue after. */
+                {
+                    size_t n = (size_t)(hit + 8 - name_begin);
+                    memcpy(out + out_len, name_begin, n);
+                    out_len += n;
+                    r = hit + 8;
+                }
+            }
+        }
+
+        free(*msl_ptr);
+        *msl_ptr = out;
+    }
+
+    return GL_TRUE;
+}
+
+GLboolean mglPatchStripVolatileDeviceBuffers(MSLPatchContext *ctx, char **msl_ptr)
+{
+    /* SPIRV-Cross emits `volatile device T&` for coherent/volatile SSBOs.
+     * Metal's matrix types do not provide operator[] / transpose on
+     * volatile-qualified device references, which breaks SSBO matrix tests.
+     * Drop the volatile qualifier on device address-space types; atomics
+     * still go through metal::atomic_* APIs. */
+    (void)ctx;
+    if (!msl_ptr || !*msl_ptr) {
+        return GL_TRUE;
+    }
+    if (!strstr(*msl_ptr, "volatile device ")) {
+        return GL_TRUE;
+    }
+    replace_all_substr(msl_ptr, "volatile device ", "device ");
     return GL_TRUE;
 }
 
@@ -6041,8 +7292,14 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
             mslPipelineAddStep(&pipeline, "remove_restrict", mglPatchRemoveRestrict);
             mslPipelineAddStep(&pipeline, "fix_sampler_shadowing", mglPatchFixSamplerShadowing);
             mslPipelineAddStep(&pipeline, "fix_unknown_texture_type", mglPatchFixUnknownTextureType);
+            mslPipelineAddStep(&pipeline, "fix_texture2d_proj_sample", mglPatchFixTexture2DProjSample);
+            mslPipelineAddStep(&pipeline, "fix_spv_array_copy_unsafe_array", mglPatchFixSpvArrayCopyUnsafeArray);
             mslPipelineAddStep(&pipeline, "strip_thread_const_ref", mglPatchStripThreadConstRef);
             mslPipelineAddStep(&pipeline, "rename_length_squared", mglPatchRenameLengthSquared);
+            mslPipelineAddStep(&pipeline, "fix_ambiguous_int_uint_minmax", mglPatchFixAmbiguousIntUintMinMax);
+            mslPipelineAddStep(&pipeline, "fix_shader_group_vote", mglPatchFixShaderGroupVote);
+            mslPipelineAddStep(&pipeline, "fix_image_atomic_coords", mglPatchFixImageAtomicCoords);
+            mslPipelineAddStep(&pipeline, "strip_volatile_device_buffers", mglPatchStripVolatileDeviceBuffers);
             mslPipelineAddStep(&pipeline, "lower_double_types", mglPatchLowerDoubleTypes);
             mslPipelineAddStep(&pipeline, "fix_end_portal_layer", mglPatchFixEndPortalLayer);
             mslPipelineAddStep(&pipeline, "fullscreen_fb_yflip", mglPatchFullscreenFBYFlip);
