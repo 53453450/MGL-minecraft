@@ -51,6 +51,10 @@ static inline void MGLMarkTextureSlot(uint64_t mask[2], NSUInteger index)
     _state.lastDepthBias = 0;
     _state.lastDepthBiasClamp = 0;
     _state.lastDepthSlopeScale = 0;
+    _state.lastBlendColorRed = 0.0f;
+    _state.lastBlendColorGreen = 0.0f;
+    _state.lastBlendColorBlue = 0.0f;
+    _state.lastBlendColorAlpha = 0.0f;
     _state.lastBoundValid = NO;
 }
 
@@ -243,6 +247,14 @@ static inline void MGLMarkTextureSlot(uint64_t mask[2], NSUInteger index)
     _state.lastDepthBias = bias;
     _state.lastDepthBiasClamp = clamp;
     _state.lastDepthSlopeScale = slopeScale;
+}
+
+- (void)setLastBlendColorRed:(float)r green:(float)g blue:(float)b alpha:(float)a
+{
+    _state.lastBlendColorRed = r;
+    _state.lastBlendColorGreen = g;
+    _state.lastBlendColorBlue = b;
+    _state.lastBlendColorAlpha = a;
 }
 
 - (void)setBoundValid:(BOOL)valid

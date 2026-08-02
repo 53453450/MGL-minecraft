@@ -29,6 +29,45 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
     return obj;
 }
 
+/* ---- 11-bit / 10-bit unsigned float unpacking ----
+ * Used to decode GL_UNSIGNED_INT_10F_11F_11F_REV vertex data on the CPU.
+ * These are unsigned floating-point formats (no sign bit) sharing the same
+ * 5-bit exponent bias (15) as half-float, with 6 or 5 mantissa bits. */
+
+static float mglFloat11ToFloat(uint32_t val) {
+    /* 11-bit float: 5-bit exponent, 6-bit mantissa, no sign */
+    if (val == 0u) {
+        return 0.0f;
+    }
+    uint32_t exp = (val >> 6) & 0x1Fu;
+    uint32_t mant = val & 0x3Fu;
+    if (exp == 0u) {
+        /* Denormalized: 2^(1-15) * (mant/64) */
+        return (float)((double)mant / 64.0) * (1.0 / 16384.0);
+    } else if (exp == 31u) {
+        return mant ? NAN : INFINITY;
+    }
+    /* Normalized: 2^(exp-15) * (1 + mant/64) */
+    return ldexpf((float)(1.0 + (double)mant / 64.0), (int)exp - 15);
+}
+
+static float mglFloat10ToFloat(uint32_t val) {
+    /* 10-bit float: 5-bit exponent, 5-bit mantissa, no sign */
+    if (val == 0u) {
+        return 0.0f;
+    }
+    uint32_t exp = (val >> 5) & 0x1Fu;
+    uint32_t mant = val & 0x1Fu;
+    if (exp == 0u) {
+        /* Denormalized: 2^(1-15) * (mant/32) */
+        return (float)((double)mant / 32.0) * (1.0 / 16384.0);
+    } else if (exp == 31u) {
+        return mant ? NAN : INFINITY;
+    }
+    /* Normalized: 2^(exp-15) * (1 + mant/32) */
+    return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
+}
+
 @implementation MGLRenderer (Buffer)
 
 - (id<MTLBuffer>)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
@@ -275,6 +314,370 @@ static inline id<NSObject> SafeMetalBridge(void *ptr, Class expectedClass, const
             }
             memcpy(dst + dstOffset + rel, floats, compBytes);
         }
+    }
+
+    id<MTLBuffer> converted = [_device newBufferWithBytes:dst
+                                                   length:convertedData.length
+                                                  options:MTLResourceStorageModeShared];
+    if (!converted) {
+        return nil;
+    }
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
+    if (outStride) {
+        *outStride = convertedStride;
+    }
+    return converted;
+}
+
+/* GL_FIXED: each component is a 32-bit signed integer (GLfixed) representing
+ * a 16.16 fixed-point value (actual value = raw / 65536.0). size ranges 1-4;
+ * each component is converted independently to float. Output is float[size].
+ * sizeof(GLfixed)==sizeof(GLfloat)==4, so the converted stride equals the
+ * original stride, mirroring floatVertexBufferForIntAttrib. */
+- (id<MTLBuffer>)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
+                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                             size:(GLuint)componentCount
+                                        outStride:(NSUInteger *)outStride
+{
+    if (outStride) {
+        *outStride = 0;
+    }
+    if (!sourceBuffer || !resolved || componentCount == 0 || componentCount > 4) {
+        return nil;
+    }
+
+    const uint8_t *sourceBytes = NULL;
+    size_t sourceSize = 0;
+    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
+        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
+        sourceSize = (size_t)sourceBuffer->size;
+    } else if (sourceBuffer->data.mtl_data) {
+        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        if (metal && metal.contents && metal.length > 0) {
+            sourceBytes = (const uint8_t *)metal.contents;
+            sourceSize = (size_t)metal.length;
+        }
+    }
+    if (!sourceBytes || sourceSize == 0) {
+        return nil;
+    }
+
+    NSUInteger originalStride = (resolved->stride > 0)
+        ? (NSUInteger)resolved->stride
+        : (NSUInteger)(componentCount * sizeof(int32_t));
+    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, (NSUInteger)(componentCount * sizeof(GLfloat))));
+    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
+        (NSUInteger)resolved->binding_offset >= sourceSize) {
+        return nil;
+    }
+
+    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
+    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
+    NSString *cacheKey = [NSString stringWithFormat:@"X:%u:%lld:%lld:%u:%u:%lu:%zu:%016llx",
+                          sourceBuffer->name,
+                          (long long)resolved->binding_offset,
+                          (long long)resolved->relativeoffset,
+                          (unsigned)originalStride,
+                          (unsigned)componentCount,
+                          (unsigned long)convertedStride,
+                          copyLength,
+                          (unsigned long long)sourceHash];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    }
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    if (cached) {
+        if (outStride) {
+            *outStride = convertedStride;
+        }
+        return cached;
+    }
+
+    if (originalStride == 0u) {
+        return nil;
+    }
+
+    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
+    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
+        return nil;
+    }
+
+    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
+    if (!convertedData) {
+        return nil;
+    }
+    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
+
+    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
+    NSUInteger compBytes = (NSUInteger)componentCount * sizeof(GLfloat);
+    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
+    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
+        NSUInteger srcOffset = vertex * originalStride;
+        NSUInteger dstOffset = vertex * convertedStride;
+        NSUInteger copyBytes = 0;
+
+        if (srcOffset < (NSUInteger)copyLength) {
+            copyBytes = MIN(originalStride, (NSUInteger)copyLength - srcOffset);
+            memcpy(dst + dstOffset, srcBase + srcOffset, copyBytes);
+        }
+
+        if (rel <= copyBytes && compBytes <= copyBytes - rel) {
+            GLfloat floats[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            for (GLuint c = 0; c < componentCount; c++) {
+                int32_t raw = 0;
+                memcpy(&raw,
+                       srcBase + srcOffset + rel + (NSUInteger)c * sizeof(int32_t),
+                       sizeof(raw));
+                floats[c] = (GLfloat)((double)raw / 65536.0);
+            }
+            memcpy(dst + dstOffset + rel, floats, compBytes);
+        }
+    }
+
+    id<MTLBuffer> converted = [_device newBufferWithBytes:dst
+                                                   length:convertedData.length
+                                                  options:MTLResourceStorageModeShared];
+    if (!converted) {
+        return nil;
+    }
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
+    if (outStride) {
+        *outStride = convertedStride;
+    }
+    return converted;
+}
+
+/* GL_UNSIGNED_INT_10_10_10_2: 1 uint32 packed as RGBA.
+ * Non-REV bit layout: R[22-31] G[12-21] B[2-11] A[0-1].
+ * Converted to float4(R/1023.0, G/1023.0, B/1023.0, A/3.0). The source
+ * element (4 bytes) is smaller than the float4 output (16 bytes), so the
+ * converted buffer is zero-initialized and the unpacked floats are written
+ * per vertex (no copy-then-overwrite, unlike the GL_DOUBLE path). */
+- (id<MTLBuffer>)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
+                                                  resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                                 outStride:(NSUInteger *)outStride
+{
+    if (outStride) {
+        *outStride = 0;
+    }
+    if (!sourceBuffer || !resolved) {
+        return nil;
+    }
+
+    const uint8_t *sourceBytes = NULL;
+    size_t sourceSize = 0;
+    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
+        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
+        sourceSize = (size_t)sourceBuffer->size;
+    } else if (sourceBuffer->data.mtl_data) {
+        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        if (metal && metal.contents && metal.length > 0) {
+            sourceBytes = (const uint8_t *)metal.contents;
+            sourceSize = (size_t)metal.length;
+        }
+    }
+    if (!sourceBytes || sourceSize == 0) {
+        return nil;
+    }
+
+    const NSUInteger outComponents = 4u;
+    NSUInteger originalStride = (resolved->stride > 0)
+        ? (NSUInteger)resolved->stride
+        : (NSUInteger)sizeof(uint32_t);
+    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, outComponents * sizeof(GLfloat)));
+    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
+        (NSUInteger)resolved->binding_offset >= sourceSize) {
+        return nil;
+    }
+
+    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
+    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
+    NSString *cacheKey = [NSString stringWithFormat:@"Y:%u:%lld:%lld:%u:%lu:%zu:%016llx",
+                          sourceBuffer->name,
+                          (long long)resolved->binding_offset,
+                          (long long)resolved->relativeoffset,
+                          (unsigned)originalStride,
+                          (unsigned long)convertedStride,
+                          copyLength,
+                          (unsigned long long)sourceHash];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    }
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    if (cached) {
+        if (outStride) {
+            *outStride = convertedStride;
+        }
+        return cached;
+    }
+
+    if (originalStride == 0u) {
+        return nil;
+    }
+
+    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
+    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
+        return nil;
+    }
+
+    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
+    if (!convertedData) {
+        return nil;
+    }
+    /* Zero-init so missing source bytes / padding default to 0. */
+    memset(convertedData.mutableBytes, 0, convertedData.length);
+    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
+
+    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
+    NSUInteger outBytes = outComponents * sizeof(GLfloat);
+    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
+    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
+        NSUInteger srcOffset = vertex * originalStride;
+        NSUInteger dstOffset = vertex * convertedStride;
+
+        size_t srcByteIdx = (size_t)srcOffset + rel;
+        if (srcByteIdx + sizeof(uint32_t) > (size_t)copyLength) {
+            continue;
+        }
+        if (rel + outBytes > convertedStride) {
+            continue;
+        }
+
+        uint32_t packed = 0;
+        memcpy(&packed, srcBase + srcByteIdx, sizeof(packed));
+
+        /* Non-REV layout: R[22-31] G[12-21] B[2-11] A[0-1] */
+        GLfloat r = (GLfloat)((packed >> 22) & 0x3FFu) / 1023.0f;
+        GLfloat g = (GLfloat)((packed >> 12) & 0x3FFu) / 1023.0f;
+        GLfloat b = (GLfloat)((packed >>  2) & 0x3FFu) / 1023.0f;
+        GLfloat a = (GLfloat)(packed & 0x3u) / 3.0f;
+
+        GLfloat floats[4] = {r, g, b, a};
+        memcpy(dst + dstOffset + rel, floats, outBytes);
+    }
+
+    id<MTLBuffer> converted = [_device newBufferWithBytes:dst
+                                                   length:convertedData.length
+                                                  options:MTLResourceStorageModeShared];
+    if (!converted) {
+        return nil;
+    }
+    _resourceFallback.doubleVertexAttribBufferCache[cacheKey] = converted;
+    [self mglCapAuxCache:_resourceFallback.doubleVertexAttribBufferCache limit:64];
+    if (outStride) {
+        *outStride = convertedStride;
+    }
+    return converted;
+}
+
+/* GL_UNSIGNED_INT_10F_11F_11F_REV: 1 uint32 packed as RGB float.
+ * REV bit layout: R[0-10] G[11-21] B[22-31].
+ * R/G are 11-bit float, B is 10-bit float (all unsigned). Converted to
+ * float3. Like the 10_10_10_2 path, the source element (4 bytes) is smaller
+ * than the float3 output (12 bytes), so the converted buffer is zero-
+ * initialized and unpacked floats are written per vertex. */
+- (id<MTLBuffer>)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
+                                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                                    outStride:(NSUInteger *)outStride
+{
+    if (outStride) {
+        *outStride = 0;
+    }
+    if (!sourceBuffer || !resolved) {
+        return nil;
+    }
+
+    const uint8_t *sourceBytes = NULL;
+    size_t sourceSize = 0;
+    if (sourceBuffer->data.buffer_data && sourceBuffer->size > 0) {
+        sourceBytes = (const uint8_t *)(uintptr_t)sourceBuffer->data.buffer_data;
+        sourceSize = (size_t)sourceBuffer->size;
+    } else if (sourceBuffer->data.mtl_data) {
+        id<MTLBuffer> metal = (__bridge id<MTLBuffer>)(sourceBuffer->data.mtl_data);
+        if (metal && metal.contents && metal.length > 0) {
+            sourceBytes = (const uint8_t *)metal.contents;
+            sourceSize = (size_t)metal.length;
+        }
+    }
+    if (!sourceBytes || sourceSize == 0) {
+        return nil;
+    }
+
+    const NSUInteger outComponents = 3u;
+    NSUInteger originalStride = (resolved->stride > 0)
+        ? (NSUInteger)resolved->stride
+        : (NSUInteger)sizeof(uint32_t);
+    NSUInteger convertedStride = mglAlignVertexStrideForMetal(MAX(originalStride, outComponents * sizeof(GLfloat)));
+    if (resolved->binding_offset < 0 || resolved->relativeoffset < 0 ||
+        (NSUInteger)resolved->binding_offset >= sourceSize) {
+        return nil;
+    }
+
+    size_t copyLength = sourceSize - (size_t)resolved->binding_offset;
+    uint64_t sourceHash = mglHashVertexBytesFNV1a(sourceBytes + (size_t)resolved->binding_offset, copyLength);
+    NSString *cacheKey = [NSString stringWithFormat:@"Z:%u:%lld:%lld:%u:%lu:%zu:%016llx",
+                          sourceBuffer->name,
+                          (long long)resolved->binding_offset,
+                          (long long)resolved->relativeoffset,
+                          (unsigned)originalStride,
+                          (unsigned long)convertedStride,
+                          copyLength,
+                          (unsigned long long)sourceHash];
+    if (!_resourceFallback.doubleVertexAttribBufferCache) {
+        _resourceFallback.doubleVertexAttribBufferCache = [NSMutableDictionary dictionary];
+    }
+    id<MTLBuffer> cached = _resourceFallback.doubleVertexAttribBufferCache[cacheKey];
+    if (cached) {
+        if (outStride) {
+            *outStride = convertedStride;
+        }
+        return cached;
+    }
+
+    if (originalStride == 0u) {
+        return nil;
+    }
+
+    NSUInteger vertexCount = ((NSUInteger)copyLength + originalStride - 1u) / originalStride;
+    if (vertexCount == 0u || vertexCount > NSUIntegerMax / convertedStride) {
+        return nil;
+    }
+
+    NSMutableData *convertedData = [NSMutableData dataWithLength:vertexCount * convertedStride];
+    if (!convertedData) {
+        return nil;
+    }
+    /* Zero-init so missing source bytes / padding default to 0. */
+    memset(convertedData.mutableBytes, 0, convertedData.length);
+    uint8_t *dst = (uint8_t *)convertedData.mutableBytes;
+
+    NSUInteger rel = (NSUInteger)resolved->relativeoffset;
+    NSUInteger outBytes = outComponents * sizeof(GLfloat);
+    const uint8_t *srcBase = sourceBytes + (size_t)resolved->binding_offset;
+    for (NSUInteger vertex = 0; vertex < vertexCount; vertex++) {
+        NSUInteger srcOffset = vertex * originalStride;
+        NSUInteger dstOffset = vertex * convertedStride;
+
+        size_t srcByteIdx = (size_t)srcOffset + rel;
+        if (srcByteIdx + sizeof(uint32_t) > (size_t)copyLength) {
+            continue;
+        }
+        if (rel + outBytes > convertedStride) {
+            continue;
+        }
+
+        uint32_t packed = 0;
+        memcpy(&packed, srcBase + srcByteIdx, sizeof(packed));
+
+        /* REV layout: R[0-10] G[11-21] B[22-31] */
+        GLfloat r = mglFloat11ToFloat((packed >>  0) & 0x7FFu);
+        GLfloat g = mglFloat11ToFloat((packed >> 11) & 0x7FFu);
+        GLfloat b = mglFloat10ToFloat((packed >> 22) & 0x3FFu);
+
+        GLfloat floats[3] = {r, g, b};
+        memcpy(dst + dstOffset + rel, floats, outBytes);
     }
 
     id<MTLBuffer> converted = [_device newBufferWithBytes:dst
@@ -917,6 +1320,11 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                 bentry->buf = buf;
                 bentry->offset = baseBinding->offset;
                 bentry->size = baseBinding->size;
+                if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+                    bentry->size = mglBufferMapExtendUniformRange(
+                        bentry->size, buf->size, bentry->offset,
+                        reflectedRequiredSize);
+                }
                 baseBinding->buffer = buf->name;
                 buffer_map->count++;
 
@@ -1394,6 +1802,11 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
                     entry->buf = buf;
                     entry->offset = baseBinding->offset;
                     entry->size = baseBinding->size;
+                    if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) {
+                        entry->size = mglBufferMapExtendUniformRange(
+                            entry->size, buf->size, entry->offset,
+                            reflectedRequiredSize);
+                    }
                     baseBinding->buffer = buf->name;
                     buffer_map->count++;
 
@@ -1732,6 +2145,38 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     return true;
 }
 
+/* Byte range the CPU shadow is allowed to push into the Metal store, clamped to
+ * limit.  For a buffer a shader may have written (SSBO/atomic counter/transform
+ * feedback) those writes are part of the data store per GL 4.6 §6.2 and live
+ * only in the Metal buffer, so only the CPU-written range may be pushed and the
+ * rest must be preserved.  The range is cumulative, so a CPU write covering the
+ * whole store still authorizes a full overwrite.  Returns NO when there is
+ * nothing to push. */
+static BOOL mglBufferShadowUploadRange(const Buffer *ptr,
+                                       NSUInteger limit,
+                                       NSUInteger *outOffset,
+                                       NSUInteger *outLength)
+{
+    NSUInteger offset = 0;
+    NSUInteger length = limit;
+
+    if (ptr->gpu_write_target) {
+        if (ptr->written_min < 0 || ptr->written_max <= ptr->written_min) {
+            return NO;
+        }
+        offset = MIN((NSUInteger)ptr->written_min, limit);
+        length = MIN((NSUInteger)ptr->written_max, limit) - offset;
+    }
+
+    if (length == 0) {
+        return NO;
+    }
+
+    *outOffset = offset;
+    *outLength = length;
+    return YES;
+}
+
 BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
                                          Buffer *ptr,
                                          id<MTLBuffer> *bufferPtr)
@@ -1768,12 +2213,25 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
         NSLog(@"MGL BUFFER ERROR: failed to snapshot dynamic buffer %u", ptr->name);
         return NO;
     }
+    MGL_PERF_INC(g_mglBufferCowCountSinceSwap);
+    MGL_PERF_ADD(g_mglBufferCowBytesSinceSwap, (uint64_t)buffer.length);
 
-    memcpy(snapshot.contents, cpuData, snapshotLength);
-    if (snapshotLength < snapshot.length) {
-        memset((uint8_t *)snapshot.contents + snapshotLength,
-               0,
-               snapshot.length - snapshotLength);
+    if (ptr->gpu_write_target) {
+        NSUInteger uploadOffset = 0;
+        NSUInteger uploadLength = 0;
+        memcpy(snapshot.contents, buffer.contents, buffer.length);
+        if (mglBufferShadowUploadRange(ptr, snapshotLength, &uploadOffset, &uploadLength)) {
+            memcpy((uint8_t *)snapshot.contents + uploadOffset,
+                   (const uint8_t *)cpuData + uploadOffset,
+                   uploadLength);
+        }
+    } else {
+        memcpy(snapshot.contents, cpuData, snapshotLength);
+        if (snapshotLength < snapshot.length) {
+            memset((uint8_t *)snapshot.contents + snapshotLength,
+                   0,
+                   snapshot.length - snapshotLength);
+        }
     }
 
     mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
@@ -1809,6 +2267,8 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         NSLog(@"MGL BUFFER ERROR: failed to snapshot mapped buffer %u", ptr->name);
         return NO;
     }
+    MGL_PERF_INC(g_mglBufferCowCountSinceSwap);
+    MGL_PERF_ADD(g_mglBufferCowBytesSinceSwap, (uint64_t)buffer.length);
 
     memcpy(snapshot.contents, buffer.contents, buffer.length);
     memcpy((uint8_t *)snapshot.contents + offset, cpuData + offset, length);
@@ -1821,6 +2281,18 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
 - (bool) updateDirtyBuffer:(Buffer *)ptr
 {
+    /* Small plain-uniform slots are bound with set*Bytes straight from the CPU
+     * shadow, so materializing an MTLBuffer here would only make every later
+     * upload allocate a full-buffer copy-on-write snapshot that no encoder ever
+     * binds.  While no Metal buffer exists there is nothing to keep in sync:
+     * consumers that do need one create it from the current shadow. */
+    if (ptr->plain_uniform_slot && ptr->data.mtl_data == NULL &&
+        ptr->data.buffer_data && ptr->size > 0 && ptr->size <= 4096)
+    {
+        ptr->data.dirty_bits &= ~(DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR);
+        return true;
+    }
+
     if (ptr->size < 4096)
     {
         if ((ptr->data.dirty_bits & DIRTY_BUFFER_ADDR) && ptr->data.mtl_data == NULL) {
@@ -1846,6 +2318,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                 return false;
             }
 
+            id<MTLBuffer> bufferBeforeSnapshot = buffer;
             if (!mglSnapshotSharedDirtyBuffer(_device, ptr, &buffer)) {
                 return false;
             }
@@ -1858,14 +2331,24 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
             const void *cpuData = (const void *)(uintptr_t)ptr->data.buffer_data;
             void *metalData = buffer.contents;
-            if (cpuData && (uintptr_t)cpuData >= 0x1000u && metalData && copyLen > 0) {
-                if (cpuData != metalData) {
-                    memmove(metalData, cpuData, copyLen);
+            /* Snapshot already populated the new Shared buffer from the CPU
+             * shadow (or Metal+shadow overlay for gpu_write_target).  Only
+             * upload in place when no new MTLBuffer was allocated. */
+            if (buffer == bufferBeforeSnapshot &&
+                cpuData && (uintptr_t)cpuData >= 0x1000u && metalData && copyLen > 0) {
+                NSUInteger uploadOffset = 0;
+                NSUInteger uploadLength = 0;
+                if (mglBufferShadowUploadRange(ptr, copyLen, &uploadOffset, &uploadLength)) {
+                    if (cpuData != metalData) {
+                        memmove((uint8_t *)metalData + uploadOffset,
+                                (const uint8_t *)cpuData + uploadOffset,
+                                uploadLength);
+                    }
+                    if (buffer.storageMode == MTLStorageModeManaged) {
+                        [buffer didModifyRange:NSMakeRange(uploadOffset, uploadLength)];
+                    }
                 }
-                if (buffer.storageMode == MTLStorageModeManaged) {
-                    [buffer didModifyRange:NSMakeRange(0, copyLen)];
-                }
-            } else if (metalData && copyLen > 0) {
+            } else if (buffer == bufferBeforeSnapshot && metalData && copyLen > 0) {
                 NSUInteger modifyOffset = 0;
                 NSUInteger modifyLength = copyLen;
                 if (ptr->mapped_length > 0 &&

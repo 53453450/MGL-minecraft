@@ -25,6 +25,73 @@
 
 #include "glm_limits.h"
 
+/* GL spec minimum required attribute stack depth */
+#define MGL_ATTRIB_STACK_DEPTH 16
+
+/* Saved server-side GL state entry for glPushAttrib / glPopAttrib.
+ * Covers the most commonly used mask bits:
+ *   GL_COLOR_BUFFER_BIT, GL_DEPTH_BUFFER_BIT, GL_STENCIL_BUFFER_BIT,
+ *   GL_ENABLE_BIT, GL_TRANSFORM_BIT, GL_VIEWPORT_BIT.
+ * Other mask bits (GL_TEXTURE_BIT, GL_EVAL_BIT, etc.) are accepted but
+ * only bump the stack depth without saving their state. */
+typedef struct MGLAttribStackEntry_t {
+    GLbitfield mask;
+
+    /* GL_COLOR_BUFFER_BIT */
+    GLfloat  blend_color[4];
+    GLuint   blend_src_rgb[MAX_COLOR_ATTACHMENTS];
+    GLuint   blend_src_alpha[MAX_COLOR_ATTACHMENTS];
+    GLuint   blend_dst_rgb[MAX_COLOR_ATTACHMENTS];
+    GLuint   blend_dst_alpha[MAX_COLOR_ATTACHMENTS];
+    GLuint   blend_equation_rgb[MAX_COLOR_ATTACHMENTS];
+    GLuint   blend_equation_alpha[MAX_COLOR_ATTACHMENTS];
+    GLboolean color_writemask[MAX_COLOR_ATTACHMENTS][4];
+    GLboolean use_color_mask[MAX_COLOR_ATTACHMENTS];
+    GLboolean blend_enabled;
+    GLboolean blendi[MAX_COLOR_ATTACHMENTS];
+    GLboolean logic_op_enabled;
+    GLenum   logic_op_mode;
+
+    /* GL_DEPTH_BUFFER_BIT */
+    GLboolean depth_test_enabled;
+    GLboolean depth_writemask;
+    GLenum   depth_func;
+    GLclampd depth_near;
+    GLclampd depth_far;
+
+    /* GL_STENCIL_BUFFER_BIT */
+    GLboolean stencil_test_enabled;
+    GLuint   stencil_writemask;
+    GLuint   stencil_back_writemask;
+
+    /* GL_ENABLE_BIT (subset not already covered above) */
+    GLboolean cull_face_enabled;
+    GLboolean dither_enabled;
+    GLboolean polygon_offset_fill_enabled;
+    GLboolean sample_alpha_to_coverage_enabled;
+    GLboolean sample_coverage_enabled;
+    GLboolean scissor_test_enabled;
+    GLboolean color_logic_op_enabled;
+
+    /* GL_TRANSFORM_BIT */
+    GLenum   clip_origin;
+    GLenum   clip_depth_mode;
+
+    /* GL_VIEWPORT_BIT */
+    GLint    viewport[4];
+    GLclampd depth_range[2];
+    GLint    scissor_box[4];
+} MGLAttribStackEntry;
+
+/* Saved client-side GL state entry for glPushClientAttrib / glPopClientAttrib.
+ * Minimal: saves VAO binding and pixel pack/unpack buffer bindings. */
+typedef struct MGLClientAttribStackEntry_t {
+    GLbitfield mask;
+    GLuint vertex_array_binding;
+    GLuint pixel_pack_buffer_binding;
+    GLuint pixel_unpack_buffer_binding;
+} MGLClientAttribStackEntry;
+
 typedef struct GLMHints_t {
     GLuint line_smooth_hint;
     GLuint polygon_smooth_hint;
@@ -147,6 +214,7 @@ typedef struct GLMParams_t {
     GLuint modelview_matrix;
     GLuint projection_matrix;
     GLuint attrib_stack_depth;
+    MGLAttribStackEntry attrib_stack[MGL_ATTRIB_STACK_DEPTH];
     GLuint alpha_test_func;
     GLuint alpha_test_ref;
     GLuint logic_op;
@@ -199,6 +267,7 @@ typedef struct GLMParams_t {
     GLuint texture_binding_2d;
     GLuint client_attrib_stack_depth;
     GLuint max_client_attrib_stack_depth;
+    MGLClientAttribStackEntry client_attrib_stack[MGL_ATTRIB_STACK_DEPTH];
     GLuint feedback_buffer_size;
     GLuint feedback_buffer_type;
     GLuint selection_buffer_size;

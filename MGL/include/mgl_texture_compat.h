@@ -198,6 +198,14 @@ MTLPixelFormat mglSRGBPixelFormat(MTLPixelFormat fmt);
  * original format if no linear variant exists. */
 MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt);
 
+/* Returns the effective Metal pixel format for a texture, honoring
+ * GL_EXT_texture_sRGB_decode.  When tex->params.srgb_decode_ext is
+ * GL_SKIP_DECODE_EXT, an sRGB pixel format is downgraded to its linear
+ * variant so the data is sampled without automatic sRGB decode; otherwise
+ * the format is returned unchanged.  Call from the texture-creation path
+ * when selecting the Metal pixel format for an sRGB internal format. */
+MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture *tex);
+
 /* Returns the compressed-block height (in pixels) for a Metal compressed
  * pixel format.  BC1-BC7 and ASTC 4x4 return 4; ASTC variants return
  * their Y dimension (5/6/8/10/12); uncompressed formats return 1. */

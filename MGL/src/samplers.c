@@ -77,6 +77,24 @@ static void mglSamplerParameterUnhandled(GLMContext ctx)
         ERROR_RETURN(GL_INVALID_ENUM);
 }
 
+/* GL 4.6 spec: GL_TEXTURE_SWIZZLE_* are texture-object state, not sampler
+ * state.  Sampler objects must reject these pnames with GL_INVALID_ENUM.
+ * Without this guard, setParam → setTexParmi would accept them and silently
+ * write into the sampler's dead swizzle fields. */
+static GLboolean mglIsTextureOnlyParameter(GLenum pname)
+{
+    switch (pname) {
+        case GL_TEXTURE_SWIZZLE_R:
+        case GL_TEXTURE_SWIZZLE_G:
+        case GL_TEXTURE_SWIZZLE_B:
+        case GL_TEXTURE_SWIZZLE_A:
+        case GL_TEXTURE_SWIZZLE_RGBA:
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 Sampler *newSampler(GLMContext ctx, GLuint sampler)
 {
     Sampler *ptr;
@@ -357,6 +375,11 @@ void mglSamplerParameterf(GLMContext ctx, GLuint sampler, GLenum pname, GLfloat 
     Sampler *ptr = findSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
 
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
+
     mglTraceLogExternal("SAMPLER_PARAM_F sampler=%u pname=0x%x fparam=%.6f",
                         (unsigned)sampler,
                         (unsigned)pname,
@@ -384,6 +407,11 @@ void mglSamplerParameterfv(GLMContext ctx, GLuint sampler, GLenum pname, const G
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
 
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
+
     if (setTexParamsf(ctx, &candidate, pname, param))
     {
         mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
@@ -403,6 +431,11 @@ void mglSamplerParameteri(GLMContext ctx, GLuint sampler, GLenum pname, GLint pa
 {
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
+
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
 
     mglTraceLogExternal("SAMPLER_PARAM sampler=%u pname=0x%x iparam=%d",
                         (unsigned)sampler,
@@ -432,6 +465,11 @@ void mglSamplerParameteriv(GLMContext ctx, GLuint sampler, GLenum pname, const G
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
 
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
+
     if (setTexParamsi(ctx, &candidate, pname, param))
     {
         mglCommitSamplerParameter(ctx, ptr, pname, &candidate);
@@ -459,6 +497,11 @@ void mglSamplerParameterIiv(GLMContext ctx, GLuint sampler, GLenum pname, const 
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
+
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
 
     if (setTexParamsIiv(ctx, &candidate, pname, param))
     {
@@ -493,6 +536,11 @@ void mglSamplerParameterIuiv(GLMContext ctx, GLuint sampler, GLenum pname, const
     Sampler *ptr = getSampler(ctx, sampler);
     ERROR_CHECK_RETURN(ptr, GL_INVALID_OPERATION);
     TextureParameter candidate = ptr->params;
+
+    if (mglIsTextureOnlyParameter(pname)) {
+        mglSamplerParameterUnhandled(ctx);
+        return;
+    }
 
     if (setTexParamsIuiv(ctx, &candidate, pname, param))
     {

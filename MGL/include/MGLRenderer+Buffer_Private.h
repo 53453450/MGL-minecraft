@@ -84,6 +84,28 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                                      dstIsInt:(BOOL)dstIsInt
                                     outStride:(NSUInteger *)outStride;
 
+/* GL_FIXED: each component is a 32-bit signed integer representing a 16.16
+ * fixed-point value (actual value = raw / 65536.0). size ranges 1-4; each
+ * component is converted independently to float. Output is float[size]. */
+- (id<MTLBuffer>)floatVertexBufferForFixedAttrib:(Buffer *)sourceBuffer
+                                         resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                             size:(GLuint)componentCount
+                                        outStride:(NSUInteger *)outStride;
+
+/* GL_UNSIGNED_INT_10_10_10_2: 1 uint32 packed as RGBA.
+ * Non-REV bit layout: R[22-31] G[12-21] B[2-11] A[0-1].
+ * Converted to float4(R/1023.0, G/1023.0, B/1023.0, A/3.0). */
+- (id<MTLBuffer>)floatVertexBufferForPacked1010102Attrib:(Buffer *)sourceBuffer
+                                                  resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                                 outStride:(NSUInteger *)outStride;
+
+/* GL_UNSIGNED_INT_10F_11F_11F_REV: 1 uint32 packed as RGB float.
+ * REV bit layout: R[0-10] G[11-21] B[22-31].
+ * R/G are 11-bit float, B is 10-bit float (unsigned). Converted to float3. */
+- (id<MTLBuffer>)floatVertexBufferForPacked10f11f11fAttrib:(Buffer *)sourceBuffer
+                                                     resolved:(const MGLResolvedVertexAttribBinding *)resolved
+                                                    outStride:(NSUInteger *)outStride;
+
 @end
 
 #endif /* MGLRenderer_Buffer_Private_h */

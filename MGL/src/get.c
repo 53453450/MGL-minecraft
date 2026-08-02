@@ -48,6 +48,7 @@ static const char *kMglExtensions[] = {
     "GL_ARB_shading_language_420pack",
     "GL_ARB_separate_shader_objects",
     "GL_EXT_texture_filter_anisotropic",
+    "GL_ARB_texture_filter_anisotropic", /* alias of EXT; same 0x84FE/0x84FF tokens */
     "GL_KHR_robustness",
     /* The following advertise functionality MGL already implements (or, for
      * parallel_shader_compile, treats as a no-op hint the spec permits).
@@ -65,6 +66,7 @@ static const char *kMglExtensions[] = {
     "GL_KHR_parallel_shader_compile",      /* alias */
     "GL_EXT_texture_compression_s3tc",     /* MGL maps compressed S3TC internal formats in textures.c */
     "GL_KHR_texture_compression_astc_ldr", /* MGL maps compressed ASTC LDR internal formats in textures.c */
+    "GL_EXT_texture_sRGB_decode",          /* GL_TEXTURE_SRGB_DECODE_EXT state in tex_param.c; mglEffectiveMTLPixelFormatForTexture downgrades sRGB→linear on SKIP_DECODE */
 };
 static_assert((sizeof(kMglExtensions) / sizeof(kMglExtensions[0])) == MGL_NUM_EXTENSIONS,
               "MGL_NUM_EXTENSIONS must match kMglExtensions");
@@ -617,10 +619,12 @@ static void mglGet(GLMContext ctx, GLenum pname, GLuint type, void *data)
 
         case 0x84FD: RET_TYPE_VAR(type, max_texture_lod_bias); break; // GL_MAX_TEXTURE_LOD_BIAS
         case 0x84FF: { // GL_MAX_TEXTURE_MAX_ANISOTROPY
+            /* Must equal kMGLMaxAnisotropyLimit (mgl_types_texture.h) — see
+             * three-way sync note. */
             switch(type) {
-                case kFloat: *(GLfloat *)data = 16.0f; break;
-                case kDouble: *(GLdouble *)data = 16.0; break;
-                case kInt: *(GLint *)data = 16; break;
+                case kFloat: *(GLfloat *)data = kMGLMaxAnisotropyLimit; break;
+                case kDouble: *(GLdouble *)data = (GLdouble)kMGLMaxAnisotropyLimit; break;
+                case kInt: *(GLint *)data = (GLint)kMGLMaxAnisotropyLimit; break;
                 case kBool: *(GLboolean *)data = GL_TRUE; break;
             }
             break;

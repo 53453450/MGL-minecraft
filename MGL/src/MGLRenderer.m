@@ -1986,7 +1986,7 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     return -1;
 }
 
-// === Phase 3: Thread Safety Lock Macros ===
+// === Thread Safety Lock Macros ===
 //
 // Lock macros (METAL_LOCK/METAL_UNLOCK/SYNC_LOCK/SYNC_UNLOCK) and helpers
 // (mglMetalLock/mglMetalUnlock/mglNowSeconds) moved to MGLRenderer_Private.h
@@ -2191,10 +2191,34 @@ MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
                     return MTLVertexFormatInt1010102Normalized;
                 break;
 
-            case GL_UNSIGNED_INT_10_10_10_2:
+            case GL_INT_2_10_10_10_REV:
+                if (normalized)
+                    return MTLVertexFormatInt1010102Normalized;
+                break;
+
             case GL_UNSIGNED_INT_2_10_10_10_REV:
                 if (normalized)
                     return MTLVertexFormatUInt1010102Normalized;
+                break;
+
+            case GL_UNSIGNED_INT_10_10_10_2:
+                /* Non-REV 布局: R 在 MSB(bits 22-31), A 在 LSB(bits 0-1)。
+                 * Metal 的 UInt1010102Normalized 是 REV 布局(R 在 LSB, A 在 MSB),
+                 * 两者 bit 序不兼容,无法直接映射。返回 Invalid 让调用方走 CPU 转换回退
+                 * (generateVertexDescriptor 中的 mglDoubleVertexAttribFloatFormat 路径)。 */
+                break;
+
+            /* GL_UNSIGNED_INT_10F_11F_11F_REV: 11/11/10 float packed 格式,Metal 没有对应
+             * 的 vertex format。返回 Invalid,需要 CPU 端解包为 float(类似 GL_DOUBLE 的
+             * mglDoubleVertexAttribFloatFormat 路径)。CPU 转换入口在 generateVertexDescriptor
+             * (MGLRenderer+RenderPass.m),需后续扩展以识别该 type。 */
+            case GL_UNSIGNED_INT_10F_11F_11F_REV:
+                break;
+
+            /* GL_FIXED: 16.16 定点格式,Metal 没有 vertex format 对应。返回 Invalid,需要
+             * CPU 端解包为 float。CPU 转换入口在 generateVertexDescriptor
+             * (MGLRenderer+RenderPass.m),需后续扩展以识别该 type。 */
+            case GL_FIXED:
                 break;
         }
 
@@ -4127,6 +4151,7 @@ void logDirtyBits(GLMContext ctx)
     }
 
     uint8_t *cpuData = (uint8_t *)(uintptr_t)buf->data.buffer_data;
+    id<MTLBuffer> bufferBeforeSnapshot = mtl_buffer;
     if (cpuData && cpuData != mtl_buffer.contents) {
         memmove(cpuData + offset, ptr, size);
         if (!mglSnapshotSharedDirtyBuffer(_device, buf, &mtl_buffer)) {
@@ -4148,10 +4173,14 @@ void logDirtyBits(GLMContext ctx)
         NSLog(@"MGL ERROR: mtlBufferSubData buffer=%u has NULL contents", buf->name);
         return;
     }
-    memcpy(data+offset, ptr, size);
-
-    if (mtl_buffer.storageMode == MTLStorageModeManaged) {
-        [mtl_buffer didModifyRange:NSMakeRange(offset, size)];
+    /* A COW snapshot already copied the CPU shadow (including this range when
+     * written_min/max covers it).  Only write the Metal store in place when
+     * no new buffer was allocated. */
+    if (mtl_buffer == bufferBeforeSnapshot) {
+        memcpy((uint8_t *)data + offset, ptr, size);
+        if (mtl_buffer.storageMode == MTLStorageModeManaged) {
+            [mtl_buffer didModifyRange:NSMakeRange(offset, size)];
+        }
     }
 
     if (trace) {
@@ -4174,6 +4203,14 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark C interface to mtlMapUnmapBuffer
 -(void *) mtlMapUnmapBuffer:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
+    METAL_LOCK();
+    void *result = [self mtlMapUnmapBufferLocked:glm_ctx buf:buf offset:offset size:size access:access map:map];
+    METAL_UNLOCK();
+    return result;
+}
+
+-(void *) mtlMapUnmapBufferLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
+{
     id<MTLBuffer> mtl_buffer = nil;
 
     if (!buf) {
@@ -4183,7 +4220,7 @@ void logDirtyBits(GLMContext ctx)
 
     if (buf->data.mtl_data == NULL)
     {
-        [self bindMTLBuffer:buf];
+        [self bindMTLBufferLocked:buf];
     }
 
     mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
@@ -4316,6 +4353,13 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark C interface to mtlFlushMappedBufferRange
 -(void) mtlFlushMappedBufferRange:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
 {
+    METAL_LOCK();
+    [self mtlFlushMappedBufferRangeLocked:glm_ctx buf:buf offset:offset length:length];
+    METAL_UNLOCK();
+}
+
+-(void) mtlFlushMappedBufferRangeLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(GLintptr) offset length:(GLsizeiptr) length
+{
     id<MTLBuffer> mtl_buffer;
 
     if (!buf) {
@@ -4325,7 +4369,7 @@ void logDirtyBits(GLMContext ctx)
 
     mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
     if (!mtl_buffer) {
-        [self bindMTLBuffer:buf];
+        [self bindMTLBufferLocked:buf];
         mtl_buffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
         if (!mtl_buffer) {
             return;
@@ -4573,7 +4617,11 @@ Buffer *getIndirectBuffer(GLMContext ctx)
         return isolated;
     }
 
-    size_t copyLength = mglBufferMapVisibleBackingBytes(map, source.length);
+    /* For UBOs, prefer the underlying store over the (possibly short) indexed
+     * range so trailing std140 members remain visible after padding. */
+    size_t copyLength = (map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER)
+        ? mglBufferMapAvailableBackingBytes(map, source.length)
+        : mglBufferMapVisibleBackingBytes(map, source.length);
     if (copyLength > requiredLength) {
         copyLength = requiredLength;
     }

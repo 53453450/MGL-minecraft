@@ -68,8 +68,40 @@ typedef struct TextureParameter_t {
     GLenum  wrap_s;
     GLenum  wrap_t;
     GLenum  wrap_r;
+    /* GL_EXT_texture_sRGB_decode: GL_TEXTURE_SRGB_DECODE_EXT accepts
+     * GL_DECODE_EXT (default, sample sRGB-encoded data through the sRGB
+     * pipeline) or GL_SKIP_DECODE_EXT (treat sRGB-backed data as linear).
+     * Stored here so the texture-creation / pixel-format selection path can
+     * downgrade an sRGB Metal pixel format to its linear variant when
+     * SKIP_DECODE is requested.  Kept before mtl_data so the param-equality
+     * memcmp (which spans up to offsetof(mtl_data)) detects changes to it.
+     * Default is GL_DECODE_EXT; texture structs are bzero'd at creation, so 0
+     * is treated as "unset → DECODE" by the getter/helper. */
+    GLenum  srgb_decode_ext;
     void *mtl_data;
 } TextureParameter;
+
+/* GL_EXT_texture_filter_anisotropic: advertised upper bound for
+ * GL_MAX_TEXTURE_MAX_ANISOTROPY and the clamp limit for
+ * GL_TEXTURE_MAX_ANISOTROPY. THREE-WAY SYNC requirement — same value must
+ * appear in:
+ *   1. tex_param.c   setTexParmf / setTexParmi (input clamp)
+ *   2. get.c         GL_MAX_TEXTURE_MAX_ANISOTROPY query response
+ *   3. MGLRenderer+Texture.m  MTLSamplerDescriptor.maxAnisotropy cap
+ * Drift between these causes either spec violation (query says 16, set
+ * accepts 32) or Metal assertion (descriptor > device limit). Mirrors the
+ * kMGLSnapshotBufferBaseTypes three-way sync discipline. */
+static const GLfloat kMGLMaxAnisotropyLimit = 16.0f;
+
+/* GL 4.6 §8.14.1 eq 8.8: biasmax is the implementation-defined constant
+ * MAX_TEXTURE_LOD_BIAS.  The sum biastexobj + biasshader is clamped to
+ * [-biasmax, biasmax] before use.  GL spec does not mandate a minimum, but
+ * mainstream implementations advertise 14.0–16.0; 14.0 is a conservative
+ * default used when the system OpenGL provider returns 0 (headless / CGL
+ * failure).  TWO-WAY SYNC requirement — same value must appear in:
+ *   1. glm_params.c  getMacOSDefaults fallback when system query returns 0
+ *   2. MGLRenderer+RenderPass.m  clamp of _mglLodBias before setFragmentBytes */
+static const GLfloat kMGLMaxTextureLodBias = 14.0f;
 
 typedef enum MGLTexLevelInitSource_t {
     kTexInitNone = 0,

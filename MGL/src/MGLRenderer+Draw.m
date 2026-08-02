@@ -314,16 +314,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             continue;
         }
 
-        if (!ptr->data.mtl_data) {
-            [self bindMTLBuffer:ptr];
-        }
-        id<MTLBuffer> buffer = nil;
-        if (ptr->data.mtl_data &&
-            (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
-            buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-        }
-
-        NSUInteger metalLen = buffer ? buffer.length : 0u;
         NSUInteger bindOffset = (NSUInteger)offset;
         NSUInteger reflectedRequiredBytes = 0;
         NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
@@ -338,6 +328,65 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 requiredBindingBytes = reflectedRequiredBytes;
             }
         }
+
+        /* For small uniform constants (plain uniforms), use setVertexBytes
+         * to copy the data into the command buffer at bind time. This is
+         * critical for correctness when the same uniform buffer is updated
+         * between draws encoded into the same command buffer — a shared-
+         * memory MTLBuffer would let the GPU see only the final value.
+         *
+         * Decided before bindMTLBuffer so these slots never materialize an
+         * MTLBuffer at all: with one, every glUniform* upload allocates a
+         * copy-on-write snapshot, and a slot below requiredBindingBytes then
+         * allocates a zero-padded isolated buffer per draw on top of it.
+         * Padding here reproduces exactly what that isolated buffer held. */
+        if (isBaseBinding &&
+            map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+            ptr->data.buffer_data &&
+            offset == 0 &&
+            requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
+            NSUInteger visibleBytes =
+                (NSUInteger)mglBufferMapVisibleBackingBytes(map, ptr->data.buffer_size);
+            NSUInteger inlineLength = MAX(visibleBytes, requiredBindingBytes);
+            if (visibleBytes > 0 && inlineLength <= kMGLStageBindingStackScratchSize) {
+                uint8_t padded[kMGLStageBindingStackScratchSize];
+                const void *inlineBytes = (const void *)(uintptr_t)ptr->data.buffer_data;
+                if (inlineLength > visibleBytes) {
+                    memcpy(padded, inlineBytes, visibleBytes);
+                    memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
+                    inlineBytes = padded;
+                }
+                [encCtx->encoder setVertexBytes:inlineBytes
+                                        length:inlineLength
+                                       atIndex:bindingIndex];
+                [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
+                anyBindingPresent[bindingIndex] = true;
+                /* Only clear while no MTLBuffer exists: an existing one would
+                 * keep stale contents with no pending upload left to fix it. */
+                if (!ptr->data.mtl_data) {
+                    ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
+                }
+                if (kMGLVerboseBindLogs) {
+                    NSLog(@"MGL VBIND uniform-constant setVertexBytes slot=%lu buffer=%u len=%lu visible=%lu",
+                          (unsigned long)bindingIndex,
+                          ptr->name,
+                          (unsigned long)inlineLength,
+                          (unsigned long)visibleBytes);
+                }
+                continue;
+            }
+        }
+
+        if (!ptr->data.mtl_data) {
+            [self bindMTLBuffer:ptr];
+        }
+        id<MTLBuffer> buffer = nil;
+        if (ptr->data.mtl_data &&
+            (uintptr_t)ptr->data.mtl_data >= 0x10000u) {
+            buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+        }
+
+        NSUInteger metalLen = buffer ? buffer.length : 0u;
         NSUInteger availableBytes = buffer
             ? mglBufferMapVisibleBackingBytes(map, metalLen)
             : 0u;
@@ -374,25 +423,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                       (unsigned long)availableBytes,
                       (long long)map->size);
             }
-            continue;
-        }
-
-        /* For small uniform constants (plain uniforms), use setVertexBytes
-         * to copy the data into the command buffer at bind time. This is
-         * critical for correctness when the same uniform buffer is updated
-         * between draws encoded into the same command buffer — a shared-
-         * memory MTLBuffer would let the GPU see only the final value. */
-        if (isBaseBinding &&
-            map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
-            ptr->data.buffer_data &&
-            (NSUInteger)ptr->size <= 4096 &&
-            offset == 0) {
-            [encCtx->encoder setVertexBytes:(const void *)(uintptr_t)ptr->data.buffer_data
-                                            length:(NSUInteger)ptr->size
-                                           atIndex:bindingIndex];
-            [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
-            anyBindingPresent[bindingIndex] = true;
-            ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
             continue;
         }
 
@@ -755,6 +785,13 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                           (attribState->type == GL_INT ||
                                            attribState->type == GL_UNSIGNED_INT));
 
+        /* GL_FIXED / GL_UNSIGNED_INT_10_10_10_2 / GL_UNSIGNED_INT_10F_11F_11F_REV
+         * have no direct Metal vertex format (see glTypeSizeToMtlType). They
+         * are unpacked to float on the CPU, mirroring the GL_DOUBLE path. */
+        bool needsPackedConversion = (attribState->type == GL_FIXED ||
+                                      attribState->type == GL_UNSIGNED_INT_10_10_10_2 ||
+                                      attribState->type == GL_UNSIGNED_INT_10F_11F_11F_REV);
+
         /* glVertexAttribIFormat (integer==1): detect signedness mismatch
          * between source type and shader's declared int/uint input. Metal
          * rejects e.g. UChar/UShort/UInt feeding `int` shader inputs (and
@@ -779,7 +816,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
 
         if (attribState->type != GL_DOUBLE && !needsIntToFloatConversion &&
-            !needsIntegerConversion && anyBindingPresent[bindingIndex]) {
+            !needsIntegerConversion && !needsPackedConversion && anyBindingPresent[bindingIndex]) {
             continue;
         }
 
@@ -822,6 +859,43 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert GL_INT/GL_UNSIGNED_INT vertex attrib to float",
                       attrib,
                       attribBuffer->name);
+                continue;
+            }
+            if (!_bindingSync.state->lastBoundValid ||
+                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
+                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
+                [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
+                [_bindingSync updateVertexBufferSlot:bindingIndex
+                                       buffer:convertedBuffer
+                                       offset:0];
+                MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+            } else {
+                MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
+            }
+            anyBindingPresent[bindingIndex] = true;
+            continue;
+        }
+
+        if (needsPackedConversion) {
+            NSUInteger convertedStride = 0;
+            id<MTLBuffer> convertedBuffer = nil;
+            if (attribState->type == GL_FIXED) {
+                convertedBuffer = [self floatVertexBufferForFixedAttrib:attribBuffer
+                                                               resolved:&resolved
+                                                                   size:attribState->size
+                                                              outStride:&convertedStride];
+            } else if (attribState->type == GL_UNSIGNED_INT_10_10_10_2) {
+                convertedBuffer = [self floatVertexBufferForPacked1010102Attrib:attribBuffer
+                                                                        resolved:&resolved
+                                                                       outStride:&convertedStride];
+            } else { /* GL_UNSIGNED_INT_10F_11F_11F_REV */
+                convertedBuffer = [self floatVertexBufferForPacked10f11f11fAttrib:attribBuffer
+                                                                           resolved:&resolved
+                                                                          outStride:&convertedStride];
+            }
+            if (!convertedBuffer) {
+                NSLog(@"MGL VBIND skip attrib=%u buffer=%u: failed to convert packed/fixed vertex attrib (type=0x%x)",
+                      attrib, attribBuffer->name, (unsigned)attribState->type);
                 continue;
             }
             if (!_bindingSync.state->lastBoundValid ||
@@ -901,16 +975,19 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             continue;
         }
 
-        /* Bind the VBO at offset 0. Per-attribute offsets are expressed via
-         * the vertex descriptor's attribute offset field (set in
-         * generateVertexDescriptor), which is relative to this buffer base. */
+        /* Default: bind the VBO at offset 0; per-attribute offsets live in the
+         * vertex descriptor (binding_offset + relativeoffset).
+         * Absolute mode (BindNoFlush dynamic VAO batches): descriptor has only
+         * relativeoffset, so pass VERTEX_BINDING_OFFSET here. */
+        NSUInteger metalBindOffset =
+            _batching.absoluteVertexBindingOffsets ? attribBindingOffset : 0u;
 	    if (!_bindingSync.state->lastBoundValid ||
 	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != attribMetalBuffer ||
-	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-	        [encCtx->encoder setVertexBuffer:attribMetalBuffer offset:0 atIndex:bindingIndex];
+	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != metalBindOffset) {
+	        [encCtx->encoder setVertexBuffer:attribMetalBuffer offset:metalBindOffset atIndex:bindingIndex];
 	        [_bindingSync updateVertexBufferSlot:bindingIndex
 	                               buffer:attribMetalBuffer
-	                               offset:0];
+	                               offset:metalBindOffset];
 	        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
 	    } else {
 	        MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -1296,16 +1373,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
         else
         {
-            if (!ptr->data.mtl_data) {
-                [self bindMTLBuffer:ptr];
-            }
-            id<MTLBuffer> buffer = nil;
-            if (ptr->data.mtl_data &&
-                (uintptr_t)ptr->data.mtl_data >= 0x100000000ULL) {
-                buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
-            }
-
-            NSUInteger metalLen = buffer ? buffer.length : 0u;
             NSUInteger bindOffset = (NSUInteger)offset;
             NSUInteger reflectedRequiredBytes = 0;
             NSUInteger requiredBindingBytes = kMGLMinimumStageBindingSize;
@@ -1320,6 +1387,62 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     requiredBindingBytes = reflectedRequiredBytes;
                 }
             }
+
+            /* For small uniform constants (plain uniforms), use setFragmentBytes
+             * to copy the data into the command buffer at bind time. This is
+             * critical for correctness when the same uniform buffer is updated
+             * between draws encoded into the same command buffer — a shared-
+             * memory MTLBuffer would let the GPU see only the final value.
+             *
+             * See the vertex-stage counterpart: taking this before
+             * bindMTLBuffer keeps these slots free of an MTLBuffer, which
+             * otherwise costs a copy-on-write snapshot per glUniform* upload
+             * plus a zero-padded isolated buffer per draw. */
+            if (isBaseBinding &&
+                map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+                ptr->data.buffer_data &&
+                offset == 0 &&
+                requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
+                NSUInteger visibleBytes =
+                    (NSUInteger)mglBufferMapVisibleBackingBytes(map, ptr->data.buffer_size);
+                NSUInteger inlineLength = MAX(visibleBytes, requiredBindingBytes);
+                if (visibleBytes > 0 && inlineLength <= kMGLStageBindingStackScratchSize) {
+                    uint8_t padded[kMGLStageBindingStackScratchSize];
+                    const void *inlineBytes = (const void *)(uintptr_t)ptr->data.buffer_data;
+                    if (inlineLength > visibleBytes) {
+                        memcpy(padded, inlineBytes, visibleBytes);
+                        memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
+                        inlineBytes = padded;
+                    }
+                    [encCtx->encoder setFragmentBytes:inlineBytes
+                                               length:inlineLength
+                                              atIndex:bindingIndex];
+                    [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
+                    anyBindingPresent[bindingIndex] = true;
+                    if (!ptr->data.mtl_data) {
+                        ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
+                    }
+                    if (kMGLVerboseBindLogs) {
+                        NSLog(@"MGL FBIND uniform-constant setFragmentBytes slot=%lu buffer=%u len=%lu visible=%lu",
+                              (unsigned long)bindingIndex,
+                              ptr->name,
+                              (unsigned long)inlineLength,
+                              (unsigned long)visibleBytes);
+                    }
+                    continue;
+                }
+            }
+
+            if (!ptr->data.mtl_data) {
+                [self bindMTLBuffer:ptr];
+            }
+            id<MTLBuffer> buffer = nil;
+            if (ptr->data.mtl_data &&
+                (uintptr_t)ptr->data.mtl_data >= 0x100000000ULL) {
+                buffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
+            }
+
+            NSUInteger metalLen = buffer ? buffer.length : 0u;
             NSUInteger availableBytes = buffer
                 ? mglBufferMapVisibleBackingBytes(map, metalLen)
                 : 0u;
@@ -1363,31 +1486,6 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 continue;
             }
             
-            /* For small uniform constants (plain uniforms), use setFragmentBytes
-             * to copy the data into the command buffer at bind time. This is
-             * critical for correctness when the same uniform buffer is updated
-             * between draws encoded into the same command buffer — a shared-
-             * memory MTLBuffer would let the GPU see only the final value. */
-            if (isBaseBinding &&
-                map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
-                ptr->data.buffer_data &&
-                (NSUInteger)ptr->size <= 4096 &&
-                offset == 0) {
-                [encCtx->encoder setFragmentBytes:(const void *)(uintptr_t)ptr->data.buffer_data
-                                                  length:(NSUInteger)ptr->size
-                                                 atIndex:bindingIndex];
-                [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
-                if (kMGLVerboseBindLogs) {
-                    NSLog(@"MGL FBIND uniform-constant setFragmentBytes slot=%lu buffer=%u len=%lu (plain uniform snapshot)",
-                          (unsigned long)bindingIndex,
-                          ptr->name,
-                          (unsigned long)ptr->size);
-                }
-                anyBindingPresent[bindingIndex] = true;
-                ptr->data.dirty_bits &= ~DIRTY_BUFFER_DATA;
-                continue;
-            }
-
             if (!_bindingSync.state->lastBoundValid ||
                 _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer != buffer ||
                 _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
@@ -3359,6 +3457,57 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             (unsigned long)(texture ? texture.mipmapLevelCount : 0u));
     }
 
+    if (mglMipDiagEnabled() && ptr) {
+        Sampler *glSampler = (textureUnit < TEXTURE_UNITS)
+            ? STATE(texture_samplers[textureUnit]) : NULL;
+        const TextureParameter *effective = glSampler ? &glSampler->params : &ptr->params;
+        uint64_t signature = 1469598103934665603ULL;
+        signature = mglMipDiagMixState(signature, ptr->name);
+        signature = mglMipDiagMixState(signature, effective->min_filter);
+        signature = mglMipDiagMixState(signature, effective->mag_filter);
+        signature = mglMipDiagMixState(signature, ptr->params.base_level);
+        signature = mglMipDiagMixState(signature, ptr->params.max_level);
+        signature = mglMipDiagMixState(signature, texture ? texture.mipmapLevelCount : 0u);
+        signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)texture);
+        /* A render-target atlas is sampled through the Y-flip copy, so a mip
+         * level left dirty or a version mismatch is what a stale mip looks like. */
+        signature = mglMipDiagMixState(signature, usedSampledCopyForTrace ? 1u : 0u);
+        signature = mglMipDiagMixState(signature, ptr->mtl_gl_sampled_levels);
+        signature = mglMipDiagMixState(signature, ptr->mtl_gl_sampled_dirty_mip_mask);
+        signature = mglMipDiagMixState(signature,
+            (uint64_t)(ptr->mtl_gl_sampled_write_version != ptr->mtl_render_target_write_version));
+
+        static uint64_t s_fragSamplerState[TEXTURE_UNITS];
+        if (textureUnit < TEXTURE_UNITS &&
+            mglMipDiagStateChanged(&s_fragSamplerState[textureUnit], signature)) {
+            NSLog(@"MGL MIP_DIAG frag unit=%u binding=%u program=%u glTex=%u "
+                  @"source=%s minFilter=0x%x magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f "
+                  @"base=%u max=%u glLevels=%u mtlLevels=%lu mtlTex=%p "
+                  @"renderTarget=%d viaCopy=%d copyLevels=%u dirtyMips=0x%x rtVer=%u copyVer=%u",
+                  (unsigned)textureUnit,
+                  (unsigned)spirvBinding,
+                  (unsigned)fragmentProgramName,
+                  (unsigned)ptr->name,
+                  glSampler ? "glSampler" : "texParams",
+                  (unsigned)effective->min_filter,
+                  (unsigned)effective->mag_filter,
+                  (double)effective->min_lod,
+                  (double)effective->max_lod,
+                  (double)effective->max_anisotropy,
+                  (unsigned)ptr->params.base_level,
+                  (unsigned)ptr->params.max_level,
+                  (unsigned)ptr->num_levels,
+                  (unsigned long)(texture ? texture.mipmapLevelCount : 0u),
+                  texture,
+                  ptr->is_render_target ? 1 : 0,
+                  usedSampledCopyForTrace ? 1 : 0,
+                  (unsigned)ptr->mtl_gl_sampled_levels,
+                  (unsigned)ptr->mtl_gl_sampled_dirty_mip_mask,
+                  (unsigned)ptr->mtl_render_target_write_version,
+                  (unsigned)ptr->mtl_gl_sampled_write_version);
+        }
+    }
+
     *texturePtr = texture;
     *samplerPtr = sampler;
     *usedFallbackTexturePtr = usedFallbackTexture;
@@ -4329,6 +4478,27 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 &cb->sampler_snapshot_keys[entry->key_index]];
         }
         if (!sampler) return false;
+
+        /* The snapshot overrides whatever the resolve path bound, so this is the
+         * only place the per-draw sampler is observable under deferred batching. */
+        if (mglMipDiagEnabled() && entry->stage == _FRAGMENT_SHADER &&
+            entry->key_index != MGL_FALLBACK_SAMPLER_KEY_INDEX) {
+            const MGLSamplerSnapshotKey *key = &cb->sampler_snapshot_keys[entry->key_index];
+            static uint64_t s_snapshotState[16];
+            if (mglMipDiagStateChanged(&s_snapshotState[entry->metal_slot],
+                                       mglRendererSamplerSnapshotHash(key))) {
+                NSLog(@"MGL MIP_DIAG snapshot slot=%u unit=%u target=0x%x "
+                      @"minFilter=0x%x magFilter=0x%x minLod=%.1f maxLod=%.1f aniso=%.1f",
+                      (unsigned)entry->metal_slot,
+                      (unsigned)entry->texture_unit,
+                      (unsigned)key->target,
+                      (unsigned)key->min_filter,
+                      (unsigned)key->mag_filter,
+                      (double)key->min_lod,
+                      (double)key->max_lod,
+                      (double)key->max_anisotropy);
+            }
+        }
 
         if (entry->stage == _VERTEX_SHADER) {
             [self setVertexSamplerStateIfNeeded:sampler atIndex:entry->metal_slot];

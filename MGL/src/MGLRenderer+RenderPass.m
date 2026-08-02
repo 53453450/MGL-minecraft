@@ -4,6 +4,8 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
 
+#import <objc/message.h>
+
 static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     const char *src = shader ? shader->src : NULL;
@@ -745,6 +747,40 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         tex->dirty_bits &= ~DIRTY_TEXTURE_PARAM;
     }
 
+    if (mglMipDiagEnabled()) {
+        id<MTLTexture> mtlTex = (__bridge id<MTLTexture>)(tex->mtl_data);
+        uint64_t signature = 1469598103934665603ULL;
+        signature = mglMipDiagMixState(signature, (uint64_t)(uintptr_t)tex->mtl_data);
+        signature = mglMipDiagMixState(signature, mtlTex ? mtlTex.mipmapLevelCount : 0u);
+        signature = mglMipDiagMixState(signature, tex->num_levels);
+        signature = mglMipDiagMixState(signature, tex->mipmap_levels);
+        signature = mglMipDiagMixState(signature, tex->params.base_level);
+        signature = mglMipDiagMixState(signature, tex->params.max_level);
+        signature = mglMipDiagMixState(signature, tex->mipmapped ? 1u : 0u);
+        signature = mglMipDiagMixState(signature, tex->genmipmaps ? 1u : 0u);
+
+        /* Direct-mapped by name; a collision only costs an extra line. */
+        static uint64_t s_textureState[128];
+        if (mglMipDiagStateChanged(&s_textureState[tex->name & 127u], signature)) {
+            NSLog(@"MGL MIP_DIAG texture glTex=%u target=0x%x size=%ux%u "
+                  @"glLevels=%u mipmapLevels=%u mtlLevels=%lu base=%u max=%u "
+                  @"mipmapped=%d genmipmaps=%d renderTarget=%d mtlTex=%p",
+                  (unsigned)tex->name,
+                  (unsigned)tex->target,
+                  (unsigned)tex->width,
+                  (unsigned)tex->height,
+                  (unsigned)tex->num_levels,
+                  (unsigned)tex->mipmap_levels,
+                  (unsigned long)(mtlTex ? mtlTex.mipmapLevelCount : 0u),
+                  (unsigned)tex->params.base_level,
+                  (unsigned)tex->params.max_level,
+                  tex->mipmapped ? 1 : 0,
+                  tex->genmipmaps ? 1 : 0,
+                  tex->is_render_target ? 1 : 0,
+                  mtlTex);
+        }
+    }
+
     return true;
 }
 
@@ -1283,10 +1319,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
     }
 
-    [_renderPassManager.state->currentRenderEncoder setBlendColorRed:state->var.blend_color[0]
-                                      green:state->var.blend_color[1]
-                                       blue:state->var.blend_color[2]
-                                      alpha:state->var.blend_color[3]];
+    {
+        float bcRed   = state->var.blend_color[0];
+        float bcGreen = state->var.blend_color[1];
+        float bcBlue  = state->var.blend_color[2];
+        float bcAlpha = state->var.blend_color[3];
+        if (!_bindingSync.state->lastBoundValid ||
+            _bindingSync.state->lastBlendColorRed   != bcRed ||
+            _bindingSync.state->lastBlendColorGreen != bcGreen ||
+            _bindingSync.state->lastBlendColorBlue  != bcBlue ||
+            _bindingSync.state->lastBlendColorAlpha != bcAlpha) {
+            [_renderPassManager.state->currentRenderEncoder setBlendColorRed:bcRed
+                                                                       green:bcGreen
+                                                                        blue:bcBlue
+                                                                       alpha:bcAlpha];
+            [_bindingSync setLastBlendColorRed:bcRed green:bcGreen blue:bcBlue alpha:bcAlpha];
+        }
+    }
 
     /* GL_SAMPLE_MASK: Metal does not expose a per-draw sample mask setter on
      * MTLRenderCommandEncoder.  Sample coverage in Metal is controlled via
@@ -3663,6 +3712,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                        (vao->attrib[i].type == GL_INT ||
                         vao->attrib[i].type == GL_UNSIGNED_INT)) {
                 needsConversion = true;
+            } else if (vao->attrib[i].type == GL_FIXED ||
+                       vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2 ||
+                       vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                /* These packed/fixed formats have no direct Metal vertex
+                 * format (see glTypeSizeToMtlType). Unpack to float on the
+                 * CPU in bindVertexBuffersToCurrentRenderEncoder. */
+                needsConversion = true;
             } else if (vao->attrib[i].integer == 1) {
                 SpirvResource *attrRes = mglRendererProgramVertexAttribResource(activeProgram, i);
                 GLuint shaderGlType = attrRes ? attrRes->gl_type : 0u;
@@ -3685,6 +3741,16 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                  * float format here and convert the data on the CPU side in
                  * bindVertexBuffersToCurrentRenderEncoder (like GL_DOUBLE). */
                 format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
+            } else if (vao->attrib[i].type == GL_FIXED) {
+                /* GL_FIXED: 16.16 fixed-point, unpacked to float[size] on the
+                 * CPU. Output component count matches the GL size. */
+                format = mglDoubleVertexAttribFloatFormat(vao->attrib[i].size);
+            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2) {
+                /* Packed RGBA -> float4 (CPU unpack). */
+                format = MTLVertexFormatFloat4;
+            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                /* Packed RGB float -> float3 (CPU unpack). */
+                format = MTLVertexFormatFloat3;
             } else if (vao->attrib[i].integer == 1) {
                 /* glVertexAttribIFormat path: Metal only allows 32-bit Int
                  * formats for int shader inputs and UInt formats for uint
@@ -3741,10 +3807,15 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
              * integer signedness mismatch) produce a fresh buffer that already
              * starts at binding_offset. For those, the attribute offset must be
              * just relativeoffset, otherwise the shader would read past the
-             * start of the converted data. */
+             * start of the converted data.
+             *
+             * EXCEPTION: BindNoFlush batches with per-draw BindVertexBuffer
+             * overrides rebind Metal buffers at the absolute
+             * VERTEX_BINDING_OFFSET.  Baking the snapshot binding_offset into
+             * the descriptor would double-count those overrides. */
             if (usesCurrentValue) {
                 vertexDescriptor.attributes[i].offset = 0u;
-            } else if (needsConversion) {
+            } else if (needsConversion || _batching.absoluteVertexBindingOffsets) {
                 vertexDescriptor.attributes[i].offset = (NSUInteger)resolved.relativeoffset;
             } else {
                 vertexDescriptor.attributes[i].offset = (NSUInteger)(resolved.binding_offset + resolved.relativeoffset);
@@ -3765,6 +3836,31 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                     ? (NSUInteger)resolved.stride
                     : (NSUInteger)(vao->attrib[i].size * sizeof(GLint));
                 vertexDescriptor.layouts[mapped_buffer_index].stride = mglAlignVertexStrideForMetal(intStride);
+            } else if (vao->attrib[i].type == GL_FIXED) {
+                /* GL_FIXED unpacks to float[size]; source element size is
+                 * size*4 (each GLfixed is 32-bit). Must match the converted
+                 * stride computed in floatVertexBufferForFixedAttrib. */
+                NSUInteger fixedStride = resolved.stride > 0
+                    ? (NSUInteger)resolved.stride
+                    : (NSUInteger)(vao->attrib[i].size * sizeof(int32_t));
+                vertexDescriptor.layouts[mapped_buffer_index].stride =
+                    mglAlignVertexStrideForMetal(MAX(fixedStride, (NSUInteger)(vao->attrib[i].size * sizeof(GLfloat))));
+            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10_10_10_2) {
+                /* Packed uint32 -> float4. Must match the converted stride
+                 * computed in floatVertexBufferForPacked1010102Attrib. */
+                NSUInteger packedStride = resolved.stride > 0
+                    ? (NSUInteger)resolved.stride
+                    : (NSUInteger)sizeof(uint32_t);
+                vertexDescriptor.layouts[mapped_buffer_index].stride =
+                    mglAlignVertexStrideForMetal(MAX(packedStride, 4u * sizeof(GLfloat)));
+            } else if (vao->attrib[i].type == GL_UNSIGNED_INT_10F_11F_11F_REV) {
+                /* Packed uint32 -> float3. Must match the converted stride
+                 * computed in floatVertexBufferForPacked10f11f11fAttrib. */
+                NSUInteger packedStride = resolved.stride > 0
+                    ? (NSUInteger)resolved.stride
+                    : (NSUInteger)sizeof(uint32_t);
+                vertexDescriptor.layouts[mapped_buffer_index].stride =
+                    mglAlignVertexStrideForMetal(MAX(packedStride, 3u * sizeof(GLfloat)));
             } else if (vao->attrib[i].integer == 1) {
                 /* Integer attribs that need CPU conversion (unsigned source
                  * feeding int shader input, or signed source feeding uint
@@ -3908,6 +4004,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             if (ctx->active_state->var.color_writemask[i][2]) colorMask_i |= MTLColorWriteMaskBlue;
             if (ctx->active_state->var.color_writemask[i][3]) colorMask_i |= MTLColorWriteMaskAlpha;
         }
+
+        /* Force alpha write when rendering to the default framebuffer (drawable).
+         * GL's default framebuffer is conceptually opaque (no alpha channel),
+         * but Metal's CAMetalLayer drawable is RGBA8. If the GL app sets
+         * glColorMask(R,G,B,0), the alpha channel is never written, leaving
+         * the drawable with alpha=0. On macOS, the compositor treats alpha=0
+         * as fully transparent, causing the displayed image to appear black.
+         * Force alpha write on attachment 0 when rendering to the default
+         * framebuffer to ensure the drawable is opaque. */
+        if (i == 0 && ctx->active_state->framebuffer == NULL) {
+            colorMask_i |= MTLColorWriteMaskAlpha;
+        }
         [_pipelineCache setBlendFactorsForAttachment:(NSUInteger)i
                                         srcRgbFactor:[self blendFactorFromGL:ctx->active_state->var.blend_src_rgb[i]]
                                       srcAlphaFactor:[self blendFactorFromGL:ctx->active_state->var.blend_src_alpha[i]]
@@ -3922,15 +4030,33 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                               DIRTY_RENDER_STATE | DIRTY_ALPHA_STATE);
 }
 
+static inline BOOL MGLBlendFactorIsDualSource(MTLBlendFactor f)
+{
+    switch (f) {
+        case MTLBlendFactorSource1Color:
+        case MTLBlendFactorOneMinusSource1Color:
+        case MTLBlendFactorSource1Alpha:
+        case MTLBlendFactorOneMinusSource1Alpha:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
 -(void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
 {
     pipelineStateDescriptor.alphaToCoverageEnabled = ctx->active_state->caps.sample_alpha_to_coverage ? YES : NO;
     pipelineStateDescriptor.alphaToOneEnabled = ctx->active_state->caps.sample_alpha_to_one ? YES : NO;
 
+    BOOL needsDualSource = NO;
+    NSUInteger activeColorAttachmentCount = 0;
+
     for(int i=0; i<MAX_COLOR_ATTACHMENTS; i++)
     {
         if (pipelineStateDescriptor.colorAttachments[i].pixelFormat != MTLPixelFormatInvalid)
         {
+            activeColorAttachmentCount++;
+
             if (mglMetalDrawBufferAt(ctx, (GLuint)i) == GL_NONE) {
                 pipelineStateDescriptor.colorAttachments[i].blendingEnabled = NO;
                 pipelineStateDescriptor.colorAttachments[i].writeMask = 0;
@@ -3949,6 +4075,34 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             pipelineStateDescriptor.colorAttachments[i].alphaBlendOperation = _pipelineCache.state->alpha_blend_operation[i];
 
             pipelineStateDescriptor.colorAttachments[i].writeMask = _pipelineCache.state->color_mask[i];
+
+            if (!needsDualSource &&
+                (MGLBlendFactorIsDualSource(_pipelineCache.state->src_blend_rgb_factor[i]) ||
+                 MGLBlendFactorIsDualSource(_pipelineCache.state->dst_blend_rgb_factor[i]) ||
+                 MGLBlendFactorIsDualSource(_pipelineCache.state->src_blend_alpha_factor[i]) ||
+                 MGLBlendFactorIsDualSource(_pipelineCache.state->dst_blend_alpha_factor[i]))) {
+                needsDualSource = YES;
+            }
+        }
+    }
+
+    /* dualSourceBlendingEnabled is a pipeline-level property on classic Metal
+     * (macOS 10.11+). On Metal 4 (macOS 26+) the property was removed and
+     * dual-source blending is enabled implicitly when MTLBlendFactorSource1*
+     * factors are used, so set it via runtime introspection only when the
+     * setter exists. Metal restricts dual-source blending to a single color
+     * attachment; warn but still attempt to enable so Metal reports the error. */
+    if (needsDualSource) {
+        if (activeColorAttachmentCount > 1) {
+            NSLog(@"MGL WARNING: dual-source blending enabled with %lu color "
+                  @"attachments; Metal limits dual-source blending to a single "
+                  @"color attachment.",
+                  (unsigned long)activeColorAttachmentCount);
+        }
+        SEL setDualSourceSel = @selector(setDualSourceBlendingEnabled:);
+        if ([pipelineStateDescriptor respondsToSelector:setDualSourceSel]) {
+            ((void(*)(id, SEL, BOOL))objc_msgSend)(pipelineStateDescriptor,
+                                                   setDualSourceSel, YES);
         }
     }
 }
@@ -4723,6 +4877,61 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                          length:sizeof(fragCoordParams)
                                         atIndex:kMGLFragCoordParamsBufferIndex];
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
+    }
+
+    /* LOD_BIAS: Metal MTLSamplerDescriptor has no lodBias property, so MGL
+     * injects bias() into MSL .sample() calls via mglPatchInjectLodBias.
+     * Here we bind the actual bias value as a 4-byte fragment buffer.
+     *
+     * Global single bias — scan bound textures, use first non-zero
+     * lod_bias.  When all are zero, bind 0.0 (no-op, matches Metal default). */
+    BOOL useLodBias = NO;
+    if (fragmentProgram) {
+        if (_resourceFallback.mslCacheEnabled && fragmentProgram->mslCacheValid) {
+            useLodBias = (fragmentProgram->uses_lod_bias == GL_TRUE);
+        } else {
+            const char *fragmentMSL = fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str;
+            useLodBias = (fragmentMSL && strstr(fragmentMSL, kMGLLodBiasMSLName));
+        }
+    }
+    if (useLodBias) {
+        /* P7: Per-texture LOD_BIAS array — one float per sampler slot.
+         * GL 4.6 §8.14.1 eq 8.8 defines biastexobj as per-texture state.
+         * The injected MSL uses _mglLodBias[sampler_idx] to index this array. */
+        const GLfloat biasmax = ctx->state.var.max_texture_lod_bias;
+        float lodBiasArr[TEXTURE_UNITS];
+        for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
+            Texture *tex = ctx->active_state->active_textures[unit];
+            Sampler *smp = ctx->active_state->texture_samplers[unit];
+            /* GL 4.6 §8.2: sampler object state overrides texture state
+             * when a sampler object is bound to the unit. */
+            float bias = smp ? smp->params.lod_bias
+                             : (tex ? tex->params.lod_bias : 0.0f);
+            /* GL 4.6 §8.14.1 eq 8.8: clamp(biastexobj + biasshader) to
+             * [-biasmax, biasmax].  biasshader is added in-shader by P9's
+             * bias(clamp((expr) + _mglLodBias[idx], -_mglLodBiasMax,
+             * _mglLodBiasMax)) rewrite; the clamp here covers biastexobj
+             * only (CPU-side defensive pre-clamp).  Full sum clamp is done
+             * in MSL via _mglLodBiasMax bound below. */
+            if (biasmax > 0.0f) {
+                if (bias > biasmax) bias = biasmax;
+                else if (bias < -biasmax) bias = -biasmax;
+            }
+            lodBiasArr[unit] = bias;
+        }
+        [_renderPassManager.state->currentRenderEncoder setFragmentBytes:lodBiasArr
+                                         length:sizeof(lodBiasArr)
+                                        atIndex:kMGLLodBiasBufferIndex];
+        [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
+
+        /* Bind _mglLodBiasMax scalar (MAX_TEXTURE_LOD_BIAS) for the MSL
+         * clamp(biastexobj + biasshader, -biasmax, biasmax) in
+         * mglRewriteMSLBiasExpr and in the no-bias injected clamp().
+         * GL 4.6 §8.14.1 eq 8.8. */
+        [_renderPassManager.state->currentRenderEncoder setFragmentBytes:&biasmax
+                                         length:sizeof(biasmax)
+                                        atIndex:kMGLLodBiasMaxBufferIndex];
+        [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
 
     if (draw_command &&

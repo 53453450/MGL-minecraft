@@ -2161,10 +2161,20 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatDepth16Unorm;
 
         case GL_DEPTH_COMPONENT24:
-            // Apple Silicon doesn't support 24-bit depth, use 32-bit float instead
+            // Apple Silicon doesn't support 24-bit depth, use 32-bit float instead.
+            // (Intel Mac MTLPixelFormatDepth24Unorm_Stencil8 exists, but a
+            // depth-only 24-bit format does not; Depth32Float is the portable
+            // choice.  CPU shadow buffers still store 24-bit unorm and the
+            // upload path normalizes uint→float when filling the Metal texture.)
             return MTLPixelFormatDepth32Float;
 
         case GL_DEPTH_COMPONENT32:
+            // GL spec defines DEPTH_COMPONENT32 as a 32-bit unorm format
+            // (values normalized to [0,1]); mapping it to Depth32Float is
+            // semantically correct — both represent normalized depth, and
+            // Metal has no 32-bit unorm depth format.  As with the 24-bit
+            // case, CPU shadow buffers store uint32 and the upload path
+            // (rendering.c) performs the uint→float normalization.
             return MTLPixelFormatDepth32Float;
 
         case GL_SRGB:
@@ -2269,15 +2279,24 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatDepth32Float_Stencil8;
 
         case GL_STENCIL_INDEX1:
+            // Metal only supports an 8-bit stencil format
+            // (MTLPixelFormatStencil8); 1-bit stencil has no Metal equivalent.
+            // Returning Invalid makes glTexStorage2D reject this format.
+            // (glTexImage2D callers could be relaxed to fall back to
+            // STENCIL_INDEX8, but that is a behavior change left for later.)
             return MTLPixelFormatInvalid;
 
         case GL_STENCIL_INDEX4:
+            // Metal only supports 8-bit stencil; 4-bit has no equivalent.
+            // Returning Invalid makes glTexStorage2D reject this format.
             return MTLPixelFormatInvalid;
 
         case GL_STENCIL_INDEX8:
             return MTLPixelFormatStencil8;
 
         case GL_STENCIL_INDEX16:
+            // Metal only supports 8-bit stencil; 16-bit has no equivalent.
+            // Returning Invalid makes glTexStorage2D reject this format.
             return MTLPixelFormatInvalid;
 
         case GL_COMPRESSED_RED_RGTC1:
@@ -2454,7 +2473,13 @@ MTLPixelFormat mtlFormatForGLInternalFormat(GLenum internal_format)
             return MTLPixelFormatRGB10A2Uint;
 
         case GL_RGB565:
-            return MTLPixelFormatB5G6R5Unorm;  // Closest match
+            /* MTLPixelFormatB5G6R5Unorm places B in the high bits, but GL
+             * UNSIGNED_SHORT_5_6_5 places R in the high bits — sampling would
+             * swap R and B.  Back GL_RGB565 with RGBA8Unorm instead and let
+             * mglCreateRGBA8ExpandedUpload rearrange channels on the CPU.
+             * (mglTextureInternalFormatNeedsRGBA8Expansion returns true for
+             * GL_RGB565 to drive that expansion path.) */
+            return MTLPixelFormatRGBA8Unorm;
 
         // Legacy unsized formats - map to sized equivalents
         case GL_RED:

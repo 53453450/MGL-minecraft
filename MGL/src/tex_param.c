@@ -64,7 +64,14 @@ static bool mglTextureParameterAffectsTextureDescriptor(GLenum pname)
     }
 }
 
-static bool mglTextureParameterIsSamplerState(GLenum pname)
+/* Returns the set of texture parameters that multisample textures
+ * (GL_TEXTURE_2D_MULTISAMPLE / GL_TEXTURE_2D_MULTISAMPLE_ARRAY) must reject
+ * with GL_INVALID_OPERATION per GL 4.6 §8.8 ("Texture Parameters" for
+ * multisample textures).  Despite the historical name suggesting "sampler
+ * state", GL_TEXTURE_SWIZZLE_* are texture-object state, not sampler-class
+ * state — they are included here solely because multisample textures reject
+ * them along with the other sampler-class parameters. */
+static bool mglTextureParameterIsForbiddenForMultisample(GLenum pname)
 {
     switch (pname)
     {
@@ -114,7 +121,7 @@ static bool mglTextureParameterValidateNamedTarget(GLMContext ctx, Texture *tex,
 
     if (target == GL_TEXTURE_2D_MULTISAMPLE || target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
     {
-        if (mglTextureParameterIsSamplerState(pname))
+        if (mglTextureParameterIsForbiddenForMultisample(pname))
         {
             return mglTextureParameterSetError(ctx, GL_INVALID_OPERATION);
         }
@@ -740,6 +747,23 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             tex_params->max_level = *param;
             break;
 
+        case GL_TEXTURE_MAX_ANISOTROPY:
+            /* GL_EXT_texture_filter_anisotropic: lower bound is an error,
+             * upper bound is silently clamped to kMGLMaxAnisotropyLimit
+             * (spec: "clamped to the value of MAX_TEXTURE_MAX_ANISOTROPY_EXT").
+             * Explicit case here avoids relying on setParam's iparam-truth
+             * fallback to setTexParmf for iparam==0 (which would still reject
+             * 0 via the < 1.0f check, but obscurely). */
+            if (*param < 1)
+                return mglTexParameterError(ctx, GL_INVALID_VALUE);
+            {
+                GLfloat v = (GLfloat)*param;
+                if (v > kMGLMaxAnisotropyLimit)
+                    v = kMGLMaxAnisotropyLimit;
+                tex_params->max_anisotropy = v;
+            }
+            break;
+
         case GL_TEXTURE_SWIZZLE_R:
             if (!mglValidTextureSwizzle(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
@@ -784,6 +808,21 @@ bool setTexParmi(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             if (!mglValidTextureWrapMode(*param))
                 return mglTexParameterError(ctx, GL_INVALID_ENUM);
             tex_params->wrap_r = *param;
+            break;
+
+        case GL_TEXTURE_SRGB_DECODE_EXT:
+            /* GL_EXT_texture_sRGB_decode: only GL_DECODE_EXT (default) and
+             * GL_SKIP_DECODE_EXT are legal; anything else is GL_INVALID_ENUM. */
+            switch (*param)
+            {
+                case GL_DECODE_EXT:
+                case GL_SKIP_DECODE_EXT:
+                    tex_params->srgb_decode_ext = *param;
+                    break;
+
+                default:
+                    return mglTexParameterError(ctx, GL_INVALID_ENUM);
+            }
             break;
 
         default:
@@ -868,9 +907,18 @@ bool setTexParmf(GLMContext ctx, TextureParameter *tex_params, GLenum pname, con
             break;
 
         case GL_TEXTURE_MAX_ANISOTROPY:
+            /* GL_EXT_texture_filter_anisotropic: < 1.0f is GL_INVALID_VALUE;
+             * values above MAX_TEXTURE_MAX_ANISOTROPY_EXT are silently clamped
+             * (kMGLMaxAnisotropyLimit). See three-way sync note in
+             * mgl_types_texture.h. */
             if (*param < 1.0f)
                 return mglTexParameterError(ctx, GL_INVALID_VALUE);
-            tex_params->max_anisotropy = *param;
+            {
+                GLfloat v = *param;
+                if (v > kMGLMaxAnisotropyLimit)
+                    v = kMGLMaxAnisotropyLimit;
+                tex_params->max_anisotropy = v;
+            }
             break;
 
         case GL_TEXTURE_MIN_LOD:
@@ -980,6 +1028,14 @@ static bool getTexParmi(GLMContext ctx, TextureParameter *tex_params, const GLen
 
         case GL_TEXTURE_WRAP_R:
             *ret = tex_params->wrap_r;
+            break;
+
+        case GL_TEXTURE_SRGB_DECODE_EXT:
+            /* Default is GL_DECODE_EXT; texture structs are bzero'd at
+             * creation so an unset (0) field reports the spec default. */
+            *ret = tex_params->srgb_decode_ext
+                ? tex_params->srgb_decode_ext
+                : GL_DECODE_EXT;
             break;
 
         default:

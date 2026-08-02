@@ -901,6 +901,34 @@ static void mgl_replace_identifier(char *src, size_t src_capacity,
     }
 }
 
+/* Return true if `name` appears as a standalone identifier in `src` (not as
+ * a substring of a longer identifier and not a struct-member access after
+ * '.').  Used to gate legacy-GLSL rewriting so that clean shaders — and
+ * unrelated identifiers like gl_VertexID when checking for gl_Vertex — are
+ * not touched. */
+static bool mgl_source_uses_identifier(const char *src, const char *name)
+{
+    if (!src || !name) {
+        return false;
+    }
+    size_t name_len = strlen(name);
+    if (name_len == 0) {
+        return false;
+    }
+    const char *cursor = src;
+    while ((cursor = strstr(cursor, name)) != NULL) {
+        int before = cursor == src ? 0 : cursor[-1];
+        int after = cursor[name_len];
+        if (!mgl_is_identifier_char(before) &&
+            !mgl_is_identifier_char(after) &&
+            before != '.') {
+            return true;
+        }
+        cursor += name_len;
+    }
+    return false;
+}
+
 /* Remove a `#extension NAME : ...` directive (blanked to preserve line numbers). */
 static bool mgl_strip_extension(char *src, const char *ext_name)
 {
@@ -1097,6 +1125,140 @@ static void mgl_inject_after_version(char *src, size_t src_capacity,
     size_t tail_len = strlen(insert_point);
     memmove(insert_point + text_len, insert_point, tail_len + 1);
     memcpy(insert_point, text, text_len);
+}
+
+/* Rewrite legacy (pre-3.30) GLSL fixed-function constructs so glslang can
+ * parse them under the core profile and emit SPIR-V.
+ *
+ * glslang REJECTS the compatibility profile for SPIR-V output
+ * (ShaderLang.cpp: "#version: compilation for SPIR-V does not support the
+ * compatibility profile"), and the gl_ prefix is reserved so we cannot
+ * #define the legacy names (glslang's preprocessor calls
+ * reservedPpErrorCheck on #define).  For shaders that reference
+ * compatibility-only built-ins (ftransform, gl_ModelViewProjectionMatrix,
+ * gl_TextureMatrix, gl_Vertex, ...) we therefore:
+ *   1. Rename each legacy identifier to an mgl_-prefixed user name via
+ *      mgl_replace_identifier (identifier-aware, so gl_VertexID is not
+ *      touched when renaming gl_Vertex).
+ *   2. Inject declarations for the mgl_-prefixed stand-ins after the
+ *      #version line.
+ *
+ * This makes legacy shaders COMPILE; it does not feed the legacy
+ * uniforms/attributes with GL state (that needs renderer-side binding,
+ * outside this file).  Clean shaders without legacy markers are not
+ * touched, so there is no regression for modern shaders.
+ *
+ * Must run BEFORE glslang_shader_create: glslang stores a pointer to
+ * input->code (setStrings(&input->code, 1)), so the source buffer must be
+ * final by then.  Operates in place on `src` using `src_capacity`. */
+static void mglRewriteLegacyGLSL(char *src, size_t src_capacity, int version)
+{
+    if (!src || src_capacity == 0 || version >= 330) {
+        return;
+    }
+
+    bool use_mvp  = mgl_source_uses_identifier(src, "gl_ModelViewProjectionMatrix");
+    bool use_mv   = mgl_source_uses_identifier(src, "gl_ModelViewMatrix");
+    bool use_pj   = mgl_source_uses_identifier(src, "gl_ProjectionMatrix");
+    bool use_nm   = mgl_source_uses_identifier(src, "gl_NormalMatrix");
+    bool use_tm   = mgl_source_uses_identifier(src, "gl_TextureMatrix");
+    /* ftransform is always invoked as "ftransform()"; match the call syntax
+     * directly so a comment mentioning the name cannot trigger the (VS-only)
+     * gl_Position-bearing shim in a fragment shader. */
+    bool use_ft   = strstr(src, "ftransform()") != NULL;
+    bool use_vert = mgl_source_uses_identifier(src, "gl_Vertex");
+
+    /* ftransform() expands to mvp * vertex, so it implies both. */
+    if (use_ft) {
+        use_mvp = true;
+        use_vert = true;
+    }
+
+    if (!use_mvp && !use_mv && !use_pj && !use_nm && !use_tm &&
+        !use_ft && !use_vert) {
+        return;
+    }
+
+    /* Rename legacy identifiers to mgl_-prefixed user names.  Done before
+     * injecting declarations so the injected mgl_ names are not scanned
+     * (mgl_replace_identifier is boundary-aware and skips them). */
+    if (use_mvp) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_ModelViewProjectionMatrix",
+                               "mgl_ModelViewProjectionMatrix");
+    }
+    if (use_mv) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_ModelViewMatrix", "mgl_ModelViewMatrix");
+    }
+    if (use_pj) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_ProjectionMatrix", "mgl_ProjectionMatrix");
+    }
+    if (use_nm) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_NormalMatrix", "mgl_NormalMatrix");
+    }
+    if (use_tm) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_TextureMatrix", "mgl_TextureMatrix");
+    }
+    if (use_vert) {
+        mgl_replace_identifier(src, src_capacity,
+                               "gl_Vertex", "mgl_Vertex");
+    }
+    if (use_ft) {
+        mgl_replace_identifier(src, src_capacity,
+                               "ftransform", "mgl_ftransform");
+    }
+
+    /* Build the stand-in declaration preamble. */
+    char preamble[1024];
+    size_t off = 0;
+    off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+        "/* MGL legacy GLSL compatibility shims: provide fixed-function\n"
+        " * built-ins that core profile removes.  glslang cannot emit SPIR-V\n"
+        " * for the compatibility profile, so we emulate via user-named\n"
+        " * stand-ins renamed from the gl_ originals. */\n");
+
+    if (use_mvp) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "uniform mat4 mgl_ModelViewProjectionMatrix;\n");
+    }
+    if (use_mv) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "uniform mat4 mgl_ModelViewMatrix;\n");
+    }
+    if (use_pj) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "uniform mat4 mgl_ProjectionMatrix;\n");
+    }
+    if (use_nm) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "uniform mat3 mgl_NormalMatrix;\n");
+    }
+    if (use_tm) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "uniform mat4 mgl_TextureMatrix[8];\n");
+    }
+    if (use_vert) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "in vec4 mgl_Vertex;\n");
+    }
+    if (use_ft) {
+        off += (size_t)snprintf(preamble + off, sizeof(preamble) - off,
+            "void mgl_ftransform() { gl_Position = mgl_ModelViewProjectionMatrix * mgl_Vertex; }\n");
+    }
+
+    if (off == 0 || off >= sizeof(preamble)) {
+        return;
+    }
+
+    mgl_inject_after_version(src, src_capacity, preamble, true);
+
+    fprintf(stderr,
+            "[MGL] Legacy GLSL %d: rewrote fixed-function constructs (compatibility shims injected)\n",
+            version);
 }
 
 static const glslang_resource_t *mgl_glslang_resource(GLMContext ctx)
@@ -1450,6 +1612,17 @@ void initGLSLInput(GLMContext ctx, GLuint type, const char *src, glslang_input_t
         if (!is_es_profile && strstr(modified_src, "#version 420") != NULL && glsl_version < 420) {
             glsl_version = 420;
         }
+
+        /* Rewrite legacy fixed-function constructs (ftransform,
+         * gl_ModelViewProjectionMatrix, gl_TextureMatrix, ...) into
+         * core-profile-compatible forms.  This is the "compatibility
+         * mode" handling: glslang cannot emit SPIR-V for the
+         * compatibility profile, so we emulate the legacy built-ins via
+         * renamed user declarations.  Must run before glslang_shader_create
+         * sees input->code (glslang stores the pointer via setStrings).
+         * Gated on original_version + marker presence so modern shaders
+         * are untouched (no regression). */
+        mglRewriteLegacyGLSL(modified_src, modified_src_size, original_version);
 
         input->code = modified_src;
         if (out_modified_src) {

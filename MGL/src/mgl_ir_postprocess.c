@@ -218,8 +218,8 @@ GLboolean mglBufferSlotConflictsForProgram(Program *pptr, int stage, GLuint slot
  * These compute the correct std140/std430 ArrayStride for a single array
  * element and detect types affected by a glslang bug that emits the natural
  * (std430) stride instead of the std140 rounded stride.  Used by
- * ir_fix_std140_array_strides to repair SSBO member strides at IR level
- * before spvc_compiler_compile. */
+ * ir_fix_std140_array_strides to repair SSBO and UBO member strides at IR
+ * level before spvc_compiler_compile. */
 
 static unsigned compute_std140_stride(spvc_basetype bt, unsigned vecsize,
                                       unsigned cols, spvc_bool row_major)
@@ -661,10 +661,11 @@ static GLboolean ir_validate_binding_uniqueness(MGLIRPatchContext *ctx)
     return ok;
 }
 
-/* Pass 5: Fix std140 ArrayStride for SSBO members affected by a glslang bug.
+/* Pass 5: Fix std140 ArrayStride for SSBO and UBO members affected by a
+ * glslang bug.
  *
- * In std140 SSBO blocks, glslang emits ArrayStride using the vector's natural
- * size (std430 rule) instead of the std140 rounded size (16) for:
+ * In std140 SSBO/UBO blocks, glslang emits ArrayStride using the vector's
+ * natural size (std430 rule) instead of the std140 rounded size (16) for:
  *   - int/uint vec2 direct arrays (float vec2 is correct)
  *   - matrices whose stored vector has 2 components
  *
@@ -672,17 +673,23 @@ static GLboolean ir_validate_binding_uniqueness(MGLIRPatchContext *ctx)
  * incorrect data access patterns.  We detect std140 blocks by looking for
  * "definite std140" indicator members, then fix bug-affected members.
  *
+ * Both SSBO (SPVC_RESOURCE_TYPE_STORAGE_BUFFER) and UBO
+ * (SPVC_RESOURCE_TYPE_UNIFORM_BUFFER) are scanned: std140 layout rules are
+ * identical for the two buffer kinds, and the glslang stride bug affects
+ * ivec2/uvec2 arrays in either.  Without the UBO scan, a GUI shader that
+ * declares e.g. "ivec2 arr[N]" inside a UBO would read misaligned data.
+ *
  * Layout detection is heuristic, not definitive: SPIR-V does not record
  * whether a block was declared with std140 or std430 layout rules.  The
- * detection works by scanning SSBO members for one whose actual ArrayStride
- * matches the "definite std140" pattern (matches compute_std140_stride AND
- * differs from compute_std430_stride).  When such an indicator is found, the
- * whole shader is treated as std140.  Ambiguous cases — strides that match
- * both layouts, or shaders that mix layouts across blocks — may be
- * misclassified.  This is acceptable because the stride rewrite below only
- * touches glslang-bug-affected member types (see is_glslang_bug_affected);
- * misclassification of non-affected types is harmless since their strides
- * are left unchanged.
+ * detection works by scanning SSBO and UBO members for one whose actual
+ * ArrayStride matches the "definite std140" pattern (matches
+ * compute_std140_stride AND differs from compute_std430_stride).  When such
+ * an indicator is found, the whole shader is treated as std140.  Ambiguous
+ * cases — strides that match both layouts, or shaders that mix layouts
+ * across blocks — may be misclassified.  This is acceptable because the
+ * stride rewrite below only touches glslang-bug-affected member types (see
+ * is_glslang_bug_affected); misclassification of non-affected types is
+ * harmless since their strides are left unchanged.
  *
  * ArrayStride is a type-level decoration (OpDecorate on the array type), so
  * we use spvc_compiler_set_decoration on the member's type ID.
@@ -702,63 +709,78 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
         return GL_TRUE; /* no resources — nothing to fix */
     }
 
-    const spvc_reflected_resource *ssbo_list = NULL;
-    size_t ssbo_count = 0;
+    /* std140 layout rules apply identically to SSBOs and UBOs, and the
+     * glslang ArrayStride bug affects ivec2/uvec2/vec2 arrays in either
+     * buffer type.  Process both resource lists so a UBO that declares
+     * e.g. "ivec2 arr[N]" is repaired too. */
+    const spvc_reflected_resource *res_lists[2];
+    size_t res_counts[2];
+    const char *res_labels[2];
     spvc_resources_get_resource_list_for_type(resources,
                                                SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-                                               &ssbo_list, &ssbo_count);
-    if (ssbo_count == 0) {
+                                               &res_lists[0], &res_counts[0]);
+    spvc_resources_get_resource_list_for_type(resources,
+                                               SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
+                                               &res_lists[1], &res_counts[1]);
+    res_labels[0] = "SSBO";
+    res_labels[1] = "UBO";
+
+    if (res_counts[0] == 0 && res_counts[1] == 0) {
         return GL_TRUE;
     }
 
     /* Pass 1: Check if the shader has any "definite std140" indicator. */
     GLboolean shader_has_std140 = GL_FALSE;
-    for (size_t si = 0; si < ssbo_count && !shader_has_std140; si++)
+    for (int li = 0; li < 2 && !shader_has_std140; li++)
     {
-        spvc_type struct_type = spvc_compiler_get_type_handle(compiler,
-            ssbo_list[si].type_id);
-        if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-            struct_type = spvc_compiler_get_type_handle(compiler,
-                ssbo_list[si].base_type_id);
-        if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-            continue;
-
-        unsigned num_members = spvc_type_get_num_member_types(struct_type);
-        for (unsigned mi = 0; mi < num_members; mi++)
+        for (size_t si = 0; si < res_counts[li] && !shader_has_std140; si++)
         {
-            spvc_type member_type = spvc_compiler_get_type_handle(compiler,
-                spvc_type_get_member_type(struct_type, mi));
-            if (!member_type)
-                continue;
-            if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                continue;
-
-            spvc_basetype bt = spvc_type_get_basetype(member_type);
-            unsigned vecsize = spvc_type_get_vector_size(member_type);
-            unsigned cols = spvc_type_get_columns(member_type);
-
-            unsigned stride = 0;
-            if (spvc_compiler_type_struct_member_array_stride(
-                    compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
+            const spvc_reflected_resource *res = &res_lists[li][si];
+            spvc_type struct_type = spvc_compiler_get_type_handle(compiler,
+                res->type_id);
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+                struct_type = spvc_compiler_get_type_handle(compiler,
+                    res->base_type_id);
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
                 continue;
 
-            spvc_bool row_major = spvc_compiler_has_member_decoration(
-                compiler, ssbo_list[si].base_type_id, mi,
-                SpvDecorationRowMajor);
-
-            unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-            unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
-
-            /* "Definite std140" = actual stride matches the correct std140
-             * value AND differs from std430.  Bug-affected types are
-             * never used as indicators here because their buggy std140
-             * stride equals std430, so a matching stride is ambiguous. */
-            if (std140_stride > 0 && std430_stride > 0 &&
-                std140_stride != std430_stride &&
-                stride == std140_stride)
+            unsigned num_members = spvc_type_get_num_member_types(struct_type);
+            for (unsigned mi = 0; mi < num_members; mi++)
             {
-                shader_has_std140 = GL_TRUE;
-                break;
+                spvc_type member_type = spvc_compiler_get_type_handle(compiler,
+                    spvc_type_get_member_type(struct_type, mi));
+                if (!member_type)
+                    continue;
+                if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                    continue;
+
+                spvc_basetype bt = spvc_type_get_basetype(member_type);
+                unsigned vecsize = spvc_type_get_vector_size(member_type);
+                unsigned cols = spvc_type_get_columns(member_type);
+
+                unsigned stride = 0;
+                if (spvc_compiler_type_struct_member_array_stride(
+                        compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
+                    continue;
+
+                spvc_bool row_major = spvc_compiler_has_member_decoration(
+                    compiler, res->base_type_id, mi,
+                    SpvDecorationRowMajor);
+
+                unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
+
+                /* "Definite std140" = actual stride matches the correct std140
+                 * value AND differs from std430.  Bug-affected types are
+                 * never used as indicators here because their buggy std140
+                 * stride equals std430, so a matching stride is ambiguous. */
+                if (std140_stride > 0 && std430_stride > 0 &&
+                    std140_stride != std430_stride &&
+                    stride == std140_stride)
+                {
+                    shader_has_std140 = GL_TRUE;
+                    break;
+                }
             }
         }
     }
@@ -769,126 +791,131 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
 
     /* Pass 2: Fix strides in std140 blocks. */
     int fixed_count = 0;
-    for (size_t si = 0; si < ssbo_count; si++)
+    for (int li = 0; li < 2; li++)
     {
-        spvc_type_id struct_id = ssbo_list[si].type_id;
-        spvc_type struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
-        if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
+        for (size_t si = 0; si < res_counts[li]; si++)
         {
-            struct_id = ssbo_list[si].base_type_id;
-            struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
-        }
-        if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-            continue;
-
-        /* Skip blocks that are definitely std430 (have a member whose
-         * stride matches std430 and differs from std140).  This catches
-         * the Output buffer and any explicitly std430 blocks. */
-        GLboolean block_is_std430 = GL_FALSE;
-        unsigned num_members = spvc_type_get_num_member_types(struct_type);
-        for (unsigned mi = 0; mi < num_members; mi++)
-        {
-            spvc_type member_type = spvc_compiler_get_type_handle(compiler,
-                spvc_type_get_member_type(struct_type, mi));
-            if (!member_type)
-                continue;
-            if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                continue;
-
-            spvc_basetype bt = spvc_type_get_basetype(member_type);
-            unsigned vecsize = spvc_type_get_vector_size(member_type);
-            unsigned cols = spvc_type_get_columns(member_type);
-
-            unsigned stride = 0;
-            if (spvc_compiler_type_struct_member_array_stride(
-                    compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
-                continue;
-
-            spvc_bool row_major = spvc_compiler_has_member_decoration(
-                compiler, ssbo_list[si].base_type_id, mi,
-                SpvDecorationRowMajor);
-
-            /* Bug-affected types have buggy std140 stride == std430
-             * stride, so they cannot distinguish the two layouts.
-             * Skip them when looking for std430 indicators. */
-            if (is_glslang_bug_affected(bt, vecsize, cols, row_major))
-                continue;
-
-            unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-            unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
-
-            /* "Definite std430" = actual matches std430 AND differs from std140. */
-            if (std140_stride > 0 && std430_stride > 0 &&
-                std140_stride != std430_stride &&
-                stride == std430_stride)
+            const spvc_reflected_resource *res = &res_lists[li][si];
+            spvc_type_id struct_id = res->type_id;
+            spvc_type struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
             {
-                block_is_std430 = GL_TRUE;
-                break;
+                struct_id = res->base_type_id;
+                struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
             }
-        }
-
-        if (block_is_std430)
-            continue;
-
-        /* Fix any member whose stride doesn't match the correct std140 value. */
-        for (unsigned mi = 0; mi < num_members; mi++)
-        {
-            spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
-            if (!member_type_id)
+            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
                 continue;
 
-            spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
-            if (!member_type)
-                continue;
-            if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                continue;
-
-            spvc_basetype bt = spvc_type_get_basetype(member_type);
-            unsigned vecsize = spvc_type_get_vector_size(member_type);
-            unsigned cols = spvc_type_get_columns(member_type);
-
-            unsigned stride = 0;
-            if (spvc_compiler_type_struct_member_array_stride(
-                    compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
-                continue;
-
-            spvc_bool row_major = spvc_compiler_has_member_decoration(
-                compiler, ssbo_list[si].base_type_id, mi,
-                SpvDecorationRowMajor);
-
-            /* Only fix members affected by the glslang bug.  Other
-             * members in std140 blocks already have correct strides,
-             * and fixing them could harm undetected std430 blocks. */
-            if (!is_glslang_bug_affected(bt, vecsize, cols, row_major))
-                continue;
-
-            /* Matrices with 2-component stored vectors are also
-             * bug-affected, but correcting their stride causes
-             * SPIRV-Cross to fail with "cannot represent in MSL"
-             * because MSL cannot express std140's vec4-padding of
-             * 2-component matrix vectors.  Skip them — these tests
-             * remain failing, same as the baseline. */
-            if (cols > 1)
-                continue;
-
-            unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
-            if (std140_stride == 0)
-                continue;
-
-            if (stride != std140_stride)
+            /* Skip blocks that are definitely std430 (have a member whose
+             * stride matches std430 and differs from std140).  This catches
+             * the Output buffer and any explicitly std430 blocks. */
+            GLboolean block_is_std430 = GL_FALSE;
+            unsigned num_members = spvc_type_get_num_member_types(struct_type);
+            for (unsigned mi = 0; mi < num_members; mi++)
             {
-                spvc_compiler_set_decoration(compiler, member_type_id,
-                                             SpvDecorationArrayStride,
-                                             std140_stride);
-                fixed_count++;
+                spvc_type member_type = spvc_compiler_get_type_handle(compiler,
+                    spvc_type_get_member_type(struct_type, mi));
+                if (!member_type)
+                    continue;
+                if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                    continue;
 
-                if (mglIRRemapDebugEnabled()) {
-                    fprintf(stderr,
-                            "MGL IR STD140: program=%u stage=%d SSBO '%s' "
-                            "member %u stride %u -> %u\n",
-                            pptr->name, ctx->stage,
-                            ssbo_list[si].name ? ssbo_list[si].name : "(null)",
-                            mi, stride, std140_stride);
+                spvc_basetype bt = spvc_type_get_basetype(member_type);
+                unsigned vecsize = spvc_type_get_vector_size(member_type);
+                unsigned cols = spvc_type_get_columns(member_type);
+
+                unsigned stride = 0;
+                if (spvc_compiler_type_struct_member_array_stride(
+                        compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
+                    continue;
+
+                spvc_bool row_major = spvc_compiler_has_member_decoration(
+                    compiler, res->base_type_id, mi,
+                    SpvDecorationRowMajor);
+
+                /* Bug-affected types have buggy std140 stride == std430
+                 * stride, so they cannot distinguish the two layouts.
+                 * Skip them when looking for std430 indicators. */
+                if (is_glslang_bug_affected(bt, vecsize, cols, row_major))
+                    continue;
+
+                unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                unsigned std430_stride = compute_std430_stride(bt, vecsize, cols, row_major);
+
+                /* "Definite std430" = actual matches std430 AND differs from std140. */
+                if (std140_stride > 0 && std430_stride > 0 &&
+                    std140_stride != std430_stride &&
+                    stride == std430_stride)
+                {
+                    block_is_std430 = GL_TRUE;
+                    break;
+                }
+            }
+
+            if (block_is_std430)
+                continue;
+
+            /* Fix any member whose stride doesn't match the correct std140 value. */
+            for (unsigned mi = 0; mi < num_members; mi++)
+            {
+                spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
+                if (!member_type_id)
+                    continue;
+
+                spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+                if (!member_type)
+                    continue;
+                if (spvc_type_get_num_array_dimensions(member_type) == 0)
+                    continue;
+
+                spvc_basetype bt = spvc_type_get_basetype(member_type);
+                unsigned vecsize = spvc_type_get_vector_size(member_type);
+                unsigned cols = spvc_type_get_columns(member_type);
+
+                unsigned stride = 0;
+                if (spvc_compiler_type_struct_member_array_stride(
+                        compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
+                    continue;
+
+                spvc_bool row_major = spvc_compiler_has_member_decoration(
+                    compiler, res->base_type_id, mi,
+                    SpvDecorationRowMajor);
+
+                /* Only fix members affected by the glslang bug.  Other
+                 * members in std140 blocks already have correct strides,
+                 * and fixing them could harm undetected std430 blocks. */
+                if (!is_glslang_bug_affected(bt, vecsize, cols, row_major))
+                    continue;
+
+                /* Matrices with 2-component stored vectors are also
+                 * bug-affected, but correcting their stride causes
+                 * SPIRV-Cross to fail with "cannot represent in MSL"
+                 * because MSL cannot express std140's vec4-padding of
+                 * 2-component matrix vectors.  Skip them — these tests
+                 * remain failing, same as the baseline. */
+                if (cols > 1)
+                    continue;
+
+                unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
+                if (std140_stride == 0)
+                    continue;
+
+                if (stride != std140_stride)
+                {
+                    spvc_compiler_set_decoration(compiler, member_type_id,
+                                                 SpvDecorationArrayStride,
+                                                 std140_stride);
+                    fixed_count++;
+
+                    if (mglIRRemapDebugEnabled()) {
+                        fprintf(stderr,
+                                "MGL IR STD140: program=%u stage=%d %s '%s' "
+                                "member %u stride %u -> %u\n",
+                                pptr->name, ctx->stage,
+                                res_labels[li],
+                                res->name ? res->name : "(null)",
+                                mi, stride, std140_stride);
+                    }
                 }
             }
         }

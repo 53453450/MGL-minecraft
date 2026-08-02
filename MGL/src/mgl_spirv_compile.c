@@ -1713,6 +1713,27 @@ void applyMSLFragCoordOriginFix(int stage, char **msl_ptr)
         return;
     }
 
+    /* Slot 30 is reserved for the FragCoord fixup when the FS uses
+     * gl_FragCoord, and mglPatchApplyResourceBindings (which runs later
+     * in the pipeline) remaps user FS buffers off it.  This injection
+     * however runs BEFORE that remap, so a user UBO may still occupy
+     * [[buffer(30)]] here.  We do NOT skip: skipping would lose the
+     * FragCoord origin flip (a correctness regression) in the common
+     * case where the later remap resolves the conflict.  Emit a warning
+     * so the residual conflict (e.g. when all remap slots are full) is
+     * diagnosable. */
+    {
+        char fragcoord_slot_attr[32];
+        snprintf(fragcoord_slot_attr, sizeof(fragcoord_slot_attr),
+                 "[[buffer(%u)]]", (unsigned)kMGLFragCoordParamsBufferIndex);
+        if (strstr(*msl_ptr, fragcoord_slot_attr)) {
+            fprintf(stderr,
+                    "[MGL] FragCoord origin fix: buffer slot %u already in "
+                    "use; relying on later resource remap to resolve\n",
+                    (unsigned)kMGLFragCoordParamsBufferIndex);
+        }
+    }
+
     const char *position = strstr(*msl_ptr, position_parameter);
     if (!position) {
         return;
@@ -1765,10 +1786,21 @@ GLboolean mglInjectMSLPointSizeParams(char **msl_ptr)
     }
 
     /* Slot 15 is reserved for point-size params. If a user UBO already
-     * occupies [[buffer(15)]], skip the dynamic param buffer and let the
-     * caller fall back to a literal point size (avoids Metal slot clash). */
-    if (strstr(*msl_ptr, "[[buffer(15)]]")) {
-        return GL_FALSE;
+     * occupies the slot, skip the dynamic param buffer and let the caller
+     * fall back to a literal point size (avoids Metal slot clash).  Use
+     * the kMGLPointSizeBufferIndex constant so the check tracks the
+     * registry rather than a hardcoded literal. */
+    {
+        char point_size_slot_attr[32];
+        snprintf(point_size_slot_attr, sizeof(point_size_slot_attr),
+                 "[[buffer(%u)]]", (unsigned)kMGLPointSizeBufferIndex);
+        if (strstr(*msl_ptr, point_size_slot_attr)) {
+            fprintf(stderr,
+                    "[MGL] PointSize injection skipped: buffer slot %u "
+                    "occupied by user resource\n",
+                    (unsigned)kMGLPointSizeBufferIndex);
+            return GL_FALSE;
+        }
     }
 
     const char *param_open = mglFindMSLEntryParameterOpen(*msl_ptr);
@@ -1791,6 +1823,439 @@ GLboolean mglInjectMSLPointSizeParams(char **msl_ptr)
              has_existing_params ? ", " : "",
              (unsigned)kMGLPointSizeBufferIndex);
     return mglInsertStringAt(msl_ptr, param_close, param) ? GL_TRUE : GL_FALSE;
+}
+
+/* LOD bias parameter injection for GL 4.6 §3.8.10 / §8.14.1 texture LOD bias.
+ *
+ * GLSL texture() calls may carry per-texture-object and per-sampler LOD bias
+ * (GL_TEXTURE_LOD_BIAS).  Metal's .sample() accepts a bias() optional
+ * parameter but has no GL-equivalent state.  This subsystem injects:
+ *   - constant float _mglLodBias[TEXTURE_UNITS] [[buffer(15)]]  (per-unit bias)
+ *   - constant float& _mglLodBiasMax [[buffer(14)]]             (clamp ceiling)
+ * into the fragment entry point, then rewrites .sample() calls to pass
+ * bias(_mglLodBias[sampler_idx]).
+ *
+ * Slots 14/15 are FS-only and disjoint from VS point-size (slot 15 VS).
+ * This is a GL compatibility feature; Minecraft shaders do not use LOD bias. */
+GLboolean mglInjectMSLLodBiasParam(char **msl_ptr, GLuint buffer_slot,
+                                    GLuint array_size, GLuint max_buffer_slot)
+{
+    if (!msl_ptr || !*msl_ptr || array_size == 0u) {
+        return GL_FALSE;
+    }
+
+    /* Idempotent: skip if already injected. */
+    if (strstr(*msl_ptr, "_mglLodBias")) {
+        return GL_TRUE;
+    }
+
+    /* Slot conflict: if either target slot is already occupied by a user
+     * UBO, skip injection (caller falls back to no LOD bias). */
+    char slot_attr[32];
+    snprintf(slot_attr, sizeof(slot_attr), "[[buffer(%u)]]", (unsigned)buffer_slot);
+    if (strstr(*msl_ptr, slot_attr)) {
+        return GL_FALSE;
+    }
+    snprintf(slot_attr, sizeof(slot_attr), "[[buffer(%u)]]", (unsigned)max_buffer_slot);
+    if (strstr(*msl_ptr, slot_attr)) {
+        return GL_FALSE;
+    }
+
+    const char *param_open = mglFindMSLEntryParameterOpen(*msl_ptr);
+    const char *param_close = mglFindMSLEntryParameterClose(*msl_ptr);
+    if (!param_open || !param_close || param_open >= param_close) {
+        return GL_FALSE;
+    }
+
+    GLboolean has_existing_params = GL_FALSE;
+    for (const char *p = param_open + 1; p < param_close; p++) {
+        if (!isspace((unsigned char)*p)) {
+            has_existing_params = GL_TRUE;
+            break;
+        }
+    }
+
+    char param[256];
+    int written = snprintf(param, sizeof(param),
+                           "%sconstant float* _mglLodBias [[buffer(%u)]]"
+                           ", constant float* _mglLodBiasMax [[buffer(%u)]]",
+                           has_existing_params ? ", " : "",
+                           (unsigned)buffer_slot,
+                           (unsigned)max_buffer_slot);
+    if (written <= 0 || (size_t)written >= sizeof(param)) {
+        return GL_FALSE;
+    }
+    return mglInsertStringAt(msl_ptr, param_close, param) ? GL_TRUE : GL_FALSE;
+}
+
+/* Parse MSL sampler declarations of the form:
+ *   sampler <varName> [[sampler(N)]]
+ * Returns the count of bindings filled (0 if none found). */
+GLuint mglParseMSLSamplerBindings(const char *msl,
+                                  MGLSamplerBinding *out_bindings,
+                                  GLuint max_bindings)
+{
+    if (!msl || !out_bindings || max_bindings == 0u) {
+        return 0u;
+    }
+
+    GLuint count = 0u;
+    const char *cursor = msl;
+
+    while (count < max_bindings && *cursor) {
+        /* Find "sampler" keyword followed by whitespace, not part of a
+         * longer identifier (e.g. "sampler2d" or "sample"). */
+        const char *kw = NULL;
+        for (const char *s = cursor; *s; s++) {
+            if (strncmp(s, "sampler", 7) == 0 &&
+                (s[7] == ' ' || s[7] == '\t' || s[7] == '\n') &&
+                (s == msl || (!isalnum((unsigned char)s[-1]) && s[-1] != '_'))) {
+                kw = s;
+                break;
+            }
+        }
+        if (!kw) {
+            break;
+        }
+
+        /* Skip "sampler" + whitespace to reach the variable name. */
+        const char *p = kw + 7;
+        while (*p && isspace((unsigned char)*p)) {
+            p++;
+        }
+
+        /* Read identifier (variable name). */
+        const char *name_start = p;
+        while (*p && (isalnum((unsigned char)*p) || *p == '_')) {
+            p++;
+        }
+        size_t name_len = (size_t)(p - name_start);
+        if (name_len == 0u || name_len >= sizeof(out_bindings[count].name)) {
+            cursor = kw + 7;
+            continue;
+        }
+
+        /* Find [[sampler(N)]] annotation nearby. */
+        const char *ann = strstr(p, "[[sampler(");
+        if (!ann || (size_t)(ann - p) > 200u) {
+            cursor = kw + 7;
+            continue;
+        }
+
+        const char *num_start = ann + 10;  /* strlen("[[sampler(") */
+        char *end_ptr = NULL;
+        unsigned long slot = strtoul(num_start, &end_ptr, 10);
+        if (end_ptr == num_start || *end_ptr != ')') {
+            cursor = ann + 10;
+            continue;
+        }
+
+        memcpy(out_bindings[count].name, name_start, name_len);
+        out_bindings[count].name[name_len] = '\0';
+        out_bindings[count].idx = (GLuint)slot;
+        count++;
+
+        cursor = end_ptr;
+    }
+
+    return count;
+}
+
+/* Find an MSL optional parameter call (e.g. "bias(") within a segment.
+ * Returns a pointer to the start of param_name within segment, or NULL.
+ * The match must be a standalone identifier (not part of a longer word)
+ * followed by optional whitespace and '('. */
+static const char *mglFindMSLOptionalParamCall(const char *segment, size_t len,
+                                                const char *param_name)
+{
+    size_t name_len = strlen(param_name);
+    if (name_len == 0u || len < name_len + 1u) {
+        return NULL;
+    }
+
+    for (size_t i = 0u; i + name_len < len; i++) {
+        if (strncmp(segment + i, param_name, name_len) != 0) {
+            continue;
+        }
+        /* Check before: not an identifier character. */
+        if (i > 0u) {
+            char before = segment[i - 1u];
+            if (isalnum((unsigned char)before) || before == '_') {
+                continue;
+            }
+        }
+        /* Check after: skip whitespace, expect '('. */
+        size_t j = i + name_len;
+        while (j < len && isspace((unsigned char)segment[j])) {
+            j++;
+        }
+        if (j < len && segment[j] == '(') {
+            return segment + i;
+        }
+    }
+    return NULL;
+}
+
+/* Rewrite .sample() / .sample_compare() calls to inject or wrap LOD bias,
+ * complying with GL 4.6 §8.14.1 eq 8.8:
+ *   final_bias = clamp(bias_texobj + bias_shader, -biasmax, biasmax)
+ *
+ * For each .sample(samplerVar, ...) call:
+ * - Look up samplerVar in sampler_bindings to get idx.
+ * - If the call has level() or gradient*(), skip (GLSL textureLod /
+ *   textureGrad don't take LOD bias).
+ * - If the call already has bias(expr), rewrite to:
+ *     bias(clamp(expr + _mglLodBias[idx], -_mglLodBiasMax, _mglLodBiasMax))
+ *   combining per-texture bias_texobj with shader bias_shader and clamping.
+ * - Otherwise inject ", bias(clamp(_mglLodBias[idx], -_mglLodBiasMax, _mglLodBiasMax))"
+ *   before the closing ')'.
+ *
+ * Returns the number of .sample() calls modified. */
+GLuint mglInjectMSLLodBiasToSampleCalls(char **msl_ptr,
+                                         const char *bias_uniform_name,
+                                         const char *bias_max_uniform_name,
+                                         GLboolean include_sample_compare,
+                                         const MGLSamplerBinding *sampler_bindings,
+                                         GLuint sampler_binding_count)
+{
+    if (!msl_ptr || !*msl_ptr || !bias_uniform_name || !bias_uniform_name[0] ||
+        !bias_max_uniform_name || !bias_max_uniform_name[0] ||
+        !sampler_bindings || sampler_binding_count == 0u) {
+        return 0u;
+    }
+
+    static const struct { const char *fn; size_t len; } kFns[] = {
+        { ".sample(", 8 },
+        { ".sample_compare(", 16 }
+    };
+    const size_t kFnCount = sizeof(kFns) / sizeof(kFns[0]);
+
+    GLuint modified = 0u;
+
+    for (size_t fi = 0u; fi < kFnCount; fi++) {
+        if (kFns[fi].len == 16 && !include_sample_compare) {
+            continue;
+        }
+
+        size_t pos = 0u;
+        while ((*msl_ptr)[pos]) {
+            const char *base = *msl_ptr;
+            const char *found = strstr(base + pos, kFns[fi].fn);
+            if (!found) {
+                break;
+            }
+
+            const char *paren = found + kFns[fi].len - 1;  /* points at '(' */
+            /* Find matching close paren of .sample(...) */
+            int depth = 0;
+            const char *close = NULL;
+            for (const char *q = paren; *q; q++) {
+                if (*q == '(') {
+                    depth++;
+                } else if (*q == ')') {
+                    depth--;
+                    if (depth == 0) {
+                        close = q;
+                        break;
+                    }
+                }
+            }
+            if (!close) {
+                break;
+            }
+
+            /* Check if this is a function call (not a declaration with '{'). */
+            const char *after = close + 1;
+            while (*after && isspace((unsigned char)*after)) {
+                after++;
+            }
+            if (*after == '{') {
+                pos = (size_t)(close - base) + 1u;
+                continue;
+            }
+
+            /* Extract first argument (sampler variable name). */
+            const char *arg_start = paren + 1;
+            while (arg_start < close && isspace((unsigned char)*arg_start)) {
+                arg_start++;
+            }
+            const char *arg_end = arg_start;
+            while (arg_end < close &&
+                   (isalnum((unsigned char)*arg_end) || *arg_end == '_')) {
+                arg_end++;
+            }
+            size_t arg_len = (size_t)(arg_end - arg_start);
+
+            /* Look up sampler index in bindings. */
+            GLuint sampler_idx = 0u;
+            GLboolean found_binding = GL_FALSE;
+            for (GLuint bi = 0u; bi < sampler_binding_count; bi++) {
+                size_t bn_len = strlen(sampler_bindings[bi].name);
+                if (bn_len == arg_len &&
+                    strncmp(arg_start, sampler_bindings[bi].name, arg_len) == 0) {
+                    sampler_idx = sampler_bindings[bi].idx;
+                    found_binding = GL_TRUE;
+                    break;
+                }
+            }
+            if (!found_binding) {
+                pos = (size_t)(close - base) + 1u;
+                continue;
+            }
+
+            /* Check for existing level() / gradient*() — skip if present
+             * (GLSL textureLod / textureGrad don't take LOD bias). */
+            size_t args_len = (size_t)(close - (paren + 1));
+            if (mglSegmentContainsIdentifier(paren + 1, args_len, "level") ||
+                mglSegmentContainsIdentifier(paren + 1, args_len, "gradient2d") ||
+                mglSegmentContainsIdentifier(paren + 1, args_len, "gradient3d") ||
+                mglSegmentContainsIdentifier(paren + 1, args_len, "gradientcube")) {
+                pos = (size_t)(close - base) + 1u;
+                continue;
+            }
+
+            /* Find existing bias() call within .sample() args. */
+            const char *bias_kw = mglFindMSLOptionalParamCall(paren + 1, args_len, "bias");
+
+            if (bias_kw) {
+                /* Existing bias(expr) — rewrite to:
+                 * bias(clamp(expr + _mglLodBias[idx], -_mglLodBiasMax, _mglLodBiasMax))
+                 * per GL 4.6 §8.14.1 eq 8.8: clamp(bias_texobj + bias_shader, -max, max). */
+                const char *bias_paren_open = bias_kw + 4;  /* after "bias" */
+                while (bias_paren_open < close &&
+                       isspace((unsigned char)*bias_paren_open)) {
+                    bias_paren_open++;
+                }
+                if (bias_paren_open >= close || *bias_paren_open != '(') {
+                    pos = (size_t)(close - base) + 1u;
+                    continue;
+                }
+
+                /* Find matching close paren of bias(...). */
+                int bias_depth = 0;
+                const char *bias_close = NULL;
+                for (const char *q = bias_paren_open; q <= close; q++) {
+                    if (*q == '(') {
+                        bias_depth++;
+                    } else if (*q == ')') {
+                        bias_depth--;
+                        if (bias_depth == 0) {
+                            bias_close = q;
+                            break;
+                        }
+                    }
+                }
+                if (!bias_close) {
+                    pos = (size_t)(close - base) + 1u;
+                    continue;
+                }
+
+                /* Extract bias expression. */
+                const char *expr_start = bias_paren_open + 1;
+                size_t expr_len = (size_t)(bias_close - expr_start);
+
+                /* Skip if expression is empty or whitespace-only. */
+                GLboolean expr_empty = GL_TRUE;
+                for (size_t ei = 0u; ei < expr_len; ei++) {
+                    if (!isspace((unsigned char)expr_start[ei])) {
+                        expr_empty = GL_FALSE;
+                        break;
+                    }
+                }
+                if (expr_empty) {
+                    pos = (size_t)(close - base) + 1u;
+                    continue;
+                }
+
+                /* Build replacement:
+                 * bias(clamp(<expr> + <bias>[idx], -<max>, <max>)) */
+                size_t bias_name_len = strlen(bias_uniform_name);
+                size_t max_name_len = strlen(bias_max_uniform_name);
+                size_t needed = 64u + expr_len + bias_name_len + max_name_len * 2u + 32u;
+                char *inject_buf = (char *)malloc(needed);
+                if (!inject_buf) {
+                    fprintf(stderr,
+                            "MGL MSL PATCH FAIL: mglInjectMSLLodBiasToSampleCalls "
+                            "allocation failed; bias(expr) rewrite skipped\n");
+                    break;
+                }
+
+                int written = snprintf(inject_buf, needed,
+                                       "bias(clamp(%.*s + %s[%u], -%s, %s))",
+                                       (int)expr_len, expr_start,
+                                       bias_uniform_name, (unsigned)sampler_idx,
+                                       bias_max_uniform_name, bias_max_uniform_name);
+                if (written <= 0 || (size_t)written >= needed) {
+                    free(inject_buf);
+                    pos = (size_t)(close - base) + 1u;
+                    continue;
+                }
+
+                /* Replace [bias_kw, bias_close+1) with inject_buf. */
+                size_t prefix_len = (size_t)(bias_kw - base);
+                size_t suffix_offset = (size_t)(bias_close + 1 - base);
+                size_t old_len = strlen(base);
+                size_t inject_len = (size_t)written;
+                size_t suffix_len = old_len - suffix_offset;
+                char *new_msl = (char *)malloc(prefix_len + inject_len + suffix_len + 1u);
+                if (!new_msl) {
+                    free(inject_buf);
+                    fprintf(stderr,
+                            "MGL MSL PATCH FAIL: mglInjectMSLLodBiasToSampleCalls "
+                            "replacement allocation failed\n");
+                    break;
+                }
+                memcpy(new_msl, base, prefix_len);
+                memcpy(new_msl + prefix_len, inject_buf, inject_len);
+                memcpy(new_msl + prefix_len + inject_len,
+                       base + suffix_offset, suffix_len + 1u);
+                free(inject_buf);
+                free(*msl_ptr);
+                *msl_ptr = new_msl;
+                modified++;
+
+                /* Advance past the rewritten text in the new string. */
+                pos = prefix_len + inject_len;
+                continue;
+            }
+
+            /* No existing bias() — check for empty args. */
+            GLboolean empty = GL_TRUE;
+            for (const char *q = paren + 1; q < close; q++) {
+                if (!isspace((unsigned char)*q)) {
+                    empty = GL_FALSE;
+                    break;
+                }
+            }
+            if (empty) {
+                pos = (size_t)(close - base) + 1u;
+                continue;
+            }
+
+            /* Inject ", bias(clamp(_mglLodBias[idx], -_mglLodBiasMax, _mglLodBiasMax))"
+             * before closing ')'.
+             * Per GL 4.6 §8.14.1: bias_texobj is clamped at set time, but we
+             * clamp defensively to handle any buffer staleness. */
+            char inject[256];
+            int written = snprintf(inject, sizeof(inject),
+                                   ", bias(clamp(%s[%u], -%s, %s))",
+                                   bias_uniform_name, (unsigned)sampler_idx,
+                                   bias_max_uniform_name, bias_max_uniform_name);
+            if (written <= 0 || (size_t)written >= sizeof(inject)) {
+                break;
+            }
+
+            if (!mglInsertStringAt(msl_ptr, *msl_ptr + (size_t)(close - base), inject)) {
+                break;
+            }
+            modified++;
+
+            /* Advance past the injected text (msl_ptr may have been realloc'd). */
+            pos = (size_t)(close - base) + (size_t)written + 1u;
+        }
+    }
+
+    return modified;
 }
 
 /* Inject or override [[point_size]] output for vertex-producing shaders.
@@ -5835,18 +6300,26 @@ GLboolean mglPatchFullscreenFBYFlip(MSLPatchContext *ctx, char **msl_ptr)
     Program *ptr = ctx->program;
     int stage = ctx->stage;
     char *str_ret = *msl_ptr;
-    if (stage == _VERTEX_SHADER &&
-        strstr(str_ret, "float2 screenPos = (in.Position.xy * 2.0) - float2(1.0);") &&
-        strstr(str_ret, "out.gl_Position = float4(screenPos.x, screenPos.y, 1.0, 1.0);") &&
-        strstr(str_ret, "out.texCoord = in.Position.xy;")) {
-        fprintf(stderr,
-                "MGL MSL FULLSCREEN FIX: program=%u flips sampled framebuffer texcoord Y\n",
-                ptr->name);
-        replace_all_substr(&str_ret,
-                           "out.texCoord = in.Position.xy;",
-                           "out.texCoord = float2(in.Position.x, 1.0 - in.Position.y);");
-        ptr->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip = GL_TRUE;
-    }
+    /* Disabled: Y-flip injection for fullscreen blit shaders.
+     *
+     * This patch matched 1.21.1's blit_screen.vsh (`texCoord = Position.xy`)
+     * and injected a VS texCoord Y-flip, causing the blit to sample the raw RT
+     * with flipped coordinates. However MGL already handles RT Y-orientation
+     * via the Y-flipped sampled-copy mechanism (mglDecideYFlipForSampledRT),
+     * so the VS Y-flip caused a DOUBLE flip → the final blit was upside down.
+     *
+     * 1.21.11+ uses screenquad.vsh (`texCoord = uv`) which does NOT match
+     * this pattern, so it was never affected and worked correctly by using
+     * the Y-flipped sampled copy (decision=yflip-copy).
+     *
+     * Disabling this patch makes 1.21.1's blit_screen behave identically to
+     * 1.21.11: it falls through to decision=yflip-copy and samples the
+     * Y-flipped copy, producing correct output.
+     *
+     * The mgl_injected_framebuffer_yflip flag and the authority-bit machinery
+     * in Batch.m remain in place for potential future use, but with this patch
+     * disabled the flag will never be set to GL_TRUE. */
+    (void)ptr; (void)stage; (void)str_ret;
     *msl_ptr = str_ret;
     return GL_TRUE;
 }
@@ -5926,6 +6399,75 @@ GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr)
           !mglProgramHasPassthroughGeometryShader(ptr))) {
         mglInjectMSLPointSizeBuiltin(stage, msl_ptr);
     }
+    return GL_TRUE;
+}
+
+GLboolean mglPatchInjectLodBias(MSLPatchContext *ctx, char **msl_ptr)
+{
+    Program *ptr = ctx->program;
+    int stage = ctx->stage;
+    (void)ptr;
+
+    /* LOD bias is FS-only: only fragment shaders sample textures with
+     * GL_TEXTURE_LOD_BIAS.  VS/GS/TES may have .sample() calls but LOD
+     * bias state is not applied to non-FS sampling. */
+    if (stage != _FRAGMENT_SHADER) {
+        return GL_TRUE;
+    }
+
+    /* Parse sampler variable → slot mappings from the MSL. */
+    MGLSamplerBinding bindings[TEXTURE_UNITS];
+    GLuint binding_count = mglParseMSLSamplerBindings(*msl_ptr,
+                                                      bindings,
+                                                      TEXTURE_UNITS);
+    if (binding_count == 0u) {
+        return GL_TRUE;  /* no samplers — nothing to do */
+    }
+
+    /* Slots 14/15 live in the user UBO range and are NOT reserved for FS,
+     * so mglPatchApplyResourceBindings does not remap user buffers off
+     * them.  If a user FS UBO already occupies either slot, the low-level
+     * injector would refuse to inject (silent skip); detect the conflict
+     * explicitly here and emit a diagnostic so it is visible.  This runs
+     * after mglPatchApplyResourceBindings, so a remaining [[buffer(14/15)]]
+     * is a genuine, unremappable conflict. */
+    {
+        char lod_slot_attr[32];
+        GLuint lod_slots[2];
+        lod_slots[0] = (GLuint)kMGLLodBiasMaxBufferIndex;
+        lod_slots[1] = (GLuint)kMGLLodBiasBufferIndex;
+        for (int s = 0; s < 2; s++) {
+            snprintf(lod_slot_attr, sizeof(lod_slot_attr),
+                     "[[buffer(%u)]]", lod_slots[s]);
+            if (strstr(*msl_ptr, lod_slot_attr)) {
+                fprintf(stderr,
+                        "[MGL] LOD bias injection skipped: buffer slot %u "
+                        "occupied by user resource\n",
+                        lod_slots[s]);
+                return GL_TRUE;
+            }
+        }
+    }
+
+    /* Inject the _mglLodBias array + _mglLodBiasMax parameters. */
+    if (!mglInjectMSLLodBiasParam(msl_ptr,
+                                  kMGLLodBiasBufferIndex,
+                                  TEXTURE_UNITS,
+                                  kMGLLodBiasMaxBufferIndex)) {
+        return GL_TRUE;  /* parse failure (no entry params) — skip silently */
+    }
+
+    /* Rewrite .sample() / .sample_compare() calls to add or wrap bias().
+     * _mglLodBias is constant float* (pointer to bias array), indexed by slot.
+     * _mglLodBiasMax is constant float* (pointer to single max value),
+     * dereferenced via [0]. */
+    mglInjectMSLLodBiasToSampleCalls(msl_ptr,
+                                     "_mglLodBias",
+                                     "_mglLodBiasMax[0]",
+                                     GL_TRUE,
+                                     bindings,
+                                     binding_count);
+
     return GL_TRUE;
 }
 
@@ -7308,6 +7850,7 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
             mslPipelineAddStep(&pipeline, "inject_atomic_counter_args", mglPatchInjectAtomicCounterArgs);
             mslPipelineAddStep(&pipeline, "apply_resource_bindings", mglPatchApplyResourceBindings);
             mslPipelineAddStep(&pipeline, "inject_point_size_builtin", mglPatchInjectPointSizeBuiltin);
+            mslPipelineAddStep(&pipeline, "inject_lod_bias", mglPatchInjectLodBias);
             mslPipelineAddStep(&pipeline, "fix_image2drect_imagesize", mglPatchFixImage2DRectImageSize);
             mslPipelineAddStep(&pipeline, "tes_as_compute_kernel", mglPatchTesAsComputeKernel);
             mslPipelineAddStep(&pipeline, "tcs_stage_in_fix", mglPatchTcsStageInFix);

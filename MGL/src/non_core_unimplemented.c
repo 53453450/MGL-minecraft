@@ -42,6 +42,24 @@
     ERROR_RETURN_VALUE(GL_INVALID_OPERATION, (val));                          \
 } while(0)
 
+/* Legacy GL attribute-group mask bits not present in the core profile header.
+ * Defined locally so glPushAttrib / glPopAttrib can test them. */
+#ifndef GL_VIEWPORT_BIT
+#define GL_VIEWPORT_BIT             0x00000800
+#endif
+#ifndef GL_TRANSFORM_BIT
+#define GL_TRANSFORM_BIT            0x00001000
+#endif
+#ifndef GL_ENABLE_BIT
+#define GL_ENABLE_BIT               0x00002000
+#endif
+#ifndef GL_CLIENT_PIXEL_STORE_BIT
+#define GL_CLIENT_PIXEL_STORE_BIT   0x00000001
+#endif
+#ifndef GL_CLIENT_VERTEX_ARRAY_BIT
+#define GL_CLIENT_VERTEX_ARRAY_BIT  0x00000002
+#endif
+
 void mglArrayElement(GLMContext ctx, GLint i)
 {
     // Unimplemented function — deprecated GL function
@@ -1447,16 +1465,209 @@ void mglAccum(GLMContext ctx, GLenum op, GLfloat value)
     MGL_UNIMPLEMENTED();
 }
 
-void mglPopAttrib(GLMContext ctx)
-{
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
-}
-
 void mglPushAttrib(GLMContext ctx, GLbitfield mask)
 {
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
+    if (ctx->state.var.attrib_stack_depth >= MGL_ATTRIB_STACK_DEPTH)
+    {
+        ERROR_RETURN(GL_STACK_OVERFLOW);
+        return;
+    }
+
+    MGLAttribStackEntry *entry = &ctx->state.var.attrib_stack[ctx->state.var.attrib_stack_depth];
+    memset(entry, 0, sizeof(*entry));
+    entry->mask = mask;
+
+    if (mask & GL_COLOR_BUFFER_BIT)
+    {
+        memcpy(entry->blend_color, ctx->state.var.blend_color, sizeof(entry->blend_color));
+        memcpy(entry->blend_src_rgb, ctx->state.var.blend_src_rgb, sizeof(entry->blend_src_rgb));
+        memcpy(entry->blend_src_alpha, ctx->state.var.blend_src_alpha, sizeof(entry->blend_src_alpha));
+        memcpy(entry->blend_dst_rgb, ctx->state.var.blend_dst_rgb, sizeof(entry->blend_dst_rgb));
+        memcpy(entry->blend_dst_alpha, ctx->state.var.blend_dst_alpha, sizeof(entry->blend_dst_alpha));
+        memcpy(entry->blend_equation_rgb, ctx->state.var.blend_equation_rgb, sizeof(entry->blend_equation_rgb));
+        memcpy(entry->blend_equation_alpha, ctx->state.var.blend_equation_alpha, sizeof(entry->blend_equation_alpha));
+        memcpy(entry->color_writemask, ctx->state.var.color_writemask, sizeof(entry->color_writemask));
+        memcpy(entry->use_color_mask, ctx->state.caps.use_color_mask, sizeof(entry->use_color_mask));
+        entry->blend_enabled = ctx->state.caps.blend;
+        memcpy(entry->blendi, ctx->state.caps.blendi, sizeof(entry->blendi));
+        entry->logic_op_enabled = ctx->state.caps.color_logic_op;
+        entry->logic_op_mode = ctx->state.var.logic_op_mode;
+    }
+
+    if (mask & GL_DEPTH_BUFFER_BIT)
+    {
+        entry->depth_test_enabled = ctx->state.caps.depth_test;
+        entry->depth_writemask = ctx->state.var.depth_writemask;
+        entry->depth_func = ctx->state.var.depth_func;
+        entry->depth_near = ctx->state.var.depth_range[0];
+        entry->depth_far = ctx->state.var.depth_range[1];
+    }
+
+    if (mask & GL_STENCIL_BUFFER_BIT)
+    {
+        entry->stencil_test_enabled = ctx->state.caps.stencil_test;
+        entry->stencil_writemask = ctx->state.var.stencil_writemask;
+        entry->stencil_back_writemask = ctx->state.var.stencil_back_writemask;
+    }
+
+    if (mask & GL_ENABLE_BIT)
+    {
+        /* Save all relevant enable states (some overlap with buffer bits). */
+        entry->depth_test_enabled = ctx->state.caps.depth_test;
+        entry->stencil_test_enabled = ctx->state.caps.stencil_test;
+        entry->blend_enabled = ctx->state.caps.blend;
+        memcpy(entry->blendi, ctx->state.caps.blendi, sizeof(entry->blendi));
+        entry->color_logic_op_enabled = ctx->state.caps.color_logic_op;
+        entry->cull_face_enabled = ctx->state.caps.cull_face;
+        entry->dither_enabled = ctx->state.caps.dither;
+        entry->polygon_offset_fill_enabled = ctx->state.caps.polygon_offset_fill;
+        entry->sample_alpha_to_coverage_enabled = ctx->state.caps.sample_alpha_to_coverage;
+        entry->sample_coverage_enabled = ctx->state.caps.sample_coverage;
+        entry->scissor_test_enabled = ctx->state.caps.scissor_test;
+    }
+
+    if (mask & GL_TRANSFORM_BIT)
+    {
+        entry->clip_origin = ctx->state.var.clip_origin;
+        entry->clip_depth_mode = ctx->state.var.clip_depth_mode;
+    }
+
+    if (mask & GL_VIEWPORT_BIT)
+    {
+        memcpy(entry->viewport, ctx->state.viewport, sizeof(entry->viewport));
+        entry->depth_range[0] = ctx->state.var.depth_range[0];
+        entry->depth_range[1] = ctx->state.var.depth_range[1];
+        memcpy(entry->scissor_box, ctx->state.var.scissor_box, sizeof(entry->scissor_box));
+    }
+
+    ctx->state.var.attrib_stack_depth++;
+}
+
+void mglPopAttrib(GLMContext ctx)
+{
+    if (ctx->state.var.attrib_stack_depth == 0)
+    {
+        ERROR_RETURN(GL_STACK_UNDERFLOW);
+        return;
+    }
+
+    ctx->state.var.attrib_stack_depth--;
+    MGLAttribStackEntry *entry = &ctx->state.var.attrib_stack[ctx->state.var.attrib_stack_depth];
+    GLbitfield mask = entry->mask;
+
+    if (mask & GL_COLOR_BUFFER_BIT)
+    {
+        mglBlendColor(ctx, entry->blend_color[0], entry->blend_color[1],
+                      entry->blend_color[2], entry->blend_color[3]);
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+        {
+            mglBlendFuncSeparatei(ctx, i,
+                                  entry->blend_src_rgb[i], entry->blend_dst_rgb[i],
+                                  entry->blend_src_alpha[i], entry->blend_dst_alpha[i]);
+            mglBlendEquationSeparatei(ctx, i,
+                                     entry->blend_equation_rgb[i],
+                                     entry->blend_equation_alpha[i]);
+            mglColorMaski(ctx, i,
+                          entry->color_writemask[i][0], entry->color_writemask[i][1],
+                          entry->color_writemask[i][2], entry->color_writemask[i][3]);
+        }
+        /* Restore per-attachment blend enables; caps.blend is recomputed
+         * automatically by mglRecomputeGlobalBlendEnable. */
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+        {
+            if (entry->blendi[i])
+                mglEnablei(ctx, GL_BLEND, i);
+            else
+                mglDisablei(ctx, GL_BLEND, i);
+        }
+        if (entry->logic_op_enabled)
+            mglEnable(ctx, GL_COLOR_LOGIC_OP);
+        else
+            mglDisable(ctx, GL_COLOR_LOGIC_OP);
+        mglLogicOp(ctx, entry->logic_op_mode);
+    }
+
+    if (mask & GL_DEPTH_BUFFER_BIT)
+    {
+        if (entry->depth_test_enabled)
+            mglEnable(ctx, GL_DEPTH_TEST);
+        else
+            mglDisable(ctx, GL_DEPTH_TEST);
+        mglDepthMask(ctx, entry->depth_writemask);
+        mglDepthFunc(ctx, entry->depth_func);
+        mglDepthRange(ctx, entry->depth_near, entry->depth_far);
+    }
+
+    if (mask & GL_STENCIL_BUFFER_BIT)
+    {
+        if (entry->stencil_test_enabled)
+            mglEnable(ctx, GL_STENCIL_TEST);
+        else
+            mglDisable(ctx, GL_STENCIL_TEST);
+        mglStencilMaskSeparate(ctx, GL_FRONT, entry->stencil_writemask);
+        mglStencilMaskSeparate(ctx, GL_BACK, entry->stencil_back_writemask);
+    }
+
+    if (mask & GL_ENABLE_BIT)
+    {
+        if (entry->depth_test_enabled)
+            mglEnable(ctx, GL_DEPTH_TEST);
+        else
+            mglDisable(ctx, GL_DEPTH_TEST);
+        if (entry->stencil_test_enabled)
+            mglEnable(ctx, GL_STENCIL_TEST);
+        else
+            mglDisable(ctx, GL_STENCIL_TEST);
+        for (GLuint i = 0; i < MAX_COLOR_ATTACHMENTS; i++)
+        {
+            if (entry->blendi[i])
+                mglEnablei(ctx, GL_BLEND, i);
+            else
+                mglDisablei(ctx, GL_BLEND, i);
+        }
+        if (entry->color_logic_op_enabled)
+            mglEnable(ctx, GL_COLOR_LOGIC_OP);
+        else
+            mglDisable(ctx, GL_COLOR_LOGIC_OP);
+        if (entry->cull_face_enabled)
+            mglEnable(ctx, GL_CULL_FACE);
+        else
+            mglDisable(ctx, GL_CULL_FACE);
+        if (entry->dither_enabled)
+            mglEnable(ctx, GL_DITHER);
+        else
+            mglDisable(ctx, GL_DITHER);
+        if (entry->polygon_offset_fill_enabled)
+            mglEnable(ctx, GL_POLYGON_OFFSET_FILL);
+        else
+            mglDisable(ctx, GL_POLYGON_OFFSET_FILL);
+        if (entry->sample_alpha_to_coverage_enabled)
+            mglEnable(ctx, GL_SAMPLE_ALPHA_TO_COVERAGE);
+        else
+            mglDisable(ctx, GL_SAMPLE_ALPHA_TO_COVERAGE);
+        if (entry->sample_coverage_enabled)
+            mglEnable(ctx, GL_SAMPLE_COVERAGE);
+        else
+            mglDisable(ctx, GL_SAMPLE_COVERAGE);
+        if (entry->scissor_test_enabled)
+            mglEnable(ctx, GL_SCISSOR_TEST);
+        else
+            mglDisable(ctx, GL_SCISSOR_TEST);
+    }
+
+    if (mask & GL_TRANSFORM_BIT)
+    {
+        mglClipControl(ctx, entry->clip_origin, entry->clip_depth_mode);
+    }
+
+    if (mask & GL_VIEWPORT_BIT)
+    {
+        mglViewport(ctx, entry->viewport[0], entry->viewport[1],
+                    entry->viewport[2], entry->viewport[3]);
+        mglDepthRange(ctx, entry->depth_range[0], entry->depth_range[1]);
+        mglScissor(ctx, entry->scissor_box[0], entry->scissor_box[1],
+                   entry->scissor_box[2], entry->scissor_box[3]);
+    }
 }
 
 void mglMap1d(GLMContext ctx, GLenum target, GLdouble u1, GLdouble u2, GLint stride, GLint order, const GLdouble *points)
@@ -2245,16 +2456,54 @@ void mglIndexubv(GLMContext ctx, const GLubyte *c)
     MGL_UNIMPLEMENTED();
 }
 
-void mglPopClientAttrib(GLMContext ctx)
-{
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
-}
-
 void mglPushClientAttrib(GLMContext ctx, GLbitfield mask)
 {
-    // Unimplemented function — deprecated GL function
-    MGL_UNIMPLEMENTED();
+    if (ctx->state.var.client_attrib_stack_depth >= MGL_ATTRIB_STACK_DEPTH)
+    {
+        ERROR_RETURN(GL_STACK_OVERFLOW);
+        return;
+    }
+
+    MGLClientAttribStackEntry *entry = &ctx->state.var.client_attrib_stack[ctx->state.var.client_attrib_stack_depth];
+    memset(entry, 0, sizeof(*entry));
+    entry->mask = mask;
+
+    if (mask & GL_CLIENT_VERTEX_ARRAY_BIT)
+    {
+        entry->vertex_array_binding = ctx->state.var.vertex_array_binding;
+    }
+
+    if (mask & GL_CLIENT_PIXEL_STORE_BIT)
+    {
+        entry->pixel_pack_buffer_binding = ctx->state.var.pixel_pack_buffer_binding;
+        entry->pixel_unpack_buffer_binding = ctx->state.var.pixel_unpack_buffer_binding;
+    }
+
+    ctx->state.var.client_attrib_stack_depth++;
+}
+
+void mglPopClientAttrib(GLMContext ctx)
+{
+    if (ctx->state.var.client_attrib_stack_depth == 0)
+    {
+        ERROR_RETURN(GL_STACK_UNDERFLOW);
+        return;
+    }
+
+    ctx->state.var.client_attrib_stack_depth--;
+    MGLClientAttribStackEntry *entry = &ctx->state.var.client_attrib_stack[ctx->state.var.client_attrib_stack_depth];
+    GLbitfield mask = entry->mask;
+
+    if (mask & GL_CLIENT_VERTEX_ARRAY_BIT)
+    {
+        mglBindVertexArray(ctx, entry->vertex_array_binding);
+    }
+
+    if (mask & GL_CLIENT_PIXEL_STORE_BIT)
+    {
+        mglBindBuffer(ctx, GL_PIXEL_PACK_BUFFER, entry->pixel_pack_buffer_binding);
+        mglBindBuffer(ctx, GL_PIXEL_UNPACK_BUFFER, entry->pixel_unpack_buffer_binding);
+    }
 }
 
 GLboolean mglAreTexturesResident(GLMContext ctx, GLsizei n, const GLuint *textures, GLboolean *residences)

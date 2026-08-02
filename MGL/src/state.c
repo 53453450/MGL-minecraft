@@ -977,6 +977,11 @@ void mglBlendFunc(GLMContext ctx, GLenum sfactor, GLenum dfactor)
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1000,6 +1005,11 @@ void mglBlendFunc(GLMContext ctx, GLenum sfactor, GLenum dfactor)
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1037,6 +1047,11 @@ void mglBlendFunci(GLMContext ctx, GLuint buf, GLenum sfactor, GLenum dfactor)
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1060,6 +1075,11 @@ void mglBlendFunci(GLMContext ctx, GLuint buf, GLenum sfactor, GLenum dfactor)
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1096,6 +1116,11 @@ void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dst
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1119,6 +1144,11 @@ void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dst
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1143,6 +1173,11 @@ void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dst
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1166,6 +1201,11 @@ void mglBlendFuncSeparatei(GLMContext ctx, GLuint buf, GLenum srcRGB, GLenum dst
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1271,6 +1311,11 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1294,6 +1339,11 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1318,6 +1368,11 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
         case GL_SRC_ALPHA_SATURATE:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:
@@ -1341,6 +1396,11 @@ void mglBlendFuncSeparate(GLMContext ctx, GLenum sfactorRGB, GLenum dfactorRGB, 
         case GL_ONE_MINUS_CONSTANT_COLOR:
         case GL_CONSTANT_ALPHA:
         case GL_ONE_MINUS_CONSTANT_ALPHA:
+        case GL_SRC1_COLOR:
+        case GL_ONE_MINUS_SRC1_COLOR:
+        case GL_SRC1_ALPHA:
+        case GL_ONE_MINUS_SRC1_ALPHA:
+            /* GL 4.0+ dual-source blending, requires dualSourceBlendingEnabled */
             break;
 
         default:

@@ -158,10 +158,43 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
         sliceCount = texture.arrayLength * 6u;
     }
 
-    id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                           textureType:texture.textureType
-                                                                levels:NSMakeRange(baseLevel, levelCount)
-                                                                slices:NSMakeRange(0, sliceCount)];
+    /* GL swizzle is texture-object state.  The source Metal texture bakes the
+     * swizzle into MTLTextureDescriptor.swizzle at creation time, but a view
+     * created with newTextureViewWithPixelFormat:levels:slices: defaults to
+     * identity swizzle and does NOT inherit the source's channel routing.
+     * Re-apply the GL swizzle via the swizzle-aware view API (macOS 10.15+)
+     * so sampling the base-level view matches sampling the source texture. */
+    MTLTextureSwizzle sw_r = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_r);
+    MTLTextureSwizzle sw_g = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_g);
+    MTLTextureSwizzle sw_b = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_b);
+    MTLTextureSwizzle sw_a = mglMTLSwizzleForGLSwizzle(ptr, ptr->params.swizzle_a);
+    BOOL swizzleIsIdentity = (sw_r == MTLTextureSwizzleRed &&
+                              sw_g == MTLTextureSwizzleGreen &&
+                              sw_b == MTLTextureSwizzleBlue &&
+                              sw_a == MTLTextureSwizzleAlpha);
+
+    id<MTLTexture> levelView = nil;
+    if (swizzleIsIdentity) {
+        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                                textureType:texture.textureType
+                                                     levels:NSMakeRange(baseLevel, levelCount)
+                                                     slices:NSMakeRange(0, sliceCount)];
+    } else if (@available(macOS 10.15, *)) {
+        MTLTextureSwizzleChannels swizzle = MTLTextureSwizzleChannelsMake(sw_r, sw_g, sw_b, sw_a);
+        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                                textureType:texture.textureType
+                                                     levels:NSMakeRange(baseLevel, levelCount)
+                                                     slices:NSMakeRange(0, sliceCount)
+                                                    swizzle:swizzle];
+    } else {
+        /* Pre-10.15 fallback: swizzle-aware view API unavailable.  The view
+         * will sample with identity swizzle; the source texture's baked-in
+         * swizzle is lost on the view.  This matches the prior behavior. */
+        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                                textureType:texture.textureType
+                                                     levels:NSMakeRange(baseLevel, levelCount)
+                                                     slices:NSMakeRange(0, sliceCount)];
+    }
     if (levelView) {
         /* Store in cache, releasing the old view if any. */
         if (ptr->mtl_base_level_view) {
@@ -235,9 +268,28 @@ bool mglTextureUploadNeedsSingleChannelSwizzle(Texture *tex)
         return false;
     }
 
+    /* Single-channel GL formats (R-only) rely on GL swizzle to route the lone
+     * Red value into G/B/A.  Metal applies swizzle via MTLTextureDescriptor
+     * at texture-creation time, but to keep single-channel swizzle behavior
+     * consistent across all R-only formats (and aligned with the RGBA8
+     * expansion path), expand every single-channel format on the CPU into a
+     * 4-channel buffer and let mglResolveR8SwizzledComponent route channels.
+     * This avoids depending on MTLTextureDescriptor.swizzle, which some Apple
+     * GPU paths handle inconsistently for single-channel textures. */
     switch (tex->internalformat)
     {
         case GL_R8:
+        case GL_R8_SNORM:
+        case GL_R16:
+        case GL_R16_SNORM:
+        case GL_R16F:
+        case GL_R32F:
+        case GL_R8I:
+        case GL_R8UI:
+        case GL_R16I:
+        case GL_R16UI:
+        case GL_R32I:
+        case GL_R32UI:
             return true;
         default:
             return false;
@@ -270,6 +322,19 @@ uint8_t *mglCreateSingleChannelSwizzledUpload(Texture *tex,
                                               NSUInteger *outBytesPerImage)
 {
     if (!tex || !srcData || width == 0 || height == 0 || !outBytesPerRow || !outBytesPerImage) {
+        return NULL;
+    }
+
+    /* mglTextureUploadNeedsSingleChannelSwizzle gates all R-only formats into
+     * this path, but the byte-level expansion below is only correct for R8
+     * (1 byte/pixel source → RGBA8 4 bytes/pixel destination).  Multi-byte
+     * single-channel formats (R16F/R32F/R16/R32I/...) require a matching
+     * RGBA variant destination and per-format zero/one constants, plus a
+     * corresponding texture-format promotion at creation time (handled
+     * elsewhere).  Return NULL here so the caller falls back to the original
+     * upload data and relies on MTLTextureDescriptor.swizzle, preserving the
+     * prior behavior for those formats. */
+    if (tex->internalformat != GL_R8) {
         return NULL;
     }
 
@@ -334,6 +399,10 @@ bool mglTextureInternalFormatNeedsRGBA8Expansion(GLenum internalformat,
         case GL_RGB8_SNORM:
         case GL_RGB8I:
         case GL_RGB8UI:
+        /* GL_RGB565: Metal's MTLPixelFormatB5G6R5Unorm reverses the channel
+         * order (B in the high bits vs R in the high bits for GL), so back
+         * it with RGBA8Unorm and let the CPU expansion rearrange channels. */
+        case GL_RGB565:
             return true;
         default:
             return false;
@@ -536,6 +605,7 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
         case GL_RGBA2:
         case GL_RGB4:
         case GL_RGB5:
+        case GL_RGB565:
         case GL_RGBA4:
         case GL_RGB5_A1:
             srcPixelBytes = 2u;
@@ -609,6 +679,7 @@ uint8_t *mglCreateRGBA8ExpandedUpload(Texture *tex,
                     break;
                 case GL_RGB4:
                 case GL_RGB5:
+                case GL_RGB565:
                     /* CPU data is raw GL_UNSIGNED_SHORT_5_6_5 (unpackTexture
                      * memcpy fallback when mglBuildCPUPixelLayout fails).
                      * R at bits 11-15, G at bits 5-10, B at bits 0-4. */
@@ -690,4 +761,20 @@ MTLPixelFormat mglLinearPixelFormat(MTLPixelFormat fmt)
         case MTLPixelFormatBGRA8Unorm_sRGB: return MTLPixelFormatBGRA8Unorm;
         default: return fmt;
     }
+}
+
+MTLPixelFormat mglEffectiveMTLPixelFormatForTexture(MTLPixelFormat fmt, Texture *tex)
+{
+    /* GL_EXT_texture_sRGB_decode: GL_SKIP_DECODE_EXT requests that sRGB-backed
+     * texture data be sampled as linear, bypassing the automatic sRGB decode
+     * that the *_sRGB Metal pixel formats apply.  Downgrade the sRGB pixel
+     * format to its linear variant in that case.  An unset (0) field — the
+     * bzero default at texture creation — or GL_DECODE_EXT leaves the format
+     * unchanged so the sRGB pipeline decodes normally.  Intended to be called
+     * from the texture-creation path (MGLRenderer+Texture.m) when selecting
+     * the Metal pixel format for an sRGB internal format. */
+    if (tex && tex->params.srgb_decode_ext == GL_SKIP_DECODE_EXT) {
+        return mglLinearPixelFormat(fmt);
+    }
+    return fmt;
 }

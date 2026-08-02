@@ -35,6 +35,10 @@ typedef struct MGLBindingDedupState_t {
     float lastDepthBias;
     float lastDepthBiasClamp;
     float lastDepthSlopeScale;
+    float lastBlendColorRed;
+    float lastBlendColorGreen;
+    float lastBlendColorBlue;
+    float lastBlendColorAlpha;
     BOOL lastBoundValid;
 } MGLBindingDedupState;
 
@@ -106,6 +110,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)setLastDepthBias:(float)bias
                    clamp:(float)clamp
               slopeScale:(float)slopeScale;
+- (void)setLastBlendColorRed:(float)r green:(float)g blue:(float)b alpha:(float)a;
 - (void)setBoundValid:(BOOL)valid;
 
 @end
