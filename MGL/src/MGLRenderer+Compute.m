@@ -66,6 +66,13 @@
         }
         bindOffset = (NSUInteger)map->offset;
 
+        /* Compute has no inline set*Bytes path, so it needs a real Metal
+         * buffer.  Small plain-uniform slots deliberately do not carry one
+         * (see updateDirtyBuffer); create it from the current CPU shadow
+         * instead of falling through to a zero-filled isolated binding. */
+        if (!ptr->data.mtl_data) {
+            [self bindMTLBuffer:ptr];
+        }
         id<MTLBuffer> buffer = ptr->data.mtl_data
             ? (__bridge id<MTLBuffer>)(ptr->data.mtl_data)
             : nil;

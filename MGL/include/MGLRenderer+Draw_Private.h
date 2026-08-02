@@ -71,7 +71,10 @@ static const BOOL kMGLDrawSubmitDiagnostics = NO;
 static const BOOL kMGLVerboseBindLogs = NO;
 static const NSUInteger kMGLMinimumStageBindingSize = 256;
 static const NSUInteger kMGLDefaultStageFallbackBufferSize = 4096;
-static const NSUInteger kMGLStageBindingStackScratchSize = 1024;
+/* Stack scratch used to zero-pad small inline stage bindings up to the size the
+ * shader argument requires.  Matches Metal's 4 KB set*Bytes limit.  A macro so
+ * it can size a local array. */
+#define kMGLStageBindingStackScratchSize 4096u
 static const BOOL kMGLEnableVertexAllSlotFallback = YES;
 static const BOOL kMGLEnableSampledTextureFallback = YES;
 static const BOOL kMGLValidateDrawArraysVboRange = YES;

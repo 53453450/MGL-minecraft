@@ -298,6 +298,7 @@ typedef struct Program_t {
     uint32_t vertexAttribUsageMask;  /* VS: bit N set => [[attribute(N)]] */
     GLboolean uses_point_size_params; /* VS/TES/GS: _mgl_point_size_params in MSL */
     GLboolean uses_cull_distance;     /* VS: mgl_CullDistance in MSL */
+    GLboolean uses_lod_bias;          /* FS: _mglLodBias injected in MSL */
     /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
      * Computed lazily on first call during link-time resource binding, then
      * reused for all subsequent slot checks.  Invalidated at link start. */

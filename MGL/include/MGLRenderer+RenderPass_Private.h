@@ -34,6 +34,7 @@ static const BOOL kMGLVerbosePipelineLogs = NO;
 
 /* MSL identifier constant. */
 static const char *kMGLFragCoordParamsMSLName = "_mglFragCoordParams";
+static const char *kMGLLodBiasMSLName = "_mglLodBias";
 
 /* === C functions defined in MGLRenderer.m, used by MGLRenderer+RenderPass.m === */
 
@@ -120,7 +121,7 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (BOOL)synchronizeRenderPassForTextureReadback:(id<MTLTexture>)texture
                                           reason:(const char *)reason;
 
-// === Phase 3 Thread Safety: *Locked variants ===
+// === Thread Safety: *Locked variants ===
 - (void)bindMTLBufferLocked:(Buffer *)ptr;
 - (bool)bindMTLProgramLocked:(Program *)ptr;
 - (bool)newCommandBufferLocked;
@@ -170,12 +171,14 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (BOOL)validateMetalObjects;
 - (void)cleanupCommandBuffer;
 
-// Phase 3 Thread Safety: *Locked variants defined in MGLRenderer.m
+// Thread Safety: *Locked variants defined in MGLRenderer.m
 - (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;
 
 // Locked variants defined in MGLRenderer.m (called from category files)
 - (void)mtlSwapBuffersLocked:(GLMContext)glm_ctx;
 - (void)mtlBufferSubDataLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr;
+- (void *)mtlMapUnmapBufferLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size access:(GLenum)access map:(bool)map;
+- (void)mtlFlushMappedBufferRangeLocked:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(GLintptr)offset length:(GLsizeiptr)length;
 
 // === Other methods defined in MGLRenderer.m, called from category files ===
 - (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth

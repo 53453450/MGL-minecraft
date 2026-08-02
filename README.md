@@ -195,6 +195,24 @@ MGL_TRACE_LOG=1 MGL_TRACE_LOG_DRAW=1 MGL_TRACE_LOG_PROGRAMS=91,92
 
 启动后，在 MGL dylib 所在目录查找 `mgl-trace-<pid>.log`。
 
+### MGL_MIP_DIAG
+
+设置 `MGL_MIP_DIAG=1` 报告被采样纹理的实际 mip 链和采样器状态，用于排查 mipmap 相关的画面异常。
+
+它独立于 `MGL_TRACE_LOG`：逐绑定的 trace 行密度太高，帧率会掉到看不出随视角变化的瑕疵。输出走普通日志路径，前缀 `MGL MIP_DIAG`，并且只在状态发生变化时打印——画面稳定时完全静默，突然出现一批日志就说明某个状态翻转了。
+
+三种记录：
+
+| 记录 | 触发点 | 用途 |
+|------|--------|------|
+| `MIP_DIAG texture` | 纹理绑定 | GL 与 Metal 两侧的级数是否一致、`mipmapped`/`genmipmaps` 标志、`mtlTex` 指针变化（指针变了说明纹理被重建） |
+| `MIP_DIAG frag` | 片元采样器解析 | 立即模式下生效的 filter、LOD 夹取、`BASE_LEVEL`/`MAX_LEVEL`；以及渲染目标是否经 Y-flip 副本采样（`viaCopy`）、副本级数、脏 mip 掩码和版本号 |
+| `MIP_DIAG snapshot` | 延迟批次回放 | 开启延迟批处理时真正交给 Metal 的逐 draw 采样器，会覆盖上面 `frag` 记录的值 |
+
+```bash
+MGL_MIP_DIAG=1
+```
+
 ## 致谢
 
 - [Khronos Group](https://www.khronos.org/) - SPIRV-Cross, glslang, SPIRV-Tools,VK-GL-CTS

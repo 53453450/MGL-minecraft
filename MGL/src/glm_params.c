@@ -187,6 +187,12 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glGetIntegerv(GL_BLEND_SRC_ALPHA,&glm_ctx->state.var.blend_src_alpha[0]);
 
     glGetFloatv(GL_MAX_TEXTURE_LOD_BIAS,&glm_ctx->state.var.max_texture_lod_bias);
+    /* GL 4.6 §8.14.1: MAX_TEXTURE_LOD_BIAS is the clamp bound for bias sum.
+     * System OpenGL may return 0 on headless/CGL failure — fall back to the
+     * conservative default kMGLMaxTextureLodBias (see mgl_types_texture.h). */
+    if (glm_ctx->state.var.max_texture_lod_bias <= 0.0f) {
+        glm_ctx->state.var.max_texture_lod_bias = kMGLMaxTextureLodBias;
+    }
 
     glGetFloatv(GL_BLEND_COLOR,glm_ctx->state.var.blend_color);
 

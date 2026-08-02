@@ -328,7 +328,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
     NSLog(@"MGL INFO: Metal command queue created successfully");
 
-    /* Phase 2 #6: Load or create Binary Archive for PSO compile acceleration.
+    /* Load or create Binary Archive for PSO compile acceleration.
      * Gated by MGL_BINARY_ARCHIVE (default ON; =0 disables).
      * The archive is stored in the user's Caches directory and persists
      * compiled PSO binaries across launches, reducing cold-start PSO

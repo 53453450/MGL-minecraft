@@ -145,6 +145,10 @@ extern _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap;    /* setDepthSten
 extern _Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap;    /* bytes malloc'd for state+vao snapshots */
 extern _Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap;   /* snapshot malloc count */
 
+/* Buffer copy-on-write (MTLBuffer reallocation on dirty Shared uploads) */
+extern _Atomic uint64_t g_mglBufferCowCountSinceSwap;            /* newBufferWithLength snapshots */
+extern _Atomic uint64_t g_mglBufferCowBytesSinceSwap;            /* bytes of those new MTLBuffers */
+
 /* State replay */
 extern _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap;         /* memcpy calls in restoreStateForBatch: */
 
@@ -333,6 +337,9 @@ typedef struct MGLPerfCounters {
     /* Snapshot allocation */
     uint64_t snapshot_bytes_allocated;
     uint64_t snapshot_allocation_count;
+    /* Buffer copy-on-write */
+    uint64_t buffer_cow_count;
+    uint64_t buffer_cow_bytes;
     /* State replay */
     uint64_t replay_memcpy_count;
     /* Hazard tracking */
@@ -412,6 +419,8 @@ static inline MGLPerfCounters mglSnapshotPerfCounters(void)
     c.ds_state_skips          = MGL_FRAME_LOAD(g_mglDepthStencilStateSkipsSinceSwap);
     c.snapshot_bytes_allocated = MGL_FRAME_LOAD(g_mglSnapshotBytesAllocatedSinceSwap);
     c.snapshot_allocation_count = MGL_FRAME_LOAD(g_mglSnapshotAllocationCountSinceSwap);
+    c.buffer_cow_count        = MGL_FRAME_LOAD(g_mglBufferCowCountSinceSwap);
+    c.buffer_cow_bytes        = MGL_FRAME_LOAD(g_mglBufferCowBytesSinceSwap);
     c.replay_memcpy_count     = MGL_FRAME_LOAD(g_mglReplayMemcpyCountSinceSwap);
     c.hazard_active_bindings  = MGL_FRAME_LOAD(g_mglHazardActiveBindingsSinceSwap);
     c.hazard_range_count      = MGL_FRAME_LOAD(g_mglHazardRangeCountSinceSwap);
@@ -482,6 +491,8 @@ static inline void mglResetPerfCounters(void)
     MGL_FRAME_STORE(g_mglDepthStencilStateSkipsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSnapshotBytesAllocatedSinceSwap, 0);
     MGL_FRAME_STORE(g_mglSnapshotAllocationCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglBufferCowCountSinceSwap, 0);
+    MGL_FRAME_STORE(g_mglBufferCowBytesSinceSwap, 0);
     MGL_FRAME_STORE(g_mglReplayMemcpyCountSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardActiveBindingsSinceSwap, 0);
     MGL_FRAME_STORE(g_mglHazardRangeCountSinceSwap, 0);

@@ -115,9 +115,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
     /* Update original-sampling authority: if the current rendering program had
      * VS framebuffer Y-flip injection, the RT already holds GL-visible
-     * orientation, so RT_SAMPLE_COPY must not flip it again.  Exclude only true
-     * framebuffer input passes (InSampler); ordinary mesh/item shaders can
-     * sample Sampler0 while still producing an authoritative RT.
+     * orientation, so RT_SAMPLE_COPY must not flip it again.  Exclude true
+     * framebuffer input passes, which Minecraft names "InSampler" (1.21.4+)
+     * or "DiffuseSampler" (≤ 1.21.1).  Ordinary mesh/item shaders can sample
+     * Sampler0 while still producing an authoritative RT.
      *
      * Do not infer this from scissored atlas writes. Minecraft 1.21.11's GUI
      * item atlas still samples with GL texture-origin semantics, so it needs the
@@ -127,7 +128,8 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         BOOL framebufferYFlipWrite =
             renderingProgram &&
             renderingProgram->spirv[_VERTEX_SHADER].mgl_injected_framebuffer_yflip == GL_TRUE &&
-            !mglRendererProgramHasSampledResourceNamed(renderingProgram, "InSampler");
+            !mglRendererProgramHasSampledResourceNamed(renderingProgram, "InSampler") &&
+            !mglRendererProgramHasSampledResourceNamed(renderingProgram, "DiffuseSampler");
 
         if (tex && framebufferYFlipWrite) {
             tex->mtl_render_yflip_authority |= 1u;
@@ -987,6 +989,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             if (batch->command_count == 0)
                 continue;
 
+            BOOL wantAbsoluteVertexOffsets =
+                batch->has_dynamic_vertex_bindings ? YES : NO;
+
             {
             /* Same-key skip: only when the previous sequential batch fully
              * executed, the same encoder is still open with valid bind
@@ -999,6 +1004,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 _renderPassManager.state->currentRenderEncoder != nil &&
                 _bindingSync.state->lastBoundValid &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
+                wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
                 [self currentRenderPassMatchesCurrentFramebuffer]) {
                 canSkipRestore = YES;
             } else if (_batching.skipSameKeyRestoreEnabled &&
@@ -1038,12 +1044,24 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 glm_ctx->active_state->dirty_bits = 0;
                 MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
             } else {
+                /* Per-batch Metal vertex-buffer contract: dynamic BindVertexBuffer
+                 * overrides store absolute VERTEX_BINDING_OFFSET and rebind via
+                 * setVertexBuffer:offset:.  The descriptor must therefore bake only
+                 * relativeoffset for those batches (see generateVertexDescriptor).
+                 * Set before restore so DIRTY_VAO rebuilds the matching descriptor. */
+                GLuint absoluteContractDirty = 0u;
+                if (wantAbsoluteVertexOffsets !=
+                    _batching.absoluteVertexBindingOffsets) {
+                    absoluteContractDirty = (DIRTY_VAO | DIRTY_BUFFER);
+                }
+                _batching.absoluteVertexBindingOffsets = wantAbsoluteVertexOffsets;
                 [self restoreStateForBatch:batch
                                    context:glm_ctx
                                 savedState:&savedState
                                    prevKey:(lastKeyValid ? &lastKey : NULL)
-                           forcedDirtyBits:(lastWasStreamBatch
-                                            ? (DIRTY_VAO | DIRTY_BUFFER) : 0u)];
+                           forcedDirtyBits:((lastWasStreamBatch
+                                            ? (DIRTY_VAO | DIRTY_BUFFER) : 0u) |
+                                           absoluteContractDirty)];
             }
 
             if (![self checkBatchShouldExecute:batch
@@ -1347,6 +1365,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     /* DUAL-PROXY INVARIANT checkpoint: post-teardown, both proxies must be
      * in default config (A).  MGL_STATE now falls through to &ctx->state. */
     [self mglAssertDualProxyInSyncForContext:glm_ctx];
+    _batching.absoluteVertexBindingOffsets = NO;
     mglResetCommandBufferForContext(glm_ctx, &glm_ctx->draw_command_buffer);
     /* Task 4: Reset the snapshot arena now that all batch replay is complete
      * and mglResetCommandBufferForContext has cleared all batch references.

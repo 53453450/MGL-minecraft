@@ -149,6 +149,11 @@ typedef struct Buffer_t {
      * shadow or a GPU write is copied back into it.  Read-map refresh from
      * Metal is skipped while set (GL 4.6 §6.3). */
     GLboolean cpu_shadow_pending;
+    /* Sticky: the buffer has been bound to a target a shader may write
+     * (SSBO/atomic counter/transform feedback), so the Metal store — not the
+     * CPU shadow — is authoritative outside the CPU-written range.  Uploads
+     * preserve the rest instead of overwriting it from the shadow. */
+    GLboolean gpu_write_target;
     GLintptr written_min;
     GLintptr written_max; // exclusive byte offset, -1 when unknown/unwritten
     MGLBufferInitSource last_init_source;
@@ -185,6 +190,12 @@ typedef struct Buffer_t {
     size_t      mtl_uint16_expanded_byte_count;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
+    /* Program-owned storage for a default-block (glUniform*) location.  Small
+     * slots are bound with set*Bytes straight from the CPU shadow, so no
+     * MTLBuffer is materialized up front; consumers that need one (compute,
+     * isolated stage bindings) create it lazily from the current shadow.
+     * See updateDirtyBuffer and bindVertexBuffersToCurrentRenderEncoder. */
+    GLboolean plain_uniform_slot;
     /* reference count for deferred buffer lifetime management.
      * Follows the Program refcount pattern (program.c:441-475).
      * - newBuffer sets refcount=1 (caller holds initial reference)
@@ -304,6 +315,30 @@ static inline GLsizeiptr mglBufferMapVisibleSize(const BufferMap *map)
         visible = map->size;
     }
     return visible;
+}
+
+/* Minecraft 1.21.11 binds ChunkSection with glBindBufferRange size=64 while
+ * writing the full 96-byte std140 block (TextureSize lives at offset 72).
+ * Desktop GL commonly still serves the trailing store; Metal only exposes the
+ * bound length.  Extend readonly UBO ranges up to the reflected block size
+ * when the underlying buffer still holds those bytes. */
+static inline GLsizeiptr mglBufferMapExtendUniformRange(GLsizeiptr bound_size,
+                                                        GLsizeiptr buffer_size,
+                                                        GLsizeiptr offset,
+                                                        size_t reflected_required)
+{
+    if (bound_size <= 0 || reflected_required == 0 ||
+        (size_t)bound_size >= reflected_required ||
+        buffer_size <= offset) {
+        return bound_size;
+    }
+
+    GLsizeiptr remaining = buffer_size - offset;
+    GLsizeiptr want = (GLsizeiptr)reflected_required;
+    if (remaining < want) {
+        want = remaining;
+    }
+    return want > bound_size ? want : bound_size;
 }
 
 static inline size_t mglBufferMapVisibleBackingBytes(const BufferMap *map,

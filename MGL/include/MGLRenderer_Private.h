@@ -83,6 +83,34 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 BOOL mglEnvFlagEnabled(const char *name);
 BOOL mglEnvFlagEnabledDefaultOn(const char *name);
 
+/* MGL_MIP_DIAG=1 reports the effective sampler and mip chain of sampled
+ * textures.  Independent of MGL_TRACE_LOG because the per-binding trace lines
+ * are too dense to keep a frame rate high enough to observe view-dependent
+ * artifacts.  Output goes to NSLog under the "MGL MIP_DIAG" prefix. */
+static inline BOOL mglMipDiagEnabled(void)
+{
+    static BOOL enabled;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ enabled = mglEnvFlagEnabled("MGL_MIP_DIAG"); });
+    return enabled;
+}
+
+/* Emits only on transitions, so a scene whose state is stable logs nothing and
+ * a burst of lines pinpoints the state that flipped. */
+static inline BOOL mglMipDiagStateChanged(uint64_t *cache, uint64_t signature)
+{
+    if (!cache || *cache == signature) {
+        return NO;
+    }
+    *cache = signature;
+    return YES;
+}
+
+static inline uint64_t mglMipDiagMixState(uint64_t signature, uint64_t value)
+{
+    return (signature ^ value) * 1099511628211ULL;
+}
+
 /* === Lock infrastructure ===
  * These macros reference MGLRenderer ivars directly and therefore can only
  * be expanded inside @implementation MGLRenderer methods. */

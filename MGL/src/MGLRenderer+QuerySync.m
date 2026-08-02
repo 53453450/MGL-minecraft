@@ -232,7 +232,7 @@
 
     sync->mtl_event = (void *)CFBridgingRetain(pendingEvent);
 
-    // Phase 3: Lock the sync list for the write path — newCommandBuffer
+    // Lock the sync list for the write path — newCommandBuffer
     // acquires the same lock on the read/clear path, so without this lock
     // mtlGetSync: would race against newCommandBuffer on multi-thread use.
     // Uses _syncListLock (independent from _metalStateLock) to avoid

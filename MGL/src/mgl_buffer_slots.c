@@ -99,8 +99,10 @@ GLboolean mglBufferSlotIsReservedForFragCoordFixup(GLuint slot)
 const char *mglBufferSlotReservedName(GLuint slot)
 {
     switch (slot) {
+        case 14:
+            return "kMGLLodBiasMaxBufferIndex (FS LOD_BIAS clamp max)";
         case 15:
-            return "kMGLPointSizeBufferIndex (fixed-function point size)";
+            return "kMGLPointSizeBufferIndex (VS point size) / kMGLLodBiasBufferIndex (FS LOD_BIAS)";
         case 24:
             return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement)";
         case 25:

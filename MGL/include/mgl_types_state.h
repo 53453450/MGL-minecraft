@@ -203,7 +203,7 @@ typedef struct {
     // hints
     GLMHints    hints;
 
-    /* Phase 1 #1: Dirty-Flag Hash Optimization
+    /* Dirty-Flag Hash Optimization
      * Cache hash values to avoid recomputing on every draw when state unchanged.
      * dirty flags indicate which hashes need recomputation. */
     uint64_t cached_texture_hash;

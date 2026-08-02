@@ -9,7 +9,7 @@
  * Sampler::mtl_data, Program::mtl_data, Spirv::mtl_function / mtl_library,
  * Sync::mtl_event / mtl_command_buffer, etc.).
  *
- * Problem (PLAN.md Phase 1E): the codebase had three parallel release paths:
+ * Problem: the codebase had three parallel release paths:
  *   1. ctx->mtl_funcs.mtlDeleteMTLObj(ctx, ptr)  — C files (22 call sites)
  *   2. CFBridgingRelease(ptr); ptr = NULL;        — MGLRenderer.m (24 sites)
  *   3. CFRelease(ptr); ptr = NULL;                — program.c Spirv + 3-way

@@ -1168,6 +1168,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 ? GL_TRUE : GL_FALSE;
         }
 
+        /* Detect LOD bias injection in the fragment MSL so the renderer
+         * knows to bind the _mglLodBias / _mglLodBiasMax buffers at slots
+         * 15 / 14.  Without this, uses_lod_bias stays GL_FALSE (initialized
+         * at link start) and the per-draw path skips buffer binding,
+         * leaving the shader to read from unbound buffers → garbage bias
+         * → wrong mip level → dark/blank output. */
+        pptr->uses_lod_bias = (fs_msl && strstr(fs_msl, "_mglLodBias"))
+            ? GL_TRUE : GL_FALSE;
+
         pptr->mslCacheValid = GL_TRUE;
     }
 

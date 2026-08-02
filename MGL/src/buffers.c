@@ -1450,6 +1450,28 @@ void mglBindBuffer(GLMContext ctx, GLenum target, GLuint buffer)
     mglSetGenericBufferBinding(ctx, target, ptr ? ptr->name : 0u);
 }
 
+/* Indexed bind targets a shader can write to.  Sticky per buffer: once bound
+ * this way the Metal store may hold bytes the CPU shadow never saw, so uploads
+ * must not overwrite the whole store from the shadow. */
+static void mglBufferNoteIndexedBindTarget(Buffer *ptr, GLenum target)
+{
+    if (!ptr) {
+        return;
+    }
+
+    switch (target)
+    {
+        case GL_SHADER_STORAGE_BUFFER:
+        case GL_ATOMIC_COUNTER_BUFFER:
+        case GL_TRANSFORM_FEEDBACK_BUFFER:
+            ptr->gpu_write_target = GL_TRUE;
+            break;
+
+        default:
+            break;
+    }
+}
+
 void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffer)
 {
     Buffer  *ptr;
@@ -1529,6 +1551,7 @@ void mglBindBufferBase(GLMContext ctx, GLenum target, GLuint index, GLuint buffe
         mglSetGenericBufferBinding(ctx, target, buffer);
 
         ptr->target = target;
+        mglBufferNoteIndexedBindTarget(ptr, target);
     }
     else
     {
@@ -1735,6 +1758,7 @@ void mglBindBufferRange(GLMContext ctx, GLenum target, GLuint index, GLuint buff
         STATE(buffers[buffer_index]) = ptr;
 
         ptr->target = target;
+        mglBufferNoteIndexedBindTarget(ptr, target);
     }
 
     mglSetGenericBufferBinding(ctx, target, buffer);
@@ -1779,9 +1803,18 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
                 ptr->size = size;
                 if (data)
                 {
-                    memcpy((void *)ptr->data.buffer_data, data, size);
-                    
-                    ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                    /* Identical contents leave the Metal side already in sync
+                     * (or with an upload still pending), so re-marking the
+                     * store dirty would only force a redundant full-store
+                     * upload — including its copy-on-write snapshot — for the
+                     * very common case of re-setting a uniform to the value it
+                     * already holds. */
+                    if (!uniform_data_unchanged)
+                    {
+                        memcpy((void *)ptr->data.buffer_data, data, size);
+
+                        ptr->data.dirty_bits |= DIRTY_BUFFER_DATA;
+                    }
                     /* Hash only feeds the element-array index cache or trace logging. */
                     const uint64_t init_hash =
                         (ptr->target == GL_ELEMENT_ARRAY_BUFFER || mglTraceLogIsEnabled())
@@ -2199,15 +2232,26 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         }
         if (ctx->mtl_funcs.mtlBufferSubData)
         {
+            /* Mark before the Metal upload so gpu_write_target snapshots
+             * include this range in their shadow overlay (otherwise the
+             * COW path would preserve stale Metal bytes over the write). */
+            mglBufferMarkWrite(ptr,
+                               kInitBufferSubData,
+                               offset,
+                               size,
+                               data,
+                               src_hash_for_meta);
             ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
         }
-
-        mglBufferMarkWrite(ptr,
-                           kInitBufferSubData,
-                           offset,
-                           size,
-                           data,
-                           src_hash_for_meta);
+        else
+        {
+            mglBufferMarkWrite(ptr,
+                               kInitBufferSubData,
+                               offset,
+                               size,
+                               data,
+                               src_hash_for_meta);
+        }
     }
 }
 
@@ -2322,14 +2366,13 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
     }
     else
     {
-        // use use metal to do the subdata call
-        ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
         mglBufferMarkWrite(ptr,
                            kInitBufferSubData,
                            offset,
                            size,
                            data,
                            src_hash_for_meta);
+        ctx->mtl_funcs.mtlBufferSubData(ctx, ptr, offset, size, data);
     }
 }
 

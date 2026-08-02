@@ -588,7 +588,7 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 
     STATE(dirty_bits) = DIRTY_ALL;
 
-    /* Phase 1 #1: Initialize hash cache dirty flags to 1 (needs initial computation) */
+    /* Initialize hash cache dirty flags to 1 (needs initial computation) */
     STATE(texture_dirty) = 1;
     STATE(vertex_layout_dirty) = 1;
     STATE(render_state_dirty) = 1;

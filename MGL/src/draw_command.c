@@ -1977,7 +1977,7 @@ void mglComputeStateKey(GLMContext ctx, GLenum mode, bool uses_elements, MGLStat
     out->primitive_type = mglModeToPrimitiveType(mode);
     out->caps_flags = mglComputeCapsFlags(ctx);
 
-    /* Phase 1 #1: Dirty-Flag Hash Optimization
+    /* Dirty-Flag Hash Optimization
      * Only recompute hashes when dirty flags are set (texture bindings changed,
      * VAO changed, render state changed). This reduces redundant hash computation
      * from ~1200 → ~360 per frame when state is stable across draw calls.

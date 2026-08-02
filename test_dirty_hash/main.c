@@ -1070,6 +1070,189 @@ static int verify_tes_xfb_range_isolation(void)
     return failed;
 }
 
+static int floats_close(GLfloat a, GLfloat b)
+{
+    GLfloat d = a - b;
+    if (d < 0.0f) d = -d;
+    return d < 1e-5f;
+}
+
+/* GetUniform must read per-location slots (arr[i] at location+i) and unpack
+ * Metal-packed mat3 (12 words) back to GL's 9-float column-major layout.
+ * Also covers mat3 array elements written via UniformMatrix3fv(loc+1), which
+ * store tightly packed 9 floats when the packing helper only matches base. */
+static int verify_get_uniform_array_and_mat3(void)
+{
+    static const char *vertex_source =
+        "#version 330 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fragment_source =
+        "#version 330 core\n"
+        "uniform float u_arr[4];\n"
+        "uniform mat3 u_m;\n"
+        "uniform mat3 u_marr[2];\n"
+        "out vec4 color;\n"
+        "void main() {\n"
+        "  color = vec4(u_arr[0] + u_arr[1] + u_arr[2] + u_arr[3],\n"
+        "               u_m[0][0] + u_m[1][1] + u_m[2][2],\n"
+        "               u_marr[0][0][0] + u_marr[1][1][1], 1.0);\n"
+        "}\n";
+    static const GLfloat arr_per_elem[4] = {1.0f, 2.0f, 3.0f, 4.0f};
+    static const GLfloat arr_bulk[4] = {10.0f, 20.0f, 30.0f, 40.0f};
+    static const GLfloat mat_a[9] = {
+        1.0f, 2.0f, 3.0f,
+        4.0f, 5.0f, 6.0f,
+        7.0f, 8.0f, 9.0f,
+    };
+    static const GLfloat mat_b[9] = {
+        0.5f, 1.5f, 2.5f,
+        3.5f, 4.5f, 5.5f,
+        6.5f, 7.5f, 8.5f,
+    };
+
+    GLint saved_program = 0;
+    GLuint vs = 0, fs = 0, program = 0;
+    int failed = 1;
+    GLfloat got[9];
+    GLint loc_arr = -1, loc_m = -1, loc_marr = -1;
+    int i;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &saved_program);
+    while (glGetError() != GL_NO_ERROR) {}
+
+    vs = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    fs = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+    if (!vs || !fs) {
+        goto done;
+    }
+    program = glCreateProgram();
+    glAttachShader(program, vs);
+    glAttachShader(program, fs);
+    glLinkProgram(program);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    vs = fs = 0;
+
+    {
+        GLint linked = GL_FALSE;
+        glGetProgramiv(program, GL_LINK_STATUS, &linked);
+        if (!linked) {
+            char log[2048] = {0};
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr, "dirty-hash: GetUniform program link failed: %s\n", log);
+            goto done;
+        }
+    }
+
+    glUseProgram(program);
+    loc_arr = glGetUniformLocation(program, "u_arr[0]");
+    if (loc_arr < 0) {
+        loc_arr = glGetUniformLocation(program, "u_arr");
+    }
+    loc_m = glGetUniformLocation(program, "u_m");
+    loc_marr = glGetUniformLocation(program, "u_marr[0]");
+    if (loc_marr < 0) {
+        loc_marr = glGetUniformLocation(program, "u_marr");
+    }
+    if (loc_arr < 0 || loc_m < 0 || loc_marr < 0) {
+        fprintf(stderr,
+                "dirty-hash: GetUniform missing locations arr=%d m=%d marr=%d\n",
+                loc_arr, loc_m, loc_marr);
+        goto done;
+    }
+
+    /* Bulk count>1 upload into the base slot; GetUniform(loc+i) must stride. */
+    glUniform1fv(loc_arr, 4, arr_bulk);
+    for (i = 0; i < 4; i++) {
+        GLfloat v = -1.0f;
+        glGetUniformfv(program, loc_arr + i, &v);
+        if (!floats_close(v, arr_bulk[i])) {
+            fprintf(stderr,
+                    "dirty-hash: GetUniform float arr[%d] bulk got %g want %g\n",
+                    i, (double)v, (double)arr_bulk[i]);
+            goto done;
+        }
+    }
+
+    /* Per-element writes: each location is its own CPU slot. */
+    for (i = 0; i < 4; i++) {
+        glUniform1f(loc_arr + i, arr_per_elem[i]);
+    }
+    for (i = 0; i < 4; i++) {
+        GLfloat v = -1.0f;
+        glGetUniformfv(program, loc_arr + i, &v);
+        if (!floats_close(v, arr_per_elem[i])) {
+            fprintf(stderr,
+                    "dirty-hash: GetUniform float arr[%d] per-elem got %g want %g\n",
+                    i, (double)v, (double)arr_per_elem[i]);
+            goto done;
+        }
+    }
+
+    /* Scalar mat3 at base: Metal-packed 12-word store must round-trip as 9. */
+    glUniformMatrix3fv(loc_m, 1, GL_FALSE, mat_a);
+    memset(got, 0, sizeof(got));
+    glGetUniformfv(program, loc_m, got);
+    for (i = 0; i < 9; i++) {
+        if (!floats_close(got[i], mat_a[i])) {
+            fprintf(stderr,
+                    "dirty-hash: GetUniform mat3[%d] got %g want %g\n",
+                    i, (double)got[i], (double)mat_a[i]);
+            goto done;
+        }
+    }
+
+    /* mat3[2] bulk at base (packed 24 words); element 1 is a stride read. */
+    {
+        GLfloat both[18];
+        memcpy(both, mat_a, 9u * sizeof(GLfloat));
+        memcpy(both + 9, mat_b, 9u * sizeof(GLfloat));
+        glUniformMatrix3fv(loc_marr, 2, GL_FALSE, both);
+        memset(got, 0, sizeof(got));
+        glGetUniformfv(program, loc_marr + 1, got);
+        for (i = 0; i < 9; i++) {
+            if (!floats_close(got[i], mat_b[i])) {
+                fprintf(stderr,
+                        "dirty-hash: GetUniform mat3 arr bulk[1][%d] got %g want %g\n",
+                        i, (double)got[i], (double)mat_b[i]);
+                goto done;
+            }
+        }
+    }
+
+    /* mat3 array element 1 written alone (often tightly packed 9 floats). */
+    glUniformMatrix3fv(loc_marr + 1, 1, GL_FALSE, mat_b);
+    memset(got, 0, sizeof(got));
+    glGetUniformfv(program, loc_marr + 1, got);
+    for (i = 0; i < 9; i++) {
+        if (!floats_close(got[i], mat_b[i])) {
+            fprintf(stderr,
+                    "dirty-hash: GetUniform mat3 arr[1][%d] got %g want %g\n",
+                    i, (double)got[i], (double)mat_b[i]);
+            goto done;
+        }
+    }
+
+    {
+        GLenum error = glGetError();
+        if (error != GL_NO_ERROR) {
+            fprintf(stderr, "dirty-hash: GetUniform left GL error 0x%x\n",
+                    (unsigned)error);
+            goto done;
+        }
+    }
+
+    failed = 0;
+
+done:
+    glUseProgram((GLuint)saved_program);
+    if (program) glDeleteProgram(program);
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return failed;
+}
+
 int main(void)
 {
     static const GLfloat offscreen_triangle[6] = {
@@ -1134,6 +1317,9 @@ int main(void)
         return 1;
     }
     if (verify_tes_xfb_range_isolation() != 0) {
+        return 1;
+    }
+    if (verify_get_uniform_array_and_mat3() != 0) {
         return 1;
     }
 

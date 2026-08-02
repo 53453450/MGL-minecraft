@@ -45,6 +45,8 @@ extern "C" {
 #define MGL_INTERNAL_UNIFORM_BUFFER_NAME_BASE 0xf0000000u
 #define MGL_FRAG_COORD_PARAMS_MSL_NAME "_mglFragCoordParams"
 #define MGL_FRAG_COORD_PARAMS_BUFFER_INDEX 30
+#define MGL_LOD_BIAS_MSL_NAME "_mglLodBias"
+#define MGL_LOD_BIAS_MAX_MSL_NAME "_mglLodBiasMax"
 
 /* ---- Types moved from program.c ---- */
 
@@ -133,6 +135,29 @@ const char *mglFindMSLEntryParameterClose(const char *msl);
 /* ---- Group B.3: MSL Fix/Patch Functions ---- */
 
 void applyMSLFragCoordOriginFix(int stage, char **msl_ptr);
+
+/* P7: Sampler binding entry for per-texture LOD_BIAS.
+ * Filled by mglParseMSLSamplerBindings (in mgl_spirv_compile.c). */
+typedef struct {
+    char name[64];   /* sampler variable name, e.g. "u_tex0Smplr" */
+    GLuint idx;      /* sampler slot from [[sampler(N)]] */
+} MGLSamplerBinding;
+
+/* Parse MSL sampler declarations of the form "sampler varName [[sampler(N)]]".
+ * Fills out_bindings[] with {name, idx} pairs up to max_bindings.
+ * Returns the count of bindings filled. */
+GLuint mglParseMSLSamplerBindings(const char *msl,
+                                  MGLSamplerBinding *out_bindings,
+                                  GLuint max_bindings);
+
+GLboolean mglInjectMSLLodBiasParam(char **msl_ptr, GLuint buffer_slot,
+                                    GLuint array_size, GLuint max_buffer_slot);
+GLuint mglInjectMSLLodBiasToSampleCalls(char **msl_ptr,
+                                         const char *bias_uniform_name,
+                                         const char *bias_max_uniform_name,
+                                         GLboolean include_sample_compare,
+                                         const MGLSamplerBinding *sampler_bindings,
+                                         GLuint sampler_binding_count);
 GLboolean mglInjectMSLPointSizeParams(char **msl_ptr);
 void mglInjectMSLPointSizeBuiltin(int stage, char **msl_ptr);
 void mglFixMSLImage2DRectImageSize(char **msl_ptr);
@@ -219,6 +244,7 @@ GLboolean mglPatchInjectAtomicCounterArgs(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchApplyResourceBindings(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchValidateResourceBindings(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchInjectPointSizeBuiltin(MSLPatchContext *ctx, char **msl_ptr);
+GLboolean mglPatchInjectLodBias(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchFixImage2DRectImageSize(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchTesAsComputeKernel(MSLPatchContext *ctx, char **msl_ptr);
 GLboolean mglPatchTcsStageInFix(MSLPatchContext *ctx, char **msl_ptr);

@@ -153,6 +153,8 @@ _Atomic uint64_t g_mglDepthStencilStateCreatesSinceSwap   = 0;
 _Atomic uint64_t g_mglDepthStencilStateSkipsSinceSwap     = 0;
 _Atomic uint64_t g_mglSnapshotBytesAllocatedSinceSwap     = 0;
 _Atomic uint64_t g_mglSnapshotAllocationCountSinceSwap    = 0;
+_Atomic uint64_t g_mglBufferCowCountSinceSwap             = 0;
+_Atomic uint64_t g_mglBufferCowBytesSinceSwap             = 0;
 _Atomic uint64_t g_mglReplayMemcpyCountSinceSwap          = 0;
 _Atomic uint64_t g_mglHazardActiveBindingsSinceSwap       = 0;
 _Atomic uint64_t g_mglHazardRangeCountSinceSwap           = 0;
@@ -205,6 +207,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           @"lock: wait=%.1fms hold=%.1fms | "
           @"ds: creates=%llu skips=%llu | "
           @"snap: bytes=%llu allocs=%llu | "
+          @"bufCow: n=%llu bytes=%llu | "
           @"replay: memcpy=%llu same_key_skip=%llu delta_narrow=%llu batches=%llu oracle=%llu | "
           @"hazard: active=%llu ranges=%llu overflow=%llu | "
           @"pso_dedup: hits=%llu misses=%llu",
@@ -223,6 +226,7 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.lock_wait_time * 1000.0, c.lock_hold_time * 1000.0,
           c.ds_state_creates, c.ds_state_skips,
           c.snapshot_bytes_allocated, c.snapshot_allocation_count,
+          c.buffer_cow_count, c.buffer_cow_bytes,
           c.replay_memcpy_count, c.same_key_restore_skips, c.dirty_key_delta_narrow,
           c.batches_replayed, c.same_key_oracle_would_skip,
           c.hazard_active_bindings, c.hazard_range_count, c.hazard_overflow_flushes,

@@ -99,6 +99,23 @@ typedef enum {
      * kMGLBufferSlot_TESGlIn, FS-only. */
     kMGLFragCoordParamsBufferIndex = 30,
 
+    /* LOD_BIAS_MAX uniform buffer (FS path only).  Holds a single float
+     * (MAX_TEXTURE_LOD_BIAS) for GL 4.6 §8.14.1 eq 8.8:
+     *   clamp(biastexobj + biasshader, -biasmax, biasmax)
+     * The value is injected as `constant float& _mglLodBiasMax [[buffer(14)]]`
+     * and referenced by clamp() in mglRewriteMSLBiasExpr.
+     * Slot 14 is in the user UBO range; mglInjectMSLLodBiasParam checks
+     * availability via strstr before injecting. */
+    kMGLLodBiasMaxBufferIndex = 14,
+
+    /* LOD_BIAS uniform buffer (FS path only).  Same numeric slot as
+     * kMGLPointSizeBufferIndex (VS-only), disjoint stages, no conflict.
+     * Holds an array of TEXTURE_UNITS floats for GL_TEXTURE_LOD_BIAS
+     * emulation via MSL bias() injection.  Occupied only when the FS has
+     * .sample() calls; mglPatchInjectLodBias checks slot availability
+     * before injecting. */
+    kMGLLodBiasBufferIndex = 15,
+
     /* ---- Vertex attribute slots ---- */
 
     /* Vertex attribute buffers start at slot 16 and grow upward.

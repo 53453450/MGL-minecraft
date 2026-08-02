@@ -1987,6 +1987,18 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
     }
 }
 
+/* mat3 CPU slots are either Metal-packed (3x float4 = 12 words) or tightly
+ * packed GL layout (9 words).  Packed UniformMatrix3fv uploads are multiples
+ * of 12; detect stride from the backing buffer length.  When length is a
+ * multiple of both (e.g. 36), prefer 12 — that is the valid-mat3 upload path. */
+static GLuint mglMat3ElementStrideWords(size_t avail_words)
+{
+    if (avail_words >= 12u && (avail_words % 12u) == 0u) {
+        return 12u;
+    }
+    return 9u;
+}
+
 /* Read back one element of a plain (non-sampler) default-block uniform from
  * the per-program CPU store (plain_uniform_buffers).  Returns the component
  * count (0 = location does not name a plain uniform).  out[] receives raw
@@ -1996,20 +2008,20 @@ static GLuint mglPlainUniformTypeInfo(GLuint gl_type, GLboolean *is_float)
 static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                                   uint32_t out[16], GLboolean *is_float_out)
 {
-    if (!ptr || location < 0) {
+    if (!ptr || location < 0 || location >= MAX_BINDABLE_BUFFERS) {
         return 0;
     }
 
-    GLint slot_loc = -1, element = 0;
+    GLint base_loc = -1, element = 0;
     GLuint gl_type = 0;
 
-    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES && slot_loc < 0; stage++) {
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES && base_loc < 0; stage++) {
         SpirvResourceList *resources =
             mglUniformSafeResourceList(ptr, stage, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, __FUNCTION__);
         if (!resources) {
             continue;
         }
-        for (GLuint i = 0; i < resources->count && slot_loc < 0; i++) {
+        for (GLuint i = 0; i < resources->count && base_loc < 0; i++) {
             SpirvResource *res = &resources->list[i];
             if (mglUniformResourceLooksSamplerLike(res, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT)) {
                 continue;
@@ -2019,14 +2031,15 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                 continue;
             }
             if (res->ubo_members && res->ubo_member_count > 0) {
-                /* Struct leaves: one location per leaf element, data stored
-                 * per member base location. */
+                /* Struct leaves: one location per leaf element; glUniform*
+                 * stores each leaf location in its own plain_uniform_buffers
+                 * slot. */
                 for (GLuint m = 0; m < res->ubo_member_count; m++) {
                     const SpirvUBOMember *member = &res->ubo_members[m];
                     GLint mbase = base + member->location_offset;
                     GLint msize = member->size > 1 ? member->size : 1;
                     if (location >= mbase && location < mbase + msize) {
-                        slot_loc = mbase;
+                        base_loc = mbase;
                         element = location - mbase;
                         gl_type = member->gl_type;
                         break;
@@ -2035,7 +2048,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
             } else {
                 GLint arr = res->gl_array_size > 1 ? res->gl_array_size : 1;
                 if (location >= base && location < base + arr) {
-                    slot_loc = base;
+                    base_loc = base;
                     element = location - base;
                     gl_type = res->gl_type;
                 }
@@ -2043,7 +2056,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
         }
     }
 
-    if (slot_loc < 0 || slot_loc >= MAX_BINDABLE_BUFFERS) {
+    if (base_loc < 0) {
         return 0;
     }
 
@@ -2052,15 +2065,39 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
         return 0;
     }
 
-    /* GL_FLOAT_MAT3 is stored Metal-packed: 3 columns x float4 (12 words). */
-    GLuint stored_words = (gl_type == GL_FLOAT_MAT3) ? 12u : comps;
-
     memset(out, 0, comps * sizeof(uint32_t));
-    Buffer *buf = ptr->plain_uniform_buffers[slot_loc].buf;
-    if (buf && buf->data.buffer_data && buf->size > 0) {
+
+    /* Prefer the exact location slot: glUniform* writes each location
+     * independently (arr[i] / mat3[i] live at location+i).  Fall back to the
+     * base slot with an element stride for Uniform*v(count>1) bulk uploads
+     * that pack consecutive elements into one buffer. */
+    Buffer *buf = NULL;
+    size_t first = 0;
+    GLuint stored_words = comps;
+
+    Buffer *direct = ptr->plain_uniform_buffers[location].buf;
+    if (direct && direct->data.buffer_data && direct->size > 0) {
+        buf = direct;
+        first = 0;
+        if (gl_type == GL_FLOAT_MAT3) {
+            size_t avail = (size_t)direct->size / sizeof(uint32_t);
+            stored_words = mglMat3ElementStrideWords(avail);
+        }
+    } else if (element > 0 && base_loc < MAX_BINDABLE_BUFFERS) {
+        Buffer *base_buf = ptr->plain_uniform_buffers[base_loc].buf;
+        if (base_buf && base_buf->data.buffer_data && base_buf->size > 0) {
+            buf = base_buf;
+            if (gl_type == GL_FLOAT_MAT3) {
+                size_t avail = (size_t)base_buf->size / sizeof(uint32_t);
+                stored_words = mglMat3ElementStrideWords(avail);
+            }
+            first = (size_t)element * stored_words;
+        }
+    }
+
+    if (buf) {
         const uint32_t *src = (const uint32_t *)(uintptr_t)buf->data.buffer_data;
         size_t avail_words = (size_t)buf->size / sizeof(uint32_t);
-        size_t first = (size_t)element * stored_words;
         uint32_t tmp[16];
         memset(tmp, 0, sizeof(tmp));
         for (GLuint w = 0; w < stored_words && w < 16u; w++) {
@@ -2068,7 +2105,7 @@ static GLuint mglReadPlainUniform(Program *ptr, GLint location,
                 tmp[w] = src[first + w];
             }
         }
-        if (gl_type == GL_FLOAT_MAT3) {
+        if (gl_type == GL_FLOAT_MAT3 && stored_words == 12u) {
             for (GLuint col = 0; col < 3u; col++) {
                 for (GLuint row = 0; row < 3u; row++) {
                     out[col * 3u + row] = tmp[col * 4u + row];
@@ -2821,6 +2858,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         uniformSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, internalName);
         buf = uniformSlot->buf;
         if (buf) {
+            buf->plain_uniform_slot = GL_TRUE;
             insertHashElement(&ctx->state.buffer_table, internalName, buf);
         }
     }
@@ -2848,6 +2886,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
                             (GLuint)location;
         globalSlot->buf = newBuffer(ctx, GL_UNIFORM_BUFFER, globalName);
         if (globalSlot->buf) {
+            globalSlot->buf->plain_uniform_slot = GL_TRUE;
             insertHashElement(&ctx->state.buffer_table, globalName, globalSlot->buf);
         }
     }

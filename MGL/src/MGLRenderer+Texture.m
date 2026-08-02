@@ -5831,9 +5831,21 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 
     //     @property (nonatomic) NSUInteger maxAnisotropy;
-    if (tex_param->max_anisotropy > 1.0)
+    if (tex_param->max_anisotropy > 1.0f)
     {
-        samplerDescriptor.maxAnisotropy = tex_param->max_anisotropy;
+        /* Explicit GLfloat -> NSUInteger cast avoids -Wconversion warnings and
+         * silent truncation (e.g. 4.5f -> 4). tex_param->max_anisotropy was
+         * already clamped to [1.0, kMGLMaxAnisotropyLimit] on the GL side
+         * (setTexParmf/setTexParmi in tex_param.c). Metal does not expose a
+         * device-level maxAnisotropy query, so kMGLMaxAnisotropyLimit is the
+         * single source of truth for both the GL query and the Metal cap;
+         * defensive clamp below guards against future drift. */
+        NSUInteger v = (NSUInteger)tex_param->max_anisotropy;
+        NSUInteger limit = (NSUInteger)kMGLMaxAnisotropyLimit;
+        if (limit < 1u) limit = 1u;
+        if (v < 1u) v = 1u;
+        if (v > limit) v = limit;
+        samplerDescriptor.maxAnisotropy = v;
     }
 
     //    @property (nonatomic) MTLSamplerAddressMode sAddressMode;

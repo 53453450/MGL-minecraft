@@ -151,6 +151,10 @@ typedef struct MGLBatchingState_t {
     BOOL arenaSnapshotEnabled;
     BOOL skipSameKeyRestoreEnabled;
     BOOL dirtyKeyDeltaEnabled;
+    /* Replay of a BindNoFlush batch that captured per-draw BindVertexBuffer
+     * overrides.  Descriptor bakes only relativeoffset; setVertexBuffer uses
+     * the absolute VERTEX_BINDING_OFFSET so overrides are not double-counted. */
+    BOOL absoluteVertexBindingOffsets;
 } MGLBatchingState;
 
 #endif /* MGLRenderer_State_h */
