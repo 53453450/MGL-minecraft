@@ -17,14 +17,15 @@
  * MGL
  *
  * Private method declarations and C helpers for the Buffer category
- * (MGLRenderer+Buffer.m).  Imports MGLRenderer_Private.h for ivar access
+ * (MGLRenderer+Buffer.m).  Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access
  * and shared types.
  */
 
 #ifndef MGLRenderer_Buffer_Private_h
 #define MGLRenderer_Buffer_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 /* Trace sampling helper for buffer-transfer call counters.  Defined here as
  * static inline so both MGLRenderer.m (mtlBufferSubData path) and

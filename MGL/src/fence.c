@@ -227,8 +227,8 @@ GLenum  mglClientWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint6
 
     /* Fallback (no status query available): block until the fence completes.
      *
-     * MGL_SYNC_STRICT: fence wait 已通过 mtlWaitForSync (waitUntilCompleted)
-     * 完成保守同步，无需额外 strict 分支。 */
+     * MGL_SYNC_STRICT: fence wait already performs conservative sync via
+     * mtlWaitForSync (waitUntilCompleted); no extra strict branch needed. */
     ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
     result = GL_CONDITION_SATISFIED;
 
@@ -260,8 +260,8 @@ void mglWaitSync(GLMContext ctx, GLsync sync, GLbitfield flags, GLuint64 timeout
      * buffer, satisfying the GL spec requirement that glWaitSync block until the
      * fence's insertion-point-prior commands have completed on the GPU.
      *
-     * MGL_SYNC_STRICT: fence wait 已通过 mtlWaitForSync (waitUntilCompleted)
-     * 完成保守同步，无需额外 strict 分支。 */
+     * MGL_SYNC_STRICT: fence wait already performs conservative sync via
+     * mtlWaitForSync (waitUntilCompleted); no extra strict branch needed. */
     ctx->mtl_funcs.mtlWaitForSync(ctx, sync);
 
     mglReleaseSyncReference(ctx, sync);
@@ -393,8 +393,9 @@ void mglMemoryBarrier(GLMContext ctx, GLbitfield barriers)
     if (ctx->mtl_funcs.mtlFlush) {
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
-    /* MGL_SYNC_STRICT: 此处已执行 mglFlushCommandBuffer + mtlFlush(ctx, true)
-     * (commit + waitUntilCompleted)，属于保守路径，无需额外 strict 分支。 */
+    /* MGL_SYNC_STRICT: mglFlushCommandBuffer + mtlFlush(ctx, true)
+     * (commit + waitUntilCompleted) already ran here, a conservative path
+     * that needs no extra strict branch. */
 
     /* Storage image (imageStore) writes go directly to the GPU Metal texture.
      * Without marking the texture/level as metal_data_authoritative, subsequent

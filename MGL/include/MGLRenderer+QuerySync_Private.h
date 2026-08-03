@@ -24,15 +24,17 @@
  * mtlEndTimerQuery:, mtlGetGPUTimestamp:) are declared in mgl_metal_bridge.h
  * and called through GLMContext function pointers.  This header exists for
  * structural symmetry with the other per-category private headers and
- * provides ivar access via MGLRenderer_Private.h.
+ * MGLRenderer.h provides the MGLRenderer interface;
+ * ivar access comes from MGLRenderer_Private.h in the implementing file.
  *
- * Imports MGLRenderer_Private.h for ivar access and shared types.
+ * Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.
  */
 
 #ifndef MGLRenderer_QuerySync_Private_h
 #define MGLRenderer_QuerySync_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 @interface MGLRenderer ()
 

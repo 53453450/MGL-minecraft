@@ -240,7 +240,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.color_writemask[0][2] = GL_TRUE;
         glm_ctx->state.var.color_writemask[0][3] = GL_TRUE;
     }
-    glm_ctx->state.max_vertex_attribs = 32; // OpenGL minimum is 16; MGL supports up to MAX_ATTRIBS
+    glm_ctx->state.max_vertex_attribs = MAX_ATTRIBS; // MGL supports up to MAX_ATTRIBS (Metal vertex attr budget)
     glm_ctx->state.var.max_texture_image_units = 16;
     glm_ctx->state.var.max_fragment_uniform_components = 4096;
     glm_ctx->state.var.max_vertex_uniform_components = 4096;

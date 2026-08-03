@@ -24,7 +24,7 @@
 #ifndef MGLRenderer_Draw_Private_h
 #define MGLRenderer_Draw_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 #import "msl_patch_pipeline.h"
 
 /* Encode target passed explicitly to the issue and bind methods instead of

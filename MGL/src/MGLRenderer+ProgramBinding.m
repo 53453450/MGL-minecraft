@@ -161,8 +161,8 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (!ptr) {
         NSLog(@"MGL ERROR: getProgramBinding with no current program for stage=%s (name=%u pipeline=%u)",
               mglShaderStageName(stage),
-              (unsigned)ctx->active_state->program_name,
-              (unsigned)ctx->active_state->var.program_pipeline_binding);
+              (unsigned)MGL_STATE(ctx)->program_name,
+              (unsigned)MGL_STATE(ctx)->var.program_pipeline_binding);
         return 0;
     }
 
@@ -403,8 +403,8 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     if (!ptr) {
         NSLog(@"MGL ERROR: getProgramLocation with no current program for stage=%s (name=%u pipeline=%u)",
               mglShaderStageName(stage),
-              (unsigned)ctx->active_state->program_name,
-              (unsigned)ctx->active_state->var.program_pipeline_binding);
+              (unsigned)MGL_STATE(ctx)->program_name,
+              (unsigned)MGL_STATE(ctx)->var.program_pipeline_binding);
         return 0;
     }
 

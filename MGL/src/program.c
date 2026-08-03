@@ -1123,6 +1123,15 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
     pptr->dirty_bits |= DIRTY_PROGRAM;
+    /* Relink rebuilds the SPIR-V resource list, so the program-level
+     * sampled-texture-unit bitmap is stale (mglLinkProgram invalidated it
+     * earlier) and the merged state-level mask must follow.  glLinkProgram
+     * only sets the renderer dirty bit directly, so the state-level cache
+     * would otherwise stay valid while the active program changed what it
+     * samples. */
+    if (ctx->active_state && ctx->active_state->program == pptr) {
+        ctx->active_state->active_sampled_texture_unit_mask_valid = 0u;
+    }
 
     /* Populate the MSL query result cache from the finalized per-stage MSL.
      * Scanning once here lets the per-draw paths skip repeated strstr() over

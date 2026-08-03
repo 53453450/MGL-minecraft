@@ -4686,6 +4686,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
 - (id<MTLTexture>) createMTLTextureFromGLTexture:(Texture *) tex
 {
+    mglMetalCountCreate(MGLMetalKindTexture);
     // PROPER FIX: Enhanced pre-creation validation to prevent AGX driver issues
     if (!_device || !_commandQueue) {
         NSLog(@"MGL ERROR: Metal device or command queue not available for texture creation");
@@ -5229,7 +5230,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
      */
     static const NSUInteger kMGLTexelBufferTextureWidth = 4096u;
     NSUInteger max2DSize = (NSUInteger)MIN((GLuint)kMGLTexelBufferTextureWidth,
-                                           ctx ? ctx->active_state->var.max_texture_size : (GLuint)kMGLTexelBufferTextureWidth);
+                                           ctx ? MGL_STATE(ctx)->var.max_texture_size : (GLuint)kMGLTexelBufferTextureWidth);
     if (max2DSize == 0 || max2DSize > kMGLTexelBufferTextureWidth) {
         max2DSize = kMGLTexelBufferTextureWidth;
     }
@@ -5767,6 +5768,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
 - (id<MTLSamplerState>) createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target
 {
+    mglMetalCountCreate(MGLMetalKindSampler);
     MTLSamplerDescriptor *samplerDescriptor;
 
     if (!tex_param) {
@@ -6410,12 +6412,12 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 
     if (expectedType == 0) {
-        return STATE(active_textures[textureUnit]);
+        return MGL_STATE(ctx)->active_textures[textureUnit];
     }
 
     int textureIndex = [self textureIndexForExpectedMetalType:expectedType];
     if (textureIndex >= 0 && textureIndex < _MAX_TEXTURE_TYPES) {
-        Texture *typedTexture = STATE(texture_units[textureUnit].textures[textureIndex]);
+        Texture *typedTexture = MGL_STATE(ctx)->texture_units[textureUnit].textures[textureIndex];
         /* SPIRV-Cross lowers sampler1D to texture2d in MSL, so expectedType is
          * MTLTextureType2D even for GL_TEXTURE_1D bindings. If the _TEXTURE_2D
          * slot only contains an auto-created default texture (name ==
@@ -6423,7 +6425,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
          * GL_TEXTURE_1D, prefer the 1D texture. Otherwise the default 2D
          * texture leaks across test cases and masks the real 1D binding. */
         if (typedTexture && typedTexture->name == TEX_OBJ_RES_NAME) {
-            Texture *activeTexture = STATE(active_textures[textureUnit]);
+            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
             if (activeTexture && activeTexture->name != TEX_OBJ_RES_NAME) {
                 typedTexture = NULL;
             }
@@ -6433,7 +6435,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
 
         if (expectedType == MTLTextureType2D) {
-            Texture *activeTexture = STATE(active_textures[textureUnit]);
+            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
             if (activeTexture &&
                 activeTexture->target == GL_TEXTURE_1D) {
                 return activeTexture;
@@ -6449,7 +6451,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             static uint64_t s_missingTextureBufferBindingLogs = 0;
             uint64_t hit = ++s_missingTextureBufferBindingLogs;
             if (hit <= 32ull || (hit % 512ull) == 0ull) {
-                Texture *activeTexture = STATE(active_textures[textureUnit]);
+                Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
                 NSLog(@"MGL TEXBUFFER BIND MISSING binding=%u unit=%u activeTex=%u activeTarget=0x%x hit=%llu",
                       (unsigned)metalBinding,
                       (unsigned)textureUnit,
@@ -6470,7 +6472,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         static uint64_t s_missingTypedTextureBindingLogs = 0;
         uint64_t hit = ++s_missingTypedTextureBindingLogs;
         if (hit <= 64ull || (hit % 512ull) == 0ull) {
-            Texture *activeTexture = STATE(active_textures[textureUnit]);
+            Texture *activeTexture = MGL_STATE(ctx)->active_textures[textureUnit];
             NSLog(@"MGL TEX TYPED BIND MISSING binding=%u stage=%s unit=%u expectedType=%lu expectedIndex=%d activeTex=%u activeTarget=0x%x hit=%llu",
                   (unsigned)metalBinding,
                   mglShaderStageName(stage),
@@ -6484,7 +6486,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return NULL;
     }
 
-    return STATE(active_textures[textureUnit]);
+    return MGL_STATE(ctx)->active_textures[textureUnit];
 }
 
 - (Texture *)textureForSampledResource:(SpirvResource *)sampledResource

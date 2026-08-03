@@ -5174,6 +5174,7 @@ void mglApplyPlainUniformInitializers(GLMContext ctx, Program *program, int stag
         slot->buffer = slot->buf->name;
         slot->offset = 0;
         slot->size = size;
+        mglProgramPlainUniformSetActive(program, (GLuint)location);
     }
 }
 
@@ -6687,10 +6688,9 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
     }
 
     
-    // create an entry point for metal based on the shader type and name
-    GLuint name;
+    // create a fixed entry point for metal based on the shader type, so
+    // identical GLSL produces identical MSL and hits the MSL library cache
     char entry_point[128];
-    name = ptr->shader_slots[stage]->name;
 
     SpvExecutionModel model = SpvExecutionModelVertex; // CRITICAL FIX: Initialize with safe default
     switch(stage)
@@ -6709,12 +6709,12 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
 
     switch(stage)
     {
-        case _VERTEX_SHADER: snprintf(entry_point, sizeof(entry_point), "vertex_%d_main",name); break;
-        case _TESS_CONTROL_SHADER: snprintf(entry_point, sizeof(entry_point), "tess_control_%d_main",name); break;
-        case _TESS_EVALUATION_SHADER: snprintf(entry_point, sizeof(entry_point), "tess_evaluation_%d_main",name); break;
-        case _GEOMETRY_SHADER: snprintf(entry_point, sizeof(entry_point), "geometry_%d",name); break;
-        case _FRAGMENT_SHADER: snprintf(entry_point, sizeof(entry_point), "fragment_%d",name); break;
-        case _COMPUTE_SHADER: snprintf(entry_point, sizeof(entry_point), "compute_%d",name); break;
+        case _VERTEX_SHADER: snprintf(entry_point, sizeof(entry_point), "vertex_main"); break;
+        case _TESS_CONTROL_SHADER: snprintf(entry_point, sizeof(entry_point), "tess_control_main"); break;
+        case _TESS_EVALUATION_SHADER: snprintf(entry_point, sizeof(entry_point), "tess_evaluation_main"); break;
+        case _GEOMETRY_SHADER: snprintf(entry_point, sizeof(entry_point), "geometry_main"); break;
+        case _FRAGMENT_SHADER: snprintf(entry_point, sizeof(entry_point), "fragment_main"); break;
+        case _COMPUTE_SHADER: snprintf(entry_point, sizeof(entry_point), "compute_main"); break;
         default: // CRITICAL FIX: Handle error gracefully instead of crashing
         fprintf(stderr, "MGL ERROR: Critical error in program.c at line %d\n", __LINE__);
         STATE(error) = GL_INVALID_OPERATION;

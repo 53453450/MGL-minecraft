@@ -13,23 +13,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * glm_limits.h
+ * MGLRenderer+Binding_Private.h
  * MGL
  *
+ * Private method declarations for the Binding category
+ * (MGLRenderer+Binding.m).  Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access
+ * and shared types.
  */
 
-#ifndef glm_limits_h
-#define glm_limits_h
+#ifndef MGLRenderer_Binding_Private_h
+#define MGLRenderer_Binding_Private_h
 
+#import "MGLRenderer.h"
 
-#define MAX_ATTRIBS 30
-#define MAX_MAPPED_BUFFERS 32
-#define MAX_COLOR_ATTACHMENTS 8
-#define MGL_MAX_VIEWPORTS 16
-#define TEXTURE_UNITS 128
-#define TEX_OBJ_RES_NAME    0xcafebeef  // for tex objects.. renderbuffers
-#define MAX_CLIP_DISTANCES  8
-#define MAX_VERTEX_BUFFER_BINDINGS 64
+@interface MGLRenderer ()
 
+- (void)bindMTLBuffer:(Buffer *)ptr;
+- (void)bindMTLBufferLocked:(Buffer *)ptr;
+- (bool)bindMTLTexture:(Texture *)tex;
+- (bool)bindMTLTextureLocked:(Texture *)tex;
 
-#endif /* glm_limits_h */
+@end
+
+#endif /* MGLRenderer_Binding_Private_h */

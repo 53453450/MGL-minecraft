@@ -44,10 +44,62 @@
  * On Apple platforms this is always available as a system framework.
  * In ARC mode, CFBridgingRelease transfers ownership from CF to ARC. */
 #include <CoreFoundation/CoreFoundation.h>
+#include <string.h>
+
+#ifdef __OBJC__
+#include <objc/runtime.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* === Metal object lifecycle counters ===
+ *
+ * Cross-TU accounting used by the MGL PERF summary to expose net-live
+ * object growth (created minus released) per Metal object kind. */
+
+typedef enum MGLMetalKind {
+    MGLMetalKindBuffer   = 0, /* MTLBuffer */
+    MGLMetalKindTexture  = 1, /* MTLTexture */
+    MGLMetalKindSampler  = 2, /* MTLSamplerState */
+    MGLMetalKindLibrary  = 3, /* MTLLibrary */
+    MGLMetalKindFunction = 4, /* MTLFunction */
+    MGLMetalKindPSO      = 5, /* MTLRenderPipelineState / MTLComputePipelineState */
+    MGLMetalKindOther    = 6,
+    MGLMetalKindCount    = 7
+} MGLMetalKind;
+
+void mglMetalCountCreate(int kind);
+void mglMetalCountRelease(int kind);
+uint64_t mglMetalGetCreated(int kind);
+uint64_t mglMetalGetReleased(int kind);
+
+/* Classify a bridged Metal object by its runtime class name.  The concrete
+ * classes are private (MTLIOAccelBuffer etc.), so match stable suffixes on
+ * object_getClassName.  In pure C TUs (no ObjC runtime access) this can only
+ * return MGLMetalKindOther; ObjC TUs get the precise class. */
+static inline int mglMetalObjKindOf(void *obj)
+{
+    if (!obj) {
+        return MGLMetalKindOther;
+    }
+#ifdef __OBJC__
+    const char *cls = object_getClassName((__bridge id)obj);
+    if (!cls) {
+        return MGLMetalKindOther;
+    }
+    if (strstr(cls, "Buffer"))       return MGLMetalKindBuffer;
+    if (strstr(cls, "Texture"))      return MGLMetalKindTexture;
+    if (strstr(cls, "Sampler"))      return MGLMetalKindSampler;
+    if (strstr(cls, "Library"))      return MGLMetalKindLibrary;
+    if (strstr(cls, "Function"))     return MGLMetalKindFunction;
+    if (strstr(cls, "Pipeline"))     return MGLMetalKindPSO;
+    return MGLMetalKindOther;
+#else
+    return MGLMetalKindOther;
+#endif
+}
 
 /* === Core release helper ===
  *
@@ -63,6 +115,7 @@ extern "C" {
 static inline void mglSafeReleaseMetalObj(void **slot)
 {
     if (slot && *slot) {
+        mglMetalCountRelease(mglMetalObjKindOf(*slot));
 #ifdef __OBJC__
         CFBridgingRelease(*slot);
 #else
@@ -80,6 +133,7 @@ static inline void mglSafeReleaseMetalObj(void **slot)
 static inline void mglReleaseMetalObjNoNull(void *obj)
 {
     if (obj) {
+        mglMetalCountRelease(mglMetalObjKindOf(obj));
 #ifdef __OBJC__
         CFBridgingRelease(obj);
 #else

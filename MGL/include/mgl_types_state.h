@@ -214,7 +214,19 @@ typedef struct {
     uint8_t  vertex_layout_dirty;
     uint8_t  render_state_dirty;
     uint8_t  uniform_buffer_dirty;
-    uint8_t  _hash_cache_padding[3];
+    /* Lazily-built OR of program/pipeline vertex+fragment
+     * sampled_texture_unit_mask.  Built on first query per draw and
+     * invalidated whenever DIRTY_PROGRAM is signaled (glUseProgram /
+     * glUseProgramStages / uniform sampler uploads / relink).
+     * Turns the 128-unit per-draw scan in mglCaptureDynamicTextureBindings
+     * and the per-unit mglStateSamplesTextureUnit calls in
+     * mglFlushPendingDrawsForActiveTextures / mglTrackPendingSampledTextureReads
+     * from O(128) program queries into O(1) bit tests.  When no program and
+     * no pipeline is bound, the mask is set to all-ones to preserve the
+     * legacy conservative "return true" semantics of mglStateSamplesTextureUnit. */
+    uint32_t active_sampled_texture_unit_mask[4];  /* 128 bits */
+    uint8_t  active_sampled_texture_unit_mask_valid;
+    uint8_t  _hash_cache_padding[2];
 
     // put at end, big chunk of yuck
     GLMParams   var;
@@ -239,6 +251,13 @@ static inline void mglInvalidateStateHashCachesForDirtyBits(GLMState *state,
          * mglStateKeysEqualIgnoringUniformRanges XORs it back out of
          * render_state_hash during batch merge comparisons. */
         state->uniform_buffer_dirty = 1;
+    }
+    /* DIRTY_PROGRAM invalidates the merged active_sampled_texture_unit_mask
+     * because the underlying program/pipeline sampler-resource → texture-unit
+     * resolution changes (glUseProgram, glUseProgramStages, glUniform1i on a
+     * sampler location, relink).  Lazy rebuild happens on next query. */
+    if ((dirty_bits & DIRTY_PROGRAM) != 0u) {
+        state->active_sampled_texture_unit_mask_valid = 0u;
     }
 }
 

@@ -119,6 +119,9 @@ void mglDispatchComputeIndirect(GLMContext ctx, GLintptr indirect)
         (ctx->state.var.max_compute_work_group_count[2] > 0 &&
          groups[2] > (GLuint)ctx->state.var.max_compute_work_group_count[2]))
     {
+    /* GL 4.6 §7.12.9: an indirect count outside the compute work-group
+     * limit is GL_INVALID_VALUE; report it instead of silently skipping. */
+        ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
 

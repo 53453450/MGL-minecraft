@@ -46,11 +46,11 @@ enum {
 };
 
 /* Single source of truth for the batch-snapshot hot/cold buffer_base split.
- * Three sites must agree on this partition: mglCopyHotStateFields copies the
- * hot set into the snapshot, mglRestoreColdBufferBase restores the cold set
- * from live state, and kMGLSnapshotBufferBaseTypes retains/releases the hot
- * set.  Expanding these X-macro lists at each site keeps them in lockstep.
- * See mgl_types_state.h. */
+ * Two sites must agree on this partition: mglCopyHotStateFields copies the
+ * hot set into the snapshot (the cold set stays live in active_state through
+ * replay, since nothing in replay writes it), and kMGLSnapshotBufferBaseTypes
+ * retains/releases the hot set.  Expanding these X-macro lists at each site
+ * keeps them in lockstep.  See mgl_types_state.h. */
 #define MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(_X_) \
     _X_(_UNIFORM_BUFFER) \
     _X_(_UNIFORM_CONSTANT) \

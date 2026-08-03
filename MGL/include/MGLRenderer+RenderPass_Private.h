@@ -19,13 +19,14 @@
  * Private method declarations, C helpers, and constants for the RenderPass
  * category (MGLRenderer+RenderPass.m).  Also hosts method declarations
  * defined in MGLRenderer.m but called from multiple category files.
- * Imports MGLRenderer_Private.h for ivar access and shared types.
+ * Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.
  */
 
 #ifndef MGLRenderer_RenderPass_Private_h
 #define MGLRenderer_RenderPass_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 /* === Diagnostic constants — used by MGLRenderer.m and RenderPass/Query === */
 static const BOOL kMGLDisableSharedEventSync = YES;
@@ -106,9 +107,11 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (bool)newRenderEncoderLocked; /* OTHER — prefer WithReason: */
 - (void)endRenderEncoding;
 - (void)endRenderEncodingLocked;
+- (void)endRenderPassIfFramebufferChangedForNonDraw:(uint64_t)processCall;
 - (bool)currentRenderPassMatchesCurrentFramebuffer;
 - (bool)bindFramebufferAttachmentTextures;
 - (bool)bindBufferSizeConstantsForRenderEncoder;
+- (bool)bindFramebufferTexture:(FBOAttachment *)fbo_attachment isDrawBuffer:(bool)isDrawBuffer;
 
 // === Framebuffer attachment helpers ===
 - (Texture *)framebufferAttachmentTexture:(FBOAttachment *)fbo_attachment;
@@ -122,18 +125,15 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                                           reason:(const char *)reason;
 
 // === Thread Safety: *Locked variants ===
-- (void)bindMTLBufferLocked:(Buffer *)ptr;
 - (bool)bindMTLProgramLocked:(Program *)ptr;
 - (bool)newCommandBufferLocked;
 - (bool)ensureWritableCommandBufferLocked:(const char *)reason;
-- (bool)bindMTLTextureLocked:(Texture *)tex;
 - (void)flushCommandBufferLocked:(bool)finish;
 - (bool)processGLStateLocked:(bool)draw_command;
 
 // === Public wrapper methods (non-locking; call the *Locked variants) ===
 - (bool)ensureWritableCommandBuffer:(const char *)reason;
 - (bool)newCommandBuffer;
-- (bool)bindMTLTexture:(Texture *)tex;
 - (bool)processGLState:(bool)draw_command;
 - (void)flushCommandBuffer:(bool)finish;
 
@@ -162,14 +162,6 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                                     options:(MTLCompileOptions *)options
                                       label:(NSString *)label
                                       error:(NSError **)error;
-- (BOOL)shouldSkipGPUOperations;
-- (void)recordGPUError;
-- (void)recordGPUSuccess;
-- (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format;
-- (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer;
-- (void)resetMetalState;
-- (BOOL)validateMetalObjects;
-- (void)cleanupCommandBuffer;
 
 // Thread Safety: *Locked variants defined in MGLRenderer.m
 - (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;

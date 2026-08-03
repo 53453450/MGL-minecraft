@@ -74,7 +74,7 @@ void mglDispatchError(GLMContext ctx, const char *func, GLenum type);
 #define ERROR_CHECK_RETURN(_expr_, _type_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); return; } } while(0)
 #define ERROR_CHECK_RETURN_VALUE(_expr_, _type_, _val_) do { if ((_expr_) == false) { mglDispatchError(ctx, __FUNCTION__, (_type_)); return (_val_); } } while(0)
 
-// 类型定义（从拆分的头文件引入）
+// Type definitions (pulled in from the split headers)
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_vertex.h"
@@ -147,18 +147,7 @@ void mglRecordActiveSampleQueryDraw(GLMContext ctx);
 void MGLsetCurrentContext(GLMContext ctx);
 void destroyGLMContext(GLMContext ctx);
 
-#ifndef MGL_CONTEXT_ENUMS_DEFINED
-#define MGL_CONTEXT_ENUMS_DEFINED
-enum {
-    MGL_PIXEL_FORMAT,
-    MGL_PIXEL_TYPE,
-    MGL_DEPTH_FORMAT,
-    MGL_DEPTH_TYPE,
-    MGL_STENCIL_FORMAT,
-    MGL_STENCIL_TYPE,
-    MGL_CONTEXT_FLAGS
-};
-#endif /* MGL_CONTEXT_ENUMS_DEFINED */
+#include "mgl_context_enums.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -1454,7 +1454,7 @@ bool mglTryCPUTransformFeedbackCaptureElements(GLMContext ctx,
 /* function.  Indirect and multidraw entries are NOT unified (see     */
 /* docs/stage1_entry_step_matrix.md §B).                              */
 /*                                                                    */
-/* Design rules (from RENDERER_EVOLUTION_TODO.md core principles):   */
+/* Design rules:                                                      */
 /*  - Pure C, no Metal calls (core principle 1)                       */
 /*  - Behaviour aligns with the original mglDrawArrays reference     */
 /*    (conditional check BEFORE program validation, per GL spec)      */

@@ -13,6 +13,7 @@
 
 #import <Foundation/Foundation.h>
 #import "mgl_frame_activity.h"
+#import "mgl_metal_ref.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -251,6 +252,15 @@ void mglPrintPerfSummary(double frame_interval_ms)
           c.encoder_reason_draw, c.encoder_reason_vao, c.encoder_reason_rs,
           c.encoder_reason_cmd, c.encoder_reason_other,
           c.encoder_fbo_rot_default, c.encoder_fbo_rot_named);
+    NSLog(@"MGL PERF5: metal alive(+created/-released): buf=+%llu/-%llu tex=+%llu/-%llu smp=+%llu/-%llu "
+          @"lib=+%llu/-%llu fn=+%llu/-%llu pso=+%llu/-%llu other=+%llu/-%llu",
+          mglMetalGetCreated(MGLMetalKindBuffer), mglMetalGetReleased(MGLMetalKindBuffer),
+          mglMetalGetCreated(MGLMetalKindTexture), mglMetalGetReleased(MGLMetalKindTexture),
+          mglMetalGetCreated(MGLMetalKindSampler), mglMetalGetReleased(MGLMetalKindSampler),
+          mglMetalGetCreated(MGLMetalKindLibrary), mglMetalGetReleased(MGLMetalKindLibrary),
+          mglMetalGetCreated(MGLMetalKindFunction), mglMetalGetReleased(MGLMetalKindFunction),
+          mglMetalGetCreated(MGLMetalKindPSO), mglMetalGetReleased(MGLMetalKindPSO),
+          mglMetalGetCreated(MGLMetalKindOther), mglMetalGetReleased(MGLMetalKindOther));
 
     if (frame_interval_ms > 33.0) {
         NSLog(@"MGL PERF SLOW FRAME: %.1fms — see counters above for breakdown", frame_interval_ms);

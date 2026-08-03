@@ -2577,7 +2577,7 @@ bool createTextureLevel(GLMContext ctx, Texture *tex, GLuint face, GLint level, 
         mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
     }
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -3497,7 +3497,7 @@ bool texSubImage(GLMContext ctx, Texture *tex, GLuint face, GLint level, GLint x
                                                     0u);
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -4764,7 +4764,7 @@ void mglClearTexImage(GLMContext ctx, GLuint texture, GLint level, GLenum format
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -4873,7 +4873,7 @@ void mglClearTexSubImage(GLMContext ctx, GLuint texture, GLint level, GLint xoff
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5123,7 +5123,7 @@ void mglCopyTexImage2D(GLMContext ctx, GLenum target, GLint level, GLenum intern
     // Copy from framebuffer to texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5156,7 +5156,7 @@ void mglCopyTexSubImage1D(GLMContext ctx, GLenum target, GLint level, GLint xoff
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5217,7 +5217,7 @@ void mglCopyTexSubImage2D(GLMContext ctx, GLenum target, GLint level, GLint xoff
     // This copies from the current read framebuffer to the texture
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5256,7 +5256,7 @@ void mglCopyTexSubImage3D(GLMContext ctx, GLenum target, GLint level, GLint xoff
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5293,7 +5293,7 @@ void mglCopyTextureSubImage1D(GLMContext ctx, GLuint texture, GLint level, GLint
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5335,7 +5335,7 @@ void mglCopyTextureSubImage2D(GLMContext ctx, GLuint texture, GLint level, GLint
         }
         mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-        /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+        /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
         if (ctx->sync_strict) {
             mglFlushCommandBuffer(ctx);
             ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -5382,7 +5382,7 @@ void mglCopyTextureSubImage3D(GLMContext ctx, GLuint texture, GLint level, GLint
 
     mglFlushPendingDrawsBeforeTextureWrite(ctx, tex);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);

@@ -17,18 +17,7 @@ typedef struct GLMContextRec_t *GLMContext;
 // Guarded so external consumers that also pull in glm_context.h (via
 // MGLRenderer.h) don't see a redefinition. Internal MGL sources include
 // glm_context.h directly and never MGLContext.h, so they are unaffected.
-#ifndef MGL_CONTEXT_ENUMS_DEFINED
-#define MGL_CONTEXT_ENUMS_DEFINED
-enum {
-    MGL_PIXEL_FORMAT,
-    MGL_PIXEL_TYPE,
-    MGL_DEPTH_FORMAT,
-    MGL_DEPTH_TYPE,
-    MGL_STENCIL_FORMAT,
-    MGL_STENCIL_TYPE,
-    MGL_CONTEXT_FLAGS
-};
-#endif /* MGL_CONTEXT_ENUMS_DEFINED */
+#include "mgl_context_enums.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -13,23 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  *
- * glm_limits.h
+ * MGLRenderer+VertexLayout_Private.h
  * MGL
  *
+ * Private method declarations for the VertexLayout category
+ * (MGLRenderer+VertexLayout.m).  Imports MGLRenderer_Private.h for ivar
+ * access and shared types.
  */
 
-#ifndef glm_limits_h
-#define glm_limits_h
+#ifndef MGLRenderer_VertexLayout_Private_h
+#define MGLRenderer_VertexLayout_Private_h
 
+#import "MGLRenderer.h"
 
-#define MAX_ATTRIBS 30
-#define MAX_MAPPED_BUFFERS 32
-#define MAX_COLOR_ATTACHMENTS 8
-#define MGL_MAX_VIEWPORTS 16
-#define TEXTURE_UNITS 128
-#define TEX_OBJ_RES_NAME    0xcafebeef  // for tex objects.. renderbuffers
-#define MAX_CLIP_DISTANCES  8
-#define MAX_VERTEX_BUFFER_BINDINGS 64
+@interface MGLRenderer ()
 
+- (MTLVertexDescriptor *)generateVertexDescriptor;
+- (void)updateBlendStateCache;
+- (void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor;
 
-#endif /* glm_limits_h */
+@end
+
+#endif /* MGLRenderer_VertexLayout_Private_h */

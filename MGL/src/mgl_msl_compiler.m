@@ -8,6 +8,7 @@
 
 #import "mgl_msl_compiler.h"
 #import "mgl_frame_activity.h"
+#import "mgl_metal_ref.h"
 
 #include <string.h>
 #include <stdatomic.h>
@@ -103,6 +104,9 @@ static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
         double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
         MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
         MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
+        if (library) {
+            mglMetalCountCreate(MGLMetalKindLibrary);
+        }
         return library;
     }
 
@@ -175,6 +179,7 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
                     library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
                 }
                 if (library) {
+                    mglMetalCountCreate(MGLMetalKindLibrary);
                     if (cacheKey) {
                         [mglMSLLibraryCache() setObject:library forKey:cacheKey];
                     }
@@ -243,6 +248,9 @@ id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,
         function = [library newFunctionWithName:entryName
                                  constantValues:values
                                           error:&error];
+        if (function) {
+            mglMetalCountCreate(MGLMetalKindFunction);
+        }
         if (!function) {
             NSLog(@"MGL ERROR: Failed to specialize %@ with function constants: %@",
                   label ?: entryName,

@@ -984,7 +984,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0,
-              ctx ? (unsigned)ctx->active_state->program_name : 0u);
+              ctx ? (unsigned)MGL_STATE(ctx)->program_name : 0u);
     }
 
     int count;
@@ -1079,9 +1079,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
         BufferBaseTarget *fallbackBuffers = NULL;
         if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
             buffers = program->plain_uniform_buffers;
-            fallbackBuffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
+            fallbackBuffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
         } else {
-            buffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
+            buffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
         }
 
         /* MGL_DEBUG_STRUCT_PACK diagnostic (gated by getenv). */
@@ -1285,7 +1285,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
             /* Recover from name/object map skew. */
             if (!buf && baseBinding->buffer != 0) {
-                Buffer *resolved = (Buffer *)searchHashTable(&ctx->active_state->buffer_table, baseBinding->buffer);
+                Buffer *resolved = (Buffer *)searchHashTable(&MGL_STATE(ctx)->buffer_table, baseBinding->buffer);
                 resolved = mglRendererGetValidatedBuffer(ctx, resolved,
                                                          "mapShaderBufferResourcesViaPlan(base,recover)",
                                                          (NSUInteger)spirv_binding);
@@ -1366,7 +1366,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                 if (reflectedRequiredSize > 0 && baseBinding->size > 0 &&
                     (NSUInteger)baseBinding->size < reflectedRequiredSize) {
-                    GLuint programName = ctx ? ctx->active_state->program_name : 0u;
+                    GLuint programName = ctx ? MGL_STATE(ctx)->program_name : 0u;
                     if (mglShouldLogSmallBaseBinding(programName,
                                                      stage,
                                                      spvc_type,
@@ -1510,9 +1510,9 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
             if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT && program) {
                 buffers = program->plain_uniform_buffers;
-                fallbackBuffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
+                fallbackBuffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
             } else {
-                buffers = ctx->active_state->buffer_base[gl_buffer_type].buffers;
+                buffers = MGL_STATE(ctx)->buffer_base[gl_buffer_type].buffers;
             }
             
             for (int i = 0; i < count; i++)
@@ -1762,7 +1762,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                 // Recover from name/object map skew: some paths can preserve GL name while pointer slot is stale.
                 if (!buf && baseBinding->buffer != 0) {
-                    Buffer *resolved = (Buffer *)searchHashTable(&ctx->active_state->buffer_table, baseBinding->buffer);
+                    Buffer *resolved = (Buffer *)searchHashTable(&MGL_STATE(ctx)->buffer_table, baseBinding->buffer);
                     resolved = mglRendererGetValidatedBuffer(ctx, resolved,
                                                              "mapGLBuffersToMTLBufferMap(base,recover)",
                                                              (NSUInteger)spirv_binding);
@@ -1849,7 +1849,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
                     if (reflectedRequiredSize > 0 && baseBinding->size > 0 &&
                         (NSUInteger)baseBinding->size < reflectedRequiredSize) {
-                        GLuint programName = ctx ? ctx->active_state->program_name : 0u;
+                        GLuint programName = ctx ? MGL_STATE(ctx)->program_name : 0u;
                         if (mglShouldLogSmallBaseBinding(programName,
                                                          stage,
                                                          spvc_type,
@@ -2136,10 +2136,10 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
 
 - (bool) mapBuffersToMTL
 {
-    if ([self mapGLBuffersToMTLBufferMap: &ctx->active_state->vertex_buffer_map_list stage:_VERTEX_SHADER] == false)
+    if ([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->vertex_buffer_map_list stage:_VERTEX_SHADER] == false)
         return false;
 
-    if ([self mapGLBuffersToMTLBufferMap: &ctx->active_state->fragment_buffer_map_list stage:_FRAGMENT_SHADER] == false)
+    if ([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->fragment_buffer_map_list stage:_FRAGMENT_SHADER] == false)
         return false;
 
     return true;
@@ -2621,15 +2621,15 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
     }
 
     // Legacy fallback: use cached map list if available.
-    GLuint mapCount = ctx->active_state->vertex_buffer_map_list.count;
+    GLuint mapCount = MGL_STATE(ctx)->vertex_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
         mapCount = MAX_MAPPED_BUFFERS;
     }
 
     for (GLuint i = 0; i < mapCount; i++)
     {
-        if (ctx->active_state->vertex_buffer_map_list.buffers[i].attribute_mask & (0x1 << attribute)) {
-            GLuint baseIndex = ctx->active_state->vertex_buffer_map_list.buffers[i].buffer_base_index;
+        if (MGL_STATE(ctx)->vertex_buffer_map_list.buffers[i].attribute_mask & (0x1 << attribute)) {
+            GLuint baseIndex = MGL_STATE(ctx)->vertex_buffer_map_list.buffers[i].buffer_base_index;
             if (baseIndex >= kMGLMaxMetalVertexBufferCount) {
                 NSLog(@"MGL ERROR: getVertexBufferIndexWithAttributeSet mapped base index out of Metal range=%u (max valid=%lu)",
                       baseIndex, (unsigned long)kMGLMaxMetalVertexBufferIndex);

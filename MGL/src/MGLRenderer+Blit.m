@@ -4323,7 +4323,7 @@ typedef struct MGLBlitColorState {
          MGLCapabilityHasBug(&_capability, MGL_BUG_3D_REPLACE_REGION_NONZERO_ORIGIN) ||
          MGLCapabilityHasBug(&_capability, MGL_BUG_3D_COPY_FROM_BUFFER_SLICE_OOB));
     if (needs3DDestinationWorkaround) {
-        RETURN_ON_FAILURE([self processGLState:false]);
+        [self endRenderPassIfFramebufferChangedForNonDraw:0];
         [self endRenderEncoding];
         RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlCopyImageSubData.3D"]);
         if ([self copyImageSubData3DFallback:glm_ctx
@@ -4374,7 +4374,11 @@ typedef struct MGLBlitColorState {
         return;
     }
 
-    RETURN_ON_FAILURE([self processGLState: false]);
+    // End a stale render pass (if the render encoder's FBO no longer matches
+    // the current context FBO) so the blit encoder is not interleaved with
+    // a live render encoder.  This is the only GL state the blit path depends
+    // on; the full processGLState:false sync is unnecessary here.
+    [self endRenderPassIfFramebufferChangedForNonDraw:0];
     [self endRenderEncoding];
     RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlCopyImageSubData"]);
 

@@ -33,7 +33,7 @@
  *                                     still needs string-level replacement
  *                                     after IR pre-mapping.
  *
- * See docs/IR_LEVEL_POSTPROCESS_TODO.md for the design rationale and
+ * See mgl_ir_postprocess.c for the design rationale and
  * remaining work items.
  */
 

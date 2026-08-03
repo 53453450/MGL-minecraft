@@ -23,13 +23,14 @@
  * capture helpers, and dealloc.  The CppCreateMGLRenderer* C entry points are
  * declared in MGLRenderer.h.
  *
- * Imports MGLRenderer_Private.h for ivar access and shared types.
+ * Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access and shared types.
  */
 
 #ifndef MGLRenderer_Lifecycle_Private_h
 #define MGLRenderer_Lifecycle_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 @interface MGLRenderer ()
 

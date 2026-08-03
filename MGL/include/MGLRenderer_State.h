@@ -107,6 +107,16 @@ typedef struct MGLGPURecoveryState_t {
     GLuint interfaceMismatchBlockedProgram;
     CFTimeInterval interfaceMismatchBlockedUntil;
     uint32_t interfaceMismatchBlockedStreak;
+    CFTimeInterval pipelineRetryAfter;
+    CFTimeInterval interfaceMismatchRetryAfter;
+    GLuint interfaceMismatchProgramName;
+    MTLPixelFormat interfaceMismatchColor0Format;
+    MTLPixelFormat interfaceMismatchDepthFormat;
+    MTLPixelFormat interfaceMismatchStencilFormat;
+    uint32_t interfaceMismatchStreak;
+    GLuint programMismatchProgramName;
+    CFTimeInterval programMismatchRetryAfter;
+    uint32_t programMismatchStreak;
 } MGLGPURecoveryState;
 
 typedef struct MGLResourceFallbackState_t {

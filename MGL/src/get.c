@@ -49,7 +49,9 @@ static const char *kMglExtensions[] = {
     "GL_ARB_separate_shader_objects",
     "GL_EXT_texture_filter_anisotropic",
     "GL_ARB_texture_filter_anisotropic", /* alias of EXT; same 0x84FE/0x84FF tokens */
-    "GL_KHR_robustness",
+    /* GL_KHR_robustness intentionally NOT advertised: mglGetGraphicsResetStatus
+     * is a stub returning GL_NO_ERROR, and advertising robust context support
+     * would mislead apps into relying on reset semantics that do not exist. */
     /* The following advertise functionality MGL already implements (or, for
      * parallel_shader_compile, treats as a no-op hint the spec permits).
      * Each was a pure CTS extension-string gate that produced not_supported

@@ -26,20 +26,20 @@
         return false;
     }
 
-    RETURN_FALSE_ON_FAILURE([self mapGLBuffersToMTLBufferMap: &ctx->active_state->compute_buffer_map_list stage:_COMPUTE_SHADER]);
+    RETURN_FALSE_ON_FAILURE([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->compute_buffer_map_list stage:_COMPUTE_SHADER]);
 
     // dirty buffer covers all buffer modifications
-    if (ctx->active_state->dirty_bits & DIRTY_BUFFER)
+    if (MGL_STATE(ctx)->dirty_bits & DIRTY_BUFFER)
     {
         // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-        [self updateDirtyBaseBufferList: &ctx->active_state->compute_buffer_map_list];
+        [self updateDirtyBaseBufferList: &MGL_STATE(ctx)->compute_buffer_map_list];
 
-        ctx->active_state->dirty_bits &= ~DIRTY_BUFFER;
+        MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
     }
 
-    for(int i=0; i<ctx->active_state->compute_buffer_map_list.count; i++)
+    for(int i=0; i<MGL_STATE(ctx)->compute_buffer_map_list.count; i++)
     {
-        BufferMap *map = &ctx->active_state->compute_buffer_map_list.buffers[i];
+        BufferMap *map = &MGL_STATE(ctx)->compute_buffer_map_list.buffers[i];
         Buffer *ptr;
         NSUInteger metalBindingIndex;
         NSUInteger bindOffset;
@@ -147,9 +147,9 @@
             uint32_t sizeConstants[31];
             memset(sizeConstants, 0, sizeof(sizeConstants));
 
-            for (int i = 0; i < ctx->active_state->compute_buffer_map_list.count; i++)
+            for (int i = 0; i < MGL_STATE(ctx)->compute_buffer_map_list.count; i++)
             {
-                BufferMap *map = &ctx->active_state->compute_buffer_map_list.buffers[i];
+                BufferMap *map = &MGL_STATE(ctx)->compute_buffer_map_list.buffers[i];
                 if (!map->buf)
                     continue;
                 NSUInteger metalSlot = map->has_metal_binding
@@ -261,7 +261,7 @@
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
-                        ptr = STATE(image_units[glUnit].tex);
+                        ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
                         break;
                     default:
                         ptr = NULL;
@@ -287,7 +287,7 @@
                      * dimensions at the bound level (matches the fragment-stage
                      * path).  Sampled textures are not affected. */
                     if (gl_texture_type == _IMAGE_TEXTURE) {
-                        GLuint imgLevel = STATE(image_units[glUnit].level);
+                        GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                         if (imgLevel > 0u) {
                             NSUInteger sliceCount = texture.arrayLength;
                             if (texture.textureType == MTLTextureTypeCube ||
@@ -307,11 +307,11 @@
                     id<MTLSamplerState> sampler;
 
                     // late binding of texture samplers.. but its better than scanning the entire texture_samplers
-                    if(gl_texture_type == _TEXTURE && STATE(texture_samplers[glUnit]))
+                    if(gl_texture_type == _TEXTURE && MGL_STATE(ctx)->texture_samplers[glUnit])
                     {
                         Sampler *gl_sampler;
 
-                        gl_sampler = STATE(texture_samplers[glUnit]);
+                        gl_sampler = MGL_STATE(ctx)->texture_samplers[glUnit];
 
                         // delete existing sampler if dirty
                         if (gl_sampler->dirty_bits)
@@ -402,8 +402,8 @@
 
                 id<MTLTexture> texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
                 id<MTLSamplerState> sampler = nil;
-                if (glUnit < TEXTURE_UNITS && STATE(texture_samplers[glUnit])) {
-                    Sampler *glSampler = STATE(texture_samplers[glUnit]);
+                if (glUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[glUnit]) {
+                    Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
                     if (glSampler->mtl_data == NULL) {
                         glSampler->mtl_data = (void *)CFBridgingRetain(
                             [self createMTLSamplerForTexParam:&glSampler->params target:ptr->target]);
@@ -449,7 +449,7 @@
                     continue;
                 }
 
-                Texture *ptr = STATE(image_units[glUnit].tex);
+                Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
                 if (!ptr || ![self bindMTLTexture:ptr] || !ptr->mtl_data) {
                     continue;
                 }
@@ -458,7 +458,7 @@
 
                 /* For storage images bound to a non-zero mipmap level, create
                  * a level-specific texture view (matches element 0 path). */
-                GLuint imgLevel = STATE(image_units[glUnit].level);
+                GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
                 if (imgLevel > 0u) {
                     NSUInteger sliceCount = texture.arrayLength;
                     if (texture.textureType == MTLTextureTypeCube ||
@@ -479,7 +479,7 @@
         }
     }
 
-    ctx->active_state->dirty_bits &= ~(DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
+    MGL_STATE(ctx)->dirty_bits &= ~(DIRTY_TEX_BINDING | DIRTY_SAMPLER | DIRTY_IMAGE_UNIT_STATE);
 
     return true;
 }
@@ -558,7 +558,7 @@
 
     // [computeCommandEncoder setThreadgroupMemoryLength:atIndex:
 
-    ctx->active_state->dirty_bits = 0;
+    MGL_STATE(ctx)->dirty_bits = 0;
 
     return true;
 }
@@ -596,12 +596,12 @@
     RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlDispatchCompute"]);
 
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *imageTexture = glm_ctx->active_state->image_units[unit].tex;
+        Texture *imageTexture = MGL_STATE(glm_ctx)->image_units[unit].tex;
         if (imageTexture) {
             RETURN_ON_FAILURE([self bindMTLTexture:imageTexture]);
         }
 
-        Texture *sampledTexture = glm_ctx->active_state->active_textures[unit];
+        Texture *sampledTexture = MGL_STATE(glm_ctx)->active_textures[unit];
         if (sampledTexture) {
             RETURN_ON_FAILURE([self bindMTLTexture:sampledTexture]);
         }
@@ -668,7 +668,7 @@
     }
 
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        ImageUnit *imageUnit = &glm_ctx->active_state->image_units[unit];
+        ImageUnit *imageUnit = &MGL_STATE(glm_ctx)->image_units[unit];
         Texture *imageTexture = imageUnit->tex;
         if (!imageTexture ||
             (imageUnit->access != GL_WRITE_ONLY && imageUnit->access != GL_READ_WRITE)) {
@@ -716,8 +716,8 @@
 
     ctx = glm_ctx;
 
-    Buffer *glIndirectBuffer = glm_ctx->active_state->buffers[_DISPATCH_INDIRECT_BUFFER];
-    if (glm_ctx->active_state->var.dispatch_indirect_buffer_binding == 0 || !glIndirectBuffer) {
+    Buffer *glIndirectBuffer = MGL_STATE(glm_ctx)->buffers[_DISPATCH_INDIRECT_BUFFER];
+    if (MGL_STATE(glm_ctx)->var.dispatch_indirect_buffer_binding == 0 || !glIndirectBuffer) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchComputeIndirect with no GL_DISPATCH_INDIRECT_BUFFER bound");
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
@@ -759,12 +759,12 @@
     RETURN_ON_FAILURE([self ensureWritableCommandBuffer:"mtlDispatchComputeIndirect"]);
 
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
-        Texture *imageTexture = glm_ctx->active_state->image_units[unit].tex;
+        Texture *imageTexture = MGL_STATE(glm_ctx)->image_units[unit].tex;
         if (imageTexture) {
             RETURN_ON_FAILURE([self bindMTLTexture:imageTexture]);
         }
 
-        Texture *sampledTexture = glm_ctx->active_state->active_textures[unit];
+        Texture *sampledTexture = MGL_STATE(glm_ctx)->active_textures[unit];
         if (sampledTexture) {
             RETURN_ON_FAILURE([self bindMTLTexture:sampledTexture]);
         }

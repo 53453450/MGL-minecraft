@@ -877,7 +877,7 @@ void bufferStorage(GLMContext ctx, Buffer *ptr, GLenum target, GLuint index, GLs
 
     mglFlushPendingDrawsForBuffer(ctx, ptr);
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -1055,7 +1055,7 @@ bool clearBufferData(GLMContext ctx, Buffer *ptr, GLenum internalformat, GLintpt
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -1785,7 +1785,7 @@ kern_return_t initBufferData(GLMContext ctx, Buffer *ptr, GLsizeiptr size, const
     if (!uniform_data_unchanged) {
         mglFlushPendingDrawsForBuffer(ctx, ptr);
 
-        /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+        /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
         if (ctx->sync_strict) {
             mglFlushCommandBuffer(ctx);
             ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -2129,7 +2129,7 @@ void mglBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizeiptr
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -2310,7 +2310,7 @@ void mglNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GLsiz
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -2462,7 +2462,7 @@ void copyBufferSubData(GLMContext ctx, Buffer *src_buf, Buffer *dst_buf, GLintpt
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
-    /* MGL_SYNC_STRICT: 强制 full flush + commit + waitUntilCompleted，用于排查回归 */
+    /* MGL_SYNC_STRICT: force a full flush + commit + waitUntilCompleted for regression triage */
     if (ctx->sync_strict) {
         mglFlushCommandBuffer(ctx);
         ctx->mtl_funcs.mtlFlush(ctx, true);
@@ -3046,8 +3046,9 @@ void *mglMapBufferRange(GLMContext ctx, GLenum target, GLintptr offset, GLsizeip
      * and are not tracked by mglFlushPendingDrawsForBuffer, so we must commit
      * and wait here to guarantee visibility of GPU writes.
      *
-     * MGL_SYNC_STRICT: 此处已执行 mglFlushCommandBuffer + mtlFlush(ctx, true)
-     * (commit + waitUntilCompleted)，属于保守路径，无需额外 strict 分支。 */
+     * MGL_SYNC_STRICT: mglFlushCommandBuffer + mtlFlush(ctx, true)
+     * (commit + waitUntilCompleted) already ran here, a conservative path
+     * that needs no extra strict branch. */
     if (access_flags & GL_MAP_READ_BIT) {
         mglFlushCommandBuffer(ctx);
         if (ctx->mtl_funcs.mtlFlush) {
@@ -3731,8 +3732,9 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         return;
     }
 
-    /* MGL_SYNC_STRICT: 此处已通过 mtlFlush(ctx, true) 完成 commit + waitUntilCompleted，
-     * 属于保守路径，无需额外 strict 分支（避免重复 double-wait）。 */
+    /* MGL_SYNC_STRICT: mtlFlush(ctx, true) already performed commit +
+     * waitUntilCompleted here, a conservative path needing no extra strict
+     * branch (avoids a double wait). */
     if (ctx->mtl_funcs.mtlFlush) {
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }

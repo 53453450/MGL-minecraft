@@ -1669,8 +1669,13 @@ static GLboolean mglSetSamplerUniformUnit(GLMContext ctx, GLint location, GLint 
                             hit);
         /* Invalidate the sampled-texture-unit bitmap so the next
          * mglProgramSamplesTextureUnit query rebuilds it with the new
-         * sampler binding. */
+         * sampler binding.  Also invalidate the merged state-level mask
+         * (active_sampled_texture_unit_mask): the sampler binding change
+         * alters the set of sampled units, and DIRTY_PROGRAM is not set
+         * here, so without this the draw-command hazard/rebuild paths
+         * would keep using the stale unit set. */
         program->sampled_texture_unit_mask_valid = 0u;
+        ctx->state.active_sampled_texture_unit_mask_valid = 0u;
         mglMarkRendererDirtyBits(&ctx->state,
                                  DIRTY_TEX_BINDING | DIRTY_SAMPLER);
     }
@@ -2860,6 +2865,7 @@ void mglUniform(GLMContext ctx, GLint location, void *ptr, GLsizeiptr size)
         if (buf) {
             buf->plain_uniform_slot = GL_TRUE;
             insertHashElement(&ctx->state.buffer_table, internalName, buf);
+            mglProgramPlainUniformSetActive(program, (GLuint)location);
         }
     }
 

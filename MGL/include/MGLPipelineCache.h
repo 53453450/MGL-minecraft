@@ -29,6 +29,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (instancetype)initWithWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
 @end
 
+@class MGLDepthStencilCacheKey;
+
 NS_ASSUME_NONNULL_END
 
 typedef struct MGLPipelineCacheState_t {
@@ -52,6 +54,7 @@ typedef struct MGLPipelineCacheState_t {
     NSMutableOrderedSet<MGLPipelineCacheKey *> *__strong _Nullable pipelineDescriptorCacheLRU;
     NSMutableDictionary *__strong _Nullable depthStencilStateCache;
     NSMutableOrderedSet *__strong _Nullable depthStencilStateCacheLRU;
+    MGLDepthStencilCacheKey *__strong _Nullable depthStencilCacheQueryKey;
     BOOL dsCacheEnabled;
     id<MTLBinaryArchive> __strong _Nullable binaryArchive;
     BOOL binaryArchiveEnabled;

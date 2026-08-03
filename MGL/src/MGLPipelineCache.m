@@ -71,6 +71,36 @@
 @property(nonatomic) MTLStencilOperation backDepthStencilPassOperation;
 @end
 
+/* Populates the key's fields from a MTLDepthStencilDescriptor. */
+static inline void MGLPopulateDepthStencilKey(MGLDepthStencilCacheKey *key,
+                                              MTLDepthStencilDescriptor *descriptor)
+{
+    key.depthCompareFunction = descriptor.depthCompareFunction;
+    key.depthWriteEnabled = descriptor.depthWriteEnabled;
+
+    MTLStencilDescriptor *front = descriptor.frontFaceStencil;
+    if (front) {
+        key.frontStencilPresent = YES;
+        key.frontStencilCompareFunction = front.stencilCompareFunction;
+        key.frontReadMask = front.readMask;
+        key.frontWriteMask = front.writeMask;
+        key.frontStencilFailureOperation = front.stencilFailureOperation;
+        key.frontDepthFailureOperation = front.depthFailureOperation;
+        key.frontDepthStencilPassOperation = front.depthStencilPassOperation;
+    }
+
+    MTLStencilDescriptor *back = descriptor.backFaceStencil;
+    if (back) {
+        key.backStencilPresent = YES;
+        key.backStencilCompareFunction = back.stencilCompareFunction;
+        key.backReadMask = back.readMask;
+        key.backWriteMask = back.writeMask;
+        key.backStencilFailureOperation = back.stencilFailureOperation;
+        key.backDepthFailureOperation = back.depthFailureOperation;
+        key.backDepthStencilPassOperation = back.depthStencilPassOperation;
+    }
+}
+
 @implementation MGLDepthStencilCacheKey
 
 - (BOOL)isEqual:(id)object
@@ -220,43 +250,27 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return state;
     }
 
-    MGLDepthStencilCacheKey *key = [MGLDepthStencilCacheKey new];
-    key.depthCompareFunction = descriptor.depthCompareFunction;
-    key.depthWriteEnabled = descriptor.depthWriteEnabled;
-
-    MTLStencilDescriptor *front = descriptor.frontFaceStencil;
-    if (front) {
-        key.frontStencilPresent = YES;
-        key.frontStencilCompareFunction = front.stencilCompareFunction;
-        key.frontReadMask = front.readMask;
-        key.frontWriteMask = front.writeMask;
-        key.frontStencilFailureOperation = front.stencilFailureOperation;
-        key.frontDepthFailureOperation = front.depthFailureOperation;
-        key.frontDepthStencilPassOperation = front.depthStencilPassOperation;
+    if (!_state.depthStencilCacheQueryKey) {
+        _state.depthStencilCacheQueryKey = [MGLDepthStencilCacheKey new];
     }
+    MGLDepthStencilCacheKey *key = _state.depthStencilCacheQueryKey;
+    MGLPopulateDepthStencilKey(key, descriptor);
 
-    MTLStencilDescriptor *back = descriptor.backFaceStencil;
-    if (back) {
-        key.backStencilPresent = YES;
-        key.backStencilCompareFunction = back.stencilCompareFunction;
-        key.backReadMask = back.readMask;
-        key.backWriteMask = back.writeMask;
-        key.backStencilFailureOperation = back.stencilFailureOperation;
-        key.backDepthFailureOperation = back.depthFailureOperation;
-        key.backDepthStencilPassOperation = back.depthStencilPassOperation;
-    }
-
+    /* Hit path uses the reusable query key (no per-lookup allocation).  The
+     * DS cache is small (cap 64) and distinct depth/stencil states are few,
+     * so we intentionally skip LRU-touch on hits — touching would require
+     * copying the hash key, reintroducing the per-lookup alloc this avoids. */
     id<MTLDepthStencilState> cached = _state.depthStencilStateCache[key];
     if (cached) {
-        MGLTouchLRU(_state.depthStencilStateCacheLRU, key);
         return cached;
     }
 
     id<MTLDepthStencilState> state = [_device newDepthStencilStateWithDescriptor:descriptor];
     MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
     if (state) {
-        _state.depthStencilStateCache[key] = state;
-        MGLTouchLRU(_state.depthStencilStateCacheLRU, key);
+        MGLDepthStencilCacheKey *cacheKey = [key copy];
+        _state.depthStencilStateCache[cacheKey] = state;
+        MGLTouchLRU(_state.depthStencilStateCacheLRU, cacheKey);
         if (_state.depthStencilStateCache.count > 64) {
             MGLEvictLRU(_state.depthStencilStateCache,
                         _state.depthStencilStateCacheLRU,
@@ -557,6 +571,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.pipelineDescriptorCacheLRU = nil;
     _state.depthStencilStateCache = nil;
     _state.depthStencilStateCacheLRU = nil;
+    _state.depthStencilCacheQueryKey = nil;
     _state.binaryArchive = nil;
 #if MGL_HAS_MTL4_COMPILER
     _state.mtl4Compiler = nil;

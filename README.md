@@ -172,7 +172,6 @@ MGL_TRACE_LOG=1
 MGL_TRACE_LOG_STDERR=1
 MGL_TRACE_LOG_DRAW=1
 MGL_TRACE_LOG_RESOURCES=1
-MGL_TRACE_LOG_GUI=1
 MGL_TRACE_LOG_PROGRAMS=91,92,93
 ```
 
@@ -182,7 +181,6 @@ MGL_TRACE_LOG_PROGRAMS=91,92,93
 | `MGL_TRACE_LOG_STDERR` | 将 trace 同步镜像到 `stderr`，默认关闭 |
 | `MGL_TRACE_LOG_DRAW` | 记录绘制调用与 draw replay 相关诊断 |
 | `MGL_TRACE_LOG_RESOURCES` | 记录更详细的 buffer/texture/sampler 绑定诊断 |
-| `MGL_TRACE_LOG_GUI` | 记录 GUI 相关诊断 |
 | `MGL_TRACE_LOG_PROGRAMS` | 只重点追踪指定 program，支持逗号/空格/分号/冒号分隔 |
 
 `MGL TRACE`、`MGL DUMP`、shader interface dump 等诊断输出统一进入 trace 文件。`MGL ERROR` / `MGL WARNING` 仍会保留在普通日志路径中，方便第一时间发现真实故障。

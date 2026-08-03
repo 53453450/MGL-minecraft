@@ -2018,27 +2018,6 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
                          numFaces:(uint)num_faces
              effectiveMipmapLevels:(GLuint *)outEffectiveMipmapLevels
                  storageMipmapped:(BOOL *)outStorageMipmapped;
-- (void)uploadDirty3DTextureLevels:(Texture *)tex
-                             metal:(id<MTLTexture>)texture
-                       pixelFormat:(MTLPixelFormat)pixelFormat
-                          numFaces:(uint)num_faces
-                  uploadLevelCount:(GLuint)upload_level_count
-                            texType:(MTLTextureType)tex_type
-                texture1DBackedBy2D:(BOOL)texture1DBackedBy2D;
-- (void)uploadDirtyArrayTextureLevels:(Texture *)tex
-                                metal:(id<MTLTexture>)texture
-                          pixelFormat:(MTLPixelFormat)pixelFormat
-                             numFaces:(uint)num_faces
-                     uploadLevelCount:(GLuint)upload_level_count
-                               texType:(MTLTextureType)tex_type
-                   texture1DBackedBy2D:(BOOL)texture1DBackedBy2D
-             texture1DArrayBackedBy2DArray:(BOOL)texture1DArrayBackedBy2DArray;
-- (void)uploadDirty2DTextureLevels:(Texture *)tex
-                             metal:(id<MTLTexture>)texture
-                       pixelFormat:(MTLPixelFormat)pixelFormat
-                          numFaces:(uint)num_faces
-                  uploadLevelCount:(GLuint)upload_level_count
-                texture1DBackedBy2D:(BOOL)texture1DBackedBy2D;
 - (void)logMTLTextureMipDiagnostics:(Texture *)tex
                               metal:(id<MTLTexture>)texture
                effectiveMipLevels:(GLuint)effective_mipmap_levels;
@@ -2202,22 +2181,29 @@ MTLVertexFormat glTypeSizeToMtlType(GLuint type, GLuint size, bool normalized)
                 break;
 
             case GL_UNSIGNED_INT_10_10_10_2:
-                /* Non-REV 布局: R 在 MSB(bits 22-31), A 在 LSB(bits 0-1)。
-                 * Metal 的 UInt1010102Normalized 是 REV 布局(R 在 LSB, A 在 MSB),
-                 * 两者 bit 序不兼容,无法直接映射。返回 Invalid 让调用方走 CPU 转换回退
-                 * (generateVertexDescriptor 中的 mglDoubleVertexAttribFloatFormat 路径)。 */
+                /* Non-REV layout: R in MSB (bits 22-31), A in LSB (bits 0-1).
+                 * Metal's UInt1010102Normalized is the REV layout (R in LSB,
+                 * A in MSB); the two bit orders are incompatible and cannot be
+                 * mapped directly.  Return Invalid so the caller falls back to
+                 * the CPU conversion path (the mglDoubleVertexAttribFloatFormat
+                 * path in generateVertexDescriptor). */
                 break;
 
-            /* GL_UNSIGNED_INT_10F_11F_11F_REV: 11/11/10 float packed 格式,Metal 没有对应
-             * 的 vertex format。返回 Invalid,需要 CPU 端解包为 float(类似 GL_DOUBLE 的
-             * mglDoubleVertexAttribFloatFormat 路径)。CPU 转换入口在 generateVertexDescriptor
-             * (MGLRenderer+RenderPass.m),需后续扩展以识别该 type。 */
+            /* GL_UNSIGNED_INT_10F_11F_11F_REV: 11/11/10 float packed format,
+             * with no corresponding Metal vertex format.  Return Invalid; the
+             * CPU must unpack it to float (like the GL_DOUBLE
+             * mglDoubleVertexAttribFloatFormat path).  The CPU conversion
+             * entry point lives in generateVertexDescriptor
+             * (MGLRenderer+RenderPass.m) and needs extending to recognize
+             * this type. */
             case GL_UNSIGNED_INT_10F_11F_11F_REV:
                 break;
 
-            /* GL_FIXED: 16.16 定点格式,Metal 没有 vertex format 对应。返回 Invalid,需要
-             * CPU 端解包为 float。CPU 转换入口在 generateVertexDescriptor
-             * (MGLRenderer+RenderPass.m),需后续扩展以识别该 type。 */
+            /* GL_FIXED: 16.16 fixed-point format, with no corresponding Metal
+             * vertex format.  Return Invalid; the CPU must unpack it to float.
+             * The CPU conversion entry point lives in generateVertexDescriptor
+             * (MGLRenderer+RenderPass.m) and needs extending to recognize
+             * this type. */
             case GL_FIXED:
                 break;
         }
@@ -3704,7 +3690,7 @@ void logDirtyBits(GLMContext ctx)
 
     ctx = glm_ctx;
 
-    if (!glm_ctx->active_state->caps.scissor_test) {
+    if (!MGL_STATE(glm_ctx)->caps.scissor_test) {
         [self endRenderEncoding];
 
         if (!_renderPassManager.state->currentCommandBuffer && ![self newCommandBuffer]) {
@@ -3712,7 +3698,7 @@ void logDirtyBits(GLMContext ctx)
             return;
         }
 
-        Framebuffer *fbo = glm_ctx->active_state->framebuffer;
+        Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
         if (fbo && (fbo->dirty_bits & DIRTY_FBO_BINDING)) {
             RETURN_ON_FAILURE([self bindFramebufferAttachmentTextures]);
             fbo->dirty_bits &= ~DIRTY_FBO_BINDING;
@@ -3725,15 +3711,15 @@ void logDirtyBits(GLMContext ctx)
         return;
     }
 
-    GLint rawX = glm_ctx->active_state->var.scissor_box[0];
-    GLint rawY = glm_ctx->active_state->var.scissor_box[1];
-    GLint rawW = glm_ctx->active_state->var.scissor_box[2];
-    GLint rawH = glm_ctx->active_state->var.scissor_box[3];
+    GLint rawX = MGL_STATE(glm_ctx)->var.scissor_box[0];
+    GLint rawY = MGL_STATE(glm_ctx)->var.scissor_box[1];
+    GLint rawW = MGL_STATE(glm_ctx)->var.scissor_box[2];
+    GLint rawH = MGL_STATE(glm_ctx)->var.scissor_box[3];
     if (rawW <= 0 || rawH <= 0) {
         return;
     }
 
-    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
+    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
     Texture *colorTexObj = NULL;
     Texture *depthTexObj = NULL;
     FBOAttachment *colorAttachment = NULL;
@@ -3744,15 +3730,15 @@ void logDirtyBits(GLMContext ctx)
     MGLMetalAttachmentSubresource depthSubresource = {0u, 0u, 0u};
 
     BOOL wantsColor = ((mask & GL_COLOR_BUFFER_BIT) != 0);
-    BOOL wantsDepth = ((mask & GL_DEPTH_BUFFER_BIT) != 0) && glm_ctx->active_state->var.depth_writemask;
+    BOOL wantsDepth = ((mask & GL_DEPTH_BUFFER_BIT) != 0) && MGL_STATE(glm_ctx)->var.depth_writemask;
 
     if (wantsColor) {
         BOOL colorMaskAllowsWrite =
-            !glm_ctx->active_state->caps.use_color_mask[0] ||
-            glm_ctx->active_state->var.color_writemask[0][0] ||
-            glm_ctx->active_state->var.color_writemask[0][1] ||
-            glm_ctx->active_state->var.color_writemask[0][2] ||
-            glm_ctx->active_state->var.color_writemask[0][3];
+            !MGL_STATE(glm_ctx)->caps.use_color_mask[0] ||
+            MGL_STATE(glm_ctx)->var.color_writemask[0][0] ||
+            MGL_STATE(glm_ctx)->var.color_writemask[0][1] ||
+            MGL_STATE(glm_ctx)->var.color_writemask[0][2] ||
+            MGL_STATE(glm_ctx)->var.color_writemask[0][3];
         if (!colorMaskAllowsWrite) {
             wantsColor = NO;
         }
@@ -3809,7 +3795,7 @@ void logDirtyBits(GLMContext ctx)
             wantsDepth = NO;
         }
     } else {
-        GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(glm_ctx->active_state->draw_buffer);
+        GLuint drawBufferIndex = mglDefaultDrawBufferIndexForGL(MGL_STATE(glm_ctx)->draw_buffer);
         if (wantsColor) {
             if (drawBufferIndex == _FRONT) {
                 if (!_drawable && _layer) {
@@ -3836,8 +3822,8 @@ void logDirtyBits(GLMContext ctx)
                 if (depthFormat == MTLPixelFormatInvalid) {
                     depthFormat = MTLPixelFormatDepth32Float;
                 }
-                NSUInteger depthWidth = colorTexture ? colorTexture.width : (NSUInteger)MAX(glm_ctx->active_state->viewport[2], 1);
-                NSUInteger depthHeight = colorTexture ? colorTexture.height : (NSUInteger)MAX(glm_ctx->active_state->viewport[3], 1);
+                NSUInteger depthWidth = colorTexture ? colorTexture.width : (NSUInteger)MAX(MGL_STATE(glm_ctx)->viewport[2], 1);
+                NSUInteger depthHeight = colorTexture ? colorTexture.height : (NSUInteger)MAX(MGL_STATE(glm_ctx)->viewport[3], 1);
                 depthTexture = [self newDrawBufferWithCustomSize:depthFormat
                                                   isDepthStencil:true
                                                       customSize:CGSizeMake(depthWidth, depthHeight)];
@@ -3879,7 +3865,7 @@ void logDirtyBits(GLMContext ctx)
     GLint clearW = x1 - x0;
     GLint clearH = y1 - y0;
     GLint metalY = y0;
-    if (glm_ctx->active_state->var.clip_origin != GL_UPPER_LEFT) {
+    if (MGL_STATE(glm_ctx)->var.clip_origin != GL_UPPER_LEFT) {
         metalY = (GLint)passHeight - y1;
         if (metalY < 0) {
             metalY = 0;
@@ -3903,12 +3889,12 @@ void logDirtyBits(GLMContext ctx)
 
     MGLClearRectParams params;
     params.color = (vector_float4){
-        glm_ctx->active_state->color_clear_value[0],
-        glm_ctx->active_state->color_clear_value[1],
-        glm_ctx->active_state->color_clear_value[2],
-        glm_ctx->active_state->color_clear_value[3]
+        MGL_STATE(glm_ctx)->color_clear_value[0],
+        MGL_STATE(glm_ctx)->color_clear_value[1],
+        MGL_STATE(glm_ctx)->color_clear_value[2],
+        MGL_STATE(glm_ctx)->color_clear_value[3]
     };
-    params.depth = (float)glm_ctx->active_state->var.depth_clear_value;
+    params.depth = (float)MGL_STATE(glm_ctx)->var.depth_clear_value;
     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
     MTLViewport viewport = {
@@ -4561,7 +4547,7 @@ Buffer *getElementBuffer(GLMContext ctx)
 
 Buffer *getIndirectBuffer(GLMContext ctx)
 {
-    Buffer *gl_indirect_buffer = STATE(buffers[_DRAW_INDIRECT_BUFFER]);
+    Buffer *gl_indirect_buffer = ctx->active_state->buffers[_DRAW_INDIRECT_BUFFER];
 
     return gl_indirect_buffer;
 }

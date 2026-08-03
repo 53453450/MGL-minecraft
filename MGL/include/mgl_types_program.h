@@ -317,6 +317,12 @@ typedef struct Program_t {
     uint64_t msl_texture_cache_generation;
     GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
+    /* Active-binding bitmap for plain_uniform_buffers: bit i is set iff
+     * plain_uniform_buffers[i].buf != NULL.  Maintained at uniform upload
+     * (uniforms.c) and link-time reflection (mgl_spirv_compile.c) so
+     * mglComputeDrawBufferBindingHashScan and mglTrackPendingBaseBufferReads
+     * can skip the ~84-slot linear scan.  84 bits fit in 2 × uint64_t. */
+    uint64_t plain_uniform_active_mask[2];
     char *attrib_location_names[MAX_ATTRIBS];
     GLboolean attrib_location_name_owned[MAX_ATTRIBS];
     /* Pre-link fragment output bindings set via glBindFragDataLocation(Indexed).
@@ -373,6 +379,18 @@ void mglProgramCopyActiveUniformName(const SpirvResource *res, GLsizei bufSize, 
 GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuint expectedName);
 void mglRetainProgramReference(GLMContext ctx, Program *program);
 void mglReleaseProgramReference(GLMContext ctx, Program *program);
+
+/* plain_uniform_active_mask helper.  Called at uniform upload / link-time
+ * reflection to keep the bitmap in sync with which plain_uniform_buffers
+ * slots have buf != NULL.  Draw-command hot paths (hash + hazard tracker)
+ * use the bitmap to skip the ~84-slot linear scan.  Slots are only ever
+ * populated (never cleared) while a program is alive, so this is the only
+ * helper the maintenance sites need. */
+static inline void mglProgramPlainUniformSetActive(Program *program, GLuint index)
+{
+    if (!program || index >= MAX_BINDABLE_BUFFERS) return;
+    program->plain_uniform_active_mask[index >> 6] |= (uint64_t)1u << (index & 63u);
+}
 
 typedef struct ProgramPipeline_t {
     GLuint name;

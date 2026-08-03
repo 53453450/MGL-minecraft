@@ -305,12 +305,15 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 
 /* === Aggregate imports of per-category private headers ===
  * These headers declare ObjC methods and C helpers implemented in each
- * category file.  They import MGLRenderer_Private.h for ivar/types access;
- * the include guards prevent infinite recursion.  Importing them here means
- * existing code that imports just MGLRenderer_Private.h continues to see ALL
- * declarations. */
+ * category file.  They import MGLRenderer.h (interface + glm_context types)
+ * only — no include cycle with MGLRenderer_Private.h.  Importing them here
+ * means existing code that imports just MGLRenderer_Private.h continues to
+ * see ALL declarations. */
 #import "MGLRenderer+Draw_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
+#import "MGLRenderer+Binding_Private.h"
+#import "MGLRenderer+VertexLayout_Private.h"
+#import "MGLRenderer+GPURecovery_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #import "MGLRenderer+Texture_Private.h"
 #import "MGLRenderer+QuerySync_Private.h"

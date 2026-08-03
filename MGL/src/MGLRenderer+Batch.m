@@ -100,7 +100,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)markCurrentFramebufferColorAttachmentWrittenAtIndex:(GLuint)attachmentIndex
 {
-    Framebuffer *fbo = ctx ? ctx->active_state->framebuffer : NULL;
+    Framebuffer *fbo = ctx ? MGL_STATE(ctx)->framebuffer : NULL;
     if (!fbo || attachmentIndex >= MAX_COLOR_ATTACHMENTS) {
         return;
     }
@@ -155,29 +155,29 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             mglTraceLog("RT_SAMPLE_COPY_WRITE_MARK hit=%llu fbo=%u program=%u rtTex=%u label=\"%s\" depthTex=%u depthLabel=\"%s\" viewport=%d,%d,%d,%d scissor(en=%d box=%d,%d,%d,%d) depth(test=%d write=%d func=0x%x) blend=%d cull=%d colorMask=%d%d%d%d level=%u texInit(ever=%u full=%u source=%u) levels=%u mips=%u mipmapped=%u mtlColor=%p fmt=%lu size=%lux%lu rpColor=%p rpDepth=%p depthMTL=%p",
                         (unsigned long long)hit,
                         (unsigned)fbo->name,
-                        program ? (unsigned)program->name : (unsigned)(ctx ? ctx->active_state->program_name : 0u),
+                        program ? (unsigned)program->name : (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
                         (unsigned)mglTraceTextureName(tex),
                         mglTraceTextureLabel(tex),
                         (unsigned)mglTraceTextureName(rtDepth),
                         mglTraceTextureLabel(rtDepth),
-                  (int)ctx->active_state->viewport[0],
-                  (int)ctx->active_state->viewport[1],
-                  (int)ctx->active_state->viewport[2],
-                  (int)ctx->active_state->viewport[3],
-                  ctx->active_state->caps.scissor_test ? 1 : 0,
-                  (int)ctx->active_state->var.scissor_box[0],
-                  (int)ctx->active_state->var.scissor_box[1],
-                  (int)ctx->active_state->var.scissor_box[2],
-                  (int)ctx->active_state->var.scissor_box[3],
-                  ctx->active_state->caps.depth_test ? 1 : 0,
-                  ctx->active_state->var.depth_writemask ? 1 : 0,
-                  (unsigned)ctx->active_state->var.depth_func,
-                  ctx->active_state->caps.blend ? 1 : 0,
-                  ctx->active_state->caps.cull_face ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][3] ? 1 : 0,
+                  (int)MGL_STATE(ctx)->viewport[0],
+                  (int)MGL_STATE(ctx)->viewport[1],
+                  (int)MGL_STATE(ctx)->viewport[2],
+                  (int)MGL_STATE(ctx)->viewport[3],
+                  MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
+                  (int)MGL_STATE(ctx)->var.scissor_box[0],
+                  (int)MGL_STATE(ctx)->var.scissor_box[1],
+                  (int)MGL_STATE(ctx)->var.scissor_box[2],
+                  (int)MGL_STATE(ctx)->var.scissor_box[3],
+                  MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
+                  MGL_STATE(ctx)->var.depth_writemask ? 1 : 0,
+                  (unsigned)MGL_STATE(ctx)->var.depth_func,
+                  MGL_STATE(ctx)->caps.blend ? 1 : 0,
+                  MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][0] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][1] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][2] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][3] ? 1 : 0,
                   (unsigned)attachment->level,
                   mglTextureAttachmentLevel(tex, attachment->level)
                       ? (unsigned)mglTextureAttachmentLevel(tex, attachment->level)->ever_written : 0u,
@@ -201,7 +201,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)markCurrentFramebufferDrawAttachmentsWritten
 {
-    Framebuffer *fbo = ctx ? ctx->active_state->framebuffer : NULL;
+    Framebuffer *fbo = ctx ? MGL_STATE(ctx)->framebuffer : NULL;
     if (!fbo) {
         return;
     }
@@ -297,7 +297,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     // 128 bits long.. do it on 4 parts
     for(int i=0; i<4; i++)
     {
-        unsigned mask = STATE(active_texture_mask[i]);
+        unsigned mask = MGL_STATE(ctx)->active_texture_mask[i];
 
         if (mask)
         {
@@ -308,11 +308,11 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                     Texture *tex;
                     int unit = i * 32 + bitpos;
 
-                    tex = STATE(active_textures[unit]);
+                    tex = MGL_STATE(ctx)->active_textures[unit];
                     if (!tex)
                     {
                         // Stale active texture mask bit; clear it and continue.
-                        STATE(active_texture_mask[i]) &= ~(0x1u << bitpos);
+                        MGL_STATE(ctx)->active_texture_mask[i] &= ~(0x1u << bitpos);
                         mglInvalidateStateHashCachesForDirtyBits(ctx->active_state,
                                                                 DIRTY_TEX_BINDING);
                         continue;
@@ -339,7 +339,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 /* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
  *
  * These centralize all writes to _core.activeState and ctx->active_state so
- * that the invariant ("MGL_STATE(ctx) and STATE(ctx) return the same
+ * that the invariant ("MGL_STATE(ctx) and MGL_STATE(ctx)->ctx) return the same
  * GLMState") cannot be broken by a caller forgetting to update one side.
  *
  * Valid invariant configurations:
@@ -365,7 +365,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
      * of letting it manifest as wrong binds/dirty bits later. */
     NSCAssert(_core.activeState == NULL || _core.activeState == glm_ctx->active_state,
               @"DUAL-PROXY DESYNC: _activeState != ctx->active_state — "
-              @"STATE() and MGL_STATE() would read different GLMState objects");
+              @"MGL_STATE() and STATE() would read different GLMState objects");
 }
 
 - (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
@@ -468,41 +468,41 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
     /* VAO */
     uint32_t vaoName = key->vao_name;
-    if (vaoName != (glm_ctx->active_state->vao ? glm_ctx->active_state->vao->name : 0)) {
+    if (vaoName != (MGL_STATE(glm_ctx)->vao ? MGL_STATE(glm_ctx)->vao->name : 0)) {
         VertexArray *vaoInst = NULL;
         if (vaoName != 0) {
-            vaoInst = (VertexArray *)searchHashTable(&glm_ctx->active_state->vao_table, vaoName);
+            vaoInst = (VertexArray *)searchHashTable(&MGL_STATE(glm_ctx)->vao_table, vaoName);
         }
-        glm_ctx->active_state->vao = vaoInst;
+        MGL_STATE(glm_ctx)->vao = vaoInst;
     }
 
     /* FBO */
     uint32_t batchFBO = key->fbo_name;
-    uint32_t currentFBO = glm_ctx->active_state->framebuffer ? glm_ctx->active_state->framebuffer->name : 0;
+    uint32_t currentFBO = MGL_STATE(glm_ctx)->framebuffer ? MGL_STATE(glm_ctx)->framebuffer->name : 0;
     if (batchFBO != currentFBO) {
         Framebuffer *fbo = NULL;
         if (batchFBO != 0) {
-            fbo = (Framebuffer *)searchHashTable(&glm_ctx->active_state->framebuffer_table, batchFBO);
+            fbo = (Framebuffer *)searchHashTable(&MGL_STATE(glm_ctx)->framebuffer_table, batchFBO);
         }
-        glm_ctx->active_state->framebuffer = fbo;
+        MGL_STATE(glm_ctx)->framebuffer = fbo;
     }
     mglRendererSyncFramebufferBindingNames(glm_ctx);
 
     /* Viewport */
-    glm_ctx->active_state->viewport[0] = key->viewport[0];
-    glm_ctx->active_state->viewport[1] = key->viewport[1];
-    glm_ctx->active_state->viewport[2] = key->viewport[2];
-    glm_ctx->active_state->viewport[3] = key->viewport[3];
+    MGL_STATE(glm_ctx)->viewport[0] = key->viewport[0];
+    MGL_STATE(glm_ctx)->viewport[1] = key->viewport[1];
+    MGL_STATE(glm_ctx)->viewport[2] = key->viewport[2];
+    MGL_STATE(glm_ctx)->viewport[3] = key->viewport[3];
 
     /* Scissor */
     if (key->scissor_enabled) {
-        glm_ctx->active_state->caps.scissor_test = true;
-        glm_ctx->active_state->var.scissor_box[0] = key->scissor[0];
-        glm_ctx->active_state->var.scissor_box[1] = key->scissor[1];
-        glm_ctx->active_state->var.scissor_box[2] = key->scissor[2];
-        glm_ctx->active_state->var.scissor_box[3] = key->scissor[3];
+        MGL_STATE(glm_ctx)->caps.scissor_test = true;
+        MGL_STATE(glm_ctx)->var.scissor_box[0] = key->scissor[0];
+        MGL_STATE(glm_ctx)->var.scissor_box[1] = key->scissor[1];
+        MGL_STATE(glm_ctx)->var.scissor_box[2] = key->scissor[2];
+        MGL_STATE(glm_ctx)->var.scissor_box[3] = key->scissor[3];
     } else {
-        glm_ctx->active_state->caps.scissor_test = false;
+        MGL_STATE(glm_ctx)->caps.scissor_test = false;
     }
 }
 
@@ -544,7 +544,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     }
 
     VertexArray *vao = mglRendererGetValidatedVAO(glm_ctx, "replay.batch.trace");
-    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
+    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
     GLuint fboName = 0u;
     if (fbo &&
         mglRendererObjectPointerLikelyValid(fbo) &&
@@ -592,36 +592,36 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 (unsigned)snapshotFBOName,
                 snapshot ? snapshot->vao : NULL,
                 (unsigned)currentProgramKey,
-                (unsigned)glm_ctx->active_state->program_name,
-                (unsigned)glm_ctx->active_state->var.program_pipeline_binding,
+                (unsigned)MGL_STATE(glm_ctx)->program_name,
+                (unsigned)MGL_STATE(glm_ctx)->var.program_pipeline_binding,
                 vertexProgram ? (unsigned)vertexProgram->name : 0u,
                 fragmentProgram ? (unsigned)fragmentProgram->name : 0u,
                 (unsigned)fboName,
                 vao,
                 vao ? (unsigned)vao->enabled_attribs : 0u,
-                (int)glm_ctx->active_state->viewport[0],
-                (int)glm_ctx->active_state->viewport[1],
-                (int)glm_ctx->active_state->viewport[2],
-                (int)glm_ctx->active_state->viewport[3],
-                glm_ctx->active_state->caps.scissor_test ? 1 : 0,
-                (int)glm_ctx->active_state->var.scissor_box[0],
-                (int)glm_ctx->active_state->var.scissor_box[1],
-                (int)glm_ctx->active_state->var.scissor_box[2],
-                (int)glm_ctx->active_state->var.scissor_box[3],
-                (unsigned)glm_ctx->active_state->draw_buffer,
-                (unsigned)glm_ctx->active_state->read_buffer,
-                glm_ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-                glm_ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-                glm_ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-                glm_ctx->active_state->var.color_writemask[0][3] ? 1 : 0,
-                glm_ctx->active_state->caps.depth_test ? 1 : 0,
-                glm_ctx->active_state->var.depth_writemask ? 1 : 0,
-                (unsigned)glm_ctx->active_state->var.depth_func,
-                glm_ctx->active_state->caps.blend ? 1 : 0,
-                glm_ctx->active_state->caps.cull_face ? 1 : 0,
-                (unsigned)glm_ctx->active_state->var.cull_face_mode,
-                (unsigned)glm_ctx->active_state->var.front_face,
-                (unsigned)glm_ctx->active_state->dirty_bits,
+                (int)MGL_STATE(glm_ctx)->viewport[0],
+                (int)MGL_STATE(glm_ctx)->viewport[1],
+                (int)MGL_STATE(glm_ctx)->viewport[2],
+                (int)MGL_STATE(glm_ctx)->viewport[3],
+                MGL_STATE(glm_ctx)->caps.scissor_test ? 1 : 0,
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[0],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[1],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[2],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[3],
+                (unsigned)MGL_STATE(glm_ctx)->draw_buffer,
+                (unsigned)MGL_STATE(glm_ctx)->read_buffer,
+                MGL_STATE(glm_ctx)->var.color_writemask[0][0] ? 1 : 0,
+                MGL_STATE(glm_ctx)->var.color_writemask[0][1] ? 1 : 0,
+                MGL_STATE(glm_ctx)->var.color_writemask[0][2] ? 1 : 0,
+                MGL_STATE(glm_ctx)->var.color_writemask[0][3] ? 1 : 0,
+                MGL_STATE(glm_ctx)->caps.depth_test ? 1 : 0,
+                MGL_STATE(glm_ctx)->var.depth_writemask ? 1 : 0,
+                (unsigned)MGL_STATE(glm_ctx)->var.depth_func,
+                MGL_STATE(glm_ctx)->caps.blend ? 1 : 0,
+                MGL_STATE(glm_ctx)->caps.cull_face ? 1 : 0,
+                (unsigned)MGL_STATE(glm_ctx)->var.cull_face_mode,
+                (unsigned)MGL_STATE(glm_ctx)->var.front_face,
+                (unsigned)MGL_STATE(glm_ctx)->dirty_bits,
                 _renderPassManager.state->currentRenderEncoder,
                 _pipelineCache.state->pipelineState,
                 (unsigned)_renderPassManager.state->renderPassFramebufferName,
@@ -676,7 +676,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         mglPointerRangeIsReadable(ebo, sizeof(*ebo))) {
         eboName = ebo->name;
     }
-    Framebuffer *fbo = glm_ctx->active_state->framebuffer;
+    Framebuffer *fbo = MGL_STATE(glm_ctx)->framebuffer;
     GLuint fboName = 0u;
     if (fbo &&
         mglRendererObjectPointerLikelyValid(fbo) &&
@@ -692,12 +692,12 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         : NULL;
     Texture *color0Texture = mglTraceFramebufferAttachmentTexture(glm_ctx, color0Attachment);
     Texture *depthTexture = fbo ? mglTraceFramebufferAttachmentTexture(glm_ctx, &fbo->depth) : NULL;
-    Texture *unit0Active = glm_ctx->active_state->active_textures[0];
-    Texture *unit0Tex2D = glm_ctx->active_state->texture_units[0].textures[_TEXTURE_2D];
-    Texture *unit1Active = glm_ctx->active_state->active_textures[1];
-    Texture *unit1Tex2D = glm_ctx->active_state->texture_units[1].textures[_TEXTURE_2D];
-    Texture *unit2Active = glm_ctx->active_state->active_textures[2];
-    Texture *unit2Tex2D = glm_ctx->active_state->texture_units[2].textures[_TEXTURE_2D];
+    Texture *unit0Active = MGL_STATE(glm_ctx)->active_textures[0];
+    Texture *unit0Tex2D = MGL_STATE(glm_ctx)->texture_units[0].textures[_TEXTURE_2D];
+    Texture *unit1Active = MGL_STATE(glm_ctx)->active_textures[1];
+    Texture *unit1Tex2D = MGL_STATE(glm_ctx)->texture_units[1].textures[_TEXTURE_2D];
+    Texture *unit2Active = MGL_STATE(glm_ctx)->active_textures[2];
+    Texture *unit2Tex2D = MGL_STATE(glm_ctx)->texture_units[2].textures[_TEXTURE_2D];
     GLuint cEver = 0u, cFull = 0u, cSource = 0u;
     GLuint dEver = 0u, dFull = 0u, dSource = 0u;
     mglTraceTextureLevelSummary(color0Texture,
@@ -795,27 +795,27 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 unit1Tex2D ? (unsigned)unit1Tex2D->name : 0u,
                 unit2Active ? (unsigned)unit2Active->name : 0u,
                 unit2Tex2D ? (unsigned)unit2Tex2D->name : 0u,
-                (int)glm_ctx->active_state->viewport[0],
-                (int)glm_ctx->active_state->viewport[1],
-                (int)glm_ctx->active_state->viewport[2],
-                (int)glm_ctx->active_state->viewport[3],
-                glm_ctx->active_state->caps.scissor_test ? 1 : 0,
-                (int)glm_ctx->active_state->var.scissor_box[0],
-                (int)glm_ctx->active_state->var.scissor_box[1],
-                (int)glm_ctx->active_state->var.scissor_box[2],
-                (int)glm_ctx->active_state->var.scissor_box[3],
-                (unsigned)glm_ctx->active_state->draw_buffer,
-                (unsigned)glm_ctx->active_state->read_buffer,
-                glm_ctx->active_state->caps.depth_test ? 1 : 0,
-                glm_ctx->active_state->var.depth_writemask ? 1 : 0,
-                (unsigned)glm_ctx->active_state->var.depth_func,
-                (double)glm_ctx->active_state->var.depth_clear_value,
-                glm_ctx->active_state->caps.blend ? 1 : 0,
-                glm_ctx->active_state->caps.cull_face ? 1 : 0,
-	                glm_ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-		                glm_ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-		                glm_ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-		                glm_ctx->active_state->var.color_writemask[0][3] ? 1 : 0);
+                (int)MGL_STATE(glm_ctx)->viewport[0],
+                (int)MGL_STATE(glm_ctx)->viewport[1],
+                (int)MGL_STATE(glm_ctx)->viewport[2],
+                (int)MGL_STATE(glm_ctx)->viewport[3],
+                MGL_STATE(glm_ctx)->caps.scissor_test ? 1 : 0,
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[0],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[1],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[2],
+                (int)MGL_STATE(glm_ctx)->var.scissor_box[3],
+                (unsigned)MGL_STATE(glm_ctx)->draw_buffer,
+                (unsigned)MGL_STATE(glm_ctx)->read_buffer,
+                MGL_STATE(glm_ctx)->caps.depth_test ? 1 : 0,
+                MGL_STATE(glm_ctx)->var.depth_writemask ? 1 : 0,
+                (unsigned)MGL_STATE(glm_ctx)->var.depth_func,
+                (double)MGL_STATE(glm_ctx)->var.depth_clear_value,
+                MGL_STATE(glm_ctx)->caps.blend ? 1 : 0,
+                MGL_STATE(glm_ctx)->caps.cull_face ? 1 : 0,
+	                MGL_STATE(glm_ctx)->var.color_writemask[0][0] ? 1 : 0,
+		                MGL_STATE(glm_ctx)->var.color_writemask[0][1] ? 1 : 0,
+		                MGL_STATE(glm_ctx)->var.color_writemask[0][2] ? 1 : 0,
+		                MGL_STATE(glm_ctx)->var.color_writemask[0][3] ? 1 : 0);
 
     if (submitPhase && (fsSlotHasRT || fsSlotUsedCopy || mglProgramNeedsBindingTrace(fragmentProgram))) {
         mglTraceLog("REPLAY_CMD_TEXSLOTS flush=%llu batch=%u cmd=%u program=%u vs=%u fs=%u pipelineProgram=%u "
@@ -1041,7 +1041,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                      * diverged (shouldn't happen, but fail gracefully). */
                     _activeState = glm_ctx->active_state;
                 }
-                glm_ctx->active_state->dirty_bits = 0;
+                MGL_STATE(glm_ctx)->dirty_bits = 0;
                 MGL_PERF_INC(g_mglSameKeyRestoreSkipsSinceSwap);
             } else {
                 /* Per-batch Metal vertex-buffer contract: dynamic BindVertexBuffer
@@ -1239,28 +1239,28 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
          * may have been reallocated since the snapshot was taken, making the
          * snapshot's copies stale (use-after-free risk).  Preserve the live
          * HashTables from savedState so lookups during replay remain valid. */
-        glm_ctx->active_state->vao_table                 = savedState->vao_table;
-        glm_ctx->active_state->buffer_table              = savedState->buffer_table;
-        glm_ctx->active_state->texture_table             = savedState->texture_table;
-        glm_ctx->active_state->shader_table              = savedState->shader_table;
-        glm_ctx->active_state->program_table             = savedState->program_table;
-        glm_ctx->active_state->program_pipeline_table    = savedState->program_pipeline_table;
-        glm_ctx->active_state->transform_feedback_table  = savedState->transform_feedback_table;
-        glm_ctx->active_state->renderbuffer_table        = savedState->renderbuffer_table;
-        glm_ctx->active_state->framebuffer_table         = savedState->framebuffer_table;
-        glm_ctx->active_state->sampler_table             = savedState->sampler_table;
+        MGL_STATE(glm_ctx)->vao_table                 = savedState->vao_table;
+        MGL_STATE(glm_ctx)->buffer_table              = savedState->buffer_table;
+        MGL_STATE(glm_ctx)->texture_table             = savedState->texture_table;
+        MGL_STATE(glm_ctx)->shader_table              = savedState->shader_table;
+        MGL_STATE(glm_ctx)->program_table             = savedState->program_table;
+        MGL_STATE(glm_ctx)->program_pipeline_table    = savedState->program_pipeline_table;
+        MGL_STATE(glm_ctx)->transform_feedback_table  = savedState->transform_feedback_table;
+        MGL_STATE(glm_ctx)->renderbuffer_table        = savedState->renderbuffer_table;
+        MGL_STATE(glm_ctx)->framebuffer_table         = savedState->framebuffer_table;
+        MGL_STATE(glm_ctx)->sampler_table             = savedState->sampler_table;
         /* The 11 cold buffer_base types need no restore: the hot copy above
          * skips them and nothing in replay writes them, so active_state still
          * holds the pre-flush live values (== savedState). */
-        mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
-                                     glm_ctx->active_state->var.program_pipeline_binding);
+        mglRestoreProgramPipelinePair(glm_ctx, MGL_STATE(glm_ctx)->program_name,
+                                     MGL_STATE(glm_ctx)->var.program_pipeline_binding);
     } else {
         [self restoreStateFromKey:&batch->key context:glm_ctx];
     }
     /* Activate snapshot-based state access for sync functions.
      * _activeState points to ctx->state (which now holds the snapshot data). */
     _activeState = glm_ctx->active_state;
-    glm_ctx->active_state->dirty_bits = 0;
+    MGL_STATE(glm_ctx)->dirty_bits = 0;
 
     static const GLuint kMGLFullReplayDirtyBits =
         (DIRTY_PROGRAM | DIRTY_VAO | DIRTY_RENDER_STATE |
@@ -1324,7 +1324,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     }
     replayDirtyBits |= forcedDirtyBits;
 
-    Framebuffer *replayFBO = glm_ctx->active_state->framebuffer;
+    Framebuffer *replayFBO = MGL_STATE(glm_ctx)->framebuffer;
     if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
         (prevKeyValid && prevKey->fbo_name != batch->key.fbo_name) ||
         (_renderPassManager.state->currentRenderEncoder &&
@@ -1378,10 +1378,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
      * Clear only renderer-consumed legacy bits; deriving flags from those bits
      * would force an unnecessary hash recompute after every non-empty flush. */
     mglClearStateDirtyBitsPreservingHashInvalidation(glm_ctx->active_state);
-    mglRestoreProgramPipelinePair(glm_ctx, glm_ctx->active_state->program_name,
-                                  glm_ctx->active_state->var.program_pipeline_binding);
+    mglRestoreProgramPipelinePair(glm_ctx, MGL_STATE(glm_ctx)->program_name,
+                                  MGL_STATE(glm_ctx)->var.program_pipeline_binding);
     if (savedError == GL_NO_ERROR && replayError != GL_NO_ERROR) {
-        glm_ctx->active_state->error = replayError;
+        MGL_STATE(glm_ctx)->error = replayError;
     }
 }
 
@@ -1411,8 +1411,8 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     }
 
     if ([self processGLState:true] == false) {
-        if (glm_ctx->active_state->error != GL_NO_ERROR) {
-            *replayError = glm_ctx->active_state->error;
+        if (MGL_STATE(glm_ctx)->error != GL_NO_ERROR) {
+            *replayError = MGL_STATE(glm_ctx)->error;
         }
         [self traceReplayBatch:batch context:glm_ctx flushId:flushId
                     batchIndex:batchIndex phase:"SKIP_PROCESS_STATE"];

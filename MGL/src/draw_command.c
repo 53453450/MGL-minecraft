@@ -416,22 +416,27 @@ static inline uint64_t mglRotateLeft64(uint64_t x, int n)
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #include <arm_neon.h>
 
-static uint64_t mglHashBytes64_SIMD(const void *data, size_t size, uint64_t seed)
+static inline uint64_t mglHashBytes64_SIMD(const void *data, size_t size, uint64_t seed)
 {
     const unsigned char *bytes = (const unsigned char *)data;
     uint64_t hash = seed ^ 0xcbf29ce484222325ULL;
 
     if (!bytes) return hash;
 
-    /* SIMD path: process 16-byte chunks with NEON */
-    if (size >= 16) {
+    /* SIMD path: process 16-byte chunks with NEON.
+     * Threshold is 32 bytes (2+ chunks): for 16-byte inputs the scalar
+     * 8-byte loop is faster because the NEON path's vectorized XOR is
+     * offset by 2× lane extraction + scalar multiply (vmulq_u64 carries
+     * 128-bit product, unsuitable for FNV-1a).  Small inputs dominate
+     * mglComputeRenderStateHash (~15 calls of 4-32 bytes) and
+     * mglHashCurrentVertexAttrib (4 calls of 4-16 bytes per attrib). */
+    if (size >= 32) {
         const uint8_t *ptr = bytes;
         size_t chunks = size / 16;
 
         /* Load FNV prime as vector for parallel multiply */
         const uint64_t fnv_prime = 0x100000001b3ULL;
         uint64x2_t hash_vec = vdupq_n_u64(hash);
-        uint64x2_t prime_vec = vdupq_n_u64(fnv_prime);
 
         for (size_t c = 0; c < chunks; c++) {
             /* Load 16 bytes as 2x uint64 */
@@ -486,7 +491,7 @@ static uint64_t mglHashBytes64_SIMD(const void *data, size_t size, uint64_t seed
 }
 #endif
 
-static uint64_t mglHashBytes64(const void *data, size_t size, uint64_t seed)
+static inline uint64_t mglHashBytes64(const void *data, size_t size, uint64_t seed)
 {
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
     /* Use SIMD version on ARM with NEON support */
@@ -902,13 +907,17 @@ static void mglTrackPendingFramebufferTextureWrites(GLMContext ctx)
 }
 
 /*
- * mglFlushPendingDrawsBeforeFramebufferTextureWrites — 帧缓冲附件写后读危害刷新
+ * mglFlushPendingDrawsBeforeFramebufferTextureWrites — flush on post-framebuffer-attachment
+ * write/read hazards
  *
- * 触发条件：待处理 draw 读取了当前绑定 FBO 的颜色/深度/模板附件所对应 texture 时 flush。
- * 保证语义：防止写后读（WAR）危害——前序 draw 采样了某附件 texture，而新 draw 又将写入该附件；
- *           确保采样读到的是前序 draw 完成后的内容，而非新 draw 覆盖后的内容。
- * 溢出退化：当 texture_read_overflow 置位时退化为无条件全刷新。
- * 附加行为：命中时输出 trace 日志（前 64 次及之后每 512 次一次）。
+ * Trigger: flush when a pending draw read the texture backing any color/depth/stencil
+ * attachment of the currently bound FBO.
+ * Guarantee: prevents WAR (write-after-read) hazards — an earlier draw sampled an
+ * attachment texture that a new draw will now write; ensure the sampling reads the
+ * earlier draw's output, not the new draw's overwrite.
+ * Overflow degradation: when texture_read_overflow is set, degrade to an unconditional
+ * full flush.
+ * Extra behavior: emits a trace log on hit (first 64 hits, then every 512th).
  */
 static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
 {
@@ -991,12 +1000,15 @@ static void mglFlushPendingDrawsBeforeFramebufferTextureWrites(GLMContext ctx)
 }
 
 /*
- * mglPendingDrawsReadBufferRange — 缓冲区范围读危害查询
+ * mglPendingDrawsReadBufferRange — buffer-range read hazard query
  *
- * 触发条件：当待处理 draw 读取的缓冲区范围与 [offset, offset+size) 存在重叠时返回 true。
- * 保证语义：为 CPU 端写入缓冲区前的按范围危害检测提供基础，避免破坏已编码 draw 的读取。
- * 溢出退化：当 buffer_read_range_overflow 置位时退化为对任意 buffer/range 均返回 true，
- *           使随后的 flush 调用退化为无条件全刷新。
+ * Trigger: returns true when a pending draw reads a buffer range overlapping
+ * [offset, offset+size).
+ * Guarantee: provides the per-range hazard detection a CPU-side write performs
+ * before overwriting a buffer, so an encoded draw's reads are not broken.
+ * Overflow degradation: when buffer_read_range_overflow is set, return true for
+ * any buffer/range, which degrades the subsequent flush to an unconditional
+ * full flush.
  */
 bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size)
 {
@@ -1027,11 +1039,13 @@ bool mglPendingDrawsReadBufferRange(GLMContext ctx, void *buffer, int64_t offset
 }
 
 /*
- * mglPendingDrawsWriteTexture — 纹理写危害查询
+ * mglPendingDrawsWriteTexture — texture write hazard query
  *
- * 触发条件：当待处理 draw 写入了给定 texture 时返回 true。
- * 保证语义：检测 RAW/写后读危害，确保后续对该纹理的采样不会读到陈旧的写入。
- * 溢出退化：当 texture_write_overflow 置位时退化为对任意 texture 均返回 true。
+ * Trigger: returns true when a pending draw wrote the given texture.
+ * Guarantee: detects RAW (read-after-write) hazards, ensuring later sampling
+ * of the texture does not read a stale write.
+ * Overflow degradation: when texture_write_overflow is set, return true for
+ * any texture.
  */
 bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
 {
@@ -1045,29 +1059,34 @@ bool mglPendingDrawsWriteTexture(GLMContext ctx, void *texture)
         return true;
     }
 
-    /* O(1) membership via hash-set index instead of O(n) scan. */
+    /* O(1) membership via hash-set index instead of O(n) scan.
+     * Query path is side-effect free: if the table is degenerate (every
+     * slot occupied but no match), we conservatively return true without
+     * setting texture_write_overflow.  The insert path already sets the
+     * sticky overflow flag when capacity is exhausted, so the next insert
+     * will latch overflow and trigger the conservative flush on subsequent
+     * queries.  Avoiding writes here keeps queries pure and predictable. */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_WRITE_INDEX_MASK);
     uint32_t start_slot = slot;
-    uint32_t probes = 0;
-    for (;;) {
+    do {
         uint32_t entry = cb->texture_write_index[slot];
         if (entry == 0) return false;                /* empty — not present */
         if (cb->texture_write_objects[entry - 1] == texture) return true;
         slot = (slot + 1) & MGL_TEX_WRITE_INDEX_MASK; /* probe */
-        if (++probes > (MGL_TEX_WRITE_INDEX_MASK + 1) || slot == start_slot) {
-            /* Probed entire table without finding empty slot or match — treat as overflow */
-            cb->texture_write_overflow = true;
-            return true;
-        }
-    }
+    } while (slot != start_slot);
+    /* Table fully probed with no empty slot and no match: degenerate.
+     * Conservatively report a hit; the next insert will set overflow. */
+    return true;
 }
 
 /*
- * mglPendingDrawsReadTexture — 纹理读危害查询
+ * mglPendingDrawsReadTexture — texture read hazard query
  *
- * 触发条件：当待处理 draw 读取（采样）了给定 texture 时返回 true。
- * 保证语义：检测 WAR/读后写危害，确保随后对该纹理的写入不会破坏已编码 draw 的采样。
- * 溢出退化：当 texture_read_overflow 置位时退化为对任意 texture 均返回 true。
+ * Trigger: returns true when a pending draw read (sampled) the given texture.
+ * Guarantee: detects WAR (write-after-read) hazards, ensuring a later write to
+ * the texture does not break an encoded draw's sampling.
+ * Overflow degradation: when texture_read_overflow is set, return true for any
+ * texture.
  */
 bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
 {
@@ -1081,29 +1100,29 @@ bool mglPendingDrawsReadTexture(GLMContext ctx, void *texture)
         return true;
     }
 
-    /* O(1) membership via hash-set index instead of O(n) scan. */
+    /* O(1) membership via hash-set index instead of O(n) scan.
+     * Query path is side-effect free (see mglPendingDrawsWriteTexture). */
     uint32_t slot = (uint32_t)(((uintptr_t)texture >> 4) & MGL_TEX_READ_INDEX_MASK);
     uint32_t start_slot = slot;
-    uint32_t probes = 0;
-    for (;;) {
+    do {
         uint32_t entry = cb->texture_read_index[slot];
         if (entry == 0) return false;                /* empty — not present */
         if (cb->texture_read_objects[entry - 1] == texture) return true;
         slot = (slot + 1) & MGL_TEX_READ_INDEX_MASK; /* probe */
-        if (++probes > (MGL_TEX_READ_INDEX_MASK + 1) || slot == start_slot) {
-            /* Probed entire table without finding empty slot or match — treat as overflow */
-            cb->texture_read_overflow = true;
-            return true;
-        }
-    }
+    } while (slot != start_slot);
+    /* Degenerate table: conservatively report a hit; next insert latches overflow. */
+    return true;
 }
 
 /*
- * mglFlushPendingDrawsForBuffer — 整缓冲区危害刷新
+ * mglFlushPendingDrawsForBuffer — whole-buffer hazard flush
  *
- * 触发条件：待处理 draw 读取了指定的整个 buffer（等价于 [0, INT64_MAX) 范围查询命中）时 flush。
- * 保证语义：确保随后对该 buffer 的 CPU 端写入/重定义不会破坏已编码 draw 的读取。
- * 溢出退化：当 buffer_read_range_overflow 置位时退化为无条件全刷新。
+ * Trigger: flush when a pending draw read the whole given buffer (equivalent to
+ * a [0, INT64_MAX) range query hit).
+ * Guarantee: ensures a later CPU-side write/redefinition of the buffer does not
+ * break an encoded draw's reads.
+ * Overflow degradation: when buffer_read_range_overflow is set, degrade to an
+ * unconditional full flush.
  */
 void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 {
@@ -1114,11 +1133,14 @@ void mglFlushPendingDrawsForBuffer(GLMContext ctx, void *buffer)
 }
 
 /*
- * mglFlushPendingDrawsForBufferRange — 按范围危害检测刷新
+ * mglFlushPendingDrawsForBufferRange — range-based hazard-detection flush
  *
- * 触发条件：待处理 draw 读取的缓冲区范围与 [offset, offset+size) 重叠时 flush。
- * 保证语义：确保随后对该缓冲区范围的 CPU 写入不会破坏已编码 draw 的读取。
- * 溢出退化：当 buffer_read_range_overflow 置位时，退化为无条件全刷新。
+ * Trigger: flush when a pending draw reads a buffer range overlapping
+ * [offset, offset+size).
+ * Guarantee: ensures a later CPU write to that buffer range does not break an
+ * encoded draw's reads.
+ * Overflow degradation: when buffer_read_range_overflow is set, degrade to an
+ * unconditional full flush.
  */
 void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t offset, int64_t size)
 {
@@ -1129,12 +1151,15 @@ void mglFlushPendingDrawsForBufferRange(GLMContext ctx, void *buffer, int64_t of
 }
 
 /*
- * mglPendingDrawsReferenceVertexArray — VAO 引用危害查询
+ * mglPendingDrawsReferenceVertexArray — VAO reference hazard query
  *
- * 触发条件：待处理 draw 引用了给定 VAO（按 source_vao / state_snapshot.vao / vao_name 匹配）时返回 true。
- * 保证语义：为 VAO 状态变更前的危害检测提供基础，确保后续 VAO 修改不会影响已编码 draw。
- * 溢出退化：stream-merged 的 batch 持有私有 VAO 快照与已拷贝的瞬时顶点/索引数据，
- *           后续 VAO 修改不会影响其已编码 draw，故直接跳过此类 batch。
+ * Trigger: returns true when a pending draw references the given VAO (matched
+ * by source_vao / state_snapshot.vao / vao_name).
+ * Guarantee: provides the hazard detection performed before VAO state changes,
+ * ensuring later VAO mutations do not affect encoded draws.
+ * Overflow degradation: stream-merged batches own a private VAO snapshot and
+ * copied transient vertex/index data, so later VAO mutations cannot affect
+ * their encoded draws; such batches are skipped outright.
  */
 static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao)
 {
@@ -1171,11 +1196,13 @@ static bool mglPendingDrawsReferenceVertexArray(GLMContext ctx, VertexArray *vao
 }
 
 /*
- * mglFlushPendingDrawsForVertexArray — VAO 危害刷新
+ * mglFlushPendingDrawsForVertexArray — VAO hazard flush
  *
- * 触发条件：待处理 draw 引用了指定 VAO 时 flush。
- * 保证语义：确保随后对该 VAO 的状态/顶点属性修改不会改变已编码 draw 的行为。
- * 溢出退化：stream-merged batch 持有私有 VAO 快照，不受影响；其余 batch 命中即 flush。
+ * Trigger: flush when a pending draw references the given VAO.
+ * Guarantee: ensures later mutations of the VAO's state/vertex attributes do
+ * not change the behavior of encoded draws.
+ * Overflow degradation: stream-merged batches own a private VAO snapshot and
+ * are unaffected; all other matching batches trigger a flush.
  */
 void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao)
 {
@@ -1185,11 +1212,13 @@ void mglFlushPendingDrawsForVertexArray(GLMContext ctx, void *vao)
 }
 
 /*
- * mglFlushPendingDrawsForTexture — 纹理读/写危害刷新
+ * mglFlushPendingDrawsForTexture — texture read/write hazard flush
  *
- * 触发条件：待处理 draw 写入或读取了指定 texture 时 flush。
- * 保证语义：确保随后对该 texture 的任何操作（写破坏采样，或读看到陈旧写入）不会破坏同步。
- * 溢出退化：当 texture_write_overflow 或 texture_read_overflow 任一置位时退化为无条件全刷新。
+ * Trigger: flush when a pending draw wrote or read the given texture.
+ * Guarantee: ensures any later operation on the texture (a write breaking
+ * sampling, or a read seeing stale writes) cannot break synchronization.
+ * Overflow degradation: degrade to an unconditional full flush when either
+ * texture_write_overflow or texture_read_overflow is set.
  */
 void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
 {
@@ -1200,13 +1229,16 @@ void mglFlushPendingDrawsForTexture(GLMContext ctx, void *texture)
 }
 
 /*
- * mglFlushPendingDrawsBeforeTextureWrite — CPU 端纹理写入前的读/写危害刷新
+ * mglFlushPendingDrawsBeforeTextureWrite — read/write hazard flush before a
+ * CPU-side texture write
  *
- * 触发条件：待处理 draw 读取或写入了指定 texture 时 flush；用于 CPU 端纹理上传/更新前。
- * 保证语义：确保随后对 texture 的 CPU 端写入不会破坏已编码 draw 的采样（WAR），
- *           也避免与已编码 draw 的写入发生冲突（WAW）。
- * 溢出退化：当 texture_read_overflow 或 texture_write_overflow 任一置位时退化为无条件全刷新。
- * 附加行为：命中时输出 trace 日志（前 64 次及之后每 512 次一次）。
+ * Trigger: flush when a pending draw read or wrote the given texture; used
+ * before CPU-side texture upload/update.
+ * Guarantee: ensures the CPU-side write cannot break an encoded draw's sampling
+ * (WAR) nor race with an encoded draw's write (WAW).
+ * Overflow degradation: degrade to an unconditional full flush when either
+ * texture_read_overflow or texture_write_overflow is set.
+ * Extra behavior: emits a trace log on hit (first 64 hits, then every 512th).
  */
 void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
 {
@@ -1238,42 +1270,111 @@ void mglFlushPendingDrawsBeforeTextureWrite(GLMContext ctx, void *texture)
 }
 
 /*
- * mglStateSamplesTextureUnit — 当前活跃 program 是否实际采样纹理单元 unit
+ * mglBuildActiveSampledTextureUnitMask — merge the current program's or each
+ * pipeline stage program's sampled_texture_unit_mask into the cached bitmap on
+ * GLMState.
  *
- * 遍历当前 monolithic program 或 pipeline 各 stage program，调用
- * mglProgramSamplesTextureUnit 判断是否有 sampler 资源解析到该 unit。
- * 无 program 且无 pipeline 时退化为保守返回 true（保留旧刷新行为）。
+ * Semantics match the legacy mglStateSamplesTextureUnit implementation:
+ *  - monolithic program bound: take the program's mask
+ *  - pipeline bound (program_name == 0): OR the stage programs' masks
+ *  - pipeline with no stage program: conservative all-ones (preserves the
+ *    "return true" behavior)
+ *  - no program and no pipeline: conservative all-ones
+ *
+ * Cached in GLMState::active_sampled_texture_unit_mask, invalidated by
+ * DIRTY_PROGRAM.  Once built, every per-unit query degrades to a single bit
+ * test.
+ */
+static void mglBuildActiveSampledTextureUnitMask(GLMContext ctx)
+{
+    if (!ctx || !ctx->active_state) return;
+    GLMState *state = ctx->active_state;
+
+    /* Default: conservative (all units sampled).  Overwritten below when
+     * a usable program or pipeline with at least one stage program is found. */
+    state->active_sampled_texture_unit_mask[0] = 0xFFFFFFFFu;
+    state->active_sampled_texture_unit_mask[1] = 0xFFFFFFFFu;
+    state->active_sampled_texture_unit_mask[2] = 0xFFFFFFFFu;
+    state->active_sampled_texture_unit_mask[3] = 0xFFFFFFFFu;
+
+    Program *program = state->program;
+    if (program) {
+        /* mglProgramSamplesTextureUnit(program, 0) triggers lazy build of
+         * the program-level mask if not yet valid. */
+        (void)mglProgramSamplesTextureUnit(program, 0);
+        for (int i = 0; i < 4; i++) {
+            state->active_sampled_texture_unit_mask[i] =
+                program->sampled_texture_unit_mask[i];
+        }
+        state->active_sampled_texture_unit_mask_valid = 1u;
+        return;
+    }
+
+    /* Pipeline path only applies when GL_CURRENT_PROGRAM is 0. */
+    if (state->program_name != 0u) {
+        /* No monolithic program but name is set: treat as no program bound
+         * (will fall through to conservative all-ones above). */
+        state->active_sampled_texture_unit_mask_valid = 1u;
+        return;
+    }
+
+    ProgramPipeline *pipeline = state->program_pipeline;
+    if (!pipeline) {
+        /* No program and no pipeline: conservative. */
+        state->active_sampled_texture_unit_mask_valid = 1u;
+        return;
+    }
+
+    /* OR every stage program's mask.  Track whether any stage is present so
+     * an empty pipeline remains conservative (matches legacy semantics). */
+    bool hasAnyStage = false;
+    uint32_t merged[4] = {0, 0, 0, 0};
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        Program *stageProg = pipeline->stage_programs[stage];
+        if (!stageProg) continue;
+        hasAnyStage = true;
+        (void)mglProgramSamplesTextureUnit(stageProg, 0);
+        for (int i = 0; i < 4; i++) {
+            merged[i] |= stageProg->sampled_texture_unit_mask[i];
+        }
+    }
+
+    if (hasAnyStage) {
+        for (int i = 0; i < 4; i++) {
+            state->active_sampled_texture_unit_mask[i] = merged[i];
+        }
+    }
+    /* else: empty pipeline -> keep all-ones conservative. */
+    state->active_sampled_texture_unit_mask_valid = 1u;
+}
+
+static inline const uint32_t *mglGetActiveSampledTextureUnitMask(GLMContext ctx)
+{
+    if (!ctx || !ctx->active_state) return NULL;
+    GLMState *state = ctx->active_state;
+    if (!state->active_sampled_texture_unit_mask_valid) {
+        mglBuildActiveSampledTextureUnitMask(ctx);
+    }
+    return state->active_sampled_texture_unit_mask;
+}
+
+/*
+ * mglStateSamplesTextureUnit — whether the currently active program/pipeline
+ * actually samples texture unit `unit`
+ *
+ * O(1) bit test against the merged mask cached on GLMState; the mask is
+ * invalidated by DIRTY_PROGRAM and built lazily on first query.  With no
+ * program and no pipeline bound, degrades to a conservative true (mask
+ * all-ones, preserving the legacy flush behavior).
  */
 static bool mglStateSamplesTextureUnit(GLMContext ctx, GLuint unit)
 {
     if (!ctx) return true;
+    if (unit >= TEXTURE_UNITS) return false;
 
-    Program *program = ctx->active_state->program;
-    if (program && mglProgramSamplesTextureUnit(program, unit)) {
-        return true;
-    }
-
-    /* Pipeline with separate stage programs. */
-    if (!program && ctx->active_state->program_pipeline) {
-        ProgramPipeline *pipeline = ctx->active_state->program_pipeline;
-        bool hasAnyStage = false;
-        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-            Program *stageProg = pipeline->stage_programs[stage];
-            if (!stageProg) continue;
-            hasAnyStage = true;
-            if (mglProgramSamplesTextureUnit(stageProg, unit)) {
-                return true;
-            }
-        }
-        /* Pipeline has stage programs but none sample this unit -> safe.
-         * Empty pipeline -> conservative. */
-        return !hasAnyStage;
-    }
-
-    /* No program and no pipeline: conservative. */
-    if (!program) return true;
-
-    return false;
+    const uint32_t *mask = mglGetActiveSampledTextureUnitMask(ctx);
+    if (!mask) return true;
+    return (mask[unit >> 5] & (1u << (unit & 31u))) != 0u;
 }
 
 static Program *mglSamplerSnapshotProgramForStage(GLMContext ctx, int stage)
@@ -1549,13 +1650,18 @@ static bool mglCaptureSamplerSnapshot(GLMContext ctx, uint16_t *snapshot_id)
 }
 
 /*
- * mglFlushPendingDrawsForActiveTextures — 活跃纹理单元写后读危害刷新
+ * mglFlushPendingDrawsForActiveTextures — write-after-read hazard flush for
+ * active texture units
  *
- * 触发条件：待处理 draw 写入了当前任何活跃纹理单元所绑定的 texture 时 flush；每次 draw 前调用。
- * 保证语义：防止写后读（WAR）危害——前序 draw 写入了某 texture，而当前 draw 又将其作为采样器读取。
- * 程序感知：仅当当前 program 实际采样该 unit 时才 flush，避免 FBO 颜色附件纹理残留绑定
- *           导致的误报刷新（false-positive hazard）。
- * 溢出退化：当 texture_write_overflow 置位时退化为无条件全刷新。
+ * Trigger: flush when a pending draw wrote a texture bound to any currently
+ * active texture unit; called before each draw.
+ * Guarantee: prevents WAR hazards — an earlier draw wrote a texture that the
+ * current draw reads as a sampler.
+ * Program-aware: flushes only when the current program actually samples the
+ * unit, avoiding false-positive hazard flushes caused by leftover FBO color
+ * attachment texture bindings.
+ * Overflow degradation: degrade to an unconditional full flush when
+ * texture_write_overflow is set.
  */
 void mglFlushPendingDrawsForActiveTextures(GLMContext ctx)
 {
@@ -1706,12 +1812,46 @@ static uint64_t mglComputeDrawBufferBindingHashScan(GLMContext ctx, bool use_mas
 
     Program *program = ctx->active_state->program;
     if (program) {
-        /* plain_uniform_buffers has no active_mask; keep the linear scan. */
+        /* plain_uniform_active_mask skips empty slots (buf==NULL contributes
+         * 0 to the hash, so skipping them is bit-identical to the linear
+         * scan).  Typical MC draws have a handful of plain uniforms, so
+         * this turns ~84 empty-slot iterations into ~5-10 active ones. */
+#ifdef DEBUG
+        uint64_t hash_before_plain = hash;
+        /* DEBUG path: linear scan + assert that mask-scan produces the same
+         * incremental contribution.  Run both to detect mask drift. */
         for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
             mglHashBufferBaseBinding(&hash,
                                      &program->plain_uniform_buffers[i],
                                      0x700u + (uint64_t)i);
         }
+        static uint32_t s_plainMaskCheck = 0;
+        if ((++s_plainMaskCheck & 0xFFu) == 0u) {
+            uint64_t verify = hash_before_plain;
+            for (int w = 0; w < 2; w++) {
+                uint64_t bits = program->plain_uniform_active_mask[w];
+                while (bits) {
+                    int i = (int)((w * 64) + __builtin_ctzll(bits));
+                    bits &= bits - 1;
+                    mglHashBufferBaseBinding(&verify,
+                                             &program->plain_uniform_buffers[i],
+                                             0x700u + (uint64_t)i);
+                }
+            }
+            assert(verify == hash);
+        }
+#else
+        for (int w = 0; w < 2; w++) {
+            uint64_t bits = program->plain_uniform_active_mask[w];
+            while (bits) {
+                int i = (int)((w * 64) + __builtin_ctzll(bits));
+                bits &= bits - 1;
+                mglHashBufferBaseBinding(&hash,
+                                         &program->plain_uniform_buffers[i],
+                                         0x700u + (uint64_t)i);
+            }
+        }
+#endif
     }
 
     return hash;
@@ -2406,44 +2546,60 @@ static bool mglCaptureDynamicTextureBindings(GLMContext ctx,
     const GLMState *snapshot = (const GLMState *)batch->state_snapshot;
     cmd->dynamic_texture_binding_count = 0;
 
-    for (GLuint unit = 0; unit < TEXTURE_UNITS; unit++) {
-        if (!mglStateSamplesTextureUnit(ctx, unit)) continue;
+    /* Iterate only the units the current program/pipeline actually samples,
+     * using the cached merged mask (bitmap scan).  Falls back to scanning
+     * all 128 units only when no program/pipeline is bound (mask all-ones). */
+    const uint32_t *sampled_mask = mglGetActiveSampledTextureUnitMask(ctx);
+    if (!sampled_mask) {
+        return cmd->dynamic_texture_binding_count > 0;
+    }
+    const uint32_t *cur_active_mask = ctx->active_state->active_texture_mask;
+    const uint32_t *snap_active_mask = snapshot->active_texture_mask;
 
-        bool snapshot_active =
-            (snapshot->active_texture_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
-        bool current_active =
-            (ctx->active_state->active_texture_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
-        if (snapshot_active != current_active ||
-            snapshot->texture_samplers[unit] !=
-                ctx->active_state->texture_samplers[unit]) {
-            return false;
-        }
-        if (!current_active) continue;
+    for (int w = 0; w < 4; w++) {
+        uint32_t bits = sampled_mask[w];
+        while (bits) {
+            int bit = __builtin_ctz(bits);
+            bits &= bits - 1;
+            GLuint unit = (GLuint)((w * 32) + bit);
+            if (unit >= TEXTURE_UNITS) continue;
 
-        bool found_active = ctx->active_state->active_textures[unit] == NULL;
-        for (GLuint target = 0; target < _MAX_TEXTURE_TYPES; target++) {
-            Texture *base = snapshot->texture_units[unit].textures[target];
-            Texture *current = ctx->active_state->texture_units[unit].textures[target];
-            if ((base == NULL) != (current == NULL)) return false;
-            if (!current) continue;
-            if (current->index != target || (base && base->index != target) ||
-                current->target != base->target ||
-                cmd->dynamic_texture_binding_count >=
-                    MGL_MAX_DYNAMIC_TEXTURE_BINDINGS) {
+            bool snapshot_active =
+                (snap_active_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
+            bool current_active =
+                (cur_active_mask[unit / 32u] & (1u << (unit % 32u))) != 0u;
+            if (snapshot_active != current_active ||
+                snapshot->texture_samplers[unit] !=
+                    ctx->active_state->texture_samplers[unit]) {
                 return false;
             }
+            if (!current_active) continue;
 
-            MGLDynamicTextureBinding *binding =
-                &cmd->dynamic_texture_bindings[
-                    cmd->dynamic_texture_binding_count++];
-            binding->unit = (uint8_t)unit;
-            binding->target_index = (uint8_t)target;
-            binding->is_active =
-                ctx->active_state->active_textures[unit] == current ? 1u : 0u;
-            binding->texture = current;
-            found_active = found_active || binding->is_active != 0u;
+            bool found_active = ctx->active_state->active_textures[unit] == NULL;
+            for (GLuint target = 0; target < _MAX_TEXTURE_TYPES; target++) {
+                Texture *base = snapshot->texture_units[unit].textures[target];
+                Texture *current = ctx->active_state->texture_units[unit].textures[target];
+                if ((base == NULL) != (current == NULL)) return false;
+                if (!current) continue;
+                if (current->index != target || (base && base->index != target) ||
+                    current->target != base->target ||
+                    cmd->dynamic_texture_binding_count >=
+                        MGL_MAX_DYNAMIC_TEXTURE_BINDINGS) {
+                    return false;
+                }
+
+                MGLDynamicTextureBinding *binding =
+                    &cmd->dynamic_texture_bindings[
+                        cmd->dynamic_texture_binding_count++];
+                binding->unit = (uint8_t)unit;
+                binding->target_index = (uint8_t)target;
+                binding->is_active =
+                    ctx->active_state->active_textures[unit] == current ? 1u : 0u;
+                binding->texture = current;
+                found_active = found_active || binding->is_active != 0u;
+            }
+            if (!found_active) return false;
         }
-        if (!found_active) return false;
     }
 
     return cmd->dynamic_texture_binding_count > 0;
@@ -2481,29 +2637,52 @@ static bool mglCaptureDynamicDrawBindings(GLMContext ctx,
     return true;
 }
 
-static bool mglBatchIsMDICompatible(const MGLDrawBatch *batch, const MGLDrawCommand *cmd)
+/* Called once at batch creation to compute the initial mdi_compatible
+ * value.  Checks batch-level invariants (primitive type, element-usage
+ * match) plus the first command's draw mode.  Batch-level invariants never
+ * change after creation, so they must NOT be re-checked on each append. */
+static bool mglBatchInitMDICompatible(const MGLDrawBatch *batch, const MGLDrawCommand *cmd)
 {
-    uint8_t prim_type = batch->key.primitive_type;
-    if (prim_type == 0xFF) return false;
+    if (batch->key.primitive_type == 0xFF) return false;
 
     MGLDrawCommandType cmd_type = cmd->type;
     bool cmd_uses_elements = (cmd_type != MGL_CMD_DRAW_ARRAYS &&
-                              cmd_type != MGL_CMD_DRAW_ARRAYS_INSTANCED &&
-                              cmd_type != MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE);
-
+                             cmd_type != MGL_CMD_DRAW_ARRAYS_INSTANCED &&
+                             cmd_type != MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE);
     if (cmd_uses_elements != batch->uses_elements) return false;
-    if (batch->uses_elements &&
-        batch->command_count > 0 &&
-        batch->commands &&
-        batch->commands[0].indexType != cmd->indexType) {
-        return false;
-    }
 
     /* Emulated modes can't use MDI */
     GLenum mode = cmd->mode;
     if (mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP) return false;
 
     return true;
+}
+
+/* Called on each command append to maintain mdi_compatible incrementally.
+ * Short-circuits when the batch is already incompatible.  Only checks
+ * per-command properties:
+ *   - draw mode (GL_TRIANGLE_FAN / GL_LINE_LOOP emulated by MDI-incompatible
+ *     primitives)
+ *   - indexType match against the first command (only meaningful for the
+ *     2nd and later commands; the 1st command's self-comparison is skipped
+ *     since commands[0] is the just-stored command)
+ * Batch-level invariants (primitive type, element usage) were validated at
+ * creation by mglBatchInitMDICompatible and are not re-checked here. */
+static void mglBatchUpdateMDIOnAppend(MGLDrawBatch *batch, const MGLDrawCommand *cmd)
+{
+    if (!batch->mdi_compatible) return;
+
+    GLenum mode = cmd->mode;
+    if (mode == GL_TRIANGLE_FAN || mode == GL_LINE_LOOP) {
+        batch->mdi_compatible = false;
+        return;
+    }
+
+    if (batch->uses_elements && batch->command_count > 1u) {
+        if (batch->commands[0].indexType != cmd->indexType) {
+            batch->mdi_compatible = false;
+        }
+    }
 }
 
 static void mglUpdateBatchSamplerSnapshotState(MGLDrawBatch *batch,
@@ -2840,17 +3019,24 @@ static void mglTrackPendingBaseBufferReads(GLMContext ctx)
 
     Program *program = ctx->active_state->program;
     if (program) {
-        for (int i = 0; i < MAX_BINDABLE_BUFFERS; i++) {
-            BufferBaseTarget *binding = &program->plain_uniform_buffers[i];
-            if (!binding->buf) continue;
-            activeCount++;
-            if (binding->size > 0 && binding->offset >= 0) {
-                mglTrackPendingReadBytes(ctx,
-                                         binding->buf,
-                                         (uint64_t)binding->offset,
-                                         (uint64_t)binding->size);
-            } else {
-                mglTrackPendingReadWholeBuffer(ctx, binding->buf);
+        /* plain_uniform_active_mask bitmap scan replaces the 84-slot linear
+         * scan; only slots with buf != NULL are visited. */
+        for (int w = 0; w < 2; w++) {
+            uint64_t bits = program->plain_uniform_active_mask[w];
+            while (bits) {
+                int i = (int)((w * 64) + __builtin_ctzll(bits));
+                bits &= bits - 1;
+                BufferBaseTarget *binding = &program->plain_uniform_buffers[i];
+                if (!binding->buf) continue;
+                activeCount++;
+                if (binding->size > 0 && binding->offset >= 0) {
+                    mglTrackPendingReadBytes(ctx,
+                                             binding->buf,
+                                             (uint64_t)binding->offset,
+                                             (uint64_t)binding->size);
+                } else {
+                    mglTrackPendingReadWholeBuffer(ctx, binding->buf);
+                }
             }
         }
     }
@@ -3308,30 +3494,44 @@ static bool mglPrepareStreamMergeCandidate(GLMContext ctx,
 
     uint64_t minSourceIndex = UINT64_MAX;
     uint64_t maxSourceIndex = 0u;
-    for (GLsizei i = 0; i < cmd->count; i++) {
-        uint64_t rawIndex = (uint64_t)cmd->first + (uint64_t)i;
-        if (uses_elements &&
-            !mglCommandReadIndexValue(indices, cmd->indexType, i, &rawIndex)) {
+    if (uses_elements) {
+        for (GLsizei i = 0; i < cmd->count; i++) {
+            uint64_t rawIndex = (uint64_t)cmd->first + (uint64_t)i;
+            if (!mglCommandReadIndexValue(indices, cmd->indexType, i, &rawIndex)) {
+                return false;
+            }
+
+            int64_t sourceIndex = (int64_t)rawIndex + (int64_t)cmd->baseVertex;
+            if (sourceIndex < 0) return false;
+            uint64_t sourceIndexU = (uint64_t)sourceIndex;
+            if (sourceIndexU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
+                return false;
+            }
+
+            uint64_t vertexByte = (uint64_t)bindingOffset +
+                                  (sourceIndexU * (uint64_t)vertexStride);
+            if (vertexByte > UINT64_MAX - (uint64_t)maxAttribEnd ||
+                vertexByte + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size) {
+                return false;
+            }
+            if (sourceIndexU < minSourceIndex) minSourceIndex = sourceIndexU;
+            if (sourceIndexU > maxSourceIndex) maxSourceIndex = sourceIndexU;
+        }
+    } else {
+        /* Non-indexed draws reference a linear vertex sequence; the source
+         * index range is closed-form, so skip the per-vertex scan. */
+        uint64_t lastSourceIndex = (uint64_t)cmd->first + (uint64_t)cmd->count - 1u;
+        if (lastSourceIndex > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
             return false;
         }
-
-        int64_t sourceIndex = uses_elements
-            ? (int64_t)rawIndex + (int64_t)cmd->baseVertex
-            : (int64_t)rawIndex;
-        if (sourceIndex < 0) return false;
-        uint64_t sourceIndexU = (uint64_t)sourceIndex;
-        if (sourceIndexU > (UINT64_MAX - (uint64_t)bindingOffset) / (uint64_t)vertexStride) {
-            return false;
-        }
-
         uint64_t vertexByte = (uint64_t)bindingOffset +
-                              (sourceIndexU * (uint64_t)vertexStride);
+                              (lastSourceIndex * (uint64_t)vertexStride);
         if (vertexByte > UINT64_MAX - (uint64_t)maxAttribEnd ||
             vertexByte + (uint64_t)maxAttribEnd > (uint64_t)vertexBuffer->size) {
             return false;
         }
-        if (sourceIndexU < minSourceIndex) minSourceIndex = sourceIndexU;
-        if (sourceIndexU > maxSourceIndex) maxSourceIndex = sourceIndexU;
+        minSourceIndex = (uint64_t)cmd->first;
+        maxSourceIndex = lastSourceIndex;
     }
     if (minSourceIndex == UINT64_MAX ||
         minSourceIndex > maxSourceIndex ||
@@ -3769,7 +3969,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
         /* The frontend command is zero-initialized and does not own the
          * command-buffer-local snapshot ID.  Check the normalized copy so a
          * draw without a sampler snapshot is not mistaken for snapshot 0. */
-        batch->mdi_compatible = mglBatchIsMDICompatible(batch, &stored_cmd);
+        batch->mdi_compatible = mglBatchInitMDICompatible(batch, &stored_cmd);
 
         if (can_stream_merge) {
             if (!mglInitializeStreamMergedBatch(ctx, batch, &streamCandidate)) {
@@ -3894,9 +4094,7 @@ void mglRecordDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
     batch->command_count++;
     cb->total_commands++;
 
-    if (!mglBatchIsMDICompatible(batch, &stored_cmd)) {
-        batch->mdi_compatible = false;
-    }
+    mglBatchUpdateMDIOnAppend(batch, &stored_cmd);
 
     if (batch->uses_elements) {
         cb->element_cmd_count++;
@@ -3920,12 +4118,15 @@ void mglAppendDrawCommand(GLMContext ctx, const MGLDrawCommand *cmd)
 }
 
 /*
- * mglFlushCommandBuffer — 最低级 flush，将延迟 draw 缓冲区提交给 Metal
+ * mglFlushCommandBuffer — lowest-level flush, submitting the deferred draw
+ * buffer to Metal
  *
- * 触发条件：当 batch_count > 0 时，通过 ctx->mtl_funcs.mtlFlushDrawBuffer(ctx) 将已编码的
- *           延迟 draw 提交到 Metal 后端执行。
- * 保证语义：所有危害检测 flush 函数的最终汇聚点；调用后所有 per-CB read/write 跟踪数组被清空。
- * 溢出退化：无（本函数不做危害检测，仅负责提交）。
+ * Trigger: when batch_count > 0, submit the encoded deferred draws to the
+ * Metal backend for execution via ctx->mtl_funcs.mtlFlushDrawBuffer(ctx).
+ * Guarantee: final rendezvous of every hazard-detection flush; after the call
+ * all per-CB read/write tracking arrays are cleared.
+ * Overflow degradation: none (this function performs no hazard detection; it
+ * only submits).
  */
 void mglFlushCommandBuffer(GLMContext ctx)
 {
@@ -3941,12 +4142,15 @@ void mglFlushCommandBuffer(GLMContext ctx)
 }
 
 /*
- * mglFlushPendingDraws — 无条件全刷新（无危害检测）
+ * mglFlushPendingDraws — unconditional full flush (no hazard detection)
  *
- * 触发条件：当 draw_defer_enabled 时无条件调用 mglFlushCommandBuffer；不做任何危害检测。
- * 保证语义：用于任何可能广泛使待处理 draw 失效的状态变更（如广泛的 GL 状态重置），
- *           保守地保证所有已编码 draw 提交完毕后再进行后续操作。
- * 溢出退化：本函数本身就是全刷新，等价于溢出退化后的最终行为。
+ * Trigger: unconditionally call mglFlushCommandBuffer when draw_defer_enabled
+ * is set; no hazard detection is performed.
+ * Guarantee: used for any state change that could broadly invalidate pending
+ * draws (e.g. broad GL state resets); conservatively guarantees all encoded
+ * draws are submitted before later operations proceed.
+ * Overflow degradation: this function is itself a full flush, equivalent to
+ * the final behavior after overflow degradation.
  */
 void mglFlushPendingDraws(GLMContext ctx)
 {

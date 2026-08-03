@@ -25,7 +25,7 @@
 #ifndef MGLRenderer_ProgramBinding_Private_h
 #define MGLRenderer_ProgramBinding_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 @interface MGLRenderer (ProgramBinding)
 

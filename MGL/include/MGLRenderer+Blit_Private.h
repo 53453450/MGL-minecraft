@@ -17,14 +17,15 @@
  * MGL
  *
  * Private method declarations, types, and C helpers for the Blit category
- * (MGLRenderer+Blit.m).  Imports MGLRenderer_Private.h for ivar access
+ * (MGLRenderer+Blit.m).  Imports MGLRenderer.h for the MGLRenderer interface;
+ * the category file itself imports MGLRenderer_Private.h for ivar access
  * and shared types.
  */
 
 #ifndef MGLRenderer_Blit_Private_h
 #define MGLRenderer_Blit_Private_h
 
-#import "MGLRenderer_Private.h"
+#import "MGLRenderer.h"
 
 /* === Shader parameter structs ===
  * Used by blit/copy/resolve pipelines in MGLRenderer+Blit.m and MGLRenderer.m.

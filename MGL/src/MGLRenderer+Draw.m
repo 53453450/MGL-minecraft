@@ -131,7 +131,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     if (kMGLVerboseBindLogs) {
         NSLog(@"MGL VBIND begin ctx=%p vao=%p encoder=%p",
-              ctx, ctx ? ctx->active_state->vao : NULL, encCtx->encoder);
+              ctx, ctx ? MGL_STATE(ctx)->vao : NULL, encCtx->encoder);
     }
 
     if (!ctx || !encCtx->encoder) {
@@ -149,7 +149,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     if (kMGLVerboseBindLogs) {
         NSLog(@"MGL VBIND vao=%p magic=0x%x", vao, vao->magic);
     }
-    mapCount = ctx->active_state->vertex_buffer_map_list.count;
+    mapCount = MGL_STATE(ctx)->vertex_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
         static uint64_t s_vbindMapCountOverflow = 0;
         uint64_t hit = ++s_vbindMapCountOverflow;
@@ -248,7 +248,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     for(int i=0; i<(int)mapCount; i++)
     {
-        map = &ctx->active_state->vertex_buffer_map_list.buffers[i];
+        map = &MGL_STATE(ctx)->vertex_buffer_map_list.buffers[i];
         
         ptr = mglRendererGetValidatedBuffer(ctx, map->buf, __FUNCTION__, (NSUInteger)i);
         offset = map->offset;
@@ -679,14 +679,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                             (unsigned long)attribStride,
                             (unsigned)vao->attrib[attrib].size,
                             (unsigned)vao->attrib[attrib].type,
-                            (int)ctx->active_state->current_vertex_attrib[attrib].i[0],
-                            (int)ctx->active_state->current_vertex_attrib[attrib].i[1],
-                            (int)ctx->active_state->current_vertex_attrib[attrib].i[2],
-                            (int)ctx->active_state->current_vertex_attrib[attrib].i[3],
-                            ctx->active_state->current_vertex_attrib[attrib].f[0],
-                            ctx->active_state->current_vertex_attrib[attrib].f[1],
-                            ctx->active_state->current_vertex_attrib[attrib].f[2],
-                            ctx->active_state->current_vertex_attrib[attrib].f[3]);
+                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[0],
+                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[1],
+                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[2],
+                            (int)MGL_STATE(ctx)->current_vertex_attrib[attrib].i[3],
+                            MGL_STATE(ctx)->current_vertex_attrib[attrib].f[0],
+                            MGL_STATE(ctx)->current_vertex_attrib[attrib].f[1],
+                            MGL_STATE(ctx)->current_vertex_attrib[attrib].f[2],
+                            MGL_STATE(ctx)->current_vertex_attrib[attrib].f[3]);
             }
             continue;
         }
@@ -1165,8 +1165,8 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     if (needsPointSizeParams) {
         float pointSizeParams[2] = {
-            ctx && ctx->active_state->var.point_size > 0.0f ? ctx->active_state->var.point_size : 1.0f,
-            ctx && ctx->active_state->caps.program_point_size ? 1.0f : 0.0f
+            ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
+            ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
         };
         [encCtx->encoder setVertexBytes:pointSizeParams
                                       length:sizeof(pointSizeParams)
@@ -1212,7 +1212,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
     activeProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
 
-    mapCount = ctx->active_state->fragment_buffer_map_list.count;
+    mapCount = MGL_STATE(ctx)->fragment_buffer_map_list.count;
     if (mapCount > MAX_MAPPED_BUFFERS) {
         static uint64_t s_fbindMapCountOverflow = 0;
         uint64_t hit = ++s_fbindMapCountOverflow;
@@ -1225,7 +1225,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
     for (GLuint i = 0; i < mapCount; i++)
     {
-        map = &ctx->active_state->fragment_buffer_map_list.buffers[i];
+        map = &MGL_STATE(ctx)->fragment_buffer_map_list.buffers[i];
 
         if (kMGLVerboseBindLogs) {
             NSLog(@"MGL FBIND slot=%u candidate=%p mask=0x%x baseIndex=%u offset=%lld",
@@ -1980,8 +1980,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 usedTypeFallback = YES;
             }
 
-            if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
-                Sampler *glSampler = STATE(texture_samplers[textureUnit]);
+            if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
+                Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
                 if (glSampler->dirty_bits && glSampler->mtl_data) {
                     mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
                 }
@@ -2207,14 +2207,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglShouldLogTraceFileBindingForProgram(focusedTextureProgram, &s_traceFileVertexTextureBindLogs)) {
             TextureLevel *level0 = mglTraceTextureBaseLevel(ptr);
             int expectedIndex = [self textureIndexForExpectedMetalType:(lookupType ? lookupType : expectedType)];
-            Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+            Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
             Texture *unitExpected = (textureUnit < TEXTURE_UNITS &&
                                      expectedIndex >= 0 &&
                                      expectedIndex < _MAX_TEXTURE_TYPES)
-                ? STATE(texture_units[textureUnit].textures[expectedIndex])
+                ? MGL_STATE(ctx)->texture_units[textureUnit].textures[expectedIndex]
                 : NULL;
-            Texture *unit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
-            Texture *unitCube = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP]) : NULL;
+            Texture *unit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
+            Texture *unitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
             mglTraceLog("TBIND stage=vertex program=%u resource=%s metalTextureSlot=%u samplerUnit=%u resUnit=%d explicit=%d glTex=%u target=0x%x fallback=%d expectedType=%lu lookupType=%lu expectedIndex=%d unit(active=%u expected=%u tex2D=%u cube=%u) mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                         (unsigned)focusedTextureProgram->name,
                         sampledName ? sampledName : "",
@@ -2246,8 +2246,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             static uint64_t s_vertexTexelBufferBindLogs = 0;
             uint64_t hit = ++s_vertexTexelBufferBindLogs;
             if (hit <= 8ull || (hit % 2048ull) == 0ull) {
-                Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
-                Texture *unitBuffer = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_BUFFER_TARGET]) : NULL;
+                Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
+                Texture *unitBuffer = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_BUFFER_TARGET] : NULL;
                 NSLog(@"MGL TEXBUFFER BIND vertex hit=%llu program=%u binding=%u unit=%u ptrTex=%u active=%u bufferSlot=%u expectedType=%lu lookupType=%lu mtlTex=%p mtlType=%lu size=%lux%lu format=%lu sampler=%p",
                       (unsigned long long)hit,
                       (unsigned)vertexProgramName,
@@ -2281,9 +2281,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 uint64_t hit = ++s_vertexSampleDetailLogCount;
                 if (hit <= 128ull || (hit % 512ull) == 0ull) {
                     int expectedIndex = [self textureIndexForExpectedMetalType:expectedType];
-                    Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+                    Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
                     Texture *unitExpected = (expectedIndex >= 0 && expectedIndex < _MAX_TEXTURE_TYPES)
-                        ? STATE(texture_units[textureUnit].textures[expectedIndex])
+                        ? MGL_STATE(ctx)->texture_units[textureUnit].textures[expectedIndex]
                         : NULL;
                     uint64_t levelDataHash = (sampleLevel0 && sampleLevel0->data && sampleLevel0->data_size > 0)
                         ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
@@ -2498,12 +2498,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             uint64_t hit = ++s_fragmentSampleDetailLogCount;
             if (hit <= 256ull || (hit % 512ull) == 0ull) {
 	                int expectedIndex = [self textureIndexForExpectedMetalType:expectedType];
-	                Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+	                Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
 	                Texture *unitExpected = (expectedIndex >= 0 && expectedIndex < _MAX_TEXTURE_TYPES)
-	                    ? STATE(texture_units[textureUnit].textures[expectedIndex])
+	                    ? MGL_STATE(ctx)->texture_units[textureUnit].textures[expectedIndex]
 	                    : NULL;
-	                Texture *unit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
-	                Texture *unitCube = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP]) : NULL;
+	                Texture *unit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
+	                Texture *unitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
 	                MTLTextureType actualType = texture ? texture.textureType : 0;
 	                uint64_t levelDataHash = (sampleLevel0 && sampleLevel0->data && sampleLevel0->data_size > 0)
 	                    ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
@@ -2552,12 +2552,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                    uint64_t atlasHit = ++s_guiRTSampleLogCount;
                     if (atlasHit <= 128ull || (atlasHit % 256ull) == 0ull) {
                             int atlasExpectedIndex = [self textureIndexForExpectedMetalType:expectedType];
-                            Texture *atlasUnitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+                            Texture *atlasUnitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
                             Texture *atlasUnitExpected = (atlasExpectedIndex >= 0 && atlasExpectedIndex < _MAX_TEXTURE_TYPES)
-                                ? STATE(texture_units[textureUnit].textures[atlasExpectedIndex])
+                                ? MGL_STATE(ctx)->texture_units[textureUnit].textures[atlasExpectedIndex]
                                 : NULL;
-                            Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
-                            Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP]) : NULL;
+                            Texture *atlasUnit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
+                            Texture *atlasUnitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
 	                        id<MTLTexture> rpColor0 = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture : nil;
 	                        id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.depthAttachment.texture : nil;
                         mglTraceLog("RT_SAMPLE_COPY_SAMPLE hit=%llu bindCall=%llu program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u "
@@ -2568,9 +2568,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     (unsigned long long)atlasHit,
                                     (unsigned long long)bindCall,
                                     sampleProgramName,
-                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
                                     (unsigned)_pipelineCache.state->pipelineProgramName,
@@ -2598,12 +2598,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                     sampleLevel0 ? (unsigned)sampleLevel0->suspicious_zero_upload : 0u,
                                     sampleLevel0 ? (unsigned)sampleLevel0->last_init_source : 0u,
                                     (unsigned long)(sampleLevel0 ? sampleLevel0->last_upload_size : 0u),
-                                    (unsigned)(ctx && ctx->active_state->framebuffer ? ctx->active_state->framebuffer->name : 0u),
+                                    (unsigned)(ctx && MGL_STATE(ctx)->framebuffer ? MGL_STATE(ctx)->framebuffer->name : 0u),
                                     (unsigned)_renderPassManager.state->renderPassFramebufferName,
                                     rpColor0,
                                     rpDepth,
-                                    ctx && ctx->active_state->caps.depth_test ? 1 : 0,
-                                    ctx && ctx->active_state->caps.blend ? 1 : 0);
+                                    ctx && MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
+                                    ctx && MGL_STATE(ctx)->caps.blend ? 1 : 0);
                     }
                 }
 
@@ -2676,14 +2676,14 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglShouldLogTraceFileBindingForProgram(focusedTextureProgram, &s_traceFileFragmentTextureBindLogs)) {
             TextureLevel *level0 = mglTraceTextureBaseLevel(ptr);
             int expectedIndex = [self textureIndexForExpectedMetalType:(lookupType ? lookupType : expectedType)];
-            Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
+            Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
             Texture *unitExpected = (textureUnit < TEXTURE_UNITS &&
                                      expectedIndex >= 0 &&
                                      expectedIndex < _MAX_TEXTURE_TYPES)
-                ? STATE(texture_units[textureUnit].textures[expectedIndex])
+                ? MGL_STATE(ctx)->texture_units[textureUnit].textures[expectedIndex]
                 : NULL;
-            Texture *unit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
-            Texture *unitCube = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP]) : NULL;
+            Texture *unit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
+            Texture *unitCube = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_CUBE_MAP] : NULL;
             mglTraceLog("TBIND stage=fragment program=%u resource=%s metalTextureSlot=%u samplerUnit=%u resUnit=%d explicit=%d glTex=%u target=0x%x fallback=%d expectedType=%lu lookupType=%lu expectedIndex=%d unit(active=%u expected=%u tex2D=%u cube=%u) mtl=%p mtlType=%lu size=%lux%lu level0=%ux%u init(ever=%u full=%u source=%u)",
                         (unsigned)focusedTextureProgram->name,
                         sampledName ? sampledName : "",
@@ -2914,7 +2914,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                  historyIndex < MGL_RECENT_SAMPLED_2D_HISTORY;
                  historyIndex++) {
                 Texture *candidate =
-                    STATE(recent_sampled_2d_textures[textureUnit][historyIndex]);
+                    MGL_STATE(ctx)->recent_sampled_2d_textures[textureUnit][historyIndex];
                 if (!candidate ||
                     candidate == ptr ||
                     candidate == pairedColor ||
@@ -3041,9 +3041,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         (!depthSampleLevel0 ||
          !depthSampleLevel0->ever_written ||
          !depthSampleLevel0->has_initialized_data)) {
-        Texture *unitActive = textureUnit < TEXTURE_UNITS ? STATE(active_textures[textureUnit]) : NULL;
-        Texture *unit2D = textureUnit < TEXTURE_UNITS ? STATE(texture_units[textureUnit].textures[_TEXTURE_2D]) : NULL;
-        Texture *last2D = textureUnit < TEXTURE_UNITS ? STATE(last_sampled_2d_textures[textureUnit]) : NULL;
+        Texture *unitActive = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->active_textures[textureUnit] : NULL;
+        Texture *unit2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->texture_units[textureUnit].textures[_TEXTURE_2D] : NULL;
+        Texture *last2D = textureUnit < TEXTURE_UNITS ? MGL_STATE(ctx)->last_sampled_2d_textures[textureUnit] : NULL;
         Texture *recoverTexture = NULL;
         const char *recoverReason = "none";
         GLuint recoverFboName = 0u;
@@ -3112,7 +3112,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 !mglMetalPixelFormatIsDepthOrStencil(recoverMTL.pixelFormat) &&
                 (expectedType == 0 || recoverMTL.textureType == expectedType) &&
                 mglTexturePixelFormatCompatibleWithExpectedDataKind(recoverMTL.pixelFormat, expectedKind)) {
-                Framebuffer *currentFbo = ctx ? ctx->active_state->framebuffer : NULL;
+                Framebuffer *currentFbo = ctx ? MGL_STATE(ctx)->framebuffer : NULL;
                 GLuint colorTexName = 0u;
                 GLuint depthTexName = 0u;
                 if (currentFbo &&
@@ -3232,9 +3232,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (mglTraceRTYFlipDiagnosticsEnabled()) {
             mglTraceLog("RT_YFLIP_DECISION stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" decision=%s(%d) authority=0x%x rtVer=%u copyVer=%u hasCopy=%d sampleYFlip=%d",
                         (unsigned)fragmentProgramName,
-                        (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                        (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                        (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
+                        (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                        (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                        (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                         (unsigned)vertexProgramName,
                         (unsigned)fragmentProgramName,
                         (unsigned)_pipelineCache.state->pipelineProgramName,
@@ -3267,9 +3267,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     if (mglTraceLogIsEnabled()) {
                         mglTraceLog("RT_SAMPLE_COPY_BIND stage=fragment program=%u stateProgram=%u current=%u pipeline=%u vs=%u fs=%u pipelineProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" original=%p copy=%p size=%lux%lu originalLevels=%lu copyLevels=%lu glLevels=%u mips=%u base=%u max=%u version=%u",
                                     (unsigned)fragmentProgramName,
-                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->program_name : 0u),
-                                    (unsigned)(ctx ? ctx->active_state->var.program_pipeline_binding : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
+                                    (unsigned)(ctx ? MGL_STATE(ctx)->var.program_pipeline_binding : 0u),
                                     (unsigned)vertexProgramName,
                                     (unsigned)fragmentProgramName,
                                     (unsigned)_pipelineCache.state->pipelineProgramName,
@@ -3330,7 +3330,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 BOOL canUse = mglTextureCanUseGLSampledRenderTargetCopy(ptr);
                 mglTraceLog("RT_SAMPLE_COPY_GATE_MISS stage=fragment program=%u stateProgram=%u name=%s binding=%u unit=%u tex=%u label=\"%s\" isRT=%d hasCopy=%d verMatch=%d writeVer=%u rtVer=%u canUse=%d expectedType=%lu",
                             (unsigned)fragmentProgramName,
-                            (unsigned)(ctx ? ctx->active_state->program_name : 0u),
+                            (unsigned)(ctx ? MGL_STATE(ctx)->program_name : 0u),
                             sampledName ? sampledName : "",
                             (unsigned)spirvBinding,
                             (unsigned)textureUnit,
@@ -3406,8 +3406,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         usedSampledCopyForTrace = NO;
     }
 
-    if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
-        Sampler *glSampler = STATE(texture_samplers[textureUnit]);
+    if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
+        Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
         if (glSampler->dirty_bits && glSampler->mtl_data) {
             mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
         }
@@ -3459,7 +3459,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     if (mglMipDiagEnabled() && ptr) {
         Sampler *glSampler = (textureUnit < TEXTURE_UNITS)
-            ? STATE(texture_samplers[textureUnit]) : NULL;
+            ? MGL_STATE(ctx)->texture_samplers[textureUnit] : NULL;
         const TextureParameter *effective = glSampler ? &glSampler->params : &ptr->params;
         uint64_t signature = 1469598103934665603ULL;
         signature = mglMipDiagMixState(signature, ptr->name);
@@ -3544,7 +3544,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         if (ptr) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
         }
@@ -3576,12 +3576,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         id<MTLTexture> texture = nil;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
             texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
-            GLuint imgLevel = STATE(image_units[glUnit].level);
+            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
                 NSUInteger sliceCount = texture.arrayLength;
                 if (texture.textureType == MTLTextureTypeCube ||
@@ -3640,7 +3640,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         if (ptr) {
             RETURN_FALSE_ON_FAILURE([self bindMTLTexture:ptr]);
         }
@@ -3677,7 +3677,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
 
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         id<MTLTexture> texture = nil;
         if (ptr) {
             MGL_ABORT_TBIND_IF_ENCODER_CLOSED();
@@ -3690,7 +3690,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
              * level 0 maps to the original's level N).  Without this view,
              * glBindImageTexture's <level> parameter is silently ignored
              * and all imageSize queries return level-0 dimensions. */
-            GLuint imgLevel = STATE(image_units[glUnit].level);
+            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
                 /* Cube and cube-array textures pack 6 face-slices per cube;
                  * the view's slice count must be a multiple of 6 for these
@@ -3752,8 +3752,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                            stage:_FRAGMENT_SHADER];
 
         id<MTLSamplerState> sampler = nil;
-        if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
-            Sampler *glSampler = STATE(texture_samplers[textureUnit]);
+        if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
+            Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
             if (glSampler->dirty_bits && glSampler->mtl_data) {
                 mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
             }
@@ -3822,8 +3822,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 id<MTLSamplerState> metalSampler = defaultSampler;
                 if (arrayTexture && [self bindMTLTexture:arrayTexture]) {
                     metalTexture = (__bridge id<MTLTexture>)(arrayTexture->mtl_data);
-                    if (textureUnit < TEXTURE_UNITS && STATE(texture_samplers[textureUnit])) {
-                        Sampler *glSampler = STATE(texture_samplers[textureUnit]);
+                    if (textureUnit < TEXTURE_UNITS && MGL_STATE(ctx)->texture_samplers[textureUnit]) {
+                        Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[textureUnit];
                         if (glSampler->mtl_data == NULL) {
                             glSampler->mtl_data = (void *)CFBridgingRetain(
                                 [self createMTLSamplerForTexParam:&glSampler->params target:arrayTexture->target]);
@@ -4167,8 +4167,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                             encodeContext:(const MGLEncodeContext *)encCtx
 {
     BufferMapList *stage_maps[2] = {
-        &glm_ctx->active_state->vertex_buffer_map_list,
-        &glm_ctx->active_state->fragment_buffer_map_list,
+        &MGL_STATE(glm_ctx)->vertex_buffer_map_list,
+        &MGL_STATE(glm_ctx)->fragment_buffer_map_list,
     };
     const int stages[2] = { _VERTEX_SHADER, _FRAGMENT_SHADER };
 
@@ -4178,7 +4178,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         const MGLDynamicUniformBinding *override =
             &cmd->dynamic_uniform_bindings[dynamic_index];
         BufferBaseTarget *slot =
-            &glm_ctx->active_state->buffer_base[_UNIFORM_BUFFER]
+            &MGL_STATE(glm_ctx)->buffer_base[_UNIFORM_BUFFER]
                  .buffers[override->binding_index];
         if (!slot->buf || !slot->buf->data.mtl_data ||
             (uintptr_t)slot->buf->data.mtl_data < 0x10000u ||
@@ -4345,7 +4345,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             if (!resource || resource->msl_has_combined_sampler) {
                 id<MTLSamplerState> sampler = nil;
                 Sampler *bound_sampler =
-                    glm_ctx->active_state->texture_samplers[texture_unit];
+                    MGL_STATE(glm_ctx)->texture_samplers[texture_unit];
                 if (bound_sampler) {
                     if (bound_sampler->dirty_bits || !bound_sampler->mtl_data) {
                         return false;
@@ -4525,7 +4525,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     VertexArray dynamic_vao;
-    VertexArray *base_vao = glm_ctx->active_state->vao;
+    VertexArray *base_vao = MGL_STATE(glm_ctx)->vao;
     VertexArray *draw_vao = base_vao;
     if (cmd->dynamic_vertex_binding_count > 0) {
         if (!base_vao || base_vao->magic != MGL_VAO_MAGIC ||
@@ -4542,7 +4542,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             return false;
         }
         BufferBaseTarget *slot =
-            &glm_ctx->active_state->buffer_base[_UNIFORM_BUFFER]
+            &MGL_STATE(glm_ctx)->buffer_base[_UNIFORM_BUFFER]
                  .buffers[override->binding_index];
         if (!slot->buf) {
             return false;
@@ -4565,13 +4565,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             return false;
         }
         if (!touched_texture_units[override->unit]) {
-            glm_ctx->active_state->active_textures[override->unit] = NULL;
+            MGL_STATE(glm_ctx)->active_textures[override->unit] = NULL;
             touched_texture_units[override->unit] = true;
         }
-        glm_ctx->active_state->texture_units[override->unit]
+        MGL_STATE(glm_ctx)->texture_units[override->unit]
             .textures[override->target_index] = texture;
         if (override->is_active) {
-            glm_ctx->active_state->active_textures[override->unit] = texture;
+            MGL_STATE(glm_ctx)->active_textures[override->unit] = texture;
         }
     }
 
@@ -4615,16 +4615,16 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     /* Uncommon conversion, undersized-range and allocation cases reuse the
      * full validated mapper.  Pipeline, textures and render state remain
      * constant for the containing batch. */
-    VertexArray *saved_vao = glm_ctx->active_state->vao;
+    VertexArray *saved_vao = MGL_STATE(glm_ctx)->vao;
     if (cmd->dynamic_vertex_binding_count > 0) {
-        glm_ctx->active_state->vao = draw_vao;
+        MGL_STATE(glm_ctx)->vao = draw_vao;
     }
     bool fallback_ok = [self mapBuffersToMTL] &&
         [self bindVertexBuffersToCurrentRenderEncoder:encCtx];
     if (fallback_ok && cmd->dynamic_uniform_binding_count > 0) {
         fallback_ok = [self bindFragmentBuffersToCurrentRenderEncoder:encCtx];
     }
-    glm_ctx->active_state->vao = saved_vao;
+    MGL_STATE(glm_ctx)->vao = saved_vao;
     return fallback_ok;
 }
 
@@ -5826,10 +5826,10 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         return NO;
     }
 
-    GLint vx = ctx->active_state->viewport[0];
-    GLint vy = ctx->active_state->viewport[1];
-    GLint vw = ctx->active_state->viewport[2];
-    GLint vh = ctx->active_state->viewport[3];
+    GLint vx = MGL_STATE(ctx)->viewport[0];
+    GLint vy = MGL_STATE(ctx)->viewport[1];
+    GLint vw = MGL_STATE(ctx)->viewport[2];
+    GLint vh = MGL_STATE(ctx)->viewport[3];
     if (vw <= 0 || vh <= 0) {
         return YES;
     }
@@ -5869,11 +5869,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         return YES;
     }
 
-    if (ctx->active_state->caps.scissor_test) {
-        GLint sx = ctx->active_state->var.scissor_box[0];
-        GLint sy = ctx->active_state->var.scissor_box[1];
-        GLint sw = ctx->active_state->var.scissor_box[2];
-        GLint sh = ctx->active_state->var.scissor_box[3];
+    if (MGL_STATE(ctx)->caps.scissor_test) {
+        GLint sx = MGL_STATE(ctx)->var.scissor_box[0];
+        GLint sy = MGL_STATE(ctx)->var.scissor_box[1];
+        GLint sw = MGL_STATE(ctx)->var.scissor_box[2];
+        GLint sh = MGL_STATE(ctx)->var.scissor_box[3];
         if (sw <= 0 || sh <= 0) {
             return YES;
         }
@@ -5898,12 +5898,12 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     MTLTriangleFillMode triangleFillMode = MTLTriangleFillModeFill;
     if (ctx && mglDrawModeProducesPolygons(mode)) {
-        if (ctx->active_state->var.polygon_mode == GL_LINE) {
+        if (MGL_STATE(ctx)->var.polygon_mode == GL_LINE) {
             triangleFillMode = MTLTriangleFillModeLines;
-        } else if (ctx->active_state->var.polygon_mode != GL_FILL &&
-                   ctx->active_state->var.polygon_mode != GL_POINT) {
-            mglLogRenderStateRepair("polygon_mode", ctx->active_state->var.polygon_mode, GL_FILL);
-            ctx->active_state->var.polygon_mode = GL_FILL;
+        } else if (MGL_STATE(ctx)->var.polygon_mode != GL_FILL &&
+                   MGL_STATE(ctx)->var.polygon_mode != GL_POINT) {
+            mglLogRenderStateRepair("polygon_mode", MGL_STATE(ctx)->var.polygon_mode, GL_FILL);
+            MGL_STATE(ctx)->var.polygon_mode = GL_FILL;
             mglMarkStateDirtyBits(ctx->active_state, DIRTY_RENDER_STATE);
         }
     }
@@ -5912,23 +5912,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     BOOL enableDepthBias = NO;
 
     if (ctx && mglDrawModeProducesPolygons(mode)) {
-        switch (ctx->active_state->var.polygon_mode) {
+        switch (MGL_STATE(ctx)->var.polygon_mode) {
             case GL_POINT:
-                enableDepthBias = ctx->active_state->caps.polygon_offset_point;
+                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_point;
                 break;
             case GL_LINE:
-                enableDepthBias = ctx->active_state->caps.polygon_offset_line;
+                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_line;
                 break;
             case GL_FILL:
             default:
-                enableDepthBias = ctx->active_state->caps.polygon_offset_fill;
+                enableDepthBias = MGL_STATE(ctx)->caps.polygon_offset_fill;
                 break;
         }
     }
 
     if (enableDepthBias) {
-        float _bias = ctx->active_state->var.polygon_offset_units;
-        float _slope = ctx->active_state->var.polygon_offset_factor;
+        float _bias = MGL_STATE(ctx)->var.polygon_offset_units;
+        float _slope = MGL_STATE(ctx)->var.polygon_offset_factor;
         float _clamp = 0.0f;
         if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != _bias ||
             _bindingSync.state->lastDepthBiasClamp != _clamp || _bindingSync.state->lastDepthSlopeScale != _slope) {
@@ -5949,8 +5949,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 - (BOOL)currentDrawModeIsFullyCulled:(GLenum)mode
 {
     return ctx &&
-           ctx->active_state->caps.cull_face &&
-           ctx->active_state->var.cull_face_mode == GL_FRONT_AND_BACK &&
+           MGL_STATE(ctx)->caps.cull_face &&
+           MGL_STATE(ctx)->var.cull_face_mode == GL_FRONT_AND_BACK &&
            mglDrawModeProducesPolygons(mode);
 }
 
@@ -6227,31 +6227,31 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     (unsigned)mode,
                     (int)first,
                     (int)count,
-                    ctx && ctx->active_state->framebuffer ? (unsigned)ctx->active_state->framebuffer->name : 0u,
+                    ctx && MGL_STATE(ctx)->framebuffer ? (unsigned)MGL_STATE(ctx)->framebuffer->name : 0u,
                     drawVAO,
                     drawVAO ? (unsigned)drawVAO->enabled_attribs : 0u,
-                    (int)ctx->active_state->viewport[0],
-                    (int)ctx->active_state->viewport[1],
-                    (int)ctx->active_state->viewport[2],
-                    (int)ctx->active_state->viewport[3],
-                    ctx->active_state->caps.scissor_test ? 1 : 0,
-                    (int)ctx->active_state->var.scissor_box[0],
-                    (int)ctx->active_state->var.scissor_box[1],
-                    (int)ctx->active_state->var.scissor_box[2],
-                    (int)ctx->active_state->var.scissor_box[3],
-                    (unsigned)ctx->active_state->draw_buffer,
-                    (unsigned)ctx->active_state->read_buffer,
-                    ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][3] ? 1 : 0,
-                    ctx->active_state->caps.depth_test ? 1 : 0,
-                    ctx->active_state->var.depth_writemask ? 1 : 0,
-                    (unsigned)ctx->active_state->var.depth_func,
-                    ctx->active_state->caps.blend ? 1 : 0,
-                    ctx->active_state->caps.cull_face ? 1 : 0,
-                    (unsigned)ctx->active_state->var.cull_face_mode,
-                    (unsigned)ctx->active_state->var.front_face);
+                    (int)MGL_STATE(ctx)->viewport[0],
+                    (int)MGL_STATE(ctx)->viewport[1],
+                    (int)MGL_STATE(ctx)->viewport[2],
+                    (int)MGL_STATE(ctx)->viewport[3],
+                    MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
+                    (int)MGL_STATE(ctx)->var.scissor_box[0],
+                    (int)MGL_STATE(ctx)->var.scissor_box[1],
+                    (int)MGL_STATE(ctx)->var.scissor_box[2],
+                    (int)MGL_STATE(ctx)->var.scissor_box[3],
+                    (unsigned)MGL_STATE(ctx)->draw_buffer,
+                    (unsigned)MGL_STATE(ctx)->read_buffer,
+                    MGL_STATE(ctx)->var.color_writemask[0][0] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][1] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][2] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][3] ? 1 : 0,
+                    MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
+                    MGL_STATE(ctx)->var.depth_writemask ? 1 : 0,
+                    (unsigned)MGL_STATE(ctx)->var.depth_func,
+                    MGL_STATE(ctx)->caps.blend ? 1 : 0,
+                    MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
+                    (unsigned)MGL_STATE(ctx)->var.cull_face_mode,
+                    (unsigned)MGL_STATE(ctx)->var.front_face);
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         if (traceLogDraw) {
@@ -6619,8 +6619,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
               (unsigned)type,
               indices,
               activeProgramName,
-              ctx ? ctx->active_state->vao : NULL,
-              ctx ? ctx->active_state->framebuffer : NULL);
+              ctx ? MGL_STATE(ctx)->vao : NULL,
+              ctx ? MGL_STATE(ctx)->framebuffer : NULL);
     }
 
     if (count <= 0) {
@@ -6670,31 +6670,31 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     (int)count,
                     (unsigned)type,
                     indices,
-                    ctx->active_state->framebuffer ? (unsigned)ctx->active_state->framebuffer->name : 0u,
+                    MGL_STATE(ctx)->framebuffer ? (unsigned)MGL_STATE(ctx)->framebuffer->name : 0u,
                     drawVAO,
                     drawVAO ? (unsigned)drawVAO->enabled_attribs : 0u,
-                    (int)ctx->active_state->viewport[0],
-                    (int)ctx->active_state->viewport[1],
-                    (int)ctx->active_state->viewport[2],
-                    (int)ctx->active_state->viewport[3],
-                    ctx->active_state->caps.scissor_test ? 1 : 0,
-                    (int)ctx->active_state->var.scissor_box[0],
-                    (int)ctx->active_state->var.scissor_box[1],
-                    (int)ctx->active_state->var.scissor_box[2],
-                    (int)ctx->active_state->var.scissor_box[3],
-                    (unsigned)ctx->active_state->draw_buffer,
-                    (unsigned)ctx->active_state->read_buffer,
-                    ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-                    ctx->active_state->var.color_writemask[0][3] ? 1 : 0,
-                    ctx->active_state->caps.depth_test ? 1 : 0,
-                    ctx->active_state->var.depth_writemask ? 1 : 0,
-                    (unsigned)ctx->active_state->var.depth_func,
-                    ctx->active_state->caps.blend ? 1 : 0,
-                    ctx->active_state->caps.cull_face ? 1 : 0,
-                    (unsigned)ctx->active_state->var.cull_face_mode,
-                    (unsigned)ctx->active_state->var.front_face);
+                    (int)MGL_STATE(ctx)->viewport[0],
+                    (int)MGL_STATE(ctx)->viewport[1],
+                    (int)MGL_STATE(ctx)->viewport[2],
+                    (int)MGL_STATE(ctx)->viewport[3],
+                    MGL_STATE(ctx)->caps.scissor_test ? 1 : 0,
+                    (int)MGL_STATE(ctx)->var.scissor_box[0],
+                    (int)MGL_STATE(ctx)->var.scissor_box[1],
+                    (int)MGL_STATE(ctx)->var.scissor_box[2],
+                    (int)MGL_STATE(ctx)->var.scissor_box[3],
+                    (unsigned)MGL_STATE(ctx)->draw_buffer,
+                    (unsigned)MGL_STATE(ctx)->read_buffer,
+                    MGL_STATE(ctx)->var.color_writemask[0][0] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][1] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][2] ? 1 : 0,
+                    MGL_STATE(ctx)->var.color_writemask[0][3] ? 1 : 0,
+                    MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
+                    MGL_STATE(ctx)->var.depth_writemask ? 1 : 0,
+                    (unsigned)MGL_STATE(ctx)->var.depth_func,
+                    MGL_STATE(ctx)->caps.blend ? 1 : 0,
+                    MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
+                    (unsigned)MGL_STATE(ctx)->var.cull_face_mode,
+                    (unsigned)MGL_STATE(ctx)->var.front_face);
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         if (traceLogDraw) {
@@ -7269,28 +7269,28 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
         if (ctx) {
             MTLTriangleFillMode loggedTriangleFillMode =
-                (mglDrawModeProducesPolygons(mode) && ctx->active_state->var.polygon_mode == GL_LINE)
+                (mglDrawModeProducesPolygons(mode) && MGL_STATE(ctx)->var.polygon_mode == GL_LINE)
                     ? MTLTriangleFillModeLines
                     : MTLTriangleFillModeFill;
             MGLTraceNSLog(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
                   (unsigned)mode,
-                  (unsigned)ctx->active_state->var.polygon_mode,
+                  (unsigned)MGL_STATE(ctx)->var.polygon_mode,
                   (unsigned long)loggedTriangleFillMode,
-                  ctx->active_state->caps.use_color_mask[0] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][1] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][2] ? 1 : 0,
-                  ctx->active_state->var.color_writemask[0][3] ? 1 : 0,
-                  ctx->active_state->var.depth_writemask ? 1 : 0,
-                  ctx->active_state->caps.depth_test ? 1 : 0,
-                  ctx->active_state->caps.blend ? 1 : 0,
-                  ctx->active_state->caps.cull_face ? 1 : 0,
-                  (int)ctx->active_state->viewport[0],
-                  (int)ctx->active_state->viewport[1],
-                  (int)ctx->active_state->viewport[2],
-                  (int)ctx->active_state->viewport[3]);
+                  MGL_STATE(ctx)->caps.use_color_mask[0] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][0] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][1] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][2] ? 1 : 0,
+                  MGL_STATE(ctx)->var.color_writemask[0][3] ? 1 : 0,
+                  MGL_STATE(ctx)->var.depth_writemask ? 1 : 0,
+                  MGL_STATE(ctx)->caps.depth_test ? 1 : 0,
+                  MGL_STATE(ctx)->caps.blend ? 1 : 0,
+                  MGL_STATE(ctx)->caps.cull_face ? 1 : 0,
+                  (int)MGL_STATE(ctx)->viewport[0],
+                  (int)MGL_STATE(ctx)->viewport[1],
+                  (int)MGL_STATE(ctx)->viewport[2],
+                  (int)MGL_STATE(ctx)->viewport[3]);
         }
 
         const uint8_t *indexBytes = NULL;
@@ -7340,9 +7340,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                   minIndex == UINT32_MAX ? 0u : minIndex,
                   maxIndex);
 
-            VertexArray *vao = ctx ? ctx->active_state->vao : NULL;
+            VertexArray *vao = ctx ? MGL_STATE(ctx)->vao : NULL;
             if (vao) {
-                GLuint traceAttribLimit = MIN((GLuint)4u, ctx ? ctx->active_state->max_vertex_attribs : (GLuint)4u);
+                GLuint traceAttribLimit = MIN((GLuint)4u, ctx ? MGL_STATE(ctx)->max_vertex_attribs : (GLuint)4u);
                 for (GLuint attrib = 0; attrib < traceAttribLimit; attrib++) {
 	                    mglTraceDrawElementsAttrib(ctx,
 	                                               vao,
@@ -7487,7 +7487,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     if (mglShouldInspectDrawCall(drawCall, activeProgramName) || drawProgramUsesCloudFaces) {
-        VertexArray *submitVAO = ctx ? ctx->active_state->vao : NULL;
+        VertexArray *submitVAO = ctx ? MGL_STATE(ctx)->vao : NULL;
         MGLTraceNSLog(@"MGL TRACE drawElements.submit call=%llu program=%u mode=0x%x count=%d type=0x%x ebo=%u offset=%lu stride=%lu needed=%lu len=%lu haveRange=%d range=[%u,%u] vao=%p enabled=0x%x encoder=%p cloudFaces=%d",
               (unsigned long long)drawCall,
               (unsigned)activeProgramName,
@@ -8591,24 +8591,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p program=%u",
                 (unsigned)mode, indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -8617,7 +8617,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "drawArraysIndirect")) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8625,7 +8625,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8688,7 +8688,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)cmd.count * (uint64_t)cmd.instanceCount];
             mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x count=%u instances=%u first=%u baseInstance=%u program=%u",
                         (unsigned)mode, cmd.count, cmd.instanceCount, cmd.first, cmd.baseInstance,
-                        (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                        (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         }
         return;
     }
@@ -8697,7 +8697,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: drawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -8706,7 +8706,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -8717,7 +8717,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, indirect, (unsigned long)(NSUInteger)(uintptr_t)indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 }
 
 -(void) mtlDrawElementsIndirect: (GLMContext) glm_ctx mode:(GLenum) mode type:(GLenum) type indirect: (const void *) indirect
@@ -8727,24 +8727,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -8753,7 +8753,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "drawElementsIndirect")) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8762,13 +8762,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type);
         return;
     }
     if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, "drawElementsIndirect")) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8776,7 +8776,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8785,7 +8785,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8869,7 +8869,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x type=0x%x count=%u instances=%u first=%u baseVertex=%d baseInstance=%u program=%u",
                         (unsigned)mode, (unsigned)type, cmd.count, cmd.instanceCount, cmd.first,
                         cmd.baseVertex, cmd.baseInstance,
-                        (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                        (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         }
         return;
     }
@@ -8878,7 +8878,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: drawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -8887,7 +8887,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -8902,7 +8902,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   &drawIndexType);
     if (!drawIndexBuffer) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=prepare_index_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -8917,7 +8917,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
                 (unsigned long)(NSUInteger)(uintptr_t)indirect,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 }
 
 -(void) mtlDrawArraysInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
@@ -9821,24 +9821,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=fully_culled mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -9847,7 +9847,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "multiDrawArraysIndirect")) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -9855,7 +9855,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -9942,7 +9942,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x drawcount=%d submittedVertices=%llu program=%u",
                     (unsigned)mode, (int)drawcount,
                     (unsigned long long)submittedVertices,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -9950,7 +9950,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: multiDrawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -9959,7 +9959,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -9984,7 +9984,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 }
 
 -(void) mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
@@ -9994,23 +9994,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 
     mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawRasterizationIsEmpty]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=rasterization_empty program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
     if ([self currentDrawModeIsFullyCulled:mode]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=fully_culled program=%u mode=0x%x",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u), (unsigned)mode);
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u), (unsigned)mode);
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
@@ -10019,7 +10019,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglSkipIndirectDrawWhenPolygonPointEmulationNeeded(ctx, mode, "multiDrawElementsIndirect")) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=polygon_point_indirect mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10028,13 +10028,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)indexType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_index_type type=0x%x program=%u",
                     (unsigned)type,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported index type=0x%x, skipping draw call", type);
         return;
     }
     if (mglSkipIndirectElementDrawWhenPrimitiveRestartEnabled(ctx, type, "multiDrawElementsIndirect")) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=primitive_restart program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10042,7 +10042,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indexBuffer = nil;
     if (![self resolveElementBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_element_buffer mtlBuffer:&indexBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_element_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10051,7 +10051,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     id<MTLBuffer> indirectBuffer = nil;
     if (![self resolveIndirectBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10162,7 +10162,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=emulated mode=0x%x type=0x%x drawcount=%d submittedIndices=%llu program=%u",
                     (unsigned)mode, (unsigned)type, (int)drawcount,
                     (unsigned long long)submittedIndices,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10170,7 +10170,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         /* Indirect patch draws would require command decoding before TCS/TES
          * dispatch. Keep them explicit until a real caller needs this path. */
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: multiDrawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
         return;
     }
@@ -10179,7 +10179,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     if ((GLuint)primitiveType == 0xFFFFFFFF) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=unsupported_mode mode=0x%x program=%u",
                     (unsigned)mode,
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode);
         return;
     }
@@ -10194,7 +10194,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                                                                   &drawIndexType);
     if (!drawIndexBuffer) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=prepare_index_buffer program=%u",
-                    (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
         return;
     }
 
@@ -10219,7 +10219,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
-                (unsigned)(glm_ctx ? glm_ctx->active_state->program_name : 0u));
+                (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
 }
 
 @end

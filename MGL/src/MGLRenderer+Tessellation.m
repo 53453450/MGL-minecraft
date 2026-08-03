@@ -260,8 +260,8 @@ typedef struct {
         return;
     }
     float pointSizeParams[2] = {
-        ctx && ctx->active_state->var.point_size > 0.0f ? ctx->active_state->var.point_size : 1.0f,
-        ctx && ctx->active_state->caps.program_point_size ? 1.0f : 0.0f
+        ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
+        ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
     };
     [computeEncoder setBytes:pointSizeParams
                       length:sizeof(pointSizeParams)
@@ -534,7 +534,7 @@ typedef struct {
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         if (ptr && !ptr->mtl_data) {
             [self bindMTLTexture:ptr];
         }
@@ -582,11 +582,11 @@ typedef struct {
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         id<MTLTexture> texture = nil;
         if (ptr) {
             texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
-            GLuint imgLevel = STATE(image_units[glUnit].level);
+            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
                 NSUInteger sliceCount = texture.arrayLength;
                 if (texture.textureType == MTLTextureTypeCube ||
@@ -631,7 +631,7 @@ typedef struct {
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(active_textures[glUnit]);
+        Texture *ptr = MGL_STATE(ctx)->active_textures[glUnit];
         if (ptr && !ptr->mtl_data) {
             [self bindMTLTexture:ptr];
         }
@@ -639,8 +639,8 @@ typedef struct {
         [computeEncoder setTexture:texture atIndex:metalSlot];
         if (resource && resource->msl_has_combined_sampler) {
             id<MTLSamplerState> sampler = nil;
-            if (STATE(texture_samplers[glUnit])) {
-                Sampler *glSampler = STATE(texture_samplers[glUnit]);
+            if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
+                Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
                 if (glSampler->dirty_bits && glSampler->mtl_data) {
                     mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
                 }
@@ -677,7 +677,7 @@ typedef struct {
 
     /* Create indirect params buffer (buffer 29).
      * spvIndirectParams[0] = vertexCount, [1] = instanceCount. */
-    GLuint patchVertices = MAX(1u, (GLuint)STATE(var.patch_vertices));
+    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(ctx)->var.patch_vertices);
     GLuint vertexCount = (GLuint)count;
     GLuint instanceCount = (drawInstanceCount > 0) ? (GLuint)drawInstanceCount : 1u;
 
@@ -999,7 +999,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         if (glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         if (ptr && !ptr->mtl_data) {
             [self bindMTLTexture:ptr];
         }
@@ -1047,11 +1047,11 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(image_units[glUnit].tex);
+        Texture *ptr = MGL_STATE(ctx)->image_units[glUnit].tex;
         id<MTLTexture> texture = nil;
         if (ptr) {
             texture = (__bridge id<MTLTexture>)(ptr->mtl_data);
-            GLuint imgLevel = STATE(image_units[glUnit].level);
+            GLuint imgLevel = MGL_STATE(ctx)->image_units[glUnit].level;
             if (imgLevel > 0u && texture) {
                 NSUInteger sliceCount = texture.arrayLength;
                 if (texture.textureType == MTLTextureTypeCube ||
@@ -1096,7 +1096,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
         }
-        Texture *ptr = STATE(active_textures[glUnit]);
+        Texture *ptr = MGL_STATE(ctx)->active_textures[glUnit];
         if (ptr && !ptr->mtl_data) {
             [self bindMTLTexture:ptr];
         }
@@ -1104,8 +1104,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
         [computeEncoder setTexture:texture atIndex:metalSlot];
         if (resource && resource->msl_has_combined_sampler) {
             id<MTLSamplerState> sampler = nil;
-            if (STATE(texture_samplers[glUnit])) {
-                Sampler *glSampler = STATE(texture_samplers[glUnit]);
+            if (MGL_STATE(ctx)->texture_samplers[glUnit]) {
+                Sampler *glSampler = MGL_STATE(ctx)->texture_samplers[glUnit];
                 if (glSampler->dirty_bits && glSampler->mtl_data) {
                     mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
                 }
@@ -1143,7 +1143,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     /* Dispatch: one threadgroup per patch, 1 thread per threadgroup.
      * gl_PrimitiveID → threadgroup_position_in_grid gives the patch index.
      * TessCoord → thread_position_in_threadgroup is 0 (1 thread per TG). */
-    GLuint patchVertices = MAX(1u, (GLuint)STATE(var.patch_vertices));
+    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(ctx)->var.patch_vertices);
     GLuint vertexCount = (GLuint)count;
     GLuint patchCount = vertexCount / patchVertices;
     if (patchCount == 0u) patchCount = 1u;
@@ -1220,7 +1220,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * when every injected write fits in both the requested GL range and the
      * current logical store. On overflow, capture into a full-size temporary
      * buffer and copy back only the prefix containing complete primitives. */
-    TransformFeedback *xfbState = glm_ctx->active_state->transform_feedback;
+    TransformFeedback *xfbState = MGL_STATE(glm_ctx)->transform_feedback;
     const bool xfbCaptureActive =
         tesProgram->transform_feedback_varying_count > 0 &&
         tesProgram->transform_feedback_buffer_mode == GL_INTERLEAVED_ATTRIBS &&
@@ -1239,7 +1239,7 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
 
     if (xfbCaptureActive) {
         BufferBaseTarget *xfbSlot =
-            &glm_ctx->active_state->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
+            &MGL_STATE(glm_ctx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
         NSUInteger xfbStride = mglTESXFBVertexStride(tesProgram);
         NSUInteger conservativeStride =
             (NSUInteger)tesProgram->transform_feedback_varying_count * 16u;

@@ -3,8 +3,7 @@
  * MGL
  *
  * Implementation of the IR-level postprocessing subsystem.
- * See mgl_ir_postprocess.h for the architectural rationale and
- * docs/IR_LEVEL_POSTPROCESS_TODO.md for the design roadmap.
+ * See mgl_ir_postprocess.h for the architectural rationale.
  *
  * This module is the single source of truth for:
  *   - Buffer-slot conflict detection (mglBufferSlotConflictsForProgram),

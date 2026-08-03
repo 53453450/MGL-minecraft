@@ -21,7 +21,7 @@
     // Diagnostic + compatibility path:
     // When swapping the default framebuffer, the active render pass should target the drawable.
     // If it still points to an offscreen texture, copy that texture into the drawable before present.
-    if (ctx->active_state->framebuffer == NULL &&
+    if (MGL_STATE(ctx)->framebuffer == NULL &&
         !_defaultDrawableWrittenSinceLastSwap &&
         rpColor0 &&
         drawableTexture &&
@@ -109,7 +109,7 @@
         if (traceCopyToDrawable) {
             MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
         }
-    } else if (ctx->active_state->framebuffer == NULL &&
+    } else if (MGL_STATE(ctx)->framebuffer == NULL &&
                _defaultDrawableWrittenSinceLastSwap &&
                rpColor0 &&
                drawableTexture &&
