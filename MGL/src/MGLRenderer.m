@@ -3594,6 +3594,20 @@ void logDirtyBits(GLMContext ctx)
 
         id<MTLCommandBuffer> commandBufferToCommit =
             [_renderPassManager detachCurrentCommandBufferForSubmission];
+        uint64_t committedGeneration = mglAdvanceFrameGeneration();
+        /* Sweep the bound buffer maps so base/attrib/uniform/SSBO buffers that
+         * were encoded this frame keep their pool slots pinned for the
+         * committed command buffer (P3 CoW snapshot reuse). */
+        BufferMapList *boundLists[3] = {
+            &MGL_STATE(glm_ctx)->vertex_buffer_map_list,
+            &MGL_STATE(glm_ctx)->fragment_buffer_map_list,
+            &MGL_STATE(glm_ctx)->compute_buffer_map_list,
+        };
+        for (int li = 0; li < 3; ++li) {
+            for (GLuint mi = 0; mi < boundLists[li]->count; ++mi) {
+                mglNoteBufferEncoded(boundLists[li]->buffers[mi].buf);
+            }
+        }
         @try {
             if (traceSwap) {
                 MGLTraceNSLog(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
@@ -3603,6 +3617,11 @@ void logDirtyBits(GLMContext ctx)
                       commandBufferToCommit ? (commandBufferToCommit.label ?: @"(no-label)") : @"(nil)");
             }
             [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+            if (commandBufferToCommit) {
+                [commandBufferToCommit addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
+                    mglRecordFrameCompleted(committedGeneration);
+                }];
+            }
             _lastCommittedCB = commandBufferToCommit;
             if (traceSwap) {
                 MGLTraceNSLog(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);

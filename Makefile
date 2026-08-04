@@ -347,11 +347,32 @@ lib: core es
 
 toolchain: $(mgl_toolchain_lib)
 
+test_exe := $(build_dir)/test_mgl
+
 test: $(test_exe)
-	$(test_exe)
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(test_exe)
 
 dbg: $(test_exe)
-	lldb -o run $(test_exe)
+	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) lldb -o run $(test_exe)
+
+$(build_dir)/test_mgl: test_mgl/main.cpp $(mgl_lib) $(build_dir)/libglfw.dylib
+	$(CXX) -Wall -gfull -O2 -arch $(HOST_ARCH) \
+		$(CFLAGS) \
+		-I./external/glfw/include \
+		-I./external/glslang/glslang/Include \
+		-I./external/SPIRV-Cross \
+		-I./external/SPIRV-Tools/include \
+		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
+		-DMGL_GL_CORE -DENABLE_OPT=0 \
+		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
+		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-isysroot $(SDK_ROOT) \
+		test_mgl/main.cpp \
+		-L$(build_dir) -lmgl -lglfw \
+		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
+		-framework IOKit -framework Foundation -framework QuartzCore \
+		-framework Metal -framework OpenGL \
+		-o $@
 
 
 # generic rules

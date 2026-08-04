@@ -280,6 +280,11 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
                                              NSUInteger *ioIndexBufferOffset,
                                              MTLIndexType *outMetalIndexType);
 
+/* P3: mark the snapshot-pool slot holding buf's current Metal backing as
+ * encoded in the current frame, so it is not recycled until that frame's GPU
+ * work completes.  Defined in MGLRenderer+Buffer.m. */
+void mglNoteBufferEncoded(Buffer *buf);
+
 #endif /* __OBJC__ */
 
 #ifdef __cplusplus

@@ -6897,7 +6897,7 @@ void glTextureBufferEXT(GLuint texture, GLenum target, GLenum internalformat, GL
 
     if (target != GL_TEXTURE_BUFFER) {
         if (ctx) {
-            ctx->state.error = GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         }
         return;
     }
@@ -6923,7 +6923,7 @@ void glTextureBufferRangeEXT(GLuint texture, GLenum target, GLenum internalforma
 
     if (target != GL_TEXTURE_BUFFER) {
         if (ctx) {
-            ctx->state.error = GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         }
         return;
     }
@@ -6955,14 +6955,15 @@ void glMultiTexBufferEXT(GLenum texunit, GLenum target, GLenum internalformat, G
 
     if (!ctx || target != GL_TEXTURE_BUFFER || unit >= TEXTURE_UNITS) {
         if (ctx) {
-            ctx->state.error = (target == GL_TEXTURE_BUFFER) ? GL_INVALID_VALUE : GL_INVALID_ENUM;
+            mglDispatchError(ctx, __FUNCTION__,
+                             (target == GL_TEXTURE_BUFFER) ? GL_INVALID_VALUE : GL_INVALID_ENUM);
         }
         return;
     }
 
     index = textureIndexFromTarget(ctx, target);
     if (index >= _MAX_TEXTURE_TYPES) {
-        ctx->state.error = GL_INVALID_ENUM;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_ENUM);
         return;
     }
 
@@ -6976,7 +6977,7 @@ void glMultiTexBufferEXT(GLenum texunit, GLenum target, GLenum internalformat, G
     }
 
     if (!tex) {
-        ctx->state.error = GL_INVALID_OPERATION;
+        mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
     }
 

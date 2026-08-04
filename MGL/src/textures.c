@@ -3282,7 +3282,6 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
             tex->dirty_bits |= DIRTY_TEXTURE_LEVEL;
             tex->dirty_bits &= ~DIRTY_TEXTURE_DATA;
             mglMarkStateDirtyBits(ctx->active_state, DIRTY_TEX);
-            ctx->state.error = GL_NO_ERROR;
         }
 
         if (MGL_VERBOSE_TEXTURE_UPLOAD_LOGS) {
@@ -3293,12 +3292,7 @@ void mglTexImage2D(GLMContext ctx, GLenum target, GLint level, GLint internalfor
         return;
     }
 
-    created_ok = createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
-    if (created_ok)
-    {
-        /* Clear stale validation errors on successful upload to avoid false-positive 1282. */
-        ctx->state.error = GL_NO_ERROR;
-    }
+    createTextureLevel(ctx, tex, face, level, is_array, internalformat, width, height, 1, format, type, (void *)pixels, proxy);
 }
 
 void mglTexImage2DMultisample(GLMContext ctx, GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations)
@@ -4510,7 +4504,6 @@ void mglTexStorage2D(GLMContext ctx, GLenum target, GLsizei levels, GLenum inter
     fflush(stderr);
 
     texStorage(ctx, tex, num_faces, levels, is_array, internalformat, width, height, 1, proxy);
-    ctx->state.error = GL_NO_ERROR;
 }
 
 
@@ -6469,8 +6462,8 @@ static bool mglTextureParameterGetTarget(GLMContext ctx, Texture *tex, GLenum pn
         return false;
 
     if (tex->target == GL_TEXTURE_BUFFER) {
-        if (ctx && ctx->state.error == GL_NO_ERROR) {
-            ctx->state.error = GL_INVALID_OPERATION;
+        if (ctx) {
+            mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         }
         return true;
     }

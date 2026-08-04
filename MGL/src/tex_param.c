@@ -103,9 +103,9 @@ static bool mglTextureParameterIsForbiddenForMultisample(GLenum pname)
 
 static bool mglTextureParameterSetError(GLMContext ctx, GLenum error)
 {
-    if (ctx && ctx->state.error == GL_NO_ERROR)
+    if (ctx)
     {
-        ctx->state.error = error;
+        mglDispatchError(ctx, __FUNCTION__, error);
     }
     return false;
 }

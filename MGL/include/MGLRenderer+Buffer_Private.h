@@ -50,6 +50,15 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                                   NSUInteger offset,
                                   NSUInteger length);
 
+/* CoW snapshot pool (P3): frame-generation gates for reusing snapshot
+ * MTLBuffers after the GPU has finished reading them.  All pool entry points
+ * run under METAL_LOCK; only mglRecordFrameCompleted runs on the Metal
+ * completion thread. */
+uint64_t mglCompletedFrameGeneration(void);
+uint64_t mglAdvanceFrameGeneration(void);
+void mglRecordFrameCompleted(uint64_t generation);
+void mglNoteBufferEncoded(Buffer *buf);
+
 @interface MGLRenderer (Buffer)
 
 /* mapGLBuffersToMTLBufferMap:stage: helpers */

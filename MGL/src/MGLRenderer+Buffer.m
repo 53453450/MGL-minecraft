@@ -68,6 +68,14 @@ static float mglFloat10ToFloat(uint32_t val) {
     return ldexpf((float)(1.0 + (double)mant / 32.0), (int)exp - 15);
 }
 
+@interface MGLBufferSnapshotPoolEntry : NSObject
+@property (nonatomic, strong) id<MTLBuffer> buffer;
+@property (nonatomic) uint64_t lastUseGeneration;
+@end
+
+@implementation MGLBufferSnapshotPoolEntry
+@end
+
 @implementation MGLRenderer (Buffer)
 
 - (id<MTLBuffer>)floatVertexBufferForDoubleAttrib:(Buffer *)sourceBuffer
@@ -2177,6 +2185,109 @@ static BOOL mglBufferShadowUploadRange(const Buffer *ptr,
     return YES;
 }
 
+/* === CoW snapshot pool ===
+ *
+ * Every glBufferSubData on a dynamic buffer whose current Metal backing was
+ * created with newBufferWithLength allocates a fresh MTLBuffer and memcpy's
+ * the whole store (mglSnapshotSharedDirtyBuffer).  The old buffer is then
+ * dead as soon as the GPU finishes the frame that encoded it.  Pooling that
+ * old buffer for reuse removes the per-upload allocation, at the cost of
+ * keeping one full copy per live snapshot slot.
+ *
+ * Reuse is safe only when the GPU can no longer read the buffer.  A
+ * monotonically increasing frame generation is bumped at swap; every buffer
+ * binding records the generation it was last encoded with (direct draw sites
+ * plus a swap-time sweep of the bound buffer maps, which covers base/attrib/
+ * uniform/SSBO bindings in one place).  A slot is reusable once the swap
+ * command buffer that committed its generation has completed.  All entry
+ * points run under METAL_LOCK; the completion handler only stores a counter. */
+
+static uint64_t s_mglFrameGeneration = 0;
+static _Atomic uint64_t s_mglCompletedFrameGeneration = 0;
+#define MGL_COW_POOL_MAX_SLOTS 4
+
+uint64_t mglCompletedFrameGeneration(void)
+{
+    return atomic_load_explicit(&s_mglCompletedFrameGeneration,
+                                memory_order_acquire);
+}
+
+uint64_t mglAdvanceFrameGeneration(void)
+{
+    return ++s_mglFrameGeneration;
+}
+
+void mglRecordFrameCompleted(uint64_t generation)
+{
+    uint64_t completed = atomic_load_explicit(&s_mglCompletedFrameGeneration,
+                                              memory_order_relaxed);
+    while (generation > completed) {
+        if (atomic_compare_exchange_weak_explicit(&s_mglCompletedFrameGeneration,
+                                                  &completed, generation,
+                                                  memory_order_release,
+                                                  memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+/* Mark the slot holding buf's current Metal backing as encoded in the current
+ * generation, so it is not recycled until that frame's GPU work completes. */
+void mglNoteBufferEncoded(Buffer *buf)
+{
+    if (!buf || !buf->mtl_cow_pool || !buf->data.mtl_data) {
+        return;
+    }
+    NSArray<MGLBufferSnapshotPoolEntry *> *pool =
+        (__bridge NSArray *)buf->mtl_cow_pool;
+    for (MGLBufferSnapshotPoolEntry *entry in pool) {
+        if (entry.buffer == (__bridge id)buf->data.mtl_data) {
+            entry.lastUseGeneration = s_mglFrameGeneration;
+            return;
+        }
+    }
+}
+
+/* Reuse a snapshot slot, or allocate and pool a fresh one when available.  The
+ * current backing (oldBuffer) may still be in the current command buffer, so
+ * its slot is never a reuse candidate.  When the pool is full and nothing is
+ * reusable, falls back to a plain allocation that is not pooled. */
+static id<MTLBuffer> mglCowPoolTakeSnapshotForOwner(id<MTLDevice> device,
+                                                    id<MTLBuffer> oldBuffer,
+                                                    NSUInteger length,
+                                                    MTLResourceOptions options,
+                                                    Buffer *owner)
+{
+    NSMutableArray<MGLBufferSnapshotPoolEntry *> *pool =
+        owner->mtl_cow_pool ? (__bridge NSMutableArray *)owner->mtl_cow_pool : nil;
+    if (!pool) {
+        pool = [NSMutableArray arrayWithCapacity:MGL_COW_POOL_MAX_SLOTS];
+        owner->mtl_cow_pool = (void *)CFBridgingRetain(pool);
+    }
+
+    uint64_t completed = mglCompletedFrameGeneration();
+    for (MGLBufferSnapshotPoolEntry *entry in pool) {
+        if (!entry.buffer || entry.buffer == oldBuffer ||
+            completed < entry.lastUseGeneration) {
+            continue;
+        }
+        return entry.buffer;
+    }
+
+    if (pool.count < MGL_COW_POOL_MAX_SLOTS) {
+        id<MTLBuffer> snapshot = [device newBufferWithLength:length
+                                                     options:options];
+        if (!snapshot) {
+            return nil;
+        }
+        MGLBufferSnapshotPoolEntry *entry = [MGLBufferSnapshotPoolEntry new];
+        entry.buffer = snapshot;
+        [pool addObject:entry];
+        return snapshot;
+    }
+    return [device newBufferWithLength:length options:options];
+}
+
 BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
                                          Buffer *ptr,
                                          id<MTLBuffer> *bufferPtr)
@@ -2208,7 +2319,9 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
         options |= MTLResourceCPUCacheModeWriteCombined;
     }
 
-    id<MTLBuffer> snapshot = [device newBufferWithLength:buffer.length options:options];
+    id<MTLBuffer> snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
+                                                            buffer.length,
+                                                            options, ptr);
     if (!snapshot) {
         NSLog(@"MGL BUFFER ERROR: failed to snapshot dynamic buffer %u", ptr->name);
         return NO;
@@ -2236,6 +2349,7 @@ BOOL mglSnapshotSharedDirtyBuffer(id<MTLDevice> device,
 
     mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
     ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
+    mglNoteBufferEncoded(ptr);
     *bufferPtr = snapshot;
     return YES;
 }

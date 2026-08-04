@@ -50,11 +50,11 @@
 
 
 // macros because I get tired of write if this and that then return
-#define RETURN_ON_FAILURE(_expr_) if (_expr_ == false) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return; }
-#define RETURN_FALSE_ON_FAILURE(_expr_) if (_expr_ == false) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return false; }
-#define RETURN_FALSE_ON_NULL(_expr_) if (_expr_ == NULL) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return false; }
-#define RETURN_NULL_ON_FAILURE(_expr_) if (_expr_ == false) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return NULL; }
-#define RETURN_ON_NULL(_expr_) if (_expr_ == NULL) { printf("failure %s:%d\n",__FUNCTION__,__LINE__); return; }
+#define RETURN_ON_FAILURE(_expr_) if (_expr_ == false) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return; }
+#define RETURN_FALSE_ON_FAILURE(_expr_) if (_expr_ == false) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return false; }
+#define RETURN_FALSE_ON_NULL(_expr_) if (_expr_ == NULL) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return false; }
+#define RETURN_NULL_ON_FAILURE(_expr_) if (_expr_ == false) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return NULL; }
+#define RETURN_ON_NULL(_expr_) if (_expr_ == NULL) { fprintf(stderr, "failure %s:%d\n",__FUNCTION__,__LINE__); return; }
 
 /* STATE() / STATE_VAR() / VAO() redirect through ctx->active_state, which
  * always points at the embedded &ctx->state.  The indirection lets the Metal

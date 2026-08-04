@@ -50,6 +50,18 @@ static NSUInteger     s_cachedQuadArrayVertexCount = 0;
 static id<MTLBuffer> s_cachedQuadLineArrayBuffer = nil;
 static NSUInteger     s_cachedQuadLineArrayVertexCount = 0;
 
+/* LINE_LOOP array-variant indices are firstVertex-relative (firstVertex+i),
+ * so they are NOT prefix-compatible across different (firstVertex,count)
+ * ranges.  Repeat draws of the same loop geometry (same GL_LINE_LOOP mesh
+ * drawn every frame) hit a small fixed-slot cache keyed on (firstVertex,
+ * vertexCount); missing keys allocate a fresh buffer. */
+#define MGL_LINE_LOOP_ARRAY_CACHE_SLOTS 4u
+static struct {
+    NSUInteger   firstVertex;
+    NSUInteger   vertexCount;
+    id<MTLBuffer> buffer;
+} s_lineLoopArrayCache[MGL_LINE_LOOP_ARRAY_CACHE_SLOTS];
+
 id<MTLBuffer> mglNewTriangleFanArrayIndexBuffer(id<MTLDevice> device,
                                                 NSUInteger vertexCount,
                                                 NSUInteger *outIndexCount)
@@ -125,6 +137,22 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
     }
 
     NSUInteger indexCount = vertexCount + 1u;
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    for (NSUInteger slot = 0u; slot < MGL_LINE_LOOP_ARRAY_CACHE_SLOTS; slot++) {
+        id<MTLBuffer> cached = s_lineLoopArrayCache[slot].buffer;
+        if (cached &&
+            s_lineLoopArrayCache[slot].firstVertex == firstVertex &&
+            s_lineLoopArrayCache[slot].vertexCount == vertexCount) {
+            os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+            if (outIndexCount) {
+                *outIndexCount = indexCount;
+            }
+            return cached;
+        }
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
+
     uint32_t *indices = NULL;
     id<MTLBuffer> buffer = mglNewUninitializedIndexBuffer(device,
                                                           indexCount * sizeof(uint32_t),
@@ -140,6 +168,17 @@ id<MTLBuffer> mglNewLineLoopArrayIndexBuffer(id<MTLDevice> device,
         indices[i] = (uint32_t)(firstVertex + i);
     }
     indices[vertexCount] = (uint32_t)firstVertex;
+
+    os_unfair_lock_lock(&s_arrayIndexCacheLock);
+    for (NSUInteger slot = 0u; slot < MGL_LINE_LOOP_ARRAY_CACHE_SLOTS; slot++) {
+        if (s_lineLoopArrayCache[slot].buffer == nil) {
+            s_lineLoopArrayCache[slot].firstVertex = firstVertex;
+            s_lineLoopArrayCache[slot].vertexCount = vertexCount;
+            s_lineLoopArrayCache[slot].buffer = buffer;
+            break;
+        }
+    }
+    os_unfair_lock_unlock(&s_arrayIndexCacheLock);
 
     if (outIndexCount) {
         *outIndexCount = indexCount;
@@ -698,6 +737,9 @@ id<MTLBuffer> mglPreparedElementIndexBuffer(id<MTLDevice> device,
         }
     }
     if (glIndexType != GL_UNSIGNED_BYTE) {
+        /* The EBO's own Metal backing is encoded directly by the caller: pin
+         * its snapshot-pool slot for the current frame (P3). */
+        mglNoteBufferEncoded(glElementBuffer);
         return metalElementBuffer;
     }
 

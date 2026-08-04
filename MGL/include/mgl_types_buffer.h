@@ -188,6 +188,26 @@ typedef struct Buffer_t {
     void       *mtl_uint16_expanded_data;       /* id<MTLBuffer> retained via CFRetain */
     uint64_t    mtl_uint16_expanded_src_hash;
     size_t      mtl_uint16_expanded_byte_count;
+    /* Cached drawElements index-range scan (min/max) used by the drawElements
+     * VBO-range guard.  Keyed on last_write_src_hash + (offset,count,type,
+     * restart) — the same invalidation contract as mtl_uint16_expanded_* :
+     * only valid while the hash matches AND the bytes came from CPU-side
+     * buffer_data (GPU-own buffers and persistent maps can change without a
+     * GL call).  Skips the O(count) scan on every draw of unchanged EBOs. */
+    uint32_t    scan_cache_min_index;
+    uint32_t    scan_cache_max_index;
+    uint64_t    scan_cache_src_hash;
+    uint64_t    scan_cache_offset;
+    uint32_t    scan_cache_count;
+    GLenum      scan_cache_type;
+    uint32_t    scan_cache_restart_index;
+    uint8_t     scan_cache_restart_enabled;
+    uint8_t     scan_cache_valid;
+    /* CoW snapshot pool (MGLRenderer+Buffer.m): CFBridged NSMutableArray of
+     * MGLBufferSnapshotPoolEntry.  Snapshot slots are reused only after the
+     * GPU has completed the frame that last encoded them.  Released in
+     * mglReleaseBufferStorage alongside mtl_data. */
+    void *mtl_cow_pool;
     void *mapped_ptr;
     GLboolean transient_batch_buffer;
     /* Program-owned storage for a default-block (glUniform*) location.  Small

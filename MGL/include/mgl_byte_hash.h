@@ -60,6 +60,11 @@ void mglDumpBytesToLog(NSString *label,
  * Used by vertex attribute byte comparison. */
 uint64_t mglHashVertexBytesFNV1a(const uint8_t *bytes, size_t length);
 
+/* Shared linear FNV-1a core.  mglHashVertexBytesFNV1a is a thin wrapper;
+ * sampler/batch snapshot hashing (draw_command.c, MGLRenderer+BatchReplay.m)
+ * delegates here so the constant-and-loop pattern exists once. */
+uint64_t mglHashBytesFNV1a(const void *data, size_t length);
+
 #ifdef __cplusplus
 }
 #endif

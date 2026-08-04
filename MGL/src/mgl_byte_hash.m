@@ -121,15 +121,21 @@ void mglDumpBytesToLog(NSString *label,
     }
 }
 
-uint64_t mglHashVertexBytesFNV1a(const uint8_t *bytes, size_t length)
+uint64_t mglHashBytesFNV1a(const void *data, size_t length)
 {
     uint64_t hash = 1469598103934665603ull;
-    if (!bytes) {
+    if (!data) {
         return hash;
     }
+    const uint8_t *bytes = (const uint8_t *)data;
     for (size_t i = 0; i < length; i++) {
         hash ^= (uint64_t)bytes[i];
         hash *= 1099511628211ull;
     }
     return hash;
+}
+
+uint64_t mglHashVertexBytesFNV1a(const uint8_t *bytes, size_t length)
+{
+    return mglHashBytesFNV1a(bytes, length);
 }

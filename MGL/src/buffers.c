@@ -370,6 +370,9 @@ void mglReleaseBufferStorage(Buffer *buf)
     buf->mtl_uint16_expanded_src_hash = 0ull;
     buf->mtl_uint16_expanded_byte_count = 0u;
 
+    /* release CoW snapshot pool (P3) */
+    mglSafeReleaseMetalObj(&buf->mtl_cow_pool);
+
     /* A no-copy MTLBuffer may remain alive in an in-flight command buffer.
      * Its deallocator owns the old VM range after this point. */
     buf->data.buffer_data = 0;

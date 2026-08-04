@@ -76,7 +76,6 @@ static void mglSamplerParameterUnhandled(GLMContext ctx)
     if (!ctx || ctx->state.error == GL_NO_ERROR)
         ERROR_RETURN(GL_INVALID_ENUM);
 }
-
 /* GL 4.6 spec: GL_TEXTURE_SWIZZLE_* are texture-object state, not sampler
  * state.  Sampler objects must reject these pnames with GL_INVALID_ENUM.
  * Without this guard, setParam → setTexParmi would accept them and silently

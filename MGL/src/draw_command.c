@@ -26,6 +26,7 @@
 
 #include "glm_context.h"
 #include "draw_command.h"
+#include "mgl_byte_hash.h"
 #include "mgl_safety.h"
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
@@ -1435,13 +1436,7 @@ static void mglBuildSamplerSnapshotKey(const TextureParameter *params,
 
 static uint64_t mglSamplerSnapshotHashBytes(const void *data, size_t size)
 {
-    const uint8_t *bytes = (const uint8_t *)data;
-    uint64_t hash = 1469598103934665603ULL;
-    for (size_t i = 0; i < size; i++) {
-        hash ^= bytes[i];
-        hash *= 1099511628211ULL;
-    }
-    return hash;
+    return mglHashBytesFNV1a(data, size);
 }
 
 static bool mglInternSamplerSnapshotKey(MGLCommandBuffer *cb,

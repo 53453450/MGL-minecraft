@@ -77,8 +77,17 @@ static const NSUInteger kMGLDefaultStageFallbackBufferSize = 4096;
 #define kMGLStageBindingStackScratchSize 4096u
 static const BOOL kMGLEnableVertexAllSlotFallback = YES;
 static const BOOL kMGLEnableSampledTextureFallback = YES;
-static const BOOL kMGLValidateDrawArraysVboRange = YES;
-static const BOOL kMGLValidateDrawElementsVboRange = YES;
+/* VBO-range guards: block draws whose vertex inputs would read out of bounds.
+ * Set MGL_VALIDATE_VBO_RANGE=0 to disable (per-draw attrib re-resolution can
+ * cost ~0.5-1µs per draw call).  Defaults: on in debug builds, off in release. */
+static inline BOOL mglVboRangeValidationEnabled(void)
+{
+#if defined(DEBUG) || defined(MGL_DEBUG)
+    return YES;
+#else
+    return mglEnvFlagEnabledDefaultOn("MGL_VALIDATE_VBO_RANGE");
+#endif
+}
 
 #define kMGLPointSizeParamBufferIndex     kMGLPointSizeBufferIndex
 #define kMGLTCSStageInReplBufferIndex     kMGLBufferSlot_TCSStageInRepl
@@ -318,6 +327,32 @@ typedef struct {
                     reason:(const char *)reason;
 - (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount;
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount;
+- (void)bindCullDistanceEmulationBuffers:(GLenum)mode
+                           encodeContext:(const MGLEncodeContext *)encCtx;
+- (bool)validateDrawArraysVertexInputs:(GLMContext)drawCtx
+                                  mode:(GLenum)mode
+                                 first:(GLint)first
+                                 count:(GLsizei)count
+                              drawCall:(uint64_t)drawCall;
+- (BOOL)resolveElementBufferForDraw:(const char *)label
+                            context:(GLMContext)drawCtx
+                           glBuffer:(Buffer **)glBufferOut
+                          mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+- (BOOL)resolveIndirectBufferForDraw:(const char *)label
+                             context:(GLMContext)drawCtx
+                            glBuffer:(Buffer **)glBufferOut
+                           mtlBuffer:(id<MTLBuffer> *)mtlBufferOut;
+- (BOOL)prepareEmulatedIndirectCPURead:(GLMContext)drawCtx label:(const char *)label;
+- (BOOL)handleTessellationPatchDrawIfNeeded:(GLMContext)drawCtx
+                                        mode:(GLenum *)mode
+                                       first:(GLint)first
+                                       count:(GLsizei)count
+                                   indexType:(GLenum)indexType
+                                     indices:(const void *)indices
+                                  baseVertex:(GLint)baseVertex
+                               instanceCount:(GLsizei)instanceCount
+                                baseInstance:(GLuint)baseInstance
+                                       label:(const char *)label;
 
 @end
 

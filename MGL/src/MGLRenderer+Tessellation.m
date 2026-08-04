@@ -126,6 +126,9 @@ typedef struct {
         if (!needsIsolatedBinding) {
             binding->buffer = buffer;
             binding->offset = bindOffset;
+            /* The GL buffer's Metal backing is about to be staged in a
+             * compute encoder: pin its snapshot-pool slot (P3). */
+            mglNoteBufferEncoded(ptr);
             continue;
         }
 

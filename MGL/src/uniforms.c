@@ -76,9 +76,7 @@ static void mglUniformSetError(GLMContext ctx, GLenum error)
     if (!ctx) {
         return;
     }
-    if (ctx->state.error == GL_NO_ERROR) {
-        ctx->state.error = error;
-    }
+    mglDispatchError(ctx, __FUNCTION__, error);
 }
 
 /* Defined in MGLRenderer.m (ObjC BOOL == bool on arm64); declared extern here

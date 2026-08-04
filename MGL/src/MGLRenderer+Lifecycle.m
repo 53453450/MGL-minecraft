@@ -34,72 +34,22 @@ static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
 
 - (void) bindObjFuncsToGLMContext: (GLMContext) glm_ctx
 {
+    /* mtlObj is CFBridgingRetain +1 (see destroyGLMContext in glm_context.c).
+     * Re-binding (e.g. GLFW window renderer replacing the auto-init headless
+     * renderer) must release the previous owner or it leaks permanently. */
+    void *previousObj = glm_ctx->mtl_funcs.mtlObj;
+    if (previousObj != NULL) {
+        CFRelease((CFTypeRef)previousObj);
+    }
+
     glm_ctx->mtl_funcs.mtlObj = (void *)CFBridgingRetain(self);
 
-    glm_ctx->mtl_funcs.mtlBindBuffer = mtlBindBuffer;
-    glm_ctx->mtl_funcs.mtlBindTexture = mtlBindTexture;
-    glm_ctx->mtl_funcs.mtlBindProgram = mtlBindProgram;
-
-    glm_ctx->mtl_funcs.mtlDeleteMTLObj = mtlDeleteMTLObj;
-    glm_ctx->mtl_funcs.release_buffer_metal_data = mtlReleaseBufferMetalData;
-
-    glm_ctx->mtl_funcs.mtlGetSync = mtlGetSync;
-    glm_ctx->mtl_funcs.mtlWaitForSync = mtlWaitForSync;
-    glm_ctx->mtl_funcs.mtlGetSyncStatus = mtlGetSyncStatus;
-    glm_ctx->mtl_funcs.mtlReleaseSync = mtlReleaseSync;
-    glm_ctx->mtl_funcs.mtlFlush = mtlFlush;
-    glm_ctx->mtl_funcs.mtlSwapBuffers = mtlSwapBuffers;
-    glm_ctx->mtl_funcs.mtlFlushDrawBuffer = mtlFlushDrawBuffer;
-    glm_ctx->mtl_funcs.mtlInvalidateRenderPass = mtlInvalidateRenderPass;
-    glm_ctx->mtl_funcs.mtlClearBuffer = mtlClearBuffer;
-    glm_ctx->mtl_funcs.mtlBlitFramebuffer = mtlBlitFramebuffer;
-
-    glm_ctx->mtl_funcs.mtlBufferSubData = mtlBufferSubData;
-    glm_ctx->mtl_funcs.mtlMapUnmapBuffer = mtlMapUnmapBuffer;
-    glm_ctx->mtl_funcs.mtlFlushBufferRange = mtlFlushBufferRange;
-
-    glm_ctx->mtl_funcs.mtlReadDrawable = mtlReadDrawable;
-    glm_ctx->mtl_funcs.mtlReadIntegerPixels = mtlReadIntegerPixels;
-    glm_ctx->mtl_funcs.mtlReadDepthPixels = mtlReadDepthPixels;
-    glm_ctx->mtl_funcs.mtlGetTexImage = mtlGetTexImage;
-    glm_ctx->mtl_funcs.mtlCopyTexSubImage = mtlCopyTexSubImage;
-
-    glm_ctx->mtl_funcs.mtlGenerateMipmaps = mtlGenerateMipmaps;
-    glm_ctx->mtl_funcs.mtlTexSubImage = mtlTexSubImage;
-    glm_ctx->mtl_funcs.mtlTexSubImageBytes = mtlTexSubImageBytes;
-
-    glm_ctx->mtl_funcs.mtlCopyImageSubData = mtlCopyImageSubData;
-
-    glm_ctx->mtl_funcs.mtlDrawArrays = mtlDrawArrays;
-    glm_ctx->mtl_funcs.mtlDrawElements = mtlDrawElements;
-    glm_ctx->mtl_funcs.mtlDrawRangeElements = mtlDrawRangeElements;
-    glm_ctx->mtl_funcs.mtlDrawArraysInstanced = mtlDrawArraysInstanced;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstanced = mtlDrawElementsInstanced;
-    glm_ctx->mtl_funcs.mtlDrawElementsBaseVertex = mtlDrawElementsBaseVertex;
-    glm_ctx->mtl_funcs.mtlDrawRangeElementsBaseVertex = mtlDrawRangeElementsBaseVertex;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex = mtlDrawElementsInstancedBaseVertex;
-    glm_ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex = mtlMultiDrawElementsBaseVertex;
-    glm_ctx->mtl_funcs.mtlDrawArraysIndirect = mtlDrawArraysIndirect;
-    glm_ctx->mtl_funcs.mtlDrawElementsIndirect = mtlDrawElementsIndirect;
-    glm_ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance = mtlDrawArraysInstancedBaseInstance;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance = mtlDrawElementsInstancedBaseInstance;
-    glm_ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance = mtlDrawElementsInstancedBaseVertexBaseInstance;
-
-    glm_ctx->mtl_funcs.mtlMultiDrawArrays = mtlMultiDrawArrays;
-    glm_ctx->mtl_funcs.mtlMultiDrawElements = mtlMultiDrawElements;
-    glm_ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex = mtlMultiDrawElementsBaseVertex;
-    glm_ctx->mtl_funcs.mtlMultiDrawArraysIndirect = mtlMultiDrawArraysIndirect;
-    glm_ctx->mtl_funcs.mtlMultiDrawElementsIndirect = mtlMultiDrawElementsIndirect;
-
-    glm_ctx->mtl_funcs.mtlDispatchCompute = mtlDispatchCompute;
-    glm_ctx->mtl_funcs.mtlDispatchComputeIndirect = mtlDispatchComputeIndirect;
-
-    glm_ctx->mtl_funcs.mtlBeginSampleQuery = mtlBeginSampleQuery;
-    glm_ctx->mtl_funcs.mtlEndSampleQuery = mtlEndSampleQuery;
-
-    glm_ctx->mtl_funcs.mtlBeginTimerQuery = mtlBeginTimerQuery;
-    glm_ctx->mtl_funcs.mtlEndTimerQuery = mtlEndTimerQuery;
-    glm_ctx->mtl_funcs.mtlGetGPUTimestamp = mtlGetGPUTimestamp;
+    /* Assignment block generated from MGL_MTL_FUNC_LIST (see
+     * mgl_types_metal_funcs.h — single source of truth). */
+#define MGL_MTL_FUNC_ASSIGN(field, cname, ret, args) \
+    glm_ctx->mtl_funcs.field = cname;
+    MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_ASSIGN)
+#undef MGL_MTL_FUNC_ASSIGN
 }
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;

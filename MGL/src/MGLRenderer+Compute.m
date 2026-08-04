@@ -134,6 +134,7 @@
         }
 
         [computeCommandEncoder setBuffer:buffer offset:bindOffset atIndex:metalBindingIndex];
+        mglNoteBufferEncoded(ptr);
     }
 
     /* Bind spvBufferSizeConstants for runtime-sized SSBO arrays.
