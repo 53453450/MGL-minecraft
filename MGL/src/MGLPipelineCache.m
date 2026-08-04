@@ -18,6 +18,16 @@
     return self;
 }
 
+/* Rewrites the cached words of a reusable query key.  The caller must never
+ * store this object into the pipeline cache dictionaries/LRU — only the
+ * hit-path lookup may use it, because later overwrites would corrupt any
+ * dictionary that retained the object.  Miss paths must allocate a fresh
+ * MGLPipelineCacheKey instead. */
+- (void)overwriteWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
+{
+    memcpy(_words, words, sizeof(_words));
+}
+
 - (BOOL)isEqual:(id)object
 {
     if (self == object) return YES;
@@ -283,6 +293,18 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (id)pipelineEntryForKey:(MGLPipelineCacheKey *)key
 {
     return _state.pipelineStateCache[key];
+}
+
+- (MGLPipelineCacheKey *)pipelineQueryKeyForWords:
+    (const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
+{
+    if (!_state.pipelineCacheQueryKey) {
+        _state.pipelineCacheQueryKey =
+            [[MGLPipelineCacheKey alloc] initWithWords:words];
+    } else {
+        [_state.pipelineCacheQueryKey overwriteWords:words];
+    }
+    return _state.pipelineCacheQueryKey;
 }
 
 - (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key

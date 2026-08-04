@@ -127,27 +127,31 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 }
 
 #define METAL_LOCK()   do { \
-    if (mglPerfLockTimingEnabled()) { \
-        double _mlw = mglNowSeconds(); \
-        [_metalStateLock lock]; \
-        double _mln = mglNowSeconds(); \
-        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, (uint64_t)((_mln - _mlw) * 1e9)); \
-        if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
-            _metalLockHoldStartStack[_metalLockHoldDepth] = _mln; \
-        } \
-        _metalLockHoldDepth++; \
-    } else { \
-        [_metalStateLock lock]; \
+    BOOL _mlTiming = mglPerfLockTimingEnabled(); \
+    double _mlw = 0.0, _mln = 0.0; \
+    if (_mlTiming) { \
+        _mlw = mglNowSeconds(); \
     } \
+    [_metalStateLock lock]; \
+    if (_mlTiming) { \
+        _mln = mglNowSeconds(); \
+        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, (uint64_t)((_mln - _mlw) * 1e9)); \
+    } \
+    if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
+        _metalLockHoldStartStack[_metalLockHoldDepth] = _mln; \
+    } \
+    _metalLockHoldDepth++; \
 } while (0)
 #define METAL_UNLOCK() do { \
-    if (mglPerfLockTimingEnabled()) { \
-        double _mln = mglNowSeconds(); \
-        if (_metalLockHoldDepth > 0) { \
-            _metalLockHoldDepth--; \
-            if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
-                MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, (uint64_t)((_mln - _metalLockHoldStartStack[_metalLockHoldDepth]) * 1e9)); \
-            } \
+    BOOL _mlinU = mglPerfLockTimingEnabled(); \
+    double _mlnU = 0.0; \
+    if (_mlinU) { \
+        _mlnU = mglNowSeconds(); \
+    } \
+    if (_metalLockHoldDepth > 0) { \
+        _metalLockHoldDepth--; \
+        if (_mlinU && _metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
+            MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, (uint64_t)((_mlnU - _metalLockHoldStartStack[_metalLockHoldDepth]) * 1e9)); \
         } \
     } \
     [_metalStateLock unlock]; \

@@ -170,6 +170,10 @@ help:
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
 mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c, $(wildcard MGL/src/*.c))
 
+# MGL/src currently has no C++ sources, but the wildcard must be defined so
+# the .cpp rules below are not silently dropped if one is added later.
+mgl_srcs_cpp := $(wildcard MGL/src/*.cpp)
+
 mgl_srcs_objc := $(wildcard MGL/src/*.m)
 
 mgl_core_c := MGL/src/gl_core.c

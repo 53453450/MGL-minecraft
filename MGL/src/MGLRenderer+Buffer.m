@@ -2376,7 +2376,9 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
         options |= MTLResourceCPUCacheModeWriteCombined;
     }
 
-    id<MTLBuffer> snapshot = [device newBufferWithLength:buffer.length options:options];
+    id<MTLBuffer> snapshot = mglCowPoolTakeSnapshotForOwner(device, buffer,
+                                                            buffer.length,
+                                                            options, ptr);
     if (!snapshot) {
         NSLog(@"MGL BUFFER ERROR: failed to snapshot mapped buffer %u", ptr->name);
         return NO;
@@ -2389,6 +2391,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
 
     mglSafeReleaseMetalObj((void **)&ptr->data.mtl_data);
     ptr->data.mtl_data = (void *)CFBridgingRetain(snapshot);
+    mglNoteBufferEncoded(ptr);
     *bufferPtr = snapshot;
     return YES;
 }

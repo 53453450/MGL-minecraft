@@ -4484,6 +4484,10 @@ stencil_format_ok:;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
             uint64_t vertexSig = 0;
+            /* Function-scope key words: filled inside the lookup block below,
+             * read by the miss path after it.  Only meaningful when
+             * currentProgramName != 0. */
+            uint64_t keyWords[MGL_PIPELINE_CACHE_KEY_WORDS] = {0};
 
             if (!pipelineResolvedFromCache && currentProgramName != 0) {
                 pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
@@ -4503,16 +4507,18 @@ stencil_format_ok:;
                     ? currentFragmentProgram->msl_texture_cache_instance_id : 0u;
                 uint64_t fragmentGeneration = currentFragmentProgram
                     ? currentFragmentProgram->msl_texture_cache_generation : 0u;
-                const uint64_t keyWords[MGL_PIPELINE_CACHE_KEY_WORDS] = {
-                    primaryKey,
-                    vertexInstance,
-                    vertexGeneration,
-                    fragmentInstance,
-                    fragmentGeneration,
-                    pipelineSig,
-                    vertexSig,
-                };
-                pipelineCacheKey = [[MGLPipelineCacheKey alloc] initWithWords:keyWords];
+                keyWords[0] = primaryKey;
+                keyWords[1] = vertexInstance;
+                keyWords[2] = vertexGeneration;
+                keyWords[3] = fragmentInstance;
+                keyWords[4] = fragmentGeneration;
+                keyWords[5] = pipelineSig;
+                keyWords[6] = vertexSig;
+                /* Hit path uses the reusable zero-alloc query key.  The key
+                 * is only valid for lookups; the miss path below allocates a
+                 * fresh key for the store/compile path so overwriteWords:
+                 * cannot corrupt cache dictionaries. */
+                pipelineCacheKey = [_pipelineCache pipelineQueryKeyForWords:keyWords];
 
                 /* Two-level cache lookup:
                  * Level 1: PSO cache (fastest - compiled pipeline ready to use)
@@ -4569,7 +4575,11 @@ stencil_format_ok:;
                                        fragmentFunction:cachedFunctionMetadataPresent
                                              ? cachedFragmentFunction : pipelineStateDescriptor.fragmentFunction];
                     pipelineResolvedFromCache = true;
-                    [_pipelineCache markPipelineEntryUsedForKey:pipelineCacheKey];
+                    /* Hit path deliberately skips the LRU touch: touching
+                     * would require copying the query-keyed object that must
+                     * never enter the LRU (see pipelineQueryKeyForWords:),
+                     * reintroducing the per-draw alloc this avoids.  Mirrors
+                     * the depth-stencil cache policy. */
 
 	                    // Mirror successful compile-side breaker resets.
 	                    _gpuRecovery.interfaceMismatchStreak = 0;
@@ -4593,9 +4603,18 @@ stencil_format_ok:;
 
 	            // PROPER AGX VIRTUALIZATION COMPATIBILITY: Fix root cause while maintaining Metal functionality
             if (!pipelineResolvedFromCache) {
+                /* Compile/store path needs its own key object: the reusable
+                 * query key words are overwritten on every lookup and must
+                 * never be retained by the cache dictionaries/LRU.  One heap
+                 * allocation on a cache miss is negligible against the PSO
+                 * compile itself. */
+                MGLPipelineCacheKey *storeKey =
+                    (currentProgramName != 0)
+                        ? [[MGLPipelineCacheKey alloc] initWithWords:keyWords]
+                        : nil;
                 return [self buildPipelineStateOnCacheMissWithDescriptor:pipelineStateDescriptor
                                                      vertexDescriptor:vertexDescriptor
-                                                            cacheKey:pipelineCacheKey
+                                                            cacheKey:storeKey
                                                          pipelineSig:pipelineSig
                                                           vertexSig:vertexSig
                                                   builtColor0Format:builtColor0Format
@@ -4627,6 +4646,47 @@ stencil_format_ok:;
                                  builtStencilFormat:(MTLPixelFormat)builtStencilFormat
                                        programName:(GLuint)currentProgramName
                                               now:(CFTimeInterval)now
+{
+    /* PSO compilation can take 10-100ms (first frame / new shader).  The
+     * render pipeline is built on a dedicated compile path that never
+     * re-enters METAL_LOCK, so release the recursive lock for the duration
+     * of the compile and re-acquire it afterwards.  This keeps a cache-miss
+     * stall from blocking other subsystems that wait on _metalStateLock. */
+    NSUInteger unlockDepth = _metalLockHoldDepth;
+    for (NSUInteger i = 0; i < unlockDepth; i++) {
+        [_metalStateLock unlock];
+    }
+    _metalLockHoldDepth = 0;
+
+    @try {
+        return [self buildPipelineStateOnCacheMissUnlockedWithDescriptor:pipelineStateDescriptor
+                                                        vertexDescriptor:vertexDescriptor
+                                                               cacheKey:pipelineCacheKey
+                                                            pipelineSig:pipelineSig
+                                                             vertexSig:vertexSig
+                                                     builtColor0Format:builtColor0Format
+                                                      builtDepthFormat:builtDepthFormat
+                                                    builtStencilFormat:builtStencilFormat
+                                                          programName:currentProgramName
+                                                                 now:now];
+    } @finally {
+        for (NSUInteger i = 0; i < unlockDepth; i++) {
+            [_metalStateLock lock];
+        }
+        _metalLockHoldDepth = unlockDepth;
+    }
+}
+
+- (bool)buildPipelineStateOnCacheMissUnlockedWithDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
+                                            vertexDescriptor:(MTLVertexDescriptor *)vertexDescriptor
+                                                   cacheKey:(MGLPipelineCacheKey *)pipelineCacheKey
+                                                pipelineSig:(uint64_t)pipelineSig
+                                                 vertexSig:(uint64_t)vertexSig
+                                         builtColor0Format:(MTLPixelFormat)builtColor0Format
+                                          builtDepthFormat:(MTLPixelFormat)builtDepthFormat
+                                        builtStencilFormat:(MTLPixelFormat)builtStencilFormat
+                                              programName:(GLuint)currentProgramName
+                                                     now:(CFTimeInterval)now
 {
     GLMState *state = MGL_STATE(ctx);
     Program *currentProgram = mglResolveProgramFromState(ctx);

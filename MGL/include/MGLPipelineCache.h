@@ -27,6 +27,10 @@ NS_ASSUME_NONNULL_BEGIN
  * 118-char string on every pipeline resolve. */
 @interface MGLPipelineCacheKey : NSObject <NSCopying>
 - (instancetype)initWithWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
+/* Rewrites the cached words of a reusable query key.  The returned object
+ * must only be used for cache lookups; store paths must allocate a fresh
+ * MGLPipelineCacheKey instead. */
+- (void)overwriteWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
 @end
 
 @class MGLDepthStencilCacheKey;
@@ -55,6 +59,9 @@ typedef struct MGLPipelineCacheState_t {
     NSMutableDictionary *__strong _Nullable depthStencilStateCache;
     NSMutableOrderedSet *__strong _Nullable depthStencilStateCacheLRU;
     MGLDepthStencilCacheKey *__strong _Nullable depthStencilCacheQueryKey;
+    /* Reusable zero-alloc PSO lookup key (see MGLPipelineCacheKey
+     * overwriteWords: contract). */
+    MGLPipelineCacheKey *__strong _Nullable pipelineCacheQueryKey;
     BOOL dsCacheEnabled;
     id<MTLBinaryArchive> __strong _Nullable binaryArchive;
     BOOL binaryArchiveEnabled;
@@ -84,6 +91,10 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable id)pipelineEntryForKey:(MGLPipelineCacheKey *)key;
 - (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key;
 - (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key;
+/* Returns a reusable query key populated with words.  Zero per-lookup
+ * allocation; the object is only valid for cache lookups. */
+- (nonnull MGLPipelineCacheKey *)pipelineQueryKeyForWords:
+    (const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
 - (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key;
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                          forKey:(MGLPipelineCacheKey *)key;
