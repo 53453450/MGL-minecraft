@@ -124,15 +124,23 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
         return nil;
     }
 
+    /* The Metal compiler APIs return autoreleased NSError objects. If we
+     * write *error while inside the @autoreleasepool below, the pool drain
+     * at scope exit releases the error and leaves the caller with a
+     * dangling pointer (compileShader: crashes in [error localizedDescription]).
+     * Capture the error into a strong __block reference instead and publish
+     * it to *error only after the pool has been drained. */
+    __block id<MTLLibrary> result = nil;
+    __block NSError *capturedError = nil;
+
     @autoreleasepool {
         NSString *cacheKey = mglMSLCompileCacheKey(device, source, options);
         id<MTLLibrary> cachedLibrary = cacheKey ? [mglMSLLibraryCache() objectForKey:cacheKey] : nil;
         if (cachedLibrary) {
-            return cachedLibrary;
-        }
-
-        if ([source rangeOfString:@"EmitVertex"].location != NSNotFound ||
-            [source rangeOfString:@"EndPrimitive"].location != NSNotFound) {
+            result = cachedLibrary;
+            capturedError = nil;
+        } else if ([source rangeOfString:@"EmitVertex"].location != NSNotFound ||
+                   [source rangeOfString:@"EndPrimitive"].location != NSNotFound) {
             static uint64_t s_unsupportedGeometryMSLSkipCount = 0;
             uint64_t hit = ++s_unsupportedGeometryMSLSkipCount;
             if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -140,72 +148,75 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
                       label ?: @"shader",
                       (unsigned long long)hit);
             }
-            if (error) {
-                NSString *description =
-                    @"Geometry shader MSL contains EmitVertex/EndPrimitive, which Metal cannot compile directly";
-                *error = [NSError errorWithDomain:@"MGLRenderer"
-                                             code:GL_INVALID_OPERATION
-                                         userInfo:@{NSLocalizedDescriptionKey: description}];
-            }
-            return nil;
-        }
-
+            NSString *description =
+                @"Geometry shader MSL contains EmitVertex/EndPrimitive, which Metal cannot compile directly";
+            capturedError = [NSError errorWithDomain:@"MGLRenderer"
+                                                 code:GL_INVALID_OPERATION
+                                             userInfo:@{NSLocalizedDescriptionKey: description}];
+        } else {
 #if MGL_HAS_MTL4_COMPILER
-        static _Atomic uint32_t s_mtl4FailCount = 0;
-        const uint32_t kMTL4FallbackThreshold = 8u;
-        if (mtl4Compiler &&
-            !mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER") &&
-            atomic_load_explicit(&s_mtl4FailCount, memory_order_relaxed) < kMTL4FallbackThreshold) {
-            if (@available(macOS 26.0, *)) {
-                MTL4LibraryDescriptor *descriptor = [[MTL4LibraryDescriptor alloc] init];
-                descriptor.source = source;
-                descriptor.options = options;
-                descriptor.name = label;
+            static _Atomic uint32_t s_mtl4FailCount = 0;
+            const uint32_t kMTL4FallbackThreshold = 8u;
+            if (mtl4Compiler &&
+                !mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER") &&
+                atomic_load_explicit(&s_mtl4FailCount, memory_order_relaxed) < kMTL4FallbackThreshold) {
+                if (@available(macOS 26.0, *)) {
+                    MTL4LibraryDescriptor *descriptor = [[MTL4LibraryDescriptor alloc] init];
+                    descriptor.source = source;
+                    descriptor.options = options;
+                    descriptor.name = label;
 
-                id<MTLLibrary> library = nil;
-                if (mglPerfSummaryEnabled()) {
-                    /* mach_timebase_info is constant for the process lifetime. */
-                    static mach_timebase_info_data_t s_tb;
-                    static dispatch_once_t s_tbOnce;
-                    dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
+                    id<MTLLibrary> library = nil;
+                    if (mglPerfSummaryEnabled()) {
+                        /* mach_timebase_info is constant for the process lifetime. */
+                        static mach_timebase_info_data_t s_tb;
+                        static dispatch_once_t s_tbOnce;
+                        dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
 
-                    uint64_t compile_start = mach_absolute_time();
-                    library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
-                    uint64_t compile_end = mach_absolute_time();
-                    double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
-                    MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
-                    MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
-                } else {
-                    library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:error];
-                }
-                if (library) {
-                    mglMetalCountCreate(MGLMetalKindLibrary);
-                    if (cacheKey) {
-                        [mglMSLLibraryCache() setObject:library forKey:cacheKey];
+                        uint64_t compile_start = mach_absolute_time();
+                        library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:&capturedError];
+                        uint64_t compile_end = mach_absolute_time();
+                        double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
+                        MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
+                        MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
+                    } else {
+                        library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:&capturedError];
                     }
-                    return library;
+                    if (library) {
+                        mglMetalCountCreate(MGLMetalKindLibrary);
+                        capturedError = nil;
+                        if (cacheKey) {
+                            [mglMSLLibraryCache() setObject:library forKey:cacheKey];
+                        }
+                        result = library;
+                    } else {
+                        atomic_fetch_add_explicit(&s_mtl4FailCount, 1u, memory_order_relaxed);
+                        static uint64_t s_mtl4LibraryFallbackCount = 0;
+                        uint64_t hit = ++s_mtl4LibraryFallbackCount;
+                        if (hit <= 8ull || (hit % 256ull) == 0ull) {
+                            NSLog(@"MGL WARNING: Metal 4 library compile failed label=%@ hit=%llu, falling back to MTLDevice: %@",
+                                  label ?: @"shader",
+                                  (unsigned long long)hit,
+                                  capturedError.localizedDescription ?: capturedError);
+                        }
+                    }
                 }
-
-                atomic_fetch_add_explicit(&s_mtl4FailCount, 1u, memory_order_relaxed);
-                static uint64_t s_mtl4LibraryFallbackCount = 0;
-                uint64_t hit = ++s_mtl4LibraryFallbackCount;
-                if (hit <= 8ull || (hit % 256ull) == 0ull) {
-                    NSError *compileError = error ? *error : nil;
-                    NSLog(@"MGL WARNING: Metal 4 library compile failed label=%@ hit=%llu, falling back to MTLDevice: %@",
-                          label ?: @"shader",
-                          (unsigned long long)hit,
-                          compileError.localizedDescription ?: compileError);
+            }
+#endif
+            if (!result) {
+                capturedError = nil;
+                result = mglCompileMSLWithTiming(device, source, options, &capturedError);
+                if (result && cacheKey) {
+                    [mglMSLLibraryCache() setObject:result forKey:cacheKey];
                 }
             }
         }
-#endif
-
-        id<MTLLibrary> library = mglCompileMSLWithTiming(device, source, options, error);
-        if (library && cacheKey) {
-            [mglMSLLibraryCache() setObject:library forKey:cacheKey];
-        }
-        return library;
     }
+
+    if (error) {
+        *error = capturedError;
+    }
+    return result;
 }
 
 id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,

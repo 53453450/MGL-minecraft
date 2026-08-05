@@ -2232,26 +2232,84 @@ GLuint mglInjectMSLLodBiasToSampleCalls(char **msl_ptr,
                 continue;
             }
 
-            /* Inject ", bias(clamp(_mglLodBias[idx], -_mglLodBiasMax, _mglLodBiasMax))"
-             * before closing ')'.
+            char inject[256];
+            size_t inject_pos;
+            int written = 0;
+
+            /* MSL requires bias() to precede the integer offset argument,
+             * so when the last top-level argument is an offset (intN(...),
+             * emitted by SPIRV-Cross for textureOffset-style calls) insert
+             * bias before it instead of appending to the call.
              * Per GL 4.6 §8.14.1: bias_texobj is clamped at set time, but we
              * clamp defensively to handle any buffer staleness. */
-            char inject[256];
-            int written = snprintf(inject, sizeof(inject),
-                                   ", bias(clamp(%s[%u], -%s, %s))",
-                                   bias_uniform_name, (unsigned)sampler_idx,
-                                   bias_max_uniform_name, bias_max_uniform_name);
-            if (written <= 0 || (size_t)written >= sizeof(inject)) {
-                break;
+            {
+                const char *last_arg = NULL;
+                int depth = 0;
+                const char *q = close - 1;
+                /* Locate the last top-level comma to find the final argument. */
+                const char *last_comma = NULL;
+                for (; q > paren; q--) {
+                    if (*q == ')') {
+                        depth++;
+                    } else if (*q == '(') {
+                        depth--;
+                    } else if (*q == ',' && depth == 0) {
+                        last_comma = q;
+                        break;
+                    }
+                }
+                last_arg = (last_comma ? last_comma + 1 : paren + 1);
+                while (last_arg < close && isspace((unsigned char)*last_arg)) {
+                    last_arg++;
+                }
+                const char *last_arg_end = close;
+                while (last_arg_end > last_arg && isspace((unsigned char)last_arg_end[-1])) {
+                    last_arg_end--;
+                }
+                static const struct { const char *pre; size_t len; } kOffsetPrefs[] = {
+                    { "int2(", 5 }, { "int3(", 5 }, { "int4(", 5 }
+                };
+                const size_t kOffsetPrefCount = sizeof(kOffsetPrefs) / sizeof(kOffsetPrefs[0]);
+                GLboolean is_offset = GL_FALSE;
+                for (size_t oi = 0u; oi < kOffsetPrefCount; oi++) {
+                    if ((size_t)(last_arg_end - last_arg) >= kOffsetPrefs[oi].len &&
+                        strncmp(last_arg, kOffsetPrefs[oi].pre, kOffsetPrefs[oi].len) == 0) {
+                        is_offset = GL_TRUE;
+                        break;
+                    }
+                }
+                if (is_offset) {
+                    /* Insert bias() before the offset argument: MSL requires
+                     * bias(...) to precede int offset(...). */
+                    int w = snprintf(inject, sizeof(inject),
+                                     "bias(clamp(%s[%u], -%s, %s)), ",
+                                     bias_uniform_name, (unsigned)sampler_idx,
+                                     bias_max_uniform_name, bias_max_uniform_name);
+                    if (w <= 0 || (size_t)w >= sizeof(inject)) {
+                        break;
+                    }
+                    inject_pos = (size_t)(last_arg - base);
+                    written = w;
+                } else {
+                    int w = snprintf(inject, sizeof(inject),
+                                     ", bias(clamp(%s[%u], -%s, %s))",
+                                     bias_uniform_name, (unsigned)sampler_idx,
+                                     bias_max_uniform_name, bias_max_uniform_name);
+                    if (w <= 0 || (size_t)w >= sizeof(inject)) {
+                        break;
+                    }
+                    inject_pos = (size_t)(close - base);
+                    written = w;
+                }
             }
 
-            if (!mglInsertStringAt(msl_ptr, *msl_ptr + (size_t)(close - base), inject)) {
+            if (!mglInsertStringAt(msl_ptr, *msl_ptr + inject_pos, inject)) {
                 break;
             }
             modified++;
 
             /* Advance past the injected text (msl_ptr may have been realloc'd). */
-            pos = (size_t)(close - base) + (size_t)written + 1u;
+            pos = inject_pos + (size_t)written + 1u;
         }
     }
 
