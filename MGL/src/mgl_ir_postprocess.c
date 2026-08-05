@@ -795,13 +795,12 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
         for (size_t si = 0; si < res_counts[li]; si++)
         {
             const spvc_reflected_resource *res = &res_lists[li][si];
-            spvc_type_id struct_id = res->type_id;
+            /* base_type_id is the struct type that owns the member
+             * decorations.  type_id may be a pointer type whose basetype
+             * reports STRUCT as well, which would make member decoration
+             * writes land on the pointer type instead of the struct. */
+            spvc_type_id struct_id = res->base_type_id;
             spvc_type struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
-            if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
-            {
-                struct_id = res->base_type_id;
-                struct_type = spvc_compiler_get_type_handle(compiler, struct_id);
-            }
             if (!struct_type || spvc_type_get_basetype(struct_type) != SPVC_BASETYPE_STRUCT)
                 continue;
 
@@ -855,6 +854,7 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
                 continue;
 
             /* Fix any member whose stride doesn't match the correct std140 value. */
+            GLboolean block_fixed = GL_FALSE;
             for (unsigned mi = 0; mi < num_members; mi++)
             {
                 spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
@@ -864,17 +864,10 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
                 spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
                 if (!member_type)
                     continue;
-                if (spvc_type_get_num_array_dimensions(member_type) == 0)
-                    continue;
 
                 spvc_basetype bt = spvc_type_get_basetype(member_type);
                 unsigned vecsize = spvc_type_get_vector_size(member_type);
                 unsigned cols = spvc_type_get_columns(member_type);
-
-                unsigned stride = 0;
-                if (spvc_compiler_type_struct_member_array_stride(
-                        compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
-                    continue;
 
                 spvc_bool row_major = spvc_compiler_has_member_decoration(
                     compiler, res->base_type_id, mi,
@@ -886,35 +879,180 @@ static GLboolean ir_fix_std140_array_strides(MGLIRPatchContext *ctx)
                 if (!is_glslang_bug_affected(bt, vecsize, cols, row_major))
                     continue;
 
-                /* Matrices with 2-component stored vectors are also
-                 * bug-affected, but correcting their stride causes
-                 * SPIRV-Cross to fail with "cannot represent in MSL"
-                 * because MSL cannot express std140's vec4-padding of
-                 * 2-component matrix vectors.  Skip them — these tests
-                 * remain failing, same as the baseline. */
-                if (cols > 1)
-                    continue;
-
                 unsigned std140_stride = compute_std140_stride(bt, vecsize, cols, row_major);
                 if (std140_stride == 0)
                     continue;
 
-                if (stride != std140_stride)
-                {
-                    spvc_compiler_set_decoration(compiler, member_type_id,
-                                                 SpvDecorationArrayStride,
-                                                 std140_stride);
-                    fixed_count++;
+                GLboolean member_fixed = GL_FALSE;
 
-                    if (mglIRRemapDebugEnabled()) {
-                        fprintf(stderr,
-                                "MGL IR STD140: program=%u stage=%d %s '%s' "
-                                "member %u stride %u -> %u\n",
-                                pptr->name, ctx->stage,
-                                res_labels[li],
-                                res->name ? res->name : "(null)",
-                                mi, stride, std140_stride);
+                if (spvc_type_get_num_array_dimensions(member_type) > 0)
+                {
+                    unsigned stride = 0;
+                    if (spvc_compiler_type_struct_member_array_stride(
+                            compiler, struct_type, mi, &stride) != SPVC_SUCCESS)
+                        continue;
+
+                    if (stride != std140_stride)
+                    {
+                        /* Array of 2-component vectors: glslang emits the
+                         * natural (std430) stride instead of the std140
+                         * rounded stride.  Fixing the ArrayStride alone
+                         * makes SPIRV-Cross fail with "cannot represent in
+                         * MSL" for matrix members, because MSL cannot
+                         * natively pad a {float,float} column to vec4.  For
+                         * matrices we must also bump MatrixStride to 16 so
+                         * SPIRV-Cross remaps the physical type to a
+                         * vec4-column matrix. */
+                        spvc_compiler_set_decoration(compiler, member_type_id,
+                                                     SpvDecorationArrayStride,
+                                                     std140_stride);
+                        member_fixed = GL_TRUE;
+                        fixed_count++;
+
+                        if (mglIRRemapDebugEnabled()) {
+                            fprintf(stderr,
+                                    "MGL IR STD140: program=%u stage=%d %s '%s' "
+                                    "member %u stride %u -> %u\n",
+                                    pptr->name, ctx->stage,
+                                    res_labels[li],
+                                    res->name ? res->name : "(null)",
+                                    mi, stride, std140_stride);
+                        }
                     }
+                }
+
+                /* Non-array matrix members (e.g. a bare mat3x2 before a
+                 * runtime array) carry the same buggy MatrixStride and must
+                 * be bumped to 16 as well. */
+                if (cols > 1)
+                {
+                    unsigned mstride = 0;
+                    if (spvc_compiler_type_struct_member_matrix_stride(
+                            compiler, struct_type, mi, &mstride) == SPVC_SUCCESS &&
+                        mstride != 16)
+                    {
+                        spvc_compiler_set_member_decoration(
+                            compiler, struct_id, mi, SpvDecorationMatrixStride,
+                            16u);
+                        member_fixed = GL_TRUE;
+
+                        if (mglIRRemapDebugEnabled()) {
+                            fprintf(stderr,
+                                    "MGL IR STD140: program=%u stage=%d %s '%s' "
+                                    "member %u matrix stride %u -> 16\n",
+                                    pptr->name, ctx->stage,
+                                    res_labels[li],
+                                    res->name ? res->name : "(null)",
+                                    mi, mstride);
+                        }
+                    }
+                }
+
+                if (member_fixed)
+                    block_fixed = GL_TRUE;
+            }
+
+            /* The glslang bug also affects the layout: a buggy matrix
+             * member is smaller than its std140 size, so offsets of later
+             * members were computed from the wrong size.  Re-layout the
+             * block so SPIRV-Cross can validate the offsets. */
+            if (block_fixed)
+            {
+                unsigned layout_offset = 0;
+                for (unsigned mi = 0; mi < num_members; mi++)
+                {
+                    spvc_type_id member_type_id = spvc_type_get_member_type(struct_type, mi);
+                    if (!member_type_id)
+                        continue;
+
+                    spvc_type member_type = spvc_compiler_get_type_handle(compiler, member_type_id);
+                    if (!member_type)
+                        continue;
+
+                    unsigned member_size;
+                    if (is_glslang_bug_affected(
+                            spvc_type_get_basetype(member_type),
+                            spvc_type_get_vector_size(member_type),
+                            spvc_type_get_columns(member_type),
+                            spvc_compiler_has_member_decoration(
+                                compiler, res->base_type_id, mi,
+                                SpvDecorationRowMajor)))
+                    {
+                        unsigned bt_size = (spvc_type_get_vector_size(member_type) > 1)
+                            ? spvc_type_get_vector_size(member_type) * 4 : 4;
+                        unsigned mcols = spvc_type_get_columns(member_type);
+                        unsigned num_vectors = (mcols > 1)
+                            ? (spvc_compiler_has_member_decoration(
+                                   compiler, res->base_type_id, mi,
+                                   SpvDecorationRowMajor)
+                                   ? spvc_type_get_vector_size(member_type)
+                                   : mcols)
+                            : 1;
+                        member_size = (mcols > 1)
+                            ? num_vectors * 16
+                            : bt_size;
+                        if (spvc_type_get_num_array_dimensions(member_type) > 0)
+                        {
+                            unsigned stride = 0;
+                            if (spvc_compiler_type_struct_member_array_stride(
+                                    compiler, struct_type, mi, &stride) == SPVC_SUCCESS)
+                            {
+                                unsigned arr_len = 1;
+                                for (unsigned ad = 0;
+                                     ad < spvc_type_get_num_array_dimensions(member_type);
+                                     ad++)
+                                {
+                                    SpvId dim = spvc_type_get_array_dimension(member_type, ad);
+                                    if (dim == 0)
+                                        arr_len = 0;
+                                    else
+                                    {
+                                        spvc_constant c = spvc_compiler_get_constant_handle(compiler, dim);
+                                        if (c)
+                                            arr_len *= spvc_constant_get_scalar_u32(c, 0, 0);
+                                        else
+                                            arr_len = 0;
+                                    }
+                                }
+                                if (arr_len > 0)
+                                    member_size = stride * arr_len;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        /* Non-affected member: keep the size glslang used. */
+                        unsigned this_offset = 0, next_offset = 0;
+                        if (spvc_compiler_type_struct_member_offset(
+                                compiler, struct_type, mi, &this_offset) != SPVC_SUCCESS)
+                            continue;
+                        if (mi + 1 < num_members &&
+                            spvc_compiler_type_struct_member_offset(
+                                compiler, struct_type, mi + 1, &next_offset) == SPVC_SUCCESS)
+                            member_size = next_offset - this_offset;
+                        else
+                            member_size = 0;
+                    }
+
+                    unsigned this_offset = 0;
+                    if (spvc_compiler_type_struct_member_offset(
+                            compiler, struct_type, mi, &this_offset) == SPVC_SUCCESS &&
+                        this_offset != layout_offset)
+                    {
+                        spvc_compiler_set_member_decoration(
+                            compiler, struct_id, mi, SpvDecorationOffset,
+                            layout_offset);
+                        if (mglIRRemapDebugEnabled()) {
+                            fprintf(stderr,
+                                    "MGL IR STD140: program=%u stage=%d %s '%s' "
+                                    "member %u offset %u -> %u\n",
+                                    pptr->name, ctx->stage,
+                                    res_labels[li],
+                                    res->name ? res->name : "(null)",
+                                    mi, this_offset, layout_offset);
+                        }
+                    }
+                    layout_offset += member_size;
                 }
             }
         }
