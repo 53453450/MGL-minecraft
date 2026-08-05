@@ -4170,6 +4170,45 @@ void logDirtyBits(GLMContext ctx)
     return result;
 }
 
+/* Copy GPU-written bytes back from the Metal buffer into the CPU shadow so
+ * later glGetBufferSubData / glGetNamedBufferSubData reads return the shader
+ * results (GL 4.6 §6.2).  The caller must have waited for the GPU (commit +
+ * waitUntilCompleted) before this runs.  Mirrors the read side of
+ * mtlMapUnmapBufferLocked: skips when the shadow holds un-uploaded CPU writes
+ * (cpu_shadow_pending) or when the Metal buffer shares the shadow memory. */
+- (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size
+{
+    if (!buf || size == 0 || buf->cpu_shadow_pending) {
+        return;
+    }
+
+    id<MTLBuffer> mtlBuffer = (__bridge id<MTLBuffer>)(buf->data.mtl_data);
+    if (!mtlBuffer || mtlBuffer.storageMode != MTLStorageModeShared) {
+        return;
+    }
+
+    uint8_t *mtlBase = (uint8_t *)mtlBuffer.contents;
+    uint8_t *cpuBase = (uint8_t *)(uintptr_t)buf->data.buffer_data;
+    if (!mtlBase || !cpuBase || mtlBase == cpuBase) {
+        return;
+    }
+
+    NSUInteger mtlLen = mtlBuffer.length;
+    NSUInteger shadowLen = (NSUInteger)buf->data.buffer_size;
+    if (offset >= mtlLen) {
+        return;
+    }
+    size_t safeLen = MIN((NSUInteger)size, mtlLen - (NSUInteger)offset);
+    if (shadowLen > 0 && (NSUInteger)offset + safeLen > shadowLen) {
+        if ((NSUInteger)offset >= shadowLen) {
+            return;
+        }
+        safeLen = shadowLen - (NSUInteger)offset;
+    }
+
+    memcpy(cpuBase + offset, mtlBase + offset, safeLen);
+}
+
 -(void *) mtlMapUnmapBufferLocked:(GLMContext) glm_ctx buf:(Buffer *)buf offset:(size_t) offset size:(size_t) size access:(GLenum) access map:(bool)map
 {
     id<MTLBuffer> mtl_buffer = nil;

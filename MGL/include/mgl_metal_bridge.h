@@ -65,6 +65,7 @@
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx;
 - (void)mtlBufferSubData:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size ptr:(const void *)ptr;
 - (void *)mtlMapUnmapBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size access:(GLenum)access map:(bool)map;
+- (void)mtlReadBackBuffer:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(size_t)offset size:(size_t)size;
 - (void)mtlFlushMappedBufferRange:(GLMContext)glm_ctx buf:(Buffer *)buf offset:(GLintptr)offset length:(GLsizeiptr)length;
 - (void)mtlReadDrawable:(GLMContext)glm_ctx pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region;
 - (void)mtlReadIntegerPixels:(GLMContext)glm_ctx pixelBytes:(void *)pixelBytes bytesPerRow:(NSUInteger)bytesPerRow bytesPerImage:(NSUInteger)bytesPerImage fromRegion:(MTLRegion)region format:(GLenum)format type:(GLenum)type;
@@ -133,6 +134,7 @@ void mtlInvalidateRenderPass(GLMContext glm_ctx);
 /* Buffer */
 void mtlBufferSubData(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, const void *ptr);
 void *mtlMapUnmapBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, GLenum access, bool map);
+void mtlReadBackBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size);
 void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length);
 
 /* Readback */

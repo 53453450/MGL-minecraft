@@ -64,6 +64,7 @@ struct GLMMetalFuncs {
     M(mtlBlitFramebuffer, mtlBlitFramebuffer, void, (GLMContext ctx, GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter)) \
     M(mtlBufferSubData, mtlBufferSubData, void, (GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, const void *ptr)) \
     M(mtlMapUnmapBuffer, mtlMapUnmapBuffer, void *, (GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size, GLenum access, bool map)) \
+    M(mtlReadBackBuffer, mtlReadBackBuffer, void, (GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size)) \
     M(mtlFlushBufferRange, mtlFlushBufferRange, void, (GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsizeiptr length)) \
     M(mtlReadDrawable, mtlReadDrawable, void, (GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height)) \
     M(mtlReadIntegerPixels, mtlReadIntegerPixels, void, (GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type)) \

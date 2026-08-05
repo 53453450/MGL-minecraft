@@ -286,6 +286,12 @@
 
         if (!ptr->data.mtl_data) {
             [self bindMTLBuffer:ptr];
+        } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+            /* A CPU write (map/unmap, BufferSubData) since the Metal backing
+             * was created is normally pushed by updateDirtyBaseBufferList.
+             * On the first draw the base map list is still empty when that
+             * path runs, so refresh here before binding stale contents. */
+            [self updateDirtyBuffer:ptr];
         }
         id<MTLBuffer> buffer = nil;
         if (ptr->data.mtl_data &&
@@ -298,8 +304,9 @@
             ? mglBufferMapVisibleBackingBytes(map, metalLen)
             : 0u;
 
-        if (!buffer || bindOffset >= metalLen ||
-            availableBytes < requiredBindingBytes) {
+        if (!ptr->gpu_write_target &&
+            (!buffer || bindOffset >= metalLen ||
+             availableBytes < requiredBindingBytes)) {
             id<MTLBuffer> isolated =
                 [self isolatedStageBindingBufferForMap:map
                                                  source:buffer
@@ -1345,6 +1352,9 @@
 
             if (!ptr->data.mtl_data) {
                 [self bindMTLBuffer:ptr];
+            } else if (ptr->data.dirty_bits & (DIRTY_BUFFER_DATA | DIRTY_BUFFER_ADDR)) {
+                /* Same first-draw refresh as the vertex path above. */
+                [self updateDirtyBuffer:ptr];
             }
             id<MTLBuffer> buffer = nil;
             if (ptr->data.mtl_data &&
@@ -1357,8 +1367,9 @@
                 ? mglBufferMapVisibleBackingBytes(map, metalLen)
                 : 0u;
 
-            if (!buffer || bindOffset >= metalLen ||
-                availableBytes < requiredBindingBytes) {
+            if (!ptr->gpu_write_target &&
+                (!buffer || bindOffset >= metalLen ||
+                 availableBytes < requiredBindingBytes)) {
                 id<MTLBuffer> isolated =
                     [self isolatedStageBindingBufferForMap:map
                                                      source:buffer

@@ -3742,6 +3742,13 @@ void mglGetBufferSubData(GLMContext ctx, GLenum target, GLintptr offset, GLsizei
         ctx->mtl_funcs.mtlFlush(ctx, true);
     }
 
+    /* A shader may have written this range (SSBO/XFB); after the GPU wait
+     * above, refresh the CPU shadow from the Metal buffer so the read returns
+     * the shader results instead of stale shadow bytes. */
+    if (ctx->mtl_funcs.mtlReadBackBuffer) {
+        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
+    }
+
     if (!mgl_range_ok_size_t(offset, size, ptr->data.buffer_size))
     {
         ERROR_RETURN(GL_INVALID_VALUE);
@@ -3957,6 +3964,13 @@ void mglGetNamedBufferSubData(GLMContext ctx, GLuint buffer, GLintptr offset, GL
     if (ctx->mtl_funcs.mtlFlush)
     {
         ctx->mtl_funcs.mtlFlush(ctx, true);
+    }
+
+    /* Same shadow refresh as mglGetBufferSubData: shader-written ranges
+     * (SSBO/XFB) live in the Metal buffer, not the CPU shadow. */
+    if (ctx->mtl_funcs.mtlReadBackBuffer)
+    {
+        ctx->mtl_funcs.mtlReadBackBuffer(ctx, ptr, (size_t)offset, (size_t)size);
     }
 
     memcpy(data, (const uint8_t *)((uintptr_t)ptr->data.buffer_data) + (uintptr_t)offset, (size_t)size);

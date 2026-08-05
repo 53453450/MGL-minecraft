@@ -241,6 +241,14 @@ void mtlFlushBufferRange(GLMContext glm_ctx, Buffer *buf, GLintptr offset, GLsiz
     [target mtlFlushMappedBufferRange: glm_ctx buf: buf offset: offset length: length];
 }
 
+void mtlReadBackBuffer(GLMContext glm_ctx, Buffer *buf, size_t offset, size_t size) {
+    id<MGLMetalBridgeTarget> target = mglBridgeTarget(glm_ctx, __func__);
+    if (!target) {
+        return;
+    }
+    [target mtlReadBackBuffer: glm_ctx buf: buf offset: offset size: size];
+}
+
 #pragma mark - Readback
 
 void mtlReadDrawable(GLMContext glm_ctx, void *pixelBytes, GLuint bytesPerRow, GLuint bytesPerImage, GLint x, GLint y, GLsizei width, GLsizei height) {
