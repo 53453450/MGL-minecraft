@@ -739,6 +739,7 @@ GLboolean mglIsEnabled(GLMContext ctx, GLenum cap)
         case GL_SAMPLE_ALPHA_TO_ONE: RET_CAP(sample_alpha_to_one);
         case GL_SAMPLE_COVERAGE: RET_CAP(sample_coverage);
         case GL_SAMPLE_MASK: RET_CAP(sample_mask);
+        case GL_SAMPLE_SHADING: RET_CAP(sample_shading);
         case GL_SCISSOR_TEST: RET_CAP(scissor_test);
         case GL_STENCIL_TEST: RET_CAP(stencil_test);
         case GL_TEXTURE_CUBE_MAP_SEAMLESS: RET_CAP(texture_cube_map_seamless);
