@@ -45,6 +45,7 @@
 #import "mgl_msl_compat.h"
 #import "mgl_safety.h"
 #import "mgl_vertex_format.h"
+#import "mgl_thread_affinity.h"      // MGL_ASSERT_GL_THREAD / mglClaimGLThread
 /* Kept: many .m files transitively rely on this header for SPVC_* constants
  * (SPVC_RESOURCE_TYPE_*, spvc_compiler_*).  Removing it breaks 7+ categories. */
 #include "spirv_cross_c.h"
@@ -111,53 +112,28 @@ static inline uint64_t mglMipDiagMixState(uint64_t signature, uint64_t value)
     return (signature ^ value) * 1099511628211ULL;
 }
 
-/* === Lock infrastructure ===
- * These macros reference MGLRenderer ivars directly and therefore can only
- * be expanded inside @implementation MGLRenderer methods. */
+/* === GL-thread contract ===
+ * The Metal layer is owned by a single thread (see mgl_thread_affinity.h).
+ * These macros used to acquire _metalStateLock; the lock has been replaced by
+ * the thread-affinity assertion (compiled out in Release), so every former
+ * METAL_LOCK() site now validates the single-threaded contract instead.
+ * Keep the LOCK/UNLOCK pairing so existing call sites remain structurally
+ * unchanged. */
 static inline double mglNowSeconds(void)
 {
     return CFAbsoluteTimeGetCurrent();
 }
 
-static inline void mglMetalLock(os_unfair_lock *lock) {
-    os_unfair_lock_lock(lock);
-}
-static inline void mglMetalUnlock(os_unfair_lock *lock) {
-    os_unfair_lock_unlock(lock);
+/* Monotonic clock for duration/gap/age measurements (heartbeats, watchdog,
+ * perf intervals).  Wall-clock mglNowSeconds is unsuitable: NTP steps can
+ * make elapsed values negative or spuriously large. */
+static inline double mglTraceNowSeconds(void)
+{
+    return (double)mglTraceClockNS() / 1000000000.0;
 }
 
-#define METAL_LOCK()   do { \
-    BOOL _mlTiming = mglPerfLockTimingEnabled(); \
-    double _mlw = 0.0, _mln = 0.0; \
-    if (_mlTiming) { \
-        _mlw = mglNowSeconds(); \
-    } \
-    [_metalStateLock lock]; \
-    if (_mlTiming) { \
-        _mln = mglNowSeconds(); \
-        MGL_FRAME_ADD(g_mglLockWaitTimeSinceSwap, (uint64_t)((_mln - _mlw) * 1e9)); \
-    } \
-    if (_metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
-        _metalLockHoldStartStack[_metalLockHoldDepth] = _mln; \
-    } \
-    _metalLockHoldDepth++; \
-} while (0)
-#define METAL_UNLOCK() do { \
-    BOOL _mlinU = mglPerfLockTimingEnabled(); \
-    double _mlnU = 0.0; \
-    if (_mlinU) { \
-        _mlnU = mglNowSeconds(); \
-    } \
-    if (_metalLockHoldDepth > 0) { \
-        _metalLockHoldDepth--; \
-        if (_mlinU && _metalLockHoldDepth < MGL_LOCK_TIMING_STACK_CAPACITY) { \
-            MGL_FRAME_ADD(g_mglLockHoldTimeSinceSwap, (uint64_t)((_mlnU - _metalLockHoldStartStack[_metalLockHoldDepth]) * 1e9)); \
-        } \
-    } \
-    [_metalStateLock unlock]; \
-} while (0)
-#define SYNC_LOCK()    do { mglMetalLock(&_syncListLock); } while (0)
-#define SYNC_UNLOCK()  do { mglMetalUnlock(&_syncListLock); } while (0)
+#define METAL_LOCK()   do { MGL_ASSERT_GL_THREAD(); } while (0)
+#define METAL_UNLOCK() do { } while (0)
 
 /* Returns the active GLMState pointer for Metal-layer sync functions.
  *
@@ -193,7 +169,10 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
     /* Keep this ivar named `ctx`: C GLM macros and older helper code expect
      * that identifier to exist inside MGLRenderer methods. */
     GLMContext  ctx;    // context macros need this exact name
-    MGLRendererCoreState _core;
+    /* Window whose resize/backing notifications are observed for geometry
+     * publishing (see MGLRenderer+Lifecycle.m).  Weak: never retain a window
+     * the host owns. */
+    __weak NSWindow *_observedWindow;    MGLRendererCoreState _core;
     MGLGPURecoveryState _gpuRecovery;
     MGLPipelineCache *_pipelineCache;
     MGLQueryManager *_queryManager;
@@ -286,6 +265,14 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
  * (mtlSwapBuffersLocked:, flushCommandBufferLocked:). */
 - (void)flushDrawBufferLocked:(GLMContext)glm_ctx;
 
+/* Drawable-geometry hand-off (component 3 of the lock replacement).
+ * mglMainThreadSyncViewGeometry: main-thread only; reads NSView/NSWindow/
+ * NSScreen geometry, writes the layer frame/contentsScale and the atomic
+ * drawable-size snapshot.  mglApplyPendingDrawableSize: GL thread only;
+ * consumes the snapshot and sets CAMetalLayer.drawableSize (safe off main). */
+- (void)mglMainThreadSyncViewGeometry;
+- (CGSize)mglApplyPendingDrawableSize;
+
 @end
 
 /* Temporary compatibility aliases for the state-container migration.
@@ -298,14 +285,14 @@ static inline void mglMetalUnlock(os_unfair_lock *lock) {
 #define _activeState _core.activeState
 #define _device _core.device
 #define _capability _core.capability
-#define _metalStateLock _core.metalStateLock
-#define _metalLockHoldStartStack _core.metalLockHoldStartStack
-#define _metalLockHoldDepth _core.metalLockHoldDepth
-#define _syncListLock _core.syncListLock
 #define _proactiveTextures _core.proactiveTextures
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
 #define _commandQueue _core.commandQueue
+#define _deviceResetRequested _core.deviceResetRequested
+#define _pendingDrawableW _core.pendingDrawableW
+#define _pendingDrawableH _core.pendingDrawableH
+#define _drawableSizeDirty _core.drawableSizeDirty
 
 /* === Aggregate imports of per-category private headers ===
  * These headers declare ObjC methods and C helpers implemented in each

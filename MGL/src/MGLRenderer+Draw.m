@@ -50,7 +50,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     static double s_drawArraysLastCallTime = 0.0;
     static uint64_t s_drawArraysLastCallCount = 0;
     uint64_t drawCall = ++s_drawArraysCallCount;
-    double drawStartSeconds = mglNowSeconds();
+    double drawStartSeconds = mglTraceNowSeconds();
+    uint64_t drawStartNS = mglTraceClockNS();
     bool traceDraw = mglShouldTraceCall(drawCall);
     mglLogLoopHeartbeat("drawArrays.loop",
                         drawCall,
@@ -422,17 +423,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
     }
 
-    if (traceLogDraw) {
-        mglTraceLog("DRAW_ARRAYS_SUBMIT call=%llu program=%u mode=0x%x first=%d count=%d encoder=%p pipeline=%p",
-                    (unsigned long long)drawCall,
-                    activeProgram ? (unsigned)activeProgram->name : (unsigned)mglCurrentRenderProgramKey(ctx),
-                    (unsigned)mode,
-                    (int)first,
-                    (int)count,
-                    _renderPassManager.state->currentRenderEncoder,
-                    _pipelineCache.state->pipelineState);
-    }
-
     MGL_FRAME_STORE(g_mglLastDrawArraysCall, drawCall);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0)];
     mglLogDrawWithoutSwapWatchdog("arrays",
@@ -442,14 +432,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   _renderPassManager.state->currentRenderEncoder,
                                   _renderPassManager.state->renderPassDescriptor);
 
-    double drawElapsedMs = (mglNowSeconds() - drawStartSeconds) * 1000.0;
-    if (traceDraw || drawElapsedMs >= 16.0) {
-        MGLTraceNSLog(@"MGL TRACE drawArrays.end call=%llu mode=0x%x first=%d count=%d elapsed=%.3fms encoder=%p",
+    double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
+    if (traceDraw || drawElapsedUs >= 16000.0) {
+        mglTraceLogNSString(@"MGL TRACE drawArrays.end call=%llu mode=0x%x first=%d count=%d elapsed=%.1fus encoder=%p",
               (unsigned long long)drawCall,
               (unsigned)mode,
               (int)first,
               (int)count,
-              drawElapsedMs,
+              drawElapsedUs,
               _renderPassManager.state->currentRenderEncoder);
     }
 }
@@ -470,7 +460,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     static uint64_t s_drawElementsLastCallCount = 0;
     static uint64_t s_drawElementsProcessStateFailCount = 0;
     uint64_t drawCall = ++s_drawElementsCallCount;
-    double drawStartSeconds = mglNowSeconds();
+    double drawStartSeconds = mglTraceNowSeconds();
+    uint64_t drawStartNS = mglTraceClockNS();
     bool traceDraw = mglShouldTraceCall(drawCall);
     mglLogLoopHeartbeat("drawElements.loop",
                         drawCall,
@@ -488,7 +479,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     bool drawProgramUsesCloudFaces = false;
 
     if (traceDraw) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.begin call=%llu mode=0x%x count=%d type=0x%x indices=%p program=%u vao=%p fbo=%p",
+        mglTraceLogNSString(@"MGL TRACE drawElements.begin call=%llu mode=0x%x count=%d type=0x%x indices=%p program=%u vao=%p fbo=%p",
               (unsigned long long)drawCall,
               (unsigned)mode,
               (int)count,
@@ -501,7 +492,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
     if (count <= 0) {
         if (traceDraw) {
-            MGLTraceNSLog(@"MGL TRACE drawElements.skip.invalidCount call=%llu count=%d",
+            mglTraceLogNSString(@"MGL TRACE drawElements.skip.invalidCount call=%llu count=%d",
                   (unsigned long long)drawCall,
                   (int)count);
         }
@@ -525,7 +516,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         s_drawElementsProcessStateFailCount++;
         MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
         if (traceDraw || s_drawElementsProcessStateFailCount <= 16 || (s_drawElementsProcessStateFailCount % 500) == 0) {
-            MGLTraceNSLog(@"MGL TRACE drawElements.skip.processGLState call=%llu failCount=%llu",
+            mglTraceLogNSString(@"MGL TRACE drawElements.skip.processGLState call=%llu failCount=%llu",
                   (unsigned long long)drawCall,
                   (unsigned long long)s_drawElementsProcessStateFailCount);
         }
@@ -906,11 +897,11 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   _renderPassManager.state->currentRenderEncoder,
                                   _renderPassManager.state->renderPassDescriptor);
 
-    double drawElapsedMs = (mglNowSeconds() - drawStartSeconds) * 1000.0;
-    if (traceDraw || drawElapsedMs >= 16.0) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.end call=%llu elapsed=%.3fms indexBuffer=%u len=%lu encoder=%p",
+    double drawElapsedUs = (mglTraceClockNS() - drawStartNS) / 1000.0;
+    if (traceDraw || drawElapsedUs >= 16000.0) {
+        mglTraceLogNSString(@"MGL TRACE drawElements.end call=%llu elapsed=%.1fus indexBuffer=%u len=%lu encoder=%p",
               (unsigned long long)drawCall,
-              drawElapsedMs,
+              drawElapsedUs,
               gl_element_buffer->name,
               (unsigned long)indexBuffer.length,
               _renderPassManager.state->currentRenderEncoder);
@@ -1148,7 +1139,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                       traceLogDraw:(BOOL)traceLogDraw
 {
     if (traceDraw || indexOffset != 0u) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.indices call=%llu gl=%u offset=%lu stride=%lu needed=%lu len=%lu",
+        mglTraceLogNSString(@"MGL TRACE drawElements.indices call=%llu gl=%u offset=%lu stride=%lu needed=%lu len=%lu",
               (unsigned long long)drawCall,
               gl_element_buffer->name,
               (unsigned long)indexOffset,
@@ -1157,7 +1148,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
               (unsigned long)indexBuffer.length);
     }
 
-    if (mglShouldInspectDrawCall(drawCall, activeProgramName) || drawProgramUsesCloudFaces) {
+    /* CloudFaces is a texel-buffer hot path; without a rate limit the
+     * MSL dumps below would run on every draw.  Keep the first few,
+     * then one dump per 512 draws. */
+    static uint64_t s_cloudFacesInspectCount = 0;
+    BOOL cloudFacesInspect = drawProgramUsesCloudFaces &&
+                             (++s_cloudFacesInspectCount <= 4ull ||
+                              (s_cloudFacesInspectCount % 512ull) == 0ull);
+    if (mglShouldInspectDrawCall(drawCall, activeProgramName) || cloudFacesInspect) {
         if (ctx && mglIsFocusedLoadingProgram(activeProgramName)) {
             if (drawVertexProgram) {
                 mglWriteProgramMSLDump(drawVertexProgram,
@@ -1172,7 +1170,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                                   (unsigned long long)drawCall]);
             }
         }
-        if (drawProgramUsesCloudFaces && drawProgram) {
+        if (cloudFacesInspect && drawProgram) {
             mglWriteProgramMSLDump(drawProgram,
                                    [NSString stringWithFormat:@"CloudFaces texel buffer drawElements call %llu",
                                                               (unsigned long long)drawCall]);
@@ -1183,7 +1181,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 (mglDrawModeProducesPolygons(mode) && MGL_STATE(ctx)->var.polygon_mode == GL_LINE)
                     ? MTLTriangleFillModeLines
                     : MTLTriangleFillModeFill;
-            MGLTraceNSLog(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
+            mglTraceLogNSString(@"MGL TRACE drawElements.state call=%llu program=%u mode=0x%x polygonMode=0x%x triFill=%lu colorMask(use=%d rgba=%d%d%d%d) depth(write=%d test=%d) blend=%d cull=%d viewport=%d,%d,%d,%d",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
                   (unsigned)mode,
@@ -1217,6 +1215,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             NSUInteger previewCount = MIN((NSUInteger)count, (NSUInteger)12);
             char preview[256];
             preview[0] = '\0';
+            size_t previewWritten = 0;
             uint32_t minIndex = UINT32_MAX;
             uint32_t maxIndex = 0u;
 
@@ -1229,17 +1228,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     maxIndex = idxValue;
                 }
 
-                size_t used = strlen(preview);
-                if (used < sizeof(preview) - 1u) {
-                    snprintf(preview + used,
-                             sizeof(preview) - used,
-                             "%s%u",
-                             (ii == 0u ? "" : ","),
-                             idxValue);
+                if (previewWritten < sizeof(preview) - 1u) {
+                    int added = snprintf(preview + previewWritten,
+                                         sizeof(preview) - previewWritten,
+                                         "%s%u",
+                                         (ii == 0u ? "" : ","),
+                                         idxValue);
+                    if (added > 0) {
+                        previewWritten += (size_t)added;
+                        if (previewWritten > sizeof(preview) - 1u) {
+                            previewWritten = sizeof(preview) - 1u;
+                        }
+                    }
                 }
             }
 
-            MGLTraceNSLog(@"MGL TRACE drawElements.preview call=%llu program=%u ebo=%u count=%d type=0x%x offset=%lu first[%lu]={%s} min=%u max=%u",
+            mglTraceLogNSString(@"MGL TRACE drawElements.preview call=%llu program=%u ebo=%u count=%d type=0x%x offset=%lu first[%lu]={%s} min=%u max=%u",
                   (unsigned long long)drawCall,
                   (unsigned)activeProgramName,
                   (unsigned)gl_element_buffer->name,
@@ -1300,7 +1304,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                             ((NSUInteger)vbo->size - vertexOffset) >= needed) {
                             float comps[4] = {0.f, 0.f, 0.f, 0.f};
                             memcpy(comps, vboBytes + vertexOffset, needed);
-                            MGLTraceNSLog(@"MGL TRACE drawElements.attrib0 call=%llu program=%u vbo=%u firstIndex=%u bindingOffset=%lu relOffset=%u stride=%u size=%u vec=(%.4f,%.4f,%.4f,%.4f) vboSize=%lld init(ever=%u full=%u source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
+                            mglTraceLogNSString(@"MGL TRACE drawElements.attrib0 call=%llu program=%u vbo=%u firstIndex=%u bindingOffset=%lu relOffset=%u stride=%u size=%u vec=(%.4f,%.4f,%.4f,%.4f) vboSize=%lld init(ever=%u full=%u source=%u off=%lld size=%lld src=%p hash=0x%016llx)",
                                   (unsigned long long)drawCall,
                                   (unsigned)activeProgramName,
                                   (unsigned)vbo->name,
@@ -1348,7 +1352,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     windowLen = MIN((size_t)128, totalSize - windowOffset);
                                 }
 
-                                MGLTraceNSLog(@"MGL DUMP attrib0.raw.begin call=%llu program=%u vbo=%u size=%zu firstIndex=%u vertexOffset=%zu stride=%u bindingOffset=%lu relOffset=%u",
+                                mglTraceLogNSString(@"MGL DUMP attrib0.raw.begin call=%llu program=%u vbo=%u size=%zu firstIndex=%u vertexOffset=%zu stride=%u bindingOffset=%lu relOffset=%u",
                                               (unsigned long long)drawCall,
                                               (unsigned)activeProgramName,
                                               (unsigned)vbo->name,
@@ -1365,7 +1369,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                                       windowLen,
                                                       windowOffset);
                                 }
-                                MGLTraceNSLog(@"MGL DUMP attrib0.raw.end vbo=%u", (unsigned)vbo->name);
+                                mglTraceLogNSString(@"MGL DUMP attrib0.raw.end vbo=%u", (unsigned)vbo->name);
                                 s_dumpedAttrib0RawBuffers[s_dumpedAttrib0RawBufferCount].program = activeProgramName;
                                 s_dumpedAttrib0RawBuffers[s_dumpedAttrib0RawBufferCount].vbo = vbo->name;
                                 s_dumpedAttrib0RawBufferCount++;
@@ -1381,7 +1385,7 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                   (long long)vbo->size);
                         }
                     } else {
-                        MGLTraceNSLog(@"MGL TRACE drawElements.attrib0 call=%llu skipped(vboBytes=%p type=0x%x size=%u stride=%u)",
+                        mglTraceLogNSString(@"MGL TRACE drawElements.attrib0 call=%llu skipped(vboBytes=%p type=0x%x size=%u stride=%u)",
                               (unsigned long long)drawCall,
                               vboBytes,
                               (unsigned)a0->type,
@@ -1397,9 +1401,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
     }
 
-    if (mglShouldInspectDrawCall(drawCall, activeProgramName) || drawProgramUsesCloudFaces) {
+    if (mglShouldInspectDrawCall(drawCall, activeProgramName) || cloudFacesInspect) {
         VertexArray *submitVAO = ctx ? MGL_STATE(ctx)->vao : NULL;
-        MGLTraceNSLog(@"MGL TRACE drawElements.submit call=%llu program=%u mode=0x%x count=%d type=0x%x ebo=%u offset=%lu stride=%lu needed=%lu len=%lu haveRange=%d range=[%u,%u] vao=%p enabled=0x%x encoder=%p cloudFaces=%d",
+        mglTraceLogNSString(@"MGL TRACE drawElements.submit call=%llu program=%u mode=0x%x count=%d type=0x%x ebo=%u offset=%lu stride=%lu needed=%lu len=%lu haveRange=%d range=[%u,%u] vao=%p enabled=0x%x encoder=%p cloudFaces=%d",
               (unsigned long long)drawCall,
               (unsigned)activeProgramName,
               (unsigned)mode,

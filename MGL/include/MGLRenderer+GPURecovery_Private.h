@@ -29,7 +29,6 @@
 @interface MGLRenderer ()
 
 - (BOOL)validateMetalObjects;
-- (BOOL)recoverFromMetalError:(NSError *)error operation:(NSString *)operation;
 - (void)clearTextureCache;
 - (void)cleanupCommandBuffer;
 - (void)resetMetalState;
@@ -37,7 +36,6 @@
 - (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer;
 - (BOOL)shouldSkipGPUOperations;
 - (void)clearProblematicGPUState;
-- (void)enableMinimalFunctionalityMode;
 - (void)recordGPUError;
 - (void)recordGPUSuccess;
 - (NSUInteger)getOptimalAlignmentForPixelFormat:(MTLPixelFormat)format;

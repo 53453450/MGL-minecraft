@@ -221,8 +221,10 @@ NSRange mglRendererFindMSLEntryParameterClose(NSString *msl, const char *entryPo
 /* kMGLValidateDrawArraysVboRange, kMGLValidateDrawElementsVboRange moved to MGLRenderer_Private.h */
 
 /* Env var names are always string literals (stable addresses), so we cache by
- * pointer.  GL is single-threaded so no locking needed; the worst race case is
- * a few extra getenv calls during startup before the cache fills. */
+ * pointer.  s_mglEnvCache is only ever read/written on the GL calling thread,
+ * never from the Metal completion-handler thread or the main queue, so no
+ * locking is needed here.  The worst race case would be a few extra getenv
+ * calls during startup before the cache fills. */
 #define MGL_ENV_CACHE_CAPACITY 32
 static struct {
     const char *name;   /* string literal address — key */
@@ -230,6 +232,8 @@ static struct {
     BOOL default_on;    /* distinguishes mglEnvFlagEnabled vs DefaultOn */
     BOOL valid;
 } s_mglEnvCache[MGL_ENV_CACHE_CAPACITY];
+
+#include "mgl_env_flag.h"
 
 static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
 {
@@ -246,18 +250,15 @@ static BOOL mglEnvFlagEnabledCached(const char *name, BOOL default_on)
         }
     }
 
-    /* Cache miss: compute. */
+    /* Cache miss: compute.  Truthiness (0/false/no/off) is delegated to the
+     * single-source parser in mgl_env_flag.h; only the "unset => default_on"
+     * semantics are applied here. */
     const char *value = getenv(name);
     BOOL result;
     if (!value || value[0] == '\0') {
         result = default_on;
-    } else if (strcmp(value, "0") == 0 ||
-               strcasecmp(value, "false") == 0 ||
-               strcasecmp(value, "no") == 0 ||
-               strcasecmp(value, "off") == 0) {
-        result = NO;
     } else {
-        result = YES;
+        result = mgl_env_flag_enabled(name) ? YES : NO;
     }
 
     /* Store in cache (find first empty slot). */
@@ -288,7 +289,7 @@ BOOL mglEnvFlagEnabledDefaultOn(const char *name)
 
 /* Trace log core infrastructure (3 static globals, mglInitTraceLogIfNeeded,
  * mglTraceLogIsEnabled, mglTraceLogV, mglTraceLog, mglTraceLogExternal,
- * MGLTraceNSLog) moved to mgl_trace_log.h/.m. */
+ * mglTraceLogNSString) moved to mgl_trace_log.h/.m. */
 
 /* mglTraceRTYFlipDiagnosticsEnabled moved to MGLRenderer_Private.h */
 /* mglYFlipDecisionName moved to MGLRenderer_Private.h */
@@ -582,7 +583,7 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
     }
 
     SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
-    MGLTraceNSLog(@"MGL IFACE program=%u stage=%s type=%s count=%u",
+    mglTraceLogNSString(@"MGL IFACE program=%u stage=%s type=%s count=%u",
                   (unsigned)program->name,
                   mglShaderStageName(stage),
                   mglSpirvResourceTypeName(type),
@@ -590,7 +591,7 @@ static void mglLogProgramResourceInterface(Program *program, int stage, int type
 
     for (GLuint i = 0; i < resources->count; i++) {
         SpirvResource *res = &resources->list[i];
-        MGLTraceNSLog(@"MGL IFACE   #%u name=%s loc=%u glBinding=%u metalBinding=%u set=%u typeId=%u baseTypeId=%u required=%zu imageDim=%u arrayed=%u",
+        mglTraceLogNSString(@"MGL IFACE   #%u name=%s loc=%u glBinding=%u metalBinding=%u set=%u typeId=%u baseTypeId=%u required=%zu imageDim=%u arrayed=%u",
                       (unsigned)i,
                       res->name ? res->name : "(null)",
                       (unsigned)res->location,
@@ -651,7 +652,7 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
     }
     s_dumpGeneration++;
 
-    MGLTraceNSLog(@"MGL IFACE DUMP begin program=%u reason=%@ generation=%u",
+    mglTraceLogNSString(@"MGL IFACE DUMP begin program=%u reason=%@ generation=%u",
                   (unsigned)program->name,
                   reason ?: @"(none)",
                   (unsigned)s_dumpGeneration);
@@ -725,7 +726,7 @@ void mglWriteProgramMSLDump(Program *program, NSString *reason)
                                    atomically:YES
                                      encoding:NSUTF8StringEncoding
                                         error:&writeError];
-                MGLTraceNSLog(@"MGL IFACE DUMP msl program=%u stage=%s entry=%@ path=%@ ok=%d error=%@",
+                mglTraceLogNSString(@"MGL IFACE DUMP msl program=%u stage=%s entry=%@ path=%@ ok=%d error=%@",
                               (unsigned)programName,
                               [dump[@"stageName"] UTF8String],
                               dump[@"entry"],
@@ -1068,14 +1069,14 @@ void mglLogLoopHeartbeat(const char *tag,
     if (*lastCallSeconds > 0.0 &&
         warnGapSeconds > 0.0 &&
         (nowSeconds - *lastCallSeconds) >= warnGapSeconds) {
-        MGLTraceNSLog(@"MGL TRACE %s gap=%.2fms deltaCalls=%llu call=%llu",
+        mglTraceLogNSString(@"MGL TRACE %s gap=%.2fms deltaCalls=%llu call=%llu",
               tag ? tag : "loop",
               deltaMs,
               (unsigned long long)deltaCalls,
               (unsigned long long)callCount);
     } else if (mglShouldTraceCall(callCount) &&
                (callCount <= 20ull || (callCount % 60ull) == 0ull)) {
-        MGLTraceNSLog(@"MGL TRACE %s heartbeat delta=%.2fms deltaCalls=%llu call=%llu",
+        mglTraceLogNSString(@"MGL TRACE %s heartbeat delta=%.2fms deltaCalls=%llu call=%llu",
               tag ? tag : "loop",
               deltaMs,
               (unsigned long long)deltaCalls,
@@ -1101,7 +1102,7 @@ void mglLogStateSnapshot(const char *tag,
     }
 
     if (!mglRendererContextLikelyValid(ctx)) {
-        MGLTraceNSLog(@"MGL TRACE %s ctx=%p(invalid) cb=%p enc=%p rpd=%p drawable=%p",
+        mglTraceLogNSString(@"MGL TRACE %s ctx=%p(invalid) cb=%p enc=%p rpd=%p drawable=%p",
               tag ? tag : "snapshot", ctx, commandBuffer, renderEncoder, renderPassDescriptor, drawable);
         return;
     }
@@ -1116,7 +1117,7 @@ void mglLogStateSnapshot(const char *tag,
             mglPointerRangeIsReadable(drawFBO, sizeof(*drawFBO))) {
             drawFBOName = drawFBO->name;
         } else {
-            MGLTraceNSLog(@"MGL TRACE %s invalid drawFBO=%p", tag ? tag : "snapshot", drawFBO);
+            mglTraceLogNSString(@"MGL TRACE %s invalid drawFBO=%p", tag ? tag : "snapshot", drawFBO);
             drawFBO = NULL;
         }
     }
@@ -1139,7 +1140,7 @@ void mglLogStateSnapshot(const char *tag,
 
     id<MTLTexture> drawableTexture = drawable ? drawable.texture : nil;
 
-    MGLTraceNSLog(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
+    mglTraceLogNSString(@"MGL TRACE %s prog=%u dirty=0x%x[%s] clear=0x%x drawBuf=0x%x readBuf=0x%x vao=%p drawFBO=%p(%u) "
           "vp=(%u,%u,%u,%u) scissor(en=%d box=%d,%d,%d,%d) caps(depth=%d blend=%d cull=%d) "
           "stateClear=(%.3f,%.3f,%.3f,%.3f) cb=%p[%s] label=%@ enc=%p rpd=%p rt=%lux%lu "
           "c0=%p fmt=%lu usage=0x%lx la/sa=%s/%s clear=(%.3f,%.3f,%.3f,%.3f) "
@@ -1199,7 +1200,7 @@ void mglLogStateSnapshot(const char *tag,
           (unsigned long)(drawableTexture ? drawableTexture.width : 0),
           (unsigned long)(drawableTexture ? drawableTexture.height : 0));
 
-    MGLTraceNSLog(@"MGL TRACE %s masks color0(use=%d rgba=%d%d%d%d) depthWrite=%d stencilWrite=0x%x",
+    mglTraceLogNSString(@"MGL TRACE %s masks color0(use=%d rgba=%d%d%d%d) depthWrite=%d stencilWrite=0x%x",
           tag ? tag : "snapshot",
           ctx->active_state->caps.use_color_mask[0] ? 1 : 0,
           ctx->active_state->var.color_writemask[0][0] ? 1 : 0,
@@ -1224,7 +1225,7 @@ void mglLogDrawWithoutSwapWatchdog(const char *kind,
         return;
     }
 
-    double now = mglNowSeconds();
+    double now = mglTraceNowSeconds();
     double lastSwap = MGL_FRAME_LOAD(g_mglLastSwapSeconds);
     double lastSwapAgeMs = (lastSwap > 0.0) ? ((now - lastSwap) * 1000.0) : -1.0;
     if (lastSwapAgeMs >= 0.0 && lastSwapAgeMs < 250.0) {
@@ -1986,26 +1987,38 @@ int mglRendererResolveVertexAttributeBufferIndex(GLMContext ctx,
     return -1;
 }
 
-// === Thread Safety Lock Macros ===
+// === GL-thread contract (lock replacement) ===
 //
-// Lock macros (METAL_LOCK/METAL_UNLOCK/SYNC_LOCK/SYNC_UNLOCK) and helpers
-// (mglMetalLock/mglMetalUnlock/mglNowSeconds) moved to MGLRenderer_Private.h
-// so that category files (MGLRenderer+QuerySync.m, +Blit.m, +Texture.m) can use
-// them without redefinition.
+// The Metal layer is owned by a single thread.  METAL_LOCK/METAL_UNLOCK
+// (defined in MGLRenderer_Private.h) no longer acquire a lock — they expand
+// to MGL_ASSERT_GL_THREAD(), validating the single-thread contract in
+// Debug builds and compiling to nothing in Release.
 //
-// NSRecursiveLock is reentrant — required because the MGLRenderer call graph
-// is densely interconnected (e.g. endRenderEncoding → updateGLSampledCopies
-// → updateGLSampledRenderTargetCopyForTexture → ensureWritableCommandBuffer,
-// which is another target method).  A non-reentrant lock deadlocked on
-// indirect re-entry through non-target helper methods.
+// Former lock roles are now explicit thread-affinity roles:
 //
-// Two independent locks:
-//   _metalStateLock  — guards the 15 Locked-method targets (draw path)
-//   _syncListLock    — guards MGLRenderPassManager sync-list access
-//                      (mtlGetSync: vs newCommandBufferLocked)
+// 1. GL calling thread — executes gl* entry points and all MGLRenderer
+//    state operations (draw/encode paths) including waitUntilCompleted
+//    (RenderPass.m commitFinish/wait paths).  May call
+//    recordGPUError/recordGPUSuccess (gpuErrorLock).
+//
+// 2. Metal worker thread — addCompletedHandler: completion callbacks
+//    (commitCommandBufferWithAGXRecovery).  Only touches the
+//    _gpuRecovery.* error-tracking ivars under _gpuRecovery.gpuErrorLock;
+//    never runs MGLRenderer state operations.  May request resetMetalState
+//    via the _deviceResetRequested atomic flag (drained on the GL thread
+//    at the swap frame boundary).
+//
+// 3. Main queue — AppKit view geometry only: KVO/NSWindow notifications
+//    call mglMainThreadSyncViewGeometry, which publishes the geometry into
+//    the pending-drawable-size atomics.  The GL thread consumes the
+//    snapshot in mglApplyPendingDrawableSize.  Main queue never runs
+//    MGLRenderer state operations.
 //
 // The Locked pattern (public wrapper + *Locked impl) is retained for
-// structural clarity but no longer relies on non-reentrancy.
+// structural clarity but no longer relies on any lock.
+//
+// Static helper-state variables each have a single owning thread role;
+// see the C annotations at their definitions.
 
 // Forward declarations for private helpers extracted from
 // createMTLTextureFromGLTexture:, mapGLBuffersToMTLBufferMap:stage:, and
@@ -2313,7 +2326,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
                                                attrib,
                                                "drawElements.attrib",
                                                &resolved)) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u invalid buffer",
+        mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u invalid buffer",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName);
@@ -2337,7 +2350,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     }
 
     if (!vboBytes) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u vbo=%u no readable bytes",
+        mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u vbo=%u no readable bytes",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -2355,7 +2368,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     uint32_t firstIndex = mglReadGLIndexValue(indexBytes, indexType, indexElement);
     int64_t vertexIndex64 = (int64_t)firstIndex + (int64_t)baseVertex;
     if (vertexIndex64 < 0) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u negative vertexIndex rawIndex=%u baseVertex=%d",
+        mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u negative vertexIndex rawIndex=%u baseVertex=%d",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -2393,7 +2406,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     if (elemBytes == 0u ||
         vertexOffset > (NSUInteger)vbo->size ||
         ((NSUInteger)vbo->size - vertexOffset) < elemBytes) {
-        MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u OOB rawIndex=%u baseVertex=%d vertexIndex=%llu bindingOffset=%lu relOffset=%lu stride=%lu size=%u type=0x%x normalized=%u elemBytes=%zu vboSize=%lld",
+        mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu vbo=%u OOB rawIndex=%u baseVertex=%d vertexIndex=%llu bindingOffset=%lu relOffset=%lu stride=%lu size=%u type=0x%x normalized=%u elemBytes=%zu vboSize=%lld",
               (unsigned)attrib,
               (unsigned long long)drawCall,
               (unsigned)programName,
@@ -2455,7 +2468,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     MTLVertexFormat format = glTypeSizeToMtlType(a->type, a->size, effectiveNormalized);
     int mappedIndex = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, attrib, "drawElements.attrib.trace");
     SpirvResource *resource = mglRendererProgramVertexAttribResource(program, attrib);
-    MGLTraceNSLog(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu resource=%s metalSlot=%d vbo=%u rawIndex=%u baseVertex=%d vertexIndex=%llu bindingIndex=%u bindingOffset=%lu relOffset=%lu vertexOffset=%lu stride=%lu size=%u type=0x%x normalized=%u/%u format=%lu(%s) decoded=(%.6f,%.6f,%.6f,%.6f) raw=%s",
+    mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu resource=%s metalSlot=%d vbo=%u rawIndex=%u baseVertex=%d vertexIndex=%llu bindingIndex=%u bindingOffset=%lu relOffset=%lu vertexOffset=%lu stride=%lu size=%u type=0x%x normalized=%u/%u format=%lu(%s) decoded=(%.6f,%.6f,%.6f,%.6f) raw=%s",
           (unsigned)attrib,
           (unsigned long long)drawCall,
           (unsigned)programName,
@@ -2790,97 +2803,22 @@ void logDirtyBits(GLMContext ctx)
 /* bindMTLProgramLocked: moved to MGLRenderer+RenderPass.m */
 
 #pragma mark draw buffers
-- (CGSize)mglSyncLayerDrawableSizeFromView:(const char *)reason
+/* AppKit-backed drawable-size hand-off.  The GL thread never touches
+ * NSView/NSWindow/NSScreen; it only consumes the atomic snapshot published by
+ * mglMainThreadSyncViewGeometry (see MGLRenderer+Lifecycle.m) and sets
+ * CAMetalLayer.drawableSize, which Metal explicitly allows off the main
+ * thread. */
+- (CGSize)mglApplyPendingDrawableSize
 {
-    if (!_layer) {
-        return CGSizeZero;
+    MGL_ASSERT_GL_THREAD();
+    if (atomic_exchange_explicit(&_drawableSizeDirty, false, memory_order_acquire)) {
+        uint32_t w = atomic_load_explicit(&_pendingDrawableW, memory_order_relaxed);
+        uint32_t h = atomic_load_explicit(&_pendingDrawableH, memory_order_relaxed);
+        CGSize s = CGSizeMake((CGFloat)MAX(1u, w), (CGFloat)MAX(1u, h));
+        _layer.drawableSize = s;
+        return s;
     }
-
-    CGSize oldDrawableSize = _layer.drawableSize;
-    NSRect bounds = NSZeroRect;
-    NSRect backingBounds = NSZeroRect;
-    CGFloat scale = 1.0;
-
-    if (_view) {
-        [_view setWantsLayer:YES];
-        bounds = [_view bounds];
-        if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
-            bounds = [_view frame];
-            bounds.origin = NSZeroPoint;
-        }
-
-        backingBounds = [_view convertRectToBacking:bounds];
-        if (bounds.size.width > 0.0 && backingBounds.size.width > 0.0) {
-            scale = backingBounds.size.width / bounds.size.width;
-        } else {
-            NSWindow *window = [_view window];
-            if (window) {
-                scale = [window backingScaleFactor];
-            } else if ([NSScreen mainScreen]) {
-                scale = [[NSScreen mainScreen] backingScaleFactor];
-            }
-
-            if (scale <= 0.0) {
-                scale = 1.0;
-            }
-
-            backingBounds = NSMakeRect(0.0,
-                                       0.0,
-                                       bounds.size.width * scale,
-                                       bounds.size.height * scale);
-        }
-
-        _layer.frame = bounds;
-        _layer.contentsScale = scale;
-    } else if (oldDrawableSize.width <= 0.0 || oldDrawableSize.height <= 0.0) {
-        bounds = [_layer frame];
-        scale = _layer.contentsScale > 0.0 ? _layer.contentsScale : 1.0;
-        backingBounds = NSMakeRect(0.0,
-                                   0.0,
-                                   bounds.size.width * scale,
-                                   bounds.size.height * scale);
-    } else {
-        backingBounds = NSMakeRect(0.0, 0.0, oldDrawableSize.width, oldDrawableSize.height);
-    }
-
-    NSUInteger pixelWidth = (NSUInteger)MAX(1.0, backingBounds.size.width + 0.5);
-    NSUInteger pixelHeight = (NSUInteger)MAX(1.0, backingBounds.size.height + 0.5);
-    CGSize newDrawableSize = CGSizeMake((CGFloat)pixelWidth, (CGFloat)pixelHeight);
-
-    if (oldDrawableSize.width != newDrawableSize.width ||
-        oldDrawableSize.height != newDrawableSize.height) {
-        _layer.drawableSize = newDrawableSize;
-    }
-
-    static uint64_t s_sizeSyncCall = 0;
-    static NSUInteger s_lastPixelWidth = 0;
-    static NSUInteger s_lastPixelHeight = 0;
-    uint64_t call = ++s_sizeSyncCall;
-    BOOL sizeChanged = (s_lastPixelWidth != pixelWidth || s_lastPixelHeight != pixelHeight);
-
-    if (kMGLDiagnosticStateLogs &&
-        (sizeChanged || call <= 8ull || ((call % 120ull) == 0ull))) {
-        NSWindow *window = _view ? [_view window] : nil;
-        NSRect windowFrame = window ? [window frame] : NSZeroRect;
-        MGLTraceNSLog(@"MGL SIZE sync reason=%s call=%llu viewBounds=%.1fx%.1f backing=%.1fx%.1f scale=%.3f drawable=%lux%lu old=%.0fx%.0f window=%.1fx%.1f",
-                      reason ? reason : "unknown",
-                      (unsigned long long)call,
-                      bounds.size.width,
-                      bounds.size.height,
-                      backingBounds.size.width,
-                      backingBounds.size.height,
-                      scale,
-                      (unsigned long)pixelWidth,
-                      (unsigned long)pixelHeight,
-                      oldDrawableSize.width,
-                      oldDrawableSize.height,
-                      windowFrame.size.width,
-                      windowFrame.size.height);
-    }
-
-    s_lastPixelWidth = pixelWidth;
-    s_lastPixelHeight = pixelHeight;
-    return newDrawableSize;
+    return _layer.drawableSize;
 }
 
 - (BOOL)mglEnsureLayerDrawableSizeAtLeastWidth:(NSUInteger)requiredWidth
@@ -2891,7 +2829,7 @@ void logDirtyBits(GLMContext ctx)
         return NO;
     }
 
-    CGSize viewDrawableSize = [self mglSyncLayerDrawableSizeFromView:reason ? reason : "ensureDrawableSize"];
+    CGSize viewDrawableSize = [self mglApplyPendingDrawableSize];
     NSUInteger targetWidth = MAX(requiredWidth, (NSUInteger)MAX(1.0, viewDrawableSize.width));
     NSUInteger targetHeight = MAX(requiredHeight, (NSUInteger)MAX(1.0, viewDrawableSize.height));
     CGSize oldDrawableSize = _layer.drawableSize;
@@ -2935,7 +2873,7 @@ void logDirtyBits(GLMContext ctx)
         NSLog(@"MGL DRAWBUFFER ERROR: cannot create draw buffer without CAMetalLayer");
         return nil;
     }
-    drawableSize = [self mglSyncLayerDrawableSizeFromView:"newDrawBuffer"];
+    drawableSize = [self mglApplyPendingDrawableSize];
 
     tex_desc = [[MTLTextureDescriptor alloc] init];
     if (!tex_desc) {
@@ -3000,7 +2938,7 @@ void logDirtyBits(GLMContext ctx)
 {
     CGSize drawableSize;
 
-    drawableSize = [self mglSyncLayerDrawableSizeFromView:"checkDrawBufferSize"];
+    drawableSize = [self mglApplyPendingDrawableSize];
 
     if ((GLuint)drawableSize.width != _drawBuffers[index].width)
         return false;
@@ -3320,6 +3258,7 @@ void logDirtyBits(GLMContext ctx)
 #pragma mark C interface to mtlSwapBuffers
 -(void) mtlSwapBuffers:(GLMContext) glm_ctx
 {
+    mglClaimGLThread();            /* idempotent; the rendering loop is GL-thread */
     @autoreleasepool {
         METAL_LOCK();
         [self mtlSwapBuffersLocked:glm_ctx];
@@ -3332,11 +3271,16 @@ void logDirtyBits(GLMContext ctx)
     static uint64_t s_swapCallCount = 0;
     static double s_swapLastCallTime = 0.0;
     static uint64_t s_swapLastCallCount = 0;
+    /* Heartbeat diagnostics: written only on the main queue
+     * (dispatch_async ping below), read only on the GL calling thread.
+     * Diagnostic-only; a torn read is tolerated. */
     static volatile double s_mainThreadHeartbeatSeconds = 0.0;
     static volatile uint64_t s_mainThreadPingCount = 0;
     uint64_t swapCall = ++s_swapCallCount;
-    double swapStartSeconds = mglNowSeconds();
+    double swapStartSeconds = mglTraceNowSeconds();
+    uint64_t swapStartNS = mglTraceClockNS();
     bool traceSwap = mglShouldTraceCall(swapCall);
+    mglTraceNoteFrameBoundary();
     MGL_FRAME_STORE(g_mglSwapCallCount, swapCall);
     /* advance the DontCare frame generation. Any color attachment
      * written before this point belongs to the previous frame, so its next
@@ -3364,7 +3308,7 @@ void logDirtyBits(GLMContext ctx)
     }
 
     if (ctx != glm_ctx) {
-        MGLTraceNSLog(@"MGL TRACE swap.contextSync old=%p new=%p", ctx, glm_ctx);
+        mglTraceLogNSString(@"MGL TRACE swap.contextSync old=%p new=%p", ctx, glm_ctx);
         ctx = glm_ctx;
     }
 
@@ -3372,7 +3316,7 @@ void logDirtyBits(GLMContext ctx)
     GLenum drawBuffer = activeCtx->state.draw_buffer;
     bool shouldPresent = (drawBuffer != GL_NONE);
     if (traceSwap) {
-        MGLTraceNSLog(@"MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
+        mglTraceLogNSString(@"MGL TRACE swap.begin call=%llu shouldPresent=%d draw_buffer=0x%x",
               (unsigned long long)swapCall, shouldPresent ? 1 : 0, (unsigned)drawBuffer);
         mglLogStateSnapshot("swap.enter",
                             activeCtx,
@@ -3387,7 +3331,7 @@ void logDirtyBits(GLMContext ctx)
     if (kMGLDiagnosticStateLogs &&
         (swapCall <= 20ull || (swapCall % 30ull) == 0ull)) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            s_mainThreadHeartbeatSeconds = mglNowSeconds();
+            s_mainThreadHeartbeatSeconds = mglTraceNowSeconds();
             s_mainThreadPingCount++;
         });
 
@@ -3395,7 +3339,7 @@ void logDirtyBits(GLMContext ctx)
         if (hb > 0.0) {
             double lagMs = (swapStartSeconds - hb) * 1000.0;
             if (lagMs > 500.0) {
-                MGLTraceNSLog(@"MGL TRACE mainthread.stall suspected lag=%.2fms swapCall=%llu pingCount=%llu",
+                mglTraceLogNSString(@"MGL TRACE mainthread.stall suspected lag=%.2fms swapCall=%llu pingCount=%llu",
                       lagMs,
                       (unsigned long long)swapCall,
                       (unsigned long long)s_mainThreadPingCount);
@@ -3408,13 +3352,13 @@ void logDirtyBits(GLMContext ctx)
                                         _drawable);
                 }
             } else if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE mainthread.heartbeat lag=%.2fms swapCall=%llu pingCount=%llu",
+                mglTraceLogNSString(@"MGL TRACE mainthread.heartbeat lag=%.2fms swapCall=%llu pingCount=%llu",
                       lagMs,
                       (unsigned long long)swapCall,
                       (unsigned long long)s_mainThreadPingCount);
             }
         } else if (traceSwap) {
-            MGLTraceNSLog(@"MGL TRACE mainthread.heartbeat uninitialized swapCall=%llu", (unsigned long long)swapCall);
+            mglTraceLogNSString(@"MGL TRACE mainthread.heartbeat uninitialized swapCall=%llu", (unsigned long long)swapCall);
         }
     }
 
@@ -3444,7 +3388,7 @@ void logDirtyBits(GLMContext ctx)
                              frameCounters.draw_elements_skipped > 0 ||
                              frameCounters.process_draw_calls > 0);
         if (traceSwap || hasFrameWork || swapCall <= 20ull || (swapCall % 20ull) == 0ull) {
-            MGLTraceNSLog(@"MGL TRACE swap.drawActivity call=%llu processDrawCalls=%llu drawArrays=%llu verts=%llu "
+            mglTraceLogNSString(@"MGL TRACE swap.drawActivity call=%llu processDrawCalls=%llu drawArrays=%llu verts=%llu "
                   "drawElements=%llu indices=%llu skipArrays=%llu skipElements=%llu "
                   "lastDrawArrays=%llu prog=%u mode=0x%x count=%d age=%.2fms "
                   "lastDrawElements=%llu prog=%u mode=0x%x count=%d age=%.2fms",
@@ -3484,6 +3428,15 @@ void logDirtyBits(GLMContext ctx)
 
         [self endRenderEncodingLocked];
 
+        /* Deferred device reset drain.  This is the only safe reset point: the
+         * render encoder is closed and the command buffer has not been rebuilt
+         * yet, so resetMetalState can swap the command queue / clear caches
+         * without racing an active encoder.  The request flag is set by the
+         * Metal completion handler (GPURecovery.m) via release-store. */
+        if (atomic_exchange_explicit(&_deviceResetRequested, false, memory_order_acquire)) {
+            [self resetMetalState];
+        }
+
         if (![self ensureWritableCommandBufferLocked:"mtlSwapBuffers"]) {
             NSLog(@"MGL ERROR: Failed to obtain writable command buffer in mtlSwapBuffers");
             return;
@@ -3492,13 +3445,13 @@ void logDirtyBits(GLMContext ctx)
         if (_drawable == NULL)
         {
             if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present", (unsigned long long)swapCall);
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present", (unsigned long long)swapCall);
             }
-            [self mglSyncLayerDrawableSizeFromView:"swap.pre_present"];
+            [self mglApplyPendingDrawableSize];
             _drawable = [_layer nextDrawable];
             if (traceSwap) {
                 id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present drawable=%p tex=%p size=%lux%lu",
                       (unsigned long long)swapCall,
                       _drawable,
                       tex,
@@ -3510,13 +3463,13 @@ void logDirtyBits(GLMContext ctx)
         if (_drawable == NULL) {
             NSLog(@"MGL WARNING: Drawable is NULL in mtlSwapBuffers, getting new drawable");
             if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry", (unsigned long long)swapCall);
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=pre_present_retry", (unsigned long long)swapCall);
             }
-            [self mglSyncLayerDrawableSizeFromView:"swap.pre_present_retry"];
+            [self mglApplyPendingDrawableSize];
             _drawable = [_layer nextDrawable];
             if (traceSwap) {
                 id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-                MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
+                mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=pre_present_retry drawable=%p tex=%p size=%lux%lu",
                       (unsigned long long)swapCall,
                       _drawable,
                       tex,
@@ -3581,7 +3534,7 @@ void logDirtyBits(GLMContext ctx)
 
             [_renderPassManager.state->currentCommandBuffer presentDrawable: _drawable];
             if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
+                mglTraceLogNSString(@"MGL TRACE swap.present call=%llu cb=%p drawable=%p",
                       (unsigned long long)swapCall, _renderPassManager.state->currentCommandBuffer, _drawable);
             }
 
@@ -3610,21 +3563,24 @@ void logDirtyBits(GLMContext ctx)
         }
         @try {
             if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
+                mglTraceLogNSString(@"MGL TRACE swap.commit.begin call=%llu cb=%p status=%s label=%@",
                       (unsigned long long)swapCall,
                       commandBufferToCommit,
                       mglCommandBufferStatusName(commandBufferToCommit ? commandBufferToCommit.status : MTLCommandBufferStatusError),
                       commandBufferToCommit ? (commandBufferToCommit.label ?: @"(no-label)") : @"(nil)");
             }
-            [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
+            /* Register the frame-completion handler BEFORE commit:
+             * commitCommandBufferWithAGXRecovery: commits the CB, and Metal
+             * asserts if addCompletedHandler: is called after commit. */
             if (commandBufferToCommit) {
                 [commandBufferToCommit addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
                     mglRecordFrameCompleted(committedGeneration);
                 }];
             }
+            [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
             _lastCommittedCB = commandBufferToCommit;
             if (traceSwap) {
-                MGLTraceNSLog(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
+                mglTraceLogNSString(@"MGL TRACE swap.commit.end call=%llu", (unsigned long long)swapCall);
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Failed to commit command buffer: %@", exception);
@@ -3632,12 +3588,12 @@ void logDirtyBits(GLMContext ctx)
         }
 
         if (traceSwap) {
-            MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
+            mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.begin call=%llu stage=post_commit", (unsigned long long)swapCall);
         }
         _drawable = [_layer nextDrawable];
         if (traceSwap) {
             id<MTLTexture> tex = _drawable ? _drawable.texture : nil;
-            MGLTraceNSLog(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
+            mglTraceLogNSString(@"MGL TRACE swap.nextDrawable.end call=%llu stage=post_commit drawable=%p tex=%p size=%lux%lu",
                   (unsigned long long)swapCall,
                   _drawable,
                   tex,
@@ -3656,21 +3612,21 @@ void logDirtyBits(GLMContext ctx)
         _defaultDrawableWrittenSinceLastSwap = NO;
         mglMarkRendererDirtyBits(ctx->active_state,
                                  DIRTY_FBO | DIRTY_RENDER_STATE);
-        double swapElapsedMs = (mglNowSeconds() - swapStartSeconds) * 1000.0;
+        double swapElapsedUs = (mglTraceClockNS() - swapStartNS) / 1000.0;
         if (traceSwap) {
-            MGLTraceNSLog(@"MGL TRACE swap.end call=%llu elapsed=%.3fms",
+            mglTraceLogNSString(@"MGL TRACE swap.end call=%llu elapsed=%.1fus",
                   (unsigned long long)swapCall,
-                  swapElapsedMs);
+                  swapElapsedUs);
             mglLogStateSnapshot("swap.exit.ok",
                                 ctx,
                                 _renderPassManager.state->currentCommandBuffer,
                                 _renderPassManager.state->currentRenderEncoder,
                                 _renderPassManager.state->renderPassDescriptor,
                                 _drawable);
-        } else if (swapElapsedMs >= 25.0) {
-            MGLTraceNSLog(@"MGL TRACE swap.slow call=%llu elapsed=%.3fms",
+        } else if (swapElapsedUs >= 25000.0) {
+            mglTraceLogNSString(@"MGL TRACE swap.slow call=%llu elapsed=%.1fus",
                   (unsigned long long)swapCall,
-                  swapElapsedMs);
+                  swapElapsedUs);
         }
     }
     else if (kMGLVerboseFrameLoopLogs || traceSwap)
@@ -3682,9 +3638,9 @@ void logDirtyBits(GLMContext ctx)
      * Runs on every normal exit path (present + GL_NONE skip).  Early-return
      * error paths intentionally skip this so their counters roll into the
      * next successful frame.  Uses mglNowSeconds() (CFAbsoluteTimeGetCurrent)
-     * for consistency with swapElapsedMs above. */
+     * for consistency with the swap-interval measurement above. */
     if (mglPerfSummaryEnabled()) {
-        double now = mglNowSeconds();
+        double now = mglTraceNowSeconds();
         static _Atomic double s_last_swap_time = 0.0;
         double interval = 0.0;
         double prev = atomic_load_explicit(&s_last_swap_time, memory_order_relaxed);
@@ -3818,7 +3774,7 @@ void logDirtyBits(GLMContext ctx)
         if (wantsColor) {
             if (drawBufferIndex == _FRONT) {
                 if (!_drawable && _layer) {
-                    [self mglSyncLayerDrawableSizeFromView:"scissored-clear.nextDrawable"];
+                    [self mglApplyPendingDrawableSize];
                     _drawable = [_layer nextDrawable];
                 }
                 colorTexture = _drawable ? _drawable.texture : nil;
@@ -4105,7 +4061,7 @@ void logDirtyBits(GLMContext ctx)
         srcHead[0] = '\0';
         mglTraceFormatBytes(ptr, size, srcHead, sizeof(srcHead));
         uint64_t srcHash = mglTraceHashBytes(ptr, size);
-        MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.begin call=%llu buffer=%u size=%lld off=%zu len=%zu mtl=%p cpu=%p dirty=0x%x srcHash=0x%016llx srcHead=%s",
+        mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.begin call=%llu buffer=%u size=%lld off=%zu len=%zu mtl=%p cpu=%p dirty=0x%x srcHash=0x%016llx srcHead=%s",
               (unsigned long long)call,
               buf->name,
               (long long)buf->size,
@@ -4137,7 +4093,7 @@ void logDirtyBits(GLMContext ctx)
                 dstHead[0] = '\0';
                 mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
                 uint64_t dstHash = mglTraceHashBytes(dst, size);
-                MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.cpuFallback call=%llu buffer=%u off=%zu len=%zu dstHash=0x%016llx dstHead=%s",
+                mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.cpuFallback call=%llu buffer=%u off=%zu len=%zu dstHash=0x%016llx dstHead=%s",
                       (unsigned long long)call,
                       buf->name,
                       offset,
@@ -4194,7 +4150,7 @@ void logDirtyBits(GLMContext ctx)
         dstHead[0] = '\0';
         mglTraceFormatBytes(dst, size, dstHead, sizeof(dstHead));
         uint64_t dstHash = mglTraceHashBytes(dst, size);
-        MGLTraceNSLog(@"MGL TRACE mtlBufferSubData.end call=%llu buffer=%u off=%zu len=%zu mtlLen=%lu dstHash=0x%016llx dstHead=%s",
+        mglTraceLogNSString(@"MGL TRACE mtlBufferSubData.end call=%llu buffer=%u off=%zu len=%zu mtlLen=%lu dstHash=0x%016llx dstHead=%s",
               (unsigned long long)call,
               buf->name,
               offset,
@@ -4274,7 +4230,7 @@ void logDirtyBits(GLMContext ctx)
                 cpuHead[0] = '\0';
                 mglTraceFormatBytes(mtlBase ? mtlBase + offset : NULL, (size_t)safeLen, mtlHead, sizeof(mtlHead));
                 mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-                MGLTraceNSLog(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+                mglTraceLogNSString(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
                       buf->name,
                       offset,
                       size,
@@ -4304,7 +4260,7 @@ void logDirtyBits(GLMContext ctx)
             cpuHead[0] = '\0';
             mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
 
-            MGLTraceNSLog(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+            mglTraceLogNSString(@"MGL TRACE mtlMap.map buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
                   buf->name,
                   offset,
                   size,
@@ -4337,7 +4293,7 @@ void logDirtyBits(GLMContext ctx)
         cpuHead[0] = '\0';
         mglTraceFormatBytes(mtlPtr, (size_t)safeLen, mtlHead, sizeof(mtlHead));
         mglTraceFormatBytes(cpuPtr, (size_t)safeLen, cpuHead, sizeof(cpuHead));
-        MGLTraceNSLog(@"MGL TRACE mtlMap.unmap buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
+        mglTraceLogNSString(@"MGL TRACE mtlMap.unmap buffer=%u off=%zu req=%zu safe=%lu access=0x%x mtlPtr=%p cpuPtr=%p samePtr=%d mtlHash=0x%016llx cpuHash=0x%016llx mtlHead=%s cpuHead=%s",
               buf->name,
               offset,
               size,

@@ -30,7 +30,7 @@
             (kMGLSwapPresentDiagnostics &&
              (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
         if (traceCopyToDrawable) {
-            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
+            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.begin call=%llu src=%p fmt=%lu %lux%lu dst=%p fmt=%lu %lux%lu",
                   (unsigned long long)swapCall,
                   rpColor0,
                   (unsigned long)rpColor0.pixelFormat,
@@ -107,7 +107,7 @@
         }
 
         if (traceCopyToDrawable) {
-            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
+            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.end call=%llu", (unsigned long long)swapCall);
         }
     } else if (MGL_STATE(ctx)->framebuffer == NULL &&
                _defaultDrawableWrittenSinceLastSwap &&
@@ -118,7 +118,7 @@
             (kMGLSwapPresentDiagnostics &&
              (swapCall <= 12ull || (swapCall % 120ull) == 0ull));
         if (traceSkipCopyToDrawable) {
-            MGLTraceNSLog(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
+            mglTraceLogNSString(@"MGL TRACE swap.copyToDrawable.skip call=%llu reason=default_blit_already_wrote_drawable src=%p dst=%p",
                   (unsigned long long)swapCall,
                   rpColor0,
                   drawableTexture);
@@ -139,7 +139,7 @@
         void (^scheduleTextureSample)(id<MTLTexture>, NSString *, NSUInteger, NSUInteger) =
             ^(id<MTLTexture> sampleTexture, NSString *sampleTag, NSUInteger originX, NSUInteger originY) {
                 if (!sampleTexture) {
-                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
+                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(texture=nil)",
                           sampleTag,
                           (unsigned long long)swapCall);
                     return;
@@ -147,7 +147,7 @@
 
                 if (sampleTexture.pixelFormat != MTLPixelFormatBGRA8Unorm &&
                     sampleTexture.pixelFormat != MTLPixelFormatRGBA8Unorm) {
-                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
+                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(fmt=%lu tex=%lux%lu)",
                           sampleTag,
                           (unsigned long long)swapCall,
                           (unsigned long)sampleTexture.pixelFormat,
@@ -162,7 +162,7 @@
                 NSUInteger sampleBytesPerRow = sampleWidth * bytesPerPixel;
                 NSUInteger sampleBytesPerImage = sampleBytesPerRow * sampleHeight;
                 if (sampleWidth == 0 || sampleHeight == 0 || sampleBytesPerImage == 0) {
-                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
+                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu skipped(invalid-size tex=%lux%lu)",
                           sampleTag,
                           (unsigned long long)swapCall,
                           (unsigned long)sampleTexture.width,
@@ -222,7 +222,7 @@
                 [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
                     const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
                     if (!p) {
-                        MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
+                        mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
                               sampleTagCopy,
                               (unsigned long long)sampleSwapCall,
                               mglCommandBufferStatusName(sampleCB.status),
@@ -266,7 +266,7 @@
                     }
                     BOOL appearsSolid = (pixelCount > 0u && diffFromFirst == 0u);
 
-                    MGLTraceNSLog(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
+                    mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu tex=%lux%lu origin=(%lu,%lu) sample=%lux%lu "
                           "nonZero=%lu/%lu sum=%llu firstPixel=0x%08x min=0x%08x max=0x%08x xor=0x%08x diff=%lu solid=%d status=%s error=%@",
                           sampleTagCopy,
                           (unsigned long long)sampleSwapCall,
@@ -301,7 +301,7 @@
                         if (s_sameCenterPixelRun == 10ull ||
                             s_sameCenterPixelRun == 30ull ||
                             (s_sameCenterPixelRun % 120ull) == 0ull) {
-                            MGLTraceNSLog(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
+                            mglTraceLogNSString(@"MGL TRACE swap.sample.center_stable firstPixel=0x%08x run=%llu solid=%d diff=%lu",
                                   firstPixel,
                                   (unsigned long long)s_sameCenterPixelRun,
                                   appearsSolid ? 1 : 0,

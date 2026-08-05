@@ -75,53 +75,6 @@
     }
 }
 
-- (BOOL)recoverFromMetalError:(NSError *)error operation:(NSString *)operation
-{
-    // PROPER FIX: Intelligent Metal error recovery
-    NSLog(@"MGL ERROR: Metal operation '%@' failed: %@", operation, error);
-
-    // Interface mismatch during pipeline creation is not a GPU-state corruption case.
-    // Avoid destructive resets here to prevent reset/retry loops.
-    if ([operation isEqualToString:@"pipeline_creation"]) {
-        NSString *desc = error.localizedDescription ?: @"";
-        NSString *domain = error.domain ?: @"";
-        if ((error.code == 3 && [domain hasPrefix:@"AGXMetal"]) ||
-            [desc containsString:@"mismatching vertex shader output"] ||
-            [desc containsString:@"not written by vertex shader"]) {
-            static uint64_t s_pipelineMismatchLogCount = 0;
-            s_pipelineMismatchLogCount++;
-            if ((s_pipelineMismatchLogCount % 64ull) == 1ull) {
-                NSLog(@"MGL WARNING: Pipeline interface mismatch detected; skipping destructive recovery (count=%llu)",
-                      s_pipelineMismatchLogCount);
-            }
-            return NO;
-        }
-    }
-
-    // Analyze error code for specific recovery strategies
-    switch (error.code) {
-        case MTLCommandBufferStatusError:
-            NSLog(@"MGL INFO: Command buffer execution failed - recreating command buffer");
-            [self cleanupCommandBuffer];
-            return YES;
-
-        default:
-            NSLog(@"MGL ERROR: Unknown Metal error code %ld - attempting recovery", (long)error.code);
-
-            // Handle common error scenarios based on error code
-            if (error.code >= 1000 && error.code < 2000) {
-                NSLog(@"MGL INFO: Detected feature compatibility issue - using safer settings");
-            } else if (error.code >= 2000 && error.code < 3000) {
-                NSLog(@"MGL INFO: Detected memory issue - clearing resources");
-                [self clearTextureCache];
-            } else {
-                NSLog(@"MGL ERROR: Unknown Metal error - attempting full recovery");
-                [self resetMetalState];
-            }
-            return YES;
-    }
-}
-
 - (void)clearTextureCache
 {
     // PROPER FIX: Intelligent texture cache cleanup
@@ -166,9 +119,9 @@
     // PROPER FIX: Full Metal state reset for AGX driver recovery
     NSLog(@"MGL INFO: Performing full Metal state reset for AGX recovery");
 
-    /* Runs from addCompletedHandler (Metal worker thread).  Hold
-     * _metalStateLock to prevent the render thread observing a half-reset
-     * state. */
+    /* Runs on the GL calling thread (frame-boundary drain in mtlSwapBuffers
+     * or GL-layer error paths).  With the recovery path removed from the
+     * main queue this is no longer a cross-thread reset. */
     METAL_LOCK();
 
     [self cleanupCommandBuffer];
@@ -197,6 +150,9 @@
 // AGX Driver Compatibility: Specialized command buffer commit with recovery
 - (void)commitCommandBufferWithAGXRecovery:(id<MTLCommandBuffer>)commandBuffer
 {
+    /* s_commitCallCount is owned by the GL calling thread: commit paths are
+     * reached on the GL thread and never run on the completion-handler
+     * thread or the main queue. */
     static uint64_t s_commitCallCount = 0;
     uint64_t commitCall = ++s_commitCallCount;
     bool traceCommit = mglShouldTraceCall(commitCall);
@@ -207,13 +163,13 @@
     }
 
     if (traceCommit) {
-        MGLTraceNSLog(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
+        mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
               (unsigned long long)commitCall,
               commandBuffer,
               mglCommandBufferStatusName(commandBuffer.status),
               commandBuffer.label ?: @"(no-label)");
     }
-    double commitQueuedAtSeconds = mglNowSeconds();
+    uint64_t commitQueuedAtNS = mglTraceClockNS();
 
     // Pre-commit validation for AGX driver
     if (commandBuffer.error) {
@@ -226,12 +182,12 @@
     uint64_t commitCallForBlock = commitCall;
     bool traceCommitForBlock = traceCommit;
     [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-            double completeElapsedMs = (mglNowSeconds() - commitQueuedAtSeconds) * 1000.0;
-            if (traceCommitForBlock || buffer.error || completeElapsedMs >= 50.0) {
-                MGLTraceNSLog(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.3fms error=%@",
+            double completeElapsedUs = (mglTraceClockNS() - commitQueuedAtNS) / 1000.0;
+            if (traceCommitForBlock || buffer.error || completeElapsedUs >= 50000.0) {
+                mglTraceLogNSString(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.1fus error=%@",
                       (unsigned long long)commitCallForBlock,
                       mglCommandBufferStatusName(buffer.status),
-                      completeElapsedMs,
+                      completeElapsedUs,
                       buffer.error);
             }
             if (buffer.error) {
@@ -241,14 +197,18 @@
                 // Specific handling for AGX driver rejection
                 if ([buffer.error.domain isEqualToString:@"MTLCommandBufferErrorDomain"] &&
                     buffer.error.code == 4) { // "Ignored (for causing prior/excessive GPU errors)"
+                /* Owned by the Metal completion-handler thread (this block):
+                 * never touched from the GL thread or the main queue. */
                 static NSTimeInterval s_lastDriverRejectionReset = 0.0;
                 NSTimeInterval now = [[NSDate date] timeIntervalSince1970];
                 if (now - s_lastDriverRejectionReset > 2.0) {
                     s_lastDriverRejectionReset = now;
                     NSLog(@"MGL AGX RECOVERY: Driver rejection detected; throttled reset scheduled");
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        [blockSelf resetMetalState];
-                    });
+                    /* Deferred reset: hand the request to the GL thread across
+                     * the frame boundary instead of dispatching to the main
+                     * queue.  The reset runs at the next safe point (after
+                     * endRenderEncoding in mtlSwapBuffersLocked). */
+                    atomic_store_explicit(&blockSelf->_deviceResetRequested, true, memory_order_release);
                 } else {
                     NSLog(@"MGL AGX RECOVERY: Driver rejection detected; skipping immediate reset (throttled)");
                 }
@@ -258,9 +218,9 @@
 
             // AGX Recovery: Clear recovery mode on success
             /* guard the ivar read/write with _gpuRecovery.gpuErrorLock
-             * (NOT _metalStateLock) to avoid deadlock — the completion handler
-             * runs on a Metal worker thread while the render thread may be
-             * inside waitUntilCompleted holding _metalStateLock. */
+             * (NOT METAL_LOCK) to avoid cross-thread contention — the
+             * completion handler runs on a Metal worker thread while the
+             * render thread may be inside waitUntilCompleted. */
             os_unfair_lock_lock(&blockSelf->_gpuRecovery.gpuErrorLock);
             if (blockSelf->_gpuRecovery.gpuErrorRecoveryMode) {
                 NSLog(@"MGL AGX RECOVERY: Exiting GPU recovery mode after successful completion");
@@ -282,7 +242,7 @@
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL AGX WARNING: Command buffer already committed (status: %ld) - skipping commit", (long)status);
         if (traceCommit) {
-            MGLTraceNSLog(@"MGL TRACE commit.skip.already_committed call=%llu status=%s",
+            mglTraceLogNSString(@"MGL TRACE commit.skip.already_committed call=%llu status=%s",
                   (unsigned long long)commitCall, mglCommandBufferStatusName(status));
         }
         return;
@@ -293,7 +253,7 @@
         NSLog(@"MGL AGX ERROR: Command buffer in error state - skipping commit");
         [self recordGPUError];
         if (traceCommit) {
-            MGLTraceNSLog(@"MGL TRACE commit.skip.error_state call=%llu", (unsigned long long)commitCall);
+            mglTraceLogNSString(@"MGL TRACE commit.skip.error_state call=%llu", (unsigned long long)commitCall);
         }
         return;
     }
@@ -301,7 +261,7 @@
     if (![_renderPassManager beginCommandBufferCommit]) {
         NSLog(@"MGL AGX WARNING: Commit already in progress, skipping nested commit");
         if (traceCommit) {
-            MGLTraceNSLog(@"MGL TRACE commit.skip.nested call=%llu", (unsigned long long)commitCall);
+            mglTraceLogNSString(@"MGL TRACE commit.skip.nested call=%llu", (unsigned long long)commitCall);
         }
         return;
     }
@@ -325,14 +285,15 @@
         if ([[exception name] containsString:@"CommandBuffer"] ||
             [[exception name] containsString:@"GPU"]) {
             NSLog(@"MGL AGX RECOVERY: Immediate reset due to commit exception");
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self resetMetalState];
-            });
+            /* Deferred reset — drained at the next swap frame boundary on the
+             * GL thread.  The commit exception already ran on the GL thread,
+             * so no cross-thread dispatch is needed. */
+            atomic_store_explicit(&_deviceResetRequested, true, memory_order_release);
         }
     } @finally {
         [_renderPassManager endCommandBufferCommit];
         if (traceCommit) {
-            MGLTraceNSLog(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
+            mglTraceLogNSString(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
                   (unsigned long long)commitCall,
                   commandBuffer,
                   mglCommandBufferStatusName(commandBuffer.status));
@@ -394,24 +355,12 @@
     // The AGX driver needs time to recover from error state
 }
 
-// AGX DRIVER COMPATIBILITY: Accept virtualization limitations and provide minimal functionality
-- (void)enableMinimalFunctionalityMode
-{
-    NSLog(@"MGL AGX: Enabling minimal functionality mode for AGX virtualization compatibility");
-
-    // Stop fighting the AGX driver - accept virtualization limitations
-    // Don't recreate command queues - they will continue to fail
-    // Don't submit command buffers - they will continue to be rejected
-
-    // Provide minimal framebuffer clearing without GPU operations
-    // This prevents magenta screens while accepting virtualization constraints
-}
-
 - (void)recordGPUError
 {
     /* Use _gpuRecovery.gpuErrorLock (not METAL_LOCK): addCompletedHandler
-     * runs on a Metal worker thread; blocking on _metalStateLock here
-     * deadlocks if the render thread holds it inside waitUntilCompleted. */
+     * runs on a Metal worker thread; MGL_ASSERT_GL_THREAD would abort there
+     * and a real lock would contend with the render thread inside
+     * waitUntilCompleted. */
     os_unfair_lock_lock(&_gpuRecovery.gpuErrorLock);
     _gpuRecovery.consecutiveGPUErrors++;
     _gpuRecovery.consecutiveGPUSuccesses = 0;

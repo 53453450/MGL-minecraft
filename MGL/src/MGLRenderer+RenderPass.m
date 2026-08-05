@@ -1007,7 +1007,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             static uint64_t s_defaultSampledCullBypassCount = 0;
             uint64_t hit = ++s_defaultSampledCullBypassCount;
             if (hit <= 32ull || (hit % 256ull) == 0ull) {
-                MGLTraceNSLog(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
+                mglTraceLogNSString(@"MGL TRACE default sampled pass cull bypass hit=%llu program=%u drawBuf=0x%x",
                       (unsigned long long)hit,
                       (unsigned)(ctx ? state->program_name : 0u),
                       (unsigned)(ctx ? state->draw_buffer : 0u));
@@ -1356,7 +1356,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             BOOL viewportWasClamped = (vx != rawVx || vy != rawVy || vw != rawVw || vh != rawVh);
             BOOL viewportOriginConverted = (metalVy != vy);
             if (traceEncoderState) {
-                MGLTraceNSLog(@"MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
+                mglTraceLogNSString(@"MGL VIEWPORT apply pass=%lux%lu origin=0x%x raw=(%.3f,%.3f,%.3f,%.3f) resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
                               (unsigned long)passWidth, (unsigned long)passHeight,
                               state->var.clip_origin,
                               rawVx, rawVy, rawVw, rawVh,
@@ -1379,7 +1379,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                     id<MTLTexture> rpDepth = _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
                     id<MTLTexture> drawableTexture = (_drawable ? _drawable.texture : nil);
 
-                    MGLTraceNSLog(@"MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
+                    mglTraceLogNSString(@"MGL VIEWPORT CLAMP DETAIL hit=%llu fbo=%p valid=%d fboName=%u drawBuffer=0x%x pass=%lux%lu "
                                   "rpColor0=%p(%lux%lu) rpDepth=%p(%lux%lu) drawable=%p(%lux%lu) raw=(%.3f,%.3f,%.3f,%.3f) "
                                   "resolved=(%.3f,%.3f,%.3f,%.3f) metal=(%.3f,%.3f,%.3f,%.3f)",
                                   (unsigned long long)clampHit,
@@ -1424,7 +1424,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                 : nil;
                             id<MTLTexture> rpAttachment = _renderPassManager.state->renderPassDescriptor.colorAttachments[attIndex].texture;
 
-                            MGLTraceNSLog(@"MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
+                            mglTraceLogNSString(@"MGL VIEWPORT CLAMP FBO att=%d name=%u textarget=0x%x level=%d layer=%d tex=%p "
                                           "texName=%u texTarget=0x%x texSize=%ux%ux%u mtl=%p(%lux%lu) rpTex=%p(%lux%lu)",
                                           attIndex,
                                           attachment->texture,
@@ -1736,7 +1736,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 static uint64_t s_defaultDepthCreateCount = 0;
                 uint64_t hit = ++s_defaultDepthCreateCount;
                 if (kMGLDiagnosticStateLogs && hit <= 8) {
-                    MGLTraceNSLog(@"MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
+                    mglTraceLogNSString(@"MGL DEFAULT FBO: created depth attachment fmt=%lu size=%lux%lu drawBuffer=%u",
                                   (unsigned long)depthFormat,
                                   (unsigned long)depth_texture.width,
                                   (unsigned long)depth_texture.height,
@@ -1990,7 +1990,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         static uint64_t s_defaultFboLoadLogCount = 0;
         uint64_t hit = ++s_defaultFboLoadLogCount;
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
-            MGLTraceNSLog(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
+            mglTraceLogNSString(@"MGL DEFAULT FBO: using Load (no clear mask) call=%llu drawBuf=0x%x fbo=%u",
                           (unsigned long long)hit,
                           MGL_STATE(ctx)->draw_buffer,
                           fbo ? (unsigned)fbo->name : 0u);
@@ -2034,7 +2034,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
 	    if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
 	        MTLClearColor c0 = _renderPassManager.state->renderPassDescriptor.colorAttachments[0].clearColor;
-	        MGLTraceNSLog(@"MGL TRACE clear.resolve call=%llu fbo=%u "
+	        mglTraceLogNSString(@"MGL TRACE clear.resolve call=%llu fbo=%u "
 	              "fboColorClears=%u fboColorMask=0x%x fboAtt0ClearMask=0x%x c0LA=%s depthLA=%s stencilLA=%s "
 	              "c0Clear=(%.3f,%.3f,%.3f,%.3f) depthClear=%.3f stencilClear=%u",
               (unsigned long long)renderEncoderCall,
@@ -2131,7 +2131,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         id<MTLTexture> c0Tex = _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture;
         id<MTLTexture> dTex = _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
         id<MTLTexture> sTex = _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture;
-        MGLTraceNSLog(@"MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
+        mglTraceLogNSString(@"MGL TRACE renderpass.attach call=%llu fbo=%u drawBuf=0x%x rt=%lux%lu "
               "c0=%p fmt=%lu usage=0x%lx size=%lux%lu la/sa=%s/%s depth=%p fmt=%lu size=%lux%lu la/sa=%s/%s stencil=%p fmt=%lu size=%lux%lu la/sa=%s/%s",
               (unsigned long long)renderEncoderCall,
               (unsigned)(mglRendererSafeFramebufferName(ctx)),
@@ -2561,7 +2561,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             return false;
         }
 
-        CGSize expectedDrawableSize = [self mglSyncLayerDrawableSizeFromView:"newRenderEncoder.nextDrawable"];
+        CGSize expectedDrawableSize = [self mglApplyPendingDrawableSize];
         _drawable = [_layer nextDrawable];
 
         // late init of gl scissor box on attachment to window system
@@ -2682,11 +2682,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     // STEP 1: Clean up sync tracking list safely.
     // IMPORTANT: Do NOT dereference Sync* entries here. Sync objects are owned by GL sync lifecycle
     // and may already be deleted by glDeleteSync on other paths.
-    SYNC_LOCK();
-    // Sync list access must use _syncListLock because mtlGetSync may append
-    // while another thread rotates this context's command buffer.
+    // Both this read/clear path and the append path (mtlGetSync) run on the GL
+    // calling thread, so no lock is needed.
     [_renderPassManager clearCurrentCommandBufferSyncListEntries];
-    SYNC_UNLOCK();
 
     // CRITICAL SAFETY: Validate command queue before creating buffer
     if (!_commandQueue) {
@@ -2864,7 +2862,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
     if (!_renderPassManager.state->currentCommandBuffer) {
         if (kMGLDiagnosticStateLogs) {
-            MGLTraceNSLog(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
+            mglTraceLogNSString(@"MGL INFO: %s requested with NULL command buffer, creating one", reason ? reason : "operation");
         }
         if (![self newCommandBufferLocked]) {
             NSLog(@"MGL ERROR: Failed to create command buffer for %s", reason ? reason : "operation");
@@ -3541,7 +3539,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     static double s_processGLStateLastCallTime = 0.0;
     static uint64_t s_processGLStateLastCallCount = 0;
     uint64_t processCall = ++s_processGLStateCallCount;
-    double processStartSeconds = mglNowSeconds();
+    double processStartSeconds = mglTraceNowSeconds();
+    uint64_t processStartNS = mglTraceClockNS();
     bool traceProcess = mglShouldTraceCall(processCall);
     mglLogLoopHeartbeat("processGLState.loop",
                         processCall,
@@ -3550,7 +3549,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                         &s_processGLStateLastCallCount,
                         0.25);
     if (traceProcess) {
-        MGLTraceNSLog(@"MGL TRACE processGLState.begin call=%llu draw=%d",
+        mglTraceLogNSString(@"MGL TRACE processGLState.begin call=%llu draw=%d",
               (unsigned long long)processCall, draw_command ? 1 : 0);
         mglLogStateSnapshot("processGLState.enter",
                             ctx,
@@ -3836,7 +3835,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         static uint64_t nil_pipeline_count = 0;
         nil_pipeline_count++;
         if (nil_pipeline_count <= 8 || (nil_pipeline_count % 1000) == 0) {
-            MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
+            mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil, forcing rebuild (occurrence=%llu)",
                           (unsigned long long)nil_pipeline_count);
         }
         // Force rebuild on next state processing pass.
@@ -3984,19 +3983,19 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         [self updateCurrentRenderEncoder];
     }
 
-    double processElapsedMs = (mglNowSeconds() - processStartSeconds) * 1000.0;
+    double processElapsedUs = (mglTraceClockNS() - processStartNS) / 1000.0;
     if (traceProcess) {
-        MGLTraceNSLog(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.3fms",
-              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
+        mglTraceLogNSString(@"MGL TRACE processGLState.end call=%llu draw=%d elapsed=%.1fus",
+              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedUs);
         mglLogStateSnapshot("processGLState.exit.ok",
                             ctx,
                             _renderPassManager.state->currentCommandBuffer,
                             _renderPassManager.state->currentRenderEncoder,
                             _renderPassManager.state->renderPassDescriptor,
                             _drawable);
-    } else if (processElapsedMs >= 25.0) {
-        MGLTraceNSLog(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.3fms",
-              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedMs);
+    } else if (processElapsedUs >= 25.0) {
+        mglTraceLogNSString(@"MGL TRACE processGLState.slow call=%llu draw=%d elapsed=%.1fus",
+              (unsigned long long)processCall, draw_command ? 1 : 0, processElapsedUs);
     }
     return true;
 }
@@ -4068,7 +4067,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 static uint64_t s_deferredMapCount = 0;
                 s_deferredMapCount++;
                 if (s_deferredMapCount <= 16 || (s_deferredMapCount % 1000ull) == 0ull) {
-                    MGLTraceNSLog(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
+                    mglTraceLogNSString(@"MGL DRAW SKIP: pipelineState is nil (deferring buffer mapping, occurrence=%llu)",
                                   (unsigned long long)s_deferredMapCount);
                 }
             } else {
@@ -4647,34 +4646,20 @@ stencil_format_ok:;
                                        programName:(GLuint)currentProgramName
                                               now:(CFTimeInterval)now
 {
-    /* PSO compilation can take 10-100ms (first frame / new shader).  The
-     * render pipeline is built on a dedicated compile path that never
-     * re-enters METAL_LOCK, so release the recursive lock for the duration
-     * of the compile and re-acquire it afterwards.  This keeps a cache-miss
-     * stall from blocking other subsystems that wait on _metalStateLock. */
-    NSUInteger unlockDepth = _metalLockHoldDepth;
-    for (NSUInteger i = 0; i < unlockDepth; i++) {
-        [_metalStateLock unlock];
-    }
-    _metalLockHoldDepth = 0;
-
-    @try {
-        return [self buildPipelineStateOnCacheMissUnlockedWithDescriptor:pipelineStateDescriptor
-                                                        vertexDescriptor:vertexDescriptor
-                                                               cacheKey:pipelineCacheKey
-                                                            pipelineSig:pipelineSig
-                                                             vertexSig:vertexSig
-                                                     builtColor0Format:builtColor0Format
-                                                      builtDepthFormat:builtDepthFormat
-                                                    builtStencilFormat:builtStencilFormat
-                                                          programName:currentProgramName
-                                                                 now:now];
-    } @finally {
-        for (NSUInteger i = 0; i < unlockDepth; i++) {
-            [_metalStateLock lock];
-        }
-        _metalLockHoldDepth = unlockDepth;
-    }
+    /* PSO compilation can take 10-100ms (first frame / new shader).  With the
+     * state lock replaced by the GL-thread contract, the entire build runs on
+     * the GL calling thread with no lock to release; the deferred reset drain
+     * (mtlSwapBuffersLocked:) runs on the same thread, so no lock is needed. */
+    return [self buildPipelineStateOnCacheMissUnlockedWithDescriptor:pipelineStateDescriptor
+                                                    vertexDescriptor:vertexDescriptor
+                                                           cacheKey:pipelineCacheKey
+                                                        pipelineSig:pipelineSig
+                                                         vertexSig:vertexSig
+                                                 builtColor0Format:builtColor0Format
+                                                  builtDepthFormat:builtDepthFormat
+                                                builtStencilFormat:builtStencilFormat
+                                                      programName:currentProgramName
+                                                             now:now];
 }
 
 - (bool)buildPipelineStateOnCacheMissUnlockedWithDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
@@ -4726,6 +4711,11 @@ stencil_format_ok:;
     NSError *error;
     MTLRenderPipelineDescriptor *successfulDescriptor = nil;
     id<MTLRenderPipelineState> previousPipelineState = _pipelineCache.state->pipelineState;
+    /* Compilation result lives in a local while this function runs without
+     * holding the state lock; it is published back to _pipelineCache.state
+     * at the bottom.  Nothing shared is written before the publish, so
+     * resetMetalState cannot race this code (same GL thread). */
+    id<MTLRenderPipelineState> compiledPSO = nil;
     bool pipelineReusedPrevious = false;
 
     @try {
@@ -4754,13 +4744,13 @@ stencil_format_ok:;
         }
 
         [_pipelineCache applyBinaryArchiveToDescriptor:finalDescriptor];
-        [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error]];
-        if (_pipelineCache.state->pipelineState) {
+        compiledPSO = [_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error];
+        if (compiledPSO) {
             mglMetalCountCreate(MGLMetalKindPSO);
             successfulDescriptor = finalDescriptor;
         }
 
-        if (!_pipelineCache.state->pipelineState) {
+        if (!compiledPSO) {
             NSLog(@"MGL PIPELINE CREATE fail error=%@", error);
             NSLog(@"MGL ERROR: Pipeline creation failed: %@", error);
 
@@ -4795,7 +4785,7 @@ stencil_format_ok:;
                 if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
                     NSLog(@"MGL WARNING: Interface mismatch for program %u; reusing previous compatible pipeline once",
                     (unsigned)currentProgramName);
-                    [_pipelineCache setPipelineState:previousPipelineState];
+                    compiledPSO = previousPipelineState;
                     pipelineReusedPrevious = true;
                     _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
                     _gpuRecovery.interfaceMismatchColor0Format = builtColor0Format;
@@ -4890,7 +4880,7 @@ stencil_format_ok:;
                 }
             }
 
-            if (!_pipelineCache.state->pipelineState &&
+            if (!compiledPSO &&
             MGLCapabilityHasBug(&_capability,
             MGL_BUG_MSL_PIPELINE_REJECTION)) {
                 [self invalidateCurrentPipelineStateForReason:@"pipeline creation failure"];
@@ -4914,8 +4904,8 @@ stencil_format_ok:;
                     mglEnableIndirectCommandBuffersForPipeline(simpleDescriptor);
 
                     [_pipelineCache applyBinaryArchiveToDescriptor:simpleDescriptor];
-                    [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error]];
-                    if (_pipelineCache.state->pipelineState) {
+                    compiledPSO = [_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error];
+                    if (compiledPSO) {
                         mglMetalCountCreate(MGLMetalKindPSO);
                         successfulDescriptor = simpleDescriptor;
                         builtColor0Format = simpleDescriptor.colorAttachments[0].pixelFormat;
@@ -4981,8 +4971,8 @@ stencil_format_ok:;
                 safeDescriptor.fragmentFunction = [fragLibrary newFunctionWithName:@"main"];
 
                 [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                [_pipelineCache setPipelineState:[_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error]];
-                if (_pipelineCache.state->pipelineState) {
+                compiledPSO = [_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error];
+                if (compiledPSO) {
                     mglMetalCountCreate(MGLMetalKindPSO);
                     successfulDescriptor = safeDescriptor;
                     builtColor0Format = safeDescriptor.colorAttachments[0].pixelFormat;
@@ -4995,7 +4985,7 @@ stencil_format_ok:;
             NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - Even fallback pipeline failed: %@", fallbackException);
         }
 
-        if (!_pipelineCache.state->pipelineState) {
+        if (!compiledPSO) {
             NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - All pipeline creation attempts failed, disabling rendering");
             [self invalidateCurrentPipelineStateForReason:@"all pipeline fallbacks failed"];
             _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
@@ -5008,7 +4998,7 @@ stencil_format_ok:;
     //  If the Metal API validation is enabled, you can find out more information about what
     //  went wrong.  (Metal API validation is enabled by default when a debug build is run
     //  from Xcode.)
-    if (!_pipelineCache.state->pipelineState) {
+    if (!compiledPSO) {
         NSLog(@"MGL ERROR: Failed to create pipeline state: %@", error);
         NSLog(@"MGL WARNING: Skipping draw for this pipeline build failure; will retry later");
         [self invalidateCurrentPipelineStateForReason:@"pipeline state is nil after creation"];
@@ -5017,9 +5007,13 @@ stencil_format_ok:;
         return false;
     } else {
         if (kMGLVerbosePipelineLogs) {
-            NSLog(@"MGL PIPELINE CREATE success pipeline=%p", _pipelineCache.state->pipelineState);
+            NSLog(@"MGL PIPELINE CREATE success pipeline=%p", compiledPSO);
             NSLog(@"MGL INFO: Pipeline state created successfully");
         }
+        /* Publish the compile result to the shared state under a short
+         * re-acquired lock, so a concurrent resetMetalState can never race
+         * the pipelineState pointer or the pipeline cache dictionary. */
+        METAL_LOCK();
         if (!pipelineReusedPrevious && successfulDescriptor) {
             // Clear interface-mismatch breaker after a real compile.
             _gpuRecovery.interfaceMismatchStreak = 0;
@@ -5028,7 +5022,7 @@ stencil_format_ok:;
             _gpuRecovery.interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
             _gpuRecovery.interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
             _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
-            [_pipelineCache activatePipelineState:_pipelineCache.state->pipelineState
+            [_pipelineCache activatePipelineState:compiledPSO
             color0Format:builtColor0Format
             depthFormat:builtDepthFormat
             stencilFormat:builtStencilFormat
@@ -5054,6 +5048,7 @@ stencil_format_ok:;
             descriptorFromCache:(descriptorFromCache &&
             successfulDescriptor == finalDescriptor)];
         }
+        METAL_UNLOCK();
     }
 
     return true;

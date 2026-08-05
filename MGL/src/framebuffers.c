@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include "mgl_env_flag.h"
 
 #include "glm_context.h"
 #include "draw_command.h"
@@ -544,8 +545,7 @@ static GLboolean mglFramebufferStatusTraceEnabled(void)
     static int initialized = 0;
     static GLboolean enabled = GL_FALSE;
     if (!initialized) {
-        const char *value = getenv("MGL_TRACE_FBO_STATUS");
-        enabled = (value && value[0] && strcmp(value, "0") != 0) ? GL_TRUE : GL_FALSE;
+        enabled = mgl_env_flag_enabled("MGL_TRACE_FBO_STATUS") ? GL_TRUE : GL_FALSE;
         initialized = 1;
     }
     return enabled;

@@ -17,6 +17,7 @@
                                     destinationOrigin:(MTLOrigin)destinationOrigin
                                                reason:(const char *)reason
 {
+    MGL_ASSERT_GL_THREAD();
     if (!sourceBuffer || !texture || !_commandQueue) {
         NSLog(@"MGL ERROR: dedicated texture upload prerequisites missing (source=%p texture=%p queue=%p)",
               sourceBuffer, texture, _commandQueue);
@@ -440,7 +441,7 @@
                 uint64_t hit = ++s_shortBackingLogs;
                 if (kMGLDiagnosticStateLogs &&
                     (hit <= 32ull || (hit % 512ull) == 0ull)) {
-                    MGLTraceNSLog(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%lu need=%lu reason=%s hit=%llu",
+                    mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH skip short backing tex=%u level=%u face=%d have=%lu need=%lu reason=%s hit=%llu",
                                   (unsigned)tex->name,
                                   (unsigned)level,
                                   face,
@@ -512,7 +513,7 @@
     uint64_t hit = ++s_refreshLogs;
     if (kMGLDiagnosticStateLogs &&
         (uploadedAny || hit <= 32ull || (hit % 512ull) == 0ull)) {
-        MGLTraceNSLog(@"MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
+        mglTraceLogNSString(@"MGL TEXTURE CPU-REFRESH tex=%u mtl=%p uploaded=%d failed=%d dirty=0x%x levels=%u reason=%s hit=%llu",
                       (unsigned)tex->name,
                       texture,
                       uploadedAny ? 1 : 0,
@@ -1475,6 +1476,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
              bytesPerImage:(NSUInteger)bytesPerImage
                 fromRegion:(MTLRegion)region
 {
+    MGL_ASSERT_GL_THREAD();
     ctx = glm_ctx;
 
     NSUInteger readSize = bytesPerImage;
@@ -1749,7 +1751,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     if (mgl_drawbuffer == _FRONT)
     {
         if (!_drawable) {
-            [self mglSyncLayerDrawableSizeFromView:"readPixels.default"];
+            (void)[self mglApplyPendingDrawableSize];
             _drawable = [_layer nextDrawable];
         }
         texture = _drawable ? _drawable.texture : nil;
@@ -2218,6 +2220,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                           zoffset:(NSUInteger)zoffset
                            reason:(const char *)reason
 {
+    MGL_ASSERT_GL_THREAD();
     if (!tex || !buffer || sourceBytesPerRow == 0 || width == 0 || height == 0) {
         return false;
     }
@@ -3440,10 +3443,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                          texType:(MTLTextureType)tex_type
             outAllLevelsUploaded:(BOOL *)outAllLevelsUploaded
 {
+    MGL_ASSERT_GL_THREAD();
 
     if (kMGLDiagnosticStateLogs) {
-        MGLTraceNSLog(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
-        MGLTraceNSLog(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
+        mglTraceLogNSString(@"MGL DEBUG: DIRTY_TEXTURE_DATA detected - attempting texture filling");
+        mglTraceLogNSString(@"MGL DEBUG: Texture details: target=0x%x, internalformat=0x%x, levels=%d effectiveLevels=%u",
                       tex->target, tex->internalformat, tex->num_levels, upload_level_count);
     }
 
@@ -4686,6 +4690,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
 - (id<MTLTexture>) createMTLTextureFromGLTexture:(Texture *) tex
 {
+    MGL_ASSERT_GL_THREAD();
     mglMetalCountCreate(MGLMetalKindTexture);
     // PROPER FIX: Enhanced pre-creation validation to prevent AGX driver issues
     if (!_device || !_commandQueue) {
@@ -5586,7 +5591,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                 (unsigned)tl->width, (unsigned)tl->ever_written,
                 (unsigned)tl->has_initialized_data];
         }
-        MGLTraceNSLog(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
+        mglTraceLogNSString(@"MGL TEX_MIP_DIAG tex=%u target=0x%x dims=%ux%u internal=0x%x "
                       @"numLevels=%u mipmapLevels=%u effectiveMipLevels=%u mtlMipCount=%lu "
                       @"mtlFmt=%lu mtlStorage=%ld mipmapped=%d baseLevel=%u maxLevel=%u "
                       @"uploadedLevels=%lu skippedLevels=%lu skippedSourceNone=%lu skippedNoData=%lu "
@@ -6020,7 +6025,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         uint64_t diagHit = ++s_samplerDiagLogs;
         if (kMGLDiagnosticStateLogs &&
             (diagHit <= 64ull || (diagHit % 256ull) == 0ull)) {
-            MGLTraceNSLog(@"MGL SAMPLER_DIAG minFilter=0x%x magFilter=0x%x mipFilter=%lu "
+            mglTraceLogNSString(@"MGL SAMPLER_DIAG minFilter=0x%x magFilter=0x%x mipFilter=%lu "
                           @"minLod=%f maxLod=%f lodMinClamp=%f lodMaxClamp=%f "
                           @"wrapS=0x%x wrapT=0x%x maxAniso=%f aniso=%d "
                           @"compareMode=0x%x compareFunc=0x%x hit=%llu",
@@ -6557,7 +6562,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         fmt == MTLPixelFormatBGRA8Unorm ||
         fmt == MTLPixelFormatBGRA8Unorm_sRGB;
     if (!fourByteColor) {
-        MGLTraceNSLog(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
+        mglTraceLogNSString(@"MGL TRACE sampled.readback skip program=%u binding=%u glTex=%u reason=%@ fmt=%lu type=%lu size=%lux%lu hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
@@ -6590,7 +6595,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     id<MTLCommandBuffer> cb = [_commandQueue commandBuffer];
     id<MTLBlitCommandEncoder> blit = cb ? [cb blitCommandEncoder] : nil;
     if (!readback || !cb || !blit) {
-        MGLTraceNSLog(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
+        mglTraceLogNSString(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
               (unsigned)program,
               (unsigned)binding,
               glTex ? (unsigned)glTex->name : 0u,
@@ -6647,7 +6652,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
     }
 
-    MGLTraceNSLog(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
+    mglTraceLogNSString(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
           "mtl=%p fmt=%lu type=%lu size=%lux%lu sample=%lux%lu status=%s error=%@ "
           "nonZero=%lu/%lu sum=%llu first=0x%08x min=0x%08x max=0x%08x xor=0x%08x "
           "level(init ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx)",

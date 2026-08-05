@@ -81,13 +81,13 @@ void mglDumpBytesToLog(NSString *label,
                        size_t baseOffset)
 {
     /* Early return when trace logging is disabled — avoids expensive hex
-     * formatting (snprintf loop) that would be discarded by MGLTraceNSLog. */
+     * formatting (snprintf loop) that would be discarded by mglTraceLogNSString. */
     if (!mglTraceLogIsEnabled()) {
         return;
     }
 
     if (!bytes || length == 0) {
-        MGLTraceNSLog(@"MGL DUMP %@ empty", label ?: @"(null)");
+        mglTraceLogNSString(@"MGL DUMP %@ empty", label ?: @"(null)");
         return;
     }
 
@@ -113,7 +113,7 @@ void mglDumpBytesToLog(NSString *label,
         hex[hp] = '\0';
         ascii[n] = '\0';
 
-        MGLTraceNSLog(@"MGL DUMP %@ +0x%zx: %-47s |%s|",
+        mglTraceLogNSString(@"MGL DUMP %@ +0x%zx: %-47s |%s|",
                       label ?: @"(null)",
                       baseOffset + off,
                       hex,

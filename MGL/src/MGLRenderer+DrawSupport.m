@@ -268,7 +268,7 @@
 
         GLuint drawProgramKey = mglCurrentRenderProgramKey(drawCtx);
         if (mglShouldInspectDrawCall(drawCall, drawProgramKey) && attrib == 0u) {
-            MGLTraceNSLog(@"MGL TRACE drawArrays.attrib0 call=%llu program=%u buffer=%u first=%d count=%d "
+            mglTraceLogNSString(@"MGL TRACE drawArrays.attrib0 call=%llu program=%u buffer=%u first=%d count=%d "
                   "byteRange=[%llu,%llu) vboSize=%llu metalLen=%llu stride=%llu bindingOffset=%llu relOffset=%llu elemBytes=%llu",
                   (unsigned long long)drawCall,
                   (unsigned)drawProgramKey,

@@ -15,19 +15,24 @@
  * Internal API (for MGLRenderer.m):
  *   - mglTraceLog(fmt, ...)          — same as mglTraceLogExternal but for
  *     in-renderer call sites that don't want the "External" suffix.
+ *   - mglTraceLogCategory(cat, ...)   — explicit semantic category.
+ *   - mglTraceFrameID() / mglTraceNoteFrameBoundary() — monotonic frame
+ *     counter for the fid= prefix field.
  *   - mglTraceLogIsEnabled()         — gate check (also lazily initializes
  *     the log file via dispatch_once).
- *   - MGLTraceNSLog(fmt, ...)        — legacy ObjC NSString-format wrapper
- *     gated by trace enabled state (static inline, ObjC only).  Despite the
- *     name, it writes to the trace log, not NSLog, unless stderr mirroring is
+ *   - mglTraceLogNSString(fmt, ...)  — ObjC NSString-format wrapper gated
+ *     by trace enabled state.  Despite the legacy name similarity, it
+ *     writes to the trace log, not NSLog, unless stderr mirroring is
  *     explicitly enabled.
  *
  * Design notes:
  *   - 3 static globals (log file handle, enabled flag, mutex) are private
  *     to mgl_trace_log.m and never exposed.
- *   - mglTraceLogIsEnabled() is a thin accessor that also triggers lazy
- *     initialization.  Callers that check it frequently pay only a
- *     dispatch_once predicate check after first init.
+ *   - Every written line is prefixed with
+ *     [<mono_ns> <seq> tid=<tid> fid=<frame> cat=<CAT>] by the write path
+ *     (mglTraceLogV), so lines carry a monotonic timestamp, a global
+ *     sequence number, thread id, frame id, and semantic category without
+ *     call sites doing anything.
  *   - The env-flag parser (mglTraceEnvFlag) is a private copy of
  *     MGLRenderer.m's mglEnvFlagEnabled — kept private to avoid a reverse
  *     dependency on the renderer module.
@@ -38,6 +43,34 @@
 
 #include <objc/objc.h>  /* BOOL */
 #include <stdarg.h>
+#include <stdint.h>
+#include <mach/mach_time.h>
+
+/* Monotonic nanosecond clock for trace timing.  Uses mach_absolute_time()
+ * (not CFAbsoluteTimeGetCurrent) so elapsed values are immune to wall-clock
+ * steps (e.g. NTP).  Returns nanoseconds since an arbitrary epoch. */
+static inline uint64_t mglTraceClockNS(void)
+{
+    static mach_timebase_info_data_t tb = {0, 0};
+    if (tb.denom == 0) {
+        mach_timebase_info(&tb);
+    }
+    return (uint64_t)((double)mach_absolute_time() * (double)tb.numer / (double)tb.denom);
+}
+
+/* Semantic trace categories (apitrace-style flag bits).  Each written line
+ * is tagged with one of these via the cat= field; consumers filter with
+ * awk on cat= without parsing the message body. */
+typedef enum {
+    MGL_TRACE_CAT_DEFAULT = 0,
+    MGL_TRACE_CAT_DRAW,       /* DRAW_* / MULTI_DRAW_* / VATTR_* geometry submission */
+    MGL_TRACE_CAT_RESOURCE,   /* TEXTURE_* / TEX_* resource lifecycle */
+    MGL_TRACE_CAT_PROGRAM,    /* program link / PSO-ish program state */
+    MGL_TRACE_CAT_BINDING,    /* RT_SAMPLE_COPY* / TBIND / VBIND / BINDMAP binding decisions */
+    MGL_TRACE_CAT_PSO,        /* RENDERPASS_* encoder / pipeline state */
+    MGL_TRACE_CAT_SWAP,       /* SWAP_* frame boundary */
+    MGL_TRACE_CAT_PERF        /* PERF* counters / elapsed lines */
+} MGLTraceCategory;
 
 #ifdef __OBJC__
 #import <Foundation/Foundation.h>
@@ -47,18 +80,27 @@
 extern "C" {
 #endif
 
-/* The sole public trace-logging entry point.  No-op when trace logging is
- * disabled.  Safe to call from any translation unit — replaces the ~11
- * scattered `extern void mglTraceLogExternal(...)` declarations. */
-void mglTraceLogExternal(const char *fmt, ...);
-
-/* In-renderer trace log (identical to mglTraceLogExternal).  Provided for
- * call sites within MGLRenderer.m that predate the External/External split. */
+/* The trace-logging entry point.  No-op when trace logging is disabled.
+ * Safe to call from any translation unit.  mglTraceLogExternal is kept as a
+ * source-compatible alias: the two functions had byte-identical bodies, so
+ * the duplicate implementation was removed (see mgl_trace_log.m). */
 void mglTraceLog(const char *fmt, ...);
+#define mglTraceLogExternal mglTraceLog
+
+/* Trace-log entry with an explicit semantic category (see MGLTraceCategory).
+ * The category appears in the cat= prefix field; mglTraceLog infers a
+ * category from the message token when it can, otherwise DEFAULT. */
+void mglTraceLogCategory(MGLTraceCategory cat, const char *fmt, ...);
 
 /* Returns YES if trace logging is enabled and the log file is open.
  * Lazily initializes the log file on first call (dispatch_once). */
 BOOL mglTraceLogIsEnabled(void);
+
+/* Monotonic frame counter for the fid= prefix field.  Incremented at the
+ * swap boundary by the renderer (mglTraceNoteFrameBoundary); falls back to
+ * an internal counter when the renderer never calls it. */
+uint64_t mglTraceFrameID(void);
+void mglTraceNoteFrameBoundary(void);
 
 /* Trace-specific env-flag parser.  Returns YES if the named environment
  * variable is set to a truthy value (non-empty, non-0/false/no/off).
@@ -74,20 +116,11 @@ BOOL mglTraceEnvFlagEnabled(const char *name);
 void mglInitTraceLogIfNeeded(void);
 
 #ifdef __OBJC__
-/* ObjC NSString-format wrapper gated by trace-enabled state.  Kept under the
- * old MGLTraceNSLog name so existing call sites keep compiling while trace
- * output is centralized in mgl-trace-<pid>.log. */
+/* ObjC NSString-format wrapper gated by trace-enabled state.  The write
+ * path (mglTraceLogV) adds the same [mono_ns seq tid fid cat] prefix as
+ * mglTraceLog, so NSString call sites are indistinguishable in the log. */
 void mglTraceLogNSStringV(NSString *format, va_list args);
 void mglTraceLogNSString(NSString *format, ...);
-
-static inline void MGLTraceNSLog(NSString *format, ...) {
-    if (mglTraceLogIsEnabled()) {
-        va_list args;
-        va_start(args, format);
-        mglTraceLogNSStringV(format, args);
-        va_end(args);
-    }
-}
 #endif
 
 #ifdef __cplusplus

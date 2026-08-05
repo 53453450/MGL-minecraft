@@ -988,7 +988,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        MGLTraceNSLog(@"MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
+        mglTraceLogNSString(@"MGL TRACE map.begin stage=%d call=%llu preCount=%u program=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0,
@@ -1033,7 +1033,7 @@ static Buffer *mglGetPackedStructBuffer(GLMContext ctx,
     }
 
     if (kMGLDiagnosticStateLogs && mglShouldTraceCall(mapCall)) {
-        MGLTraceNSLog(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
+        mglTraceLogNSString(@"MGL TRACE map.end stage=%d call=%llu mappedCount=%u",
               stage,
               (unsigned long long)mapCall,
               buffer_map ? buffer_map->count : 0);
@@ -2494,7 +2494,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                     mtlHead[0] = '\0';
                     mglTraceFormatBytes(cpuSample, sampleLen, cpuHead, sizeof(cpuHead));
                     mglTraceFormatBytes(mtlSample, sampleLen, mtlHead, sizeof(mtlHead));
-                    MGLTraceNSLog(@"MGL TRACE smallBufferDirty.upload call=%llu buffer=%u size=%lld dirty=0x%x copy=%lu cpuHash=0x%016llx cpuHead=%s mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
+                    mglTraceLogNSString(@"MGL TRACE smallBufferDirty.upload call=%llu buffer=%u size=%lld dirty=0x%x copy=%lu cpuHash=0x%016llx cpuHead=%s mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
                           (unsigned long long)call,
                           ptr->name,
                           (long long)ptr->size,
@@ -2545,7 +2545,7 @@ BOOL mglSnapshotSharedBufferRange(id<MTLDevice> device,
                     }
                 }
 
-                MGLTraceNSLog(@"MGL TRACE smallBufferDirty.skip call=%llu buffer=%u size=%lld dirty=0x%x cpuHash=0x%016llx cpuHead=%s mtl=%p mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
+                mglTraceLogNSString(@"MGL TRACE smallBufferDirty.skip call=%llu buffer=%u size=%lld dirty=0x%x cpuHash=0x%016llx cpuHead=%s mtl=%p mtlLen=%lu mtlHash=0x%016llx mtlHead=%s",
                       (unsigned long long)call,
                       ptr->name,
                       (long long)ptr->size,

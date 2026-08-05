@@ -819,6 +819,7 @@ typedef struct MGLBlitColorState {
                                            source:(id<MTLTexture>)source
                                            reason:(const char *)reason
 {
+    MGL_ASSERT_GL_THREAD();
     if (![self textureCanUseGLSampledRenderTargetCopy:tex source:source]) {
         return NO;
     }
@@ -1297,6 +1298,7 @@ typedef struct MGLBlitColorState {
                                     dstX0:(GLint)dstX0 dstY0:(GLint)dstY0 dstX1:(GLint)dstX1 dstY1:(GLint)dstY1
                                      mask:(GLbitfield)mask filter:(GLenum)filter
 {
+    MGL_ASSERT_GL_THREAD();
     GLbitfield depthStencilMask = mask & (GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
     if (depthStencilMask != 0u && glm_ctx->state.readbuffer && glm_ctx->state.framebuffer) {
         Framebuffer *depthReadFBO = glm_ctx->state.readbuffer;
@@ -1634,6 +1636,7 @@ typedef struct MGLBlitColorState {
                                 outState:(MGLBlitColorState *)st
                        outReadAttachment:(GLenum *)outReadAttachment
 {
+    MGL_ASSERT_GL_THREAD();
     Framebuffer * readfbo, * drawfbo;
     GLenum readAttachment, drawAttachment;
     FBOAttachment *readFBOAttachment = NULL;
@@ -1837,7 +1840,7 @@ typedef struct MGLBlitColorState {
         static uint64_t s_msaaResolveLogCount = 0;
         uint64_t msaaHit = ++s_msaaResolveLogCount;
         if (msaaHit <= 8ull || (msaaHit % 256ull) == 0ull) {
-            MGLTraceNSLog(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
+            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.msaaResolve hit=%llu srcSamples=%lu srcTex=%lux%lu srcObj=%u",
                   (unsigned long long)msaaHit,
                   (unsigned long)readtexid.sampleCount,
                   (unsigned long)srcTexW, (unsigned long)srcTexH,
@@ -2358,7 +2361,7 @@ typedef struct MGLBlitColorState {
             [clearEncoder endEncoding];
             readFBOAttachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             mglMarkTextureLevelRenderTargetWritten(readTextureObject, readFBOAttachment->level);
-            MGLTraceNSLog(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
+            mglTraceLogNSString(@"MGL TRACE blitFramebuffer.appliedPendingReadClear fbo=%u attachment=0x%x tex=%u rgba=(%.3f,%.3f,%.3f,%.3f)",
                   (unsigned)readfbo->name,
                   (unsigned)readAttachment,
                   (unsigned)readTextureObject->name,
@@ -2566,7 +2569,7 @@ typedef struct MGLBlitColorState {
                         (unsigned)(glm_ctx ? glm_ctx->state.draw_buffer : 0u),
                         (unsigned)(glm_ctx ? glm_ctx->state.read_buffer : 0u));
         } else {
-            MGLTraceNSLog(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x filter=0x%x "
+            mglTraceLogNSString(@"MGL TRACE blitFramebuffer call=%llu readFBO=%p drawFBO=%p mask=0x%x filter=0x%x "
                   "srcReq=(%d,%d)-(%d,%d) dstReq=(%d,%d)-(%d,%d) "
                   "copy srcGL=(%.3f,%.3f %.3fx%.3f) dstGL=(%.3f,%.3f %.3fx%.3f) srcMTL=(%ld,%ld) dstMTL=(%ld,%ld) scaled=%d flip=%d "
                   "srcObj=%u dstObj=%u srcRT=%d dstRT=%d srcAuth=0x%x dstAuth=0x%x srcRtVer=%u dstRtVer=%u srcCopyVer=%u dstCopyVer=%u "

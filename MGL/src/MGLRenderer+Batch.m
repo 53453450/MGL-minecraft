@@ -269,7 +269,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount
 {
-    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
     MGL_FRAME_STORE(g_mglLastDrawArraysProgram, mglCurrentRenderProgramKey(ctx));
     MGL_FRAME_STORE(g_mglLastDrawArraysMode, mode);
     MGL_FRAME_STORE(g_mglLastDrawArraysCount,
@@ -281,7 +281,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount
 {
-    MGL_FRAME_STORE(g_mglLastDrawElementsSeconds, mglNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawElementsSeconds, mglTraceNowSeconds());
     MGL_FRAME_STORE(g_mglLastDrawElementsProgram, mglCurrentRenderProgramKey(ctx));
     MGL_FRAME_STORE(g_mglLastDrawElementsMode, mode);
     MGL_FRAME_STORE(g_mglLastDrawElementsCount,
@@ -1143,9 +1143,9 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         } /* sequentialBatch */
         }
     }
-    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglNowSeconds());
+    MGL_FRAME_STORE(g_mglLastDrawArraysSeconds, mglTraceNowSeconds());
     if (traceFlush || skippedCommandCount > 0 || replayError != GL_NO_ERROR) {
-        MGLTraceNSLog(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
+        mglTraceLogNSString(@"MGL TRACE flushDrawBuffer hit=%llu batches=%u totalCommands=%u arrays=%u elements=%u streamMergedBatches=%u streamMergedCommands=%u mdiBatches=%u mdiCommands=%u icbBatches=%u icbCommands=%u directBatches=%u directCommands=%u skippedCommands=%u",
               (unsigned long long)flushHit,
               cb->batch_count, cb->total_commands,
               cb->array_cmd_count, cb->element_cmd_count,

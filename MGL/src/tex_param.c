@@ -20,6 +20,7 @@
 
 #include "glm_context.h"
 #include "mgl_trace_log.h"
+#include "mgl_env_flag.h"
 #include "pixel_utils.h"
 #include <stdlib.h>
 #include <stddef.h>
@@ -175,8 +176,7 @@ static GLboolean mglTraceTextureNameDiagnosticsEnabled(void)
     static int initialized = 0;
     static GLboolean enabled = GL_FALSE;
     if (!initialized) {
-        const char *value = getenv("MGL_TRACE_TEXTURE_NAMES");
-        enabled = (value && value[0] && strcmp(value, "0") != 0) ? GL_TRUE : GL_FALSE;
+        enabled = mgl_env_flag_enabled("MGL_TRACE_TEXTURE_NAMES") ? GL_TRUE : GL_FALSE;
         initialized = 1;
     }
     return enabled;

@@ -331,7 +331,7 @@
             }
         } else {
             if (kMGLDiagnosticStateLogs) {
-                MGLTraceNSLog(@"MGL SUCCESS: Primary texture created successfully");
+                mglTraceLogNSString(@"MGL SUCCESS: Primary texture created successfully");
             }
         }
 

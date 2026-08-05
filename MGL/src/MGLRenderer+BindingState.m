@@ -14,7 +14,8 @@
     static double s_vbindLastCallTime = 0.0;
     static uint64_t s_vbindLastCallCount = 0;
     uint64_t vbindCall = ++s_vbindCallCount;
-    double vbindStartSeconds = mglNowSeconds();
+    double vbindStartSeconds = mglTraceNowSeconds();
+    uint64_t vbindStartNS = mglTraceClockNS();
     mglLogLoopHeartbeat("vbind.loop",
                         vbindCall,
                         vbindStartSeconds,
@@ -441,13 +442,13 @@
                 baseSlots++;
             }
         }
-        MGLTraceNSLog(@"MGL TRACE vbind.end call=%llu mapCount=%u boundSlots=%lu reservedAttribSlots=%lu baseSlots=%lu elapsed=%.3fms",
+        mglTraceLogNSString(@"MGL TRACE vbind.end call=%llu mapCount=%u boundSlots=%lu reservedAttribSlots=%lu baseSlots=%lu elapsed=%.1fus",
               (unsigned long long)vbindCall,
               (unsigned)mapCount,
               (unsigned long)boundSlots,
               (unsigned long)reservedSlots,
               (unsigned long)baseSlots,
-              (mglNowSeconds() - vbindStartSeconds) * 1000.0);
+              (mglTraceClockNS() - vbindStartNS) / 1000.0);
     }
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
@@ -1092,7 +1093,8 @@
     static double s_fbindLastCallTime = 0.0;
     static uint64_t s_fbindLastCallCount = 0;
     uint64_t fbindCall = ++s_fbindCallCount;
-    double fbindStartSeconds = mglNowSeconds();
+    double fbindStartSeconds = mglTraceNowSeconds();
+    uint64_t fbindStartNS = mglTraceClockNS();
     mglLogLoopHeartbeat("fbind.loop",
                         fbindCall,
                         fbindStartSeconds,
@@ -1496,12 +1498,12 @@
                 baseSlots++;
             }
         }
-        MGLTraceNSLog(@"MGL TRACE fbind.end call=%llu mapCount=%u boundSlots=%lu baseSlots=%lu elapsed=%.3fms",
+        mglTraceLogNSString(@"MGL TRACE fbind.end call=%llu mapCount=%u boundSlots=%lu baseSlots=%lu elapsed=%.1fus",
               (unsigned long long)fbindCall,
               (unsigned)mapCount,
               (unsigned long)boundSlots,
               (unsigned long)baseSlots,
-              (mglNowSeconds() - fbindStartSeconds) * 1000.0);
+              (mglTraceClockNS() - fbindStartNS) / 1000.0);
     }
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
@@ -1767,7 +1769,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
     if (logTextureSummary) {
         GLuint programName = mglCurrentRenderProgramKey(ctx);
-        MGLTraceNSLog(@"MGL TRACE texbind.summary call=%llu program=%u vertexSampled=%u vertexBoundTex=%u vertexFallback=%u sampled=%u boundTex=%u nilTex=%u fallbackTex=%u sampledSamplers=%u separateSamplers=%u boundSeparate=%u",
+        mglTraceLogNSString(@"MGL TRACE texbind.summary call=%llu program=%u vertexSampled=%u vertexBoundTex=%u vertexFallback=%u sampled=%u boundTex=%u nilTex=%u fallbackTex=%u sampledSamplers=%u separateSamplers=%u boundSeparate=%u",
               (unsigned long long)bindCall,
               (unsigned)programName,
               (unsigned)vertexSampledCount,
@@ -2198,7 +2200,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                         ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
                         : 0ull;
 
-                    MGLTraceNSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=vertex program=%u name=%s binding=%u "
+                    mglTraceLogNSString(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=vertex program=%u name=%s binding=%u "
                           "unit=%u expectedType=%lu expectedIndex=%d ptrTex=%u ptr=%p target=0x%x fallback=%d mtlTex=%p mtlType=%lu mtlSize=%lux%lu "
                           "unit(active=%u expected=%u) "
                           "l0=%ux%ux%u bytes=%lu init(ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx dataHash=0x%016llx)",
@@ -2418,7 +2420,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 	                    ? mglTraceHashBytes((const void *)(uintptr_t)sampleLevel0->data, sampleLevel0->data_size)
 	                    : 0ull;
 
-	                MGLTraceNSLog(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=fragment program=%u name=%s binding=%u "
+	                mglTraceLogNSString(@"MGL TRACE texbind.sample-detail call=%llu hit=%llu stage=fragment program=%u name=%s binding=%u "
 	                      "unit=%u expectedType=%lu expectedIndex=%d ptrTex=%u ptr=%p target=0x%x fallback=%d mtlTex=%p mtlType=%lu mtlSize=%lux%lu "
 	                      "unit(active=%u expected=%u tex2D=%u cube=%u) "
 	                      "l0=%ux%ux%u bytes=%lu init(ever=%u full=%u zero=%u source=%u upload=%lu src=%p hash=0x%016llx dataHash=0x%016llx)",
@@ -2651,7 +2653,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                 cpuFirstTexelValid = true;
             }
 
-            MGLTraceNSLog(@"MGL TRACE texbind.sampled call=%llu idx=%u binding=%u glTex=%u target=0x%x internal=0x%x "
+            mglTraceLogNSString(@"MGL TRACE texbind.sampled call=%llu idx=%u binding=%u glTex=%u target=0x%x internal=0x%x "
                   "l0=%ux%ux%u l0bytes=%lu l0first=0x%08x(valid=%d) "
                   "l0src(source=%u upload=%lu srcPtr=%p hash=0x%016llx init(ever=%u full=%u zero=%u)) "
                   "mtlTex=%p size=%lux%lu sampler=%p fallback=%d",
@@ -3682,7 +3684,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         if (traceBind && i < 6) {
-            MGLTraceNSLog(@"MGL TRACE texbind.separateSampler call=%llu idx=%u binding=%u unit=%u sampler=%p",
+            mglTraceLogNSString(@"MGL TRACE texbind.separateSampler call=%llu idx=%u binding=%u unit=%u sampler=%p",
                   (unsigned long long)bindCall,
                   (unsigned)i,
                   (unsigned)spirvBinding,

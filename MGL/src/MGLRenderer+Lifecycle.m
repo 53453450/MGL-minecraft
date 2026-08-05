@@ -8,6 +8,10 @@
 #import "mgl_metal_bridge.h"
 #import "draw_command.h"
 
+/* KVO context shared by the observer registration in
+ * createMGLRendererAndBindToContext:view: and observeValueForKeyPath:. */
+static void *s_kvoViewGeometryContext = &s_kvoViewGeometryContext;
+
 static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
 {
     MTLPixelFormat fallback = MTLPixelFormatBGRA8Unorm;
@@ -143,6 +147,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 
 - (void) createMGLRendererAndBindToContext: (GLMContext) glm_ctx view: (NSView *) view
 {
+    mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
     ctx = glm_ctx;
     _queryManager = [MGLQueryManager new];
     _renderPassManager = [MGLRenderPassManager new];
@@ -151,17 +156,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
      * texture's zero-initialized mtl_rt_frame_generation stamp until that
      * texture is actually written this frame. */
     [_renderPassManager setDontCareFrameGeneration:1u];
-
-    // CRITICAL FIX: Initialize thread synchronization locks.
-    // _metalStateLock: NSRecursiveLock (reentrant) — required because the
-    //   MGLRenderer call graph has indirect re-entry paths through non-target
-    //   helper methods.  A non-reentrant lock deadlocked on first frame.
-    // _syncListLock: os_unfair_lock (non-reentrant, value type) - protects
-    //   only MGLRenderPassManager sync-list access and is acquired after
-    //   _metalStateLock when both locks are needed.
-    _metalStateLock = [[NSRecursiveLock alloc] init];
-    _syncListLock   = OS_UNFAIR_LOCK_INIT;
-    NSLog(@"MGL INFO: Metal state lock (NSRecursiveLock) + sync list lock (os_unfair_lock) initialized");
 
     // Initialize AGX GPU error tracking
     _gpuRecovery.gpuErrorLock = OS_UNFAIR_LOCK_INIT;
@@ -221,7 +215,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: Metal device not found - this is required for Apple Silicon");
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
-        //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
+        //   SET: ctx, AGX GPU error tracking
         //        fields (_gpuRecovery.consecutiveGPUErrors/_gpuRecovery.lastGPUErrorTime/
         //        _gpuRecovery.gpuErrorRecoveryMode), _pipeline*Format/_pipelineCache.state->pipelineProgramName,
         //        _pipelineCache.state->pipelineStateCache, and glm_ctx->mtl_funcs (bound via
@@ -266,7 +260,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
         // Intentional early return on critical Metal initialization failure.
         // The renderer is left in a PARTIALLY INITIALIZED state:
-        //   SET: ctx, _metalStateLock, _syncListLock, AGX GPU error tracking
+        //   SET: ctx, AGX GPU error tracking
         //        fields, _pipeline*Format/_pipelineCache.state->pipelineProgramName,
         //        _pipelineCache.state->pipelineStateCache, glm_ctx->mtl_funcs (bound, mtlObj
         //        retained), _device, MTL4 compiler (if available), _capability.
@@ -343,7 +337,29 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     } else {
         [_view setLayer: _layer];
     }
-    [self mglSyncLayerDrawableSizeFromView:"createRenderer"];
+
+    /* Initial geometry: the renderer is created on the main thread (AppKit
+     * window setup), so read the view geometry synchronously here.  Later
+     * changes arrive via KVO → mglMainThreadSyncViewGeometry. */
+    if (NSThread.isMainThread) {
+        [self mglMainThreadSyncViewGeometry];
+    } else {
+        (void)[self mglApplyPendingDrawableSize];
+    }
+
+    /* Observe view geometry changes so the GL thread never needs to touch
+     * NSView/NSWindow/NSScreen.  KVO fires on the main thread (bounds is only
+     * mutated there), publishing an atomic drawable-size snapshot.  The
+     * "window" keyPath is observed as well so resize/backing notifications
+     * can be attached lazily once the view joins a window. */
+    [_view addObserver:self
+            forKeyPath:@"bounds"
+               options:0
+               context:s_kvoViewGeometryContext];
+    [_view addObserver:self
+            forKeyPath:@"window"
+               options:NSKeyValueObservingOptionInitial
+               context:s_kvoViewGeometryContext];
 
     mglDrawBuffer(glm_ctx, GL_FRONT);
 
@@ -367,6 +383,100 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     // necessitates Info.plist in the cwd, see https://stackoverflow.com/a/64172784
     //MTLCaptureDescriptor *descriptor = [self setupCaptureToFile: _device];
     //[self startCapture:descriptor];
+}
+
+/* Publish view geometry to the GL thread as an atomic snapshot.  Main thread
+ * only — this is the sole place NSView/NSWindow/NSScreen are read, so the
+ * render thread never touches AppKit.  The GL thread consumes the snapshot via
+ * mglApplyPendingDrawableSize and sets CAMetalLayer.drawableSize. */
+- (void)mglMainThreadSyncViewGeometry
+{
+    NSAssert(NSThread.isMainThread, @"AppKit geometry must be read on main thread");
+    if (!_view || !_layer) {
+        return;
+    }
+
+    NSRect bounds = [_view bounds];
+    if (bounds.size.width <= 0.0 || bounds.size.height <= 0.0) {
+        bounds = [_view frame];
+        bounds.origin = NSZeroPoint;
+    }
+
+    NSRect backingBounds = [_view convertRectToBacking:bounds];
+    CGFloat scale = 1.0;
+    if (bounds.size.width > 0.0 && backingBounds.size.width > 0.0) {
+        scale = backingBounds.size.width / bounds.size.width;
+    } else {
+        NSWindow *window = [_view window];
+        if (window) {
+            scale = [window backingScaleFactor];
+        } else if ([NSScreen mainScreen]) {
+            scale = [[NSScreen mainScreen] backingScaleFactor];
+        }
+        if (scale <= 0.0) {
+            scale = 1.0;
+        }
+        backingBounds = NSMakeRect(0.0, 0.0, bounds.size.width * scale, bounds.size.height * scale);
+    }
+
+    _layer.frame = bounds;
+    _layer.contentsScale = scale;
+
+    uint32_t pw = (uint32_t)MAX(1.0, backingBounds.size.width + 0.5);
+    uint32_t ph = (uint32_t)MAX(1.0, backingBounds.size.height + 0.5);
+    atomic_store_explicit(&_pendingDrawableW, pw, memory_order_relaxed);
+    atomic_store_explicit(&_pendingDrawableH, ph, memory_order_relaxed);
+    atomic_store_explicit(&_drawableSizeDirty, true, memory_order_release);
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary *)change
+                       context:(void *)context
+{
+    if (context == s_kvoViewGeometryContext) {
+        if ([keyPath isEqualToString:@"window"]) {
+            [self mglUpdateWindowNotificationObserver];
+        }
+        [self mglMainThreadSyncViewGeometry];
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+/* Attach/detach window observation as the view's window changes.  The window
+ * is not known when the renderer is created, so this is wired lazily. */
+- (void)mglUpdateWindowNotificationObserver
+{
+    NSWindow *window = _view.window;
+    if (window == _observedWindow) {
+        return;
+    }
+    if (_observedWindow) {
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:NSWindowDidResizeNotification
+                                                      object:_observedWindow];
+        [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                        name:NSWindowDidChangeBackingPropertiesNotification
+                                                      object:_observedWindow];
+    }
+    _observedWindow = window;
+    if (window) {
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(mglWindowGeometryChanged:)
+                                                     name:NSWindowDidResizeNotification
+                                                   object:window];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(mglWindowGeometryChanged:)
+                                                     name:NSWindowDidChangeBackingPropertiesNotification
+                                                   object:window];
+    }
+}
+
+- (void)mglWindowGeometryChanged:(NSNotification *)notification
+{
+    (void)notification;
+    [self mglMainThreadSyncViewGeometry];
 }
 
 // PROACTIVE TEXTURE CREATION: Create essential textures during initialization to break sync loop
@@ -461,6 +571,22 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     NSLog(@"MGL INFO: MGLRenderer dealloc - cleaning up Metal resources");
 
     @try {
+        /* Remove the geometry observers before any view/state teardown. */
+        if (_view) {
+            [_view removeObserver:self forKeyPath:@"bounds" context:s_kvoViewGeometryContext];
+            [_view removeObserver:self forKeyPath:@"window" context:s_kvoViewGeometryContext];
+        }
+        /* Detach window notifications without the lazy re-wiring path. */
+        if (_observedWindow) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                            name:NSWindowDidResizeNotification
+                                                          object:_observedWindow];
+            [[NSNotificationCenter defaultCenter] removeObserver:self
+                                                            name:NSWindowDidChangeBackingPropertiesNotification
+                                                          object:_observedWindow];
+            _observedWindow = nil;
+        }
+
         // Stop any ongoing capture
         [MTLCaptureManager.sharedCaptureManager stopCapture];
 
@@ -525,13 +651,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         if (_device) {
             NSLog(@"MGL INFO: Releasing Metal device");
             _device = nil;
-        }
-
-        // Cleanup thread lock — _metalStateLock is an NSRecursiveLock (ObjC object,
-        // requires nil release under ARC). _syncListLock is an os_unfair_lock value
-        // type and needs no cleanup.
-        if (_metalStateLock) {
-            _metalStateLock = nil;
         }
 
         /* Task 4: Release all address-stable snapshot arena chunks. */

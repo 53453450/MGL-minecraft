@@ -35,10 +35,6 @@
 #import "mgl_trace_strategy.h"
 #import "mgl_texture_compat.h"
 
-#ifndef MGL_LOCK_TIMING_STACK_CAPACITY
-#define MGL_LOCK_TIMING_STACK_CAPACITY 64
-#endif
-
 #ifndef kMGLMaxBufferSlots
 #define kMGLMaxBufferSlots 31
 #endif
@@ -88,14 +84,16 @@ typedef struct MGLRendererCoreState_t {
     GLMState *activeState;
     id<MTLDevice> __strong device;
     MGLCapability capability;
-    NSRecursiveLock *__strong metalStateLock;
-    double metalLockHoldStartStack[MGL_LOCK_TIMING_STACK_CAPACITY];
-    NSUInteger metalLockHoldDepth;
-    os_unfair_lock syncListLock;
     NSMutableArray *__strong proactiveTextures;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
     id<MTLCommandQueue> __strong commandQueue;
+    /* Lock-free hand-off channels.  Written by the completion-handler thread
+     * / main queue, drained (and resynchronized) on the GL thread. */
+    _Atomic bool deviceResetRequested;
+    _Atomic uint32_t pendingDrawableW;
+    _Atomic uint32_t pendingDrawableH;
+    _Atomic bool drawableSizeDirty;
 } MGLRendererCoreState;
 
 typedef struct MGLGPURecoveryState_t {

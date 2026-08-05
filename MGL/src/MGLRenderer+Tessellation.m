@@ -56,6 +56,7 @@ typedef struct {
                                  stage:(int)stage
                              copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
+    MGL_ASSERT_GL_THREAD();
     if (!bindings || !copyBacks) {
         return false;
     }
@@ -224,6 +225,7 @@ typedef struct {
 - (bool)bindPreparedTessStageBufferBindings:(const MGLTessStageBufferBindingList *)bindings
                            toComputeEncoder:(id<MTLComputeCommandEncoder>)computeCommandEncoder
 {
+    MGL_ASSERT_GL_THREAD();
     if (!bindings || !computeCommandEncoder) {
         return false;
     }
@@ -255,6 +257,7 @@ typedef struct {
                                     program:(Program *)program
                                       stage:(int)stage
 {
+    MGL_ASSERT_GL_THREAD();
     if (!computeEncoder || !program || stage < 0 || stage >= _MAX_SHADER_TYPES) {
         return;
     }
@@ -283,6 +286,7 @@ typedef struct {
                                     patchCount:(GLuint)patchCount
                                      outStride:(NSUInteger *)outStride
 {
+    MGL_ASSERT_GL_THREAD();
     if (outStride) {
         *outStride = 0u;
     }
