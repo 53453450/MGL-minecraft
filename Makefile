@@ -568,6 +568,24 @@ test-msl-bindings: $(build_dir)/test_msl_bindings
 test-benchmark: bench
 	scripts/run_benchmark_smoke.sh --no-build
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark
+$(build_dir)/test_mglir: test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 \
+		-IMGL/include \
+		test_legacy_compat/test_mglir.c MGL/src/mgl_ir.c \
+		-o $@
+
+test-mglir: $(build_dir)/test_mglir
+	$(build_dir)/test_mglir
+
+$(build_dir)/test_mgllex: test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c
+	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O0 \
+		-IMGL/include \
+		test_legacy_compat/test_mgllex.c MGL/src/mgl_glsl_lexer.c \
+		-o $@
+
+test-mgllex: $(build_dir)/test_mgllex
+	$(build_dir)/test_mgllex
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex
 
 -include $(deps)
