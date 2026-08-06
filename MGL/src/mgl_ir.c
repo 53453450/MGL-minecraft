@@ -143,7 +143,9 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         r.alignment = align;
         r.array_stride = stride;
         if (type->array_size == 0) {
-            r.size = 0; /* runtime array contributes one element's stride in struct */
+            /* runtime array (SSBO tail): it does not contribute space to the
+             * enclosing struct; callers must size it via array_stride */
+            r.size = 0;
         } else {
             /* glslang (SPIR-V ArrayStride) stores every element at the full
              * stride: float[3] std140 = 48 (=3*16), vec3[2] std430 = 32. */
@@ -186,6 +188,11 @@ static int layout_type(MGLIRType *type, MGLIRLayoutStd layout, uint32_t depth,
         return -1;
     }
 
+    /* Layout is cached in type->layout (side effect).  A type object holds
+     * ONE layout result: computing std430 over an already std140-computed
+     * struct silently overwrites it (member offsets differ).  Layout must
+     * therefore be computed once per type per layout standard; shared type
+     * objects must never be re-laid out under a different standard. */
     type->layout = r;
     type->layout_valid = 1;
     if (info) {

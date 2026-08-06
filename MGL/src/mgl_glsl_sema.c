@@ -106,6 +106,31 @@ static Sym *sym_new(const char *name)
     return s;
 }
 
+/* Destroy a Sym that was never inserted into a symbol table (all members
+ * are owned).  Inserted syms are reclaimed via symtab_destroy. */
+static void sym_free(Sym *sym)
+{
+    if (!sym) {
+        return;
+    }
+    free(sym->name);
+    if (sym->ret_type) {
+        mglIRTypeDestroy(sym->ret_type);
+    }
+    if (sym->param_types) {
+        for (uint32_t i = 0; i < sym->param_count; i++) {
+            if (sym->param_types[i]) {
+                mglIRTypeDestroy(sym->param_types[i]);
+            }
+        }
+        free(sym->param_types);
+    }
+    if (sym->type && sym->type_owned) {
+        mglIRTypeDestroy(sym->type);
+    }
+    free(sym);
+}
+
 static int symtab_push(SymTab *t)
 {
     Scope *sc = (Scope *)calloc(1, sizeof(*sc));
@@ -383,6 +408,7 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
 }
 
 static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts);
+static int builtin_type_spec(const char *name, MGLTypeSpec *ts);
 
 /* Resolve a single declarator (type + array dims) into an IR type. */
 static MGLIRType *resolve_decl_type(Sema *s, SymTab *tab, const MGLDecl *d)
@@ -593,6 +619,9 @@ static int implicit_convert(MGLIRType *from, MGLIRType *to)
         to->kind != MGLIR_TYPE_SCALAR) {
         return 0;
     }
+    if (from->scalar == to->scalar) {
+        return 1; /* identical types (incl. bool/void) always convert */
+    }
     static const MGLIRScalar rank[5] = {
         MGLIR_SCALAR_INT, MGLIR_SCALAR_UINT, MGLIR_SCALAR_FLOAT, MGLIR_SCALAR_DOUBLE,
         MGLIR_SCALAR_HALF,
@@ -678,14 +707,24 @@ static const char *op_name(uint32_t op)
 
 static int is_numeric(const MGLIRType *t)
 {
-    return t && t->kind == MGLIR_TYPE_SCALAR &&
-           (t->scalar == MGLIR_SCALAR_INT || t->scalar == MGLIR_SCALAR_UINT ||
-            t->scalar == MGLIR_SCALAR_FLOAT || t->scalar == MGLIR_SCALAR_DOUBLE);
+    if (!t) {
+        return 0;
+    }
+    switch (t->kind) {
+    case MGLIR_TYPE_SCALAR:
+    case MGLIR_TYPE_VECTOR:
+    case MGLIR_TYPE_MATRIX:
+        return t->scalar == MGLIR_SCALAR_INT ||
+               t->scalar == MGLIR_SCALAR_UINT ||
+               t->scalar == MGLIR_SCALAR_FLOAT ||
+               t->scalar == MGLIR_SCALAR_DOUBLE;
+    default:
+        return 0;
+    }
 }
 
-static MGLIRType *result_numeric(MGLIRType *a, MGLIRType *b, int is_mat_operand)
+static MGLIRType *result_numeric(MGLIRType *a, MGLIRType *b)
 {
-    (void)is_mat_operand;
     /* promote the common scalar of a/b */
     MGLIRScalar sc = a->scalar;
     if (b->scalar == MGLIR_SCALAR_DOUBLE ||
@@ -707,6 +746,48 @@ static MGLIRType *result_numeric(MGLIRType *a, MGLIRType *b, int is_mat_operand)
         return v;
     }
     return base;
+}
+
+/* GLSL 4.60 matrix multiplication typing:
+ *   mat * vec  = vec (len = mat.rows), mat.cols == vec.len
+ *   vec * mat  = vec (len = mat.cols), vec.len == mat.rows
+ *   mat * mat  = mat, a.cols == b.rows, result (b.cols x a.rows) */
+static MGLIRType *matrix_mul_result(Sema *s, const MGLExpr *e, MGLIRType *l,
+                                    MGLIRType *r)
+{
+    MGLIRScalar sc = l->scalar;
+    if (r->scalar == MGLIR_SCALAR_DOUBLE ||
+        (r->scalar == MGLIR_SCALAR_FLOAT && sc != MGLIR_SCALAR_DOUBLE)) {
+        sc = r->scalar;
+    }
+    if (l->kind == MGLIR_TYPE_MATRIX && r->kind == MGLIR_TYPE_MATRIX) {
+        if (l->cols != r->rows) {
+            sema_error(s, e->line, "matrix multiply dimension mismatch (%ux%u * %ux%u)",
+                       l->cols, l->rows, r->cols, r->rows);
+            return NULL;
+        }
+        return mglIRTypeMatrix(sc, r->cols, l->rows);
+    }
+    if (l->kind == MGLIR_TYPE_MATRIX && r->kind == MGLIR_TYPE_VECTOR) {
+        if (l->cols != r->cols) {
+            sema_error(s, e->line,
+                       "matrix %ux%u must be multiplied by a vector of length %u",
+                       l->cols, l->rows, l->cols);
+            return NULL;
+        }
+        return mglIRTypeVector(sc, l->rows);
+    }
+    if (l->kind == MGLIR_TYPE_VECTOR && r->kind == MGLIR_TYPE_MATRIX) {
+        if (l->cols != r->rows) {
+            sema_error(s, e->line,
+                       "vector of length %u must be multiplied by a matrix with %u rows",
+                       l->cols, r->rows);
+            return NULL;
+        }
+        return mglIRTypeVector(sc, r->cols);
+    }
+    /* matrix * scalar: same shape */
+    return l->kind == MGLIR_TYPE_MATRIX ? l : r;
 }
 
 static int check_assign_op(MGLIRType *dst, MGLIRType *src)
@@ -776,7 +857,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                        e->u.var_ref.name);
             return NULL;
         }
-        return mglIRTypeScalar(sym->type->scalar) ? sym->type : NULL;
+        return sym->type;
     }
     case MGL_EXPR_MEMBER: {
         MGLIRType *obj = check_expr(s, tab, e->u.member.object);
@@ -808,6 +889,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             /* matrix[i] yields a column vector */
             return mglIRTypeVector(obj->scalar, obj->rows);
         }
+        if (obj->kind == MGLIR_TYPE_VECTOR) {
+            /* vector[i] yields a scalar component */
+            return mglIRTypeScalar(obj->scalar);
+        }
         sema_error(s, e->line, "indexing a non-array type");
         return NULL;
     }
@@ -815,23 +900,20 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         /* Look up the function; single-definition match at skeleton stage. */
         Sym *sym = symtab_lookup(tab, e->u.call.name);
         if (!sym || sym->kind != SYM_FUNCTION) {
-            /* builtin constructors: T(x) forms are handled by the backend;
-             * here we accept a type-name call and return its type. */
+            /* builtin constructors / type conversions: T(...) yields type T.
+             * Recognise every builtin type name plus user struct types. */
             MGLTypeSpec fake;
             memset(&fake, 0, sizeof(fake));
-            if (strcmp(e->u.call.name, "vec2") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.vec_size = 2;
-            } else if (strcmp(e->u.call.name, "vec3") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.vec_size = 3;
-            } else if (strcmp(e->u.call.name, "vec4") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.vec_size = 4;
-            } else if (strcmp(e->u.call.name, "mat4") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.mat_cols = 4; fake.mat_rows = 4;
-            } else if (strcmp(e->u.call.name, "mat3") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.mat_cols = 3; fake.mat_rows = 3;
-            } else if (strcmp(e->u.call.name, "mat2") == 0) {
-                fake.base = MGL_AST_TYPE_FLOAT; fake.mat_cols = 2; fake.mat_rows = 2;
-            } else {
+            int known = builtin_type_spec(e->u.call.name, &fake);
+            if (known != 0) {
+                Sym *st = symtab_lookup(tab, e->u.call.name);
+                if (st && st->kind == SYM_STRUCT) {
+                    fake.base = MGL_AST_TYPE_STRUCT;
+                    fake.name = (char *)e->u.call.name;
+                    known = 0;
+                }
+            }
+            if (known != 0) {
                 sema_error(s, e->line, "call to undeclared function '%s'",
                            e->u.call.name);
                 return NULL;
@@ -949,10 +1031,27 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     sema_error(s, e->line, "matrix add/sub requires matching dimensions");
                     return NULL;
                 }
-                return l;
+                /* matrix +/- scalar, or matrix +/- matrix: result is the
+                 * matrix operand */
+                return l->kind == MGLIR_TYPE_MATRIX ? l : r;
             }
-            /* fallthrough */
-        case MGL_OP_MUL: case MGL_OP_DIV: case MGL_OP_MOD:
+            if (!is_numeric(l) || !is_numeric(r)) {
+                sema_error(s, e->line, "arithmetic '%s' requires numeric operands",
+                           op_name(e->u.binary.op));
+                return NULL;
+            }
+            return result_numeric(l, r);
+        case MGL_OP_MUL:
+            if (!is_numeric(l) || !is_numeric(r)) {
+                sema_error(s, e->line, "arithmetic '*' requires numeric operands",
+                           op_name(e->u.binary.op));
+                return NULL;
+            }
+            if (l->kind == MGLIR_TYPE_MATRIX || r->kind == MGLIR_TYPE_MATRIX) {
+                return matrix_mul_result(s, e, l, r);
+            }
+            return result_numeric(l, r);
+        case MGL_OP_DIV: case MGL_OP_MOD:
             if (!is_numeric(l) || !is_numeric(r)) {
                 sema_error(s, e->line, "arithmetic '%s' requires numeric operands",
                            op_name(e->u.binary.op));
@@ -963,7 +1062,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "'%%' requires integer operands");
                 return NULL;
             }
-            return result_numeric(l, r, 0);
+            return result_numeric(l, r);
         default:
             return l;
         }
@@ -1056,16 +1155,13 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
         MGLDecl *pd = d->params[i];
         sym->param_types[i] = resolve_decl_type(s, tab, pd);
         if (!sym->param_types[i]) {
+            sym_free(sym);
             return;
         }
     }
     if (symtab_lookup_local(tab, d->name) != NULL) {
         sema_error(s, d->line, "redeclaration of '%s'", d->name);
-        free(sym->name);
-        free(sym->param_types);
-        if (sym->ret_type) {
-            mglIRTypeDestroy(sym->ret_type);
-        }
+        sym_free(sym);
         return;
     }
     symtab_insert(tab, sym);
@@ -1371,6 +1467,86 @@ static int sym_is_interface_block(const MGLIRSymbol *is)
 {
     return is->type && is->type->kind == MGLIR_TYPE_STRUCT &&
            is->layout != MGL_AST_LAYOUT_DEFAULT;
+}
+
+/* Decode a builtin type name into a MGLTypeSpec, mirroring the parser's
+ * parse_type_spec keyword decoding.  Returns 0 on success, -1 if `name`
+ * is not a builtin type name (callers then fall back to struct lookup). */
+static int builtin_type_spec(const char *name, MGLTypeSpec *ts)
+{
+    memset(ts, 0, sizeof(*ts));
+    ts->base = MGL_AST_TYPE_FLOAT;
+    if (strcmp(name, "void") == 0) {
+        ts->base = MGL_AST_TYPE_VOID;
+        return 0;
+    } else if (strcmp(name, "bool") == 0) {
+        ts->base = MGL_AST_TYPE_BOOL;
+        return 0;
+    } else if (strcmp(name, "int") == 0) {
+        ts->base = MGL_AST_TYPE_INT;
+        return 0;
+    } else if (strcmp(name, "uint") == 0) {
+        ts->base = MGL_AST_TYPE_UINT;
+        return 0;
+    } else if (strcmp(name, "float") == 0) {
+        ts->base = MGL_AST_TYPE_FLOAT;
+        return 0;
+    } else if (strcmp(name, "double") == 0) {
+        ts->base = MGL_AST_TYPE_DOUBLE;
+        return 0;
+    } else if (strcmp(name, "atomic_uint") == 0) {
+        ts->base = MGL_AST_TYPE_ATOMIC_UINT;
+        return 0;
+    }
+    size_t n = strlen(name);
+    if (n == 5 && (name[0] == 'i' || name[0] == 'u' || name[0] == 'b' ||
+                   name[0] == 'd') &&
+        name[1] == 'v' && name[2] == 'e' && name[3] == 'c' &&
+        name[4] >= '1' && name[4] <= '4') {
+        if (name[0] == 'i') {
+            ts->base = MGL_AST_TYPE_INT;
+        } else if (name[0] == 'u') {
+            ts->base = MGL_AST_TYPE_UINT;
+        } else if (name[0] == 'b') {
+            ts->base = MGL_AST_TYPE_BOOL;
+        } else {
+            ts->base = MGL_AST_TYPE_DOUBLE;
+        }
+        ts->vec_size = name[4] - '0';
+        return 0;
+    }
+    if (n == 4 && strncmp(name, "vec", 3) == 0 &&
+        name[3] >= '1' && name[3] <= '4') {
+        ts->vec_size = name[3] - '0';
+        return 0;
+    }
+    if (n == 4 && strncmp(name, "mat", 3) == 0 &&
+        name[3] >= '2' && name[3] <= '4') {
+        ts->mat_cols = ts->mat_rows = name[3] - '0';
+        return 0;
+    }
+    if (n == 6 && strncmp(name, "mat", 3) == 0 &&
+        name[3] >= '2' && name[3] <= '4' && name[4] == 'x' &&
+        name[5] >= '2' && name[5] <= '4') {
+        ts->mat_cols = name[3] - '0';
+        ts->mat_rows = name[5] - '0';
+        return 0;
+    }
+    if (n == 5 && strncmp(name, "dmat", 4) == 0 &&
+        name[4] >= '2' && name[4] <= '4') {
+        ts->base = MGL_AST_TYPE_DOUBLE;
+        ts->mat_cols = ts->mat_rows = name[4] - '0';
+        return 0;
+    }
+    if (n == 7 && strncmp(name, "dmat", 4) == 0 &&
+        name[4] >= '2' && name[4] <= '4' && name[5] == 'x' &&
+        name[6] >= '2' && name[6] <= '4') {
+        ts->base = MGL_AST_TYPE_DOUBLE;
+        ts->mat_cols = name[4] - '0';
+        ts->mat_rows = name[6] - '0';
+        return 0;
+    }
+    return -1;
 }
 
 /* Link-time check between two compiled stages (e.g. vertex and fragment).

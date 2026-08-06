@@ -151,6 +151,19 @@ static void test_std430(void)
     CHECK(rc == 0 && sz == 16, "struct{vec3,float} std430 size=16");
     CHECK(s->member_offsets[1] == 12, "struct{vec3,float} std430 float@12");
     mglIRTypeDestroy(s);
+
+    /* SSBO tail runtime array: contributes no space to the struct. */
+    MGLIRType *ra = mglIRTypeRuntimeArray(mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
+    MGLIRType *sm[] = { mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4), ra };
+    const char *sn[] = { "head", "data" };
+    MGLIRType *ssbo = mglIRTypeStruct(sm, sn, 2, "S");
+    uint32_t ssz = 0;
+    rc = mglIRComputeLayout(ssbo, MGLIR_LAYOUT_STD430, &ssz);
+    CHECK(rc == 0 && ssz == 16, "struct with runtime array std430 size=16");
+    CHECK(ssbo->member_offsets[1] == 16, "runtime array member offset=16");
+    CHECK(ra->layout_valid && ra->layout.array_stride == 4,
+          "runtime array stride computed");
+    mglIRTypeDestroy(ssbo);
 }
 
 int main(void)

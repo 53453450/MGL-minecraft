@@ -306,6 +306,20 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
     } else if (n == 4 && s[0] == 'v' && s[1] == 'e' && s[2] == 'c' &&
                s[3] >= '1' && s[3] <= '4') {
         ts->vec_size = s[3] - '0';
+    } else if (n == 5 && (s[0] == 'i' || s[0] == 'u' || s[0] == 'b' ||
+                          s[0] == 'd') &&
+               s[1] == 'v' && s[2] == 'e' && s[3] == 'c' &&
+               s[4] >= '1' && s[4] <= '4') {
+        if (s[0] == 'i') {
+            ts->base = MGL_AST_TYPE_INT;
+        } else if (s[0] == 'u') {
+            ts->base = MGL_AST_TYPE_UINT;
+        } else if (s[0] == 'b') {
+            ts->base = MGL_AST_TYPE_BOOL;
+        } else {
+            ts->base = MGL_AST_TYPE_DOUBLE;
+        }
+        ts->vec_size = s[4] - '0';
     } else if (n == 4 && s[0] == 'm' && s[1] == 'a' && s[2] == 't' &&
                s[3] >= '2' && s[3] <= '4') {
         ts->mat_cols = ts->mat_rows = s[3] - '0';
@@ -314,6 +328,16 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
                s[5] >= '2' && s[5] <= '4') {
         ts->mat_cols = s[3] - '0';
         ts->mat_rows = s[5] - '0';
+    } else if (n == 5 && s[0] == 'd' && s[1] == 'm' && s[2] == 'a' &&
+               s[3] == 't' && s[4] >= '2' && s[4] <= '4') {
+        ts->base = MGL_AST_TYPE_DOUBLE;
+        ts->mat_cols = ts->mat_rows = s[4] - '0';
+    } else if (n == 7 && s[0] == 'd' && s[1] == 'm' && s[2] == 'a' &&
+               s[3] == 't' && s[4] >= '2' && s[4] <= '4' && s[5] == 'x' &&
+               s[6] >= '2' && s[6] <= '4') {
+        ts->base = MGL_AST_TYPE_DOUBLE;
+        ts->mat_cols = s[4] - '0';
+        ts->mat_rows = s[6] - '0';
     } else {
         ts->base = MGL_AST_TYPE_STRUCT;
         ts->name = dup_token_text(p, t);
@@ -564,11 +588,12 @@ static MGLExpr *parse_binary(MGLParser *p, int min_prec)
             at_peek_punct(p, 1, "=")) {
             break;
         }
-        /* consume operator (1 or 2 chars) */
-        int nchars = ops_at(p, MGL_BINOPS[0].tok) ? 2 : 1;
-        if (op == MGL_OP_SHL || op == MGL_OP_SHR || op == MGL_OP_EQ ||
+        /* consume operator (1 or 2 chars); every two-char operator is one
+         * of these, so the length follows from the matched op */
+        int nchars = 1;
+        if (op == MGL_OP_LOR || op == MGL_OP_LAND || op == MGL_OP_EQ ||
             op == MGL_OP_NE || op == MGL_OP_LE || op == MGL_OP_GE ||
-            op == MGL_OP_LAND || op == MGL_OP_LOR) {
+            op == MGL_OP_SHL || op == MGL_OP_SHR) {
             nchars = 2;
         }
         advance(p);
@@ -852,6 +877,12 @@ static int at_decl_start(MGLParser *p)
     static const char *kw[] = {
         "float", "int", "uint", "bool", "double", "void",
         "vec2", "vec3", "vec4", "mat2", "mat3", "mat4",
+        "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
+        "mat4x2", "mat4x3", "mat4x4",
+        "ivec2", "ivec3", "ivec4", "uvec2", "uvec3", "uvec4",
+        "bvec2", "bvec3", "bvec4", "dvec2", "dvec3", "dvec4",
+        "dmat2", "dmat3", "dmat4", "dmat2x2", "dmat2x3", "dmat2x4",
+        "dmat3x2", "dmat3x3", "dmat3x4", "dmat4x2", "dmat4x3", "dmat4x4",
         "const", "uniform", "struct", "sampler2D", "samplerCube",
         "flat", "smooth", "invariant", "lowp", "mediump", "highp",
         "in", "out", "inout",
@@ -1106,7 +1137,7 @@ more_qualifiers:
     /* declarator name */
     if (!at_any_ident(p)) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
-        free(d);
+        free_decl(d);
         return NULL;
     }
     d->name = dup_current(p);

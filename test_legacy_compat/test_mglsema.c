@@ -200,6 +200,85 @@ static void test_call_arg_check(void)
     teardown();
 }
 
+static void test_integer_vector_types(void)
+{
+    analyze("#version 450 core\n"
+            "layout(location = 0) in ivec3 iv;\n"
+            "layout(location = 1) in uvec4 uv;\n"
+            "layout(location = 2) in bvec2 bv;\n"
+            "layout(location = 3) in dvec3 dv;\n"
+            "uniform dmat2 dm;\n"
+            "uniform dmat4x3 dm2;\n"
+            "layout(location = 0) out ivec4 outv;\n"
+            "void main() {\n"
+            "    outv = ivec4(iv, 1);\n"
+            "    float f = float(iv[0]);\n"
+            "    bool b = bv[0];\n"
+            "}\n");
+    CHECK(error_count == 0, "integer/boolean/double types clean");
+    MGLIRSymbol *iv = find_sym("iv");
+    CHECK(iv && iv->type && iv->type->kind == MGLIR_TYPE_VECTOR &&
+          iv->type->scalar == MGLIR_SCALAR_INT && iv->type->cols == 3,
+          "ivec3 is int vec3");
+    MGLIRSymbol *uv = find_sym("uv");
+    CHECK(uv && uv->type && uv->type->kind == MGLIR_TYPE_VECTOR &&
+          uv->type->scalar == MGLIR_SCALAR_UINT && uv->type->cols == 4,
+          "uvec4 is uint vec4");
+    MGLIRSymbol *bv = find_sym("bv");
+    CHECK(bv && bv->type && bv->type->kind == MGLIR_TYPE_VECTOR &&
+          bv->type->scalar == MGLIR_SCALAR_BOOL && bv->type->cols == 2,
+          "bvec2 is bool vec2");
+    MGLIRSymbol *dv = find_sym("dv");
+    CHECK(dv && dv->type && dv->type->kind == MGLIR_TYPE_VECTOR &&
+          dv->type->scalar == MGLIR_SCALAR_DOUBLE && dv->type->cols == 3,
+          "dvec3 is double vec3");
+    MGLIRSymbol *dm = find_sym("dm");
+    CHECK(dm && dm->type && dm->type->kind == MGLIR_TYPE_MATRIX &&
+          dm->type->scalar == MGLIR_SCALAR_DOUBLE &&
+          dm->type->cols == 2 && dm->type->rows == 2,
+          "dmat2 is double mat2");
+    MGLIRSymbol *dm2 = find_sym("dm2");
+    CHECK(dm2 && dm2->type && dm2->type->kind == MGLIR_TYPE_MATRIX &&
+          dm2->type->scalar == MGLIR_SCALAR_DOUBLE &&
+          dm2->type->cols == 4 && dm2->type->rows == 3,
+          "dmat4x3 is double mat4x3");
+    teardown();
+}
+
+static void test_matrix_arith(void)
+{
+    analyze("#version 450 core\n"
+            "uniform mat4 m4;\n"
+            "uniform mat3 m3;\n"
+            "uniform mat2x3 m23;\n"
+            "uniform mat3x2 m32;\n"
+            "layout(location = 0) in vec4 p;\n"
+            "layout(location = 0) out vec4 o;\n"
+            "void main() {\n"
+            "    vec4 a = m4 * p;\n"
+            "    vec4 b = p * m4;\n"
+            "    vec3 c = m3 * vec3(1.0);\n"
+            "    vec3 e = m23 * vec2(1.0);\n"
+            "    vec2 f = vec3(1.0) * m23;\n"
+            "    mat2 g = m32 * m23;\n"
+            "    mat4 h = m4 + m4;\n"
+            "    mat4 k = m4 * 2.0;\n"
+            "    o = a + b + c + vec3(e, 0.0);\n"
+            "}\n");
+    CHECK(error_count == 0, "matrix arithmetic clean");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "uniform mat3 m3;\n"
+            "void main() {\n"
+            "    vec4 bad = m3 * vec4(1.0);\n"
+            "}\n");
+    CHECK(error_count == 1, "mat*vec dimension mismatch rejected");
+    CHECK(has_error("must be multiplied by a vector of length 3"),
+          "dimension mismatch message");
+    teardown();
+}
+
 static void test_interface_ok(void)
 {
     /* Stage-local declarations never trip the link check by themselves:
@@ -321,6 +400,8 @@ int main(void)
     test_redecl();
     test_block_layout();
     test_call_arg_check();
+    test_integer_vector_types();
+    test_matrix_arith();
     test_interface_ok();
     test_interface_mismatch();
     test_interface_blocks();

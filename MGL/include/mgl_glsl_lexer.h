@@ -40,7 +40,7 @@ typedef enum MGLGLSLTokenKind {
     MGLGLSL_TOK_UINT,      /* unsigned literal (u/U suffix) */
     MGLGLSL_TOK_FLOAT,     /* floating point literal */
 
-    /* Punctuation / operators (see mgl_glsl_tokens.h for the map table). */
+    /* Punctuation / operators. */
     MGLGLSL_TOK_PUNCT,
 
     /* Directives: the token body is the raw directive line text. */
