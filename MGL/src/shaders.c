@@ -443,6 +443,36 @@ static bool mgl_patch_shader_storage_block_bindings(char *src, size_t src_capaci
     MGLLocalBindingEntry local_bindings[MGL_MAX_UBO_BINDINGS] = {0};
     int local_binding_count = 0;
 
+    /* A global default layout for buffer blocks — "layout(...) buffer;"
+     * with no block name — applies to every SSBO that does not declare
+     * its own layout qualifier.  When present we must NOT inject std430;
+     * overriding the declared default (e.g. std140, row_major) changes
+     * the memory layout GLSL code was written against and breaks
+     * data-dependent tests such as unsizedArrayLength. */
+    bool src_has_global_buffer_layout = false;
+    {
+        char *scan = src;
+        while (*scan) {
+            char *lo = strstr(scan, "layout(");
+            if (!lo) break;
+            char *paren_close = strchr(lo + 7, ')');
+            if (!paren_close) break;
+            char *after = paren_close + 1;
+            while (*after && isspace((unsigned char)*after)) after++;
+            if (strncmp(after, "buffer", 6) != 0) {
+                scan = after;
+                continue;
+            }
+            char *after_kw = after + 6;
+            while (*after_kw && isspace((unsigned char)*after_kw)) after_kw++;
+            if (*after_kw == ';') {
+                src_has_global_buffer_layout = true;
+                break;
+            }
+            scan = after_kw;
+        }
+    }
+
     if (!src || src_capacity == 0) {
         return false;
     }
@@ -506,7 +536,8 @@ static bool mgl_patch_shader_storage_block_bindings(char *src, size_t src_capaci
         size_t qualifier_len = (size_t)(paren_close - paren_open);
         size_t norm_len = mgl_normalize_layout_qualifiers(
             normalized, sizeof(normalized),
-            paren_open, qualifier_len, binding, "std430");
+            paren_open, qualifier_len, binding,
+            src_has_global_buffer_layout ? "" : "std430");
         if (norm_len == 0 || norm_len >= sizeof(normalized)) {
             cursor = paren_close + 1;
             continue;
@@ -647,9 +678,16 @@ static bool mgl_patch_shader_storage_block_bindings(char *src, size_t src_capaci
                                                       &local_binding_count,
                                                       block_name);
         char replacement[256];
-        int repl_total = snprintf(replacement, sizeof(replacement),
+        int repl_total;
+        if (src_has_global_buffer_layout) {
+            repl_total = snprintf(replacement, sizeof(replacement),
+                                  "layout(binding = %d) buffer ",
+                                  binding);
+        } else {
+            repl_total = snprintf(replacement, sizeof(replacement),
                                   "layout(std430, binding = %d) buffer ",
                                   binding);
+        }
         if (repl_total < 0 || (size_t)repl_total >= sizeof(replacement)) {
             cursor = buffer_kw + 6;
             continue;

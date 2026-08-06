@@ -18,14 +18,11 @@
  *      Metal slots via spvc_compiler_set_decoration (destructive IR edit).
  *   4. ir_validate_binding_uniqueness — assert no two user buffers share a
  *      Metal slot after remapping (diagnostic, no IR mutation).
- *   5. ir_fix_std140_array_strides  — repair std140 ArrayStride for SSBO
- *      members affected by a glslang bug (destructive IR edit).
  *
  * Env vars:
  *   MGL_DEBUG_IR_REMAP=1              log every IR-level binding decision.
  *   MGL_DISABLE_IR_REMAP=1            bypass ONLY the binding pre-mapping
- *                                     pass (ir_pre_map_buffer_bindings);
- *                                     std140 fix and other passes still run.
+ *                                     pass (ir_pre_map_buffer_bindings).
  *                                     Forces legacy string-level fallback for
  *                                     binding conflicts.
  *   MGL_ASSERT_NO_MSL_BINDING_REWRITE=1
@@ -70,15 +67,6 @@ typedef struct MGLIRPatchContext {
      * must not be assigned to a user buffer. */
     GLuint reserved_slot_mask;
 
-    /* Cached SPIRV-Cross shader-resources snapshot, created once in
-     * mglRunIRPostprocessPipeline and reused by ir_fix_std140_array_strides
-     * to avoid a redundant spvc_compiler_create_shader_resources call.
-     * NULL if the snapshot creation failed — passes treat NULL as "no
-     * resources" and degrade gracefully.  This snapshot is taken BEFORE
-     * any destructive decoration edits; passes must query decoration
-     * values live on the compiler rather than trusting the snapshot. */
-    spvc_resources resources;
-
     /* Counters for diagnostics. */
     int remapped_count;
 } MGLIRPatchContext;
@@ -110,7 +98,7 @@ GLboolean mglBufferSlotConflictsForProgram(Program *pptr, int stage, GLuint slot
  * Called from parseSPIRVShaderToMetal after reflection and before
  * spvc_compiler_compile.  Returns GL_TRUE on success.  When
  * MGL_DISABLE_IR_REMAP=1 is set, only the binding pre-mapping pass is
- * bypassed; diagnostic passes and std140 ArrayStride repair still run. */
+ * bypassed; diagnostic passes always run. */
 GLboolean mglRunIRPostprocessPipeline(GLMContext ctx, Program *pptr, int stage,
                                        spvc_compiler compiler);
 

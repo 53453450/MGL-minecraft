@@ -7670,10 +7670,6 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
         }
     }
 
-    /* Note: std140 ArrayStride repair for SSBO members is now handled by
-     * the ir_fix_std140_array_strides pass in mgl_ir_postprocess.c, which
-     * runs as part of mglRunIRPostprocessPipeline before spvc_compiler_compile. */
-
     /* Reflect built-in variables (gl_VertexID, gl_InstanceID, gl_FragDepth,
      * gl_SampleMask, gl_Position, etc.) so they appear as active PROGRAM_INPUT /
      * PROGRAM_OUTPUT resources per the GL 4.3 program interface query spec.
@@ -7825,19 +7821,18 @@ char *parseSPIRVShaderToMetal(GLMContext ctx,
      * replacement needed in applyMSLResourceBindings for these cases.
      *
      * Gated by env vars:
-     *   MGL_DISABLE_IR_REMAP=1 — bypass, force legacy string-level fallback.
+*   MGL_DISABLE_IR_REMAP=1 — bypass, force legacy string-level fallback.
      *   MGL_DEBUG_IR_REMAP=1    — log every binding decision.
      * See mgl_ir_postprocess.h for the full pass list and ordering. */
     /* STALE SNAPSHOT NOTE: the `resources` snapshot created above via
      * spvc_compiler_create_shader_resources reflects decorations as they
-     * were BEFORE this pipeline ran.  The IR pipeline may mutate
-     * decorations (e.g. ir_pre_map_buffer_bindings and
-     * ir_fix_std140_array_strides call spvc_compiler_set_decoration), so
-     * `resources` is now stale and MUST NOT be consulted to read bindings,
-     * strides, or any other decoration past this point.  Any future code
-     * that needs decoration values after the pipeline must use live queries
-     * such as spvc_compiler_get_decoration / spvc_compiler_has_decoration
-     * on the compiler instead of relying on the `resources` snapshot. */
+     * were BEFORE this pipeline ran.  The IR pipeline may mutate the
+     * binding decorations (ir_pre_map_buffer_bindings), so `resources` is
+     * now stale and MUST NOT be consulted to read bindings or any other
+     * decoration past this point.  Any future code that needs decoration
+     * values after the pipeline must use live queries such as
+     * spvc_compiler_get_decoration / spvc_compiler_has_decoration on the
+     * compiler instead of relying on the `resources` snapshot. */
     mglRunIRPostprocessPipeline(ctx, ptr, stage, compiler_msl);
 
     if (spvc_compiler_get_active_interface_variables(
