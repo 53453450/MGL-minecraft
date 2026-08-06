@@ -608,7 +608,7 @@ test-mglsema: $(build_dir)/test_mglsema
 LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
 LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include
-LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15
+LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \

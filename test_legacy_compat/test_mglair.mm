@@ -1,14 +1,17 @@
 /*
  * test_mglair.mm
  * M1 end-to-end gate: GLSL -> mglShaderCompileGLSL (AST->AIR->metallib)
- * -> newLibraryWithData -> MTLRenderPipelineState.
+ * -> newLibraryWithData -> MTLRenderPipelineState, plus a numeric
+ * correctness check: render a full-screen triangle with a rotation MVP
+ * and compare the readback texture against a CPU reference.
  *
- * Exit 0 = PSO_OK, 1 = any stage failed.
+ * Exit 0 = PSO_OK + values match, 1 = any failure.
  */
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -29,7 +32,7 @@ static const char *kFS =
     "in vec2 vUV;\n"
     "out vec4 fragColor;\n"
     "void main() {\n"
-    "    fragColor = vec4(vUV, 0.0, 1.0);\n"
+    "    fragColor = vec4(vUV, 0.5, 1.0);\n"
     "}\n";
 
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
@@ -44,6 +47,104 @@ static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
         return nil;
     }
     return lib;
+}
+
+static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
+    const int W = 64, H = 64;
+
+    /* Rz(30 deg), column-major (GL storage: column 0 first). */
+    const float t = 30.0f * (float)M_PI / 180.0f;
+    const float c = cosf(t), s = sinf(t);
+    const float mvp[16] = {
+         c,  s, 0, 0,
+        -s,  c, 0, 0,
+         0,  0, 1, 0,
+         0,  0, 0, 1,
+    };
+
+    /* Full-screen triangle in NDC. */
+    const float verts[9] = {
+        -1, -1, 0,
+         3, -1, 0,
+        -1,  3, 0,
+    };
+    /* Transformed NDC positions (w = 1). */
+    float ap[3], bp[3], cp[3];
+    for (int i = 0; i < 3; i++) {
+        float *dst = i == 0 ? ap : (i == 1 ? bp : cp);
+        float x = verts[3 * i + 0], y = verts[3 * i + 1];
+        dst[0] = c * x - s * y;
+        dst[1] = s * x + c * y;
+        dst[2] = 0;
+    }
+
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+        width:W height:H mipmapped:NO];
+    id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
+
+    id<MTLCommandQueue> q = [dev newCommandQueue];
+    id<MTLCommandBuffer> cb = [q commandBuffer];
+
+    MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = tex;
+    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+
+    id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
+    [enc setRenderPipelineState:pso];
+    [enc setVertexBytes:mvp length:64 atIndex:0];
+    [enc setVertexBytes:verts length:36 atIndex:1];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
+    [cb commit];
+    [cb waitUntilCompleted];
+
+    uint8_t *px = (uint8_t *)calloc((size_t)W * H * 4, 1);
+    [tex getBytes:px bytesPerRow:(NSUInteger)W * 4
+        fromRegion:MTLRegionMake2D(0, 0, W, H) mipmapLevel:0];
+
+    /* CPU reference: vUV interpolates the ORIGINAL vertex positions,
+     * with barycentric weights computed in the transformed (rasterized)
+     * triangle; compare the interior 32x32 block (away from edges). */
+    int bad = 0;
+    for (int y = 16; y < H - 16; y++) {
+        for (int x = 16; x < W - 16; x++) {
+            float ndcX = 2.0f * ((float)x + 0.5f) / W - 1.0f;
+            float ndcY = 1.0f - 2.0f * ((float)y + 0.5f) / H;
+            uint8_t *p = px + ((size_t)y * W + x) * 4;
+
+            float v0x = bp[0] - ap[0], v0y = bp[1] - ap[1];
+            float v1x = cp[0] - ap[0], v1y = cp[1] - ap[1];
+            float dx = ndcX - ap[0], dy = ndcY - ap[1];
+            float den = v0x * v1y - v1x * v0y;
+            float lb = (dx * v1y - dy * v1x) / den;
+            float lc = (dy * v0x - dx * v0y) / den;
+            float la = 1.0f - lb - lc;
+
+            float u = la * verts[0] + lb * verts[3] + lc * verts[6];
+            float v = la * verts[1] + lb * verts[4] + lc * verts[7];
+            u = fminf(1.0f, fmaxf(0.0f, u));
+            v = fminf(1.0f, fmaxf(0.0f, v));
+
+            float gotU = (float)p[0] / 255.0f;
+            float gotV = (float)p[1] / 255.0f;
+            if (fabsf(gotU - u) > 0.006f || fabsf(gotV - v) > 0.006f) {
+                if (bad < 10)
+                    printf("VALUE_MISMATCH (%d,%d): got (%.3f,%.3f) expect (%.3f,%.3f)\n",
+                           x, y, gotU, gotV, u, v);
+                bad++;
+            }
+        }
+    }
+    free(px);
+    if (bad) {
+        printf("VALUE_CHECK FAIL (%d pixels)\n", bad);
+        return 1;
+    }
+    printf("VALUE_OK\n");
+    return 0;
 }
 
 int main(int argc, const char *argv[]) {
@@ -90,13 +191,13 @@ int main(int argc, const char *argv[]) {
         MTLRenderPipelineDescriptor *pd = [MTLRenderPipelineDescriptor new];
         pd.vertexFunction = vsFn;
         pd.fragmentFunction = fsFn;
-        pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+        pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
 
         MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
         vd.attributes[0].format = MTLVertexFormatFloat3;
         vd.attributes[0].offset = 0;
-        vd.attributes[0].bufferIndex = 0;
-        vd.layouts[0].stride = 12;
+        vd.attributes[0].bufferIndex = 1; /* buffer 0 is reserved for uniforms */
+        vd.layouts[1].stride = 12;
         pd.vertexDescriptor = vd;
 
         NSError *perr = nil;
@@ -108,6 +209,6 @@ int main(int argc, const char *argv[]) {
             return 1;
         }
         printf("PSO_OK\n");
-        return 0;
+        return checkValues(dev, pso);
     }
 }
