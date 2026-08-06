@@ -131,6 +131,8 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
  * scalars and vectors of matching width. */
 llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
     llvm::Type *cur = v->getType();
+    if (!cur->isIntOrIntVectorTy() && !cur->isFPOrFPVectorTy())
+        return v;  /* arrays / matrices / aggregates: no scalar cast */
     bool wantFP = scalarIsFloat(want);
     bool curFP = cur->isFPOrFPVectorTy();
     if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
@@ -249,7 +251,8 @@ bool swizzleIndices(const char *field, std::vector<uint32_t> *out) {
 MType swizzleType(const MType &base, size_t lanes) {
     MType t = base;
     if (base.isMatrix()) return base; /* unsupported, keep */
-    t.vec = (uint32_t)lanes;
+    /* GLSL 4.60 5.5: single-component swizzle yields a scalar. */
+    t.vec = lanes == 1 ? 0 : (uint32_t)lanes;
     return t;
 }
 
@@ -364,51 +367,155 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::ConstantVector::get(mask));
     }
     case MGL_EXPR_CALL: {
-        /* vec2/vec3/vec4 constructors. */
         const char *name = e->u.call.name;
-        if (strcmp(name, "vec2") && strcmp(name, "vec3") &&
-            strcmp(name, "vec4")) {
-            cg.err = 1;
-            cg.errmsg = std::string("codegen: call to '") + name +
-                        "' not implemented in M1";
-            return nullptr;
-        }
-        uint32_t lanes = atoi(name + 3);
-        llvm::Type *elt = llvm::Type::getFloatTy(*cg.ctx);
-        llvm::Type *vt = llvm::FixedVectorType::get(elt, lanes);
-        llvm::Value *res = llvm::UndefValue::get(vt);
-        uint32_t slot = 0;
-        for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
-            llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
+        /* Scalar constructors / conversions. */
+        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
+            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
+            if (e->u.call.arg_count != 1) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: constructor '") + name +
+                            "' expects 1 argument";
+                return nullptr;
+            }
+            llvm::Value *arg = emitExpr(cg, e->u.call.args[0], mod, locals);
             if (!arg) return nullptr;
-            if (!arg->getType()->isVectorTy()) {
-                /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
-                 * otherwise one component per scalar. */
-                arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
-                if (e->u.call.arg_count == 1) {
-                    for (uint32_t lane = 0; lane < lanes; lane++)
-                        res = cg.b->CreateInsertElement(res, arg,
-                            llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), lane));
-                    return res;
-                }
-                res = cg.b->CreateInsertElement(res, arg,
-                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), slot++));
-            } else {
-                arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
-                llvm::FixedVectorType *argTy =
-            llvm::cast<llvm::FixedVectorType>(arg->getType());
-        uint32_t argLanes = (uint32_t)argTy->getElementCount().getFixedValue();
-        for (uint32_t lane = 0;
-             lane < argLanes && slot < lanes;
-             lane++, slot++) {
-                    llvm::Value *x = cg.b->CreateExtractElement(arg,
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), lane));
-                    res = cg.b->CreateInsertElement(res, x,
-                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), slot));
+            MGLIRScalar want = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                             : name[0] == 'u' ? MGLIR_SCALAR_UINT
+                             : name[0] == 'b' ? MGLIR_SCALAR_BOOL
+                                              : MGLIR_SCALAR_INT;
+            return coerceScalar(cg, arg, want);
+        }
+        /* Vector constructors: [i]uvec/bvec/vec2..4. */
+        const char *vn = name;
+        MGLIRScalar velt = MGLIR_SCALAR_FLOAT;
+        uint32_t vlanes = 0;
+        if (strncmp(vn, "ivec", 4) == 0 || strncmp(vn, "uvec", 4) == 0 ||
+            strncmp(vn, "bvec", 4) == 0) {
+            velt = vn[0] == 'i' ? MGLIR_SCALAR_INT
+                 : vn[0] == 'u' ? MGLIR_SCALAR_UINT
+                                : MGLIR_SCALAR_BOOL;
+            vn += 4;
+        } else if (strncmp(vn, "vec", 3) == 0) {
+            vn += 3;
+        } else {
+            vn = nullptr;
+        }
+        if (vn && vn[0] >= '2' && vn[0] <= '4' && vn[1] == '\0') {
+            vlanes = (uint32_t)(vn[0] - '0');
+            llvm::Type *eltTy = llvmScalar(velt, *cg.ctx);
+            llvm::Type *vt = llvm::FixedVectorType::get(eltTy, vlanes);
+            llvm::Value *res = llvm::UndefValue::get(vt);
+            uint32_t slot = 0;
+            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
+                if (!arg) return nullptr;
+                if (!arg->getType()->isVectorTy()) {
+                    /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
+                     * otherwise one component per scalar. */
+                    arg = coerceScalar(cg, arg, velt);
+                    if (e->u.call.arg_count == 1) {
+                        for (uint32_t lane = 0; lane < vlanes; lane++)
+                            res = cg.b->CreateInsertElement(res, arg,
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt32Ty(*cg.ctx), lane));
+                        return res;
+                    }
+                    res = cg.b->CreateInsertElement(res, arg,
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                               slot++));
+                } else {
+                    arg = coerceScalar(cg, arg, velt);
+                    llvm::FixedVectorType *argTy =
+                        llvm::cast<llvm::FixedVectorType>(arg->getType());
+                    uint32_t argLanes = (uint32_t)argTy->getElementCount()
+                                                    .getFixedValue();
+                    for (uint32_t lane = 0;
+                         lane < argLanes && slot < vlanes; lane++, slot++) {
+                        llvm::Value *x = cg.b->CreateExtractElement(arg,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), lane));
+                        res = cg.b->CreateInsertElement(res, x,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), slot));
+                    }
                 }
             }
+            return res;
         }
-        return res;
+        /* Matrix constructors: mat2..mat4 / matCxR. */
+        uint32_t mcols = 0, mrows = 0;
+        if (strncmp(name, "mat", 3) == 0) {
+            const char *m = name + 3;
+            if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
+                mcols = mrows = (uint32_t)(m[0] - '0');
+            } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
+                       m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
+                mcols = (uint32_t)(m[0] - '0');
+                mrows = (uint32_t)(m[2] - '0');
+            }
+        }
+        if (mcols) {
+            llvm::Type *colTy = llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(*cg.ctx), mrows);
+            llvm::Type *arrTy = llvm::ArrayType::get(colTy, mcols);
+            llvm::Value *arr = llvm::UndefValue::get(arrTy);
+            if (e->u.call.arg_count == 1) {
+                /* matN(f): diagonal scale. */
+                llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
+                if (!s) return nullptr;
+                s = coerceScalar(cg, s, MGLIR_SCALAR_FLOAT);
+                for (uint32_t c = 0; c < mcols; c++) {
+                    llvm::Value *col = llvm::UndefValue::get(colTy);
+                    for (uint32_t r = 0; r < mrows; r++) {
+                        llvm::Value *x = (r == c) ? s
+                            : llvm::ConstantFP::get(
+                                  llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                        col = cg.b->CreateInsertElement(col, x,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), r));
+                    }
+                    arr = cg.b->CreateInsertValue(arr, col, c);
+                }
+            } else if (e->u.call.arg_count == (uint32_t)(mcols * mrows)) {
+                /* Scalar list: column-major fill (defensive; sema prefers
+                 * vector columns). */
+                uint32_t a = 0;
+                for (uint32_t c = 0; c < mcols; c++) {
+                    llvm::Value *col = llvm::UndefValue::get(colTy);
+                    for (uint32_t r = 0; r < mrows; r++, a++) {
+                        llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
+                                                    mod, locals);
+                        if (!arg) return nullptr;
+                        arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
+                        col = cg.b->CreateInsertElement(col, arg,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt32Ty(*cg.ctx), r));
+                    }
+                    arr = cg.b->CreateInsertValue(arr, col, c);
+                }
+            } else {
+                /* Vector columns: matN(vecN, ...). */
+                uint32_t c = 0;
+                for (uint32_t a = 0; a < e->u.call.arg_count; a++, c++) {
+                    llvm::Value *arg = emitExpr(cg, e->u.call.args[a],
+                                                mod, locals);
+                    if (!arg) return nullptr;
+                    arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
+                    if (!arg->getType()->isVectorTy() || c >= mcols) {
+                        cg.err = 1;
+                        cg.errmsg = std::string("codegen: constructor '") +
+                                    name + "' column mismatch";
+                        return nullptr;
+                    }
+                    arr = cg.b->CreateInsertValue(arr, arg, c);
+                }
+            }
+            return arr;
+        }
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: call to '") + name +
+                    "' not implemented in M1";
+        return nullptr;
     }
     case MGL_EXPR_UNARY: {
         if (e->u.unary.op != MGL_OP_SUB || !e->u.unary.prefix) {
@@ -545,10 +652,41 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     }
     case MGL_EXPR_CALL: {
         const char *name = e->u.call.name;
-        if (strcmp(name, "vec2") == 0 || strcmp(name, "vec3") == 0 ||
-            strcmp(name, "vec4") == 0) {
-            t.scalar = MGLIR_SCALAR_FLOAT;
-            t.vec = (uint32_t)atoi(name + 3);
+        if (strcmp(name, "float") == 0 || strcmp(name, "int") == 0 ||
+            strcmp(name, "uint") == 0 || strcmp(name, "bool") == 0) {
+            t.scalar = name[0] == 'f' ? MGLIR_SCALAR_FLOAT
+                     : name[0] == 'u' ? MGLIR_SCALAR_UINT
+                     : name[0] == 'b' ? MGLIR_SCALAR_BOOL
+                                      : MGLIR_SCALAR_INT;
+            break;
+        }
+        const char *vn = name;
+        if (strncmp(vn, "ivec", 4) == 0 || strncmp(vn, "uvec", 4) == 0 ||
+            strncmp(vn, "bvec", 4) == 0) {
+            t.scalar = vn[0] == 'i' ? MGLIR_SCALAR_INT
+                     : vn[0] == 'u' ? MGLIR_SCALAR_UINT
+                                    : MGLIR_SCALAR_BOOL;
+            vn += 4;
+        } else if (strncmp(vn, "vec", 3) == 0) {
+            vn += 3;
+        } else {
+            vn = nullptr;
+        }
+        if (vn && vn[0] >= '2' && vn[0] <= '4' && vn[1] == '\0') {
+            t.vec = (uint32_t)(vn[0] - '0');
+            break;
+        }
+        if (strncmp(name, "mat", 3) == 0) {
+            const char *m = name + 3;
+            if (m[0] >= '2' && m[0] <= '4' && m[1] == '\0') {
+                t.scalar = MGLIR_SCALAR_FLOAT;
+                t.cols = t.rows = (uint32_t)(m[0] - '0');
+            } else if (m[0] >= '2' && m[0] <= '4' && m[1] == 'x' &&
+                       m[2] >= '2' && m[2] <= '4' && m[3] == '\0') {
+                t.scalar = MGLIR_SCALAR_FLOAT;
+                t.cols = (uint32_t)(m[0] - '0');
+                t.rows = (uint32_t)(m[2] - '0');
+            }
         }
         break;
     }

@@ -29,7 +29,13 @@ static const char *kVS =
     "    float o = p * 0.5;\n"        /* int*float -> 1.0 */
     "    vec2 k = vec2(0.5);\n"       /* single-arg broadcast */
     "    bool b = true;\n"            /* bool literal */
-    "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5);\n"
+    "    ivec2 io = ivec2(2);\n"      /* int vector broadcast */
+    "    uvec2 uo = uvec2(uint(3), uint(3));\n"  /* uint ctor + scalar ctor */
+    "    bvec2 bo = bvec2(true, false);\n"
+    "    mat2 mi = mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));\n"  /* column ctor */
+    "    vec2 t = mi * vec2(float(io.x) + float(uo.y) - 5.0,\n"
+    "                       float(bo.x) - 1.0);\n"
+    "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5) + t;\n"
     "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
     "}\n";

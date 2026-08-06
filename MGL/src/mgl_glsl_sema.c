@@ -1230,6 +1230,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                            e->u.member.field);
                 return NULL;
             }
+            if (n == 1) {
+                /* GLSL 4.60 5.4.3: single-component swizzle is a scalar. */
+                return scratch_type(s, mglIRTypeScalar(obj->scalar));
+            }
             return scratch_type(s, mglIRTypeVector(obj->scalar, (uint32_t)n));
         }
         const MGLIRType *m = struct_member(obj, e->u.member.field, NULL);
