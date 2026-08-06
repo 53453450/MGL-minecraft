@@ -328,6 +328,11 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
     t->members = NULL;
     t->member_names = NULL;
     t->member_offsets = NULL;
+    t->name = src->name ? strdup(src->name) : NULL;
+    if (src->name && !t->name) {
+        free(t);
+        return NULL;
+    }
     switch (src->kind) {
     case MGLIR_TYPE_ARRAY:
         t->elem_type = ir_type_clone(src->elem_type);
@@ -348,13 +353,23 @@ static MGLIRType *ir_type_clone(const MGLIRType *src)
         }
         for (uint32_t i = 0; i < src->member_count; i++) {
             t->members[i] = ir_type_clone(src->members[i]);
-            t->member_names[i] = src->member_names[i]; /* borrowed */
+            t->member_names[i] =
+                src->member_names[i] ? strdup(src->member_names[i]) : NULL;
+            if (src->member_names[i] && !t->member_names[i]) {
+                for (uint32_t j = 0; j <= i; j++) {
+                    mglIRTypeDestroy(t->members[j]);
+                }
+                free(t->member_names);
+                free(t->members);
+                free(t);
+                return NULL;
+            }
             if (!t->members[i]) {
                 for (uint32_t j = 0; j < i; j++) {
                     mglIRTypeDestroy(t->members[j]);
                 }
-                free(t->members);
                 free(t->member_names);
+                free(t->members);
                 free(t);
                 return NULL;
             }
@@ -495,6 +510,48 @@ static MGLIRType *resolve_type_spec(Sema *s, SymTab *tab, const MGLTypeSpec *ts)
 /* ------------------------------------------------------------------ */
 
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e);
+
+/* Strict interface matching (GLSL 4.60 §4.3.9.5): structs compare
+ * member names, types and order; arrays compare dimensions recursively. */
+static int ir_type_interface_equal(const MGLIRType *a, const MGLIRType *b)
+{
+    if (a == b) {
+        return 1;
+    }
+    if (!a || !b || a->kind != b->kind || a->scalar != b->scalar) {
+        return 0;
+    }
+    switch (a->kind) {
+    case MGLIR_TYPE_SCALAR:
+        return 1;
+    case MGLIR_TYPE_VECTOR:
+        return a->cols == b->cols;
+    case MGLIR_TYPE_MATRIX:
+        return a->cols == b->cols && a->rows == b->rows;
+    case MGLIR_TYPE_ARRAY:
+        return a->array_size == b->array_size &&
+               ir_type_interface_equal(a->elem_type, b->elem_type);
+    case MGLIR_TYPE_STRUCT:
+        if (a->member_count != b->member_count) {
+            return 0;
+        }
+        for (uint32_t i = 0; i < a->member_count; i++) {
+            if (strcmp(a->member_names ? a->member_names[i] : "",
+                       b->member_names ? b->member_names[i] : "") != 0) {
+                return 0;
+            }
+            if (!ir_type_interface_equal(a->members[i], b->members[i])) {
+                return 0;
+            }
+        }
+        return 1;
+    case MGLIR_TYPE_SAMPLER:
+    case MGLIR_TYPE_IMAGE:
+        return a->tex_kind == b->tex_kind && a->tex_depth == b->tex_depth;
+    default:
+        return 0;
+    }
+}
 
 static int ir_type_equal(const MGLIRType *a, const MGLIRType *b)
 {
@@ -1303,6 +1360,90 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, MGLIRModule *module,
         *error_count = s.error_count;
     }
     symtab_destroy(&tab);
+    return (int)s.error_count;
+}
+
+/* ------------------------------------------------------------------ */
+/* Cross-stage interface matching (GLSL 4.60 §4.3.9.5)                 */
+/* ------------------------------------------------------------------ */
+
+static int sym_is_interface_block(const MGLIRSymbol *is)
+{
+    return is->type && is->type->kind == MGLIR_TYPE_STRUCT &&
+           is->layout != MGL_AST_LAYOUT_DEFAULT;
+}
+
+/* Link-time check between two compiled stages (e.g. vertex and fragment).
+ * For every ordinary in/out variable declared on both sides the type must
+ * match exactly; interface blocks match by block name (instance name may
+ * differ) and require identical member lists and layout.  Variables present
+ * on only one side are legal.  Returns the number of hard errors. */
+int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
+                          MGLSemaError **errors, uint32_t *error_count)
+{
+    Sema s;
+    memset(&s, 0, sizeof(s));
+
+    for (uint32_t i = 0; i < a->symbol_count; i++) {
+        MGLIRSymbol *sa = a->symbols[i];
+        if (!sa || sa->is_function || !sa->name || !sa->type) {
+            continue;
+        }
+        for (uint32_t j = 0; j < b->symbol_count; j++) {
+            MGLIRSymbol *sb = b->symbols[j];
+            if (!sb || sb->is_function || !sb->type) {
+                continue;
+            }
+            if (sym_is_interface_block(sa)) {
+                if (!sym_is_interface_block(sb)) {
+                    continue;
+                }
+                /* Block: match by block type name; instance names may
+                 * differ. */
+                if (!sa->type->name || !sb->type->name ||
+                    strcmp(sa->type->name, sb->type->name) != 0) {
+                    continue;
+                }
+                if (sa->layout != sb->layout ||
+                    !ir_type_interface_equal(sa->type, sb->type)) {
+                    sema_error(&s, 0,
+                               "interface block '%s' does not match across stages",
+                               sa->type->name);
+                }
+                continue;
+            }
+            if (sym_is_interface_block(sb)) {
+                continue;
+            }
+            /* Ordinary in/out variables. */
+            if (strcmp(sa->name, sb->name) != 0) {
+                continue;
+            }
+            uint32_t both_ways =
+                ((sa->qualifiers & MGL_AST_Q_OUT) &&
+                 (sb->qualifiers & MGL_AST_Q_IN)) ||
+                ((sa->qualifiers & MGL_AST_Q_IN) &&
+                 (sb->qualifiers & MGL_AST_Q_OUT));
+            if (!both_ways) {
+                continue;
+            }
+            if (!ir_type_interface_equal(sa->type, sb->type)) {
+                char ta[64], tb[64];
+                sema_error(&s, 0,
+                           "interface variable '%s' type mismatch across stages "
+                           "(%s vs %s)",
+                           sa->name, ir_type_str(sa->type, ta, sizeof(ta)),
+                           ir_type_str(sb->type, tb, sizeof(tb)));
+            }
+        }
+    }
+
+    if (errors) {
+        *errors = s.errors;
+    }
+    if (error_count) {
+        *error_count = s.error_count;
+    }
     return (int)s.error_count;
 }
 

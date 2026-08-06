@@ -85,6 +85,14 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu,
 /* Make a variable symbol without a type check (entry/helper). */
 MGLIRSymbol *mglIRSymbolNew(const char *name, MGLIRType *type);
 
+/* Link-time interface matching between two compiled stages (GLSL 4.60
+ * §4.3.9.5): ordinary in/out variables declared on both sides must have
+ * identical types; interface blocks match by block name and require
+ * identical member lists and layout.  Variables on one side only are
+ * legal.  Returns the number of hard errors. */
+int mglGLSLInterfaceCheck(const MGLIRModule *a, const MGLIRModule *b,
+                          MGLSemaError **errors, uint32_t *error_count);
+
 void mglGLSLSemanticCheckDestroy(MGLSemaError *errors, uint32_t count);
 
 void mglIRModuleDestroy(MGLIRModule *module);

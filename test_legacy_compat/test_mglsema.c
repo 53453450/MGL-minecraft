@@ -39,7 +39,8 @@ static MGLIRModule module;
 static MGLSemaError *errors;
 static uint32_t error_count;
 
-static void analyze(const char *src)
+static void analyze_ex(const char *src, MGLIRModule *mod,
+                       MGLSemaError **es, uint32_t *ec)
 {
     MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
     if (!tu) {
@@ -51,11 +52,16 @@ static void analyze(const char *src)
                 tu->error_line);
         exit(2);
     }
-    memset(&module, 0, sizeof(module));
-    errors = NULL;
-    error_count = 0;
-    mglGLSLSemanticCheck(tu, &module, &errors, &error_count);
+    memset(mod, 0, sizeof(*mod));
+    *es = NULL;
+    *ec = 0;
+    mglGLSLSemanticCheck(tu, mod, es, ec);
     mglGLSLTranslationUnitDestroy(tu);
+}
+
+static void analyze(const char *src)
+{
+    analyze_ex(src, &module, &errors, &error_count);
 }
 
 static int has_error(const char *needle)
@@ -194,6 +200,117 @@ static void test_call_arg_check(void)
     teardown();
 }
 
+static void test_interface_ok(void)
+{
+    /* Stage-local declarations never trip the link check by themselves:
+     * "one side only" is legal. */
+    analyze("#version 450 core\n"
+            "layout(location = 0) in vec3 pos;\n"
+            "layout(location = 0) out vec4 color;\n"
+            "void main() { color = vec4(pos, 1.0); }\n");
+    MGLIRModule vs = module;
+    MGLSemaError *vs_err = errors;
+    uint32_t vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+
+    analyze("#version 450 core\n"
+            "layout(location = 0) in vec4 color;\n"
+            "layout(location = 0) out vec4 frag;\n"
+            "void main() { frag = color; }\n");
+    MGLSemaError *le = NULL;
+    uint32_t lec = 0;
+    int r = mglGLSLInterfaceCheck(&vs, &module, &le, &lec);
+    CHECK(r == 0 && lec == 0, "matching in/out passes");
+    mglGLSLSemanticCheckDestroy(le, lec);
+
+    /* Teardown must survive after the linked modules are gone. */
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+}
+
+static void test_interface_mismatch(void)
+{
+    analyze("#version 450 core\n"
+            "layout(location = 0) out vec4 color;\n"
+            "void main() { color = vec4(1.0); }\n");
+    MGLIRModule vs = module;
+    MGLSemaError *vs_err = errors;
+    uint32_t vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+
+    analyze("#version 450 core\n"
+            "layout(location = 0) in vec3 color;\n"
+            "void main() { vec3 c = color; }\n");
+    MGLSemaError *le = NULL;
+    uint32_t lec = 0;
+    int r = mglGLSLInterfaceCheck(&vs, &module, &le, &lec);
+    CHECK(r == 1 && lec == 1, "mismatched in/out rejected");
+    CHECK(lec == 1 && le[0].message &&
+          strstr(le[0].message, "interface variable 'color'"),
+          "mismatch message");
+    mglGLSLSemanticCheckDestroy(le, lec);
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+}
+
+static void test_interface_blocks(void)
+{
+    analyze("#version 450 core\n"
+            "layout(std140) uniform B { vec4 v; } b1;\n"
+            "void main() {}\n");
+    MGLIRModule vs = module;
+    MGLSemaError *vs_err = errors;
+    uint32_t vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+
+    /* Same block name, same members, different instance name: legal. */
+    analyze("#version 450 core\n"
+            "layout(std140) uniform B { vec4 v; } b2;\n"
+            "void main() {}\n");
+    MGLSemaError *le = NULL;
+    uint32_t lec = 0;
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 0 && lec == 0,
+          "block same members ok");
+    mglGLSLSemanticCheckDestroy(le, lec);
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+
+    analyze("#version 450 core\n"
+            "layout(std140) uniform B { vec4 v; } b1;\n"
+            "void main() {}\n");
+    vs = module;
+    vs_err = errors;
+    vs_ec = error_count;
+    errors = NULL;
+    error_count = 0;
+    memset(&module, 0, sizeof(module));
+
+    /* Different members: rejected. */
+    analyze("#version 450 core\n"
+            "layout(std140) uniform B { vec4 v; float f; } b2;\n"
+            "void main() {}\n");
+    le = NULL;
+    lec = 0;
+    CHECK(mglGLSLInterfaceCheck(&vs, &module, &le, &lec) == 1 && lec == 1,
+          "block member mismatch rejected");
+    CHECK(lec == 1 && le[0].message &&
+          strstr(le[0].message, "interface block 'B'"),
+          "block mismatch message");
+    mglGLSLSemanticCheckDestroy(le, lec);
+    mglIRModuleDestroy(&vs);
+    mglGLSLSemanticCheckDestroy(vs_err, vs_ec);
+    teardown();
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -204,6 +321,9 @@ int main(void)
     test_redecl();
     test_block_layout();
     test_call_arg_check();
+    test_interface_ok();
+    test_interface_mismatch();
+    test_interface_blocks();
     printf("\n%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

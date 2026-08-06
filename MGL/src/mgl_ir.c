@@ -278,10 +278,27 @@ MGLIRType *mglIRTypeStruct(MGLIRType *const *members, const char *const *names,
     }
     for (uint32_t i = 0; i < count; i++) {
         t->members[i] = members[i];
-        t->member_names[i] = (char *)names[i];
+        t->member_names[i] = names[i] ? strdup(names[i]) : NULL;
+        if (names[i] && !t->member_names[i]) {
+            goto oom;
+        }
     }
-    t->name = name;
+    t->name = name ? strdup(name) : NULL;
+    if (name && !t->name) {
+        goto oom;
+    }
     return t;
+oom:
+    for (uint32_t j = 0; j < t->member_count; j++) {
+        free(t->member_names[j]);
+    }
+    for (uint32_t j = 0; j < t->member_count; j++) {
+        mglIRTypeDestroy(t->members[j]);
+    }
+    free(t->member_names);
+    free(t->members);
+    free(t);
+    return NULL;
 }
 
 MGLIRType *mglIRTypeSampler(MGLIRTexKind kind, MGLIRScalar storage, int depth)
@@ -340,7 +357,11 @@ void mglIRTypeDestroy(MGLIRType *t)
         for (uint32_t i = 0; i < t->member_count; i++) {
             mglIRTypeDestroy(t->members[i]);
         }
+        for (uint32_t i = 0; i < t->member_count; i++) {
+            free(t->member_names[i]);
+        }
     }
+    free((void *)t->name);
     free(t->members);
     free(t->member_names);
     free(t->member_offsets);

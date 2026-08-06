@@ -103,7 +103,7 @@ struct MGLIRType {
     uint32_t array_size;        /* element count (0 = runtime array) */
     uint32_t member_count;      /* struct member count */
     MGLIRType **members;        /* struct members (owned) */
-    char **member_names;        /* not owned */
+    char **member_names;        /* owned (dup'd at construction) */
     uint32_t *member_offsets;   /* computed offsets (valid after layout) */
 
     /* Sampler / image. */
@@ -114,7 +114,7 @@ struct MGLIRType {
 
     uint32_t row_major;         /* matrix memory order flag */
 
-    const char *name;           /* debug name, not owned */
+    const char *name;           /* owned (dup'd at construction) */
 
     MGLIRLayoutInfo layout;     /* cached layout results */
     uint32_t layout_valid;      /* 1 after mglIRComputeLayout */
