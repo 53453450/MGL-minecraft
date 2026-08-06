@@ -301,8 +301,10 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
         ts->base = MGL_AST_TYPE_ATOMIC_UINT;
     } else if (n >= 7 && memcmp(s, "sampler", 7) == 0) {
         ts->base = MGL_AST_TYPE_SAMPLER;
+        ts->name = dup_token_text(p, t);
     } else if (n >= 5 && memcmp(s, "image", 5) == 0) {
         ts->base = MGL_AST_TYPE_IMAGE;
+        ts->name = dup_token_text(p, t);
     } else if (n == 4 && s[0] == 'v' && s[1] == 'e' && s[2] == 'c' &&
                s[3] >= '1' && s[3] <= '4') {
         ts->vec_size = s[3] - '0';

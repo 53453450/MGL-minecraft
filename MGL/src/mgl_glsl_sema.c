@@ -648,7 +648,7 @@ static int ir_type_equal(const MGLIRType *a, const MGLIRType *b)
  *   int -> uint -> float -> double
  *   int -> float -> double
  * Boolean conversions only via explicit constructors. */
-static int implicit_convert(MGLIRType *from, MGLIRType *to)
+static int implicit_convert(const MGLIRType *from, const MGLIRType *to)
 {
     if (!from || !to || from->kind != MGLIR_TYPE_SCALAR ||
         to->kind != MGLIR_TYPE_SCALAR) {
@@ -862,6 +862,308 @@ static const MGLIRType *struct_member(const MGLIRType *st, const char *name,
     return NULL;
 }
 
+/* ------------------------------------------------------------------ */
+/* Builtin functions (first-wave table)                               */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    BI_ARG_GENF,    /* float genType: float/vec2/vec3/vec4, all gen args
+                     * must share the same dimensionality */
+    BI_ARG_FLOAT,   /* scalar float (int/uint scalar implicitly ok) */
+    BI_ARG_VEC2,    /* vec2 */
+    BI_ARG_VEC3,    /* vec3 */
+    BI_ARG_VEC4,    /* vec4 */
+    BI_ARG_S2D,     /* sampler2D */
+    BI_ARG_S3D,     /* sampler3D */
+    BI_ARG_SCUBE,   /* samplerCube */
+} BiArgKind;
+
+typedef enum {
+    BI_RET_GENF,    /* same shape as the matched gen argument */
+    BI_RET_FLOAT,   /* float scalar */
+    BI_RET_VEC2,    /* vec2 */
+    BI_RET_VEC3,    /* vec3 */
+    BI_RET_VEC4,    /* vec4 */
+} BiRetKind;
+
+typedef struct {
+    const char *name;
+    uint32_t argc;
+    const BiArgKind args[4];
+    BiRetKind ret;
+} BiFn;
+
+static const BiFn kBuiltins[] = {
+    { "texture",    3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_VEC4 },
+    { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_VEC4 },
+    { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_VEC4 },
+    { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_VEC2 },
+    { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_VEC3 },
+    { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_VEC2 },
+    { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "length",    1, { BI_ARG_GENF }, BI_RET_FLOAT },
+    { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
+    { "dot",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
+    { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "clamp",     3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "clamp",     3, { BI_ARG_GENF, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+};
+
+/* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
+ * dimensionality on success.  Numeric int/uint scalars implicitly convert
+ * to float here, mirroring GLSL argument conversion. */
+static int bif_gen_matches(const MGLIRType *t, uint32_t *gen_dim)
+{
+    if (!t) {
+        return 0;
+    }
+    if (t->scalar != MGLIR_SCALAR_FLOAT &&
+        !(t->kind == MGLIR_TYPE_SCALAR &&
+          (t->scalar == MGLIR_SCALAR_INT || t->scalar == MGLIR_SCALAR_UINT))) {
+        return 0;
+    }
+    if (t->kind == MGLIR_TYPE_VECTOR) {
+        *gen_dim = t->cols;
+        return 1;
+    }
+    if (t->kind == MGLIR_TYPE_SCALAR) {
+        *gen_dim = 1;
+        return 1;
+    }
+    return 0;
+}
+
+static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
+{
+    if (!t) {
+        return 0;
+    }
+    switch (k) {
+    case BI_ARG_GENF:
+        return bif_gen_matches(t, gen_dim);
+    case BI_ARG_FLOAT:
+        return t->kind == MGLIR_TYPE_SCALAR &&
+               (t->scalar == MGLIR_SCALAR_FLOAT || t->scalar == MGLIR_SCALAR_INT ||
+                t->scalar == MGLIR_SCALAR_UINT);
+    case BI_ARG_VEC2:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_VEC3:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 3 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_VEC4:
+        return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_S2D:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
+               !t->tex_depth;
+    case BI_ARG_S3D:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_3D &&
+               !t->tex_depth;
+    case BI_ARG_SCUBE:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_CUBE &&
+               !t->tex_depth;
+    default:
+        return 0;
+    }
+}
+
+/* Match a builtin call.  On success returns a new MGLIRType for the result
+ * (caller owns it), on failure returns NULL and sets *known (1 = the name is
+ * a builtin but no signature matched, 0 = unknown name). */
+static MGLIRType *builtin_call_type(const char *name,
+                                    const MGLIRType *const *arg_types,
+                                    uint32_t argc, int *known)
+{
+    *known = 0;
+    for (size_t i = 0; i < sizeof(kBuiltins) / sizeof(kBuiltins[0]); i++) {
+        const BiFn *f = &kBuiltins[i];
+        if (strcmp(f->name, name) != 0) {
+            continue;
+        }
+        *known = 1;
+        if (f->argc != argc) {
+            continue;
+        }
+        uint32_t gen_dim = 0;
+        int ok = 1;
+        for (uint32_t j = 0; j < argc; j++) {
+            uint32_t d = 0;
+            if (!bif_arg_matches(arg_types[j], f->args[j], &d)) {
+                ok = 0;
+                break;
+            }
+            if (f->args[j] == BI_ARG_GENF) {
+                if (gen_dim == 0) {
+                    gen_dim = d;
+                } else if (gen_dim != d) {
+                    ok = 0;
+                    break;
+                }
+            }
+        }
+        if (!ok) {
+            continue;
+        }
+        switch (f->ret) {
+        case BI_RET_GENF:
+            return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_FLOAT, gen_dim)
+                               : mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+        case BI_RET_FLOAT:
+            return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+        case BI_RET_VEC2:
+            return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2);
+        case BI_RET_VEC3:
+            return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 3);
+        case BI_RET_VEC4:
+            return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
+        }
+    }
+    return NULL;
+}
+
+/* ------------------------------------------------------------------ */
+/* Type constructors                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Component count contributed by an argument to a vector constructor;
+ * returns -1 for arguments that cannot appear in a vector constructor. */
+static int constructor_components(const MGLIRType *at)
+{
+    if (!at) {
+        return -1;
+    }
+    if (at->kind == MGLIR_TYPE_SCALAR) {
+        return 1;
+    }
+    if (at->kind == MGLIR_TYPE_VECTOR) {
+        return (int)at->cols;
+    }
+    return -1;
+}
+
+/* Exact argument checking for T(...) type constructors / conversions
+ * (GLSL 4.60 §5.4.1/§5.4.2).  `t` is the target type, owned by caller. */
+
+/* Can a value of type `from` be converted component-wise to scalar `to_sc`
+ * for constructor purposes?  Constructors perform explicit conversions:
+ * any non-void scalar base converts to any other (GLSL §4.1.10), and
+ * vector arguments convert component-wise. */
+static int constructor_scalar_convert(const MGLIRType *from, MGLIRScalar to_sc)
+{
+    if (!from || (from->kind != MGLIR_TYPE_SCALAR &&
+                  from->kind != MGLIR_TYPE_VECTOR)) {
+        return 0;
+    }
+    return from->scalar != MGLIR_SCALAR_VOID && to_sc != MGLIR_SCALAR_VOID;
+}
+
+static int check_constructor(Sema *s, uint32_t line, const char *tname,
+                             MGLIRType *t, const MGLIRType *const *ats,
+                             uint32_t argc)
+{
+    int ok = 1;
+    if (t->kind == MGLIR_TYPE_SCALAR) {
+        if (argc != 1 || !ats[0] || ats[0]->kind != MGLIR_TYPE_SCALAR) {
+            ok = 0;
+        } else if (!constructor_scalar_convert(ats[0], t->scalar)) {
+            ok = 0;
+        }
+        if (!ok) {
+            sema_error(s, line, "constructor '%s' takes one scalar, got %u",
+                       tname, argc);
+        }
+        return ok;
+    }
+    if (t->kind == MGLIR_TYPE_VECTOR) {
+        uint32_t n = t->cols;
+        if (argc == 1 && ats[0]) {
+            int c = constructor_components(ats[0]);
+            if (ats[0]->kind == MGLIR_TYPE_SCALAR && c == 1) {
+                /* broadcast: vec2(1.0) */
+                return constructor_scalar_convert(ats[0], t->scalar);
+            }
+            if (c == (int)n) {
+                /* single vector of the right size */
+                return constructor_scalar_convert(ats[0], t->scalar);
+            }
+            sema_error(s, line,
+                       "constructor 'vec%u' cannot take a single %s argument",
+                       n, ir_type_str(ats[0], (char[64]){0}, 64));
+            return 0;
+        }
+        uint32_t total = 0;
+        for (uint32_t i = 0; i < argc; i++) {
+            int c = ats[i] ? constructor_components(ats[i]) : -1;
+            if (c < 0) {
+                sema_error(s, line,
+                           "cannot construct 'vec%u' from a %s argument",
+                           n, ats[i] ? ir_type_str(ats[i], (char[64]){0}, 64) : "?");
+                return 0;
+            }
+            total += (uint32_t)c;
+        }
+        if (total != n) {
+            sema_error(s, line,
+                       "constructor 'vec%u' from %u component(s), expected %u",
+                       n, total, n);
+            return 0;
+        }
+        for (uint32_t i = 0; i < argc; i++) {
+            if (!constructor_scalar_convert(ats[i], t->scalar)) {
+                char sa[64], sb[64];
+                sema_error(s, line,
+                           "constructor 'vec%u' argument %u: %s not "
+                           "convertible to %s",
+                           n, i + 1, ir_type_str(ats[i], sa, sizeof(sa)),
+                           ir_type_str(t, sb, sizeof(sb)));
+                return 0;
+            }
+        }
+        return 1;
+    }
+    if (t->kind == MGLIR_TYPE_MATRIX) {
+        uint32_t c = t->cols, r = t->rows;
+        if (argc == 1 && ats[0]) {
+            if (ats[0]->kind == MGLIR_TYPE_SCALAR) {
+                return constructor_scalar_convert(ats[0], t->scalar); /* diagonal */
+            }
+            if (ats[0]->kind == MGLIR_TYPE_MATRIX && ats[0]->cols == c &&
+                ats[0]->rows == r) {
+                return 1;
+            }
+            sema_error(s, line, "constructor 'mat%ux%u' cannot take a single "
+                       "%s argument", c, r,
+                       ir_type_str(ats[0], (char[64]){0}, 64));
+            return 0;
+        }
+        if (argc != c) {
+            sema_error(s, line, "constructor 'mat%ux%u' expects %u column "
+                       "vector(s), got %u", c, r, c, argc);
+            return 0;
+        }
+        for (uint32_t i = 0; i < argc; i++) {
+            if (!ats[i] || ats[i]->kind != MGLIR_TYPE_VECTOR ||
+                ats[i]->cols != r) {
+                sema_error(s, line,
+                           "constructor 'mat%ux%u' column %u must be a vec%u",
+                           c, r, i + 1, r);
+                return 0;
+            }
+        }
+        return 1;
+    }
+    return 1;
+}
+
 static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
 {
     if (!e) {
@@ -940,28 +1242,56 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             MGLTypeSpec fake;
             memset(&fake, 0, sizeof(fake));
             int known = builtin_type_spec(e->u.call.name, &fake);
+            int is_struct_ctor = 0;
             if (known != 0) {
                 Sym *st = symtab_lookup(tab, e->u.call.name);
                 if (st && st->kind == SYM_STRUCT) {
                     fake.base = MGL_AST_TYPE_STRUCT;
                     fake.name = (char *)e->u.call.name;
                     known = 0;
+                    is_struct_ctor = 1;
                 }
             }
-            if (known != 0) {
-                sema_error(s, e->line, "call to undeclared function '%s'",
-                           e->u.call.name);
+            if (known == 0) {
+                MGLIRType *t = scratch_type(s, resolve_type_spec(s, tab, &fake));
+                if (t) {
+                    MGLIRType **ats = (MGLIRType **)calloc(
+                        e->u.call.arg_count, sizeof(MGLIRType *));
+                    for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                        ats[i] = check_expr(s, tab, e->u.call.args[i]);
+                    }
+                    if (!is_struct_ctor) {
+                        check_constructor(s, e->line, e->u.call.name, t,
+                                          (const MGLIRType *const *)ats,
+                                          e->u.call.arg_count);
+                    }
+                    free(ats);
+                }
+                return t;
+            }
+            /* builtin functions (first-wave table) */
+            MGLIRType **atb = (MGLIRType **)calloc(
+                e->u.call.arg_count, sizeof(MGLIRType *));
+            for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                atb[i] = check_expr(s, tab, e->u.call.args[i]);
+            }
+            int bknown = 0;
+            MGLIRType *bt = builtin_call_type(e->u.call.name,
+                                              (const MGLIRType *const *)atb,
+                                              e->u.call.arg_count, &bknown);
+            free(atb);
+            if (bknown) {
+                if (bt) {
+                    return scratch_type(s, bt);
+                }
+                sema_error(s, e->line,
+                           "no matching overload of builtin '%s' for the "
+                           "given argument types", e->u.call.name);
                 return NULL;
             }
-            MGLIRType *t = scratch_type(s, resolve_type_spec(s, tab, &fake));
-            if (t) {
-                /* constructors have no real function body; argument count is
-                 * checked loosely here, exact checking with the builtin table */
-                for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
-                    check_expr(s, tab, e->u.call.args[i]);
-                }
-            }
-            return t;
+            sema_error(s, e->line, "call to undeclared function '%s'",
+                       e->u.call.name);
+            return NULL;
         }
         if (e->u.call.arg_count != sym->param_count) {
             sema_error(s, e->line, "function '%s' expects %u argument(s), got %u",

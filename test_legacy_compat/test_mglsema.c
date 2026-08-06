@@ -263,7 +263,7 @@ static void test_matrix_arith(void)
             "    mat2 g = m32 * m23;\n"
             "    mat4 h = m4 + m4;\n"
             "    mat4 k = m4 * 2.0;\n"
-            "    o = a + b + c + vec3(e, 0.0);\n"
+            "    o = a + b + c + vec4(e, 0.0);\n"
             "}\n");
     CHECK(error_count == 0, "matrix arithmetic clean");
     teardown();
@@ -390,6 +390,126 @@ static void test_interface_blocks(void)
     teardown();
 }
 
+static void test_builtins(void)
+{
+    analyze("#version 450 core\n"
+            "uniform sampler2D uTex;\n"
+            "layout(location = 0) in vec2 uv;\n"
+            "layout(location = 0) in vec3 pos;\n"
+            "layout(location = 0) out vec4 o;\n"
+            "void main() {\n"
+            "    vec4 t = texture(uTex, uv);\n"
+            "    vec4 tl = textureLod(uTex, uv, 0.0);\n"
+            "    vec2 ts = textureSize(uTex, 0);\n"
+            "    vec3 n = normalize(pos);\n"
+            "    float d = dot(pos, normalize(pos));\n"
+            "    float len = length(pos);\n"
+            "    float dist = distance(pos, vec3(0.0));\n"
+            "    vec3 c = clamp(pos, vec3(0.0), vec3(1.0));\n"
+            "    vec3 c2 = clamp(pos, 0.0, 1.0);\n"
+            "    vec3 m = mix(pos, vec3(1.0), c);\n"
+            "    vec3 m2 = mix(pos, vec3(1.0), 0.5);\n"
+            "    vec3 a = abs(pos);\n"
+            "    float af = abs(-1.0);\n"
+            "    o = t + tl + vec4(n * d + len + dist, 1.0) +\n"
+            "        c + c2 + m + m2 + a + vec4(ts, af, 0.0);\n"
+            "}\n");
+    CHECK(error_count == 0, "builtin calls clean");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    float d = dot(vec3(1.0), vec4(1.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "dot dimension mismatch rejected");
+    CHECK(has_error("no matching overload of builtin 'dot'"),
+          "dot mismatch message");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "uniform mat3 m3;\n"
+            "void main() {\n"
+            "    vec3 n = normalize(m3);\n"
+            "}\n");
+    CHECK(error_count == 1, "normalize(mat) rejected");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec4 t = texture(vec2(1.0), vec2(0.5));\n"
+            "}\n");
+    CHECK(error_count == 1, "texture with non-sampler rejected");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec3 c = clamp(vec3(1.0), vec2(0.0), vec2(1.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "clamp gen dimension conflict rejected");
+    teardown();
+}
+
+static void test_constructors(void)
+{
+    analyze("#version 450 core\n"
+            "uniform vec3 v3;\n"
+            "uniform ivec3 iv3;\n"
+            "void main() {\n"
+            "    vec2 a = vec2(1.0);\n"
+            "    vec3 b = vec3(1.0, vec2(2.0));\n"
+            "    vec4 c = vec4(v3, 1.0);\n"
+            "    vec3 d = vec3(iv3);\n"
+            "    float e = float(1);\n"
+            "    int f = int(1.5);\n"
+            "    mat2 h = mat2(1.0);\n"
+            "    mat3 i = mat3(vec3(1.0), vec3(2.0), vec3(3.0));\n"
+            "    mat3 j = mat3(v3, v3, v3);\n"
+            "    bool k = bool(1);\n"
+            "    vec4 l = vec4(1.0, vec2(2.0), 3.0);\n"
+            "    vec3 n = vec3(a, 1.0);\n"
+            "}\n");
+    CHECK(error_count == 0, "valid constructors clean");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec3 a = vec3(vec2(1.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "vec3(vec2) rejected");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec3 a = vec3(1.0, 2.0);\n"
+            "}\n");
+    CHECK(error_count == 1, "vec3 from 2 components rejected");
+    CHECK(has_error("expected 3"), "component count message");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    vec2 a = vec2(mat2(1.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "vec2(mat2) rejected");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    mat3 a = mat3(vec3(1.0), vec3(2.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "mat3 from 2 columns rejected");
+    CHECK(has_error("expects 3 column vector(s)"), "column count message");
+    teardown();
+
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    mat3 a = mat3(vec2(1.0), vec2(2.0), vec2(3.0));\n"
+            "}\n");
+    CHECK(error_count == 1, "mat3 from vec2 columns rejected");
+    CHECK(has_error("must be a vec3"), "column dimension message");
+    teardown();
+}
+
 int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
@@ -402,6 +522,8 @@ int main(void)
     test_call_arg_check();
     test_integer_vector_types();
     test_matrix_arith();
+    test_builtins();
+    test_constructors();
     test_interface_ok();
     test_interface_mismatch();
     test_interface_blocks();
