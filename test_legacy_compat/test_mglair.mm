@@ -20,19 +20,27 @@
 static const char *kVS =
     "#version 460 core\n"
     "uniform mat4 mvp;\n"
+    "uniform mat3 rot3;\n"
     "in vec3 inPos;\n"
     "out vec2 vUV;\n"
+    "out vec3 vN;\n"
     "void main() {\n"
-    "    vUV = inPos.xy;\n"
+    "    int p = 2;\n"
+    "    float o = p * 0.5;\n"        /* int*float -> 1.0 */
+    "    vec2 k = vec2(0.5);\n"       /* single-arg broadcast */
+    "    bool b = true;\n"            /* bool literal */
+    "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5);\n"
+    "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
     "}\n";
 
 static const char *kFS =
     "#version 460 core\n"
     "in vec2 vUV;\n"
+    "in vec3 vN;\n"
     "out vec4 fragColor;\n"
     "void main() {\n"
-    "    fragColor = vec4(vUV, 0.5, 1.0);\n"
+    "    fragColor = vec4(vUV + vN.xy, 0.5, 1.0);\n"
     "}\n";
 
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
@@ -52,14 +60,18 @@ static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
 static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
     const int W = 64, H = 64;
 
-    /* Rz(30 deg), column-major (GL storage: column 0 first). */
+    /* Rz(30 deg), column-major (GL storage: column 0 first).  mvp is
+     * mat4 (64 bytes); rot3 is mat3 std140: 3 columns at 16-byte stride. */
     const float t = 30.0f * (float)M_PI / 180.0f;
     const float c = cosf(t), s = sinf(t);
-    const float mvp[16] = {
-         c,  s, 0, 0,
-        -s,  c, 0, 0,
-         0,  0, 1, 0,
-         0,  0, 0, 1,
+    const float ubo[28] = {
+         c,  s, 0, 0,   /* mvp col 0 */
+        -s,  c, 0, 0,   /* mvp col 1 */
+         0,  0, 1, 0,   /* mvp col 2 */
+         0,  0, 0, 1,   /* mvp col 3 */
+         c,  s, 0, 0,   /* rot3 col 0 (offset 64) */
+        -s,  c, 0, 0,   /* rot3 col 1 (offset 80) */
+         0,  0, 1, 0,   /* rot3 col 2 (offset 96) */
     };
 
     /* Full-screen triangle in NDC. */
@@ -68,7 +80,7 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
          3, -1, 0,
         -1,  3, 0,
     };
-    /* Transformed NDC positions (w = 1). */
+    /* Transformed NDC positions (w = 1): p = Rz(30) * v. */
     float ap[3], bp[3], cp[3];
     for (int i = 0; i < 3; i++) {
         float *dst = i == 0 ? ap : (i == 1 ? bp : cp);
@@ -94,7 +106,7 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
 
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
     [enc setRenderPipelineState:pso];
-    [enc setVertexBytes:mvp length:64 atIndex:0];
+    [enc setVertexBytes:ubo length:sizeof(ubo) atIndex:0];
     [enc setVertexBytes:verts length:36 atIndex:1];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [enc endEncoding];
@@ -123,8 +135,15 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
             float lc = (dy * v0x - dx * v0y) / den;
             float la = 1.0f - lb - lc;
 
-            float u = la * verts[0] + lb * verts[3] + lc * verts[6];
-            float v = la * verts[1] + lb * verts[4] + lc * verts[7];
+            /* Original inPos at the pixel (MVP^{-1} * ndc). */
+            float px = la * verts[0] + lb * verts[3] + lc * verts[6];
+            float py = la * verts[1] + lb * verts[4] + lc * verts[7];
+            /* vN = rot3 * inPos, interpolated. */
+            float nx = c * px - s * py;
+            float ny = s * px + c * py;
+            /* vUV = inPos + (1, 0); fragColor = vUV + vN.xy. */
+            float u = px + 1.0f + nx;
+            float v = py + ny;
             u = fminf(1.0f, fmaxf(0.0f, u));
             v = fminf(1.0f, fmaxf(0.0f, v));
 

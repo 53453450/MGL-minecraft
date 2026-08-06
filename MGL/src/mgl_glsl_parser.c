@@ -388,6 +388,15 @@ static MGLExpr *parse_primary(MGLParser *p)
     if (at_any_ident(p)) {
         char *name = dup_current(p);
         advance(p);
+        if (strcmp(name, "true") == 0 || strcmp(name, "false") == 0) {
+            MGLExpr *e = expr_alloc(p, MGL_EXPR_LITERAL, line);
+            if (e) {
+                e->u.literal.base = MGL_AST_TYPE_BOOL;
+                e->u.literal.value = (name[0] == 't') ? 1.0 : 0.0;
+            }
+            free(name);
+            return e;
+        }
         if (ops_at(p, "(")) {
             MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
             if (e) {

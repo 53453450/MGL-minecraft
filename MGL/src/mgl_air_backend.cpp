@@ -93,8 +93,12 @@ struct Codegen {
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
     VarSym *fragOutput = nullptr;        /* fragment out vec4 */
-    VarSym *position = nullptr;          /* gl_Position */
+    VarSym position;                     /* gl_Position */
+    llvm::Type *retTy = nullptr;         /* stage return type */
+    std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
+    std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
     int err = 0;
+    std::string errmsg;                  /* specific diagnostic when set */
 };
 
 /* ---- type helpers ---------------------------------------------------- */
@@ -120,6 +124,38 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     if (t.vec)
         return llvm::FixedVectorType::get(s, t.vec);
     return s;
+}
+
+/* Implicit GLSL numeric conversion (sema allows any non-void scalar base
+ * to convert to any other, GLSL 4.60 4.1.10).  Idempotent; works on
+ * scalars and vectors of matching width. */
+llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
+    llvm::Type *cur = v->getType();
+    bool wantFP = scalarIsFloat(want);
+    bool curFP = cur->isFPOrFPVectorTy();
+    if (curFP == wantFP && want != MGLIR_SCALAR_BOOL &&
+        cur->getScalarSizeInBits() == (want == MGLIR_SCALAR_BOOL ? 1 : 32))
+        return v;
+    llvm::LLVMContext &ctx = *cg.ctx;
+    auto vt = [&](llvm::Type *elt) -> llvm::Type * {
+        if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(cur))
+            return llvm::FixedVectorType::get(elt,
+                fv->getElementCount().getFixedValue());
+        return elt;
+    };
+    if (wantFP) {
+        if (cur->getScalarSizeInBits() == 1)
+            return cg.b->CreateUIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
+        return cg.b->CreateSIToFP(v, vt(llvm::Type::getFloatTy(ctx)));
+    }
+    if (curFP)
+        return cg.b->CreateFPToSI(v, vt(llvm::Type::getInt32Ty(ctx)));
+    if (want == MGLIR_SCALAR_BOOL)
+        return cg.b->CreateICmpNE(v, llvm::Constant::getNullValue(cur));
+    /* int: widen bool to i32, otherwise identity. */
+    if (cur->getScalarSizeInBits() == 1)
+        return cg.b->CreateZExt(v, vt(llvm::Type::getInt32Ty(ctx)));
+    return v;
 }
 
 /* GLSL type name used in air.* metadata (MSL naming). */
@@ -223,12 +259,21 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
 
-/* Buffer read: byte GEP + bitcast + aligned load. */
+/* Buffer read: byte GEP + bitcast + aligned load.  Alignment follows
+ * std140: scalar 4, vec2 8, vec3/vec4 and matrix columns 16. */
 llvm::Value *bufferLoad(Codegen &cg, uint32_t offset, llvm::Type *loadTy) {
+    llvm::Align align(16);
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(loadTy)) {
+        uint64_t w = vt->getElementCount().getFixedValue();
+        if (w == 1) align = llvm::Align(4);
+        else if (w == 2) align = llvm::Align(8);
+    } else if (loadTy->isFloatTy()) {
+        align = llvm::Align(4);
+    }
     llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.bufferPtr,
                                      cg.b->getInt64(offset));
     p = cg.b->CreateBitCast(p, loadTy->getPointerTo(1));
-    return cg.b->CreateAlignedLoad(loadTy, p, llvm::Align(16));
+    return cg.b->CreateAlignedLoad(loadTy, p, align);
 }
 
 /* Matrix uniform -> SSA [N x <rows x float>] array value. */
@@ -264,21 +309,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals) {
     switch (e->kind) {
     case MGL_EXPR_LITERAL: {
-        llvm::Type *t = scalarIsFloat((MGLIRScalar)e->u.literal.base)
-                            ? llvm::Type::getFloatTy(*cg.ctx)
-                            : llvm::Type::getInt32Ty(*cg.ctx);
-        return llvm::ConstantFP::get(t, e->u.literal.value);
+        MGLIRScalar base = (MGLIRScalar)e->u.literal.base;
+        if (base == MGLIR_SCALAR_INT || base == MGLIR_SCALAR_UINT)
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                          (uint64_t)e->u.literal.value);
+        if (base == MGLIR_SCALAR_BOOL)
+            return llvm::ConstantInt::get(llvm::Type::getInt1Ty(*cg.ctx),
+                                          e->u.literal.value != 0.0);
+        return llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx),
+                                     e->u.literal.value);
     }
     case MGL_EXPR_VAR_REF: {
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
-            if (!cg.position) {
-                cg.position = new VarSym();
-                cg.position->name = "gl_Position";
-                cg.position->type.scalar = MGLIR_SCALAR_FLOAT;
-                cg.position->type.vec = 4;
-                cg.position->kind = VarSym::OUTPUT;
+            if (!cg.position.written) {
+                cg.position.name = "gl_Position";
+                cg.position.type.scalar = MGLIR_SCALAR_FLOAT;
+                cg.position.type.vec = 4;
+                cg.position.kind = VarSym::OUTPUT;
             }
-            return varValue(cg, *cg.position, mod);
+            return varValue(cg, cg.position, mod);
         }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end())
@@ -304,6 +353,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
         llvm::Value *obj = emitExpr(cg, e->u.member.object, mod, locals);
         if (!obj) return nullptr;
+        if (idx.size() == 1)
+            return cg.b->CreateExtractElement(obj,
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), idx[0]));
         llvm::SmallVector<llvm::Constant *, 4> mask;
         for (uint32_t i : idx)
             mask.push_back(llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), i));
@@ -316,7 +368,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         const char *name = e->u.call.name;
         if (strcmp(name, "vec2") && strcmp(name, "vec3") &&
             strcmp(name, "vec4")) {
-            cg.err = 1; return nullptr;
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: call to '") + name +
+                        "' not implemented in M1";
+            return nullptr;
         }
         uint32_t lanes = atoi(name + 3);
         llvm::Type *elt = llvm::Type::getFloatTy(*cg.ctx);
@@ -326,7 +381,20 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
             llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
             if (!arg) return nullptr;
-            if (arg->getType()->isVectorTy()) {
+            if (!arg->getType()->isVectorTy()) {
+                /* Single scalar argument broadcasts (GLSL 4.60 5.4.2);
+                 * otherwise one component per scalar. */
+                arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
+                if (e->u.call.arg_count == 1) {
+                    for (uint32_t lane = 0; lane < lanes; lane++)
+                        res = cg.b->CreateInsertElement(res, arg,
+                            llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), lane));
+                    return res;
+                }
+                res = cg.b->CreateInsertElement(res, arg,
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), slot++));
+            } else {
+                arg = coerceScalar(cg, arg, MGLIR_SCALAR_FLOAT);
                 llvm::FixedVectorType *argTy =
             llvm::cast<llvm::FixedVectorType>(arg->getType());
         uint32_t argLanes = (uint32_t)argTy->getElementCount().getFixedValue();
@@ -338,9 +406,6 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     res = cg.b->CreateInsertElement(res, x,
                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), slot));
                 }
-            } else {
-                res = cg.b->CreateInsertElement(res, arg,
-                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), slot++));
             }
         }
         return res;
@@ -356,27 +421,54 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *l = emitExpr(cg, e->u.binary.lhs, mod, locals);
         llvm::Value *r = emitExpr(cg, e->u.binary.rhs, mod, locals);
         if (!l || !r) return nullptr;
+        /* Matrix * vector: column-major dot, width = matrix rows. */
+        if (llvm::ArrayType *arr =
+                llvm::dyn_cast<llvm::ArrayType>(l->getType())) {
+            llvm::FixedVectorType *colTy =
+                llvm::dyn_cast<llvm::FixedVectorType>(arr->getElementType());
+            if (e->u.binary.op != MGL_OP_MUL || !colTy ||
+                !r->getType()->isVectorTy()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: matrix operation unsupported in M1";
+                return nullptr;
+            }
+            uint32_t cols = (uint32_t)arr->getNumElements();
+            uint32_t rows = (uint32_t)colTy->getElementCount().getFixedValue();
+            if (cols > rows) {
+                cg.err = 1;
+                cg.errmsg = "codegen: matrix with more columns than rows * vector unsupported in M1";
+                return nullptr;
+            }
+            llvm::FixedVectorType *outTy =
+                llvm::FixedVectorType::get(llvm::Type::getFloatTy(*cg.ctx),
+                                           rows);
+            llvm::Value *acc = llvm::Constant::getNullValue(outTy);
+            for (uint32_t c = 0; c < cols; c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(l, c);
+                llvm::Value *splat = cg.b->CreateShuffleVector(r,
+                    llvm::UndefValue::get(r->getType()),
+                    llvm::ConstantVector::getSplat(
+                        llvm::ElementCount::getFixed(rows),
+                        llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(*cg.ctx), c)));
+                llvm::Value *term = cg.b->CreateFMul(col, splat);
+                acc = c == 0 ? term : cg.b->CreateFAdd(acc, term);
+            }
+            return acc;
+        }
+        /* Implicit numeric conversion: if exactly one side is FP, promote
+         * the other (GLSL 4.1.10). */
+        bool lfp = l->getType()->isFPOrFPVectorTy();
+        bool rfp = r->getType()->isFPOrFPVectorTy();
+        if (lfp != rfp) {
+            if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
+            else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
+        }
         bool fp = l->getType()->isFPOrFPVectorTy();
         switch (e->u.binary.op) {
         case MGL_OP_ADD: return fp ? cg.b->CreateFAdd(l, r) : cg.b->CreateAdd(l, r);
         case MGL_OP_SUB: return fp ? cg.b->CreateFSub(l, r) : cg.b->CreateSub(l, r);
         case MGL_OP_MUL:
-            if (l->getType()->isArrayTy()) {
-                /* Matrix * vector: column-major dot. */
-                llvm::Value *acc = llvm::Constant::getNullValue(
-                    llvm::FixedVectorType::get(llvm::Type::getFloatTy(*cg.ctx), 4));
-                for (uint32_t c = 0; c < 4; c++) {
-                    llvm::Value *col = cg.b->CreateExtractValue(l, c);
-                    llvm::Value *splat = cg.b->CreateShuffleVector(r,
-                        llvm::UndefValue::get(r->getType()),
-                        llvm::ConstantVector::getSplat(
-                            llvm::ElementCount::getFixed(4),
-                            llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), c)));
-                    llvm::Value *term = cg.b->CreateFMul(col, splat);
-                    acc = c == 0 ? term : cg.b->CreateFAdd(acc, term);
-                }
-                return acc;
-            }
             if (fp) {
                 return cg.b->CreateFMul(l, r);
             }
@@ -395,18 +487,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *v = emitExpr(cg, e->u.assign.rhs, mod, locals);
         if (!v) return nullptr;
         if (strcmp(name, "gl_Position") == 0) {
-            if (!cg.position) {
-                cg.position = new VarSym();
-                cg.position->name = name;
-                cg.position->type.scalar = MGLIR_SCALAR_FLOAT;
-                cg.position->type.vec = 4;
-                cg.position->kind = VarSym::OUTPUT;
+            if (!cg.position.written) {
+                cg.position.name = name;
+                cg.position.type.scalar = MGLIR_SCALAR_FLOAT;
+                cg.position.type.vec = 4;
+                cg.position.kind = VarSym::OUTPUT;
             }
-            cg.position->written = true;
+            cg.position.written = true;
             cg.lvalues[name] = v;
             return v;
         }
-        if (!findSymbol(mod, name)) { cg.err = 1; return nullptr; }
+        auto lit = locals.find(name);
+        if (lit != locals.end()) {
+            v = coerceScalar(cg, v, lit->second.scalar);
+            cg.lvalues[name] = v;
+            return v;
+        }
+        const MGLIRSymbol *sym = findSymbol(mod, name);
+        if (!sym) { cg.err = 1; return nullptr; }
+        v = coerceScalar(cg, v, typeFromIR(sym->type).scalar);
         cg.lvalues[name] = v;
         return v;
     }
@@ -420,10 +519,13 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                const std::map<std::string, MType> &locals) {
     MType t;
     switch (e->kind) {
-    case MGL_EXPR_LITERAL:
-        t.scalar = scalarIsFloat((MGLIRScalar)e->u.literal.base)
-                       ? MGLIR_SCALAR_FLOAT : MGLIR_SCALAR_INT;
+    case MGL_EXPR_LITERAL: {
+        MGLIRScalar b = (MGLIRScalar)e->u.literal.base;
+        if (b == MGLIR_SCALAR_DOUBLE || b == MGLIR_SCALAR_HALF)
+            b = MGLIR_SCALAR_FLOAT;
+        t.scalar = scalarIsFloat(b) ? MGLIR_SCALAR_FLOAT : b;
         break;
+    }
     case MGL_EXPR_VAR_REF: {
         if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
             t.scalar = MGLIR_SCALAR_FLOAT; t.vec = 4; break;
@@ -468,6 +570,36 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
               std::map<std::string, MType> *locals);
 
+/* Assemble the stage output value: vertex = {position, varyings...},
+ * fragment = render target color.  Unknown outputs fall back to undef. */
+llvm::Value *assembleReturn(Codegen &cg) {
+    if (cg.isVS) {
+        if (cg.retTy->isStructTy()) {
+            llvm::Value *ret = llvm::UndefValue::get(cg.retTy);
+            llvm::Value *pos = cg.lvalues.count("gl_Position")
+                                   ? cg.lvalues["gl_Position"]
+                                   : llvm::UndefValue::get(cg.retElems[0]);
+            ret = cg.b->CreateInsertValue(ret, pos, 0);
+            for (uint32_t i = 0; i < cg.varyings.size(); i++) {
+                llvm::Value *vv = cg.lvalues.count(cg.varyings[i]->name)
+                                      ? cg.lvalues[cg.varyings[i]->name]
+                                      : llvm::UndefValue::get(cg.retElems[i + 1]);
+                ret = cg.b->CreateInsertValue(ret, vv, i + 1);
+            }
+            return ret;
+        }
+        return cg.lvalues.count("gl_Position")
+                   ? cg.lvalues["gl_Position"]
+                   : llvm::UndefValue::get(cg.retTy);
+    }
+    VarSym *out = nullptr;
+    for (VarSym &v : *cg.auxSyms)
+        if (v.kind == VarSym::OUTPUT) { out = &v; break; }
+    return (out && cg.lvalues.count(out->name))
+               ? cg.lvalues[out->name]
+               : llvm::UndefValue::get(cg.retTy);
+}
+
 void emitCompound(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                   std::map<std::string, MType> *locals) {
     for (uint32_t i = 0; i < st->u.compound.count; i++)
@@ -487,7 +619,15 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
     case MGL_STMT_DECL: {
         MGLDecl *d = st->u.decl.decl;
         MType t;
-        if (d->init) {
+        if (d->type && d->type->base <= MGL_AST_TYPE_DOUBLE) {
+            t.scalar = (MGLIRScalar)d->type->base;
+            if (d->type->mat_cols > 1) {
+                t.cols = d->type->mat_cols;
+                t.rows = d->type->mat_rows;
+            } else {
+                t.vec = d->type->vec_size;
+            }
+        } else if (d->init) {
             t = exprType(cg, d->init, mod, *locals);
         } else {
             t.scalar = MGLIR_SCALAR_FLOAT;
@@ -496,21 +636,24 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         if (d->init) {
             llvm::Value *v = emitExpr(cg, d->init, mod, *locals);
             if (!v) return;
+            v = coerceScalar(cg, v, t.scalar);
             cg.lvalues[d->name] = v;
         }
         (*locals)[d->name] = t;
         break;
     }
     case MGL_STMT_RETURN: {
-        llvm::Value *v = st->u.ret.value ? emitExpr(cg, st->u.ret.value, mod, *locals) : nullptr;
-        if (st->u.ret.value && !v) return;
-        if (v && cg.fn->getReturnType()->isVoidTy()) {
-            /* bare return; drop value */
-            cg.b->CreateRetVoid();
-        } else if (v) {
+        if (st->u.ret.value) {
+            llvm::Value *v = emitExpr(cg, st->u.ret.value, mod, *locals);
+            if (!v) return;
             cg.b->CreateRet(v);
-        } else {
+        } else if (cg.fn->getReturnType()->isVoidTy()) {
             cg.b->CreateRetVoid();
+        } else {
+            /* Bare return; in a non-void stage function: assemble the
+             * outputs (position / varyings / frag color) as at end of
+             * body. */
+            cg.b->CreateRet(assembleReturn(cg));
         }
         /* Stop emitting unreachable code. */
         cg.err = 2;
@@ -730,48 +873,25 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
             if (v.kind == VarSym::BUFFER && v.name == u.name)
                 v.bufferOffset = u.offset;
     }
+    /* Stage-level info for return assembly. */
+    cg.retTy = retTy;
+    cg.retElems = retElems;
+    cg.varyings = varyings;
+    cg.auxSyms = &syms;
     std::map<std::string, MType> locals;
     emitStmt(cg, mainDecl->body, &mod, &locals);
 
     if (cg.err && cg.err != 2) {
-        snprintf(err_buf, err_cap, "codegen: unsupported construct");
+        snprintf(err_buf, err_cap, "%s",
+                 cg.errmsg.empty() ? "codegen: unsupported construct"
+                                   : cg.errmsg.c_str());
         mglIRModuleDestroy(&mod);
         mglGLSLTranslationUnitDestroy(tu);
         return -1;
     }
     /* Terminate if the body's last statement was a return. */
-    if (cg.err != 2) {
-        /* Assemble vertex return value. */
-        if (isVS) {
-            llvm::Value *ret = nullptr;
-            if (retTy->isStructTy()) {
-                ret = llvm::UndefValue::get(retTy);
-                llvm::Value *pos = cg.lvalues.count("gl_Position")
-                                       ? cg.lvalues["gl_Position"]
-                                       : llvm::UndefValue::get(retElems[0]);
-                ret = b.CreateInsertValue(ret, pos, 0);
-                for (uint32_t i = 0; i < varyings.size(); i++) {
-                    llvm::Value *vv = cg.lvalues.count(varyings[i]->name)
-                                          ? cg.lvalues[varyings[i]->name]
-                                          : llvm::UndefValue::get(retElems[i + 1]);
-                    ret = b.CreateInsertValue(ret, vv, i + 1);
-                }
-            } else {
-                ret = cg.lvalues.count("gl_Position")
-                          ? cg.lvalues["gl_Position"]
-                          : llvm::UndefValue::get(retTy);
-            }
-            b.CreateRet(ret);
-        } else {
-            VarSym *out = nullptr;
-            for (VarSym &v : syms)
-                if (v.kind == VarSym::OUTPUT) { out = &v; break; }
-            llvm::Value *rv = (out && cg.lvalues.count(out->name))
-                                  ? cg.lvalues[out->name]
-                                  : llvm::UndefValue::get(retTy);
-            b.CreateRet(rv);
-        }
-    }
+    if (cg.err != 2)
+        b.CreateRet(assembleReturn(cg));
 
     /* ---- AIR metadata ---- */
     std::vector<llvm::Metadata *> argNodes;
