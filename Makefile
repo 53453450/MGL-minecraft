@@ -595,6 +595,15 @@ $(build_dir)/test_mglparse: test_legacy_compat/test_mglparse.c MGL/src/mgl_glsl_
 test-mglparse: $(build_dir)/test_mglparse
 	$(build_dir)/test_mglparse
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex test-mglparse
+$(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
+		-IMGL/include \
+		test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
+		-o $@
+
+test-mglsema: $(build_dir)/test_mglsema
+	$(build_dir)/test_mglsema
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex test-mglparse test-mglsema
 
 -include $(deps)
