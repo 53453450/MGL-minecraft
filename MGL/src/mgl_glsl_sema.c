@@ -1185,6 +1185,12 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
     case MGL_EXPR_VAR_REF: {
         Sym *sym = symtab_lookup(tab, e->u.var_ref.name);
         if (!sym) {
+            if (strcmp(e->u.var_ref.name, "gl_Position") == 0) {
+                /* Vertex-stage built-in output; the AIR backend maps it to
+                 * the air.position output entry. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4));
+            }
             sema_error(s, e->line, "undeclared identifier '%s'",
                        e->u.var_ref.name);
             return NULL;
@@ -1200,6 +1206,31 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         MGLIRType *obj = check_expr(s, tab, e->u.member.object);
         if (!obj) {
             return NULL;
+        }
+        if (obj->kind == MGLIR_TYPE_VECTOR && obj->rows <= 4) {
+            /* Swizzle: xyzw/rgba component selection. */
+            const char *f = e->u.member.field;
+            const char *names = "xyzwrgba";
+            size_t n = 0;
+            for (const char *p = f; *p; p++) {
+                if (!strchr(names, *p)) {
+                    sema_error(s, e->line, "no member named '%s' in struct",
+                               e->u.member.field);
+                    return NULL;
+                }
+                n++;
+                if (n > 4) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+            }
+            if (n == 0) {
+                sema_error(s, e->line, "invalid swizzle '%s'",
+                           e->u.member.field);
+                return NULL;
+            }
+            return scratch_type(s, mglIRTypeVector(obj->scalar, (uint32_t)n));
         }
         const MGLIRType *m = struct_member(obj, e->u.member.field, NULL);
         if (!m) {

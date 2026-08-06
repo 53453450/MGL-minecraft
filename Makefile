@@ -604,6 +604,27 @@ $(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_se
 test-mglsema: $(build_dir)/test_mglsema
 	$(build_dir)/test_mglsema
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex test-mglparse test-mglsema
+# M1 AIR backend: GLSL -> metallib -> PSO gate (C++20 + LLVM, Metal runtime).
+LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
+LLVM_CXX ?= $(APPLE_CLANG)
+LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include
+LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15
+
+$(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+	MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+	MGL/src/mgl_ir.c
+	$(LLVM_CXX) -x objective-c++ -fobjc-arc -gfull -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
+		-framework Cocoa -framework Foundation -framework Metal \
+		test_legacy_compat/test_mglair.mm \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+		MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		MGL/src/mgl_ir.c \
+		-o $@
+
+test-mglair: $(build_dir)/test_mglair
+	$(build_dir)/test_mglair
+
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex test-mglparse test-mglsema test-mglair
 
 -include $(deps)

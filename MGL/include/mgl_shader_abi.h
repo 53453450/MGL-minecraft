@@ -1,0 +1,57 @@
+/*
+ * Copyright (C) Michael Larson on 1/6/2022
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * mgl_shader_abi.h
+ * MGL - pure C ABI boundary between the C/ObjC side and the C++ AIR
+ * backend (see docs/AIR_SHADER_BACKEND_DESIGN.md).  C/ObjC code never
+ * sees LLVM types; it hands GLSL source to mglShaderCompileGLSL and
+ * receives a self-contained .metallib byte blob for newLibraryWithData.
+ */
+
+#ifndef MGL_SHADER_ABI_H
+#define MGL_SHADER_ABI_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef enum MGLShaderStage {
+    MGL_STAGE_VERTEX = 0,
+    MGL_STAGE_FRAGMENT,
+    MGL_STAGE_COMPUTE,
+} MGLShaderStage;
+
+/* Compile a GLSL source string for one stage into a .metallib byte blob.
+ *
+ * On success returns 0 and sets *metallib_out to malloc'd bytes
+ * (caller frees) and *size_out to its length.
+ * On failure returns -1 and writes a NUL-terminated message into err_buf
+ * (err_cap bytes) if err_buf is non-NULL.
+ */
+int mglShaderCompileGLSL(const char *src, int stage,
+                         unsigned char **metallib_out, size_t *size_out,
+                         char *err_buf, size_t err_cap);
+
+/* Free bytes returned by mglShaderCompileGLSL. */
+void mglShaderFree(void *bytes);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* MGL_SHADER_ABI_H */
