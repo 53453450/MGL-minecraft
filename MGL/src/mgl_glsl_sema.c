@@ -37,7 +37,42 @@ typedef struct Sema {
     MGLSemaError *errors;
     uint32_t error_count;
     uint32_t error_cap;
+    /* scratch types created by expression typing (check_expr etc.); the M0
+     * module does not hold typed expression IR, so these have no owner.
+     * Collected here and destroyed together at the end of the check. */
+    MGLIRType **tmp_types;
+    uint32_t tmp_count;
+    uint32_t tmp_cap;
 } Sema;
+
+static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
+{
+    if (!t || !s) {
+        return t;
+    }
+    if (s->tmp_count == s->tmp_cap) {
+        uint32_t ncap = s->tmp_cap ? s->tmp_cap * 2 : 16;
+        MGLIRType **n = (MGLIRType **)realloc(
+            s->tmp_types, ncap * sizeof(MGLIRType *));
+        if (!n) {
+            return t;
+        }
+        s->tmp_types = n;
+        s->tmp_cap = ncap;
+    }
+    s->tmp_types[s->tmp_count++] = t;
+    return t;
+}
+
+static void scratch_destroy(Sema *s)
+{
+    for (uint32_t i = 0; i < s->tmp_count; i++) {
+        mglIRTypeDestroy(s->tmp_types[i]);
+    }
+    free(s->tmp_types);
+    s->tmp_types = NULL;
+    s->tmp_count = s->tmp_cap = 0;
+}
 
 static void sema_error(Sema *s, uint32_t line, const char *fmt, ...)
 {
@@ -723,7 +758,7 @@ static int is_numeric(const MGLIRType *t)
     }
 }
 
-static MGLIRType *result_numeric(MGLIRType *a, MGLIRType *b)
+static MGLIRType *result_numeric(Sema *s, MGLIRType *a, MGLIRType *b)
 {
     /* promote the common scalar of a/b */
     MGLIRScalar sc = a->scalar;
@@ -743,9 +778,9 @@ static MGLIRType *result_numeric(MGLIRType *a, MGLIRType *b)
     if (cols > 1) {
         MGLIRType *v = mglIRTypeVector(sc, cols);
         mglIRTypeDestroy(base);
-        return v;
+        return scratch_type(s, v);
     }
-    return base;
+    return scratch_type(s, base);
 }
 
 /* GLSL 4.60 matrix multiplication typing:
@@ -766,7 +801,7 @@ static MGLIRType *matrix_mul_result(Sema *s, const MGLExpr *e, MGLIRType *l,
                        l->cols, l->rows, r->cols, r->rows);
             return NULL;
         }
-        return mglIRTypeMatrix(sc, r->cols, l->rows);
+        return scratch_type(s, mglIRTypeMatrix(sc, r->cols, l->rows));
     }
     if (l->kind == MGLIR_TYPE_MATRIX && r->kind == MGLIR_TYPE_VECTOR) {
         if (l->cols != r->cols) {
@@ -775,7 +810,7 @@ static MGLIRType *matrix_mul_result(Sema *s, const MGLExpr *e, MGLIRType *l,
                        l->cols, l->rows, l->cols);
             return NULL;
         }
-        return mglIRTypeVector(sc, l->rows);
+        return scratch_type(s, mglIRTypeVector(sc, l->rows));
     }
     if (l->kind == MGLIR_TYPE_VECTOR && r->kind == MGLIR_TYPE_MATRIX) {
         if (l->cols != r->rows) {
@@ -784,7 +819,7 @@ static MGLIRType *matrix_mul_result(Sema *s, const MGLExpr *e, MGLIRType *l,
                        l->cols, r->rows);
             return NULL;
         }
-        return mglIRTypeVector(sc, r->cols);
+        return scratch_type(s, mglIRTypeVector(sc, r->cols));
     }
     /* matrix * scalar: same shape */
     return l->kind == MGLIR_TYPE_MATRIX ? l : r;
@@ -841,7 +876,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         } else if (e->u.literal.base == MGL_AST_TYPE_INT) {
             sc = MGLIR_SCALAR_INT;
         }
-        MGLIRType *t = mglIRTypeScalar(sc);
+        MGLIRType *t = scratch_type(s, mglIRTypeScalar(sc));
         /* Literal type is cached on the node for the backend. */
         return t;
     }
@@ -887,11 +922,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         }
         if (obj->kind == MGLIR_TYPE_MATRIX) {
             /* matrix[i] yields a column vector */
-            return mglIRTypeVector(obj->scalar, obj->rows);
+            return scratch_type(s, mglIRTypeVector(obj->scalar, obj->rows));
         }
         if (obj->kind == MGLIR_TYPE_VECTOR) {
             /* vector[i] yields a scalar component */
-            return mglIRTypeScalar(obj->scalar);
+            return scratch_type(s, mglIRTypeScalar(obj->scalar));
         }
         sema_error(s, e->line, "indexing a non-array type");
         return NULL;
@@ -918,7 +953,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                            e->u.call.name);
                 return NULL;
             }
-            MGLIRType *t = resolve_type_spec(s, tab, &fake);
+            MGLIRType *t = scratch_type(s, resolve_type_spec(s, tab, &fake));
             if (t) {
                 /* constructors have no real function body; argument count is
                  * checked loosely here, exact checking with the builtin table */
@@ -957,7 +992,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "logical not requires bool");
                 return NULL;
             }
-            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+            return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_BNOT:
             if (!is_numeric(o) || o->scalar == MGLIR_SCALAR_FLOAT ||
                 o->scalar == MGLIR_SCALAR_DOUBLE) {
@@ -999,21 +1034,21 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                            ir_type_str(r, tb, sizeof(tb)));
                 return NULL;
             }
-            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+            return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_LT: case MGL_OP_LE: case MGL_OP_GT: case MGL_OP_GE:
             if (!is_numeric(l) || !is_numeric(r)) {
                 sema_error(s, e->line, "relational '%s' requires numeric operands",
                            op_name(e->u.binary.op));
                 return NULL;
             }
-            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+            return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_LAND: case MGL_OP_LOR:
             if (l->scalar != MGLIR_SCALAR_BOOL || r->scalar != MGLIR_SCALAR_BOOL) {
                 sema_error(s, e->line, "logical '%s' requires bool operands",
                            op_name(e->u.binary.op));
                 return NULL;
             }
-            return mglIRTypeScalar(MGLIR_SCALAR_BOOL);
+            return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_BOOL));
         case MGL_OP_AND: case MGL_OP_OR: case MGL_OP_XOR:
         case MGL_OP_SHL: case MGL_OP_SHR:
             if (!is_numeric(l) || !is_numeric(r) ||
@@ -1040,7 +1075,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                            op_name(e->u.binary.op));
                 return NULL;
             }
-            return result_numeric(l, r);
+            return result_numeric(s, l, r);
         case MGL_OP_MUL:
             if (!is_numeric(l) || !is_numeric(r)) {
                 sema_error(s, e->line, "arithmetic '*' requires numeric operands",
@@ -1050,7 +1085,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             if (l->kind == MGLIR_TYPE_MATRIX || r->kind == MGLIR_TYPE_MATRIX) {
                 return matrix_mul_result(s, e, l, r);
             }
-            return result_numeric(l, r);
+            return result_numeric(s, l, r);
         case MGL_OP_DIV: case MGL_OP_MOD:
             if (!is_numeric(l) || !is_numeric(r)) {
                 sema_error(s, e->line, "arithmetic '%s' requires numeric operands",
@@ -1062,7 +1097,7 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 sema_error(s, e->line, "'%%' requires integer operands");
                 return NULL;
             }
-            return result_numeric(l, r);
+            return result_numeric(s, l, r);
         default:
             return l;
         }
@@ -1456,6 +1491,7 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, MGLIRModule *module,
         *error_count = s.error_count;
     }
     symtab_destroy(&tab);
+    scratch_destroy(&s);
     return (int)s.error_count;
 }
 
