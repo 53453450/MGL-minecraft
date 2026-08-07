@@ -1520,10 +1520,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                            i32, {tex, lod});
                 llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d",
                                            i32, {tex, lod});
-                llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
-                llvm::Value *sz = llvm::UndefValue::get(v2f32);
-                w = cg.b->CreateUIToFP(w, f32);
-                h = cg.b->CreateUIToFP(h, f32);
+                llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+                llvm::Value *sz = llvm::UndefValue::get(v2i32);
                 sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
                 sz = cg.b->CreateInsertElement(sz, h, cg.b->getInt32(1));
                 return sz;
@@ -1573,9 +1571,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                          locals, &ty);
             if (!p) return nullptr;
             p = cg.b->CreateBitCast(p, val->getType()->getPointerTo(1));
-            return cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, p, val,
-                                         llvm::MaybeAlign(),
-                                         llvm::AtomicOrdering::Monotonic);
+            llvm::Value *old =
+                cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, p, val,
+                                      llvm::MaybeAlign(),
+                                      llvm::AtomicOrdering::Monotonic);
+            /* GLSL 4.60 8.11: atomicAdd returns the new value. */
+            return cg.b->CreateAdd(old, val);
         }
         cg.err = 1;
         cg.errmsg = std::string("codegen: call to '") + name +

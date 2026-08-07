@@ -892,6 +892,7 @@ typedef enum {
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
+    BI_RET_IVEC2,   /* ivec2 */
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
     BI_RET_MAT4,    /* mat4 */
@@ -914,9 +915,9 @@ static const BiFn kBuiltins[] = {
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
-    { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_VEC2 },
-    { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_VEC3 },
-    { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_VEC2 },
+    { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
+    { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
+    { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "length",    1, { BI_ARG_GENF }, BI_RET_FLOAT },
     { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
@@ -1161,6 +1162,8 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 3);
         case BI_RET_VEC4:
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
+        case BI_RET_IVEC2:
+            return mglIRTypeVector(MGLIR_SCALAR_INT, 2);
         case BI_RET_MAT2:
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 2, 2);
         case BI_RET_MAT3:

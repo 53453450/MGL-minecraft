@@ -220,7 +220,7 @@ static const char *kCS =
     "    b.data[2] = r1.x + r2.y + r3.x;\n"
     "    b.data[3] = b.data[1] + b.data[2];\n"
     "    a.counter += 5;\n"
-    "    atomicAdd(a.counter, 7);\n"
+    "    uCounter += atomicAdd(a.counter, 7);\n"
     "    vec4 tc = texture(tex, vec2(0.5, 0.5));\n"
     "    vec4 tl = textureLod(tex, vec2(0.25, 0.75), 0.0);\n"
     "    uCounter += int(tc.r * 100.0) + int(tl.g * 100.0);\n"
@@ -439,8 +439,8 @@ int main(int argc, const char *argv[]) {
          * (data[] and an atomic counter), a 2D texture, plus
          * gl_GlobalInvocationID and the new builtins; dispatch a single
          * thread and verify every device buffer
-         * (41 + 1 + 1328 + 100 + 0 + 4 -> 1474, data[3] = 13.285...,
-         * counter = 5 + 7 = 12). */
+         * (41 + 1 + 1328 + 100 + 0 + 4 + 12 -> 1486, data[3] =
+         * 13.285..., counter = 5 + 7 = 12). */
         unsigned char *csBytes = NULL;
         size_t csSize = 0;
         if (mglShaderCompileGLSL(kCS, MGL_STAGE_COMPUTE, &csBytes, &csSize,
@@ -505,7 +505,7 @@ int main(int argc, const char *argv[]) {
         [cb commit];
         [cb waitUntilCompleted];
         int csGot = ((int *)cbuf.contents)[0];
-        if (csGot != 1474) {
+        if (csGot != 1486) {
             fprintf(stderr, "COMPUTE_VALUE_FAIL: %d\n", csGot);
             return 1;
         }
