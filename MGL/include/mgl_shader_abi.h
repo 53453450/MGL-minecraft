@@ -60,8 +60,11 @@ int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
 
 /* Compile one stage through the self-hosted frontend + AIR backend and
  * export its resource tables: metallib bytes + SpirvResourceList.
+ * attrib_names is an optional MAX_ATTRIBS-sized array of glBindAttribLocation
+ * names (index = desired location); pass NULL for no explicit bindings.
  * Returns 0 on success; lists may be NULL to skip reflection. */
 int mglAirCompileGLSLWithReflect(const char *src, int stage,
+                                 const char *const *attrib_names,
                                  unsigned char **metallib_out,
                                  size_t *size_out,
                                  SpirvResourceList lists[_MAX_SPIRV_RES],

@@ -297,6 +297,10 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
                 "MGL BUG: mglFreeProgram name=%u ptr=%p is STILL in hash table — "
                 "will cause dangling pointer (refcount=%d delete_status=%d)\n",
                 ptr->name, (void *)ptr, ptr->refcount, ptr->delete_status);
+        /* Context teardown frees programs that were never deleted through
+         * glDeleteProgram; drop the table entry so the table's own teardown
+         * does not chase the dangling pointer. */
+        deleteHashElement(&STATE(program_table), ptr->name);
     }
 
     /* linked_glsl_program is a non-NULL linked-state marker (set to
@@ -832,9 +836,21 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     unsigned char *bytes = NULL;
     size_t size = 0;
     char err[512] = {0};
-    if (mglAirCompileGLSLWithReflect(shader->src, air_stage, &bytes, &size,
-                                     pptr->spirv_resources_list[stage],
-                                     err, sizeof err) != 0) {
+    /* Snapshot the attribute bindings: the source strings are owned by
+     * this program and could be released between stage compiles. */
+    const char *attrib_snapshot[MAX_ATTRIBS] = {NULL};
+    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+        if (pptr->attrib_location_names[ai]) {
+            attrib_snapshot[ai] = strdup(pptr->attrib_location_names[ai]);
+        }
+    }
+    int air_rc = mglAirCompileGLSLWithReflect(
+        shader->src, air_stage, attrib_snapshot, &bytes, &size,
+        pptr->spirv_resources_list[stage], err, sizeof err);
+    for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
+        free((void *)attrib_snapshot[ai]);
+    }
+    if (air_rc != 0) {
         fprintf(stderr,
                 "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
                 pptr->name, stage, err);

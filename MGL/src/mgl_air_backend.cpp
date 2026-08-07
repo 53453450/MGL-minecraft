@@ -3149,7 +3149,35 @@ void addModuleFlags(llvm::Module *m) {
 
 } /* namespace */
 
+/* Desired vertex attribute location: explicit glBindAttribLocation
+ * bindings first, then the Mojang stable names (mirroring the legacy
+ * mglDesiredAttribLocationForName default table).  UINT32_MAX means no
+ * preference (declaration order applies). */
+static uint32_t airAttribLocation(const char *name,
+                                  const char *const *attrib_names) {
+    if (name && attrib_names) {
+        for (int i = 0; i < 32; i++) {
+            if (attrib_names[i] && strcmp(attrib_names[i], name) == 0) {
+                return (uint32_t)i;
+            }
+        }
+    }
+    if (name) {
+        static const struct { const char *n; uint32_t l; } def[] = {
+            {"Position", 0}, {"Color", 1}, {"UV0", 2},
+            {"UV1", 3}, {"UV2", 4}, {"Normal", 5},
+        };
+        for (const auto &d : def) {
+            if (strcmp(d.n, name) == 0) {
+                return d.l;
+            }
+        }
+    }
+    return UINT32_MAX;
+}
+
 static int compileGLSLImpl(const char *src, int stage, int capture,
+                           const char *const *attrib_names,
                            unsigned char **metallib_out, size_t *size_out,
                            char *err_buf, size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
@@ -3695,6 +3723,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t attrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
+            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
+            if (want != UINT32_MAX) attrLoc = want;
             std::vector<llvm::Metadata *> elems = {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
@@ -3855,8 +3885,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                                     unsigned char **metallib_out,
                                     size_t *size_out, char *err_buf,
                                     size_t err_cap) {
-    return compileGLSLImpl(src, stage, 0, metallib_out, size_out, err_buf,
-                           err_cap);
+    return compileGLSLImpl(src, stage, 0, nullptr, metallib_out, size_out,
+                           err_buf, err_cap);
 }
 
 /* XFB capture variant: the vertex stage writes its full output record
@@ -3867,13 +3897,14 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            unsigned char **metallib_out,
                                            size_t *size_out, char *err_buf,
                                            size_t err_cap) {
-    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, metallib_out, size_out,
-                           err_buf, err_cap);
+    return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, nullptr, metallib_out,
+                           size_out, err_buf, err_cap);
 }
 
 extern "C" int mglAirCompileGLSLWithReflect(
-    const char *src, int stage, unsigned char **metallib_out,
-    size_t *size_out, SpirvResourceList lists[_MAX_SPIRV_RES], char *err_buf,
+    const char *src, int stage, const char *const *attrib_names,
+    unsigned char **metallib_out, size_t *size_out,
+    SpirvResourceList lists[_MAX_SPIRV_RES], char *err_buf,
     size_t err_cap) {
     if (!src || !metallib_out || !size_out) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
@@ -3905,12 +3936,13 @@ extern "C" int mglAirCompileGLSLWithReflect(
     mglGLSLSemanticCheckDestroy(errors, error_count);
 
     if (lists)
-        mglAirReflectModule(&mod, stage, lists, err_buf, err_cap);
+        mglAirReflectModule(&mod, stage, attrib_names, lists, err_buf,
+                            err_cap);
     mglIRModuleDestroy(&mod);
     mglGLSLTranslationUnitDestroy(tu);
 
-    return compileGLSLImpl(src, stage, 0, metallib_out, size_out, err_buf,
-                           err_cap);
+    return compileGLSLImpl(src, stage, 0, attrib_names, metallib_out,
+                           size_out, err_buf, err_cap);
 }
 
 extern "C" void mglShaderFree(void *bytes) {

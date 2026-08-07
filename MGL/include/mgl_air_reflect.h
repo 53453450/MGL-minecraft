@@ -32,6 +32,7 @@ GLint mglAirGLArraySizeFromIR(const MGLIRType *t);
  * must point at zeroed SpirvResourceList arrays sized [_MAX_SPIRV_RES].
  * Returns 0 on success, -1 on failure (err filled when provided). */
 int mglAirReflectModule(const MGLIRModule *mod, int stage,
+                        const char *const *attrib_names,
                         SpirvResourceList lists[_MAX_SPIRV_RES],
                         char *err, size_t errCap);
 

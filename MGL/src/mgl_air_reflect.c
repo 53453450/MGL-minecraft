@@ -154,7 +154,32 @@ static void destroy_list(SpirvResourceList *list)
     list->count = 0;
 }
 
+static uint32_t air_reflect_attrib_location(const char *name,
+                                             const char *const *attrib_names)
+{
+    if (name && attrib_names) {
+        for (int i = 0; i < 32; i++) {
+            if (attrib_names[i] && strcmp(attrib_names[i], name) == 0) {
+                return (uint32_t)i;
+            }
+        }
+    }
+    if (name) {
+        static const struct { const char *n; uint32_t l; } def[] = {
+            {"Position", 0}, {"Color", 1}, {"UV0", 2},
+            {"UV1", 3}, {"UV2", 4}, {"Normal", 5},
+        };
+        for (size_t k = 0; k < sizeof(def) / sizeof(def[0]); k++) {
+            if (strcmp(def[k].n, name) == 0) {
+                return def[k].l;
+            }
+        }
+    }
+    return UINT32_MAX;
+}
+
 int mglAirReflectModule(const MGLIRModule *mod, int stage,
+                        const char *const *attrib_names,
                         SpirvResourceList lists[_MAX_SPIRV_RES],
                         char *err, size_t errCap)
 {
@@ -229,9 +254,21 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
                           binding, stage);
         } else if (q & MGL_AST_Q_IN) {
+            /* Desired location: explicit bindings, stable names, then
+             * declaration order (glslang AUTO_MAP_LOCATIONS). */
+            uint32_t want = air_reflect_attrib_location(s->name,
+                                                        attrib_names);
+            if (want != UINT32_MAX) {
+                location = want;
+            } else if (location == UINT32_MAX) {
+                location = lists[_STAGE_INPUT_RES].count;
+            }
             push_resource(&lists[_STAGE_INPUT_RES], s, t, location, binding,
                           stage);
         } else if (q & MGL_AST_Q_OUT) {
+            if (location == UINT32_MAX) {
+                location = lists[_STAGE_OUTPUT_RES].count;
+            }
             push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, binding,
                           stage);
         }
