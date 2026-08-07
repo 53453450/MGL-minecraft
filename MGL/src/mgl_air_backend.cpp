@@ -91,9 +91,15 @@ struct LoopCtx {
     llvm::BasicBlock *incrBB = nullptr;  /* merge block; while/for continue target */
     std::map<std::string, llvm::PHINode *> phis;
     std::vector<std::pair<llvm::BasicBlock *,
-                          std::map<std::string, llvm::Value *>>> breakSnaps;
-    std::vector<std::pair<llvm::BasicBlock *,
                           std::map<std::string, llvm::Value *>>> contSnaps;
+};
+
+/* Shared by loops and switch: break jumps to endBB carrying a snapshot
+ * of the live values; the owner merges them into phis at endBB. */
+struct BreakCtx {
+    llvm::BasicBlock *endBB;
+    std::vector<std::pair<llvm::BasicBlock *,
+                          std::map<std::string, llvm::Value *>>> snaps;
 };
 
 struct Codegen {
@@ -114,6 +120,7 @@ struct Codegen {
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
     std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
+    std::vector<BreakCtx *> breakStack;  /* innermost loop/switch is last */
 };
 
 /* ---- type helpers ---------------------------------------------------- */
@@ -1208,6 +1215,18 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         cg.lvalues[name] = v;
         return v;
     }
+    case MGL_EXPR_TERNARY: {
+        llvm::Value *c = emitExpr(cg, e->u.ternary.cond, mod, locals);
+        llvm::Value *tv = emitExpr(cg, e->u.ternary.then, mod, locals);
+        llvm::Value *ev = emitExpr(cg, e->u.ternary.else_, mod, locals);
+        if (!c || !tv || !ev) return nullptr;
+        if (!c->getType()->isIntegerTy(1)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: ternary condition must be a scalar bool";
+            return nullptr;
+        }
+        return cg.b->CreateSelect(c, tv, ev);
+    }
     default:
         cg.err = 1;
         cg.errmsg = std::string("codegen: unsupported construct kind ") +
@@ -1317,6 +1336,9 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     case MGL_EXPR_BINARY:
     case MGL_EXPR_ASSIGN:
         t = exprType(cg, e->u.binary.lhs, mod, locals);
+        break;
+    case MGL_EXPR_TERNARY:
+        t = exprType(cg, e->u.ternary.then, mod, locals);
         break;
     default:
         break;
@@ -1746,6 +1768,22 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         cg.err = 2;
         break;
     }
+    case MGL_STMT_DISCARD: {
+        /* discard in fragment stage: lowers to air.discard_fragment(). */
+        if (cg.isVS) {
+            cg.err = 1;
+            cg.errmsg = "codegen: discard is only allowed in fragment shaders";
+            return;
+        }
+        llvm::Function *df = llvm::cast<llvm::Function>(
+            cg.mod->getOrInsertFunction("air.discard_fragment",
+                                        cg.b->getVoidTy())
+                .getCallee());
+        cg.b->CreateCall(df);
+        cg.b->CreateRet(assembleReturn(cg));
+        cg.err = 2;
+        break;
+    }
     case MGL_STMT_IF: {
         /* if (cond) then [else else_]: SSA via phi at the merge block.
          * Nested ifs work recursively; a return inside a branch is
@@ -1898,6 +1936,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         }
 
         cg.loopStack.push_back(&lc);
+        BreakCtx brk{bbEnd, {}};
+        cg.breakStack.push_back(&brk);
         if (st->kind == MGL_STMT_DO_WHILE) {
             emitStmt(cg, st->u.whilex.body, mod, locals);
             if (cg.err == 1) return;
@@ -1983,6 +2023,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             cg.b->CreateBr(bbCond);
         }
         cg.loopStack.pop_back();
+        cg.breakStack.pop_back();
 
         cg.b->SetInsertPoint(bbEnd);
         for (auto &n : names) {
@@ -1990,9 +2031,9 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                                  ? cg.lvalues[n]
                                  : lc.phis[n];
             llvm::PHINode *e =
-                cg.b->CreatePHI(v->getType(), 1 + lc.breakSnaps.size(), n);
+                cg.b->CreatePHI(v->getType(), 1 + brk.snaps.size(), n);
             e->addIncoming(v, bbCond);
-            for (auto &bs : lc.breakSnaps) {
+            for (auto &bs : brk.snaps) {
                 auto it = bs.second.find(n);
                 e->addIncoming(it != bs.second.end() ? it->second : v,
                                bs.first);
@@ -2001,21 +2042,154 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         }
         break;
     }
-    case MGL_STMT_BREAK:
-    case MGL_STMT_CONTINUE: {
-        if (cg.loopStack.empty()) {
+    case MGL_STMT_SWITCH: {
+        /* switch (c) { case v: ... default: ... } lowered to a chain of
+         * equality checks; each case/default starts a segment, segments
+         * fall through to the next one (or the exit) unless a break (or
+         * return) terminates them.  break carries a value snapshot and is
+         * merged into phis at the exit block. */
+        llvm::Value *cond = emitExpr(cg, st->u.switchx.cond, mod, *locals);
+        if (!cond) return;
+        if (!cond->getType()->isIntegerTy()) {
             cg.err = 1;
-            cg.errmsg = "codegen: break/continue outside of a loop";
+            cg.errmsg = "codegen: switch condition must be an integer";
             return;
         }
-        LoopCtx *lc = cg.loopStack.back();
-        if (st->kind == MGL_STMT_BREAK) {
-            std::map<std::string, llvm::Value *> snap;
-            for (auto &kv : lc->phis)
-                snap[kv.first] = cg.lvalues[kv.first];
-            lc->breakSnaps.push_back({cg.b->GetInsertBlock(), snap});
-            cg.b->CreateBr(lc->endBB);
+        int savedErr = cg.err;
+        cg.err = 0;
+        std::map<std::string, llvm::Value *> snap = cg.lvalues;
+
+        std::vector<MGLStmt *> bodyStmts;
+        if (st->u.switchx.body->kind == MGL_STMT_COMPOUND) {
+            const auto *cp = &st->u.switchx.body->u.compound;
+            bodyStmts.assign(cp->stmts, cp->stmts + cp->count);
         } else {
+            bodyStmts.push_back(st->u.switchx.body);
+        }
+
+        struct Seg {
+            std::vector<llvm::ConstantInt *> vals;
+            bool isDef = false;
+            llvm::BasicBlock *entry = nullptr;
+            std::vector<MGLStmt *> stmts;
+        };
+        std::vector<Seg> segs;
+        for (auto *s : bodyStmts) {
+            if (s->kind == MGL_STMT_CASE || s->kind == MGL_STMT_DEFAULT) {
+                segs.push_back(Seg{});
+                if (s->kind == MGL_STMT_DEFAULT) {
+                    segs.back().isDef = true;
+                    continue;
+                }
+                const MGLExpr *v = s->u.casex.value;
+                if (v->kind != MGL_EXPR_LITERAL ||
+                    (v->u.literal.base != MGL_AST_TYPE_INT &&
+                     v->u.literal.base != MGL_AST_TYPE_UINT)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: case value must be a constant integer";
+                    return;
+                }
+                segs.back().vals.push_back(llvm::cast<llvm::ConstantInt>(
+                    llvm::ConstantInt::get(cond->getType(),
+                                           (uint64_t)v->u.literal.value,
+                                           true)));
+            } else if (!segs.empty()) {
+                segs.back().stmts.push_back(s);
+            }
+        }
+
+        llvm::BasicBlock *bbEnd =
+            llvm::BasicBlock::Create(*cg.ctx, "switch.end", cg.fn);
+        for (auto &seg : segs)
+            seg.entry =
+                llvm::BasicBlock::Create(*cg.ctx, "switch.case", cg.fn);
+
+        BreakCtx brk{bbEnd, {}};
+        cg.breakStack.push_back(&brk);
+
+        llvm::BasicBlock *check =
+            llvm::BasicBlock::Create(*cg.ctx, "switch.check", cg.fn);
+        cg.b->CreateBr(check);
+        for (auto &seg : segs) {
+            for (auto *v : seg.vals) {
+                llvm::BasicBlock *next = llvm::BasicBlock::Create(
+                    *cg.ctx, "switch.check", cg.fn);
+                cg.b->SetInsertPoint(check);
+                llvm::Value *eq = cg.b->CreateICmpEQ(cond, v);
+                cg.b->CreateCondBr(eq, seg.entry, next);
+                check = next;
+            }
+        }
+        llvm::BasicBlock *defEntry = nullptr;
+        for (auto &seg : segs)
+            if (seg.isDef) { defEntry = seg.entry; break; }
+        cg.b->SetInsertPoint(check);
+        cg.b->CreateBr(defEntry ? defEntry : bbEnd);
+
+        llvm::BasicBlock *lastTail = nullptr;
+        for (size_t i = 0; i < segs.size(); i++) {
+            cg.b->SetInsertPoint(segs[i].entry);
+            for (auto *s : segs[i].stmts) {
+                emitStmt(cg, s, mod, locals);
+                if (cg.err == 1) return;
+            }
+            llvm::BasicBlock *tail = cg.b->GetInsertBlock();
+            if (!tail->getTerminator()) {
+                if (i + 1 < segs.size())
+                    cg.b->CreateBr(segs[i + 1].entry);
+                else {
+                    cg.b->CreateBr(bbEnd);
+                    lastTail = tail;
+                }
+            }
+        }
+        cg.breakStack.pop_back();
+
+        cg.b->SetInsertPoint(bbEnd);
+        for (auto &kv : snap) {
+            llvm::Value *v = kv.second;
+            llvm::PHINode *e = cg.b->CreatePHI(
+                v->getType(),
+                1 + brk.snaps.size() + (lastTail ? 1 : 0) +
+                    (defEntry ? 0 : 1),
+                kv.first);
+            /* No default label: the last check block falls through to
+             * the exit carrying the entry values. */
+            if (!defEntry)
+                e->addIncoming(v, check);
+            if (lastTail)
+                e->addIncoming(cg.lvalues[kv.first], lastTail);
+            for (auto &bs : brk.snaps) {
+                auto it = bs.second.find(kv.first);
+                e->addIncoming(it != bs.second.end() ? it->second : v,
+                               bs.first);
+            }
+            cg.lvalues[kv.first] = e;
+        }
+        cg.err = savedErr;
+        break;
+    }
+    case MGL_STMT_BREAK:
+    case MGL_STMT_CONTINUE: {
+        if (st->kind == MGL_STMT_BREAK) {
+            if (cg.breakStack.empty()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: break outside of a loop or switch";
+                return;
+            }
+            BreakCtx *bc = cg.breakStack.back();
+            std::map<std::string, llvm::Value *> snapB;
+            for (auto &kv : cg.lvalues)
+                snapB[kv.first] = kv.second;
+            bc->snaps.push_back({cg.b->GetInsertBlock(), snapB});
+            cg.b->CreateBr(bc->endBB);
+        } else {
+            if (cg.loopStack.empty()) {
+                cg.err = 1;
+                cg.errmsg = "codegen: continue outside of a loop";
+                return;
+            }
+            LoopCtx *lc = cg.loopStack.back();
             if (lc->incrBB) {
                 std::map<std::string, llvm::Value *> snap;
                 for (auto &kv : lc->phis)
