@@ -281,6 +281,9 @@ MType swizzleType(const MType &base, size_t lanes) {
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                const std::map<std::string, MType> &locals);
 
+/* Broadcast a scalar to the lane type of a vector type. */
+llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
+
 /* Scalar/vector numeric binary op (no matrices).  Signedness follows the
  * operand types; comparisons yield bool per GLSL; && / || use LLVM's
  * branch-based short-circuit ops. */
@@ -293,6 +296,12 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
         if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
         else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
         rfp = r->getType()->isFPOrFPVectorTy();
+    }
+    bool lv = l->getType()->isVectorTy();
+    bool rv = r->getType()->isVectorTy();
+        if (lv != rv) {
+        if (lv) r = broadcastTo(cg, r, l->getType());
+        else l = broadcastTo(cg, l, r->getType());
     }
     bool fp = l->getType()->isFPOrFPVectorTy();
     bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT;
@@ -768,6 +777,112 @@ static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
                                       const char *name, const MGLIRModule *mod,
                                       const std::map<std::string, MType> &locals);
 
+/* Dynamic read of obj[idx]: matrix -> column (select chain over the
+ * columns, since extractvalue needs a constant index), vector ->
+ * component.  `idx` must be an integer value. */
+static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
+                                   const MType &bt, llvm::Value *idx) {
+    if (bt.isMatrix()) {
+        auto *arr = llvm::cast<llvm::ArrayType>(obj->getType());
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *res = nullptr;
+        for (uint32_t i = 0; i < C; i++) {
+            llvm::Value *col = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            res = res ? cg.b->CreateSelect(eq, col, res) : col;
+        }
+        return res;
+    }
+    if (obj->getType()->isVectorTy())
+        return cg.b->CreateExtractElement(obj, idx);
+    return nullptr;
+}
+
+/* Dynamic write of obj[idx] = val; returns the updated aggregate. */
+static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
+                                     const MType &bt, llvm::Value *idx,
+                                     llvm::Value *val) {
+    if (bt.isMatrix()) {
+        auto *arr = llvm::cast<llvm::ArrayType>(obj->getType());
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *out = llvm::UndefValue::get(obj->getType());
+        for (uint32_t i = 0; i < C; i++) {
+            llvm::Value *col = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            llvm::Value *nc = cg.b->CreateSelect(eq, val, col);
+            out = cg.b->CreateInsertValue(out, nc, i);
+        }
+        return out;
+    }
+    if (obj->getType()->isVectorTy()) {
+        auto *vt = llvm::cast<llvm::FixedVectorType>(obj->getType());
+        uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+        llvm::Value *out = llvm::UndefValue::get(obj->getType());
+        for (uint32_t i = 0; i < n; i++) {
+            llvm::Value *el = cg.b->CreateExtractElement(
+                obj, llvm::ConstantInt::get(idx->getType(), i));
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            llvm::Value *ne = cg.b->CreateSelect(
+                eq, val, el);
+            out = cg.b->CreateInsertElement(
+                out, ne, llvm::ConstantInt::get(idx->getType(), i));
+        }
+        return out;
+    }
+    return nullptr;
+}
+
+/* Read an index chain (x[i][j]) from the root value without re-emitting
+ * the object expression. */
+static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
+                                   llvm::Value *rootVal,
+                                   const MGLIRModule *mod,
+                                   const std::map<std::string, MType> &locals) {
+    if (e->kind == MGL_EXPR_VAR_REF) return rootVal;
+    if (e->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
+    llvm::Value *obj = readIndexChain(cg, e->u.index.object, rootVal, mod,
+                                      locals);
+    if (!obj) return nullptr;
+    llvm::Value *idx = emitExpr(cg, e->u.index.index, mod, locals);
+    if (!idx) return nullptr;
+    MType bt = exprType(cg, e->u.index.object, mod, locals);
+    llvm::Value *res = emitIndexValue(cg, obj, bt, idx);
+    if (!res) { cg.err = 1; return nullptr; }
+    return res;
+}
+
+/* Write `val` through the index chain `lhs` (rooted at a var ref holding
+ * rootVal); returns the new root value. */
+static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
+                                    llvm::Value *rootVal, llvm::Value *val,
+                                    const MGLIRModule *mod,
+                                    const std::map<std::string, MType> &locals) {
+    if (lhs->kind == MGL_EXPR_VAR_REF) return val;
+    if (lhs->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
+    const MGLExpr *objE = lhs->u.index.object;
+    MType objT = exprType(cg, objE, mod, locals);
+    llvm::Value *objVal;
+    if (objE->kind == MGL_EXPR_VAR_REF) {
+        objVal = rootVal;
+    } else if (objE->kind == MGL_EXPR_INDEX) {
+        objVal = readIndexChain(cg, objE, rootVal, mod, locals);
+        if (!objVal) return nullptr;
+    } else {
+        cg.err = 1;
+        cg.errmsg = "codegen: unsupported indexed assignment target";
+        return nullptr;
+    }
+    llvm::Value *idx = emitExpr(cg, lhs->u.index.index, mod, locals);
+    if (!idx) return nullptr;
+    llvm::Value *newObj = insertIndexValue(cg, objVal, objT, idx, val);
+    if (!newObj) { cg.err = 1; return nullptr; }
+    if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
+    return updateIndexPath(cg, objE, rootVal, newObj, mod, locals);
+}
+
 /* Buffer read: byte GEP + bitcast + aligned load.  Alignment follows
  * std140: scalar 4, vec2 8, vec3/vec4 and matrix columns 16. */
 llvm::Value *bufferLoad(Codegen &cg, uint32_t offset, llvm::Type *loadTy) {
@@ -873,32 +988,35 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::ConstantVector::get(mask));
     }
     case MGL_EXPR_INDEX: {
-        /* M1: constant index only.  Matrix[i] yields a column vector
-         * (GLSL 4.60 5.5), vector[i] a component. */
-        if (e->u.index.index->kind != MGL_EXPR_LITERAL ||
-            (e->u.index.index->u.literal.base != MGL_AST_TYPE_INT &&
-             e->u.index.index->u.literal.base != MGL_AST_TYPE_UINT)) {
-            cg.err = 1;
-            cg.errmsg = std::string("codegen: matrix/vector index must be "
-                                    "a constant integer");
-            return nullptr;
-        }
-        uint32_t i = (uint32_t)e->u.index.index->u.literal.value;
+        /* Matrix[i] yields a column vector (GLSL 4.60 5.5), vector[i] a
+         * component; the index may be a constant or a runtime value. */
+        const MGLExpr *idxE = e->u.index.index;
+        bool constIdx = idxE->kind == MGL_EXPR_LITERAL &&
+                        (idxE->u.literal.base == MGL_AST_TYPE_INT ||
+                         idxE->u.literal.base == MGL_AST_TYPE_UINT);
         MType bt = exprType(cg, e->u.index.object, mod, locals);
         llvm::Value *obj = emitExpr(cg, e->u.index.object, mod, locals);
         if (!obj) return nullptr;
-        if (bt.isMatrix()) {
-            if (i >= bt.cols || !obj->getType()->isArrayTy()) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: column index ") +
-                            std::to_string(i) + " out of range";
-                return nullptr;
+        if (constIdx) {
+            uint32_t i = (uint32_t)idxE->u.literal.value;
+            if (bt.isMatrix()) {
+                if (i >= bt.cols || !obj->getType()->isArrayTy()) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: column index ") +
+                                std::to_string(i) + " out of range";
+                    return nullptr;
+                }
+                return cg.b->CreateExtractValue(obj, i);
             }
-            return cg.b->CreateExtractValue(obj, i);
-        }
-        if (obj->getType()->isVectorTy()) {
-            return cg.b->CreateExtractElement(obj,
-                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), i));
+            if (obj->getType()->isVectorTy()) {
+                return cg.b->CreateExtractElement(obj,
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), i));
+            }
+        } else {
+            llvm::Value *idx = emitExpr(cg, idxE, mod, locals);
+            if (!idx) return nullptr;
+            llvm::Value *res = emitIndexValue(cg, obj, bt, idx);
+            if (res) return res;
         }
         cg.err = 1;
         cg.errmsg = std::string("codegen: indexing this type is not "
@@ -1139,13 +1257,74 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return res;
     }
     case MGL_EXPR_ASSIGN: {
-        /* x op= y where x is a named lvalue. */
-        if (e->u.assign.lhs->kind != MGL_EXPR_VAR_REF) {
-            cg.err = 1; return nullptr;
-        }
-        const char *name = e->u.assign.lhs->u.var_ref.name;
         llvm::Value *v = emitExpr(cg, e->u.assign.rhs, mod, locals);
         if (!v) return nullptr;
+        llvm::Value *rhsV = v;
+        const MGLExpr *lhs = e->u.assign.lhs;
+
+        if (lhs->kind == MGL_EXPR_INDEX) {
+            /* Indexed lvalue: x[i] = v / x[i] op= v / m[i][j] = v. */
+            const MGLExpr *rootE = lhs;
+            while (rootE->kind == MGL_EXPR_INDEX)
+                rootE = rootE->u.index.object;
+            if (rootE->kind != MGL_EXPR_VAR_REF) {
+                cg.err = 1;
+                cg.errmsg = "codegen: unsupported indexed assignment target";
+                return nullptr;
+            }
+            const char *name = rootE->u.var_ref.name;
+            if (!cg.lvalues.count(name)) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: unknown lvalue '") + name +
+                            "'";
+                return nullptr;
+            }
+            llvm::Value *agg = cg.lvalues[name];
+            if (e->u.assign.op != MGL_OP_ASSIGN) {
+                llvm::Value *old = emitExpr(cg, lhs, mod, locals);
+                if (!old) return nullptr;
+                uint32_t binop = 0;
+                switch (e->u.assign.op) {
+                case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+                case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+                case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+                case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+                case MGL_OP_MOD_ASSIGN: binop = MGL_OP_MOD; break;
+                case MGL_OP_SHL_ASSIGN: binop = MGL_OP_SHL; break;
+                case MGL_OP_SHR_ASSIGN: binop = MGL_OP_SHR; break;
+                case MGL_OP_AND_ASSIGN: binop = MGL_OP_AND; break;
+                case MGL_OP_OR_ASSIGN:  binop = MGL_OP_OR; break;
+                case MGL_OP_XOR_ASSIGN: binop = MGL_OP_XOR; break;
+                default: break;
+                }
+                if (!binop) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: compound assign not implemented in M1";
+                    return nullptr;
+                }
+                v = emitMatrixBinOp(cg, binop, old, v);
+                if (!v)
+                    v = emitNumericBinOp(cg, binop, old, rhsV,
+                        exprType(cg, lhs, mod, locals),
+                        exprType(cg, e->u.assign.rhs, mod, locals));
+                if (!v) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: compound assign unsupported for "
+                                "this type in M1";
+                    return nullptr;
+                }
+            }
+            llvm::Value *nv = updateIndexPath(cg, lhs, agg, v, mod, locals);
+            if (!nv) return nullptr;
+            cg.lvalues[name] = nv;
+            return nv;
+        }
+
+        /* x op= y where x is a named lvalue. */
+        if (lhs->kind != MGL_EXPR_VAR_REF) {
+            cg.err = 1; return nullptr;
+        }
+        const char *name = lhs->u.var_ref.name;
         if (e->u.assign.op != MGL_OP_ASSIGN) {
             MType t;
             auto lit = locals.find(name);
