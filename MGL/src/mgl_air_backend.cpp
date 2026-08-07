@@ -366,6 +366,39 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return cg.b->CreateShuffleVector(obj, undef,
             llvm::ConstantVector::get(mask));
     }
+    case MGL_EXPR_INDEX: {
+        /* M1: constant index only.  Matrix[i] yields a column vector
+         * (GLSL 4.60 5.5), vector[i] a component. */
+        if (e->u.index.index->kind != MGL_EXPR_LITERAL ||
+            (e->u.index.index->u.literal.base != MGL_AST_TYPE_INT &&
+             e->u.index.index->u.literal.base != MGL_AST_TYPE_UINT)) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: matrix/vector index must be "
+                                    "a constant integer");
+            return nullptr;
+        }
+        uint32_t i = (uint32_t)e->u.index.index->u.literal.value;
+        MType bt = exprType(cg, e->u.index.object, mod, locals);
+        llvm::Value *obj = emitExpr(cg, e->u.index.object, mod, locals);
+        if (!obj) return nullptr;
+        if (bt.isMatrix()) {
+            if (i >= bt.cols || !obj->getType()->isArrayTy()) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: column index ") +
+                            std::to_string(i) + " out of range";
+                return nullptr;
+            }
+            return cg.b->CreateExtractValue(obj, i);
+        }
+        if (obj->getType()->isVectorTy()) {
+            return cg.b->CreateExtractElement(obj,
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), i));
+        }
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: indexing this type is not "
+                                "implemented in M1");
+        return nullptr;
+    }
     case MGL_EXPR_CALL: {
         const char *name = e->u.call.name;
         /* Scalar constructors / conversions. */
@@ -618,6 +651,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     }
     default:
         cg.err = 1;
+        cg.errmsg = std::string("codegen: unsupported construct kind ") +
+                    std::to_string(e->kind);
         return nullptr;
     }
 }
@@ -648,6 +683,21 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         MType base = exprType(cg, e->u.member.object, mod, locals);
         if (swizzleIndices(e->u.member.field, &idx))
             t = swizzleType(base, idx.size());
+        break;
+    }
+    case MGL_EXPR_INDEX: {
+        MType base = exprType(cg, e->u.index.object, mod, locals);
+        if (base.isMatrix()) {
+            /* Matrix[i] yields a column vector. */
+            t.scalar = base.scalar;
+            t.vec = base.rows;
+        } else if (base.vec) {
+            /* Vector[i] yields a scalar component. */
+            t = base;
+            t.vec = 0;
+        } else {
+            t = base;
+        }
         break;
     }
     case MGL_EXPR_CALL: {

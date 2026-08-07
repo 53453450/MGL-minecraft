@@ -35,6 +35,8 @@ static const char *kVS =
     "    mat2 mi = mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));\n"  /* column ctor */
     "    vec2 t = mi * vec2(float(io.x) + float(uo.y) - 5.0,\n"
     "                       float(bo.x) - 1.0);\n"
+    "    vec2 c01 = mat2(1.0, 2.0, 3.0, 4.0)[1];\n"  /* scalar list, col 1 */
+    "    t = t + vec2(mi[0].x - 1.0, c01.x - 3.0);\n"  /* column indexing */
     "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5) + t;\n"
     "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
