@@ -41,6 +41,7 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
@@ -258,6 +259,53 @@ MType swizzleType(const MType &base, size_t lanes) {
 
 MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                const std::map<std::string, MType> &locals);
+
+/* Scalar/vector numeric binary op (no matrices).  Signedness follows the
+ * operand types; comparisons yield bool per GLSL; && / || use LLVM's
+ * branch-based short-circuit ops. */
+llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
+                              llvm::Value *r, const MType &lt,
+                              const MType &rt) {
+    bool lfp = l->getType()->isFPOrFPVectorTy();
+    bool rfp = r->getType()->isFPOrFPVectorTy();
+    if (lfp != rfp) {
+        if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
+        else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
+        lfp = l->getType()->isFPOrFPVectorTy();
+        rfp = r->getType()->isFPOrFPVectorTy();
+    }
+    bool fp = l->getType()->isFPOrFPVectorTy();
+    bool uns = lt.scalar == MGLIR_SCALAR_UINT || rt.scalar == MGLIR_SCALAR_UINT;
+    llvm::CmpInst::Predicate pred;
+    switch (op) {
+    case MGL_OP_ADD: return fp ? cg.b->CreateFAdd(l, r) : cg.b->CreateAdd(l, r);
+    case MGL_OP_SUB: return fp ? cg.b->CreateFSub(l, r) : cg.b->CreateSub(l, r);
+    case MGL_OP_MUL: return fp ? cg.b->CreateFMul(l, r) : cg.b->CreateMul(l, r);
+    case MGL_OP_DIV: return fp ? cg.b->CreateFDiv(l, r)
+                   : uns ? cg.b->CreateUDiv(l, r) : cg.b->CreateSDiv(l, r);
+    case MGL_OP_MOD: return fp ? cg.b->CreateFRem(l, r)
+                   : uns ? cg.b->CreateURem(l, r) : cg.b->CreateSRem(l, r);
+    case MGL_OP_SHL: return cg.b->CreateShl(l, r);
+    case MGL_OP_SHR: return uns ? cg.b->CreateLShr(l, r) : cg.b->CreateAShr(l, r);
+    case MGL_OP_AND: return cg.b->CreateAnd(l, r);
+    case MGL_OP_OR:  return cg.b->CreateOr(l, r);
+    case MGL_OP_XOR: return cg.b->CreateXor(l, r);
+    case MGL_OP_LAND: return cg.b->CreateLogicalAnd(l, r);
+    case MGL_OP_LOR:  return cg.b->CreateLogicalOr(l, r);
+    case MGL_OP_EQ: pred = fp ? llvm::CmpInst::FCMP_OEQ : llvm::CmpInst::ICMP_EQ; break;
+    case MGL_OP_NE: pred = fp ? llvm::CmpInst::FCMP_ONE : llvm::CmpInst::ICMP_NE; break;
+    case MGL_OP_LT: pred = fp ? llvm::CmpInst::FCMP_OLT
+                     : uns ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT; break;
+    case MGL_OP_LE: pred = fp ? llvm::CmpInst::FCMP_OLE
+                     : uns ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE; break;
+    case MGL_OP_GT: pred = fp ? llvm::CmpInst::FCMP_OGT
+                     : uns ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT; break;
+    case MGL_OP_GE: pred = fp ? llvm::CmpInst::FCMP_OGE
+                     : uns ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE; break;
+    default: return nullptr;
+    }
+    return fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r);
+}
 
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
@@ -551,11 +599,25 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return nullptr;
     }
     case MGL_EXPR_UNARY: {
-        if (e->u.unary.op != MGL_OP_SUB || !e->u.unary.prefix) {
-            cg.err = 1; return nullptr;
+        if (!e->u.unary.prefix) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: ++/-- not implemented in M1");
+            return nullptr;
         }
         llvm::Value *v = emitExpr(cg, e->u.unary.operand, mod, locals);
-        return v ? cg.b->CreateFNeg(v) : nullptr;
+        if (!v) return nullptr;
+        switch (e->u.unary.op) {
+        case MGL_OP_SUB:
+            return v->getType()->isFPOrFPVectorTy() ? cg.b->CreateFNeg(v)
+                                                    : cg.b->CreateNeg(v);
+        case MGL_OP_NOT:
+        case MGL_OP_BNOT:
+            return cg.b->CreateNot(v);
+        default:
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: unary op not implemented in M1");
+            return nullptr;
+        }
     }
     case MGL_EXPR_BINARY: {
         llvm::Value *l = emitExpr(cg, e->u.binary.lhs, mod, locals);
@@ -596,36 +658,62 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return acc;
         }
-        /* Implicit numeric conversion: if exactly one side is FP, promote
-         * the other (GLSL 4.1.10). */
-        bool lfp = l->getType()->isFPOrFPVectorTy();
-        bool rfp = r->getType()->isFPOrFPVectorTy();
-        if (lfp != rfp) {
-            if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
-            else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
+        llvm::Value *res = emitNumericBinOp(cg, e->u.binary.op, l, r,
+            exprType(cg, e->u.binary.lhs, mod, locals),
+            exprType(cg, e->u.binary.rhs, mod, locals));
+        if (!res) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: binary op not implemented in M1");
         }
-        bool fp = l->getType()->isFPOrFPVectorTy();
-        switch (e->u.binary.op) {
-        case MGL_OP_ADD: return fp ? cg.b->CreateFAdd(l, r) : cg.b->CreateAdd(l, r);
-        case MGL_OP_SUB: return fp ? cg.b->CreateFSub(l, r) : cg.b->CreateSub(l, r);
-        case MGL_OP_MUL:
-            if (fp) {
-                return cg.b->CreateFMul(l, r);
-            }
-            return cg.b->CreateMul(l, r);
-        case MGL_OP_DIV: return fp ? cg.b->CreateFDiv(l, r) : cg.b->CreateSDiv(l, r);
-        default: cg.err = 1; return nullptr;
-        }
+        return res;
     }
     case MGL_EXPR_ASSIGN: {
-        /* x = y where x is a named lvalue. */
-        if (e->u.assign.op != MGL_OP_ASSIGN ||
-            e->u.assign.lhs->kind != MGL_EXPR_VAR_REF) {
+        /* x op= y where x is a named lvalue. */
+        if (e->u.assign.lhs->kind != MGL_EXPR_VAR_REF) {
             cg.err = 1; return nullptr;
         }
         const char *name = e->u.assign.lhs->u.var_ref.name;
         llvm::Value *v = emitExpr(cg, e->u.assign.rhs, mod, locals);
         if (!v) return nullptr;
+        if (e->u.assign.op != MGL_OP_ASSIGN) {
+            MType t;
+            auto lit = locals.find(name);
+            if (lit != locals.end()) t = lit->second;
+            else if (strcmp(name, "gl_Position") == 0) {
+                t.scalar = MGLIR_SCALAR_FLOAT;
+                t.vec = 4;
+            } else {
+                const MGLIRSymbol *sym = findSymbol(mod, name);
+                if (!sym) { cg.err = 1; return nullptr; }
+                t = typeFromIR(sym->type);
+            }
+            uint32_t binop = 0;
+            switch (e->u.assign.op) {
+            case MGL_OP_ADD_ASSIGN: binop = MGL_OP_ADD; break;
+            case MGL_OP_SUB_ASSIGN: binop = MGL_OP_SUB; break;
+            case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
+            case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
+            case MGL_OP_MOD_ASSIGN: binop = MGL_OP_MOD; break;
+            default: break;
+            }
+            if (!binop) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: compound assign not "
+                                        "implemented in M1");
+                return nullptr;
+            }
+            llvm::Value *cur = cg.lvalues.count(name)
+                ? cg.lvalues[name]
+                : llvm::UndefValue::get(llvmType(t, *cg.ctx));
+            v = emitNumericBinOp(cg, binop, cur, v, t,
+                exprType(cg, e->u.assign.rhs, mod, locals));
+            if (!v) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: compound assign unsupported "
+                                        "for this type in M1");
+                return nullptr;
+            }
+        }
         if (strcmp(name, "gl_Position") == 0) {
             if (!cg.position.written) {
                 cg.position.name = name;
@@ -847,10 +935,98 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         cg.err = 2;
         break;
     }
-    case MGL_STMT_IF:
-        /* M1: single-level if without else is enough for the gate. */
-        cg.err = 1;
+    case MGL_STMT_IF: {
+        /* if (cond) then [else else_]: SSA via phi at the merge block.
+         * Nested ifs work recursively; a return inside a branch is
+         * supported (no phi edge from that branch). */
+        llvm::Value *cond = emitExpr(cg, st->u.ifs.cond, mod, *locals);
+        if (!cond) return;
+        if (!cond->getType()->isIntegerTy(1)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: if condition must be a scalar bool";
+            return;
+        }
+        int savedErr = cg.err;
+        cg.err = 0;
+        llvm::BasicBlock *condBB = cg.b->GetInsertBlock();
+        llvm::BasicBlock *bbThen =
+            llvm::BasicBlock::Create(*cg.ctx, "if.then", cg.fn);
+        llvm::BasicBlock *bbElse = st->u.ifs.else_
+            ? llvm::BasicBlock::Create(*cg.ctx, "if.else", cg.fn)
+            : nullptr;
+        llvm::BasicBlock *bbMerge =
+            llvm::BasicBlock::Create(*cg.ctx, "if.end", cg.fn);
+        cg.b->CreateCondBr(cond, bbThen, bbElse ? bbElse : bbMerge);
+
+        std::map<std::string, llvm::Value *> snap = cg.lvalues;
+
+        cg.b->SetInsertPoint(bbThen);
+        emitStmt(cg, st->u.ifs.then, mod, locals);
+        if (cg.err == 1) return;
+        llvm::BasicBlock *thenTail = cg.b->GetInsertBlock();
+        bool thenRet = thenTail->getTerminator() &&
+                       llvm::isa<llvm::ReturnInst>(thenTail->getTerminator());
+        if (!thenRet) cg.b->CreateBr(bbMerge);
+        std::map<std::string, llvm::Value *> thenL = cg.lvalues;
+
+        std::map<std::string, llvm::Value *> elseL;
+        if (bbElse) {
+            cg.err = 0;
+            cg.b->SetInsertPoint(bbElse);
+            emitStmt(cg, st->u.ifs.else_, mod, locals);
+            if (cg.err == 1) return;
+            llvm::BasicBlock *elseTail = cg.b->GetInsertBlock();
+            bool elseRet = elseTail->getTerminator() &&
+                           llvm::isa<llvm::ReturnInst>(elseTail->getTerminator());
+            if (!elseRet) cg.b->CreateBr(bbMerge);
+            elseL = cg.lvalues;
+            if (thenRet && elseRet) {
+                /* Both paths return; code after the if is unreachable. */
+                cg.lvalues = snap;
+            } else if (thenRet) {
+                cg.lvalues = elseL;
+            } else if (elseRet) {
+                cg.lvalues = thenL;
+            } else {
+                cg.b->SetInsertPoint(bbMerge);
+                for (auto &kv : thenL) {
+                    auto it = elseL.find(kv.first);
+                    if (it == elseL.end()) continue; /* then-only decl */
+                    if (kv.second == it->second) continue;
+                    llvm::PHINode *phi =
+                        cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
+                    phi->addIncoming(kv.second, thenTail);
+                    phi->addIncoming(it->second, elseTail);
+                    cg.lvalues[kv.first] = phi;
+                }
+                for (auto &kv : elseL)
+                    if (!thenL.count(kv.first))
+                        cg.lvalues[kv.first] = kv.second;
+            }
+        } else if (thenRet) {
+            /* Return in the then branch; fall-through path skipped. */
+            cg.lvalues = snap;
+        } else {
+            /* No else: merge changed values with the fall-through. */
+            cg.b->SetInsertPoint(bbMerge);
+            for (auto &kv : thenL) {
+                auto it = snap.find(kv.first);
+                if (it != snap.end() && it->second == kv.second) continue;
+                llvm::PHINode *phi =
+                    cg.b->CreatePHI(kv.second->getType(), 2, kv.first);
+                phi->addIncoming(kv.second, thenTail);
+                phi->addIncoming(it != snap.end()
+                                     ? it->second
+                                     : llvm::UndefValue::get(
+                                           kv.second->getType()),
+                                 condBB);
+                cg.lvalues[kv.first] = phi;
+            }
+        }
+        cg.err = savedErr;
+        cg.b->SetInsertPoint(bbMerge);
         break;
+    }
     default:
         cg.err = 1;
         break;

@@ -37,6 +37,29 @@ static const char *kVS =
     "                       float(bo.x) - 1.0);\n"
     "    vec2 c01 = mat2(1.0, 2.0, 3.0, 4.0)[1];\n"  /* scalar list, col 1 */
     "    t = t + vec2(mi[0].x - 1.0, c01.x - 3.0);\n"  /* column indexing */
+    "    if (uo.y == uint(3)) {\n"          /* uint compare, then branch */
+    "        t += vec2(0.0, 0.0);\n"   /* compound assign */
+    "    } else {\n"
+    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
+    "    }\n"
+    "    if (io.x < 3 && bo.x) {\n"    /* int compare + logical and */
+    "        t -= vec2(0.0, 0.0);\n"
+    "    }\n"
+    "    if (bo.y || io.x == 2) {\n"   /* logical or, short-circuit */
+    "        t += vec2(0.0, 0.0);\n"
+    "    }\n"
+    "    if (io.x == 2 && uo.x == uint(3)) {\n"
+    "        t *= vec2(1.0, 1.0);\n"
+    "        if (bo.x) {\n"            /* nested if */
+    "            t += vec2(0.0, 0.0);\n"
+    "        }\n"
+    "    }\n"
+    "    if (!bo.y && uo.x == uint(4)) {\n"
+    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
+    "    }\n"
+    "    if (io.x > 5) {\n"
+    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
+    "    }\n"
     "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5) + t;\n"
     "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
