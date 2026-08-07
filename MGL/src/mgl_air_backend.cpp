@@ -2314,16 +2314,33 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
                                    : nullptr)
                 : emitExpr(cg, st->u.whilex.cond, mod, *locals);
             if (cg.err) return;
+            bool bodyDead = false;
             if (cond) {
                 if (!cond->getType()->isIntegerTy(1)) {
                     cg.err = 1;
                     cg.errmsg = "codegen: loop condition must be a scalar bool";
                     return;
                 }
-                cg.b->CreateCondBr(cond, bbBody, bbEnd);
+                /* Constant-false condition: the body never runs.  The
+                 * body/incr blocks were already created; terminate them
+                 * so the IR stays valid, then jump straight to the merge. */
+                if (auto *cint = llvm::dyn_cast<llvm::ConstantInt>(cond);
+                    cint && !cint->getValue().getBoolValue()) {
+                    llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                    cg.b->SetInsertPoint(bbBody);
+                    cg.b->CreateUnreachable();
+                    cg.b->SetInsertPoint(bbIncr);
+                    cg.b->CreateUnreachable();
+                    cg.b->SetInsertPoint(cur);
+                    cg.b->CreateBr(bbEnd);
+                    bodyDead = true;
+                } else {
+                    cg.b->CreateCondBr(cond, bbBody, bbEnd);
+                }
             } else {
                 cg.b->CreateBr(bbBody);
             }
+            if (!bodyDead) {
             cg.b->SetInsertPoint(bbBody);
             emitStmt(cg, st->kind == MGL_STMT_FOR ? st->u.loop.body
                                                   : st->u.whilex.body,
@@ -2357,6 +2374,7 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             for (auto &kv : lc.phis)
                 kv.second->addIncoming(cg.lvalues[kv.first], bbIncr);
             cg.b->CreateBr(bbCond);
+            }
         }
         cg.loopStack.pop_back();
         cg.breakStack.pop_back();
@@ -2442,6 +2460,86 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
 
         BreakCtx brk{bbEnd, {}};
         cg.breakStack.push_back(&brk);
+
+        /* Constant condition: emit only the matching segment (or the
+         * default) and its fall-through chain; unselected segment entry
+         * blocks are terminated so the IR stays valid. */
+        if (auto *cint = llvm::dyn_cast<llvm::ConstantInt>(cond)) {
+            int64_t cv = cint->getSExtValue();
+            int sel = -1, defIdx = -1;
+            for (size_t i = 0; i < segs.size(); i++) {
+                if (segs[i].isDef) { defIdx = (int)i; continue; }
+                for (auto *v : segs[i].vals)
+                    if (v->getSExtValue() == cv) sel = (int)i;
+            }
+            if (sel < 0) sel = defIdx;
+            if (sel >= 0) {
+                llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                if (!cur->getTerminator())
+                    cg.b->CreateBr(segs[sel].entry);
+            }
+            llvm::BasicBlock *lastTail = nullptr;
+            bool chainBroken = false;
+            for (size_t i = 0; i < segs.size(); i++) {
+                if (sel < 0 || (int)i < sel) continue;
+                if (chainBroken) break;
+                cg.b->SetInsertPoint(segs[i].entry);
+                for (auto *s : segs[i].stmts) {
+                    emitStmt(cg, s, mod, locals);
+                    if (cg.err == 1) return;
+                }
+                llvm::BasicBlock *tail = cg.b->GetInsertBlock();
+                if (!tail->getTerminator()) {
+                    if (tail->hasNPredecessors(0)) {
+                        /* Dead block left by break/continue/return:
+                         * the chain is broken; terminate it. */
+                        chainBroken = true;
+                        cg.b->CreateUnreachable();
+                    } else if (i + 1 < segs.size()) {
+                        cg.b->CreateBr(segs[i + 1].entry);
+                    } else {
+                        cg.b->CreateBr(bbEnd);
+                        lastTail = tail;
+                    }
+                } else {
+                    chainBroken = true;
+                }
+            }
+            llvm::BasicBlock *noMatch = nullptr;
+            if (sel < 0) {
+                cg.b->CreateBr(bbEnd);
+                noMatch = cg.b->GetInsertBlock();
+            }
+            for (auto &seg : segs) {
+                if (seg.entry->getTerminator()) continue;
+                llvm::BasicBlock *ip = cg.b->GetInsertBlock();
+                cg.b->SetInsertPoint(seg.entry);
+                cg.b->CreateUnreachable();
+                cg.b->SetInsertPoint(ip);
+            }
+            cg.breakStack.pop_back();
+            cg.b->SetInsertPoint(bbEnd);
+            for (auto &kv : snap) {
+                llvm::Value *v = kv.second;
+                llvm::PHINode *e = cg.b->CreatePHI(
+                    v->getType(), 1 + brk.snaps.size() +
+                                      (lastTail ? 1 : 0) +
+                                      (noMatch ? 1 : 0),
+                    kv.first);
+                if (noMatch)
+                    e->addIncoming(v, noMatch);
+                if (lastTail)
+                    e->addIncoming(cg.lvalues[kv.first], lastTail);
+                for (auto &bs : brk.snaps) {
+                    auto it = bs.second.find(kv.first);
+                    e->addIncoming(it != bs.second.end() ? it->second : v,
+                                   bs.first);
+                }
+                cg.lvalues[kv.first] = e;
+            }
+            cg.err = savedErr;
+            break;
+        }
 
         llvm::BasicBlock *check =
             llvm::BasicBlock::Create(*cg.ctx, "switch.check", cg.fn);
@@ -2952,4 +3050,50 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
 
 extern "C" void mglShaderFree(void *bytes) {
     free(bytes);
+}
+
+extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
+                                       char *err_buf, size_t err_cap) {
+    if (!vs_src || !fs_src) return -1;
+    MGLTranslationUnit *vtu = mglGLSLParse(vs_src, strlen(vs_src));
+    MGLTranslationUnit *ftu = mglGLSLParse(fs_src, strlen(fs_src));
+    if (!vtu || !ftu) {
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "parse failed");
+        mglGLSLTranslationUnitDestroy(vtu);
+        mglGLSLTranslationUnitDestroy(ftu);
+        return -1;
+    }
+    MGLIRModule vs, fs;
+    memset(&vs, 0, sizeof vs);
+    memset(&fs, 0, sizeof fs);
+    MGLSemaError *ve = nullptr, *fe = nullptr;
+    uint32_t vc = 0, fc = 0;
+    int vhard = mglGLSLSemanticCheck(vtu, &vs, &ve, &vc);
+    int fhard = mglGLSLSemanticCheck(ftu, &fs, &fe, &fc);
+    int rc = 0;
+    if (vhard || fhard) {
+        if (err_buf && err_cap) {
+            const char *msg = (vhard && ve && vc)
+                ? ve[0].message : (fe && fc) ? fe[0].message
+                                             : "semantic check failed";
+            snprintf(err_buf, err_cap, "%s", msg);
+        }
+        rc = -1;
+    } else {
+        MGLSemaError *le = nullptr;
+        uint32_t lec = 0;
+        if (mglGLSLInterfaceCheck(&vs, &fs, &le, &lec)) {
+            if (err_buf && err_cap && le && lec)
+                snprintf(err_buf, err_cap, "%s", le[0].message);
+            rc = -1;
+        }
+        mglGLSLSemanticCheckDestroy(le, lec);
+    }
+    mglGLSLSemanticCheckDestroy(ve, vc);
+    mglGLSLSemanticCheckDestroy(fe, fc);
+    mglIRModuleDestroy(&vs);
+    mglIRModuleDestroy(&fs);
+    mglGLSLTranslationUnitDestroy(vtu);
+    mglGLSLTranslationUnitDestroy(ftu);
+    return rc;
 }

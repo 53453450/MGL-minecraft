@@ -50,6 +50,13 @@ int mglShaderCompileGLSL(const char *src, int stage,
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
 
+/* Compare the vertex/fragment shader interfaces: varying names, types
+ * and interface blocks must match across stages.  On success returns 0;
+ * on mismatch or a parse/sema failure returns -1 and writes a
+ * NUL-terminated message into err_buf (err_cap bytes) if non-NULL. */
+int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
+                            char *err_buf, size_t err_cap);
+
 #ifdef __cplusplus
 }
 #endif
