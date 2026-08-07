@@ -201,6 +201,14 @@ static const char *kFS =
     "    fragColor = vec4(vUV + corr, 0.5 + (sel2 - 2.0) - off + corr2 + swcorr, 1.0);\n"
     "}\n";
 
+static const char *kCS =
+    "#version 460 core\n"
+    "layout(local_size_x = 1) in;\n"
+    "uniform int uCounter;\n"
+    "void main() {\n"
+    "    uCounter += 1 + int(gl_GlobalInvocationID.x);\n"
+    "}\n";
+
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
                                   size_t size, const char *tag) {
     NSError *err = nil;
@@ -407,6 +415,54 @@ int main(int argc, const char *argv[]) {
             return 1;
         }
         printf("PSO_OK\n");
+
+        /* Compute: kernel reads/writes the uniform buffer through
+         * gl_GlobalInvocationID; dispatch a single thread and verify the
+         * device buffer contents (41 + 1 + gid.x=0 -> 42). */
+        unsigned char *csBytes = NULL;
+        size_t csSize = 0;
+        if (mglShaderCompileGLSL(kCS, MGL_STAGE_COMPUTE, &csBytes, &csSize,
+                                 err, sizeof err) != 0) {
+            fprintf(stderr, "cs compile FAIL: %s\n", err);
+            return 1;
+        }
+        id<MTLLibrary> csLib = loadLibrary(dev, csBytes, csSize, "cs");
+        mglShaderFree(csBytes);
+        if (!csLib) return 1;
+        id<MTLFunction> csFn = [csLib newFunctionWithName:@"main"];
+        if (!csFn) {
+            fprintf(stderr, "newFunctionWithName FAIL (kernel)\n");
+            return 1;
+        }
+        MTLComputePipelineDescriptor *cpd = [MTLComputePipelineDescriptor new];
+        cpd.computeFunction = csFn;
+        id<MTLComputePipelineState> csPso =
+            [dev newComputePipelineStateWithFunction:csFn error:&perr];
+        if (!csPso) {
+            fprintf(stderr, "CS_PSO_FAIL: %s\n",
+                    perr.localizedDescription.UTF8String ?: "?");
+            return 1;
+        }
+        id<MTLBuffer> cbuf = [dev newBufferWithLength:4
+                                              options:MTLResourceStorageModeShared];
+        ((int *)cbuf.contents)[0] = 41;
+        id<MTLCommandQueue> cq = [dev newCommandQueue];
+        id<MTLCommandBuffer> cb = [cq commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
+        [enc setComputePipelineState:csPso];
+        [enc setBuffer:cbuf offset:0 atIndex:0];
+        [enc dispatchThreads:MTLSizeMake(1, 1, 1)
+           threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc endEncoding];
+        [cb commit];
+        [cb waitUntilCompleted];
+        int csGot = ((int *)cbuf.contents)[0];
+        if (csGot != 42) {
+            fprintf(stderr, "COMPUTE_VALUE_FAIL: %d\n", csGot);
+            return 1;
+        }
+        printf("COMPUTE_OK\n");
+
         return checkValues(dev, pso);
     }
 }

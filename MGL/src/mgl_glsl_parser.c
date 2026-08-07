@@ -1056,6 +1056,13 @@ more_qualifiers:
         goto more_qualifiers;
     }
 
+    /* Compute workgroup declaration `layout(local_size_x = N) in;` has no
+     * type or variable; skip it (the caller advances past the `;`). */
+    if (ops_at(p, ";")) {
+        free(d);
+        return NULL;
+    }
+
     /* struct definition?  "struct" keyword or a type followed by '{' */
     if (eat_ident(p, "struct")) {
         /* struct name */
@@ -1284,7 +1291,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         }
         MGLDecl *d = parse_declaration(&p);
         if (!d) {
-            if (!tu->error) {
+            if (!tu->error && !ops_at(&p, ";")) {
                 parse_error(&p, "unexpected token at line %u", tk_line(&p));
             }
             advance(&p);

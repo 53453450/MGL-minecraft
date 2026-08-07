@@ -108,7 +108,9 @@ struct Codegen {
     llvm::Function *fn;
     llvm::Module *mod = nullptr;       /* current LLVM module */
     bool isVS = false;
+    bool isCompute = false;
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
+    llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
     std::map<std::string, llvm::Value *> lvalues;   /* register values */
     std::vector<VarSym *> varyings;      /* vertex out / fragment in, decl order */
@@ -1046,6 +1048,24 @@ llvm::Value *bufferLoad(Codegen &cg, uint32_t offset, llvm::Type *loadTy) {
     return cg.b->CreateAlignedLoad(loadTy, p, align);
 }
 
+/* Buffer write mirroring bufferLoad; used by compute shaders to write
+ * back through the device buffer. */
+void bufferStore(Codegen &cg, uint32_t offset, llvm::Type *storeTy,
+                 llvm::Value *val) {
+    llvm::Align align(16);
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(storeTy)) {
+        uint64_t w = vt->getElementCount().getFixedValue();
+        if (w == 1) align = llvm::Align(4);
+        else if (w == 2) align = llvm::Align(8);
+    } else if (storeTy->isFloatTy() || storeTy->isIntegerTy(32)) {
+        align = llvm::Align(4);
+    }
+    llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), cg.bufferPtr,
+                                     cg.b->getInt64(offset));
+    p = cg.b->CreateBitCast(p, storeTy->getPointerTo(1));
+    cg.b->CreateAlignedStore(val, p, align);
+}
+
 /* Matrix uniform -> SSA [N x <rows x float>] array value. */
 llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
     llvm::Type *colTy = llvm::FixedVectorType::get(llvm::Type::getFloatTy(*cg.ctx),
@@ -1098,6 +1118,15 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.position.kind = VarSym::OUTPUT;
             }
             return varValue(cg, cg.position, mod);
+        }
+        if (strcmp(e->u.var_ref.name, "gl_GlobalInvocationID") == 0) {
+            if (!cg.threadPos) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_GlobalInvocationID requires a "
+                            "compute stage";
+                return nullptr;
+            }
+            return cg.threadPos;
         }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end())
@@ -1481,13 +1510,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         const char *name = lhs->u.var_ref.name;
         if (e->u.assign.op != MGL_OP_ASSIGN) {
             MType t;
+            const MGLIRSymbol *sym = nullptr;
             auto lit = locals.find(name);
             if (lit != locals.end()) t = lit->second;
             else if (strcmp(name, "gl_Position") == 0) {
                 t.scalar = MGLIR_SCALAR_FLOAT;
                 t.vec = 4;
             } else {
-                const MGLIRSymbol *sym = findSymbol(mod, name);
+                sym = findSymbol(mod, name);
                 if (!sym) { cg.err = 1; return nullptr; }
                 t = typeFromIR(sym->type);
             }
@@ -1513,7 +1543,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *cur = cg.lvalues.count(name)
                 ? cg.lvalues[name]
-                : llvm::UndefValue::get(llvmType(t, *cg.ctx));
+                : ((sym->qualifiers & MGL_AST_Q_UNIFORM)
+                       ? bufferLoad(cg, cg.bufferOffsets[name],
+                                    llvmType(t, *cg.ctx))
+                       : llvm::UndefValue::get(llvmType(t, *cg.ctx)));
             v = emitMatrixBinOp(cg, binop, cur, v);
             if (!v)
                 v = emitNumericBinOp(cg, binop, cur, rhsV, t,
@@ -1545,6 +1578,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         const MGLIRSymbol *sym = findSymbol(mod, name);
         if (!sym) { cg.err = 1; return nullptr; }
         v = coerceScalar(cg, v, typeFromIR(sym->type).scalar);
+        if (sym->qualifiers & MGL_AST_Q_UNIFORM) {
+            bufferStore(cg, cg.bufferOffsets[name],
+                        llvmType(typeFromIR(sym->type), *cg.ctx), v);
+            return v;
+        }
         cg.lvalues[name] = v;
         return v;
     }
@@ -2688,11 +2726,13 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
         return -1;
     }
-    if (stage != MGL_STAGE_VERTEX && stage != MGL_STAGE_FRAGMENT) {
-        if (err_buf && err_cap) snprintf(err_buf, err_cap, "compute unsupported");
+    if (stage != MGL_STAGE_VERTEX && stage != MGL_STAGE_FRAGMENT &&
+        stage != MGL_STAGE_COMPUTE) {
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "unsupported stage");
         return -1;
     }
     const bool isVS = (stage == MGL_STAGE_VERTEX);
+    const bool isCompute = (stage == MGL_STAGE_COMPUTE);
 
     MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
     if (!tu) {
@@ -2745,6 +2785,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
         uint32_t q = s->qualifiers;
         if (q & MGL_AST_Q_UNIFORM) {
             v.kind = VarSym::BUFFER;
+        } else if (isCompute) {
+            continue;   /* compute has no stage varyings */
         } else if (isVS && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::ATTR;
         } else if (isVS && (q & MGL_AST_Q_OUT)) {
@@ -2792,7 +2834,9 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
     std::vector<llvm::Type *> retElems;
     std::vector<VarSym *> varyings;
     llvm::Type *retTy = nullptr;
-    if (isVS) {
+    if (isCompute) {
+        retTy = llvm::Type::getVoidTy(ctx);
+    } else if (isVS) {
         retElems.push_back(llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4));
         for (VarSym &v : syms) {
             if (v.kind == VarSym::VARYING) {
@@ -2813,17 +2857,21 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                     : llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4);
     }
 
-    /* Parameters: vertex = [buffer, attrs...]; fragment = [varyings..., buffer]. */
+    /* Parameters: vertex = [buffer, attrs...]; fragment = [varyings...,
+     * buffer]; compute = [buffer, thread_position_in_grid]. */
     std::vector<llvm::Type *> paramTys;
     bool hasBuffer = !uniforms.empty();
-    if (isVS && hasBuffer)
+    if ((isVS || isCompute) && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms) {
         if ((isVS && v.kind == VarSym::ATTR) ||
-            (!isVS && v.kind == VarSym::VARYING))
+            (!isVS && !isCompute && v.kind == VarSym::VARYING))
             paramTys.push_back(llvmType(v.type, ctx));
     }
-    if (!isVS && hasBuffer)
+    if (isCompute)
+        paramTys.push_back(llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(ctx), 3));
+    else if (!isVS && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
 
     llvm::FunctionType *ft = llvm::FunctionType::get(retTy, paramTys, false);
@@ -2831,9 +2879,12 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
         ft, llvm::Function::ExternalLinkage, "main", &module);
     fn->setDoesNotThrow();
     if (hasBuffer) {
-        unsigned bufIdx = isVS ? 0 : (unsigned)paramTys.size() - 1;
+        unsigned bufIdx = (isVS || isCompute)
+                              ? 0
+                              : (unsigned)paramTys.size() - 1;
         fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
-        fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::ReadOnly);
+        if (!isCompute)
+            fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::ReadOnly);
     }
 
     llvm::BasicBlock *entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -2845,17 +2896,21 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
     cg.fn = fn;
     cg.mod = &module;
     cg.isVS = isVS;
+    cg.isCompute = isCompute;
     /* Bind parameters by symbol: vertex = [buffer, attrs...];
-     * fragment = [varyings..., buffer]. */
+     * fragment = [varyings..., buffer];
+     * compute = [buffer, thread_position_in_grid]. */
     uint32_t argSlot = 0;
-    if (isVS && hasBuffer)
+    if ((isVS || isCompute) && hasBuffer)
         cg.bufferPtr = fn->getArg(argSlot++);
     for (VarSym &v : syms) {
         if ((isVS && v.kind == VarSym::ATTR) ||
-            (!isVS && v.kind == VarSym::VARYING))
+            (!isVS && !isCompute && v.kind == VarSym::VARYING))
             cg.lvalues[v.name] = fn->getArg(argSlot++);
     }
-    if (!isVS && hasBuffer)
+    if (isCompute)
+        cg.threadPos = fn->getArg(argSlot);
+    else if (!isVS && hasBuffer)
         cg.bufferPtr = fn->getArg(argSlot);
     /* Patch BUFFER sym offsets into uniforms */
     for (Uniform &u : uniforms) {
@@ -2881,14 +2936,19 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
         return -1;
     }
     /* Terminate if the body's last statement was a return. */
-    if (cg.err != 2)
-        b.CreateRet(assembleReturn(cg));
+    if (cg.err != 2) {
+        if (isCompute)
+            b.CreateRetVoid();
+        else
+            b.CreateRet(assembleReturn(cg));
+    }
 
     /* ---- AIR metadata ---- */
     std::vector<llvm::Metadata *> argNodes;
     if (hasBuffer) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        unsigned idx = isVS ? 0 : (unsigned)paramTys.size() - 1;
+        unsigned idx = (isVS || isCompute) ? 0
+                                           : (unsigned)paramTys.size() - 1;
         std::vector<llvm::Metadata *> structFields;
         for (const Uniform &u : uniforms) {
             structFields.push_back(llvm::ConstantAsMetadata::get(
@@ -2941,7 +3001,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                 llvm::MDString::get(ctx, v.name)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
         }
-    } else {
+    } else if (!isCompute) {
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
             std::vector<llvm::Metadata *> elems = {
@@ -2957,6 +3017,17 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                 llvm::MDString::get(ctx, v.name)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
         }
+    }
+    if (isCompute) {
+        /* Kernel thread position: [[thread_position_in_grid]] as uint3. */
+        argNodes.push_back(llvm::MDNode::get(ctx, {
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                llvm::Type::getInt32Ty(ctx), mArgSlot)),
+            llvm::MDString::get(ctx, "air.thread_position_in_grid"),
+            llvm::MDString::get(ctx, "air.arg_type_name"),
+            llvm::MDString::get(ctx, "uint3"),
+            llvm::MDString::get(ctx, "air.arg_name"),
+            llvm::MDString::get(ctx, "thread_position_in_grid")}));
     }
 
     std::vector<llvm::Metadata *> outNodes;   /* outputs / render targets */
@@ -2976,7 +3047,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v->name)}));
         }
-    } else {
+    } else if (!isCompute) {
         VarSym *out = nullptr;
         for (VarSym &v : syms)
             if (v.kind == VarSym::OUTPUT) { out = &v; break; }
@@ -3000,7 +3071,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
     else
         stageElems.push_back(llvm::MDNode::get(ctx, {}));
     llvm::NamedMDNode *air = module.getOrInsertNamedMetadata(
-        isVS ? "air.vertex" : "air.fragment");
+        isCompute ? "air.kernel" : (isVS ? "air.vertex" : "air.fragment"));
     air->addOperand(llvm::MDNode::get(ctx, stageElems));
 
     llvm::NamedMDNode *ver = module.getOrInsertNamedMetadata("air.version");
@@ -3034,7 +3105,8 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
     std::vector<mgl::MTLBFunction> fns;
     mgl::MTLBFunction f;
     f.name = "main";
-    f.type = isVS ? mgl::MTLB_FN_VERTEX : mgl::MTLB_FN_FRAGMENT;
+    f.type = isCompute ? mgl::MTLB_FN_KERNEL
+                       : (isVS ? mgl::MTLB_FN_VERTEX : mgl::MTLB_FN_FRAGMENT);
     f.bitcode.assign(bc.begin(), bc.end());
     fns.push_back(f);
 
