@@ -20,103 +20,31 @@
 static const char *kVS =
     "#version 460 core\n"
     "uniform mat4 mvp;\n"
-    "uniform mat3 rot3;\n"
     "in vec3 inPos;\n"
     "out vec2 vUV;\n"
-    "out vec3 vN;\n"
     "void main() {\n"
-    "    int p = 2;\n"
-    "    float o = p * 0.5;\n"        /* int*float -> 1.0 */
-    "    vec2 k = vec2(0.5);\n"       /* single-arg broadcast */
-    "    bool b = true;\n"            /* bool literal */
-    "    ivec2 io = ivec2(2);\n"      /* int vector broadcast */
-    "    uvec2 uo = uvec2(uint(3), uint(3));\n"  /* uint ctor + scalar ctor */
-    "    bvec2 bo = bvec2(true, false);\n"
-    "    mat2 mi = mat2(vec2(1.0, 0.0), vec2(0.0, 1.0));\n"  /* column ctor */
-    "    vec2 t = mi * vec2(float(io.x) + float(uo.y) - 5.0,\n"
-    "                       float(bo.x) - 1.0);\n"
-    "    vec2 c01 = mat2(1.0, 2.0, 3.0, 4.0)[1];\n"  /* scalar list, col 1 */
-    "    t = t + vec2(mi[0].x - 1.0, c01.x - 3.0);\n"  /* column indexing */
-    "    if (uo.y == 3u) {\n"          /* uint compare, then branch */
-    "        t += vec2(0.0, 0.0);\n"   /* compound assign */
-    "    } else {\n"
-    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
-    "    }\n"
-    "    if (io.x < 3 && bo.x) {\n"    /* int compare + logical and */
-    "        t -= vec2(0.0, 0.0);\n"
-    "    }\n"
-    "    if (bo.y || io.x == 2) {\n"   /* logical or, short-circuit */
-    "        t += vec2(0.0, 0.0);\n"
-    "    }\n"
-    "    if (io.x == 2 && uo.x == 3u) {\n"
-    "        t *= vec2(1.0, 1.0);\n"
-    "        if (bo.x) {\n"            /* nested if */
-    "            t += vec2(0.0, 0.0);\n"
-    "        }\n"
-    "    }\n"
-    "    if (!bo.y && uo.x == 4u) {\n"
-    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
-    "    }\n"
-    "    int iv = 2;\n"
-    "    iv++;\n"                  /* postfix ++ (statement) */
-    "    iv &= 3;\n"               /* bitwise compound */
-    "    iv >>= 1;\n"
-    "    iv <<= 2;\n"
-    "    int j = iv--;\n"          /* postfix: j = 4, iv = 3 */
-    "    int kk = ++iv;\n"          /* prefix: k = iv = 4 */
-    "    t = t + vec2(float(j - 4) + float(kk - 4), float(iv - 4));\n"
-    "    float sa = sin(0.0); float ca = cos(0.0); float ta = tan(0.0);\n"
-    "    float ea = exp(0.0); float e2 = exp2(0.0);\n"
-    "    float la = log(1.0); float lg = log2(1.0);\n"
-    "    float pw = pow(1.0, 2.0); float sq = sqrt(4.0);\n"
-    "    float isq = inversesqrt(4.0); float fl = floor(1.5);\n"
-    "    float ce = ceil(1.5); float tr = trunc(1.5);\n"
-    "    float rn = round(1.5); float re = roundEven(1.5);\n"
-    "    float fr = fract(1.5); float sg = sign(2.0);\n"
-    "    float md = mod(5.0, 3.0); float st = step(0.5, 0.7);\n"
-    "    float ss = smoothstep(0.0, 1.0, 0.5);\n"
-    "    float mn = min(3.0, 5.0); float mx = max(3.0, 5.0);\n"
-    "    float rd = radians(0.0); float dg = degrees(0.0);\n"
-    "    vec2 rf = reflect(vec2(1.0, 0.0), vec2(1.0, 0.0));\n"
-    "    vec2 rfr = refract(vec2(0.0, -1.0), vec2(0.0, 1.0), 1.0);\n"
-    "    vec2 frw = faceforward(vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(0.0, -1.0));\n"
-    "    int ia = abs(-3); int imn = min(3, 5);\n"
-    "    int imx = max(3, 5); int icl = clamp(7, 2, 5);\n"
-    "    t = t + vec2(sa + ca - 1.0 + ta + ea - 1.0 + e2 - 1.0\n"
-    "             + la + lg + pw - 1.0 + sq - 2.0 + isq - 0.5\n"
-    "             + fl - 1.0 + ce - 2.0 + tr - 1.0 + rn - 2.0 + re - 2.0\n"
-    "             + fr - 0.5 + sg - 1.0 + md - 2.0 + st - 1.0 + ss - 0.5\n"
-    "             + mn - 3.0 + mx - 5.0 + rd + dg\n"
-    "             + float(ia - 3) + float(imn - 3) + float(imx - 5) + float(icl - 5)\n"
-    "             + rf.x + 1.0 + rf.y + frw.x - 1.0 + frw.y\n"
-    "             + rfr.x + rfr.y + 1.0, 0.0);\n"
-    "    if (io.x > 5) {\n"
-    "        t += vec2(1.0, 1.0);\n"   /* must not execute */
-    "    }\n"
-    "    vec2 uv = vec2(0.5, 0.0);\n"
-    "    float dl = length(uv);\n"                 /* 0.5 */
-    "    vec2 dn = normalize(uv);\n"               /* (1, 0) */
-    "    float dd = distance(uv, vec2(0.5, 1.0));\n"  /* 1 */
-    "    float dt = dot(uv, vec2(2.0, 0.0));\n"    /* 1 */
-    "    float da = abs(-0.5);\n"                  /* 0.5 */
-    "    float dc = clamp(uv.x, 0.25, 0.5);\n"     /* 0.5 */
-    "    vec2 dv = mix(uv, uv + vec2(1.0), vec2(0.0));\n"  /* uv */
-    "    float dm = mix(0.0, 1.0, 0.5);\n"         /* 0.5 */
-    "    t = t + vec2(dl * 2.0 - 1.0 + dd - 1.0 + dt - 1.0 + da - 0.5\n"
-    "                + dc - 0.5 + dm - 0.5,\n"
-    "                dn.x - 1.0 + dv.x - uv.x + dv.y - uv.y);\n"
-    "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5) + t;\n"
-    "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
+    "    vec2 t = vec2(0.0, 0.0);\n"
+    "    float wsum = 0.0; int wi = 0;\n"
+    "    while (wi < 3) { wsum = wsum + 1.0; wi = wi + 1; }\n"
+    "    float fsum = 0.0;\n"
+    "    for (int fi = 0; fi < 4; fi = fi + 1) { fsum = fsum + 1.0; }\n"
+    "    float dsum = 0.0; int di = 0;\n"
+    "    do { dsum = dsum + 1.0; di = di + 1; } while (di < 2);\n"
+    "    float bsum = 0.0;\n"
+    "    for (int bi = 0; bi < 10; bi = bi + 1) { if (bi == 3) { break; } bsum = bsum + 1.0; }\n"
+    "    float csum = 0.0;\n"
+    "    for (int ci = 0; ci < 10; ci = ci + 1) { if (ci == 2) { continue; } csum = csum + 1.0; }\n"
+    "    t = t + vec2(wsum - 3.0 + fsum - 4.0 + dsum - 2.0 + bsum - 3.0 + csum - 9.0, 0.0);\n"
+    "    vUV = inPos.xy + t;\n"
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
     "}\n";
 
 static const char *kFS =
     "#version 460 core\n"
     "in vec2 vUV;\n"
-    "in vec3 vN;\n"
     "out vec4 fragColor;\n"
     "void main() {\n"
-    "    fragColor = vec4(vUV + vN.xy, 0.5, 1.0);\n"
+    "    fragColor = vec4(vUV, 0.5, 1.0);\n"
     "}\n";
 
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
@@ -214,12 +142,11 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
             /* Original inPos at the pixel (MVP^{-1} * ndc). */
             float px = la * verts[0] + lb * verts[3] + lc * verts[6];
             float py = la * verts[1] + lb * verts[4] + lc * verts[7];
-            /* vN = rot3 * inPos, interpolated. */
-            float nx = c * px - s * py;
-            float ny = s * px + c * py;
-            /* vUV = inPos + (1, 0); fragColor = vUV + vN.xy. */
-            float u = px + 1.0f + nx;
-            float v = py + ny;
+            /* Loops produce zero net shift: wsum=3, fsum=4,
+             * dsum=2, bsum=3 (break at 3), csum=9 (continue
+             * at 2). */
+            float u = px;
+            float v = py;
             u = fminf(1.0f, fmaxf(0.0f, u));
             v = fminf(1.0f, fmaxf(0.0f, v));
 

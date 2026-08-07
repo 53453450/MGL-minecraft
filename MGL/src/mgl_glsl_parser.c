@@ -808,7 +808,7 @@ static MGLStmt *parse_statement(MGLParser *p)
         if (!s) {
             return NULL;
         }
-        s->u.body.body = parse_statement(p);
+        s->u.whilex.body = parse_statement(p);
         if (!eat_ident(p, "while")) {
             parse_error(p, "expected 'while' at line %u", tk_line(p));
         }

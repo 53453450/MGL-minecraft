@@ -1835,14 +1835,25 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
         symtab_pop(tab);
         break;
     }
-    case MGL_STMT_WHILE:
-        check_expr(s, tab, st->u.whilex.cond);
+    case MGL_STMT_WHILE: {
+        MGLIRType *ct = check_expr(s, tab, st->u.whilex.cond);
+        if (ct && (ct->kind != MGLIR_TYPE_SCALAR ||
+                   ct->scalar != MGLIR_SCALAR_BOOL)) {
+            sema_error(s, st->line, "while condition must be a scalar bool");
+        }
         analyze_stmt(s, tab, st->u.whilex.body);
         break;
-    case MGL_STMT_DO_WHILE:
-        analyze_stmt(s, tab, st->u.body.body);
-        check_expr(s, tab, st->u.whilex.cond);
+    }
+    case MGL_STMT_DO_WHILE: {
+        analyze_stmt(s, tab, st->u.whilex.body);
+        MGLIRType *ct = check_expr(s, tab, st->u.whilex.cond);
+        if (ct && (ct->kind != MGLIR_TYPE_SCALAR ||
+                   ct->scalar != MGLIR_SCALAR_BOOL)) {
+            sema_error(s, st->line,
+                       "do-while condition must be a scalar bool");
+        }
         break;
+    }
     case MGL_STMT_SWITCH:
         check_expr(s, tab, st->u.switchx.cond);
         analyze_stmt(s, tab, st->u.switchx.body);

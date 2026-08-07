@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <map>
 #include <memory>
 #include <string>
@@ -84,6 +85,17 @@ struct VarSym {
     bool written = false;
 };
 
+struct LoopCtx {
+    llvm::BasicBlock *condBB = nullptr;  /* do-while continue target */
+    llvm::BasicBlock *endBB = nullptr;   /* break target */
+    llvm::BasicBlock *incrBB = nullptr;  /* merge block; while/for continue target */
+    std::map<std::string, llvm::PHINode *> phis;
+    std::vector<std::pair<llvm::BasicBlock *,
+                          std::map<std::string, llvm::Value *>>> breakSnaps;
+    std::vector<std::pair<llvm::BasicBlock *,
+                          std::map<std::string, llvm::Value *>>> contSnaps;
+};
+
 struct Codegen {
     llvm::LLVMContext *ctx;
     llvm::IRBuilder<> *b;
@@ -101,6 +113,7 @@ struct Codegen {
     std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
+    std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
 };
 
 /* ---- type helpers ---------------------------------------------------- */
@@ -1476,6 +1489,203 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
         }
         cg.err = savedErr;
         cg.b->SetInsertPoint(bbMerge);
+        break;
+    }
+    case MGL_STMT_WHILE:
+    case MGL_STMT_FOR:
+    case MGL_STMT_DO_WHILE: {
+        /* SSA loop lowering: a phi for every live value is placed at the
+         * condition block (while/for) or the body head (do-while); the
+         * back-edge operand is filled in after the body/incr is emitted.
+         * break jumps to the merge block carrying a value snapshot;
+         * continue jumps to the incr/merge block (values merge there with
+         * the body tail before the condition phi sees them).  Nested
+         * loops are handled through cg.loopStack. */
+        LoopCtx lc;
+        std::vector<std::string> names;
+        for (auto &kv : cg.lvalues) names.push_back(kv.first);
+
+        llvm::BasicBlock *bbCond =
+            llvm::BasicBlock::Create(*cg.ctx, "loop.cond", cg.fn);
+        llvm::BasicBlock *bbBody =
+            llvm::BasicBlock::Create(*cg.ctx, "loop.body", cg.fn);
+        llvm::BasicBlock *bbIncr =
+            llvm::BasicBlock::Create(*cg.ctx, "loop.incr", cg.fn);
+        llvm::BasicBlock *bbEnd =
+            llvm::BasicBlock::Create(*cg.ctx, "loop.end", cg.fn);
+        lc.condBB = bbCond;
+        lc.endBB = bbEnd;
+        lc.incrBB = bbIncr;
+
+        if (st->kind == MGL_STMT_FOR && st->u.loop.init) {
+            emitStmt(cg, st->u.loop.init, mod, locals);
+            if (cg.err) return;
+            /* The init declaration is live across the loop; it must be
+             * captured by the phi set too. */
+            for (auto &kv : cg.lvalues)
+                if (std::find(names.begin(), names.end(), kv.first) ==
+                    names.end())
+                    names.push_back(kv.first);
+        }
+
+        if (st->kind == MGL_STMT_DO_WHILE) {
+            llvm::BasicBlock *pre = cg.b->GetInsertBlock();
+            cg.b->CreateBr(bbBody);
+            cg.b->SetInsertPoint(bbBody);
+            for (auto &n : names) {
+                auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(), 2, n);
+                p->addIncoming(cg.lvalues[n], pre);
+                lc.phis[n] = p;
+                cg.lvalues[n] = p;
+            }
+        } else {
+            llvm::BasicBlock *pre = cg.b->GetInsertBlock();
+            cg.b->CreateBr(bbCond);
+            cg.b->SetInsertPoint(bbCond);
+            for (auto &n : names) {
+                auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(), 2, n);
+                p->addIncoming(cg.lvalues[n], pre);
+                lc.phis[n] = p;
+                cg.lvalues[n] = p;
+            }
+        }
+
+        cg.loopStack.push_back(&lc);
+        if (st->kind == MGL_STMT_DO_WHILE) {
+            emitStmt(cg, st->u.whilex.body, mod, locals);
+            if (cg.err == 1) return;
+            llvm::BasicBlock *tail = cg.b->GetInsertBlock();
+            if (!tail->getTerminator()) cg.b->CreateBr(bbIncr);
+            cg.b->SetInsertPoint(bbIncr);
+            for (auto &n : names) {
+                auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(),
+                                          1 + lc.contSnaps.size(), n);
+                bool isCont = false;
+                for (auto &cs : lc.contSnaps)
+                    if (cs.first == tail) { isCont = true; break; }
+                if (!isCont) p->addIncoming(cg.lvalues[n], tail);
+                for (auto &cs : lc.contSnaps) {
+                    auto it = cs.second.find(n);
+                    p->addIncoming(it != cs.second.end() ? it->second
+                                                         : cg.lvalues[n],
+                                   cs.first);
+                }
+                cg.lvalues[n] = p;
+            }
+            cg.b->CreateBr(bbCond);
+            cg.b->SetInsertPoint(bbCond);
+            llvm::Value *cond = emitExpr(cg, st->u.whilex.cond, mod, *locals);
+            if (cg.err) return;
+            if (!cond->getType()->isIntegerTy(1)) {
+                cg.err = 1;
+                cg.errmsg = "codegen: do-while condition must be a scalar bool";
+                return;
+            }
+            for (auto &kv : lc.phis)
+                kv.second->addIncoming(cg.lvalues[kv.first], bbCond);
+            cg.b->CreateCondBr(cond, bbBody, bbEnd);
+        } else {
+            llvm::Value *cond = st->kind == MGL_STMT_FOR
+                ? (st->u.loop.cond ? emitExpr(cg, st->u.loop.cond, mod,
+                                              *locals)
+                                   : nullptr)
+                : emitExpr(cg, st->u.whilex.cond, mod, *locals);
+            if (cg.err) return;
+            if (cond) {
+                if (!cond->getType()->isIntegerTy(1)) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: loop condition must be a scalar bool";
+                    return;
+                }
+                cg.b->CreateCondBr(cond, bbBody, bbEnd);
+            } else {
+                cg.b->CreateBr(bbBody);
+            }
+            cg.b->SetInsertPoint(bbBody);
+            emitStmt(cg, st->kind == MGL_STMT_FOR ? st->u.loop.body
+                                                  : st->u.whilex.body,
+                     mod, locals);
+            if (cg.err == 1) return;
+            llvm::BasicBlock *tail = cg.b->GetInsertBlock();
+            if (!tail->getTerminator()) cg.b->CreateBr(bbIncr);
+            cg.b->SetInsertPoint(bbIncr);
+            /* Merge the values carried by the body tail and any continue
+             * snapshots before running the for-loop increment, so the
+             * condition phi keeps a single back-edge block. */
+            for (auto &n : names) {
+                auto *p = cg.b->CreatePHI(cg.lvalues[n]->getType(),
+                                          1 + lc.contSnaps.size(), n);
+                bool isCont = false;
+                for (auto &cs : lc.contSnaps)
+                    if (cs.first == tail) { isCont = true; break; }
+                if (!isCont) p->addIncoming(cg.lvalues[n], tail);
+                for (auto &cs : lc.contSnaps) {
+                    auto it = cs.second.find(n);
+                    p->addIncoming(it != cs.second.end() ? it->second
+                                                         : cg.lvalues[n],
+                                   cs.first);
+                }
+                cg.lvalues[n] = p;
+            }
+            if (st->kind == MGL_STMT_FOR && st->u.loop.incr) {
+                emitExpr(cg, st->u.loop.incr, mod, *locals);
+                if (cg.err == 1) return;
+            }
+            for (auto &kv : lc.phis)
+                kv.second->addIncoming(cg.lvalues[kv.first], bbIncr);
+            cg.b->CreateBr(bbCond);
+        }
+        cg.loopStack.pop_back();
+
+        cg.b->SetInsertPoint(bbEnd);
+        for (auto &n : names) {
+            llvm::Value *v = st->kind == MGL_STMT_DO_WHILE
+                                 ? cg.lvalues[n]
+                                 : lc.phis[n];
+            llvm::PHINode *e =
+                cg.b->CreatePHI(v->getType(), 1 + lc.breakSnaps.size(), n);
+            e->addIncoming(v, bbCond);
+            for (auto &bs : lc.breakSnaps) {
+                auto it = bs.second.find(n);
+                e->addIncoming(it != bs.second.end() ? it->second : v,
+                               bs.first);
+            }
+            cg.lvalues[n] = e;
+        }
+        break;
+    }
+    case MGL_STMT_BREAK:
+    case MGL_STMT_CONTINUE: {
+        if (cg.loopStack.empty()) {
+            cg.err = 1;
+            cg.errmsg = "codegen: break/continue outside of a loop";
+            return;
+        }
+        LoopCtx *lc = cg.loopStack.back();
+        if (st->kind == MGL_STMT_BREAK) {
+            std::map<std::string, llvm::Value *> snap;
+            for (auto &kv : lc->phis)
+                snap[kv.first] = cg.lvalues[kv.first];
+            lc->breakSnaps.push_back({cg.b->GetInsertBlock(), snap});
+            cg.b->CreateBr(lc->endBB);
+        } else {
+            if (lc->incrBB) {
+                std::map<std::string, llvm::Value *> snap;
+                for (auto &kv : lc->phis)
+                    snap[kv.first] = cg.lvalues[kv.first];
+                lc->contSnaps.push_back({cg.b->GetInsertBlock(), snap});
+                cg.b->CreateBr(lc->incrBB);
+            } else {
+                for (auto &kv : lc->phis)
+                    kv.second->addIncoming(cg.lvalues[kv.first],
+                                           cg.b->GetInsertBlock());
+                cg.b->CreateBr(lc->condBB);
+            }
+        }
+        /* Code after break/continue is unreachable; emit it into a fresh
+         * block so the following statements keep a valid insert point. */
+        cg.b->SetInsertPoint(
+            llvm::BasicBlock::Create(*cg.ctx, "dead", cg.fn));
         break;
     }
     default:
