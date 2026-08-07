@@ -24,18 +24,19 @@ static const char *kVS =
     "out vec2 vUV;\n"
     "void main() {\n"
     "    vec2 t = vec2(0.0, 0.0);\n"
-    "    float wsum = 0.0; int wi = 0;\n"
-    "    while (wi < 3) { wsum = wsum + 1.0; wi = wi + 1; }\n"
-    "    float fsum = 0.0;\n"
-    "    for (int fi = 0; fi < 4; fi = fi + 1) { fsum = fsum + 1.0; }\n"
-    "    float dsum = 0.0; int di = 0;\n"
-    "    do { dsum = dsum + 1.0; di = di + 1; } while (di < 2);\n"
-    "    float bsum = 0.0;\n"
-    "    for (int bi = 0; bi < 10; bi = bi + 1) { if (bi == 3) { break; } bsum = bsum + 1.0; }\n"
-    "    float csum = 0.0;\n"
-    "    for (int ci = 0; ci < 10; ci = ci + 1) { if (ci == 2) { continue; } csum = csum + 1.0; }\n"
-    "    t = t + vec2(wsum - 3.0 + fsum - 4.0 + dsum - 2.0 + bsum - 3.0 + csum - 9.0, 0.0);\n"
-    "    vUV = inPos.xy + t;\n"
+    "    mat2 A = mat2(1.0, 2.0, 3.0, 4.0);\n"
+    "    mat2 B = mat2(5.0, 6.0, 7.0, 8.0);\n"
+    "    vec2 x = vec2(2.0, -1.0);\n"
+    "    t = t + A * x;\n"
+    "    t = t + x * B;\n"
+    "    t = t + (A * B) * x;\n"
+    "    t = t - (A + 1.0) * x;\n"
+    "    mat2 C = A;\n"
+    "    C *= B;\n"
+    "    t = t - C * x;\n"
+    "    t = t - (A - A) * x;\n"
+    "    t = t - (2.0 * A - A - A) * x;\n"
+    "    vUV = inPos.xy + vec2(t.x - 3.0, t.y - 5.0);\n"
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
     "}\n";
 
@@ -142,9 +143,9 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
             /* Original inPos at the pixel (MVP^{-1} * ndc). */
             float px = la * verts[0] + lb * verts[3] + lc * verts[6];
             float py = la * verts[1] + lb * verts[4] + lc * verts[7];
-            /* Loops produce zero net shift: wsum=3, fsum=4,
-             * dsum=2, bsum=3 (break at 3), csum=9 (continue
-             * at 2). */
+            /* Matrix ops net to t=(3,5) (A*x=(-1,0), x*B=(4,6),
+             * (A*B)*x=(15,22), (A+1)*x=(0,1), C*=B then C*x,
+             * (A-A) and (2A-A-A) vanish), so vUV = inPos.xy. */
             float u = px;
             float v = py;
             u = fminf(1.0f, fmaxf(0.0f, u));

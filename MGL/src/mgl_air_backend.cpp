@@ -356,6 +356,158 @@ llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
 
+/* Matrix binary ops: M*vec, vec*M, M*M, M*scalar, scalar*M, M±M and
+ * M±scalar (element-wise).  Column-major storage: the LLVM value is
+ * [cols x <rows x float>].  Returns nullptr when neither operand is a
+ * matrix, so the caller falls back to the scalar/vector path. */
+llvm::Value *emitMatrixBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
+                             llvm::Value *r) {
+    llvm::ArrayType *larr = llvm::dyn_cast<llvm::ArrayType>(l->getType());
+    llvm::ArrayType *rarr = llvm::dyn_cast<llvm::ArrayType>(r->getType());
+    if (!larr && !rarr) return nullptr;
+
+    llvm::Type *elt = llvm::Type::getFloatTy(*cg.ctx);
+    llvm::Constant *zero = llvm::ConstantFP::get(elt, 0.0);
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    auto colCount = [](llvm::ArrayType *a) {
+        return (uint32_t)a->getNumElements();
+    };
+    auto colType = [](llvm::ArrayType *a) {
+        return llvm::cast<llvm::FixedVectorType>(a->getElementType());
+    };
+    auto rowCount = [&](llvm::ArrayType *a) {
+        return (uint32_t)colType(a)->getElementCount().getFixedValue();
+    };
+
+    if (op == MGL_OP_MUL) {
+        if (larr && r->getType()->isVectorTy()) {
+            /* M * v: out = sum of col_c * v[c]. */
+            uint32_t cols = colCount(larr), rows = rowCount(larr);
+            llvm::Value *out = llvm::Constant::getNullValue(
+                llvm::FixedVectorType::get(elt, rows));
+            for (uint32_t c = 0; c < cols; c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(l, c);
+                llvm::Value *splat = cg.b->CreateShuffleVector(r,
+                    llvm::UndefValue::get(r->getType()),
+                    llvm::ConstantVector::getSplat(
+                        llvm::ElementCount::getFixed(rows), cI(c)));
+                llvm::Value *term = cg.b->CreateFMul(col, splat);
+                out = c == 0 ? term : cg.b->CreateFAdd(out, term);
+            }
+            return out;
+        }
+        if (l->getType()->isVectorTy() && rarr) {
+            /* v * M: out[c] = dot(v, col_c). */
+            uint32_t cols = colCount(rarr), rows = rowCount(rarr);
+            llvm::Value *out = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(elt, cols));
+            for (uint32_t c = 0; c < cols; c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(r, c);
+                llvm::Value *d = dotProduct(cg, l, col);
+                out = cg.b->CreateInsertElement(out, d, cI(c));
+            }
+            return out;
+        }
+        if (larr && rarr) {
+            /* M * M: out col c = sum_k splat(B[c][k]) * A[k]; sema
+             * guarantees A->cols == B->rows. */
+            uint32_t lc = colCount(larr), lr = rowCount(larr);
+            uint32_t rc = colCount(rarr);
+            llvm::Value *out = llvm::UndefValue::get(
+                llvm::ArrayType::get(larr->getElementType(), rc));
+            for (uint32_t c = 0; c < rc; c++) {
+                llvm::Value *colB = cg.b->CreateExtractValue(r, c);
+                llvm::Value *acc = llvm::Constant::getNullValue(
+                    larr->getElementType());
+                for (uint32_t k = 0; k < lc; k++) {
+                    llvm::Value *coef = cg.b->CreateExtractElement(colB, cI(k));
+                    llvm::Value *colA = cg.b->CreateExtractValue(l, k);
+                    llvm::Value *term = cg.b->CreateFMul(colA,
+                        cg.b->CreateVectorSplat(lr, coef));
+                    acc = k == 0 ? term : cg.b->CreateFAdd(acc, term);
+                }
+                out = cg.b->CreateInsertValue(out, acc, c);
+            }
+            return out;
+        }
+        if (larr) {
+            /* M * scalar: per-column scale. */
+            llvm::Value *s = r;
+            if (s->getType()->isVectorTy()) {
+                llvm::Value *s0 = cg.b->CreateExtractElement(
+                    s, llvm::ConstantInt::get(
+                           llvm::Type::getInt32Ty(*cg.ctx), 0));
+                s = s0;
+            }
+            llvm::Value *out = llvm::UndefValue::get(l->getType());
+            for (uint32_t c = 0; c < colCount(larr); c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(l, c);
+                llvm::Value *term = cg.b->CreateFMul(col,
+                    cg.b->CreateVectorSplat(rowCount(larr), s));
+                out = cg.b->CreateInsertValue(out, term, c);
+            }
+            return out;
+        }
+        if (rarr) {
+            /* scalar * M. */
+            llvm::Value *s = l;
+            if (s->getType()->isVectorTy()) {
+                llvm::Value *s0 = cg.b->CreateExtractElement(
+                    s, llvm::ConstantInt::get(
+                           llvm::Type::getInt32Ty(*cg.ctx), 0));
+                s = s0;
+            }
+            llvm::Value *out = llvm::UndefValue::get(r->getType());
+            for (uint32_t c = 0; c < colCount(rarr); c++) {
+                llvm::Value *col = cg.b->CreateExtractValue(r, c);
+                llvm::Value *term = cg.b->CreateFMul(col,
+                    cg.b->CreateVectorSplat(rowCount(rarr), s));
+                out = cg.b->CreateInsertValue(out, term, c);
+            }
+            return out;
+        }
+        return nullptr;
+    }
+
+    if (op == MGL_OP_ADD || op == MGL_OP_SUB) {
+        bool sub = op == MGL_OP_SUB;
+        if (larr && rarr) {
+            llvm::Value *out = llvm::UndefValue::get(l->getType());
+            for (uint32_t c = 0; c < colCount(larr); c++) {
+                llvm::Value *lc = cg.b->CreateExtractValue(l, c);
+                llvm::Value *rc = cg.b->CreateExtractValue(r, c);
+                llvm::Value *m = sub ? cg.b->CreateFSub(lc, rc)
+                                     : cg.b->CreateFAdd(lc, rc);
+                out = cg.b->CreateInsertValue(out, m, c);
+            }
+            return out;
+        }
+        llvm::Value *arr = larr ? l : r;
+        llvm::Value *s = larr ? r : l;
+        if (s->getType()->isVectorTy()) {
+            s = cg.b->CreateExtractElement(
+                s, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0));
+        }
+        llvm::Value *out = llvm::UndefValue::get(arr->getType());
+        bool scalarOnRight = larr != nullptr;
+        for (uint32_t c = 0; c < colCount(
+                llvm::cast<llvm::ArrayType>(arr->getType())); c++) {
+            llvm::Value *col = cg.b->CreateExtractValue(arr, c);
+            llvm::Value *bs = cg.b->CreateVectorSplat(
+                rowCount(llvm::cast<llvm::ArrayType>(arr->getType())), s);
+            llvm::Value *m = sub
+                ? (scalarOnRight ? cg.b->CreateFSub(col, bs)
+                                 : cg.b->CreateFSub(bs, col))
+                : cg.b->CreateFAdd(col, bs);
+            out = cg.b->CreateInsertValue(out, m, c);
+        }
+        return out;
+    }
+    return nullptr;
+}
+
 static bool typeIsIntLike(llvm::Type *t) {
     return t->isIntOrIntVectorTy() &&
            (!t->isVectorTy() || llvm::cast<llvm::FixedVectorType>(t)
@@ -742,41 +894,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *l = emitExpr(cg, e->u.binary.lhs, mod, locals);
         llvm::Value *r = emitExpr(cg, e->u.binary.rhs, mod, locals);
         if (!l || !r) return nullptr;
-        /* Matrix * vector: column-major dot, width = matrix rows. */
-        if (llvm::ArrayType *arr =
-                llvm::dyn_cast<llvm::ArrayType>(l->getType())) {
-            llvm::FixedVectorType *colTy =
-                llvm::dyn_cast<llvm::FixedVectorType>(arr->getElementType());
-            if (e->u.binary.op != MGL_OP_MUL || !colTy ||
-                !r->getType()->isVectorTy()) {
-                cg.err = 1;
-                cg.errmsg = "codegen: matrix operation unsupported in M1";
-                return nullptr;
-            }
-            uint32_t cols = (uint32_t)arr->getNumElements();
-            uint32_t rows = (uint32_t)colTy->getElementCount().getFixedValue();
-            if (cols > rows) {
-                cg.err = 1;
-                cg.errmsg = "codegen: matrix with more columns than rows * vector unsupported in M1";
-                return nullptr;
-            }
-            llvm::FixedVectorType *outTy =
-                llvm::FixedVectorType::get(llvm::Type::getFloatTy(*cg.ctx),
-                                           rows);
-            llvm::Value *acc = llvm::Constant::getNullValue(outTy);
-            for (uint32_t c = 0; c < cols; c++) {
-                llvm::Value *col = cg.b->CreateExtractValue(l, c);
-                llvm::Value *splat = cg.b->CreateShuffleVector(r,
-                    llvm::UndefValue::get(r->getType()),
-                    llvm::ConstantVector::getSplat(
-                        llvm::ElementCount::getFixed(rows),
-                        llvm::ConstantInt::get(
-                            llvm::Type::getInt32Ty(*cg.ctx), c)));
-                llvm::Value *term = cg.b->CreateFMul(col, splat);
-                acc = c == 0 ? term : cg.b->CreateFAdd(acc, term);
-            }
-            return acc;
-        }
+        llvm::Value *mres = emitMatrixBinOp(cg, e->u.binary.op, l, r);
+        if (mres) return mres;
         llvm::Value *res = emitNumericBinOp(cg, e->u.binary.op, l, r,
             exprType(cg, e->u.binary.lhs, mod, locals),
             exprType(cg, e->u.binary.rhs, mod, locals));
@@ -829,8 +948,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *cur = cg.lvalues.count(name)
                 ? cg.lvalues[name]
                 : llvm::UndefValue::get(llvmType(t, *cg.ctx));
-            v = emitNumericBinOp(cg, binop, cur, v, t,
-                exprType(cg, e->u.assign.rhs, mod, locals));
+            v = emitMatrixBinOp(cg, binop, cur, v);
+            if (!v)
+                v = emitNumericBinOp(cg, binop, cur, v, t,
+                    exprType(cg, e->u.assign.rhs, mod, locals));
             if (!v) {
                 cg.err = 1;
                 cg.errmsg = std::string("codegen: compound assign unsupported "
