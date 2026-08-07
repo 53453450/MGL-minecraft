@@ -853,7 +853,8 @@ static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
 static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
                                    const MType &bt, llvm::Value *idx) {
     if (bt.isMatrix()) {
-        auto *arr = llvm::cast<llvm::ArrayType>(obj->getType());
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
         uint32_t C = (uint32_t)arr->getNumElements();
         llvm::Value *res = nullptr;
         for (uint32_t i = 0; i < C; i++) {
@@ -874,7 +875,8 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
                                      const MType &bt, llvm::Value *idx,
                                      llvm::Value *val) {
     if (bt.isMatrix()) {
-        auto *arr = llvm::cast<llvm::ArrayType>(obj->getType());
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
         uint32_t C = (uint32_t)arr->getNumElements();
         llvm::Value *out = llvm::UndefValue::get(obj->getType());
         for (uint32_t i = 0; i < C; i++) {
@@ -887,7 +889,8 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
         return out;
     }
     if (obj->getType()->isVectorTy()) {
-        auto *vt = llvm::cast<llvm::FixedVectorType>(obj->getType());
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(obj->getType());
+        if (!vt) return nullptr;
         uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
         llvm::Value *out = llvm::UndefValue::get(obj->getType());
         for (uint32_t i = 0; i < n; i++) {
@@ -970,7 +973,11 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
     if (!idx) return nullptr;
     MType bt = exprType(cg, e->u.index.object, mod, locals);
     llvm::Value *res = emitIndexValue(cg, obj, bt, idx);
-    if (!res) { cg.err = 1; return nullptr; }
+    if (!res) {
+        cg.err = 1;
+        cg.errmsg = "codegen: indexing this type is not implemented in M1";
+        return nullptr;
+    }
     return res;
 }
 
@@ -2507,8 +2514,11 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             }
             llvm::BasicBlock *noMatch = nullptr;
             if (sel < 0) {
-                cg.b->CreateBr(bbEnd);
-                noMatch = cg.b->GetInsertBlock();
+                llvm::BasicBlock *cur = cg.b->GetInsertBlock();
+                if (!cur->getTerminator()) {
+                    cg.b->CreateBr(bbEnd);
+                    noMatch = cg.b->GetInsertBlock();
+                }
             }
             for (auto &seg : segs) {
                 if (seg.entry->getTerminator()) continue;
