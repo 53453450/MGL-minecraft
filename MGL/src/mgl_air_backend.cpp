@@ -284,6 +284,76 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
 /* Broadcast a scalar to the lane type of a vector type. */
 llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy);
 
+/* Constant-fold a numeric binary op when both operands are constants of
+ * the same type; returns null when folding is not possible.  Mirrors the
+ * runtime signedness/comparison semantics of emitNumericBinOp. */
+llvm::Value *tryFoldConst(Codegen &cg, uint32_t op, llvm::Value *l,
+                          llvm::Value *r, bool uns) {
+    auto *lc = llvm::dyn_cast<llvm::Constant>(l);
+    auto *rc = llvm::dyn_cast<llvm::Constant>(r);
+    if (!lc || !rc) return nullptr;
+    if (l->getType() != r->getType()) return nullptr;
+    bool fp = l->getType()->isFPOrFPVectorTy();
+    if (op == MGL_OP_LAND || op == MGL_OP_LOR) {
+        if (!l->getType()->isIntegerTy(1)) return nullptr;
+        unsigned llo = op == MGL_OP_LAND ? llvm::Instruction::And
+                                         : llvm::Instruction::Or;
+        return llvm::ConstantFoldBinaryInstruction(llo, lc, rc);
+    }
+    unsigned llo;
+    switch (op) {
+    case MGL_OP_ADD: llo = fp ? llvm::Instruction::FAdd
+                              : llvm::Instruction::Add; break;
+    case MGL_OP_SUB: llo = fp ? llvm::Instruction::FSub
+                              : llvm::Instruction::Sub; break;
+    case MGL_OP_MUL: llo = fp ? llvm::Instruction::FMul
+                              : llvm::Instruction::Mul; break;
+    case MGL_OP_DIV: llo = fp ? llvm::Instruction::FDiv
+                 : uns ? llvm::Instruction::UDiv
+                       : llvm::Instruction::SDiv; break;
+    case MGL_OP_MOD: llo = fp ? llvm::Instruction::FRem
+                 : uns ? llvm::Instruction::URem
+                       : llvm::Instruction::SRem; break;
+    case MGL_OP_SHL: llo = llvm::Instruction::Shl; break;
+    case MGL_OP_SHR: llo = uns ? llvm::Instruction::LShr
+                               : llvm::Instruction::AShr; break;
+    case MGL_OP_AND: llo = llvm::Instruction::And; break;
+    case MGL_OP_OR:  llo = llvm::Instruction::Or; break;
+    case MGL_OP_XOR: llo = llvm::Instruction::Xor; break;
+    case MGL_OP_EQ:
+        return llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_OEQ
+                                                 : llvm::CmpInst::ICMP_EQ,
+                                              lc, rc);
+    case MGL_OP_NE:
+        return llvm::ConstantExpr::getCompare(fp ? llvm::CmpInst::FCMP_ONE
+                                                 : llvm::CmpInst::ICMP_NE,
+                                              lc, rc);
+    case MGL_OP_LT:
+        return llvm::ConstantExpr::getCompare(
+            fp ? llvm::CmpInst::FCMP_OLT
+               : uns ? llvm::CmpInst::ICMP_ULT : llvm::CmpInst::ICMP_SLT,
+            lc, rc);
+    case MGL_OP_GT:
+        return llvm::ConstantExpr::getCompare(
+            fp ? llvm::CmpInst::FCMP_OGT
+               : uns ? llvm::CmpInst::ICMP_UGT : llvm::CmpInst::ICMP_SGT,
+            lc, rc);
+    case MGL_OP_LE:
+        return llvm::ConstantExpr::getCompare(
+            fp ? llvm::CmpInst::FCMP_OLE
+               : uns ? llvm::CmpInst::ICMP_ULE : llvm::CmpInst::ICMP_SLE,
+            lc, rc);
+    case MGL_OP_GE:
+        return llvm::ConstantExpr::getCompare(
+            fp ? llvm::CmpInst::FCMP_OGE
+               : uns ? llvm::CmpInst::ICMP_UGE : llvm::CmpInst::ICMP_SGE,
+            lc, rc);
+    default:
+        return nullptr;
+    }
+    return llvm::ConstantFoldBinaryInstruction(llo, lc, rc);
+}
+
 /* Scalar/vector numeric binary op (no matrices).  Signedness follows the
  * operand types; comparisons yield bool per GLSL; && / || use LLVM's
  * branch-based short-circuit ops. */
@@ -1316,9 +1386,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (!l || !r) return nullptr;
         llvm::Value *mres = emitMatrixBinOp(cg, e->u.binary.op, l, r);
         if (mres) return mres;
-        llvm::Value *res = emitNumericBinOp(cg, e->u.binary.op, l, r,
-            exprType(cg, e->u.binary.lhs, mod, locals),
-            exprType(cg, e->u.binary.rhs, mod, locals));
+        MType lt = exprType(cg, e->u.binary.lhs, mod, locals);
+        MType rt = exprType(cg, e->u.binary.rhs, mod, locals);
+        llvm::Value *folded =
+            tryFoldConst(cg, e->u.binary.op, l, r,
+                         lt.scalar == MGLIR_SCALAR_UINT ||
+                         rt.scalar == MGLIR_SCALAR_UINT);
+        if (folded) return folded;
+        llvm::Value *res = emitNumericBinOp(cg, e->u.binary.op, l, r, lt, rt);
         if (!res) {
             cg.err = 1;
             cg.errmsg = std::string("codegen: binary op not implemented in M1");
@@ -1434,7 +1509,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 : llvm::UndefValue::get(llvmType(t, *cg.ctx));
             v = emitMatrixBinOp(cg, binop, cur, v);
             if (!v)
-                v = emitNumericBinOp(cg, binop, cur, v, t,
+                v = emitNumericBinOp(cg, binop, cur, rhsV, t,
                     exprType(cg, e->u.assign.rhs, mod, locals));
             if (!v) {
                 cg.err = 1;
@@ -2041,6 +2116,16 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
          * supported (no phi edge from that branch). */
         llvm::Value *cond = emitExpr(cg, st->u.ifs.cond, mod, *locals);
         if (!cond) return;
+        /* Constant condition: emit only the live branch. */
+        if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(cond);
+            ci && ci->getType()->isIntegerTy(1)) {
+            if (ci->getValue().getBoolValue())
+                emitStmt(cg, st->u.ifs.then, mod, locals);
+            else if (st->u.ifs.else_)
+                emitStmt(cg, st->u.ifs.else_, mod, locals);
+            if (cg.err == 1) return;
+            break;
+        }
         if (!cond->getType()->isIntegerTy(1)) {
             cg.err = 1;
             cg.errmsg = "codegen: if condition must be a scalar bool";
