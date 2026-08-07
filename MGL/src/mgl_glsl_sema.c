@@ -1344,13 +1344,28 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
             return NULL;
         }
         if (obj->kind == MGLIR_TYPE_VECTOR && obj->rows <= 4) {
-            /* Swizzle: xyzw/rgba component selection. */
+            /* Swizzle: xyzw/rgba component selection.  All components must
+             * come from the same namespace and stay in range (GLSL 4.60
+             * 5.4.2). */
             const char *f = e->u.member.field;
-            const char *names = "xyzwrgba";
             size_t n = 0;
+            const char *set = NULL;
             for (const char *p = f; *p; p++) {
-                if (!strchr(names, *p)) {
+                const char *which = strchr("xyzw", *p)
+                    ? "xyzw" : strchr("rgba", *p) ? "rgba" : NULL;
+                if (!which) {
                     sema_error(s, e->line, "no member named '%s' in struct",
+                               e->u.member.field);
+                    return NULL;
+                }
+                if (!set) set = which;
+                else if (set != which) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
+                               e->u.member.field);
+                    return NULL;
+                }
+                if ((size_t)(strchr(set, *p) - set) >= obj->cols) {
+                    sema_error(s, e->line, "invalid swizzle '%s'",
                                e->u.member.field);
                     return NULL;
                 }

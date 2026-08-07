@@ -835,6 +835,35 @@ static llvm::Value *insertIndexValue(Codegen &cg, llvm::Value *obj,
     return nullptr;
 }
 
+/* Write val into the swizzle-selected lanes of a vector (constant
+ * indices, so no runtime selection); unselected lanes are kept.  For a
+ * multi-lane target the j-th lane of val goes to the j-th component. */
+static llvm::Value *insertSwizzleValue(Codegen &cg, llvm::Value *obj,
+                                       const std::vector<uint32_t> &idx,
+                                       llvm::Value *val) {
+    auto *vt = llvm::cast<llvm::FixedVectorType>(obj->getType());
+    uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    llvm::Value *out = llvm::UndefValue::get(obj->getType());
+    for (uint32_t i = 0; i < n; i++) {
+        llvm::Value *lane = nullptr;
+        for (uint32_t j = 0; j < idx.size(); j++) {
+            if (idx[j] == i) {
+                lane = idx.size() == 1
+                    ? val
+                    : cg.b->CreateExtractElement(val, cI(j));
+                break;
+            }
+        }
+        if (!lane)
+            lane = cg.b->CreateExtractElement(obj, cI(i));
+        out = cg.b->CreateInsertElement(out, lane, cI(i));
+    }
+    return out;
+}
+
 /* Read an index chain (x[i][j]) from the root value without re-emitting
  * the object expression. */
 static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
@@ -842,6 +871,27 @@ static llvm::Value *readIndexChain(Codegen &cg, const MGLExpr *e,
                                    const MGLIRModule *mod,
                                    const std::map<std::string, MType> &locals) {
     if (e->kind == MGL_EXPR_VAR_REF) return rootVal;
+    if (e->kind == MGL_EXPR_MEMBER) {
+        llvm::Value *obj = readIndexChain(cg, e->u.member.object, rootVal, mod,
+                                          locals);
+        if (!obj) return nullptr;
+        std::vector<uint32_t> idx;
+        if (!swizzleIndices(e->u.member.field, &idx)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        if (idx.size() == 1)
+            return cg.b->CreateExtractElement(obj,
+                llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx),
+                                       idx[0]));
+        llvm::SmallVector<llvm::Constant *, 4> mask;
+        for (uint32_t i : idx)
+            mask.push_back(llvm::ConstantInt::get(
+                llvm::Type::getInt32Ty(*cg.ctx), i));
+        return cg.b->CreateShuffleVector(obj, llvm::UndefValue::get(
+            obj->getType()), llvm::ConstantVector::get(mask));
+    }
     if (e->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
     llvm::Value *obj = readIndexChain(cg, e->u.index.object, rootVal, mod,
                                       locals);
@@ -861,6 +911,25 @@ static llvm::Value *updateIndexPath(Codegen &cg, const MGLExpr *lhs,
                                     const MGLIRModule *mod,
                                     const std::map<std::string, MType> &locals) {
     if (lhs->kind == MGL_EXPR_VAR_REF) return val;
+    if (lhs->kind == MGL_EXPR_MEMBER) {
+        const MGLExpr *objE = lhs->u.member.object;
+        llvm::Value *objVal;
+        if (objE->kind == MGL_EXPR_VAR_REF) {
+            objVal = rootVal;
+        } else {
+            objVal = readIndexChain(cg, objE, rootVal, mod, locals);
+            if (!objVal) return nullptr;
+        }
+        std::vector<uint32_t> idx;
+        if (!swizzleIndices(lhs->u.member.field, &idx)) {
+            cg.err = 1;
+            cg.errmsg = "codegen: invalid swizzle";
+            return nullptr;
+        }
+        llvm::Value *newObj = insertSwizzleValue(cg, objVal, idx, val);
+        if (objE->kind == MGL_EXPR_VAR_REF) return newObj;
+        return updateIndexPath(cg, objE, rootVal, newObj, mod, locals);
+    }
     if (lhs->kind != MGL_EXPR_INDEX) { cg.err = 1; return nullptr; }
     const MGLExpr *objE = lhs->u.index.object;
     MType objT = exprType(cg, objE, mod, locals);
@@ -1262,11 +1331,14 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         llvm::Value *rhsV = v;
         const MGLExpr *lhs = e->u.assign.lhs;
 
-        if (lhs->kind == MGL_EXPR_INDEX) {
-            /* Indexed lvalue: x[i] = v / x[i] op= v / m[i][j] = v. */
+        if (lhs->kind == MGL_EXPR_INDEX || lhs->kind == MGL_EXPR_MEMBER) {
+            /* Indexed/swizzled lvalue: x[i] = v / v.xy = w / m[i][j] = v. */
             const MGLExpr *rootE = lhs;
-            while (rootE->kind == MGL_EXPR_INDEX)
-                rootE = rootE->u.index.object;
+            while (rootE->kind == MGL_EXPR_INDEX ||
+                   rootE->kind == MGL_EXPR_MEMBER) {
+                rootE = (rootE->kind == MGL_EXPR_INDEX)
+                    ? rootE->u.index.object : rootE->u.member.object;
+            }
             if (rootE->kind != MGL_EXPR_VAR_REF) {
                 cg.err = 1;
                 cg.errmsg = "codegen: unsupported indexed assignment target";

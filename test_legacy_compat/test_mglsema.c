@@ -115,6 +115,25 @@ static void test_hello(void)
     teardown();
 }
 
+static void test_swizzle_checks(void)
+{
+    analyze("#version 450 core\n"
+            "void main() {\n"
+            "    mat3 M3 = mat3(1.0);\n"
+            "    mat3 I3 = mat3(1.0);\n"
+            "    vec3 v = (M3 * inverse(M3) - I3) * vec3(1.0);\n"
+            "    vec2 w = v.xy;\n"
+            "    vec2 bad = vec2(1.0, 2.0).zw;\n"
+            "    vec4 c = vec4(1.0);\n"
+            "    vec2 bad2 = c.rx;\n"
+            "    vec3 bad3 = M3.xy;\n"
+            "}\n");
+    CHECK(error_count == 3, "swizzle range/namespace/matrix errors");
+    CHECK(has_error("invalid swizzle 'zw'"), "out-of-range swizzle");
+    CHECK(has_error("invalid swizzle 'rx'"), "mixed namespace swizzle");
+    teardown();
+}
+
 static void test_undeclared(void)
 {
     analyze("#version 450 core\n"
@@ -514,6 +533,7 @@ int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
     test_hello();
+    test_swizzle_checks();
     test_undeclared();
     test_type_mismatch();
     test_implicit_conv();
