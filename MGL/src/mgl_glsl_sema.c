@@ -869,7 +869,10 @@ static const MGLIRType *struct_member(const MGLIRType *st, const char *name,
 typedef enum {
     BI_ARG_GENF,    /* float genType: float/vec2/vec3/vec4, all gen args
                      * must share the same dimensionality */
+    BI_ARG_GENI,    /* int/uint genType: int/ivec/uint/uvec (same sharing
+                     * rule); return type follows the signedness */
     BI_ARG_FLOAT,   /* scalar float (int/uint scalar implicitly ok) */
+    BI_ARG_INT,     /* scalar int or uint */
     BI_ARG_VEC2,    /* vec2 */
     BI_ARG_VEC3,    /* vec3 */
     BI_ARG_VEC4,    /* vec4 */
@@ -879,8 +882,9 @@ typedef enum {
 } BiArgKind;
 
 typedef enum {
-    BI_RET_GENF,    /* same shape as the matched gen argument */
-    BI_RET_FLOAT,   /* float scalar */
+    BI_RET_FLOAT,   /* scalar float */
+    BI_RET_GENF,    /* float genType matching the gen args */
+    BI_RET_GENI,    /* int/uint genType matching the gen args */
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
@@ -910,11 +914,59 @@ static const BiFn kBuiltins[] = {
     { "length",    1, { BI_ARG_GENF }, BI_RET_FLOAT },
     { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
     { "dot",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
+    { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "min",       2, { BI_ARG_GENI, BI_ARG_INT }, BI_RET_GENI },
+    { "min",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "min",       2, { BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "max",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "max",       2, { BI_ARG_GENI, BI_ARG_INT }, BI_RET_GENI },
+    { "max",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "max",       2, { BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "clamp",     3, { BI_ARG_GENI, BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    { "clamp",     3, { BI_ARG_GENI, BI_ARG_INT, BI_ARG_INT }, BI_RET_GENI },
     { "clamp",     3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     { "clamp",     3, { BI_ARG_GENF, BI_ARG_FLOAT, BI_ARG_FLOAT }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     { "mix",       3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    /* trigonometric */
+    { "sin",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "cos",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "tan",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "asin", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "acos", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "atan", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "atan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    /* exponential */
+    { "exp",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "exp2", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "log",  1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "log2", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "pow",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "sqrt", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "inversesqrt", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    /* common */
+    { "floor",     1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "ceil",      1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "trunc",     1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "round",     1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "roundEven", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "fract",     1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "sign",      1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "mod",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "mod",       2, { BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "step",      2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "step",      2, { BI_ARG_FLOAT, BI_ARG_GENF }, BI_RET_GENF },
+    { "smoothstep", 3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "smoothstep", 3, { BI_ARG_FLOAT, BI_ARG_FLOAT, BI_ARG_GENF }, BI_RET_GENF },
+    /* geometric */
+    { "reflect",    2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    { "refract",    3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_FLOAT }, BI_RET_GENF },
+    { "faceforward", 3, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    /* angle conversion */
+    { "radians", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "degrees", 1, { BI_ARG_GENF }, BI_RET_GENF },
 };
 
 /* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
@@ -941,6 +993,31 @@ static int bif_gen_matches(const MGLIRType *t, uint32_t *gen_dim)
     return 0;
 }
 
+/* Does `t` satisfy a BI_ARG_GENI parameter (int/uint genType)?  Sets
+ * *gen_dim and *gen_unsigned (signedness of the matched scalar). */
+static int bif_geni_matches(const MGLIRType *t, uint32_t *gen_dim,
+                            uint32_t *gen_unsigned)
+{
+    if (!t || (t->scalar != MGLIR_SCALAR_INT && t->scalar != MGLIR_SCALAR_UINT)) {
+        return 0;
+    }
+    if (t->kind == MGLIR_TYPE_VECTOR) {
+        *gen_dim = t->cols;
+        *gen_unsigned = (t->scalar == MGLIR_SCALAR_UINT);
+        return 1;
+    }
+    if (t->kind == MGLIR_TYPE_SCALAR) {
+        *gen_dim = 1;
+        *gen_unsigned = (t->scalar == MGLIR_SCALAR_UINT);
+        return 1;
+    }
+    return 0;
+}
+
+/* Signedness carried out of the last matched BI_ARG_GENI (set per
+ * signature by the arg-matching loop in builtin_call_type). */
+static uint32_t bif_geni_unsigned;
+
 static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
 {
     if (!t) {
@@ -949,10 +1026,15 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     switch (k) {
     case BI_ARG_GENF:
         return bif_gen_matches(t, gen_dim);
+    case BI_ARG_GENI:
+        return bif_geni_matches(t, gen_dim, &bif_geni_unsigned);
     case BI_ARG_FLOAT:
         return t->kind == MGLIR_TYPE_SCALAR &&
                (t->scalar == MGLIR_SCALAR_FLOAT || t->scalar == MGLIR_SCALAR_INT ||
                 t->scalar == MGLIR_SCALAR_UINT);
+    case BI_ARG_INT:
+        return t->kind == MGLIR_TYPE_SCALAR &&
+               (t->scalar == MGLIR_SCALAR_INT || t->scalar == MGLIR_SCALAR_UINT);
     case BI_ARG_VEC2:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 2 &&
                t->scalar == MGLIR_SCALAR_FLOAT;
@@ -994,6 +1076,7 @@ static MGLIRType *builtin_call_type(const char *name,
             continue;
         }
         uint32_t gen_dim = 0;
+        bif_geni_unsigned = 0;
         int ok = 1;
         for (uint32_t j = 0; j < argc; j++) {
             uint32_t d = 0;
@@ -1001,7 +1084,7 @@ static MGLIRType *builtin_call_type(const char *name,
                 ok = 0;
                 break;
             }
-            if (f->args[j] == BI_ARG_GENF) {
+            if (f->args[j] == BI_ARG_GENF || f->args[j] == BI_ARG_GENI) {
                 if (gen_dim == 0) {
                     gen_dim = d;
                 } else if (gen_dim != d) {
@@ -1017,6 +1100,13 @@ static MGLIRType *builtin_call_type(const char *name,
         case BI_RET_GENF:
             return gen_dim > 1 ? mglIRTypeVector(MGLIR_SCALAR_FLOAT, gen_dim)
                                : mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+        case BI_RET_GENI:
+            return gen_dim > 1
+                ? mglIRTypeVector(bif_geni_unsigned ? MGLIR_SCALAR_UINT
+                                                    : MGLIR_SCALAR_INT,
+                                  gen_dim)
+                : mglIRTypeScalar(bif_geni_unsigned ? MGLIR_SCALAR_UINT
+                                                    : MGLIR_SCALAR_INT);
         case BI_RET_FLOAT:
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
         case BI_RET_VEC2:

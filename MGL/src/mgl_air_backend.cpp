@@ -88,6 +88,7 @@ struct Codegen {
     llvm::LLVMContext *ctx;
     llvm::IRBuilder<> *b;
     llvm::Function *fn;
+    llvm::Module *mod = nullptr;       /* current LLVM module */
     bool isVS = false;
     llvm::Value *bufferPtr = nullptr;    /* i8 addrspace(1)* */
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
@@ -341,6 +342,50 @@ llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
                                 llvm::Value *v) {
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
+
+static bool typeIsIntLike(llvm::Type *t) {
+    return t->isIntOrIntVectorTy() &&
+           (!t->isVectorTy() || llvm::cast<llvm::FixedVectorType>(t)
+                                    ->getElementType()
+                                    ->isIntegerTy());
+}
+
+/* Constant 0.0 / 1.0 with the shape of `t` (scalar or vector). */
+static llvm::Constant *fpConstOf(Codegen &cg, llvm::Type *t, double v) {
+    llvm::Constant *c =
+        llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), v);
+    if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+        return llvm::ConstantVector::getSplat(
+            llvm::ElementCount::getFixed(
+                (uint32_t)vt->getElementCount().getFixedValue()),
+            c);
+    }
+    return c;
+}
+
+/* Call an external libm-style function (resolved by the Metal runtime). */
+static llvm::Value *callExternMath(Codegen &cg, const char *fn,
+                                   llvm::Value *a, llvm::Value *b) {
+    llvm::Function *F = cg.mod->getFunction(fn);
+    if (!F) {
+        std::vector<llvm::Type *> args = {a->getType()};
+        if (b) args.push_back(b->getType());
+        llvm::FunctionType *ft =
+            llvm::FunctionType::get(a->getType(), args, false);
+        F = llvm::Function::Create(
+            ft, llvm::GlobalValue::ExternalLinkage, fn, cg.mod);
+        F->setCallingConv(llvm::CallingConv::C);
+    }
+    return b ? cg.b->CreateCall(F, {a, b}) : cg.b->CreateCall(F, {a});
+}
+
+/* Math builtins beyond the first wave: trigonometry, exponentials,
+ * rounding, fract/sign/mod/step/smoothstep, min/max (float and integer),
+ * geometric reflect/refract/faceforward, radians/degrees.  Returns NULL
+ * when `name` is not a math builtin handled here. */
+static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
+                                    const char *name, const MGLIRModule *mod,
+                                    const std::map<std::string, MType> &locals);
 
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
@@ -628,93 +673,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return arr;
         }
-        /* Math builtins (sema-typed subset): normalize/length/distance/
-         * dot/abs/clamp/mix.  All args are treated as float (sema converts
-         * int/uint scalars implicitly). */
-        if (strcmp(name, "normalize") == 0 || strcmp(name, "length") == 0 ||
-            strcmp(name, "distance") == 0 || strcmp(name, "dot") == 0 ||
-            strcmp(name, "abs") == 0 || strcmp(name, "clamp") == 0 ||
-            strcmp(name, "mix") == 0) {
-            uint32_t want = 0;
-            if (strcmp(name, "clamp") == 0 || strcmp(name, "mix") == 0)
-                want = 3;
-            else if (strcmp(name, "distance") == 0 || strcmp(name, "dot") == 0)
-                want = 2;
-            else
-                want = 1;  /* normalize / length / abs */
-            if (e->u.call.arg_count != want) {
-                cg.err = 1;
-                cg.errmsg = std::string("codegen: builtin '") + name +
-                            "' expects " + std::to_string(want) +
-                            " argument(s)";
-                return nullptr;
-            }
-            llvm::Value *a0 =
-                emitExpr(cg, e->u.call.args[0], mod, locals);
-            if (!a0) return nullptr;
-            a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
-            if (strcmp(name, "length") == 0) {
-                llvm::Value *sq = dotProduct(cg, a0, a0);
-                return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt, sq);
-            }
-            if (strcmp(name, "abs") == 0)
-                return callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
-            llvm::Value *a1 = e->u.call.arg_count > 1
-                ? emitExpr(cg, e->u.call.args[1], mod, locals) : nullptr;
-            if (e->u.call.arg_count > 1 && !a1) return nullptr;
-            if (strcmp(name, "dot") == 0) {
-                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
-                return dotProduct(cg, a0, a1);
-            }
-            if (strcmp(name, "distance") == 0) {
-                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
-                llvm::Value *d = cg.b->CreateFSub(a0, a1);
-                return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
-                                          dotProduct(cg, d, d));
-            }
-            if (strcmp(name, "normalize") == 0) {
-                llvm::Value *len = callFloatIntrinsic(
-                    cg, llvm::Intrinsic::sqrt, dotProduct(cg, a0, a0));
-                return cg.b->CreateFDiv(
-                    a0, broadcastTo(cg, len, a0->getType()));
-            }
-            /* clamp / mix: 3 args. */
-            llvm::Value *a2 = emitExpr(cg, e->u.call.args[2], mod, locals);
-            if (!a2) return nullptr;
-            if (strcmp(name, "clamp") == 0) {
-                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
-                a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
-                llvm::Type *t = a0->getType();
-                if (t->isVectorTy()) {
-                    a1 = broadcastTo(cg, a1, t);
-                    a2 = broadcastTo(cg, a2, t);
-                }
-                llvm::Value *mx = cg.b->CreateIntrinsic(
-                    llvm::Intrinsic::maxnum, {t}, {a0, a1});
-                return cg.b->CreateIntrinsic(llvm::Intrinsic::minnum, {t},
-                                             {mx, a2});
-            }
-            if (strcmp(name, "mix") == 0) {
-                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
-                a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
-                llvm::Type *t = a0->getType();
-                if (t->isVectorTy()) a2 = broadcastTo(cg, a2, t);
-                llvm::Constant *one;
-                if (t->isVectorTy()) {
-                    auto *vt = llvm::cast<llvm::FixedVectorType>(t);
-                    one = llvm::ConstantVector::getSplat(
-                        llvm::ElementCount::getFixed(
-                            (uint32_t)vt->getElementCount().getFixedValue()),
-                        llvm::ConstantFP::get(
-                            llvm::Type::getFloatTy(*cg.ctx), 1.0));
-                } else {
-                    one = llvm::ConstantFP::get(t, 1.0);
-                }
-                llvm::Value *s = cg.b->CreateFSub(one, a2);
-                llvm::Value *term = cg.b->CreateFMul(a0, s);
-                return cg.b->CreateIntrinsic(llvm::Intrinsic::fma, {t},
-                                             {a1, a2, term});
-            }
+        /* Math builtins (sema-typed subset).  All float args are coerced;
+         * integer variants (abs/min/max/clamp) use icmp selects. */
+        {
+            llvm::Value *mb = emitMathBuiltin(cg, e, name, mod, locals);
+            if (mb) return mb;
         }
         cg.err = 1;
         cg.errmsg = std::string("codegen: call to '") + name +
@@ -1015,6 +978,342 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         break;
     }
     return t;
+}
+
+/* ---- math builtins ----------------------------------------------------- */
+
+static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
+                                    const char *name, const MGLIRModule *mod,
+                                    const std::map<std::string, MType> &locals)
+{
+    auto arg = [&](uint32_t i) -> llvm::Value * {
+        return emitExpr(cg, e->u.call.args[i], mod, locals);
+    };
+    auto farg = [&](uint32_t i) -> llvm::Value * {
+        llvm::Value *v = arg(i);
+        return v ? coerceScalar(cg, v, MGLIR_SCALAR_FLOAT) : nullptr;
+    };
+    auto need = [&](uint32_t want) -> bool {
+        if (e->u.call.arg_count == want) return true;
+        cg.err = 1;
+        cg.errmsg = std::string("codegen: builtin '") + name + "' expects " +
+                    std::to_string(want) + " argument(s)";
+        return false;
+    };
+
+    /* --- float scalar/vector functions --- */
+    llvm::Value *a0 = nullptr, *a1 = nullptr, *a2 = nullptr;
+    (void)a1;
+    (void)a2;
+
+    if (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0 ||
+        strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
+        strcmp(name, "log") == 0 || strcmp(name, "log2") == 0 ||
+        strcmp(name, "floor") == 0 || strcmp(name, "ceil") == 0 ||
+        strcmp(name, "trunc") == 0 || strcmp(name, "round") == 0 ||
+        strcmp(name, "roundEven") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Intrinsic::ID id;
+        if (strcmp(name, "sin") == 0) id = llvm::Intrinsic::sin;
+        else if (strcmp(name, "cos") == 0) id = llvm::Intrinsic::cos;
+        else if (strcmp(name, "exp") == 0) id = llvm::Intrinsic::exp;
+        else if (strcmp(name, "exp2") == 0) id = llvm::Intrinsic::exp2;
+        else if (strcmp(name, "log") == 0) id = llvm::Intrinsic::log;
+        else if (strcmp(name, "log2") == 0) id = llvm::Intrinsic::log2;
+        else if (strcmp(name, "floor") == 0) id = llvm::Intrinsic::floor;
+        else if (strcmp(name, "ceil") == 0) id = llvm::Intrinsic::ceil;
+        else if (strcmp(name, "trunc") == 0) id = llvm::Intrinsic::trunc;
+        else if (strcmp(name, "round") == 0) id = llvm::Intrinsic::round;
+        else id = llvm::Intrinsic::roundeven;
+        return callFloatIntrinsic(cg, id, a0);
+    }
+    if (strcmp(name, "sqrt") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt, a0);
+    }
+    if (strcmp(name, "length") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
+                                  dotProduct(cg, a0, a0));
+    }
+    if (strcmp(name, "distance") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        llvm::Value *d = cg.b->CreateFSub(a0, a1);
+        return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
+                                  dotProduct(cg, d, d));
+    }
+    if (strcmp(name, "normalize") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Value *len = callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
+                                              dotProduct(cg, a0, a0));
+        return cg.b->CreateFDiv(a0, broadcastTo(cg, len, a0->getType()));
+    }
+    if (strcmp(name, "dot") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        return dotProduct(cg, a0, a1);
+    }
+    if (strcmp(name, "inversesqrt") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return cg.b->CreateFDiv(fpConstOf(cg, a0->getType(), 1.0),
+                                callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
+                                                   a0));
+    }
+    if (strcmp(name, "tan") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Value *s = callFloatIntrinsic(cg, llvm::Intrinsic::sin, a0);
+        llvm::Value *c = callFloatIntrinsic(cg, llvm::Intrinsic::cos, a0);
+        return cg.b->CreateFDiv(s, c);
+    }
+    if (strcmp(name, "fract") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Value *fl = callFloatIntrinsic(cg, llvm::Intrinsic::floor, a0);
+        return cg.b->CreateFSub(a0, fl);
+    }
+    if (strcmp(name, "sign") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        llvm::Type *t = a0->getType();
+        llvm::Value *z = fpConstOf(cg, t, 0.0);
+        llvm::Value *pos =
+            cg.b->CreateFCmpOGT(a0, z);
+        llvm::Value *one = fpConstOf(cg, t, 1.0);
+        llvm::Value *neg = cg.b->CreateFCmpOLT(a0, z);
+        llvm::Value *mone = fpConstOf(cg, t, -1.0);
+        llvm::Value *sn = cg.b->CreateSelect(neg, mone, z);
+        return cg.b->CreateSelect(pos, one, sn);
+    }
+    if (strcmp(name, "radians") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return cg.b->CreateFMul(
+            a0, fpConstOf(cg, a0->getType(),
+                          M_PI / 180.0));
+    }
+    if (strcmp(name, "degrees") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = farg(0);
+        if (!a0) return nullptr;
+        return cg.b->CreateFMul(
+            a0, fpConstOf(cg, a0->getType(),
+                          180.0 / M_PI));
+    }
+    if (strcmp(name, "pow") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        return cg.b->CreateIntrinsic(llvm::Intrinsic::pow,
+                                     {a0->getType()}, {a0, a1});
+    }
+    if (strcmp(name, "mod") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        llvm::Type *t = a0->getType();
+        if (t->isVectorTy()) a1 = broadcastTo(cg, a1, t);
+        llvm::Value *q = callFloatIntrinsic(cg, llvm::Intrinsic::floor,
+                                            cg.b->CreateFDiv(a0, a1));
+        return cg.b->CreateFSub(a0, cg.b->CreateFMul(q, a1));
+    }
+    if (strcmp(name, "step") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        llvm::Type *t = a1->getType();
+        if (t->isVectorTy()) a0 = broadcastTo(cg, a0, t);
+        llvm::Value *lt = cg.b->CreateFCmpOLT(a1, a0);
+        return cg.b->CreateSelect(
+            lt, fpConstOf(cg, t, 0.0), fpConstOf(cg, t, 1.0));
+    }
+    if (strcmp(name, "smoothstep") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        a2 = farg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        llvm::Type *t = a2->getType();
+        if (t->isVectorTy()) {
+            a0 = broadcastTo(cg, a0, t);
+            a1 = broadcastTo(cg, a1, t);
+        }
+        llvm::Value *tt = cg.b->CreateFDiv(cg.b->CreateFSub(a2, a0),
+                                           cg.b->CreateFSub(a1, a0));
+        llvm::Value *zero = fpConstOf(cg, t, 0.0);
+        llvm::Value *one = fpConstOf(cg, t, 1.0);
+        llvm::Value *t0 = cg.b->CreateFCmpOLT(tt, zero);
+        llvm::Value *t1 = cg.b->CreateFCmpOGT(tt, one);
+        tt = cg.b->CreateSelect(t0, zero, tt);
+        tt = cg.b->CreateSelect(t1, one, tt);
+        llvm::Value *tt2 = cg.b->CreateFMul(tt, tt);
+        llvm::Value *three = fpConstOf(cg, t, 3.0);
+        llvm::Value *two = fpConstOf(cg, t, 2.0);
+        return cg.b->CreateFMul(tt2, cg.b->CreateFSub(three,
+                                cg.b->CreateFMul(two, tt)));
+    }
+    if (strcmp(name, "min") == 0 || strcmp(name, "max") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        if (!a0 || !a1) return nullptr;
+        llvm::Type *t = a0->getType();
+        if (typeIsIntLike(t)) {
+            a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+            if (t->isVectorTy()) a1 = broadcastTo(cg, a1, t);
+            llvm::CmpInst::Predicate p = strcmp(name, "min") == 0
+                ? llvm::CmpInst::ICMP_SLT : llvm::CmpInst::ICMP_SGT;
+            return cg.b->CreateSelect(cg.b->CreateICmp(p, a0, a1), a0, a1);
+        }
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+        if (t->isVectorTy()) a1 = broadcastTo(cg, a1, t);
+        llvm::Intrinsic::ID id = strcmp(name, "min") == 0
+            ? llvm::Intrinsic::minnum : llvm::Intrinsic::maxnum;
+        return cg.b->CreateIntrinsic(id, {t}, {a0, a1});
+    }
+    if (strcmp(name, "clamp") == 0 || strcmp(name, "mix") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = arg(0);
+        a1 = arg(1);
+        a2 = arg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        llvm::Type *t = a0->getType();
+        if (strcmp(name, "clamp") == 0) {
+            if (typeIsIntLike(t)) {
+                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_INT);
+                a2 = coerceScalar(cg, a2, MGLIR_SCALAR_INT);
+                if (t->isVectorTy()) {
+                    a1 = broadcastTo(cg, a1, t);
+                    a2 = broadcastTo(cg, a2, t);
+                }
+                llvm::Value *mx = cg.b->CreateSelect(
+                    cg.b->CreateICmp(llvm::CmpInst::ICMP_SGT, a0, a1), a0, a1);
+                return cg.b->CreateSelect(
+                    cg.b->CreateICmp(llvm::CmpInst::ICMP_SLT, mx, a2), mx,
+                    a2);
+            }
+            a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+            a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
+            if (t->isVectorTy()) {
+                a1 = broadcastTo(cg, a1, t);
+                a2 = broadcastTo(cg, a2, t);
+            }
+            llvm::Value *mx = cg.b->CreateIntrinsic(
+                llvm::Intrinsic::maxnum, {t}, {a0, a1});
+            return cg.b->CreateIntrinsic(llvm::Intrinsic::minnum, {t},
+                                         {mx, a2});
+        }
+        /* mix(x, y, a) = fma(a, y, x * (1 - a)) */
+        a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+        a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
+        if (t->isVectorTy()) a2 = broadcastTo(cg, a2, t);
+        llvm::Value *one = fpConstOf(cg, t, 1.0);
+        llvm::Value *s = cg.b->CreateFSub(one, a2);
+        llvm::Value *term = cg.b->CreateFMul(a0, s);
+        return cg.b->CreateIntrinsic(llvm::Intrinsic::fma, {t},
+                                     {a1, a2, term});
+    }
+    if (strcmp(name, "abs") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        llvm::Type *t = a0->getType();
+        if (typeIsIntLike(t)) {
+            llvm::Value *neg = cg.b->CreateNeg(a0);
+            return cg.b->CreateSelect(
+                cg.b->CreateICmp(llvm::CmpInst::ICMP_SLT, a0,
+                                 llvm::Constant::getNullValue(t)),
+                neg, a0);
+        }
+        a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
+        return callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
+    }
+    if (strcmp(name, "reflect") == 0) {
+        if (!need(2)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        if (!a0 || !a1) return nullptr;
+        llvm::Value *d = dotProduct(cg, a1, a0);
+        d = cg.b->CreateFMul(d, fpConstOf(cg, a0->getType(), 2.0));
+        d = broadcastTo(cg, d, a0->getType());
+        llvm::Value *p = cg.b->CreateFMul(d, a1);
+        return cg.b->CreateFSub(a0, p);
+    }
+    if (strcmp(name, "refract") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        a2 = farg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        llvm::Type *t = a0->getType();
+        llvm::Value *d = dotProduct(cg, a1, a0);  /* scalar float */
+        /* k = 1 - eta^2 * (1 - d^2);  r = eta*I - (eta*d + sqrt(k))*N */
+        llvm::Value *k = cg.b->CreateFSub(
+            fpConstOf(cg, t, 1.0),
+            cg.b->CreateFMul(
+                cg.b->CreateFMul(a2, a2),
+                cg.b->CreateFSub(fpConstOf(cg, t, 1.0),
+                                 cg.b->CreateFMul(d, d))));
+        llvm::Value *kNeg = cg.b->CreateFCmpOLT(k, fpConstOf(cg, t, 0.0));
+        llvm::Value *sk = callFloatIntrinsic(cg, llvm::Intrinsic::sqrt, k);
+        llvm::Value *sc = cg.b->CreateFAdd(cg.b->CreateFMul(a2, d), sk);
+        llvm::Value *r = cg.b->CreateFSub(
+            cg.b->CreateFMul(a2, a0),
+            cg.b->CreateFMul(broadcastTo(cg, sc, t), a1));
+        llvm::Value *zeroV = fpConstOf(cg, t, 0.0);
+        if (t->isVectorTy()) {
+            auto *vt = llvm::cast<llvm::FixedVectorType>(t);
+            llvm::Value *mask = cg.b->CreateVectorSplat(
+                (uint32_t)vt->getElementCount().getFixedValue(), kNeg);
+            return cg.b->CreateSelect(mask, zeroV, r);
+        }
+        return cg.b->CreateSelect(kNeg, zeroV, r);
+    }
+    if (strcmp(name, "faceforward") == 0) {
+        if (!need(3)) return nullptr;
+        a0 = farg(0);
+        a1 = farg(1);
+        a2 = farg(2);
+        if (!a0 || !a1 || !a2) return nullptr;
+        llvm::Value *d = dotProduct(cg, a2, a1);
+        llvm::Value *neg = cg.b->CreateFNeg(a0);
+        return cg.b->CreateSelect(
+            cg.b->CreateFCmpOLT(d, fpConstOf(cg, d->getType(), 0.0)),
+            a0, neg);
+    }
+    if (strcmp(name, "asin") == 0 || strcmp(name, "acos") == 0 ||
+        strcmp(name, "atan") == 0) {
+        if (strcmp(name, "atan") == 0 && !need(2)) return nullptr;
+        if (strcmp(name, "atan") != 0 && !need(1)) return nullptr;
+        llvm::Value *f = e->u.call.arg_count == 2
+            ? callExternMath(cg, "atan2", farg(1), farg(0))
+            : callExternMath(cg, name, farg(0), nullptr);
+        if (!f) return nullptr;
+        return f;
+    }
+    return nullptr;
 }
 
 /* ---- statements -------------------------------------------------------- */
@@ -1393,6 +1692,7 @@ extern "C" int mglShaderCompileGLSL(const char *src, int stage,
     cg.ctx = &ctx;
     cg.b = &b;
     cg.fn = fn;
+    cg.mod = &module;
     cg.isVS = isVS;
     /* Bind parameters by symbol: vertex = [buffer, attrs...];
      * fragment = [varyings..., buffer]. */
