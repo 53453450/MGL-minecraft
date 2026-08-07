@@ -363,22 +363,6 @@ static llvm::Constant *fpConstOf(Codegen &cg, llvm::Type *t, double v) {
     return c;
 }
 
-/* Call an external libm-style function (resolved by the Metal runtime). */
-static llvm::Value *callExternMath(Codegen &cg, const char *fn,
-                                   llvm::Value *a, llvm::Value *b) {
-    llvm::Function *F = cg.mod->getFunction(fn);
-    if (!F) {
-        std::vector<llvm::Type *> args = {a->getType()};
-        if (b) args.push_back(b->getType());
-        llvm::FunctionType *ft =
-            llvm::FunctionType::get(a->getType(), args, false);
-        F = llvm::Function::Create(
-            ft, llvm::GlobalValue::ExternalLinkage, fn, cg.mod);
-        F->setCallingConv(llvm::CallingConv::C);
-    }
-    return b ? cg.b->CreateCall(F, {a, b}) : cg.b->CreateCall(F, {a});
-}
-
 /* Math builtins beyond the first wave: trigonometry, exponentials,
  * rounding, fract/sign/mod/step/smoothstep, min/max (float and integer),
  * geometric reflect/refract/faceforward, radians/degrees.  Returns NULL
@@ -1256,7 +1240,7 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         a1 = farg(1);
         if (!a0 || !a1) return nullptr;
         llvm::Value *d = dotProduct(cg, a1, a0);
-        d = cg.b->CreateFMul(d, fpConstOf(cg, a0->getType(), 2.0));
+        d = cg.b->CreateFMul(d, fpConstOf(cg, d->getType(), 2.0));
         d = broadcastTo(cg, d, a0->getType());
         llvm::Value *p = cg.b->CreateFMul(d, a1);
         return cg.b->CreateFSub(a0, p);
@@ -1270,13 +1254,15 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         llvm::Type *t = a0->getType();
         llvm::Value *d = dotProduct(cg, a1, a0);  /* scalar float */
         /* k = 1 - eta^2 * (1 - d^2);  r = eta*I - (eta*d + sqrt(k))*N */
+        llvm::Constant *fone =
+            llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
         llvm::Value *k = cg.b->CreateFSub(
-            fpConstOf(cg, t, 1.0),
+            fone,
             cg.b->CreateFMul(
                 cg.b->CreateFMul(a2, a2),
-                cg.b->CreateFSub(fpConstOf(cg, t, 1.0),
-                                 cg.b->CreateFMul(d, d))));
-        llvm::Value *kNeg = cg.b->CreateFCmpOLT(k, fpConstOf(cg, t, 0.0));
+                cg.b->CreateFSub(fone, cg.b->CreateFMul(d, d))));
+        llvm::Value *kNeg = cg.b->CreateFCmpOLT(
+            k, llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 0.0));
         llvm::Value *sk = callFloatIntrinsic(cg, llvm::Intrinsic::sqrt, k);
         llvm::Value *sc = cg.b->CreateFAdd(cg.b->CreateFMul(a2, d), sk);
         llvm::Value *r = cg.b->CreateFSub(
@@ -1302,16 +1288,6 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
         return cg.b->CreateSelect(
             cg.b->CreateFCmpOLT(d, fpConstOf(cg, d->getType(), 0.0)),
             a0, neg);
-    }
-    if (strcmp(name, "asin") == 0 || strcmp(name, "acos") == 0 ||
-        strcmp(name, "atan") == 0) {
-        if (strcmp(name, "atan") == 0 && !need(2)) return nullptr;
-        if (strcmp(name, "atan") != 0 && !need(1)) return nullptr;
-        llvm::Value *f = e->u.call.arg_count == 2
-            ? callExternMath(cg, "atan2", farg(1), farg(0))
-            : callExternMath(cg, name, farg(0), nullptr);
-        if (!f) return nullptr;
-        return f;
     }
     return nullptr;
 }

@@ -934,10 +934,6 @@ static const BiFn kBuiltins[] = {
     { "sin",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "cos",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "tan",  1, { BI_ARG_GENF }, BI_RET_GENF },
-    { "asin", 1, { BI_ARG_GENF }, BI_RET_GENF },
-    { "acos", 1, { BI_ARG_GENF }, BI_RET_GENF },
-    { "atan", 1, { BI_ARG_GENF }, BI_RET_GENF },
-    { "atan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
     /* exponential */
     { "exp",  1, { BI_ARG_GENF }, BI_RET_GENF },
     { "exp2", 1, { BI_ARG_GENF }, BI_RET_GENF },
