@@ -53,6 +53,7 @@
 #include "mgl_glsl_sema.h"
 #include "mgl_ir.h"
 #include "mgl_metallib_writer.h"
+#include "mgl_air_reflect.h"
 #include "mgl_shader_abi.h"
 
 namespace {
@@ -3735,6 +3736,48 @@ extern "C" int mglShaderCompileGLSLCapture(const char *src,
                                            size_t err_cap) {
     return compileGLSLImpl(src, MGL_STAGE_VERTEX, 1, metallib_out, size_out,
                            err_buf, err_cap);
+}
+
+extern "C" int mglAirCompileGLSLWithReflect(
+    const char *src, int stage, unsigned char **metallib_out,
+    size_t *size_out, SpirvResourceList lists[_MAX_SPIRV_RES], char *err_buf,
+    size_t err_cap) {
+    if (!src || !metallib_out || !size_out) {
+        if (err_buf && err_cap) snprintf(err_buf, err_cap, "bad args");
+        return -1;
+    }
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    if (!tu || tu->error) {
+        if (err_buf && err_cap) {
+            snprintf(err_buf, err_cap, "%s",
+                     (tu && tu->error) ? tu->error : "parse: out of memory");
+        }
+        mglGLSLTranslationUnitDestroy(tu);
+        return -1;
+    }
+    MGLIRModule mod;
+    memset(&mod, 0, sizeof mod);
+    MGLSemaError *errors = nullptr;
+    uint32_t error_count = 0;
+    int hard = mglGLSLSemanticCheck(tu, &mod, &errors, &error_count);
+    if (hard) {
+        if (err_buf && err_cap && errors && error_count) {
+            snprintf(err_buf, err_cap, "line %u: %s",
+                     errors[0].line, errors[0].message);
+        }
+        mglGLSLSemanticCheckDestroy(errors, error_count);
+        mglGLSLTranslationUnitDestroy(tu);
+        return -1;
+    }
+    mglGLSLSemanticCheckDestroy(errors, error_count);
+
+    if (lists)
+        mglAirReflectModule(&mod, stage, lists, err_buf, err_cap);
+    mglIRModuleDestroy(&mod);
+    mglGLSLTranslationUnitDestroy(tu);
+
+    return compileGLSLImpl(src, stage, 0, metallib_out, size_out, err_buf,
+                           err_cap);
 }
 
 extern "C" void mglShaderFree(void *bytes) {

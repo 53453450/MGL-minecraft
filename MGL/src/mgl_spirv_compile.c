@@ -8103,6 +8103,11 @@ void clearStageCompileState(Program *pptr, int stage)
         free(pptr->spirv[stage].msl_str_capture);
         pptr->spirv[stage].msl_str_capture = NULL;
     }
+    if (pptr->spirv[stage].metallib_bytes) {
+        free(pptr->spirv[stage].metallib_bytes);
+        pptr->spirv[stage].metallib_bytes = NULL;
+        pptr->spirv[stage].metallib_size = 0;
+    }
     if (pptr->spirv[stage].entry_point) {
         free(pptr->spirv[stage].entry_point);
         pptr->spirv[stage].entry_point = NULL;

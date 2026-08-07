@@ -112,6 +112,9 @@ typedef struct Spirv_t {
     unsigned int *ir;
     char *msl_str;
     char *entry_point;
+    /* AIR backend output: serialized metallib (bitcode container). */
+    unsigned char *metallib_bytes;
+    size_t metallib_size;
     void *mtl_function;
     void *mtl_library;
     void *mtl_compute_pipeline;

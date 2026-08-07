@@ -608,7 +608,9 @@ LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include
 LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 # The two *.cpp sources (GLSL->metallib compiler) build with LLVM headers.
-M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include
+M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
+	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
+	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
 CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
 # Product libs carry the M1 AIR backend, so they depend on the LLVM runtime.

@@ -26,6 +26,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+typedef struct GLMContextRec_t *GLMContext;
+
+#include "mgl_types_program.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -53,6 +57,15 @@ int mglShaderCompileGLSL(const char *src, int stage,
 int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
                                 size_t *size_out, char *err_buf,
                                 size_t err_cap);
+
+/* Compile one stage through the self-hosted frontend + AIR backend and
+ * export its resource tables: metallib bytes + SpirvResourceList.
+ * Returns 0 on success; lists may be NULL to skip reflection. */
+int mglAirCompileGLSLWithReflect(const char *src, int stage,
+                                 unsigned char **metallib_out,
+                                 size_t *size_out,
+                                 SpirvResourceList lists[_MAX_SPIRV_RES],
+                                 char *err_buf, size_t err_cap);
 
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);

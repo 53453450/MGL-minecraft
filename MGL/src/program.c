@@ -26,6 +26,7 @@
 #include <ctype.h>
 #include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include "mgl_shader_abi.h"
 #include <glslang_c_interface.h>
 #include <glslang_c_shader_types.h>
 #include "spirv-tools/libspirv.h"
@@ -330,6 +331,11 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         if (ptr->spirv[i].msl_str_capture) {
             free(ptr->spirv[i].msl_str_capture);
             ptr->spirv[i].msl_str_capture = NULL;
+        }
+        if (ptr->spirv[i].metallib_bytes) {
+            free(ptr->spirv[i].metallib_bytes);
+            ptr->spirv[i].metallib_bytes = NULL;
+            ptr->spirv[i].metallib_size = 0;
         }
         if (ptr->spirv[i].entry_point) {
             free(ptr->spirv[i].entry_point);
@@ -802,6 +808,47 @@ static bool mglValidateTransformFeedbackVaryings(Program *pptr)
     return true;
 }
 
+/* AIR path stage compiler: self-hosted frontend + LLVM -> metallib, plus
+ * resource reflection.  Returns 1 on success; a failed stage is
+ * non-fatal at link time (the stage is simply not renderable), matching
+ * the legacy path's behaviour. */
+static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
+{
+    Shader *shader = pptr->shader_slots[stage];
+    if (!shader || !shader->src) {
+        return 1;
+    }
+    /* Map the legacy stage numbering (VS=0, FS=4, CS=5) to the AIR ABI
+     * stages (VS=0, FS=1, CS=2).  TCS/TES/GS have no AIR path yet. */
+    int air_stage;
+    switch (stage) {
+    case _VERTEX_SHADER:        air_stage = MGL_STAGE_VERTEX; break;
+    case _FRAGMENT_SHADER:      air_stage = MGL_STAGE_FRAGMENT; break;
+    case _COMPUTE_SHADER:       air_stage = MGL_STAGE_COMPUTE; break;
+    default:
+        return 1;   /* unsupported stage: skip (link continues) */
+    }
+    clearStageCompileState(pptr, stage);
+    unsigned char *bytes = NULL;
+    size_t size = 0;
+    char err[512] = {0};
+    if (mglAirCompileGLSLWithReflect(shader->src, air_stage, &bytes, &size,
+                                     pptr->spirv_resources_list[stage],
+                                     err, sizeof err) != 0) {
+        fprintf(stderr,
+                "MGL WARNING: AIR compile failed program %u stage %d: %s\n",
+                pptr->name, stage, err);
+        return 0;
+    }
+    pptr->spirv[stage].metallib_bytes = bytes;
+    pptr->spirv[stage].metallib_size = size;
+    if (pptr->spirv[stage].entry_point) {
+        free(pptr->spirv[stage].entry_point);
+    }
+    pptr->spirv[stage].entry_point = strdup("main");
+    return 1;
+}
+
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
@@ -949,11 +996,21 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr, "MGL WARNING: glslang_program_map_io failed; continuing with linked program\n");
     }
 
-    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
-    {
-        if (!compileStageFromLinkedProgram(ctx, pptr, glsl_program, stage)) {
-            link_ok = false;
-            break;
+    if (getenv("MGL_USE_AIR")) {
+        /* AIR path: self-hosted frontend -> metallib + reflection. */
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+            if (!mglAirCompileStage(ctx, pptr, stage)) {
+                link_ok = false;
+                break;
+            }
+        }
+    } else {
+        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
+        {
+            if (!compileStageFromLinkedProgram(ctx, pptr, glsl_program, stage)) {
+                link_ok = false;
+                break;
+            }
         }
     }
 
