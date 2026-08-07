@@ -71,6 +71,16 @@ enum {
 #define TESS_EVALUATION_SHADER_MASK_BIT  SHADER_MASK_BIT(_TESS_EVALUATION_SHADER)
 #define COMPUTE_SHADER_MASK_BIT  SHADER_MASK_BIT(_COMPUTE_SHADER)
 
+/* How a program's geometry shader is executed (or whether it can be at
+ * all).  Decided at link time; the value also drives the GL_MAX_GEOMETRY_*
+ * capability reporting and the glGetProgramiv geometry reflection. */
+typedef enum MGLGSRoute {
+    MGL_GS_ROUTE_NONE = 0,          /* no GS attached */
+    MGL_GS_ROUTE_COMPUTE,           /* compute-expansion path (planned P1) */
+    MGL_GS_ROUTE_MESH,              /* mesh-shader path (planned P2) */
+    MGL_GS_ROUTE_UNSUPPORTED        /* GS attached, no execution path yet */
+} MGLGSRoute;
+
 typedef struct Shader_t {
     GLuint dirty_bits;
     GLuint name;
@@ -254,6 +264,8 @@ typedef struct Program_t {
         unsigned x, y, z;
     } local_workgroup_size;
     GLuint tess_control_output_vertices;  /* from TCS layout(vertices=N) out; */
+    /* Geometry shader execution route, decided at link time. */
+    MGLGSRoute gs_route;
     /* TES execution mode reflection: layout(...) in; */
     GLenum tess_gen_mode;        /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES */
     GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */

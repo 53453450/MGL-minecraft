@@ -440,8 +440,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
         glm_ctx->state.var.max_tess_evaluation_shader_storage_blocks = 8;
     }
-    if (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
-        glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS) {
+    if (glm_ctx->state.var.max_geometry_shader_storage_blocks != 0 &&
+        (glm_ctx->state.var.max_geometry_shader_storage_blocks < 8 ||
+         glm_ctx->state.var.max_geometry_shader_storage_blocks > MAX_BINDABLE_BUFFERS)) {
         glm_ctx->state.var.max_geometry_shader_storage_blocks = 8;
     }
     if (glm_ctx->state.var.max_combined_shader_storage_blocks < 8 ||
@@ -524,7 +525,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_vertex_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_tess_control_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_tess_evaluation_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
-    glm_ctx->state.var.max_geometry_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
+    glm_ctx->state.var.max_geometry_atomic_counter_buffers = 0;
     glm_ctx->state.var.max_fragment_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_combined_atomic_counter_buffers = MAX_BINDABLE_BUFFERS;
     glm_ctx->state.var.max_atomic_counter_buffer_bindings = MAX_BINDABLE_BUFFERS;
@@ -534,7 +535,7 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_vertex_image_uniforms = 8;
     glm_ctx->state.var.max_tess_control_image_uniforms = 8;
     glm_ctx->state.var.max_tess_evaluation_image_uniforms = 8;
-    glm_ctx->state.var.max_geometry_image_uniforms = 8;
+    glm_ctx->state.var.max_geometry_image_uniforms = 0;
     glm_ctx->state.var.max_fragment_image_uniforms = 8;
     glm_ctx->state.var.max_combined_image_uniforms = 40;
     glm_ctx->state.var.max_compute_image_uniforms = 8;
@@ -542,9 +543,9 @@ void getMacOSDefaults(GLMContext glm_ctx)
     glm_ctx->state.var.max_transform_feedback_separate_attribs = 4;
     glm_ctx->state.var.max_transform_feedback_separate_components = 4;
     glm_ctx->state.var.max_transform_feedback_buffers = 4;
-    glm_ctx->state.var.max_geometry_output_vertices = 256;
-    glm_ctx->state.var.max_geometry_total_output_components = 1024;
-    glm_ctx->state.var.max_geometry_shader_invocations = 32;
+    glm_ctx->state.var.max_geometry_output_vertices = 0;
+    glm_ctx->state.var.max_geometry_total_output_components = 0;
+    glm_ctx->state.var.max_geometry_shader_invocations = 0;
     glm_ctx->state.var.min_program_texture_gather_offset = (GLuint)-8; /* -8 as unsigned */
     glm_ctx->state.var.max_program_texture_gather_offset = 7;
     glm_ctx->state.var.max_shader_storage_block_size = 134217728; /* 128 MB */

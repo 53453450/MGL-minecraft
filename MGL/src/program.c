@@ -1003,6 +1003,23 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     mglAssignPlainUniformLocations(pptr);
     mglUnifySamplerUniformLocations(pptr);
 
+    /* Geometry shader execution route.  P0 has no execution path; the
+     * decision structure exists so later stages (compute expansion, mesh)
+     * and the capability reporting can key off it. */
+    if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) {
+        static uint64_t s_gsUnsupportedNotice = 0;
+        uint64_t hit = ++s_gsUnsupportedNotice;
+        if (hit <= 4ull) {
+            fprintf(stderr,
+                    "MGL WARNING: program %u has a geometry shader; GS "
+                    "execution is not available yet (route=unsupported)\n",
+                    pptr->name);
+        }
+        pptr->gs_route = MGL_GS_ROUTE_UNSUPPORTED;
+    } else {
+        pptr->gs_route = MGL_GS_ROUTE_NONE;
+    }
+
     if (pptr->program_separable &&
         (pptr->attached_shader_mask & (pptr->attached_shader_mask - 1u)) != 0u &&
         !mglLinkedProgramPerVertexCompatible(pptr)) {
