@@ -288,12 +288,17 @@ TEST(Reflect, VertexResources) {
     EXPECT_STREQ("inUV", lists[_STAGE_INPUT_RES].list[1].name);
     EXPECT_EQ(1u, lists[_STAGE_INPUT_RES].list[1].location);
 
-    /* one varying output, one uniform constant, one matrix uniform */
+    /* one varying output; plain uniforms aggregate into one struct-packed
+     * resource with mvp (mat4) and uTime (float) members. */
     ASSERT_EQ(1u, lists[_STAGE_OUTPUT_RES].count);
     EXPECT_EQ(GL_FLOAT_VEC2, lists[_STAGE_OUTPUT_RES].list[0].gl_type);
-    ASSERT_EQ(2u, lists[_UNIFORM_CONSTANT_RES].count);
-    EXPECT_EQ(GL_FLOAT_MAT4, lists[_UNIFORM_CONSTANT_RES].list[0].gl_type);
-    EXPECT_EQ(GL_FLOAT, lists[_UNIFORM_CONSTANT_RES].list[1].gl_type);
+    ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].count);
+    EXPECT_EQ(2u, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_member_count);
+    EXPECT_STREQ("mvp", lists[_UNIFORM_CONSTANT_RES].list[0].ubo_members[0].name);
+    EXPECT_EQ(GL_FLOAT_MAT4, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_members[0].gl_type);
+    EXPECT_STREQ("uTime", lists[_UNIFORM_CONSTANT_RES].list[0].ubo_members[1].name);
+    EXPECT_EQ(GL_FLOAT, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_members[1].gl_type);
+    EXPECT_GT(lists[_UNIFORM_CONSTANT_RES].list[0].required_size, 0u);
 
     mglAirReflectDestroy(lists);
     mglIRModuleDestroy(mod);
@@ -331,7 +336,8 @@ TEST(Reflect, ComputeResources) {
     EXPECT_EQ(GL_SAMPLER_2D, lists[_SEPARATE_IMAGE_RES].list[0].gl_type);
 
     ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].count);
-    EXPECT_EQ(GL_INT, lists[_UNIFORM_CONSTANT_RES].list[0].gl_type);
+    ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_member_count);
+    EXPECT_EQ(GL_INT, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_members[0].gl_type);
 
     mglAirReflectDestroy(lists);
     mglIRModuleDestroy(mod);

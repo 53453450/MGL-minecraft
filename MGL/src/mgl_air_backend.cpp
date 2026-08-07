@@ -81,7 +81,7 @@ struct Uniform {
 struct VarSym {
     std::string name;
     MType type;
-    enum Kind { ATTR, VARYING, OUTPUT, BUFFER, SSBO, TEXTURE, LOCAL } kind = LOCAL;
+    enum Kind { ATTR, VARYING, OUTPUT, BUFFER, SSBO, UBO, TEXTURE, LOCAL } kind = LOCAL;
     uint32_t bufferOffset = 0;
     bool written = false;
 };
@@ -115,6 +115,7 @@ struct Codegen {
     llvm::Value *captureBuf = nullptr;   /* capture variant: output buffer */
     llvm::Value *vertexId = nullptr;     /* capture variant: vertex_id */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
+    std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
     std::map<std::string, llvm::Value *> texValues;  /* sampler name -> texture */
     std::map<std::string, llvm::Value *> smpValues;  /* sampler name -> sampler */
     std::map<std::string, uint32_t> bufferOffsets;  /* uniform name -> byte offset */
@@ -236,6 +237,12 @@ int collectUniforms(const MGLIRModule *mod, std::vector<Uniform> *out,
             s->type->kind == MGLIR_TYPE_IMAGE) {
             continue;   /* texture/sampler params are separate AIR args */
         }
+        /* Uniform blocks (struct types) and their anonymous-block members
+         * are independent device buffers, not part of the plain uniform
+         * pack. */
+        if (s->block_name ||
+            (s->type->kind == MGLIR_TYPE_STRUCT && s->type->member_count > 0))
+            continue;
         uint32_t size = 0;
         if (mglIRComputeLayout(s->type, MGLIR_LAYOUT_STD140, &size) != 0) {
             snprintf(err, errCap, "layout failed for uniform %s", s->name);
@@ -1204,6 +1211,32 @@ llvm::Value *emitMatrixUniform(Codegen &cg, const Uniform &u) {
 
 llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
     if (v.kind == VarSym::BUFFER) {
+        /* Anonymous-block member: read from the block's device buffer. */
+        const MGLIRSymbol *bs = findSymbol(mod, v.name.c_str());
+        if (bs && bs->block_name) {
+            llvm::Value *base = cg.uboPtrs.count(bs->block_name)
+                                    ? cg.uboPtrs[bs->block_name]
+                                    : nullptr;
+            if (base) {
+                const MGLIRSymbol *blk = findSymbol(mod, bs->block_name);
+                uint32_t moff = (blk && blk->type->member_offsets)
+                                    ? blk->type->member_offsets[bs->block_member_index]
+                                    : 0;
+                llvm::Type *t = llvmType(v.type, *cg.ctx);
+                llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                                 cg.b->getInt64(moff));
+                llvm::Align align(16);
+                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+                    uint64_t w = vt->getElementCount().getFixedValue();
+                    if (w == 1) align = llvm::Align(4);
+                    else if (w == 2) align = llvm::Align(8);
+                } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+                    align = llvm::Align(4);
+                }
+                p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+                return cg.b->CreateAlignedLoad(t, p, align);
+            }
+        }
         /* Uniform: single value read. */
         llvm::Type *t = llvmType(v.type, *cg.ctx);
         uint32_t off = cg.bufferOffsets.count(v.name) ? cg.bufferOffsets[v.name] : 0;
@@ -3149,6 +3182,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (q & MGL_AST_Q_UNIFORM) {
             if (s->type->kind == MGLIR_TYPE_SAMPLER) {
                 v.kind = VarSym::TEXTURE;
+            } else if (s->type->kind == MGLIR_TYPE_STRUCT &&
+                       s->type->member_count > 0) {
+                v.kind = VarSym::UBO;
             } else {
                 v.kind = VarSym::BUFFER;
             }
@@ -3244,7 +3280,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if ((isVS || isCompute) && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms)
-        if (v.kind == VarSym::SSBO)
+        if (v.kind == VarSym::SSBO || v.kind == VarSym::UBO)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
@@ -3252,8 +3288,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         paramTys.push_back(smpTy->getPointerTo(2));
     }
     for (VarSym &v : syms) {
-        if ((isVS && v.kind == VarSym::ATTR) ||
-            (!isVS && !isCompute && v.kind == VarSym::VARYING))
+        if ((isVS && v.kind == VarSym::ATTR))
+            paramTys.push_back(llvmType(v.type, ctx));
+        else if (!isVS && !isCompute && v.kind == VarSym::VARYING)
             paramTys.push_back(llvmType(v.type, ctx));
     }
     if (isCapture)
@@ -3285,6 +3322,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             if (v.kind != VarSym::SSBO) continue;
             fn->addParamAttr(ssboIdx++, llvm::Attribute::AttrKind::NoAlias);
         }
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::UBO) continue;
+            fn->addParamAttr(ssboIdx, llvm::Attribute::AttrKind::NoAlias);
+            fn->addParamAttr(ssboIdx, llvm::Attribute::AttrKind::ReadOnly);
+            ssboIdx++;
+        }
     }
 
     llvm::BasicBlock *entry = llvm::BasicBlock::Create(ctx, "entry", fn);
@@ -3308,6 +3351,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::SSBO) continue;
         cg.ssboPtrs[v.name] = fn->getArg(argSlot++);
+    }
+    for (VarSym &v : syms) {
+        if (v.kind != VarSym::UBO) continue;
+        cg.uboPtrs[v.name] = fn->getArg(argSlot++);
     }
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
@@ -3515,12 +3562,50 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t ssboCount = 0;
     for (VarSym &v : syms)
         if (v.kind == VarSym::SSBO) ssboCount++;
+    /* Uniform blocks: independent read-only device buffers. */
+    {
+        uint32_t loc = (isCapture ? 1 : 0) +
+                       ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
+                       ssboCount;
+        uint32_t uboArg = loc;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::UBO) continue;
+            const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
+            uint32_t bsize = sb ? sb->type->layout.size : 0;
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), uboArg++)),
+                llvm::MDString::get(ctx, "air.buffer"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), loc++)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.read"),
+                llvm::MDString::get(ctx, "air.address_space"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), bsize)),
+                llvm::MDString::get(ctx, "air.arg_type_align_size"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 16)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, v.name),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, v.name)}));
+        }
+    }
+    uint32_t uboCount = 0;
+    for (VarSym &v : syms)
+        if (v.kind == VarSym::UBO) uboCount++;
     /* Texture/sampler pairs: air.texture + air.sampler arguments. */
     {
         uint32_t texLoc = 0, smpLoc = 0;
         uint32_t texArg = (isCapture ? 1 : 0) +
                           ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                          ssboCount;
+                          ssboCount + uboCount;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
             argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -3558,8 +3643,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     uint32_t mArgSlot =
         (isCapture ? 1 : 0) +
         ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
-        2 * texCount;
+        uboCount + 2 * texCount;
     if (isVS) {
+        /* Vertex attributes arrive as vertex_input value arguments; the
+         * renderer feeds them through the vertex descriptor (buffer 16+). */
+        uint32_t attrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
             std::vector<llvm::Metadata *> elems = {
@@ -3568,7 +3656,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.vertex_input"),
                 llvm::MDString::get(ctx, "air.location_index"),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 0)),
+                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), 1)),
                 llvm::MDString::get(ctx, "air.arg_type_name"),

@@ -572,13 +572,39 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 }
                 return false;
             }
-            if (!ptr->spirv[i].msl_str) {
+            if (ptr->spirv[i].metallib_bytes && ptr->spirv[i].metallib_size > 0) {
+                /* AIR path: the stage was compiled by the self-hosted
+                 * frontend into a metallib blob; load it directly. */
+                if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL) {
+                    mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
+                    mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
+                    dispatch_data_t data = dispatch_data_create(
+                        ptr->spirv[i].metallib_bytes,
+                        ptr->spirv[i].metallib_size, NULL,
+                        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+                    __autoreleasing NSError *lerr = nil;
+                    id<MTLLibrary> library = [_device newLibraryWithData:data error:&lerr];
+                    if (!library) {
+                        NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %@",
+                              (unsigned)ptr->name, i,
+                              lerr.localizedDescription ?: (id)@"?");
+                        return false;
+                    }
+                    id<MTLFunction> function = [library newFunctionWithName:@"main"];
+                    if (!function) {
+                        NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib program=%u stage=%d",
+                              (unsigned)ptr->name, i);
+                        return false;
+                    }
+                    ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
+                    ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
+                }
+            } else if (!ptr->spirv[i].msl_str) {
                 NSLog(@"MGL WARNING: Program %u stage %d has reflection but no MSL; skipping Metal bind",
                       (unsigned)ptr->name,
                       i);
                 return false;
-            }
-            if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL)
+            } else if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL)
             {
                 id<MTLLibrary> library;
                 id<MTLFunction> function;
@@ -701,6 +727,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 	    if (ctx &&
 	        MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE &&
 	        ptr->shader_slots[_VERTEX_SHADER] &&
+	        !ptr->spirv[_VERTEX_SHADER].metallib_bytes &&
 	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_library == NULL)
 	    {
 	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
@@ -741,7 +768,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 	    if (ctx &&
 	        MGL_STATE(ctx)->var.clip_origin == GL_UPPER_LEFT &&
-	        ptr->shader_slots[_VERTEX_SHADER])
+	        ptr->shader_slots[_VERTEX_SHADER] &&
+	        !ptr->spirv[_VERTEX_SHADER].metallib_bytes)
 	    {
 	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
 	        BOOL zeroToOneDepth = (MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE);

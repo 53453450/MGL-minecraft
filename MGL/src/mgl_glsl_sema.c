@@ -1799,12 +1799,28 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (!t) {
         return;
     }
-    if (symtab_lookup_local(tab, d->name) != NULL) {
-        sema_error(s, d->line, "redeclaration of '%s'", d->name);
+    /* Anonymous blocks (uniform DrawColor { ... }; with no instance name)
+     * take their interface name from the block type name; their members
+     * are registered as block-scoped uniform symbols so the body can
+     * reference them directly. */
+    const char *var_name = d->name;
+    int is_anon_block = 0;
+    if (!var_name && d->struct_members && d->struct_member_count > 0 &&
+        d->type && d->type->name) {
+        var_name = d->type->name;
+        is_anon_block = 1;
+    }
+    if (!var_name) {
         mglIRTypeDestroy(t);
         return;
     }
-    Sym *sym = sym_new(d->name);
+    Sym *existing = symtab_lookup_local(tab, var_name);
+    if (existing != NULL && existing->kind != SYM_STRUCT) {
+        sema_error(s, d->line, "redeclaration of '%s'", var_name);
+        mglIRTypeDestroy(t);
+        return;
+    }
+    Sym *sym = sym_new(var_name);
     if (!sym) {
         mglIRTypeDestroy(t);
         return;
@@ -1818,7 +1834,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
     if (global) {
         MGLIRSymbol *isym = (MGLIRSymbol *)calloc(1, sizeof(*isym));
         if (isym) {
-            isym->name = strdup(d->name);
+            isym->name = strdup(var_name);
             isym->type = t;              /* owned by module now */
             isym->qualifiers = d->qualifiers;
             isym->layout = d->layout;
@@ -1847,6 +1863,45 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
                 free(isym);
                 mglIRTypeDestroy(t);
                 sym->type_owned = 0;
+            }
+        }
+        if (is_anon_block && global) {
+            /* Anonymous-block members are referenced directly in the
+             * shader body; register each as a uniform symbol carrying its
+             * owning block and member index. */
+            MGLIRType *bt = t;
+            for (uint32_t m = 0; m < bt->member_count; m++) {
+                MGLIRSymbol *ms = (MGLIRSymbol *)calloc(1, sizeof(*ms));
+                if (!ms) break;
+                ms->name = strdup(bt->member_names[m]);
+                ms->type = ir_type_clone(bt->members[m]);
+                Sym *msym = sym_new(bt->member_names[m]);
+                if (msym) {
+                    msym->kind = SYM_VARIABLE;
+                    msym->type = ms->type;
+                    msym->type_owned = 0;
+                    msym->qualifiers = d->qualifiers;
+                    symtab_insert(tab, msym);
+                }
+                ms->qualifiers = d->qualifiers;
+                ms->layout = d->layout;
+                ms->binding = isym->binding;
+                ms->location = UINT32_MAX;
+                ms->offset = bt->member_offsets ? bt->member_offsets[m]
+                                                : UINT32_MAX;
+                ms->block_name = strdup(var_name);
+                ms->block_member_index = m;
+                s->module->symbols = (MGLIRSymbol **)realloc(
+                    s->module->symbols,
+                    (s->module->symbol_count + 1) * sizeof(MGLIRSymbol *));
+                if (s->module->symbols) {
+                    s->module->symbols[s->module->symbol_count++] = ms;
+                } else {
+                    free(ms->name);
+                    free(ms->block_name);
+                    mglIRTypeDestroy(ms->type);
+                    free(ms);
+                }
             }
         }
     }
@@ -2261,6 +2316,7 @@ void mglIRModuleDestroy(MGLIRModule *module)
             continue;
         }
         free(is->name);
+        free(is->block_name);
         if (is->type) {
             mglIRTypeDestroy(is->type);
         }

@@ -292,7 +292,7 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
     id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
     [enc setRenderPipelineState:pso];
     [enc setVertexBytes:ubo length:sizeof(ubo) atIndex:0];
-    [enc setVertexBytes:verts length:36 atIndex:1];
+    [enc setVertexBytes:verts length:36 atIndex:16];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [enc endEncoding];
     [cb commit];
@@ -421,8 +421,8 @@ int main(int argc, const char *argv[]) {
         MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
         vd.attributes[0].format = MTLVertexFormatFloat3;
         vd.attributes[0].offset = 0;
-        vd.attributes[0].bufferIndex = 1; /* buffer 0 is reserved for uniforms */
-        vd.layouts[1].stride = 12;
+        vd.attributes[0].bufferIndex = 16; /* attrs live at kMGLVertexAttribBufferBase */
+        vd.layouts[16].stride = 12;
         pd.vertexDescriptor = vd;
 
         NSError *perr = nil;
@@ -558,8 +558,8 @@ int main(int argc, const char *argv[]) {
             MTLVertexDescriptor *xvd = [MTLVertexDescriptor new];
             xvd.attributes[0].format = MTLVertexFormatFloat3;
             xvd.attributes[0].offset = 0;
-            xvd.attributes[0].bufferIndex = 2;
-            xvd.layouts[2].stride = 12;
+            xvd.attributes[0].bufferIndex = 16;
+            xvd.layouts[16].stride = 12;
             xpd.vertexDescriptor = xvd;
             NSError *xerr = nil;
             id<MTLRenderPipelineState> xpso =
@@ -592,7 +592,7 @@ int main(int argc, const char *argv[]) {
             [xenc setRenderPipelineState:xpso];
             [xenc setVertexBuffer:capBuf offset:0 atIndex:29];
             [xenc setVertexBuffer:mvpBuf offset:0 atIndex:0];
-            [xenc setVertexBuffer:vbuf offset:0 atIndex:2];
+            [xenc setVertexBuffer:vbuf offset:0 atIndex:16];
             [xenc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
             [xenc endEncoding];
             [xcb commit];

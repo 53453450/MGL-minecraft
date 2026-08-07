@@ -722,6 +722,10 @@ static MGLStmt *parse_block(MGLParser *p)
         return NULL;
     }
     while (!ops_at(p, "}") && tk(p, 0)->kind != MGLGLSL_TOK_END) {
+        if (tk(p, 0)->kind == MGLGLSL_TOK_DIRECTIVE) {
+            advance(p);
+            continue;
+        }
         MGLStmt *sub = parse_statement(p);
         if (!sub) {
             break;
@@ -1252,6 +1256,117 @@ more_qualifiers:
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
+/* Preprocess conditional directives (#ifdef/#ifndef/#else/#endif) by
+ * dropping tokens of inactive branches; #define names are recorded so
+ * #ifdef evaluates them (macro bodies are not expanded here).  #version/
+ * #extension/#pragma directives are kept. */
+static void preprocess_tokens(MGLTokenStream *ts)
+{
+    enum { MAX_DEPTH = 32, MAX_DEFS = 64, MAX_NAME = 63 };
+    int active[MAX_DEPTH];
+    int parent_active[MAX_DEPTH];
+    int depth = 0;
+    char defs[MAX_DEFS][MAX_NAME + 1];
+    uint32_t def_count = 0;
+
+    uint32_t out = 0;
+    for (uint32_t i = 0; i < ts->count; i++) {
+        MGLGLSLToken *t = &ts->tok[i];
+        int cur_active = (depth == 0) ? 1 : active[depth - 1];
+        if (t->kind != MGLGLSL_TOK_DIRECTIVE) {
+            if (cur_active) ts->tok[out++] = *t;
+            continue;
+        }
+        const char *d = ts->src + t->start;
+        size_t n = (size_t)(t->end - t->start);
+        int is_kw = (n >= 6 && memcmp(d, "#ifdef", 6) == 0 &&
+                     (n == 6 || d[6] == ' '));
+        if (is_kw) {
+            if (depth >= MAX_DEPTH) break;
+            int cond = 0;
+            if (cur_active) {
+                const char *nm = d + 6;
+                while (*nm == ' ') nm++;
+                size_t nl = strcspn(nm, " \t");
+                for (uint32_t k = 0; k < def_count; k++) {
+                    if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
+                        cond = 1;
+                        break;
+                    }
+                }
+            }
+            parent_active[depth] = cur_active;
+            active[depth] = cur_active && cond;
+            depth++;
+            continue;
+        }
+        if (n >= 7 && memcmp(d, "#ifndef", 7) == 0 &&
+            (n == 7 || d[7] == ' ')) {
+            if (depth >= MAX_DEPTH) break;
+            int cond = 1;
+            if (cur_active) {
+                const char *nm = d + 7;
+                while (*nm == ' ') nm++;
+                size_t nl = strcspn(nm, " \t");
+                for (uint32_t k = 0; k < def_count; k++) {
+                    if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
+                        cond = 0;
+                        break;
+                    }
+                }
+            }
+            parent_active[depth] = cur_active;
+            active[depth] = cur_active && cond;
+            depth++;
+            continue;
+        }
+        if (n >= 5 && memcmp(d, "#else", 5) == 0 &&
+            (n == 5 || d[5] == ' ')) {
+            if (depth > 0) {
+                active[depth - 1] =
+                    parent_active[depth - 1] && !active[depth - 1];
+            }
+            continue;
+        }
+        if (n >= 6 && memcmp(d, "#endif", 6) == 0 &&
+            (n == 6 || d[6] == ' ')) {
+            if (depth > 0) depth--;
+            continue;
+        }
+        if (n >= 7 && memcmp(d, "#define", 7) == 0 &&
+            (n == 7 || d[7] == ' ')) {
+            if (cur_active) {
+                const char *nm = d + 7;
+                while (*nm == ' ') nm++;
+                size_t nl = strcspn(nm, " \t");
+                if (nl > 0 && nl <= MAX_NAME && def_count < MAX_DEFS) {
+                    memcpy(defs[def_count], nm, nl);
+                    defs[def_count][nl] = 0;
+                    def_count++;
+                }
+            }
+            continue;
+        }
+        if (n >= 6 && memcmp(d, "#undef", 6) == 0 &&
+            (n == 6 || d[6] == ' ')) {
+            const char *nm = d + 6;
+            while (*nm == ' ') nm++;
+            size_t nl = strcspn(nm, " \t");
+            for (uint32_t k = 0; k < def_count; k++) {
+                if (strlen(defs[k]) == nl && memcmp(defs[k], nm, nl) == 0) {
+                    memmove(&defs[k], &defs[k + 1],
+                            (def_count - k - 1) * sizeof(defs[0]));
+                    def_count--;
+                    break;
+                }
+            }
+            continue;
+        }
+        if (cur_active) ts->tok[out++] = *t;
+    }
+    ts->count = out;
+}
+
 MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 {
     MGLTokenStream ts;
@@ -1259,6 +1374,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     if (tokenize(&ts, src, len) != 0) {
         return NULL;
     }
+    preprocess_tokens(&ts);
 
     MGLTranslationUnit *tu = (MGLTranslationUnit *)calloc(1, sizeof(*tu));
     if (!tu) {

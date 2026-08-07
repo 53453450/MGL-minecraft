@@ -1228,6 +1228,18 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                     attr_mask |= (1u << a);
                 }
             }
+        } else if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
+            /* AIR path: attribute usage comes from the reflected stage
+             * inputs instead of the (absent) MSL text. */
+            SpirvResourceList *ins =
+                &pptr->spirv_resources_list[_VERTEX_SHADER]
+                                           [SPVC_RESOURCE_TYPE_STAGE_INPUT];
+            for (GLuint i = 0; i < ins->count; i++) {
+                GLuint loc = ins->list[i].location;
+                if (loc < MAX_ATTRIBS) {
+                    attr_mask |= (1u << loc);
+                }
+            }
         }
         pptr->vertexAttribUsageMask = attr_mask;
 

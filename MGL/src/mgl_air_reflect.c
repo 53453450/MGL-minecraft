@@ -154,6 +154,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (err && errCap) snprintf(err, errCap, "bad args");
         return -1;
     }
+    /* Plain (non-sampler) uniforms are packed by the AIR backend into a
+     * single std140 struct buffer, so the exporter mirrors that: members
+     * are collected here and emitted as one struct-packed resource the
+     * renderer's STRUCT_PACKED path consumes. */
+    SpirvResource agg;
+    memset(&agg, 0, sizeof(agg));
+    MGLIRType **agg_types = NULL;
+    const char **agg_names = NULL;
+    uint32_t agg_count = 0;
+    uint32_t agg_size = 0;
+
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         if (s->is_function) {
@@ -161,26 +172,109 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
         const MGLIRType *t = s->type;
         uint32_t q = s->qualifiers;
-        GLuint location = s->location != UINT32_MAX ? s->location : 0;
+        GLuint location = s->location != UINT32_MAX ? s->location : UINT32_MAX;
         GLuint binding = s->binding != UINT32_MAX ? s->binding : 0;
-        SpirvResourceList *dst = NULL;
 
         if (q & MGL_AST_Q_UNIFORM) {
             if (t->kind == MGLIR_TYPE_SAMPLER) {
-                dst = &lists[_SEPARATE_IMAGE_RES];
-            } else {
-                dst = &lists[_UNIFORM_CONSTANT_RES];
+                push_resource(&lists[_SEPARATE_IMAGE_RES], s, t, location,
+                              binding, stage);
+                continue;
             }
-        } else if (q & MGL_AST_Q_BUFFER) {
-            dst = &lists[_STORAGE_BUFFER_RES];
-        } else if (q & MGL_AST_Q_IN) {
-            dst = &lists[_STAGE_INPUT_RES];
-        } else if (q & MGL_AST_Q_OUT) {
-            dst = &lists[_STAGE_OUTPUT_RES];
-        } else {
-            continue;   /* locals and unsupported kinds are not reflected */
+            if (s->block_name) {
+                continue;   /* block member: covered by the block resource */
+            }
+            if (t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) {
+                /* Uniform block: independent resource with members. */
+                push_resource(&lists[_UNIFORM_BUFFER_RES], s, t, location,
+                              binding, stage);
+                continue;
+            }
+            /* Plain uniform: collect into the packed aggregate. */
+            MGLIRType **nt = (MGLIRType **)realloc(
+                agg_types, (agg_count + 1) * sizeof(MGLIRType *));
+            const char **nn = (const char **)realloc(
+                agg_names, (agg_count + 1) * sizeof(const char *));
+            if (!nt || !nn) {
+                if (err && errCap) snprintf(err, errCap, "out of memory");
+                mglAirReflectDestroy(lists);
+                return -1;
+            }
+            agg_types = nt;
+            agg_names = nn;
+            agg_types[agg_count] = (MGLIRType *)t;
+            agg_names[agg_count] = s->name;
+            agg_count++;
+            continue;
         }
-        push_resource(dst, s, t, location, binding, stage);
+        if (q & MGL_AST_Q_BUFFER) {
+            push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
+                          binding, stage);
+        } else if (q & MGL_AST_Q_IN) {
+            push_resource(&lists[_STAGE_INPUT_RES], s, t, location, binding,
+                          stage);
+        } else if (q & MGL_AST_Q_OUT) {
+            push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, binding,
+                          stage);
+        }
+    }
+
+    if (agg_count > 0) {
+        /* std140 layout, mirroring the AIR backend's collectUniforms. */
+        uint32_t off = 0;
+        agg.ubo_members = (SpirvUBOMember *)calloc(
+            agg_count, sizeof(SpirvUBOMember));
+        if (!agg.ubo_members) {
+            free(agg_types);
+            free(agg_names);
+            mglAirReflectDestroy(lists);
+            if (err && errCap) snprintf(err, errCap, "out of memory");
+            return -1;
+        }
+        agg.ubo_member_count = agg_count;
+        for (uint32_t m = 0; m < agg_count; m++) {
+            uint32_t size = 0;
+            if (mglIRComputeLayout(agg_types[m], MGLIR_LAYOUT_STD140, &size) != 0) {
+                size = 4;
+            }
+            off = (off + agg_types[m]->layout.alignment - 1) &
+                  ~(agg_types[m]->layout.alignment - 1);
+            SpirvUBOMember *u = &agg.ubo_members[m];
+            u->name = strdup(agg_names[m]);
+            u->query_name = strdup(agg_names[m]);
+            u->gl_type = mglAirGLTypeFromIR(agg_types[m]);
+            u->offset = off;
+            u->array_stride = (agg_types[m]->kind == MGLIR_TYPE_ARRAY)
+                                  ? (GLint)agg_types[m]->layout.array_stride
+                                  : -1;
+            u->matrix_stride = (agg_types[m]->kind == MGLIR_TYPE_MATRIX)
+                                   ? (GLint)agg_types[m]->layout.matrix_stride
+                                   : -1;
+            u->is_row_major = GL_FALSE;
+            u->size = mglAirGLArraySizeFromIR(agg_types[m]);
+            u->location_offset = (GLint)m;
+            u->top_level_array_size = u->size;
+            u->top_level_array_stride = u->array_stride;
+            off += size;
+        }
+        agg_size = off;
+        agg.name = strdup("air_uniforms");
+        agg.msl_name = strdup("air_uniforms");
+        agg.ubo_member_count = agg_count;
+        agg.required_size = agg_size;
+        agg.uniform_location = 0;
+        agg.location = UINT32_MAX;   /* let the link pass assign locations */
+        agg.gl_binding = 0;
+        agg.binding = 0;
+        SpirvResourceList *l = &lists[_UNIFORM_CONSTANT_RES];
+        SpirvResource *nl = (SpirvResource *)realloc(
+            l->list, (l->count + 1) * sizeof(SpirvResource));
+        if (nl) {
+            l->list = nl;
+            l->list[l->count++] = agg;
+        }
+        free(agg_types);
+        free(agg_names);
     }
     return 0;
 }

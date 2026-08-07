@@ -11,7 +11,8 @@
 #ifndef MGL_AIR_REFLECT_H
 #define MGL_AIR_REFLECT_H
 
-#include "glm_context.h"
+typedef struct GLMContextRec_t *GLMContext;
+
 #include "mgl_glsl_sema.h"
 #include "mgl_types_program.h"
 
