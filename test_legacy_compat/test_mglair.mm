@@ -152,8 +152,49 @@ static const char *kFS =
     "    float dc = float(loopCount);\n"
     "    if (dc == 5.0) cf += 1.0;\n"
     "    if (dc > 100.0) cf += 1000.0;\n"
+    "    while (false) { cf += 100.0; }\n"
+    "    for (int zz = 0; false; zz++) cf += 100.0;\n"
+    "    do { cf += 1.0; } while (false);\n"
+    "    int zw = 0;\n"
+    "    while (zw < 3) { cf += 1.0; zw++; }\n"
+    "    do { cf += 1.0; zw++; } while (zw < 3);\n"
+    "    int bi = -8;\n"
+    "    int b1 = bi >> 2;\n"
+    "    int b2 = bi << 1;\n"
+    "    int b3 = bi & 3;\n"
+    "    int b4 = bi | 1;\n"
+    "    int b5 = bi ^ 7;\n"
+    "    int b6 = ~bi;\n"
+    "    int b7 = -8 >> 2;\n"
+    "    uint bu = 8u;\n"
+    "    int b9 = int(bu >> 1);\n"
+    "    int b10 = int(0xF0u & 0x30u);\n"
+    "    switch (2) {\n"
+    "        case 1: cf += 100.0; break;\n"
+    "        case 2: cf += 1.0; break;\n"
+    "        default: cf += 100.0;\n"
+    "    }\n"
+    "    switch (9) {\n"
+    "        case 1: cf += 100.0; break;\n"
+    "        default: cf += 2.0;\n"
+    "    }\n"
+    "    switch (7) {\n"
+    "        case 1: cf += 100.0; break;\n"
+    "        case 2: cf += 100.0;\n"
+    "    }\n"
+    "    switch (1 + 1) {\n"
+    "        case 2: cf += 1.0; break;\n"
+    "    }\n"
+    "    switch (5) {\n"
+    "        case 1: cf += 100.0; break;\n"
+    "        case 5: cf += 1.0;\n"
+    "        case 6: cf += 2.0; break;\n"
+    "        default: cf += 100.0;\n"
+    "    }\n"
     "    float swcorr = swa.x + swa.y + swb + swc.x + swc.y + swc.z\n"
-    "                   + sc.x + sc.y + lp.x + lp.y + cf - 48.0;\n"
+    "                   + sc.x + sc.y + lp.x + lp.y + cf\n"
+    "                   + float(b1 + b2 + b3 + b4 + b5 + b6 + b7 + b9 + b10)\n"
+    "                   - 91.0;\n"
     "    float off = float(q) + float(loopCount - 5);\n"
     "    vec2 corr = vsel2 - vec2(3.0, 4.0);\n"
     "    if (vUV.x > 1000.0) discard;\n"
@@ -311,6 +352,23 @@ int main(int argc, const char *argv[]) {
             return 1;
         }
         printf("metallib sizes: vs=%zu fs=%zu\n", vsSize, fsSize);
+
+        if (mglShaderInterfaceCheck(kVS, kFS, err, sizeof err) != 0) {
+            fprintf(stderr, "interface check FAIL: %s\n", err);
+            return 1;
+        }
+        /* Negative check: a mismatched fragment interface must be
+         * rejected before any GPU work happens. */
+        static const char *kFSBad =
+            "#version 460 core\n"
+            "in vec3 vUV;\n"
+            "void main() {\n"
+            "}\n";
+        if (mglShaderInterfaceCheck(kVS, kFSBad, err, sizeof err) == 0) {
+            fprintf(stderr, "interface check accepted a mismatch\n");
+            return 1;
+        }
+        printf("interface mismatch rejected: %s\n", err);
 
         id<MTLLibrary> vsLib = loadLibrary(dev, vsBytes, vsSize, "vs");
         id<MTLLibrary> fsLib = loadLibrary(dev, fsBytes, fsSize, "fs");
