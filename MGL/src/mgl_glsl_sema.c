@@ -886,6 +886,7 @@ typedef enum {
 
 typedef enum {
     BI_RET_FLOAT,   /* scalar float */
+    BI_RET_UINT,    /* scalar uint */
     BI_RET_GENF,    /* float genType matching the gen args */
     BI_RET_GENI,    /* int/uint genType matching the gen args */
     BI_RET_VEC2,    /* vec2 */
@@ -985,6 +986,22 @@ static const BiFn kBuiltins[] = {
     { "outerProduct", 2, { BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_MAT2 },
     { "outerProduct", 2, { BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_MAT3 },
     { "outerProduct", 2, { BI_ARG_VEC4, BI_ARG_VEC4 }, BI_RET_MAT4 },
+    /* geometric */
+    { "cross", 2, { BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_VEC3 },
+    /* inverse trigonometric */
+    { "asin", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "acos", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "atan", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "atan", 2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_GENF },
+    /* pack / unpack (GLSL 4.60 8.4) */
+    { "packUnorm2x16",   1, { BI_ARG_VEC2 }, BI_RET_UINT },
+    { "unpackUnorm2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
+    { "packSnorm2x16",   1, { BI_ARG_VEC2 }, BI_RET_UINT },
+    { "unpackSnorm2x16", 1, { BI_ARG_INT }, BI_RET_VEC2 },
+    { "packHalf2x16",    1, { BI_ARG_VEC2 }, BI_RET_UINT },
+    { "unpackHalf2x16",  1, { BI_ARG_INT }, BI_RET_VEC2 },
+    /* atomic (compute) */
+    { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
 };
 
 /* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
@@ -1136,6 +1153,8 @@ static MGLIRType *builtin_call_type(const char *name,
                                                     : MGLIR_SCALAR_INT);
         case BI_RET_FLOAT:
             return mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+        case BI_RET_UINT:
+            return mglIRTypeScalar(MGLIR_SCALAR_UINT);
         case BI_RET_VEC2:
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 2);
         case BI_RET_VEC3:
@@ -1332,6 +1351,11 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * thread_position_in_grid kernel argument. */
                 return scratch_type(s,
                                     mglIRTypeVector(MGLIR_SCALAR_UINT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
+                /* Vertex built-in; the AIR backend maps it to a
+                 * vertex_id argument (capture variants). */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             sema_error(s, e->line, "undeclared identifier '%s'",
                        e->u.var_ref.name);

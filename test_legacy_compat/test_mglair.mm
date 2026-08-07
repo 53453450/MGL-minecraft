@@ -204,9 +204,28 @@ static const char *kFS =
 static const char *kCS =
     "#version 460 core\n"
     "layout(local_size_x = 1) in;\n"
+    "layout(std430) buffer B { float data[4]; } b;\n"
+    "layout(std430) buffer A { int counter; } a;\n"
+    "uniform sampler2D tex;\n"
     "uniform int uCounter;\n"
     "void main() {\n"
     "    uCounter += 1 + int(gl_GlobalInvocationID.x);\n"
+    "    vec3 vc = cross(vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0));\n"
+    "    float t2 = atan(1.0, 1.0);\n"
+    "    vec2 r1 = unpackUnorm2x16(packUnorm2x16(vec2(1.0, 1.0)));\n"
+    "    vec2 r2 = unpackSnorm2x16(packSnorm2x16(vec2(1.0, 1.0)));\n"
+    "    vec2 r3 = unpackHalf2x16(0x3800u);\n"
+    "    b.data[0] = vc.z * 10.0;\n"
+    "    b.data[1] = b.data[0] + t2;\n"
+    "    b.data[2] = r1.x + r2.y + r3.x;\n"
+    "    b.data[3] = b.data[1] + b.data[2];\n"
+    "    a.counter += 5;\n"
+    "    atomicAdd(a.counter, 7);\n"
+    "    vec4 tc = texture(tex, vec2(0.5, 0.5));\n"
+    "    vec4 tl = textureLod(tex, vec2(0.25, 0.75), 0.0);\n"
+    "    uCounter += int(tc.r * 100.0) + int(tl.g * 100.0);\n"
+    "    uCounter += int(textureSize(tex, 0).x);\n"
+    "    uCounter += int(b.data[3] * 100.0);\n"
     "}\n";
 
 static id<MTLLibrary> loadLibrary(id<MTLDevice> dev, const unsigned char *bytes,
@@ -416,9 +435,12 @@ int main(int argc, const char *argv[]) {
         }
         printf("PSO_OK\n");
 
-        /* Compute: kernel reads/writes the uniform buffer through
-         * gl_GlobalInvocationID; dispatch a single thread and verify the
-         * device buffer contents (41 + 1 + gid.x=0 -> 42). */
+        /* Compute: kernel reads/writes the uniform buffer, two SSBOs
+         * (data[] and an atomic counter), a 2D texture, plus
+         * gl_GlobalInvocationID and the new builtins; dispatch a single
+         * thread and verify every device buffer
+         * (41 + 1 + 1328 + 100 + 0 + 4 -> 1474, data[3] = 13.285...,
+         * counter = 5 + 7 = 12). */
         unsigned char *csBytes = NULL;
         size_t csSize = 0;
         if (mglShaderCompileGLSL(kCS, MGL_STAGE_COMPUTE, &csBytes, &csSize,
@@ -445,23 +467,147 @@ int main(int argc, const char *argv[]) {
         }
         id<MTLBuffer> cbuf = [dev newBufferWithLength:4
                                               options:MTLResourceStorageModeShared];
+        id<MTLBuffer> ssboB = [dev newBufferWithLength:16
+                                               options:MTLResourceStorageModeShared];
+        id<MTLBuffer> ssboA = [dev newBufferWithLength:4
+                                               options:MTLResourceStorageModeShared];
+        MTLTextureDescriptor *td = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                         width:4 height:4 mipmapped:NO];
+        id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
+        {
+            unsigned char px[4 * 4 * 4];
+            for (int i = 0; i < 16; i++) {
+                px[i * 4 + 0] = 255;  /* red */
+                px[i * 4 + 1] = 0;
+                px[i * 4 + 2] = 0;
+                px[i * 4 + 3] = 255;
+            }
+            [tex replaceRegion:MTLRegionMake2D(0, 0, 4, 4)
+                   mipmapLevel:0 withBytes:px bytesPerRow:16];
+        }
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];
+        id<MTLSamplerState> smp = [dev newSamplerStateWithDescriptor:sd];
         ((int *)cbuf.contents)[0] = 41;
+        ((int *)ssboA.contents)[0] = 0;
         id<MTLCommandQueue> cq = [dev newCommandQueue];
         id<MTLCommandBuffer> cb = [cq commandBuffer];
         id<MTLComputeCommandEncoder> enc = [cb computeCommandEncoder];
         [enc setComputePipelineState:csPso];
         [enc setBuffer:cbuf offset:0 atIndex:0];
+        [enc setBuffer:ssboB offset:0 atIndex:1];
+        [enc setBuffer:ssboA offset:0 atIndex:2];
+        [enc setTexture:tex atIndex:0];
+        [enc setSamplerState:smp atIndex:0];
         [enc dispatchThreads:MTLSizeMake(1, 1, 1)
            threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         [enc endEncoding];
         [cb commit];
         [cb waitUntilCompleted];
         int csGot = ((int *)cbuf.contents)[0];
-        if (csGot != 42) {
+        if (csGot != 1474) {
             fprintf(stderr, "COMPUTE_VALUE_FAIL: %d\n", csGot);
             return 1;
         }
-        printf("COMPUTE_OK\n");
+        float *bf = (float *)ssboB.contents;
+        int *ac = (int *)ssboA.contents;
+        if (bf[3] < 13.28 || bf[3] > 13.29) {
+            fprintf(stderr, "SSBO_VALUE_FAIL: %f\n", bf[3]);
+            return 1;
+        }
+        if (*ac != 12) {
+            fprintf(stderr, "ATOMIC_VALUE_FAIL: %d\n", *ac);
+            return 1;
+        }
+        printf("SSBO_OK ATOMIC_OK\n");
+
+        /* XFB capture variant: vertex outputs (position + varyings) go
+         * into a device buffer at index 29, indexed by gl_VertexID.
+         * Render 3 vertices with an identity MVP and verify the captured
+         * record of vertex 1. */
+        {
+            static const char *kVSX =
+                "#version 460 core\n"
+                "uniform mat4 mvp;\n"
+                "in vec3 inPos;\n"
+                "out vec2 vUV;\n"
+                "void main() {\n"
+                "    gl_Position = mvp * vec4(inPos, 1.0);\n"
+                "    gl_Position.y += float(gl_VertexID);\n"
+                "    vUV = inPos.xy;\n"
+                "}\n";
+            unsigned char *xBytes = NULL;
+            size_t xSize = 0;
+            if (mglShaderCompileGLSLCapture(kVSX, &xBytes, &xSize,
+                                            err, sizeof err) != 0) {
+                fprintf(stderr, "capture compile FAIL: %s\n", err);
+                return 1;
+            }
+            id<MTLLibrary> xLib = loadLibrary(dev, xBytes, xSize, "xfb");
+            mglShaderFree(xBytes);
+            if (!xLib) return 1;
+            id<MTLFunction> xFn = [xLib newFunctionWithName:@"main"];
+            if (!xFn) {
+                fprintf(stderr, "newFunctionWithName FAIL (capture)\n");
+                return 1;
+            }
+            MTLRenderPipelineDescriptor *xpd = [MTLRenderPipelineDescriptor new];
+            xpd.vertexFunction = xFn;
+            xpd.rasterizationEnabled = NO;
+            xpd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+            MTLVertexDescriptor *xvd = [MTLVertexDescriptor new];
+            xvd.attributes[0].format = MTLVertexFormatFloat3;
+            xvd.attributes[0].offset = 0;
+            xvd.attributes[0].bufferIndex = 2;
+            xvd.layouts[2].stride = 12;
+            xpd.vertexDescriptor = xvd;
+            NSError *xerr = nil;
+            id<MTLRenderPipelineState> xpso =
+                [dev newRenderPipelineStateWithDescriptor:xpd error:&xerr];
+            if (!xpso) {
+                fprintf(stderr, "XFB_PSO_FAIL: %s\n",
+                        xerr.localizedDescription.UTF8String ?: "?");
+                return 1;
+            }
+            /* Identity MVP. */
+            id<MTLBuffer> mvpBuf = [dev newBufferWithLength:64
+                                                    options:MTLResourceStorageModeShared];
+            float *m = (float *)mvpBuf.contents;
+            for (int i = 0; i < 16; i++) m[i] = 0.0f;
+            m[0] = m[5] = m[10] = m[15] = 1.0f;
+            /* 3 vertices: (0,0,0) (1,0,0) (0,1,0). */
+            float verts[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+            id<MTLBuffer> vbuf = [dev newBufferWithBytes:verts length:36
+                                                 options:MTLResourceStorageModeShared];
+            id<MTLBuffer> capBuf = [dev newBufferWithLength:3 * 32
+                                                    options:MTLResourceStorageModeShared];
+            id<MTLCommandBuffer> xcb = [cq commandBuffer];
+            MTLRenderPassDescriptor *xrp =
+                [MTLRenderPassDescriptor renderPassDescriptor];
+            xrp.colorAttachments[0].texture = tex;
+            xrp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+            xrp.colorAttachments[0].storeAction = MTLStoreActionDontCare;
+            id<MTLRenderCommandEncoder> xenc =
+                [xcb renderCommandEncoderWithDescriptor:xrp];
+            [xenc setRenderPipelineState:xpso];
+            [xenc setVertexBuffer:capBuf offset:0 atIndex:29];
+            [xenc setVertexBuffer:mvpBuf offset:0 atIndex:0];
+            [xenc setVertexBuffer:vbuf offset:0 atIndex:2];
+            [xenc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+            [xenc endEncoding];
+            [xcb commit];
+            [xcb waitUntilCompleted];
+            float *cap = (float *)capBuf.contents;
+            /* 32-byte records (align 16): vertex 1 starts at cap[8]. */
+            if (fabsf(cap[8] - 1.0f) > 1e-4f || fabsf(cap[9] - 1.0f) > 1e-4f ||
+                fabsf(cap[10]) > 1e-4f || fabsf(cap[11] - 1.0f) > 1e-4f ||
+                fabsf(cap[12] - 1.0f) > 1e-4f || fabsf(cap[13]) > 1e-4f) {
+                fprintf(stderr, "XFB_VALUE_FAIL: pos=(%f,%f,%f,%f) uv=(%f,%f)\n",
+                        cap[8], cap[9], cap[10], cap[11], cap[12], cap[13]);
+                return 1;
+            }
+            printf("XFB_OK\n");
+        }
 
         return checkValues(dev, pso);
     }

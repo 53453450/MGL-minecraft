@@ -47,6 +47,13 @@ int mglShaderCompileGLSL(const char *src, int stage,
                          unsigned char **metallib_out, size_t *size_out,
                          char *err_buf, size_t err_cap);
 
+/* XFB capture variant of a vertex shader: the full output record
+ * (position + varyings) is written to a device buffer at Metal buffer
+ * index 29 with rasterization disabled.  Returns 0 on success. */
+int mglShaderCompileGLSLCapture(const char *src, unsigned char **metallib_out,
+                                size_t *size_out, char *err_buf,
+                                size_t err_cap);
+
 /* Free bytes returned by mglShaderCompileGLSL. */
 void mglShaderFree(void *bytes);
 
