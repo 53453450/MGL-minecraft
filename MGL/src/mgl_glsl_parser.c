@@ -1039,7 +1039,14 @@ more_qualifiers:
 
             if (has_value) {
                 expect_punct(p, "=");
-                if (at_num(p) || at_any_ident(p)) {
+                if (at_num(p)) {
+                    if (n == 8 && memcmp(s, "location", 8) == 0) {
+                        d->layout_location = (int32_t)cur_double(p);
+                    } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
+                        d->layout_binding = (int32_t)cur_double(p);
+                    }
+                    advance(p);
+                } else if (at_any_ident(p)) {
                     advance(p);
                 } else {
                     parse_error(p, "expected value in layout() at line %u",

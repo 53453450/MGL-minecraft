@@ -631,18 +631,22 @@ test-mglair: $(build_dir)/test_mglair
 
 # AIR backend unit tests with GoogleTest (pure compile-time, no GPU).
 GTEST_ROOT ?= $(HOME)/googletest
-GTEST_CXXFLAGS := -I$(GTEST_ROOT)/googletest/include -I$(GTEST_ROOT)/googlemock/include
+GTEST_CXXFLAGS := -I$(GTEST_ROOT)/googletest/include -I$(GTEST_ROOT)/googlemock/include \
+	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
+	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL
 GTEST_LIBS := $(GTEST_ROOT)/build-mgl/lib/libgtest.a \
 	$(GTEST_ROOT)/build-mgl/lib/libgtest_main.a
 
 $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
-	MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+	MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 	MGL/src/mgl_ir.c
 	$(LLVM_CXX) -x c++ $(LLVM_CXXFLAGS) $(GTEST_CXXFLAGS) $(LLVM_LDFLAGS) \
 		test_legacy_compat/test_mglair_gtest.cpp \
 		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
-		MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
+		MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+		MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c \
 		MGL/src/mgl_ir.c \
 		-x none $(GTEST_LIBS) -o $@
 

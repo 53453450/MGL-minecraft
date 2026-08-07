@@ -13,9 +13,25 @@
 #include <string>
 #include <vector>
 
+extern "C" {
+#include "mgl_air_reflect.h"
+#include "mgl_glsl_parser.h"
 #include "mgl_shader_abi.h"
+}
 
 namespace {
+
+MGLIRModule *semacheck(const char *src, MGLTranslationUnit **tu_out) {
+    MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
+    if (!tu || tu->error) return nullptr;
+    MGLIRModule *mod = (MGLIRModule *)calloc(1, sizeof(MGLIRModule));
+    MGLSemaError *errs = nullptr;
+    uint32_t ec = 0;
+    mglGLSLSemanticCheck(tu, mod, &errs, &ec);
+    mglGLSLSemanticCheckDestroy(errs, ec);
+    *tu_out = tu;
+    return mod;
+}
 
 struct CompileResult {
     int rc = -1;
@@ -242,6 +258,84 @@ TEST(Interface, MissingVaryingRejected) {
 TEST(Interface, NullSourcesRejected) {
     char err[512] = {0};
     EXPECT_NE(0, mglShaderInterfaceCheck(nullptr, kFS, err, sizeof(err)));
+}
+
+/* ---- reflection exporter ---- */
+
+TEST(Reflect, VertexResources) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(location = 0) in vec3 inPos;\n"
+        "layout(location = 1) in vec2 inUV;\n"
+        "layout(location = 0) out vec2 vUV;\n"
+        "uniform mat4 mvp;\n"
+        "uniform float uTime;\n"
+        "void main() {\n"
+        "    gl_Position = mvp * vec4(inPos, 1.0);\n"
+        "    vUV = inUV;\n"
+        "}\n";
+    MGLTranslationUnit *tu = nullptr;
+    MGLIRModule *mod = semacheck(src, &tu);
+    ASSERT_NE(nullptr, mod);
+    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    ASSERT_EQ(0, mglAirReflectModule(mod, _VERTEX_SHADER, lists, nullptr, 0));
+
+    /* two vertex inputs with explicit locations */
+    ASSERT_EQ(2u, lists[_STAGE_INPUT_RES].count);
+    EXPECT_STREQ("inPos", lists[_STAGE_INPUT_RES].list[0].name);
+    EXPECT_EQ(0u, lists[_STAGE_INPUT_RES].list[0].location);
+    EXPECT_EQ(GL_FLOAT_VEC3, lists[_STAGE_INPUT_RES].list[0].gl_type);
+    EXPECT_STREQ("inUV", lists[_STAGE_INPUT_RES].list[1].name);
+    EXPECT_EQ(1u, lists[_STAGE_INPUT_RES].list[1].location);
+
+    /* one varying output, one uniform constant, one matrix uniform */
+    ASSERT_EQ(1u, lists[_STAGE_OUTPUT_RES].count);
+    EXPECT_EQ(GL_FLOAT_VEC2, lists[_STAGE_OUTPUT_RES].list[0].gl_type);
+    ASSERT_EQ(2u, lists[_UNIFORM_CONSTANT_RES].count);
+    EXPECT_EQ(GL_FLOAT_MAT4, lists[_UNIFORM_CONSTANT_RES].list[0].gl_type);
+    EXPECT_EQ(GL_FLOAT, lists[_UNIFORM_CONSTANT_RES].list[1].gl_type);
+
+    mglAirReflectDestroy(lists);
+    mglIRModuleDestroy(mod);
+    mglGLSLTranslationUnitDestroy(tu);
+}
+
+TEST(Reflect, ComputeResources) {
+    static const char *src =
+        "#version 460 core\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std430, binding = 3) buffer B { float data[4]; } b;\n"
+        "uniform sampler2D tex;\n"
+        "uniform int uCounter;\n"
+        "void main() {\n"
+        "    uCounter += int(texture(tex, vec2(0.5)).r);\n"
+        "    b.data[0] = 1.0;\n"
+        "}\n";
+    MGLTranslationUnit *tu = nullptr;
+    MGLIRModule *mod = semacheck(src, &tu);
+    ASSERT_NE(nullptr, mod);
+    SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
+    ASSERT_EQ(0, mglAirReflectModule(mod, _COMPUTE_SHADER, lists, nullptr, 0));
+
+    ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].count);
+    EXPECT_STREQ("b", lists[_STORAGE_BUFFER_RES].list[0].name);
+    EXPECT_EQ(3u, lists[_STORAGE_BUFFER_RES].list[0].gl_binding);
+    ASSERT_EQ(1u, lists[_STORAGE_BUFFER_RES].list[0].ubo_member_count);
+    EXPECT_STREQ("data", lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].name);
+    EXPECT_EQ(GL_FLOAT, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].gl_type);
+    EXPECT_EQ(4, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].size);
+    EXPECT_EQ(0u, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].offset);
+
+    ASSERT_EQ(1u, lists[_SEPARATE_IMAGE_RES].count);
+    EXPECT_STREQ("tex", lists[_SEPARATE_IMAGE_RES].list[0].name);
+    EXPECT_EQ(GL_SAMPLER_2D, lists[_SEPARATE_IMAGE_RES].list[0].gl_type);
+
+    ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].count);
+    EXPECT_EQ(GL_INT, lists[_UNIFORM_CONSTANT_RES].list[0].gl_type);
+
+    mglAirReflectDestroy(lists);
+    mglIRModuleDestroy(mod);
+    mglGLSLTranslationUnitDestroy(tu);
 }
 
 }  // namespace

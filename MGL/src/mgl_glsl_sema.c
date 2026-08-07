@@ -1824,8 +1824,12 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->layout = d->layout;
             isym->matrix_major = d->matrix_major;
             isym->offset = UINT32_MAX;
-            isym->binding = UINT32_MAX;
-            isym->location = UINT32_MAX;
+            isym->binding = (d->layout_binding >= 0)
+                                ? (uint32_t)d->layout_binding
+                                : UINT32_MAX;
+            isym->location = (d->layout_location >= 0)
+                                 ? (uint32_t)d->layout_location
+                                 : UINT32_MAX;
             /* layout block: compute offsets on the block type */
             if (d->struct_members && d->struct_member_count > 0) {
                 layout_block(s, d, t);
