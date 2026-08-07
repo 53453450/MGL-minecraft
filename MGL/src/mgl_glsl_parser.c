@@ -143,7 +143,7 @@ static void advance(MGLParser *p)
 static int ops_at(MGLParser *p, const char *s)
 {
     size_t len = strlen(s);
-    if (len > 2) {
+    if (len < 1 || len > 3) {
         return 0;
     }
     size_t i;
@@ -372,8 +372,11 @@ static MGLExpr *parse_primary(MGLParser *p)
         t->kind == MGLGLSL_TOK_FLOAT) {
         MGLExpr *e = expr_alloc(p, MGL_EXPR_LITERAL, line);
         if (e) {
-            e->u.literal.base = (t->kind == MGLGLSL_TOK_FLOAT)
-                                    ? MGL_AST_TYPE_FLOAT : MGL_AST_TYPE_INT;
+        e->u.literal.base = (t->kind == MGLGLSL_TOK_FLOAT)
+                                ? MGL_AST_TYPE_FLOAT
+                                : (t->kind == MGLGLSL_TOK_UINT)
+                                      ? MGL_AST_TYPE_UINT
+                                      : MGL_AST_TYPE_INT;
             e->u.literal.value = cur_double(p);
         }
         advance(p);
@@ -485,6 +488,14 @@ static MGLExpr *parse_postfix(MGLParser *p)
 
 static int prefix_op(MGLParser *p, uint32_t *op)
 {
+    if (ops_at(p, "++")) {
+        *op = MGL_OP_INC;
+        return 1;
+    }
+    if (ops_at(p, "--")) {
+        *op = MGL_OP_DEC;
+        return 1;
+    }
     if (ops_at(p, "-")) {
         *op = MGL_OP_SUB;
         return 1;
@@ -499,14 +510,6 @@ static int prefix_op(MGLParser *p, uint32_t *op)
     }
     if (ops_at(p, "~")) {
         *op = MGL_OP_BNOT;
-        return 1;
-    }
-    if (ops_at(p, "++")) {
-        *op = MGL_OP_INC;
-        return 1;
-    }
-    if (ops_at(p, "--")) {
-        *op = MGL_OP_DEC;
         return 1;
     }
     return 0;
@@ -552,12 +555,12 @@ static const struct {
     { "&", MGL_OP_AND, 5 },
     { "==", MGL_OP_EQ, 6 },
     { "!=", MGL_OP_NE, 6 },
-    { "<", MGL_OP_LT, 7 },
-    { "<=", MGL_OP_LE, 7 },
-    { ">", MGL_OP_GT, 7 },
-    { ">=", MGL_OP_GE, 7 },
     { "<<", MGL_OP_SHL, 8 },
     { ">>", MGL_OP_SHR, 8 },
+    { "<=", MGL_OP_LE, 7 },
+    { "<", MGL_OP_LT, 7 },
+    { ">=", MGL_OP_GE, 7 },
+    { ">", MGL_OP_GT, 7 },
     { "+", MGL_OP_ADD, 9 },
     { "-", MGL_OP_SUB, 9 },
     { "*", MGL_OP_MUL, 10 },
@@ -593,20 +596,21 @@ static MGLExpr *parse_binary(MGLParser *p, int min_prec)
         }
         /* don't eat the leading char of a compound-assignment like "+=":
          * those are matched by lookup_assign one level up */
-        if ((op == MGL_OP_ADD || op == MGL_OP_SUB || op == MGL_OP_MUL ||
-             op == MGL_OP_DIV || op == MGL_OP_MOD || op == MGL_OP_AND ||
-             op == MGL_OP_OR || op == MGL_OP_XOR) &&
-            at_peek_punct(p, 1, "=")) {
-            break;
-        }
-        /* consume operator (1 or 2 chars); every two-char operator is one
-         * of these, so the length follows from the matched op */
         int nchars = 1;
         if (op == MGL_OP_LOR || op == MGL_OP_LAND || op == MGL_OP_EQ ||
             op == MGL_OP_NE || op == MGL_OP_LE || op == MGL_OP_GE ||
             op == MGL_OP_SHL || op == MGL_OP_SHR) {
             nchars = 2;
         }
+        if ((op == MGL_OP_ADD || op == MGL_OP_SUB || op == MGL_OP_MUL ||
+             op == MGL_OP_DIV || op == MGL_OP_MOD || op == MGL_OP_AND ||
+             op == MGL_OP_OR || op == MGL_OP_XOR || op == MGL_OP_SHL ||
+             op == MGL_OP_SHR) &&
+            at_peek_punct(p, nchars, "=")) {
+            break;
+        }
+        /* consume operator (1 or 2 chars); every two-char operator is one
+         * of these, so the length follows from the matched op */
         advance(p);
         if (nchars > 1) {
             advance(p);

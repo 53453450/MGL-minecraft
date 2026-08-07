@@ -1720,13 +1720,18 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
     case MGL_STMT_DECL:
         analyze_decl(s, tab, st->u.decl.decl, 0);
         break;
-    case MGL_STMT_IF:
-        check_expr(s, tab, st->u.ifs.cond);
+    case MGL_STMT_IF: {
+        MGLIRType *ct = check_expr(s, tab, st->u.ifs.cond);
+        if (ct && (ct->kind != MGLIR_TYPE_SCALAR ||
+                   ct->scalar != MGLIR_SCALAR_BOOL)) {
+            sema_error(s, st->line, "if condition must be a scalar bool");
+        }
         analyze_stmt(s, tab, st->u.ifs.then);
         if (st->u.ifs.else_) {
             analyze_stmt(s, tab, st->u.ifs.else_);
         }
         break;
+    }
     case MGL_STMT_FOR: {
         symtab_push(tab);
         if (st->u.loop.init) {

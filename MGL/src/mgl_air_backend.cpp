@@ -722,14 +722,49 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         return nullptr;
     }
     case MGL_EXPR_UNARY: {
-        if (!e->u.unary.prefix) {
-            cg.err = 1;
-            cg.errmsg = std::string("codegen: ++/-- not implemented in M1");
-            return nullptr;
-        }
         llvm::Value *v = emitExpr(cg, e->u.unary.operand, mod, locals);
         if (!v) return nullptr;
         switch (e->u.unary.op) {
+        case MGL_OP_INC:
+        case MGL_OP_DEC: {
+            if (e->u.unary.operand->kind != MGL_EXPR_VAR_REF) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ++/-- requires a variable");
+                return nullptr;
+            }
+            const char *name = e->u.unary.operand->u.var_ref.name;
+            auto it = cg.lvalues.find(name);
+            if (it == cg.lvalues.end()) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: ++/-- on unknown variable '") +
+                            name + "'";
+                return nullptr;
+            }
+            llvm::Value *cur = it->second;
+            llvm::Type *ty = cur->getType();
+            llvm::Type *elt = ty->isVectorTy()
+                ? llvm::cast<llvm::FixedVectorType>(ty)->getElementType()
+                : ty;
+            bool fp = elt->isFloatingPointTy();
+            llvm::Constant *one = fp
+                ? llvm::ConstantFP::get(elt, 1.0)
+                : llvm::ConstantInt::get(elt, 1);
+            if (ty->isVectorTy()) {
+                one = llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(
+                        (uint32_t)llvm::cast<llvm::FixedVectorType>(ty)
+                            ->getElementCount()
+                            .getFixedValue()),
+                    one);
+            }
+            llvm::Value *nv = (e->u.unary.op == MGL_OP_INC)
+                ? (fp ? cg.b->CreateFAdd(cur, one)
+                      : cg.b->CreateAdd(cur, one))
+                : (fp ? cg.b->CreateFSub(cur, one)
+                      : cg.b->CreateSub(cur, one));
+            cg.lvalues[name] = nv;
+            return e->u.unary.prefix ? nv : cur;
+        }
         case MGL_OP_SUB:
             return v->getType()->isFPOrFPVectorTy() ? cg.b->CreateFNeg(v)
                                                     : cg.b->CreateNeg(v);
@@ -738,7 +773,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             return cg.b->CreateNot(v);
         default:
             cg.err = 1;
-            cg.errmsg = std::string("codegen: unary op not implemented in M1");
+            cg.errmsg = std::string("codegen: unary op not implemented in M1 (line ") +
+                        std::to_string(e->line) + std::string(")");
             return nullptr;
         }
     }
@@ -817,6 +853,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             case MGL_OP_MUL_ASSIGN: binop = MGL_OP_MUL; break;
             case MGL_OP_DIV_ASSIGN: binop = MGL_OP_DIV; break;
             case MGL_OP_MOD_ASSIGN: binop = MGL_OP_MOD; break;
+            case MGL_OP_SHL_ASSIGN: binop = MGL_OP_SHL; break;
+            case MGL_OP_SHR_ASSIGN: binop = MGL_OP_SHR; break;
+            case MGL_OP_AND_ASSIGN: binop = MGL_OP_AND; break;
+            case MGL_OP_OR_ASSIGN:  binop = MGL_OP_OR; break;
+            case MGL_OP_XOR_ASSIGN: binop = MGL_OP_XOR; break;
             default: break;
             }
             if (!binop) {

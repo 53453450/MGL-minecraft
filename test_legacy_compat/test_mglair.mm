@@ -37,7 +37,7 @@ static const char *kVS =
     "                       float(bo.x) - 1.0);\n"
     "    vec2 c01 = mat2(1.0, 2.0, 3.0, 4.0)[1];\n"  /* scalar list, col 1 */
     "    t = t + vec2(mi[0].x - 1.0, c01.x - 3.0);\n"  /* column indexing */
-    "    if (uo.y == uint(3)) {\n"          /* uint compare, then branch */
+    "    if (uo.y == 3u) {\n"          /* uint compare, then branch */
     "        t += vec2(0.0, 0.0);\n"   /* compound assign */
     "    } else {\n"
     "        t += vec2(1.0, 1.0);\n"   /* must not execute */
@@ -48,15 +48,23 @@ static const char *kVS =
     "    if (bo.y || io.x == 2) {\n"   /* logical or, short-circuit */
     "        t += vec2(0.0, 0.0);\n"
     "    }\n"
-    "    if (io.x == 2 && uo.x == uint(3)) {\n"
+    "    if (io.x == 2 && uo.x == 3u) {\n"
     "        t *= vec2(1.0, 1.0);\n"
     "        if (bo.x) {\n"            /* nested if */
     "            t += vec2(0.0, 0.0);\n"
     "        }\n"
     "    }\n"
-    "    if (!bo.y && uo.x == uint(4)) {\n"
+    "    if (!bo.y && uo.x == 4u) {\n"
     "        t += vec2(1.0, 1.0);\n"   /* must not execute */
     "    }\n"
+    "    int iv = 2;\n"
+    "    iv++;\n"                  /* postfix ++ (statement) */
+    "    iv &= 3;\n"               /* bitwise compound */
+    "    iv >>= 1;\n"
+    "    iv <<= 2;\n"
+    "    int j = iv--;\n"          /* postfix: j = 4, iv = 3 */
+    "    int kk = ++iv;\n"          /* prefix: k = iv = 4 */
+    "    t = t + vec2(float(j - 4) + float(kk - 4), float(iv - 4));\n"
     "    if (io.x > 5) {\n"
     "        t += vec2(1.0, 1.0);\n"   /* must not execute */
     "    }\n"
