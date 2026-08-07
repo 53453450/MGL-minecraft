@@ -546,6 +546,12 @@ bool mglShouldSkipStageTextureResource(Program *program,
             return false;
     }
 
+    /* AIR path: there is no MSL text to scan; the reflected resource list
+     * is authoritative, so nothing is stale. */
+    if (!program->spirv[stage].msl_str) {
+        return false;
+    }
+
     if (mglStageMSLHasNamedTextureArgument(program, stage, resource->name, resource->binding)) {
         return false;
     }
@@ -584,6 +590,11 @@ bool mglShouldSkipStageSamplerResource(Program *program,
     }
 
     if (resourceType != SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS) {
+        return false;
+    }
+
+    /* AIR path: reflected resources are authoritative. */
+    if (!program->spirv[stage].msl_str) {
         return false;
     }
 

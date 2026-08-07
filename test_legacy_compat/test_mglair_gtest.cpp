@@ -331,9 +331,10 @@ TEST(Reflect, ComputeResources) {
     EXPECT_EQ(4, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].size);
     EXPECT_EQ(0u, lists[_STORAGE_BUFFER_RES].list[0].ubo_members[0].offset);
 
-    ASSERT_EQ(1u, lists[_SEPARATE_IMAGE_RES].count);
-    EXPECT_STREQ("tex", lists[_SEPARATE_IMAGE_RES].list[0].name);
-    EXPECT_EQ(GL_SAMPLER_2D, lists[_SEPARATE_IMAGE_RES].list[0].gl_type);
+    ASSERT_EQ(1u, lists[_SAMPLED_IMAGE_RES].count);
+    EXPECT_STREQ("tex", lists[_SAMPLED_IMAGE_RES].list[0].name);
+    EXPECT_EQ(GL_SAMPLER_2D, lists[_SAMPLED_IMAGE_RES].list[0].gl_type);
+    EXPECT_TRUE(lists[_SAMPLED_IMAGE_RES].list[0].msl_has_combined_sampler);
 
     ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].count);
     ASSERT_EQ(1u, lists[_UNIFORM_CONSTANT_RES].list[0].ubo_member_count);

@@ -46,6 +46,9 @@ enum {
     _MAX_SHADER_TYPES
 };
 
+/* Resource-type indices into spirv_resources_list.  Values match the
+ * SPVC_RESOURCE_TYPE_* enum (spirv_cross_c.h) so the renderer can index
+ * the list directly with SPIRV-Cross constants. */
 enum {
     _UNKNOWN_RES = 0,
     _UNIFORM_BUFFER_RES,
@@ -53,7 +56,9 @@ enum {
     _STORAGE_BUFFER_RES,
     _STAGE_INPUT_RES,
     _STAGE_OUTPUT_RES,
-    _STORAGE_OUTPUT_RES,
+    _SUBPASS_INPUT_RES,
+    _STORAGE_IMAGE_RES,
+    _SAMPLED_IMAGE_RES,
     _ATOMIC_COUNTER_RES,
     _PUSH_CONSTANT_RES,
     _SEPARATE_IMAGE_RES,

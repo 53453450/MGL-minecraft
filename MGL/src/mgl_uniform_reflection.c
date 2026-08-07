@@ -2607,6 +2607,62 @@ void mglAssignPlainUniformLocations(Program *program)
     }
 }
 
+void mglAssignAggregateMemberLocations(Program *program)
+{
+    if (!program) {
+        return;
+    }
+    /* Member name -> location, shared across stages. */
+    char **names = NULL;
+    GLint *locs = NULL;
+    uint32_t name_count = 0;
+    GLint next_loc = 0;
+    for (int stage = _VERTEX_SHADER; stage < _MAX_SHADER_TYPES; stage++) {
+        SpirvResourceList *resources =
+            &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT];
+        for (GLuint i = 0; resources->list && i < resources->count; i++) {
+            SpirvResource *res = &resources->list[i];
+            if (res->ubo_members && res->ubo_member_count > 0) {
+                res->uniform_location = 0;
+                for (GLuint m = 0; m < res->ubo_member_count; m++) {
+                    SpirvUBOMember *mem = &res->ubo_members[m];
+                    const char *name = mem->name ? mem->name : "";
+                    GLint loc = -1;
+                    for (uint32_t k = 0; k < name_count; k++) {
+                        if (strcmp(names[k], name) == 0) {
+                            loc = locs[k];
+                            break;
+                        }
+                    }
+                    if (loc < 0) {
+                        loc = next_loc++;
+                        char **nn = (char **)realloc(
+                            names, (name_count + 1) * sizeof(char *));
+                        GLint *nl = (GLint *)realloc(
+                            locs, (name_count + 1) * sizeof(GLint));
+                        if (!nn || !nl) {
+                            free(nn ? nn : names);
+                            free(nl ? nl : locs);
+                            return;
+                        }
+                        names = nn;
+                        locs = nl;
+                        names[name_count] = strdup(name);
+                        locs[name_count] = loc;
+                        name_count++;
+                    }
+                    mem->location_offset = loc;
+                }
+            }
+        }
+    }
+    for (uint32_t k = 0; k < name_count; k++) {
+        free(names[k]);
+    }
+    free(names);
+    free(locs);
+}
+
 GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res)
 {
     (void)program;

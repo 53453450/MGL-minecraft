@@ -243,6 +243,13 @@ void mglUnifySamplerUniformLocations(Program *program);
 SpirvResource *mglFindAssignedPlainUniformResource(Program *program, const char *name);
 GLint mglFirstFreePlainUniformLocation(const bool used[MAX_BINDABLE_BUFFERS]);
 void mglAssignPlainUniformLocations(Program *program);
+
+/* AIR path: assign GL locations to the members of the per-stage plain
+ * uniform aggregates.  Members with the same name across stages share one
+ * location (the GL semantics for a uniform declared in both stages);
+ * every aggregate resource gets base location 0 so the renderer's
+ * base_loc + location_offset member lookup works. */
+void mglAssignAggregateMemberLocations(Program *program);
 GLint mglDefaultSamplerUnitForProgramResource(Program *program, const SpirvResource *res);
 void mglApplyDefaultSamplerUnit(Program *program, int stage, int res_type, SpirvResource *res);
 

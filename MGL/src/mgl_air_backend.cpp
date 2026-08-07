@@ -1287,8 +1287,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         if (strcmp(e->u.var_ref.name, "gl_VertexID") == 0) {
             if (!cg.vertexId) {
                 cg.err = 1;
-                cg.errmsg = "codegen: gl_VertexID requires the capture "
-                            "variant";
+                cg.errmsg = "codegen: gl_VertexID requires a vertex stage";
                 return nullptr;
             }
             return cg.vertexId;
@@ -1543,6 +1542,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *tex = cg.texValues[sa->u.var_ref.name];
             llvm::Value *smp = cg.smpValues[sa->u.var_ref.name];
+            const MGLIRSymbol *tss = findSymbol(mod, sa->u.var_ref.name);
+            bool is3d = tss && tss->type->kind == MGLIR_TYPE_SAMPLER &&
+                        tss->type->tex_kind == MGLIR_TEX_3D;
             llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
             llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
             if (strcmp(name, "textureSize") == 0) {
@@ -1550,10 +1552,24 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                             locals);
                 if (!lod) return nullptr;
                 lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
-                llvm::Value *w = callAirFn(cg, "air.get_width_texture_2d",
-                                           i32, {tex, lod});
-                llvm::Value *h = callAirFn(cg, "air.get_height_texture_2d",
-                                           i32, {tex, lod});
+                llvm::Value *w = callAirFn(
+                    cg, is3d ? "air.get_width_texture_3d"
+                             : "air.get_width_texture_2d",
+                    i32, {tex, lod});
+                llvm::Value *h = callAirFn(
+                    cg, is3d ? "air.get_height_texture_3d"
+                             : "air.get_height_texture_2d",
+                    i32, {tex, lod});
+                if (is3d) {
+                    llvm::Value *d = callAirFn(cg, "air.get_depth_texture_3d",
+                                               i32, {tex, lod});
+                    llvm::Type *v3i32 = llvm::FixedVectorType::get(i32, 3);
+                    llvm::Value *sz = llvm::UndefValue::get(v3i32);
+                    sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
+                    sz = cg.b->CreateInsertElement(sz, h, cg.b->getInt32(1));
+                    sz = cg.b->CreateInsertElement(sz, d, cg.b->getInt32(2));
+                    return sz;
+                }
                 llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
                 llvm::Value *sz = llvm::UndefValue::get(v2i32);
                 sz = cg.b->CreateInsertElement(sz, w, cg.b->getInt32(0));
@@ -1575,7 +1591,9 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *retTy =
                 llvm::StructType::get(*cg.ctx, {v4f32, cg.b->getInt8Ty()});
             llvm::Value *r = callAirFn(
-                cg, "air.sample_texture_2d.v4f32", retTy,
+                cg, is3d ? "air.sample_texture_3d.v4f32"
+                         : "air.sample_texture_2d.v4f32",
+                retTy,
                 {tex, smp, uv, cg.b->getInt1(true),
                  llvm::Constant::getNullValue(v2i32),
                  cg.b->getInt1(explicitLod),
@@ -2448,6 +2466,22 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
 
 /* Assemble the stage output value: vertex = {position, varyings...},
  * fragment = render target color.  Unknown outputs fall back to undef. */
+/* Metal's clip-space z range is [0,1] while GLSL writes [-1,1]; convert
+ * before returning the position: z' = z*0.5 + w*0.5 (clip space). */
+static llvm::Value *fixClipZ(Codegen &cg, llvm::Value *pos) {
+    if (!pos->getType()->isVectorTy()) return pos;
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    llvm::Value *z = cg.b->CreateExtractElement(pos, cI(2));
+    llvm::Value *w = cg.b->CreateExtractElement(pos, cI(3));
+    llvm::Value *half = llvm::ConstantFP::get(f32, 0.5);
+    z = cg.b->CreateFAdd(cg.b->CreateFMul(z, half),
+                         cg.b->CreateFMul(w, half));
+    return cg.b->CreateInsertElement(pos, z, cI(2));
+}
+
 llvm::Value *assembleReturn(Codegen &cg) {
     if (cg.isVS) {
         if (cg.retTy->isStructTy()) {
@@ -2455,6 +2489,7 @@ llvm::Value *assembleReturn(Codegen &cg) {
             llvm::Value *pos = cg.lvalues.count("gl_Position")
                                    ? cg.lvalues["gl_Position"]
                                    : llvm::UndefValue::get(cg.retElems[0]);
+            pos = fixClipZ(cg, pos);
             ret = cg.b->CreateInsertValue(ret, pos, 0);
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                 llvm::Value *vv = cg.lvalues.count(cg.varyings[i]->name)
@@ -2464,9 +2499,9 @@ llvm::Value *assembleReturn(Codegen &cg) {
             }
             return ret;
         }
-        return cg.lvalues.count("gl_Position")
-                   ? cg.lvalues["gl_Position"]
-                   : llvm::UndefValue::get(cg.retTy);
+        return fixClipZ(cg, cg.lvalues.count("gl_Position")
+                                ? cg.lvalues["gl_Position"]
+                                : llvm::UndefValue::get(cg.retTy));
     }
     VarSym *out = nullptr;
     for (VarSym &v : *cg.auxSyms)
@@ -3271,8 +3306,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * compute = [buffer, ssbo..., tex/smp..., thread_position_in_grid]. */
     std::vector<llvm::Type *> paramTys;
     bool hasBuffer = !uniforms.empty();
-    llvm::StructType *texTy =
+    llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
+    llvm::StructType *texTy3d =
+        llvm::StructType::create(ctx, "struct._texture_3d_t");
     llvm::StructType *smpTy =
         llvm::StructType::create(ctx, "struct._sampler_t");
     if (isCapture)
@@ -3284,7 +3321,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
-        paramTys.push_back(texTy->getPointerTo(1));
+        const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
+        bool is3d = ts && ts->type->kind == MGLIR_TYPE_SAMPLER &&
+                    ts->type->tex_kind == MGLIR_TEX_3D;
+        paramTys.push_back((is3d ? texTy3d : texTy2d)->getPointerTo(1));
         paramTys.push_back(smpTy->getPointerTo(2));
     }
     for (VarSym &v : syms) {
@@ -3293,7 +3333,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         else if (!isVS && !isCompute && v.kind == VarSym::VARYING)
             paramTys.push_back(llvmType(v.type, ctx));
     }
-    if (isCapture)
+    if (isVS)
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     else if (isCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
@@ -3366,7 +3406,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             (!isVS && !isCompute && v.kind == VarSym::VARYING))
             cg.lvalues[v.name] = fn->getArg(argSlot++);
     }
-    if (isCapture)
+    if (isVS)
         cg.vertexId = fn->getArg(argSlot);
     else if (isCompute)
         cg.threadPos = fn->getArg(argSlot);
@@ -3409,6 +3449,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::Value *pos = cg.lvalues.count("gl_Position")
                                    ? cg.lvalues["gl_Position"]
                                    : llvm::UndefValue::get(cg.retElems[0]);
+            pos = fixClipZ(cg, pos);
             if (recTy->isStructTy()) {
                 rec = b.CreateInsertValue(rec, pos, 0);
                 for (uint32_t i = 0; i < cg.varyings.size(); i++) {
@@ -3608,6 +3649,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                           ssboCount + uboCount;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
+            const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
+            bool is3d = tss && tss->type->kind == MGLIR_TYPE_SAMPLER &&
+                        tss->type->tex_kind == MGLIR_TEX_3D;
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), texArg++)),
@@ -3619,7 +3663,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                     llvm::Type::getInt32Ty(ctx), 1)),
                 llvm::MDString::get(ctx, "air.sample"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, "texture2d<float, sample>"),
+                llvm::MDString::get(ctx, is3d ? "texture3d<float, sample>"
+                                              : "texture2d<float, sample>"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)}));
             argNodes.push_back(llvm::MDNode::get(ctx, {
@@ -3727,8 +3772,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
     }
 
-    if (isCapture) {
-        /* Capture variants index their output record by vertex id. */
+    if (isVS) {
+        /* Vertex stage vertex id (gl_VertexID). */
         argNodes.push_back(llvm::MDNode::get(ctx, {
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                 llvm::Type::getInt32Ty(ctx),

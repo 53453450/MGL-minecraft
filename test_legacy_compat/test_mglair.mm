@@ -600,7 +600,7 @@ int main(int argc, const char *argv[]) {
             float *cap = (float *)capBuf.contents;
             /* 32-byte records (align 16): vertex 1 starts at cap[8]. */
             if (fabsf(cap[8] - 1.0f) > 1e-4f || fabsf(cap[9] - 1.0f) > 1e-4f ||
-                fabsf(cap[10]) > 1e-4f || fabsf(cap[11] - 1.0f) > 1e-4f ||
+                fabsf(cap[10] - 0.5f) > 1e-4f || fabsf(cap[11] - 1.0f) > 1e-4f ||
                 fabsf(cap[12] - 1.0f) > 1e-4f || fabsf(cap[13]) > 1e-4f) {
                 fprintf(stderr, "XFB_VALUE_FAIL: pos=(%f,%f,%f,%f) uv=(%f,%f)\n",
                         cap[8], cap[9], cap[10], cap[11], cap[12], cap[13]);

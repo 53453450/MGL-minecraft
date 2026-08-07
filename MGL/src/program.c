@@ -1058,6 +1058,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     alignFragmentInputLocationsToVertexOutputs(pptr);
     mglBridgeSkippedGeometryShaderVaryings(pptr);
     mglAssignPlainUniformLocations(pptr);
+    if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
+        mglAssignAggregateMemberLocations(pptr);
+    }
     mglUnifySamplerUniformLocations(pptr);
 
     /* Geometry shader execution route.  P0 has no execution path; the

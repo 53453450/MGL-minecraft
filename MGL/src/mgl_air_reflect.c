@@ -82,6 +82,14 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
     r.uniform_location = -1;
     r.sampler_unit = 0;
     r.sampler_unit_explicit = GL_FALSE;
+    if (type->kind == MGLIR_TYPE_SAMPLER) {
+        /* SpvDim enum values (SPIR-V 3.10): 1D=0, 2D=1, 3D=2, Cube=3. */
+        switch (type->tex_kind) {
+        case MGLIR_TEX_3D:   r.image_dim = 2; break;
+        case MGLIR_TEX_CUBE: r.image_dim = 3; break;
+        default:             r.image_dim = 1; break;
+        }
+    }
     (void)stage;
 
     if (type->kind == MGLIR_TYPE_STRUCT && type->member_count > 0) {
@@ -165,6 +173,9 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t agg_count = 0;
     uint32_t agg_size = 0;
 
+    /* Sampler bindings increment per sampler, matching the AIR metadata
+     * texture location indices. */
+    uint32_t sampler_binding = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
         if (s->is_function) {
@@ -177,8 +188,15 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
 
         if (q & MGL_AST_Q_UNIFORM) {
             if (t->kind == MGLIR_TYPE_SAMPLER) {
-                push_resource(&lists[_SEPARATE_IMAGE_RES], s, t, location,
-                              binding, stage);
+                push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
+                              sampler_binding, stage);
+                SpirvResource *last =
+                    &lists[_SAMPLED_IMAGE_RES].list[
+                        lists[_SAMPLED_IMAGE_RES].count - 1];
+                last->msl_active = GL_TRUE;
+                last->msl_has_combined_sampler = GL_TRUE;
+                last->msl_combined_sampler_binding = sampler_binding;
+                sampler_binding++;
                 continue;
             }
             if (s->block_name) {
@@ -258,11 +276,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             off += size;
         }
         agg_size = off;
-        agg.name = strdup("air_uniforms");
-        agg.msl_name = strdup("air_uniforms");
+        char agg_name[64];
+        snprintf(agg_name, sizeof(agg_name), "air_uniforms_s%d", stage);
+        agg.name = strdup(agg_name);
+        agg.msl_name = strdup(agg_name);
         agg.ubo_member_count = agg_count;
         agg.required_size = agg_size;
-        agg.uniform_location = 0;
+        agg.uniform_location = -1;   /* assigned by the link pass per stage */
         agg.location = UINT32_MAX;   /* let the link pass assign locations */
         agg.gl_binding = 0;
         agg.binding = 0;
