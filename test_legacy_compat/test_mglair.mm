@@ -60,6 +60,18 @@ static const char *kVS =
     "    if (io.x > 5) {\n"
     "        t += vec2(1.0, 1.0);\n"   /* must not execute */
     "    }\n"
+    "    vec2 uv = vec2(0.5, 0.0);\n"
+    "    float dl = length(uv);\n"                 /* 0.5 */
+    "    vec2 dn = normalize(uv);\n"               /* (1, 0) */
+    "    float dd = distance(uv, vec2(0.5, 1.0));\n"  /* 1 */
+    "    float dt = dot(uv, vec2(2.0, 0.0));\n"    /* 1 */
+    "    float da = abs(-0.5);\n"                  /* 0.5 */
+    "    float dc = clamp(uv.x, 0.25, 0.5);\n"     /* 0.5 */
+    "    vec2 dv = mix(uv, uv + vec2(1.0), vec2(0.0));\n"  /* uv */
+    "    float dm = mix(0.0, 1.0, 0.5);\n"         /* 0.5 */
+    "    t = t + vec2(dl * 2.0 - 1.0 + dd - 1.0 + dt - 1.0 + da - 0.5\n"
+    "                + dc - 0.5 + dm - 0.5,\n"
+    "                dn.x - 1.0 + dv.x - uv.x + dv.y - uv.y);\n"
     "    vUV = inPos.xy + vec2(o + k.x - 0.5, k.y - 0.5) + t;\n"
     "    vN = rot3 * inPos;\n"        /* mat3 * vec3 */
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"

@@ -307,6 +307,41 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     return fp ? cg.b->CreateFCmp(pred, l, r) : cg.b->CreateICmp(pred, l, r);
 }
 
+/* Broadcast a scalar to a vector type; identity if already matching. */
+llvm::Value *broadcastTo(Codegen &cg, llvm::Value *v, llvm::Type *vecTy) {
+    if (v->getType() == vecTy) return v;
+    if (!vecTy->isVectorTy()) return v;
+    auto *vt = llvm::cast<llvm::FixedVectorType>(vecTy);
+    return cg.b->CreateVectorSplat(
+        (uint32_t)vt->getElementCount().getFixedValue(), v);
+}
+
+/* Scalar or vector dot product with a fixed lane order. */
+llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
+    llvm::Type *t = a->getType();
+    if (!t->isVectorTy()) return cg.b->CreateFMul(a, b);
+    auto *vt = llvm::cast<llvm::FixedVectorType>(t);
+    uint32_t n = (uint32_t)vt->getElementCount().getFixedValue();
+    llvm::Value *e0 = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+    llvm::Value *acc = cg.b->CreateFMul(
+        cg.b->CreateExtractElement(a, e0), cg.b->CreateExtractElement(b, e0));
+    for (uint32_t i = 1; i < n; i++) {
+        llvm::Value *ix = llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(*cg.ctx), i);
+        llvm::Value *p = cg.b->CreateFMul(
+            cg.b->CreateExtractElement(a, ix),
+            cg.b->CreateExtractElement(b, ix));
+        acc = cg.b->CreateFAdd(acc, p);
+    }
+    return acc;
+}
+
+/* Element-wise float intrinsic (scalar or vector operand). */
+llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
+                                llvm::Value *v) {
+    return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
+}
+
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
 
@@ -593,6 +628,94 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return arr;
         }
+        /* Math builtins (sema-typed subset): normalize/length/distance/
+         * dot/abs/clamp/mix.  All args are treated as float (sema converts
+         * int/uint scalars implicitly). */
+        if (strcmp(name, "normalize") == 0 || strcmp(name, "length") == 0 ||
+            strcmp(name, "distance") == 0 || strcmp(name, "dot") == 0 ||
+            strcmp(name, "abs") == 0 || strcmp(name, "clamp") == 0 ||
+            strcmp(name, "mix") == 0) {
+            uint32_t want = 0;
+            if (strcmp(name, "clamp") == 0 || strcmp(name, "mix") == 0)
+                want = 3;
+            else if (strcmp(name, "distance") == 0 || strcmp(name, "dot") == 0)
+                want = 2;
+            else
+                want = 1;  /* normalize / length / abs */
+            if (e->u.call.arg_count != want) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: builtin '") + name +
+                            "' expects " + std::to_string(want) +
+                            " argument(s)";
+                return nullptr;
+            }
+            llvm::Value *a0 =
+                emitExpr(cg, e->u.call.args[0], mod, locals);
+            if (!a0) return nullptr;
+            a0 = coerceScalar(cg, a0, MGLIR_SCALAR_FLOAT);
+            if (strcmp(name, "length") == 0) {
+                llvm::Value *sq = dotProduct(cg, a0, a0);
+                return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt, sq);
+            }
+            if (strcmp(name, "abs") == 0)
+                return callFloatIntrinsic(cg, llvm::Intrinsic::fabs, a0);
+            llvm::Value *a1 = e->u.call.arg_count > 1
+                ? emitExpr(cg, e->u.call.args[1], mod, locals) : nullptr;
+            if (e->u.call.arg_count > 1 && !a1) return nullptr;
+            if (strcmp(name, "dot") == 0) {
+                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+                return dotProduct(cg, a0, a1);
+            }
+            if (strcmp(name, "distance") == 0) {
+                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+                llvm::Value *d = cg.b->CreateFSub(a0, a1);
+                return callFloatIntrinsic(cg, llvm::Intrinsic::sqrt,
+                                          dotProduct(cg, d, d));
+            }
+            if (strcmp(name, "normalize") == 0) {
+                llvm::Value *len = callFloatIntrinsic(
+                    cg, llvm::Intrinsic::sqrt, dotProduct(cg, a0, a0));
+                return cg.b->CreateFDiv(
+                    a0, broadcastTo(cg, len, a0->getType()));
+            }
+            /* clamp / mix: 3 args. */
+            llvm::Value *a2 = emitExpr(cg, e->u.call.args[2], mod, locals);
+            if (!a2) return nullptr;
+            if (strcmp(name, "clamp") == 0) {
+                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+                a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
+                llvm::Type *t = a0->getType();
+                if (t->isVectorTy()) {
+                    a1 = broadcastTo(cg, a1, t);
+                    a2 = broadcastTo(cg, a2, t);
+                }
+                llvm::Value *mx = cg.b->CreateIntrinsic(
+                    llvm::Intrinsic::maxnum, {t}, {a0, a1});
+                return cg.b->CreateIntrinsic(llvm::Intrinsic::minnum, {t},
+                                             {mx, a2});
+            }
+            if (strcmp(name, "mix") == 0) {
+                a1 = coerceScalar(cg, a1, MGLIR_SCALAR_FLOAT);
+                a2 = coerceScalar(cg, a2, MGLIR_SCALAR_FLOAT);
+                llvm::Type *t = a0->getType();
+                if (t->isVectorTy()) a2 = broadcastTo(cg, a2, t);
+                llvm::Constant *one;
+                if (t->isVectorTy()) {
+                    auto *vt = llvm::cast<llvm::FixedVectorType>(t);
+                    one = llvm::ConstantVector::getSplat(
+                        llvm::ElementCount::getFixed(
+                            (uint32_t)vt->getElementCount().getFixedValue()),
+                        llvm::ConstantFP::get(
+                            llvm::Type::getFloatTy(*cg.ctx), 1.0));
+                } else {
+                    one = llvm::ConstantFP::get(t, 1.0);
+                }
+                llvm::Value *s = cg.b->CreateFSub(one, a2);
+                llvm::Value *term = cg.b->CreateFMul(a0, s);
+                return cg.b->CreateIntrinsic(llvm::Intrinsic::fma, {t},
+                                             {a1, a2, term});
+            }
+        }
         cg.err = 1;
         cg.errmsg = std::string("codegen: call to '") + name +
                     "' not implemented in M1";
@@ -825,6 +948,18 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 t.cols = (uint32_t)(m[0] - '0');
                 t.rows = (uint32_t)(m[2] - '0');
             }
+        } else if (strcmp(name, "normalize") == 0 ||
+                   strcmp(name, "abs") == 0 ||
+                   strcmp(name, "clamp") == 0 ||
+                   strcmp(name, "mix") == 0) {
+            /* genType result: width follows the first argument. */
+            t.scalar = MGLIR_SCALAR_FLOAT;
+            if (e->u.call.arg_count > 0)
+                t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "length") == 0 ||
+                   strcmp(name, "distance") == 0 ||
+                   strcmp(name, "dot") == 0) {
+            t.scalar = MGLIR_SCALAR_FLOAT;
         }
         break;
     }
