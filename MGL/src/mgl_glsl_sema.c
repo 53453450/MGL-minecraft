@@ -876,6 +876,9 @@ typedef enum {
     BI_ARG_VEC2,    /* vec2 */
     BI_ARG_VEC3,    /* vec3 */
     BI_ARG_VEC4,    /* vec4 */
+    BI_ARG_MAT2,    /* mat2 */
+    BI_ARG_MAT3,    /* mat3 */
+    BI_ARG_MAT4,    /* mat4 */
     BI_ARG_S2D,     /* sampler2D */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
@@ -888,6 +891,9 @@ typedef enum {
     BI_RET_VEC2,    /* vec2 */
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
+    BI_RET_MAT2,    /* mat2 */
+    BI_RET_MAT3,    /* mat3 */
+    BI_RET_MAT4,    /* mat4 */
 } BiRetKind;
 
 typedef struct {
@@ -963,6 +969,22 @@ static const BiFn kBuiltins[] = {
     /* angle conversion */
     { "radians", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "degrees", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    /* matrix */
+    { "transpose", 1, { BI_ARG_MAT2 }, BI_RET_MAT2 },
+    { "transpose", 1, { BI_ARG_MAT3 }, BI_RET_MAT3 },
+    { "transpose", 1, { BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "matrixCompMult", 2, { BI_ARG_MAT2, BI_ARG_MAT2 }, BI_RET_MAT2 },
+    { "matrixCompMult", 2, { BI_ARG_MAT3, BI_ARG_MAT3 }, BI_RET_MAT3 },
+    { "matrixCompMult", 2, { BI_ARG_MAT4, BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "determinant", 1, { BI_ARG_MAT2 }, BI_RET_FLOAT },
+    { "determinant", 1, { BI_ARG_MAT3 }, BI_RET_FLOAT },
+    { "determinant", 1, { BI_ARG_MAT4 }, BI_RET_FLOAT },
+    { "inverse", 1, { BI_ARG_MAT2 }, BI_RET_MAT2 },
+    { "inverse", 1, { BI_ARG_MAT3 }, BI_RET_MAT3 },
+    { "inverse", 1, { BI_ARG_MAT4 }, BI_RET_MAT4 },
+    { "outerProduct", 2, { BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_MAT2 },
+    { "outerProduct", 2, { BI_ARG_VEC3, BI_ARG_VEC3 }, BI_RET_MAT3 },
+    { "outerProduct", 2, { BI_ARG_VEC4, BI_ARG_VEC4 }, BI_RET_MAT4 },
 };
 
 /* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
@@ -1040,6 +1062,15 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_VEC4:
         return t->kind == MGLIR_TYPE_VECTOR && t->cols == 4 &&
                t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_MAT2:
+        return t->kind == MGLIR_TYPE_MATRIX && t->cols == 2 && t->rows == 2 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_MAT3:
+        return t->kind == MGLIR_TYPE_MATRIX && t->cols == 3 && t->rows == 3 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
+    case BI_ARG_MAT4:
+        return t->kind == MGLIR_TYPE_MATRIX && t->cols == 4 && t->rows == 4 &&
+               t->scalar == MGLIR_SCALAR_FLOAT;
     case BI_ARG_S2D:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_2D &&
                !t->tex_depth;
@@ -1111,6 +1142,12 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 3);
         case BI_RET_VEC4:
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
+        case BI_RET_MAT2:
+            return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 2, 2);
+        case BI_RET_MAT3:
+            return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 3, 3);
+        case BI_RET_MAT4:
+            return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 4, 4);
         }
     }
     return NULL;

@@ -36,6 +36,19 @@ static const char *kVS =
     "    t = t - C * x;\n"
     "    t = t - (A - A) * x;\n"
     "    t = t - (2.0 * A - A - A) * x;\n"
+    "    mat2 I2 = mat2(1.0, 0.0, 0.0, 1.0);\n"
+    "    t = t - (A * inverse(A) - I2) * x;\n"
+    "    t = t - (transpose(transpose(A)) - A) * x;\n"
+    "    t = t - (matrixCompMult(A, B) - matrixCompMult(A, B)) * x;\n"
+    "    t = t - (outerProduct(x, x) - outerProduct(x, x)) * x;\n"
+    "    t = t + vec2(determinant(A) + 2.0, determinant(I2) - 1.0);\n"
+    "    t = t + (inverse(I2) - I2) * x;\n"
+    "    mat3 M3 = mat3(1.0, 2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);\n"
+    "    mat3 I3 = mat3(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0);\n"
+    "    t = t + ((M3 * inverse(M3) - I3) * vec3(1.0)).xy;\n"
+    "    mat4 M4 = mat4(1.0, 2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);\n"
+    "    mat4 I4 = mat4(1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);\n"
+    "    t = t + ((M4 * inverse(M4) - I4) * vec4(1.0)).xy;\n"
     "    vUV = inPos.xy + vec2(t.x - 3.0, t.y - 5.0);\n"
     "    gl_Position = mvp * vec4(inPos, 1.0);\n"
     "}\n";
@@ -143,9 +156,14 @@ static int checkValues(id<MTLDevice> dev, id<MTLRenderPipelineState> pso) {
             /* Original inPos at the pixel (MVP^{-1} * ndc). */
             float px = la * verts[0] + lb * verts[3] + lc * verts[6];
             float py = la * verts[1] + lb * verts[4] + lc * verts[7];
-            /* Matrix ops net to t=(3,5) (A*x=(-1,0), x*B=(4,6),
+            /* Matrix ops net to t=(3,5): A*x=(-1,0), x*B=(4,6),
              * (A*B)*x=(15,22), (A+1)*x=(0,1), C*=B then C*x,
-             * (A-A) and (2A-A-A) vanish), so vUV = inPos.xy. */
+             * (A-A) and (2A-A-A) vanish; matrix builtins all cancel:
+             * A*inverse(A)-I2, transpose(transpose(A))-A,
+             * matrixCompMult self-diff, outerProduct self-diff,
+             * det(A)+2, det(I2)-1, inverse(I2)-I2, and
+             * (M3*inverse(M3)-I3), (M4*inverse(M4)-I4), so vUV =
+             * inPos.xy. */
             float u = px;
             float v = py;
             u = fminf(1.0f, fmaxf(0.0f, u));

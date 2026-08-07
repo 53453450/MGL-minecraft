@@ -285,7 +285,6 @@ llvm::Value *emitNumericBinOp(Codegen &cg, uint32_t op, llvm::Value *l,
     if (lfp != rfp) {
         if (lfp) r = coerceScalar(cg, r, MGLIR_SCALAR_FLOAT);
         else l = coerceScalar(cg, l, MGLIR_SCALAR_FLOAT);
-        lfp = l->getType()->isFPOrFPVectorTy();
         rfp = r->getType()->isFPOrFPVectorTy();
     }
     bool fp = l->getType()->isFPOrFPVectorTy();
@@ -348,6 +347,225 @@ llvm::Value *dotProduct(Codegen &cg, llvm::Value *a, llvm::Value *b) {
         acc = cg.b->CreateFAdd(acc, p);
     }
     return acc;
+}
+
+/* Matrix builtins (declared early; defined after emitExpr). */
+llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
+                      const std::map<std::string, MType> &locals);
+static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
+                                      const char *name, const MGLIRModule *mod,
+                                      const std::map<std::string, MType> &locals);
+
+/* ---- Matrix builtins -------------------------------------------------- */
+
+/* det of the 2x2 block (c0,c1) x (r0,r1) of a matrix. */
+static llvm::Value *det2Sel(Codegen &cg, llvm::Value *c0, llvm::Value *c1,
+                            uint32_t r0, uint32_t r1) {
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    llvm::Value *a = cg.b->CreateExtractElement(c0, cI(r0));
+    llvm::Value *b = cg.b->CreateExtractElement(c1, cI(r0));
+    llvm::Value *c = cg.b->CreateExtractElement(c0, cI(r1));
+    llvm::Value *d = cg.b->CreateExtractElement(c1, cI(r1));
+    return cg.b->CreateFSub(cg.b->CreateFMul(a, d), cg.b->CreateFMul(b, c));
+}
+
+/* det of the 3x3 block (cols[c0..c2]) x (rows r0..r2) of a matrix. */
+static llvm::Value *det3Sel(Codegen &cg, llvm::Value *const *cols,
+                            uint32_t c0, uint32_t c1, uint32_t c2,
+                            uint32_t r0, uint32_t r1, uint32_t r2) {
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    auto el = [&](uint32_t c, uint32_t r) {
+        return cg.b->CreateExtractElement(cols[c], cI(r));
+    };
+    llvm::Value *a = el(c0, r0), *b = el(c1, r0), *cc = el(c2, r0);
+    llvm::Value *d = el(c0, r1), *e = el(c1, r1), *f = el(c2, r1);
+    llvm::Value *g = el(c0, r2), *h = el(c1, r2), *ii = el(c2, r2);
+    /* a(ei - fh) - b(di - fg) + c(dh - eg) */
+    llvm::Value *t1 = cg.b->CreateFSub(cg.b->CreateFMul(e, ii),
+                                       cg.b->CreateFMul(f, h));
+    llvm::Value *t2 = cg.b->CreateFSub(cg.b->CreateFMul(d, ii),
+                                       cg.b->CreateFMul(f, g));
+    llvm::Value *t3 = cg.b->CreateFSub(cg.b->CreateFMul(d, h),
+                                       cg.b->CreateFMul(e, g));
+    llvm::Value *r0v = cg.b->CreateFSub(cg.b->CreateFMul(a, t1),
+                                        cg.b->CreateFMul(b, t2));
+    return cg.b->CreateFAdd(r0v, cg.b->CreateFMul(cc, t3));
+}
+
+/* Determinant of a square float matrix ([N x <N x float>]). */
+static llvm::Value *detMatrix(Codegen &cg, llvm::Value *m) {
+    auto *arr = llvm::cast<llvm::ArrayType>(m->getType());
+    uint32_t C = (uint32_t)arr->getNumElements();
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+    llvm::Value *cols[4];
+    for (uint32_t c = 0; c < C; c++)
+        cols[c] = cg.b->CreateExtractValue(m, c);
+    if (C == 2) return det2Sel(cg, cols[0], cols[1], 0, 1);
+    if (C == 3) return det3Sel(cg, cols, 0, 1, 2, 0, 1, 2);
+    llvm::Value *acc = cg.b->CreateFMul(
+        cg.b->CreateExtractElement(cols[0], cI(0)),
+        det3Sel(cg, cols, 1, 2, 3, 1, 2, 3));
+    llvm::Value *t = cg.b->CreateFMul(
+        cg.b->CreateExtractElement(cols[0], cI(1)),
+        det3Sel(cg, cols, 1, 2, 3, 0, 2, 3));
+    acc = cg.b->CreateFSub(acc, t);
+    t = cg.b->CreateFMul(
+        cg.b->CreateExtractElement(cols[0], cI(2)),
+        det3Sel(cg, cols, 1, 2, 3, 0, 1, 3));
+    acc = cg.b->CreateFAdd(acc, t);
+    t = cg.b->CreateFMul(
+        cg.b->CreateExtractElement(cols[0], cI(3)),
+        det3Sel(cg, cols, 1, 2, 3, 0, 1, 2));
+    return cg.b->CreateFSub(acc, t);
+}
+
+/* Matrix builtins: transpose, matrixCompMult, outerProduct, determinant
+ * and inverse (square float matrices, sema-typed subset).  Returns NULL
+ * when `name` is not a matrix builtin handled here. */
+static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
+                                      const char *name, const MGLIRModule *mod,
+                                      const std::map<std::string, MType> &locals) {
+    bool isT = !strcmp(name, "transpose");
+    bool isC = !strcmp(name, "matrixCompMult");
+    bool isO = !strcmp(name, "outerProduct");
+    bool isD = !strcmp(name, "determinant");
+    bool isI = !strcmp(name, "inverse");
+    if (!isT && !isC && !isO && !isD && !isI) return nullptr;
+
+    llvm::Value *a = emitExpr(cg, e->u.call.args[0], mod, locals);
+    if (!a) return nullptr;
+    llvm::Value *b = nullptr;
+    if (e->u.call.arg_count == 2) {
+        b = emitExpr(cg, e->u.call.args[1], mod, locals);
+        if (!b) return nullptr;
+    }
+    llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+    auto cI = [&](uint32_t v) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), v);
+    };
+
+    if (isT) {
+        auto *arr = llvm::cast<llvm::ArrayType>(a->getType());
+        uint32_t C = (uint32_t)arr->getNumElements();
+        uint32_t R = (uint32_t)llvm::cast<llvm::FixedVectorType>(
+                         arr->getElementType())
+                         ->getElementCount()
+                         .getFixedValue();
+        llvm::Type *outTy =
+            llvm::ArrayType::get(llvm::FixedVectorType::get(f32, C), R);
+        llvm::Value *out = llvm::UndefValue::get(outTy);
+        for (uint32_t j = 0; j < R; j++) {
+            llvm::Value *col = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(f32, C));
+            for (uint32_t i = 0; i < C; i++) {
+                llvm::Value *x = cg.b->CreateExtractElement(
+                    cg.b->CreateExtractValue(a, i), cI(j));
+                col = cg.b->CreateInsertElement(col, x, cI(i));
+            }
+            out = cg.b->CreateInsertValue(out, col, j);
+        }
+        return out;
+    }
+    if (isC) {
+        auto *arr = llvm::cast<llvm::ArrayType>(a->getType());
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *out = llvm::UndefValue::get(a->getType());
+        for (uint32_t c = 0; c < C; c++) {
+            llvm::Value *m = cg.b->CreateFMul(
+                cg.b->CreateExtractValue(a, c), cg.b->CreateExtractValue(b, c));
+            out = cg.b->CreateInsertValue(out, m, c);
+        }
+        return out;
+    }
+    if (isO) {
+        auto *va = llvm::cast<llvm::FixedVectorType>(a->getType());
+        auto *vb = llvm::cast<llvm::FixedVectorType>(b->getType());
+        uint32_t C = (uint32_t)va->getElementCount().getFixedValue();
+        uint32_t R = (uint32_t)vb->getElementCount().getFixedValue();
+        llvm::Type *outTy =
+            llvm::ArrayType::get(llvm::FixedVectorType::get(f32, R), C);
+        llvm::Value *out = llvm::UndefValue::get(outTy);
+        for (uint32_t c = 0; c < C; c++) {
+            llvm::Value *coef = cg.b->CreateExtractElement(a, cI(c));
+            llvm::Value *col = cg.b->CreateFMul(
+                cg.b->CreateVectorSplat(R, coef), b);
+            out = cg.b->CreateInsertValue(out, col, c);
+        }
+        return out;
+    }
+    if (isD) {
+        return detMatrix(cg, a);
+    }
+    if (isI) {
+        auto *arr = llvm::cast<llvm::ArrayType>(a->getType());
+        uint32_t C = (uint32_t)arr->getNumElements();
+        uint32_t R = (uint32_t)llvm::cast<llvm::FixedVectorType>(
+                         arr->getElementType())
+                         ->getElementCount()
+                         .getFixedValue();
+        llvm::Value *cols[4];
+        for (uint32_t c = 0; c < C; c++)
+            cols[c] = cg.b->CreateExtractValue(a, c);
+        llvm::Value *inv = cg.b->CreateFDiv(
+            llvm::ConstantFP::get(f32, 1.0), detMatrix(cg, a));
+        llvm::Value *out = llvm::UndefValue::get(
+            llvm::ArrayType::get(llvm::FixedVectorType::get(f32, R), C));
+        if (C == 2) {
+            /* inv = 1/det * [[a11, -a01], [-a10, a00]] in column-major
+             * order: col0 = (a11, -a10), col1 = (-a01, a00). */
+            llvm::Value *a00 = cg.b->CreateExtractElement(cols[0], cI(0));
+            llvm::Value *a10 = cg.b->CreateExtractElement(cols[0], cI(1));
+            llvm::Value *a01 = cg.b->CreateExtractElement(cols[1], cI(0));
+            llvm::Value *a11 = cg.b->CreateExtractElement(cols[1], cI(1));
+            llvm::Value *col0 = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(f32, 2));
+            col0 = cg.b->CreateInsertElement(col0,
+                cg.b->CreateFMul(a11, inv), cI(0));
+            col0 = cg.b->CreateInsertElement(col0,
+                cg.b->CreateFMul(cg.b->CreateFNeg(a10), inv), cI(1));
+            llvm::Value *col1 = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(f32, 2));
+            col1 = cg.b->CreateInsertElement(col1,
+                cg.b->CreateFMul(cg.b->CreateFNeg(a01), inv), cI(0));
+            col1 = cg.b->CreateInsertElement(col1,
+                cg.b->CreateFMul(a00, inv), cI(1));
+            out = cg.b->CreateInsertValue(out, col0, 0);
+            return cg.b->CreateInsertValue(out, col1, 1);
+        }
+        /* Cofactor formula: inv[i][j] = (-1)^(i+j) * det(minor row j,
+         * col i) / det(A). */
+        auto otherIdx = [](uint32_t n, uint32_t skip, uint32_t out[3]) {
+            uint32_t k = 0;
+            for (uint32_t c = 0; c < n; c++)
+                if (c != skip) out[k++] = c;
+        };
+        for (uint32_t j = 0; j < C; j++) {
+            llvm::Value *col = llvm::UndefValue::get(
+                llvm::FixedVectorType::get(f32, R));
+            for (uint32_t i = 0; i < R; i++) {
+                uint32_t cs[3], rs[3];
+                otherIdx(C, i, cs);
+                otherIdx(C, j, rs);
+                llvm::Value *m = C == 3
+                    ? det2Sel(cg, cols[cs[0]], cols[cs[1]], rs[0], rs[1])
+                    : det3Sel(cg, cols, cs[0], cs[1], cs[2],
+                              rs[0], rs[1], rs[2]);
+                if (((i + j) & 1) != 0)
+                    m = cg.b->CreateFNeg(m);
+                m = cg.b->CreateFMul(m, inv);
+                col = cg.b->CreateInsertElement(col, m, cI(i));
+            }
+            out = cg.b->CreateInsertValue(out, col, j);
+        }
+        return out;
+    }
+    return nullptr;
 }
 
 /* Element-wise float intrinsic (scalar or vector operand). */
@@ -538,6 +756,10 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
 
 llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                       const std::map<std::string, MType> &locals);
+
+static llvm::Value *emitMatrixBuiltin(Codegen &cg, const MGLExpr *e,
+                                      const char *name, const MGLIRModule *mod,
+                                      const std::map<std::string, MType> &locals);
 
 /* Buffer read: byte GEP + bitcast + aligned load.  Alignment follows
  * std140: scalar 4, vec2 8, vec3/vec4 and matrix columns 16. */
@@ -824,6 +1046,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         /* Math builtins (sema-typed subset).  All float args are coerced;
          * integer variants (abs/min/max/clamp) use icmp selects. */
+        {
+            llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
+            if (mb) return mb;
+        }
         {
             llvm::Value *mb = emitMathBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
