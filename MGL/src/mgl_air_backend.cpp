@@ -46,7 +46,13 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
+#include "llvm/Transforms/Scalar/DCE.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
+#include "llvm/Transforms/Scalar/SROA.h"
 
 #include "mgl_glsl_ast.h"
 #include "mgl_glsl_parser.h"
@@ -4558,6 +4564,34 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
             llvm::Type::getInt32Ty(ctx), 0))}));
     addModuleFlags(&module);
+
+    /* D1: LLVM optimization pipeline (SROA -> EarlyCSE -> InstCombine ->
+     * AlwaysInliner -> DCE), mirroring the DXMT runOptimizationPasses
+     * subset from the AIR design.  Runs before bitcode serialization so
+     * newLibraryWithData compiles a leaner module (lower first-PSO
+     * latency).  MGL_DUMP_IR=1 dumps the optimized IR. */
+    {
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+        llvm::ModulePassManager MPM;
+        MPM.addPass(llvm::AlwaysInlinerPass());
+        llvm::FunctionPassManager FPM;
+        FPM.addPass(llvm::SROAPass());
+        FPM.addPass(llvm::EarlyCSEPass());
+        FPM.addPass(llvm::InstCombinePass());
+        FPM.addPass(llvm::DCEPass());
+        MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
+        MPM.run(module, MAM);
+    }
 
     if (getenv("MGL_DUMP_IR"))
         module.print(llvm::errs(), nullptr);
