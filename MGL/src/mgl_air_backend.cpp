@@ -65,8 +65,10 @@ struct MType {
     uint32_t vec = 0;        /* vector width, 0 = scalar */
     uint32_t cols = 0;       /* matrix columns, 0 = not a matrix */
     uint32_t rows = 0;       /* matrix rows */
+    uint32_t arr = 0;        /* array element count, 0 = not an array */
 
     bool isMatrix() const { return cols != 0; }
+    bool isArray() const { return arr != 0; }
     uint32_t matrixCols() const { return isMatrix() ? cols : 1; }
     uint32_t lanes() const { return isMatrix() ? rows : (vec ? vec : 1); }
 };
@@ -114,6 +116,8 @@ struct Codegen {
     llvm::Value *threadPos = nullptr;    /* compute: <3 x i32> grid position */
     llvm::Value *captureBuf = nullptr;   /* capture variant: output buffer */
     llvm::Value *vertexId = nullptr;     /* capture variant: vertex_id */
+    llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
+    bool pointSize = false;              /* vertex: writes gl_PointSize */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
     std::map<std::string, llvm::Value *> texValues;  /* sampler name -> texture */
@@ -126,6 +130,7 @@ struct Codegen {
     llvm::Type *retTy = nullptr;         /* stage return type */
     std::vector<llvm::Type *> retElems;  /* VS struct fields (incl. position) */
     std::vector<VarSym> *auxSyms = nullptr;  /* all stage symbols (frag output) */
+    std::map<std::string, llvm::Function *> *userFns = nullptr;
     int err = 0;
     std::string errmsg;                  /* specific diagnostic when set */
     std::vector<LoopCtx *> loopStack;    /* innermost loop is last */
@@ -152,6 +157,11 @@ llvm::Type *llvmType(const MType &t, llvm::LLVMContext &ctx) {
     llvm::Type *s = llvmScalar(t.scalar, ctx);
     if (t.isMatrix())
         return llvm::ArrayType::get(llvm::FixedVectorType::get(s, t.rows), t.cols);
+    if (t.isArray()) {
+        llvm::Type *elt = t.vec ? (llvm::Type *)llvm::FixedVectorType::get(s, t.vec)
+                                : s;
+        return llvm::ArrayType::get(elt, t.arr);
+    }
     if (t.vec)
         return llvm::FixedVectorType::get(s, t.vec);
     return s;
@@ -191,8 +201,36 @@ llvm::Value *coerceScalar(Codegen &cg, llvm::Value *v, MGLIRScalar want) {
     return v;
 }
 
+/* Itanium-style type mangling for air.vertex_output / air.fragment_input
+ * "generated(...)" tags (e.g. "1aDv4_f": len 1 + "a" + vec4<float>). */
+std::string mslTypeName(const MType &t);
+
+std::string airTypeMangle(const MType &t) {
+    if (t.isMatrix() || t.isArray()) {
+        return mslTypeName(t);
+    }
+    const char *elem;
+    switch (t.scalar) {
+    case MGLIR_SCALAR_INT:  elem = "i"; break;
+    case MGLIR_SCALAR_UINT: elem = "j"; break;
+    default:                elem = "f"; break;
+    }
+    if (!t.vec) return elem;
+    return "Dv" + std::to_string(t.vec) + "_" + elem;
+}
+
+std::string airGenerated(const std::string &name, const MType &t) {
+    return "generated(" + std::to_string(name.size()) + name +
+           airTypeMangle(t) + ")";
+}
+
 /* GLSL type name used in air.* metadata (MSL naming). */
 std::string mslTypeName(const MType &t) {
+    if (t.isArray()) {
+        MType el = t;
+        el.arr = 0;
+        return mslTypeName(el);
+    }
     if (t.isMatrix()) {
         char buf[32];
         snprintf(buf, sizeof buf, "float%ux%u", t.cols, t.rows);
@@ -219,6 +257,19 @@ MType typeFromIR(const MGLIRType *t) {
     switch (t->kind) {
     case MGLIR_TYPE_VECTOR: r.vec = t->cols; break;
     case MGLIR_TYPE_MATRIX: r.cols = t->cols; r.rows = t->rows; break;
+    case MGLIR_TYPE_ARRAY: {
+        r.arr = t->array_size;
+        const MGLIRType *el = t->elem_type;
+        while (el && el->kind == MGLIR_TYPE_ARRAY) {
+            el = el->elem_type;
+            r.arr *= t->array_size;
+        }
+        if (el) {
+            r.scalar = el->scalar;
+            if (el->kind == MGLIR_TYPE_VECTOR) r.vec = el->cols;
+        }
+        break;
+    }
     default: break;
     }
     return r;
@@ -674,6 +725,26 @@ llvm::Value *callFloatIntrinsic(Codegen &cg, llvm::Intrinsic::ID id,
     return cg.b->CreateIntrinsic(id, {v->getType()}, {v});
 }
 
+/* Resolve a sampler argument: a global sampler2D uniform (cg.texValues)
+ * or a user-function parameter bound in cg.lvalues. */
+static llvm::Value *samplerTexValue(Codegen &cg, const char *name) {
+    auto t = cg.texValues.find(name);
+    if (t != cg.texValues.end()) return t->second;
+    auto l = cg.lvalues.find(name);
+    if (l != cg.lvalues.end()) return l->second;
+    return nullptr;
+}
+
+/* Scalar base for an LLVM type, used to coerce call arguments. */
+static MGLIRScalar scalarFromType(llvm::Type *t) {
+    if (auto *fv = llvm::dyn_cast<llvm::FixedVectorType>(t))
+        t = fv->getElementType();
+    if (t->isFloatingPointTy()) return MGLIR_SCALAR_FLOAT;
+    if (t->isIntegerTy(1)) return MGLIR_SCALAR_BOOL;
+    if (t->isIntegerTy(32)) return MGLIR_SCALAR_INT;
+    return MGLIR_SCALAR_FLOAT;
+}
+
 /* Call a named AIR function (e.g. air.pack.unorm2x16.v2f32); the module
  * declaration is created on first use. */
 llvm::Value *callAirFn(Codegen &cg, const char *fn, llvm::Type *retTy,
@@ -888,6 +959,19 @@ static llvm::Value *emitIndexValue(Codegen &cg, llvm::Value *obj,
             llvm::Value *eq = cg.b->CreateICmpEQ(
                 idx, llvm::ConstantInt::get(idx->getType(), i));
             res = res ? cg.b->CreateSelect(eq, col, res) : col;
+        }
+        return res;
+    }
+    if (bt.isArray()) {
+        auto *arr = llvm::dyn_cast<llvm::ArrayType>(obj->getType());
+        if (!arr) return nullptr;
+        uint32_t C = (uint32_t)arr->getNumElements();
+        llvm::Value *res = nullptr;
+        for (uint32_t i = 0; i < C; i++) {
+            llvm::Value *el = cg.b->CreateExtractValue(obj, i);
+            llvm::Value *eq = cg.b->CreateICmpEQ(
+                idx, llvm::ConstantInt::get(idx->getType(), i));
+            res = res ? cg.b->CreateSelect(eq, el, res) : el;
         }
         return res;
     }
@@ -1213,6 +1297,9 @@ llvm::Value *varValue(Codegen &cg, const VarSym &v, const MGLIRModule *mod) {
     if (v.kind == VarSym::BUFFER) {
         /* Anonymous-block member: read from the block's device buffer. */
         const MGLIRSymbol *bs = findSymbol(mod, v.name.c_str());
+        if (getenv("MGL_VAR_DBG"))
+            fprintf(stderr, "VAR %s kind=%d block=%s\n", v.name.c_str(),
+                    (int)v.kind, bs ? (bs->block_name ? bs->block_name : "-") : "-");
         if (bs && bs->block_name) {
             llvm::Value *base = cg.uboPtrs.count(bs->block_name)
                                     ? cg.uboPtrs[bs->block_name]
@@ -1292,6 +1379,23 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             return cg.vertexId;
         }
+        if (strcmp(e->u.var_ref.name, "gl_FragCoord") == 0) {
+            if (!cg.fragPos) {
+                cg.err = 1;
+                cg.errmsg = "codegen: gl_FragCoord requires a fragment stage";
+                return nullptr;
+            }
+            return cg.fragPos;
+        }
+        if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
+            if (!cg.pointSize) {
+                /* read-before-write: an unwritten point size is 1.0 */
+                return llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
+            }
+            return cg.lvalues.count("gl_PointSize")
+                       ? cg.lvalues["gl_PointSize"]
+                       : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
+        }
         auto lit = locals.find(e->u.var_ref.name);
         if (lit != locals.end())
             return varValue(cg, VarSym{e->u.var_ref.name, lit->second, VarSym::LOCAL},
@@ -1301,6 +1405,10 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         VarSym v;
         v.name = s->name;
         v.type = typeFromIR(s->type);
+        if (v.type.isArray()) {
+            /* const array variables are SSA values in cg.lvalues. */
+            return varValue(cg, VarSym{s->name, v.type, VarSym::LOCAL}, mod);
+        }
         if (s->qualifiers & MGL_AST_Q_UNIFORM) {
             v.kind = VarSym::BUFFER;
         } else if ((s->qualifiers & MGL_AST_Q_IN) && cg.isVS) {
@@ -1313,6 +1421,57 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     case MGL_EXPR_MEMBER: {
         if (const MGLIRSymbol *sb = ssboRootSym(e, mod))
             return emitSSBORead(cg, e, sb, mod, locals);
+        /* Uniform block instance member: lightmapInfo.BlockFactor. */
+        if (e->u.member.object->kind == MGL_EXPR_VAR_REF) {
+            const char *objName = e->u.member.object->u.var_ref.name;
+            const MGLIRSymbol *ov = findSymbol(mod, objName);
+            if (ov && !ov->is_function &&
+                (ov->qualifiers & MGL_AST_Q_UNIFORM) &&
+                ov->type->kind == MGLIR_TYPE_STRUCT &&
+                ov->type->member_count > 0) {
+                llvm::Value *base = cg.uboPtrs.count(objName)
+                                        ? cg.uboPtrs[objName]
+                                        : nullptr;
+                if (!base) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: uniform block '") +
+                                objName + "' has no device buffer";
+                    return nullptr;
+                }
+                const MGLIRType *mt = nullptr;
+                uint32_t moff = 0;
+                for (uint32_t m = 0; m < ov->type->member_count; m++) {
+                    if (strcmp(ov->type->member_names[m],
+                               e->u.member.field) == 0) {
+                        mt = ov->type->members[m];
+                        moff = ov->type->member_offsets
+                                   ? ov->type->member_offsets[m]
+                                   : 0;
+                        break;
+                    }
+                }
+                if (!mt) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: uniform block '") +
+                                objName + "' has no member '" +
+                                e->u.member.field + "'";
+                    return nullptr;
+                }
+                llvm::Type *t = llvmType(typeFromIR(mt), *cg.ctx);
+                llvm::Value *p = cg.b->CreateGEP(cg.b->getInt8Ty(), base,
+                                                 cg.b->getInt64(moff));
+                llvm::Align align(16);
+                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(t)) {
+                    uint64_t w = vt->getElementCount().getFixedValue();
+                    if (w == 1) align = llvm::Align(4);
+                    else if (w == 2) align = llvm::Align(8);
+                } else if (t->isFloatTy() || t->isIntegerTy(32)) {
+                    align = llvm::Align(4);
+                }
+                p = cg.b->CreateBitCast(p, t->getPointerTo(1));
+                return cg.b->CreateAlignedLoad(t, p, align);
+            }
+        }
         /* Swizzle only in M1. */
         std::vector<uint32_t> idx;
         if (!swizzleIndices(e->u.member.field, &idx)) { cg.err = 1; return nullptr; }
@@ -1384,6 +1543,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                              : name[0] == 'b' ? MGLIR_SCALAR_BOOL
                                               : MGLIR_SCALAR_INT;
             return coerceScalar(cg, arg, want);
+        }
+        /* Array constructors: vecN[](a, b, ...). */
+        if (e->u.call.is_array_ctor) {
+            llvm::Value *res = llvm::UndefValue::get(llvmType(
+                exprType(cg, e, mod, locals), *cg.ctx));
+            if (e->u.call.arg_count == 0) return res;
+            MType et = exprType(cg, e, mod, locals);
+            et.arr = 0;
+            llvm::Type *eltTy = llvmType(et, *cg.ctx);
+            for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                llvm::Value *arg = emitExpr(cg, e->u.call.args[a], mod, locals);
+                if (!arg) return nullptr;
+                if (arg->getType() != eltTy) {
+                    if (arg->getType()->isIntOrIntVectorTy() ||
+                        arg->getType()->isFPOrFPVectorTy())
+                        arg = coerceScalar(cg, arg, et.scalar);
+                    else
+                        arg = cg.b->CreateBitCast(arg, eltTy);
+                }
+                res = cg.b->CreateInsertValue(res, arg, a);
+            }
+            return res;
         }
         /* Vector constructors: [i]uvec/bvec/vec2..4. */
         const char *vn = name;
@@ -1460,9 +1641,51 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Type *arrTy = llvm::ArrayType::get(colTy, mcols);
             llvm::Value *arr = llvm::UndefValue::get(arrTy);
             if (e->u.call.arg_count == 1) {
-                /* matN(f): diagonal scale. */
                 llvm::Value *s = emitExpr(cg, e->u.call.args[0], mod, locals);
                 if (!s) return nullptr;
+                if (s->getType()->isArrayTy()) {
+                    /* matNxN(matMxM) with M<N: embed the smaller matrix in
+                     * the upper-left, identity on the remaining diagonal. */
+                    llvm::ArrayType *sa = llvm::cast<llvm::ArrayType>(
+                        s->getType());
+                    llvm::Type *se = sa->getElementType();
+                    uint32_t sc = (uint32_t)sa->getNumElements();
+                    uint32_t sr = 0;
+                    if (auto *sv = llvm::dyn_cast<llvm::FixedVectorType>(se))
+                        sr = (uint32_t)sv->getNumElements();
+                    else
+                        sr = 1;
+                    if (sc > mcols || sr > mrows) {
+                        cg.err = 1;
+                        cg.errmsg = std::string("codegen: constructor '") +
+                                    name + "' embeds a larger matrix";
+                        return nullptr;
+                    }
+                    for (uint32_t c = 0; c < mcols; c++) {
+                        llvm::Value *col = llvm::UndefValue::get(colTy);
+                        for (uint32_t r = 0; r < mrows; r++) {
+                            llvm::Value *x;
+                            if (c < sc && r < sr) {
+                                x = cg.b->CreateExtractElement(
+                                    cg.b->CreateExtractValue(s, c),
+                                    llvm::ConstantInt::get(
+                                        llvm::Type::getInt32Ty(*cg.ctx), r));
+                            } else {
+                                x = (r == c)
+                                    ? llvm::ConstantFP::get(
+                                          llvm::Type::getFloatTy(*cg.ctx), 1.0)
+                                    : llvm::ConstantFP::get(
+                                          llvm::Type::getFloatTy(*cg.ctx), 0.0);
+                            }
+                            col = cg.b->CreateInsertElement(col, x,
+                                llvm::ConstantInt::get(
+                                    llvm::Type::getInt32Ty(*cg.ctx), r));
+                        }
+                        arr = cg.b->CreateInsertValue(arr, col, c);
+                    }
+                    return arr;
+                }
+                /* matN(f): diagonal scale. */
                 s = coerceScalar(cg, s, MGLIR_SCALAR_FLOAT);
                 for (uint32_t c = 0; c < mcols; c++) {
                     llvm::Value *col = llvm::UndefValue::get(colTy);
@@ -1515,6 +1738,28 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         /* Math builtins (sema-typed subset).  All float args are coerced;
          * integer variants (abs/min/max/clamp) use icmp selects. */
         {
+            if (strcmp(name, "dFdx") == 0 || strcmp(name, "dFdy") == 0) {
+                if (e->u.call.arg_count != 1) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: '") + name +
+                                "' expects 1 argument";
+                    return nullptr;
+                }
+                llvm::Value *v = emitExpr(cg, e->u.call.args[0], mod, locals);
+                if (!v) return nullptr;
+                llvm::Type *et = v->getType();
+                if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(et)) {
+                    uint32_t n = (uint32_t)vt->getNumElements();
+                    std::string fn = (strcmp(name, "dFdx") == 0)
+                        ? std::string("air.dfdx.v") + std::to_string(n) + "f32"
+                        : std::string("air.dfdy.v") + std::to_string(n) + "f32";
+                    return callAirFn(cg, fn.c_str(), et, {v});
+                }
+                return callAirFn(cg, strcmp(name, "dFdx") == 0
+                                         ? "air.dfdx.f32"
+                                         : "air.dfdy.f32",
+                                 et, {v});
+            }
             llvm::Value *mb = emitMatrixBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
         }
@@ -1522,26 +1767,121 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             llvm::Value *mb = emitMathBuiltin(cg, e, name, mod, locals);
             if (mb) return mb;
         }
-        /* texture / textureLod / textureSize: the sampler argument maps
-         * to paired AIR texture + sampler parameters. */
-        if (strcmp(name, "texture") == 0 || strcmp(name, "textureLod") == 0 ||
-            strcmp(name, "textureSize") == 0) {
-            if (e->u.call.arg_count < 2 || e->u.call.arg_count > 3) {
+        /* texelFetch(sampler, ivec2, lod): unfiltered read. */
+        if (strcmp(name, "texelFetch") == 0) {
+            if (e->u.call.arg_count != 3 && e->u.call.arg_count != 2) {
                 cg.err = 1;
-                cg.errmsg = std::string("codegen: '") + name +
-                            "' expects 2 or 3 arguments";
+                cg.errmsg = "codegen: texelFetch expects 2 or 3 arguments";
                 return nullptr;
             }
             const MGLExpr *sa = e->u.call.args[0];
-            if (sa->kind != MGL_EXPR_VAR_REF ||
-                !cg.texValues.count(sa->u.var_ref.name)) {
+            if (sa->kind != MGL_EXPR_VAR_REF) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch first argument must be a "
+                            "sampler variable";
+                return nullptr;
+            }
+            llvm::Value *tex = samplerTexValue(cg, sa->u.var_ref.name);
+            if (!tex) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch first argument must be a "
+                            "sampler variable";
+                return nullptr;
+            }
+            const MGLIRSymbol *ts = findSymbol(mod, sa->u.var_ref.name);
+            bool isBuf = ts && ts->type->kind == MGLIR_TYPE_SAMPLER &&
+                         ts->type->tex_kind == MGLIR_TEX_BUFFER;
+            if (isBuf) {
+                if (e->u.call.arg_count != 2) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: texelFetch on a samplerBuffer "
+                                "expects 2 arguments";
+                    return nullptr;
+                }
+                llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod,
+                                              locals);
+                if (!coord) return nullptr;
+                coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+                llvm::Type *smp = llvm::StructType::get(
+                    *cg.ctx, "struct._sampler_t");
+                llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
+                                            smp->getPointerTo(2), {});
+                llvm::Type *v4f32 = llvm::FixedVectorType::get(
+                    llvm::Type::getFloatTy(*cg.ctx), 4);
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
+                llvm::Value *r = callAirFn(
+                    cg, "air.read_texture_buffer_1d.v4f32", retTy,
+                    {tex, rs, coord, cg.b->getInt32(1)});
+                return cg.b->CreateExtractValue(r, 0);
+            }
+            if (e->u.call.arg_count != 3) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texelFetch on a sampler2D expects 3 "
+                            "arguments";
+                return nullptr;
+            }
+            llvm::Value *coord = emitExpr(cg, e->u.call.args[1], mod, locals);
+            llvm::Value *lod = emitExpr(cg, e->u.call.args[2], mod, locals);
+            if (!coord || !lod) return nullptr;
+            coord = coerceScalar(cg, coord, MGLIR_SCALAR_INT);
+            lod = coerceScalar(cg, lod, MGLIR_SCALAR_INT);
+            llvm::Type *smp = llvm::StructType::get(
+                *cg.ctx, "struct._sampler_t");
+            llvm::Value *rs = callAirFn(cg, "air.get_read_sampler",
+                                        smp->getPointerTo(2), {});
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+            llvm::Type *v4f32 = llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(*cg.ctx), 4);
+            llvm::Type *retTy =
+                llvm::StructType::get(*cg.ctx, {v4f32, cg.b->getInt8Ty()});
+            llvm::Value *r = callAirFn(
+                cg, "air.read_texture_2d.v4f32", retTy,
+                {tex, rs, coord, llvm::Constant::getNullValue(v2i32),
+                 lod, cg.b->getInt32(0)});
+            return cg.b->CreateExtractValue(r, 0);
+        }
+        /* texture / textureLod / textureSize: the sampler argument maps
+         * to paired AIR texture + sampler parameters. */
+        if (strcmp(name, "texture") == 0 || strcmp(name, "textureLod") == 0 ||
+            strcmp(name, "textureSize") == 0 ||
+            strcmp(name, "textureGrad") == 0 ||
+            strcmp(name, "textureProj") == 0) {
+            if (e->u.call.arg_count < 2 || e->u.call.arg_count > 4) {
+                cg.err = 1;
+                cg.errmsg = std::string("codegen: '") + name +
+                            "' expects 2 to 4 arguments";
+                return nullptr;
+            }
+            const MGLExpr *sa = e->u.call.args[0];
+            if (sa->kind != MGL_EXPR_VAR_REF) {
                 cg.err = 1;
                 cg.errmsg = "codegen: texture argument must be a sampler2D "
                             "variable";
                 return nullptr;
             }
-            llvm::Value *tex = cg.texValues[sa->u.var_ref.name];
-            llvm::Value *smp = cg.smpValues[sa->u.var_ref.name];
+            llvm::Value *tex = samplerTexValue(cg, sa->u.var_ref.name);
+            if (!tex) {
+                cg.err = 1;
+                cg.errmsg = "codegen: texture argument must be a sampler2D "
+                            "variable";
+                return nullptr;
+            }
+            llvm::Value *smp = nullptr;
+            {
+                auto si = cg.smpValues.find(sa->u.var_ref.name);
+                if (si != cg.smpValues.end()) {
+                    smp = si->second;
+                } else {
+                    /* Function parameter: use the read sampler
+                     * (filtered sampling inside helpers is not wired). */
+                    llvm::Type *smpT = llvm::StructType::get(
+                        *cg.ctx, "struct._sampler_t");
+                    smp = callAirFn(cg, "air.get_read_sampler",
+                                    smpT->getPointerTo(2), {});
+                }
+            }
             const MGLIRSymbol *tss = findSymbol(mod, sa->u.var_ref.name);
             bool is3d = tss && tss->type->kind == MGLIR_TYPE_SAMPLER &&
                         tss->type->tex_kind == MGLIR_TEX_3D;
@@ -1578,6 +1918,48 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             llvm::Value *uv = emitExpr(cg, e->u.call.args[1], mod, locals);
             if (!uv) return nullptr;
+            if (strcmp(name, "textureProj") == 0) {
+                /* textureProj(sampler, vec4): sample at uv.xy / uv.w. */
+                if (auto *uvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        uv->getType());
+                    !uvt || uvt->getNumElements() != 4) {
+                    cg.err = 1;
+                    cg.errmsg = "codegen: textureProj expects a vec4 "
+                                "coordinate";
+                    return nullptr;
+                }
+                llvm::Type *f32 = llvm::Type::getFloatTy(*cg.ctx);
+                llvm::Value *w = cg.b->CreateExtractElement(
+                    uv, cg.b->getInt32(3));
+                llvm::Type *v2f32 = llvm::FixedVectorType::get(f32, 2);
+                llvm::Value *xy = cg.b->CreateShuffleVector(
+                    uv, llvm::UndefValue::get(uv->getType()),
+                    llvm::ConstantVector::get(
+                        {llvm::ConstantInt::get(
+                             llvm::Type::getInt32Ty(*cg.ctx), 0),
+                         llvm::ConstantInt::get(
+                             llvm::Type::getInt32Ty(*cg.ctx), 1)}));
+                llvm::Value *pw = cg.b->CreateVectorSplat(2, w);
+                uv = cg.b->CreateFDiv(xy, pw);
+            }
+            if (strcmp(name, "textureGrad") == 0) {
+                llvm::Value *dPdx = emitExpr(cg, e->u.call.args[2], mod,
+                                             locals);
+                llvm::Value *dPdy = emitExpr(cg, e->u.call.args[3], mod,
+                                             locals);
+                if (!dPdx || !dPdy) return nullptr;
+                llvm::Type *v2i32 = llvm::FixedVectorType::get(i32, 2);
+                llvm::Type *v4f32 = llvm::FixedVectorType::get(f32, 4);
+                llvm::Type *retTy = llvm::StructType::get(
+                    *cg.ctx, {v4f32, cg.b->getInt8Ty()});
+                llvm::Value *r = callAirFn(
+                    cg, "air.sample_texture_2d_grad.v4f32", retTy,
+                    {tex, smp, uv, dPdx, dPdy,
+                     llvm::ConstantFP::get(f32, 0.0), cg.b->getInt1(false),
+                     llvm::Constant::getNullValue(v2i32),
+                     cg.b->getInt32(0)});
+                return cg.b->CreateExtractValue(r, 0);
+            }
             llvm::Value *lod = nullptr;
             bool explicitLod = false;
             if (e->u.call.arg_count == 3) {
@@ -1629,6 +2011,52 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                                       llvm::AtomicOrdering::Monotonic);
             /* GLSL 4.60 8.11: atomicAdd returns the new value. */
             return cg.b->CreateAdd(old, val);
+        }
+        /* User-defined function call. */
+        if (cg.userFns) {
+            std::string key = std::string(name) + "#" +
+                              std::to_string(e->u.call.arg_count);
+            auto fit = cg.userFns->find(key);
+            if (fit != cg.userFns->end()) {
+                uint64_t hidden = cg.uboPtrs.size() + cg.ssboPtrs.size();
+                if (e->u.call.arg_count + hidden !=
+                    fit->second->arg_size()) {
+                    cg.err = 1;
+                    cg.errmsg = std::string("codegen: function '") + name +
+                                "' expects " +
+                                std::to_string(fit->second->arg_size() -
+                                               hidden) +
+                                " argument(s)";
+                    return nullptr;
+                }
+                std::vector<llvm::Value *> args;
+                for (uint32_t a = 0; a < e->u.call.arg_count; a++) {
+                    llvm::Value *av = nullptr;
+                    llvm::Type *at = fit->second->getArg(a)->getType();
+                    if (at->isPointerTy()) {
+                        llvm::Type *pt = at->getPointerElementType();
+                        if (pt->isStructTy()) {
+                            llvm::StringRef sn = pt->getStructName();
+                            if (!sn.empty() &&
+                                sn.startswith("struct._texture_") &&
+                                e->u.call.args[a]->kind == MGL_EXPR_VAR_REF)
+                                av = samplerTexValue(
+                                    cg, e->u.call.args[a]->u.var_ref.name);
+                        }
+                    }
+                    if (!av) {
+                        av = emitExpr(cg, e->u.call.args[a], mod, locals);
+                        if (!av) return nullptr;
+                        av = coerceScalar(cg, av, scalarFromType(at));
+                    }
+                    args.push_back(av);
+                }
+                for (const auto &kv : cg.uboPtrs)
+                    args.push_back(kv.second);
+                for (const auto &kv : cg.ssboPtrs)
+                    args.push_back(kv.second);
+                return cg.b->CreateCall(fit->second, args);
+            }
         }
         cg.err = 1;
         cg.errmsg = std::string("codegen: call to '") + name +
@@ -1820,6 +2248,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             else if (strcmp(name, "gl_Position") == 0) {
                 t.scalar = MGLIR_SCALAR_FLOAT;
                 t.vec = 4;
+            } else if (strcmp(name, "gl_PointSize") == 0) {
+                t.scalar = MGLIR_SCALAR_FLOAT;
             } else {
                 sym = findSymbol(mod, name);
                 if (!sym) { cg.err = 1; return nullptr; }
@@ -1871,6 +2301,11 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             }
             cg.position.written = true;
             cg.lvalues[name] = v;
+            return v;
+        }
+        if (strcmp(name, "gl_PointSize") == 0) {
+            cg.pointSize = true;
+            cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
             return v;
         }
         auto lit = locals.find(name);
@@ -1944,6 +2379,10 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             /* Matrix[i] yields a column vector. */
             t.scalar = base.scalar;
             t.vec = base.rows;
+        } else if (base.isArray()) {
+            /* Array[i] yields the element type. */
+            t = base;
+            t.arr = 0;
         } else if (base.vec) {
             /* Vector[i] yields a scalar component. */
             t = base;
@@ -1977,6 +2416,8 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
         }
         if (vn && vn[0] >= '2' && vn[0] <= '4' && vn[1] == '\0') {
             t.vec = (uint32_t)(vn[0] - '0');
+            if (e->u.call.is_array_ctor)
+                t.arr = e->u.call.arg_count;
             break;
         }
         if (strncmp(name, "mat", 3) == 0) {
@@ -2491,11 +2932,20 @@ llvm::Value *assembleReturn(Codegen &cg) {
                                    : llvm::UndefValue::get(cg.retElems[0]);
             pos = fixClipZ(cg, pos);
             ret = cg.b->CreateInsertValue(ret, pos, 0);
+            uint32_t ri = 1;
+            if (cg.pointSize) {
+                ret = cg.b->CreateInsertValue(
+                    ret,
+                    cg.lvalues.count("gl_PointSize")
+                        ? cg.lvalues["gl_PointSize"]
+                        : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0),
+                    ri++);
+            }
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                 llvm::Value *vv = cg.lvalues.count(cg.varyings[i]->name)
                                       ? cg.lvalues[cg.varyings[i]->name]
-                                      : llvm::UndefValue::get(cg.retElems[i + 1]);
-                ret = cg.b->CreateInsertValue(ret, vv, i + 1);
+                                      : llvm::UndefValue::get(cg.retElems[ri]);
+                ret = cg.b->CreateInsertValue(ret, vv, ri++);
             }
             return ret;
         }
@@ -2538,6 +2988,8 @@ void emitStmt(Codegen &cg, const MGLStmt *st, const MGLIRModule *mod,
             } else {
                 t.vec = d->type->vec_size;
             }
+            if (d->array_count > 0 && d->array_dims)
+                t.arr = d->array_dims[0];
         } else if (d->init) {
             t = exprType(cg, d->init, mod, *locals);
         } else {
@@ -3266,6 +3718,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         }
         syms.push_back(v);
     }
+    uint32_t ssboCount = 0, uboCount = 0, texCount = 0;
+    for (VarSym &v : syms) {
+        if (v.kind == VarSym::SSBO) ssboCount++;
+        else if (v.kind == VarSym::UBO) uboCount++;
+        else if (v.kind == VarSym::TEXTURE) texCount++;
+    }
     for (uint32_t i = 0; i < tu->decl_count; i++) {
         if (tu->decls[i]->body && tu->decls[i]->name &&
             strcmp(tu->decls[i]->name, "main") == 0) {
@@ -3302,10 +3760,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     std::vector<llvm::Type *> retElems;
     std::vector<VarSym *> varyings;
     llvm::Type *retTy = nullptr;
+    /* Built-in detection mirrors the legacy path's strstr over the source
+     * (gl_FragCoord -> fragment position arg; gl_PointSize -> point_size
+     * output member). */
+    const bool usesFragCoord =
+        !isVS && !isCompute && strstr(src, "gl_FragCoord") != nullptr;
+    const bool usesPointSize =
+        isVS && strstr(src, "gl_PointSize") != nullptr;
     if (isVS) {
         /* retElems always carries the output record (capture variants
          * write it to the XFB buffer). */
         retElems.push_back(llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4));
+        if (usesPointSize)
+            retElems.push_back(llvm::Type::getFloatTy(ctx));
         for (VarSym &v : syms) {
             if (v.kind == VarSym::VARYING) {
                 retElems.push_back(llvmType(v.type, ctx));
@@ -3334,14 +3801,26 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * compute = [buffer, ssbo..., tex/smp..., thread_position_in_grid]. */
     std::vector<llvm::Type *> paramTys;
     bool hasBuffer = !uniforms.empty();
+    uint32_t attrCount = 0;
+    for (VarSym &v : syms)
+        if (isVS && v.kind == VarSym::ATTR) attrCount++;
     llvm::StructType *texTy2d =
         llvm::StructType::create(ctx, "struct._texture_2d_t");
     llvm::StructType *texTy3d =
         llvm::StructType::create(ctx, "struct._texture_3d_t");
+    llvm::StructType *texTyBuf =
+        llvm::StructType::create(ctx, "struct._texture_buffer_1d_t");
     llvm::StructType *smpTy =
         llvm::StructType::create(ctx, "struct._sampler_t");
     if (isCapture)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    if (isVS) {
+        /* Vertex attributes come first (matching the Metal ABI: stage_in
+         * value args precede buffers/textures). */
+        for (VarSym &v : syms)
+            if (v.kind == VarSym::ATTR)
+                paramTys.push_back(llvmType(v.type, ctx));
+    }
     if ((isVS || isCompute) && hasBuffer)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     for (VarSym &v : syms)
@@ -3350,15 +3829,15 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     for (VarSym &v : syms) {
         if (v.kind != VarSym::TEXTURE) continue;
         const MGLIRSymbol *ts = findSymbol(&mod, v.name.c_str());
-        bool is3d = ts && ts->type->kind == MGLIR_TYPE_SAMPLER &&
-                    ts->type->tex_kind == MGLIR_TEX_3D;
-        paramTys.push_back((is3d ? texTy3d : texTy2d)->getPointerTo(1));
+        MGLIRTexKind tk = ts && ts->type->kind == MGLIR_TYPE_SAMPLER
+            ? ts->type->tex_kind : MGLIR_TEX_2D;
+        llvm::StructType *tt = (tk == MGLIR_TEX_3D) ? texTy3d
+                             : (tk == MGLIR_TEX_BUFFER) ? texTyBuf : texTy2d;
+        paramTys.push_back(tt->getPointerTo(1));
         paramTys.push_back(smpTy->getPointerTo(2));
     }
     for (VarSym &v : syms) {
-        if ((isVS && v.kind == VarSym::ATTR))
-            paramTys.push_back(llvmType(v.type, ctx));
-        else if (!isVS && !isCompute && v.kind == VarSym::VARYING)
+        if (!isVS && !isCompute && v.kind == VarSym::VARYING)
             paramTys.push_back(llvmType(v.type, ctx));
     }
     if (isVS)
@@ -3366,17 +3845,31 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     else if (isCompute)
         paramTys.push_back(llvm::FixedVectorType::get(
             llvm::Type::getInt32Ty(ctx), 3));
-    else if (!isVS && hasBuffer)
-        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+    else {
+        if (hasBuffer)
+            paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        if (usesFragCoord)
+            paramTys.push_back(llvm::FixedVectorType::get(
+                llvm::Type::getFloatTy(ctx), 4));
+    }
 
     llvm::FunctionType *ft = llvm::FunctionType::get(retTy, paramTys, false);
     llvm::Function *fn = llvm::Function::Create(
         ft, llvm::Function::ExternalLinkage, "main", &module);
     fn->setDoesNotThrow();
     if (hasBuffer) {
-        unsigned bufIdx = (isVS || isCompute)
-                              ? (isCapture ? 1 : 0)
-                              : (unsigned)paramTys.size() - 1;
+        unsigned bufIdx;
+        if (isVS || isCompute)
+            bufIdx = (isCapture ? 1 : 0) + (isVS ? attrCount : 0);
+        else {
+            /* fragment: buffer sits after varyings, before the optional
+             * fragCoord position arg */
+            bufIdx = (isCapture ? 1 : 0) + ssboCount + uboCount +
+                     2 * (texCount) + 0;
+            for (VarSym &v : syms)
+                if (!isVS && !isCompute && v.kind == VarSym::VARYING)
+                    bufIdx++;
+        }
         fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::NoAlias);
         if (!isCompute)
             fn->addParamAttr(bufIdx, llvm::Attribute::AttrKind::ReadOnly);
@@ -3385,6 +3878,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fn->addParamAttr(0, llvm::Attribute::AttrKind::NoAlias);
     {
         unsigned ssboIdx = (isCapture ? 1 : 0) +
+                           (isVS ? attrCount : 0) +
                            ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
@@ -3408,12 +3902,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.mod = &module;
     cg.isVS = isVS;
     cg.isCompute = isCompute;
-    /* Bind parameters by symbol: vertex = [buffer, attrs...];
-     * fragment = [varyings..., buffer];
+    /* Bind parameters by symbol: vertex = [attrs..., buffer, ssbo/ubo,
+     * tex/smp..., vertex_id]; fragment = [varyings..., buffer];
      * compute = [buffer, thread_position_in_grid]. */
     uint32_t argSlot = 0;
     if (isCapture)
         cg.captureBuf = fn->getArg(argSlot++);
+    for (VarSym &v : syms) {
+        if (isVS && v.kind == VarSym::ATTR)
+            cg.lvalues[v.name] = fn->getArg(argSlot++);
+    }
     if ((isVS || isCompute) && hasBuffer)
         cg.bufferPtr = fn->getArg(argSlot++);
     for (VarSym &v : syms) {
@@ -3430,16 +3928,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.smpValues[v.name] = fn->getArg(argSlot++);
     }
     for (VarSym &v : syms) {
-        if ((isVS && v.kind == VarSym::ATTR) ||
-            (!isVS && !isCompute && v.kind == VarSym::VARYING))
+        if (!isVS && !isCompute && v.kind == VarSym::VARYING)
             cg.lvalues[v.name] = fn->getArg(argSlot++);
     }
     if (isVS)
         cg.vertexId = fn->getArg(argSlot);
     else if (isCompute)
         cg.threadPos = fn->getArg(argSlot);
-    else if (!isVS && hasBuffer)
-        cg.bufferPtr = fn->getArg(argSlot);
+    else {
+        if (hasBuffer)
+            cg.bufferPtr = fn->getArg(argSlot++);
+        if (usesFragCoord)
+            cg.fragPos = fn->getArg(argSlot);
+    }
     /* Patch BUFFER sym offsets into uniforms */
     for (Uniform &u : uniforms) {
         cg.bufferOffsets[u.name] = u.offset;
@@ -3452,7 +3953,135 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.retElems = retElems;
     cg.varyings = varyings;
     cg.auxSyms = &syms;
+
+    /* User-defined functions (fog helpers etc.): create the LLVM
+     * functions first so calls (including recursion) resolve, then emit
+     * their bodies. */
+    std::map<std::string, llvm::Function *> userFns;
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        MGLDecl *d = tu->decls[i];
+        if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
+        const MGLIRSymbol *fs = nullptr;
+        for (uint32_t k = 0; k < mod.symbol_count; k++) {
+            if (mod.symbols[k]->is_function &&
+                strcmp(mod.symbols[k]->name, d->name) == 0 &&
+                mod.symbols[k]->param_count == d->param_count) {
+                fs = mod.symbols[k];
+                break;
+            }
+        }
+        if (!fs) continue;
+        llvm::Type *rt = fs->return_type
+            ? llvmType(typeFromIR(fs->return_type), ctx)
+            : llvm::Type::getVoidTy(ctx);
+        std::vector<llvm::Type *> pts;
+        for (uint32_t p = 0; p < fs->param_count; p++) {
+            const MGLIRType *pt = fs->param_types[p];
+            if (pt->kind == MGLIR_TYPE_SAMPLER) {
+                pts.push_back((pt->tex_kind == MGLIR_TEX_3D ? texTy3d
+                                                            : texTy2d)
+                                  ->getPointerTo(1));
+            } else {
+                pts.push_back(llvmType(typeFromIR(pt), ctx));
+            }
+        }
+        /* Hidden trailing arguments: the stage buffer(s) backing UBOs and
+         * SSBOs, so user functions can read uniforms of their own. */
+        for (const auto &kv : cg.uboPtrs)
+            pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+        for (const auto &kv : cg.ssboPtrs)
+            pts.push_back(llvm::Type::getInt8PtrTy(ctx, 1));
+        llvm::Function *f = llvm::Function::Create(
+            llvm::FunctionType::get(rt, pts, false),
+            llvm::Function::ExternalLinkage,
+            (std::string("mgl_fn_") + d->name + "_" +
+             std::to_string(fs->param_count)),
+            &module);
+        userFns[std::string(d->name) + "#" + std::to_string(fs->param_count)] =
+            f;
+    }
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        MGLDecl *d = tu->decls[i];
+        if (!d->name || !d->body || strcmp(d->name, "main") == 0) continue;
+        auto it = userFns.find(std::string(d->name) + "#" +
+                               std::to_string(d->param_count));
+        if (it == userFns.end()) continue;
+        llvm::Function *f = it->second;
+        llvm::BasicBlock *entry =
+            llvm::BasicBlock::Create(ctx, "entry", f);
+        llvm::IRBuilder<> fb(entry);
+        Codegen fc;
+        fc.ctx = cg.ctx;
+        fc.b = &fb;
+        fc.fn = f;
+        fc.mod = cg.mod;
+        fc.isVS = cg.isVS;
+        fc.isCompute = cg.isCompute;
+        fc.bufferPtr = cg.bufferPtr;
+        fc.threadPos = cg.threadPos;
+        fc.captureBuf = cg.captureBuf;
+        fc.vertexId = cg.vertexId;
+        fc.fragPos = cg.fragPos;
+        fc.pointSize = cg.pointSize;
+        fc.ssboPtrs = cg.ssboPtrs;
+        fc.uboPtrs = cg.uboPtrs;
+        fc.texValues = cg.texValues;
+        fc.smpValues = cg.smpValues;
+        fc.bufferOffsets = cg.bufferOffsets;
+        fc.position = cg.position;
+        fc.userFns = &userFns;
+        std::map<std::string, MType> flocals;
+        for (uint32_t p = 0; p < d->param_count; p++) {
+            MGLDecl *pd = d->params[p];
+            if (!pd || !pd->name) continue;
+            MType pt;
+            pt.scalar = (MGLIRScalar)(pd->type ? pd->type->base
+                                               : MGL_AST_TYPE_FLOAT);
+            if (pd->type && pd->type->vec_size) pt.vec = pd->type->vec_size;
+            flocals[pd->name] = pt;
+            fc.lvalues[pd->name] = f->getArg(p);
+        }
+        {
+            uint32_t hidx = (uint32_t)d->param_count;
+            for (const auto &kv : cg.uboPtrs)
+                fc.uboPtrs[kv.first] = f->getArg(hidx++);
+            for (const auto &kv : cg.ssboPtrs)
+                fc.ssboPtrs[kv.first] = f->getArg(hidx++);
+        }
+        emitStmt(fc, d->body, &mod, &flocals);
+        if (fc.err == 1) {
+            cg.err = 1;
+            cg.errmsg = std::string("codegen: in function '") + d->name +
+                        "': " + fc.errmsg;
+            snprintf(err_buf, err_cap, "%s", cg.errmsg.c_str());
+            mglIRModuleDestroy(&mod);
+            mglGLSLTranslationUnitDestroy(tu);
+            return -1;
+        }
+        if (fc.err != 2) {
+            if (f->getReturnType()->isVoidTy()) {
+                fb.CreateRetVoid();
+            } else {
+                fb.CreateRet(llvm::UndefValue::get(f->getReturnType()));
+            }
+        }
+    }
+
+    cg.userFns = &userFns;
     std::map<std::string, MType> locals;
+    /* Global const array initializers (e.g. Mojang's `const vec3[]
+     * vertices = vec3[](...)`): evaluate into cg.lvalues before main. */
+    for (uint32_t i = 0; i < tu->decl_count; i++) {
+        MGLDecl *d = tu->decls[i];
+        if (!d || !d->name || d->body || !d->init) continue;
+        const MGLIRSymbol *gs = findSymbol(&mod, d->name);
+        if (!gs || gs->is_function) continue;
+        MType gt = typeFromIR(gs->type);
+        if (!gt.isArray()) continue;
+        llvm::Value *gv = emitExpr(cg, d->init, &mod, locals);
+        if (!gv) break;
+        cg.lvalues[d->name] = gv;
+    }
     emitStmt(cg, mainDecl->body, &mod, &locals);
 
     if (cg.err && cg.err != 2) {
@@ -3480,12 +4109,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             pos = fixClipZ(cg, pos);
             if (recTy->isStructTy()) {
                 rec = b.CreateInsertValue(rec, pos, 0);
+                uint32_t ri = 1;
+                if (cg.pointSize) {
+                    rec = b.CreateInsertValue(
+                        rec,
+                        cg.lvalues.count("gl_PointSize")
+                            ? cg.lvalues["gl_PointSize"]
+                            : llvm::ConstantFP::get(
+                                  llvm::Type::getFloatTy(ctx), 1.0),
+                        ri++);
+                }
                 for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                     llvm::Value *vv =
                         cg.lvalues.count(cg.varyings[i]->name)
                             ? cg.lvalues[cg.varyings[i]->name]
-                            : llvm::UndefValue::get(cg.retElems[i + 1]);
-                    rec = b.CreateInsertValue(rec, vv, i + 1);
+                            : llvm::UndefValue::get(cg.retElems[ri]);
+                    rec = b.CreateInsertValue(rec, vv, ri++);
                 }
             } else {
                 rec = pos;
@@ -3506,6 +4145,30 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     /* ---- AIR metadata ---- */
     std::vector<llvm::Metadata *> argNodes;
+    if (isVS) {
+        /* Vertex attributes are the first value arguments (Metal ABI). */
+        uint32_t mArgSlot = isCapture ? 1 : 0;
+        uint32_t attrLoc = 0;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATTR) continue;
+            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
+            if (want != UINT32_MAX) attrLoc = want;
+            std::vector<llvm::Metadata *> elems = {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.vertex_input"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, mslTypeName(v.type)),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, v.name)};
+            argNodes.push_back(llvm::MDNode::get(ctx, elems));
+        }
+    }
     if (isCapture) {
         /* Capture output record buffer (XFB slot 29, read_write). */
         llvm::Type *recTy = retElems.size() == 1
@@ -3531,6 +4194,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         };
         addMember(llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx), 4),
                   "float4", "pos");
+        if (usesPointSize)
+            addMember(llvm::Type::getFloatTy(ctx), "float", "psize");
         for (VarSym *v : varyings)
             addMember(llvmType(v->type, ctx),
                       mslTypeName(v->type).c_str(), v->name.c_str());
@@ -3556,9 +4221,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     }
     if (hasBuffer) {
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
-        unsigned idx = (isVS || isCompute)
-                           ? (isCapture ? 1 : 0)
-                           : (unsigned)paramTys.size() - 1;
+        unsigned idx;
+        if (isVS || isCompute) {
+            idx = (isCapture ? 1 : 0) + (isVS ? attrCount : 0);
+        } else {
+            /* fragment: [ssbo..., ubo..., tex/smp pairs..., varyings...,
+             * buffer, fragCoord?] */
+            idx = ssboCount + uboCount;
+            for (VarSym &v : syms)
+                if (v.kind == VarSym::TEXTURE)
+                    idx += 2;
+            for (VarSym &v : syms)
+                if (!isVS && !isCompute && v.kind == VarSym::VARYING)
+                    idx++;
+        }
         std::vector<llvm::Metadata *> structFields;
         for (const Uniform &u : uniforms) {
             structFields.push_back(llvm::ConstantAsMetadata::get(
@@ -3581,7 +4257,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
             llvm::MDString::get(ctx, "air.read"),
             llvm::MDString::get(ctx, "air.address_space"),
-            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, 1)),
+            llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                llvm::Type::getInt32Ty(ctx), 1)),
             llvm::MDString::get(ctx, "air.struct_type_info"), sti,
             llvm::MDString::get(ctx, "air.arg_type_size"),
             llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(i32, bufferSize)),
@@ -3596,9 +4273,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
      * one parameter per instance. */
     {
         uint32_t loc = (isCapture ? 1 : 0) +
-                       ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0);
+                       ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
+                       (isVS ? attrCount : 0);
         uint32_t ssboArg = (isCapture ? 1 : 0) +
-                           ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0);
+                           ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
+                           (isVS ? attrCount : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
@@ -3628,14 +4307,11 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, v.name)}));
         }
     }
-    uint32_t ssboCount = 0;
-    for (VarSym &v : syms)
-        if (v.kind == VarSym::SSBO) ssboCount++;
     /* Uniform blocks: independent read-only device buffers. */
     {
         uint32_t loc = (isCapture ? 1 : 0) +
                        ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount;
+                       ssboCount + (isVS ? attrCount : 0);
         uint32_t uboArg = loc;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
@@ -3666,15 +4342,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, v.name)}));
         }
     }
-    uint32_t uboCount = 0;
-    for (VarSym &v : syms)
-        if (v.kind == VarSym::UBO) uboCount++;
     /* Texture/sampler pairs: air.texture + air.sampler arguments. */
     {
         uint32_t texLoc = 0, smpLoc = 0;
         uint32_t texArg = (isCapture ? 1 : 0) +
                           ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                          ssboCount + uboCount;
+                          ssboCount + uboCount + (isVS ? attrCount : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
             const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
@@ -3710,36 +4383,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, v.name)}));
         }
     }
-    uint32_t texCount = 0;
-    for (VarSym &v : syms)
-        if (v.kind == VarSym::TEXTURE) texCount++;
     uint32_t mArgSlot =
         (isCapture ? 1 : 0) +
         ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
         uboCount + 2 * texCount;
     if (isVS) {
-        /* Vertex attributes arrive as vertex_input value arguments; the
-         * renderer feeds them through the vertex descriptor (buffer 16+). */
-        uint32_t attrLoc = 0;
-        for (VarSym &v : syms) {
-            if (v.kind != VarSym::ATTR) continue;
-            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
-            if (want != UINT32_MAX) attrLoc = want;
-            std::vector<llvm::Metadata *> elems = {
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
-                llvm::MDString::get(ctx, "air.vertex_input"),
-                llvm::MDString::get(ctx, "air.location_index"),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
-                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx), 1)),
-                llvm::MDString::get(ctx, "air.arg_type_name"),
-                llvm::MDString::get(ctx, mslTypeName(v.type)),
-                llvm::MDString::get(ctx, "air.arg_name"),
-                llvm::MDString::get(ctx, v.name)};
-            argNodes.push_back(llvm::MDNode::get(ctx, elems));
-        }
+        /* Vertex attribute metadata already emitted above. */
     } else if (!isCompute) {
         for (VarSym &v : syms) {
             if (v.kind != VarSym::VARYING) continue;
@@ -3747,7 +4396,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), mArgSlot++)),
                 llvm::MDString::get(ctx, "air.fragment_input"),
-                llvm::MDString::get(ctx, "generated(" + v.name + ")"),
+                llvm::MDString::get(ctx, airGenerated(v.name, v.type)),
                 llvm::MDString::get(ctx, "air.center"),
                 llvm::MDString::get(ctx, "air.perspective"),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
@@ -3755,6 +4404,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)};
             argNodes.push_back(llvm::MDNode::get(ctx, elems));
+        }
+        if (usesFragCoord) {
+            if (hasBuffer) mArgSlot++;
+            argNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot)),
+                llvm::MDString::get(ctx, "air.position"),
+                llvm::MDString::get(ctx, "air.center"),
+                llvm::MDString::get(ctx, "air.no_perspective"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float4"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "gl_FragCoord")}));
         }
     }
     if (isCompute) {
@@ -3777,10 +4439,18 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             llvm::MDString::get(ctx, "float4"),
             llvm::MDString::get(ctx, "air.arg_name"),
             llvm::MDString::get(ctx, "position")}));
+        if (usesPointSize) {
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.point_size"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "float"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "psize")}));
+        }
         for (VarSym *v : varyings) {
             outNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::MDString::get(ctx, "air.vertex_output"),
-                llvm::MDString::get(ctx, "generated(" + v->name + ")"),
+                llvm::MDString::get(ctx, airGenerated(v->name, v->type)),
                 llvm::MDString::get(ctx, "air.arg_type_name"),
                 llvm::MDString::get(ctx, mslTypeName(v->type)),
                 llvm::MDString::get(ctx, "air.arg_name"),

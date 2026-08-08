@@ -24,6 +24,7 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_lexer.h"
 
+#include <ctype.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -302,6 +303,12 @@ static MGLTypeSpec *parse_type_spec(MGLParser *p)
     } else if (n >= 7 && memcmp(s, "sampler", 7) == 0) {
         ts->base = MGL_AST_TYPE_SAMPLER;
         ts->name = dup_token_text(p, t);
+    } else if (n >= 8 && memcmp(s, "isampler", 8) == 0) {
+        ts->base = MGL_AST_TYPE_SAMPLER;
+        ts->name = dup_token_text(p, t);
+    } else if (n >= 8 && memcmp(s, "usampler", 8) == 0) {
+        ts->base = MGL_AST_TYPE_SAMPLER;
+        ts->name = dup_token_text(p, t);
     } else if (n >= 5 && memcmp(s, "image", 5) == 0) {
         ts->base = MGL_AST_TYPE_IMAGE;
         ts->name = dup_token_text(p, t);
@@ -400,10 +407,16 @@ static MGLExpr *parse_primary(MGLParser *p)
             free(name);
             return e;
         }
-        if (ops_at(p, "(")) {
+        if (ops_at(p, "(") ||
+            (at_peek_punct(p, 0, "[") && at_peek_punct(p, 1, "]"))) {
             MGLExpr *e = expr_alloc(p, MGL_EXPR_CALL, line);
             if (e) {
                 e->u.call.name = name;
+                if (ops_at(p, "[")) {
+                    e->u.call.is_array_ctor = 1;
+                    advance(p);   /* [ */
+                    advance(p);   /* ] */
+                }
                 eat_punct(p, "(");
                 uint32_t argc = 0;
                 if (!ops_at(p, ")")) {
@@ -1167,6 +1180,16 @@ more_qualifiers:
         return d;
     }
 
+    /* unsized array suffix on the type, e.g. `const vec3[] vertices`
+     * (array dims before the declarator name) */
+    while (ops_at(p, "[") && at_peek_punct(p, 1, "]")) {
+        advance(p);   /* [ */
+        advance(p);   /* ] */
+        d->array_dims = (uint32_t *)realloc(
+            d->array_dims, (d->array_count + 1) * sizeof(uint32_t));
+        d->array_dims[d->array_count++] = 0;
+    }
+
     /* declarator name */
     if (!at_any_ident(p)) {
         parse_error(p, "expected identifier at line %u", tk_line(p));
@@ -1270,7 +1293,7 @@ static void preprocess_tokens(MGLTokenStream *ts)
     uint32_t def_count = 0;
 
     uint32_t out = 0;
-    for (uint32_t i = 0; i < ts->count; i++) {
+    for (uint32_t i = 0; i < (uint32_t)ts->count; i++) {
         MGLGLSLToken *t = &ts->tok[i];
         int cur_active = (depth == 0) ? 1 : active[depth - 1];
         if (t->kind != MGLGLSL_TOK_DIRECTIVE) {
@@ -1367,11 +1390,160 @@ static void preprocess_tokens(MGLTokenStream *ts)
     ts->count = out;
 }
 
+static int pp_is_ident_start(char c)
+{
+    return isalpha((unsigned char)c) || c == '_';
+}
+
+static int pp_is_ident_char(char c)
+{
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+static int pp_is_digit(char c)
+{
+    return c >= '0' && c <= '9';
+}
+
+/* Object-like macro expansion: collect `#define NAME value` lines and
+ * replace NAME occurrences outside directives with the value text.  Runs
+ * before tokenizing so macro values lex as normal tokens. */
+static char *preprocess_macros(const char *src, size_t len)
+{
+    enum { MAX_MACROS = 64, MAX_NAME = 64, MAX_VAL = 256 };
+    char names[MAX_MACROS][MAX_NAME];
+    char vals[MAX_MACROS][MAX_VAL];
+    uint32_t mcount = 0;
+
+    const char *p = src;
+    const char *end = src + len;
+    while (p < end) {
+        const char *eol = memchr(p, '\n', (size_t)(end - p));
+        if (!eol) eol = end;
+        const char *line = p;
+        size_t llen = (size_t)(eol - p);
+        const char *c = line;
+        while (c < eol && (*c == ' ' || *c == '\t')) c++;
+        if (c + 7 <= eol && memcmp(c, "#define", 7) == 0 &&
+            (c + 7 == eol || c[7] == ' ' || c[7] == '\t')) {
+            c += 7;
+            while (c < eol && (*c == ' ' || *c == '\t')) c++;
+            size_t nlen = 0;
+            while (c + nlen < eol &&
+                   (pp_is_ident_char(c[nlen]) || (nlen > 0 && pp_is_digit(c[nlen])))) {
+                nlen++;
+            }
+            if (nlen > 0 && nlen < MAX_NAME) {
+                size_t vstart = nlen;
+                while (vstart < llen && (c[vstart] == ' ' || c[vstart] == '\t')) {
+                    vstart++;
+                }
+                size_t vlen = (size_t)(eol - (c + vstart));
+                if (vlen > MAX_VAL - 1) vlen = MAX_VAL - 1;
+                if (mcount < MAX_MACROS) {
+                    memcpy(names[mcount], c, nlen);
+                    names[mcount][nlen] = 0;
+                    memcpy(vals[mcount], c + vstart, vlen);
+                    vals[mcount][vlen] = 0;
+                    mcount++;
+                }
+            }
+        }
+        p = eol + 1;
+    }
+
+    /* Expand into a fresh buffer. */
+    size_t cap = len + 1024;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    size_t o = 0;
+    p = src;
+    int line_start = 1;
+    while (p < end) {
+        if (line_start && *p == '#') {
+            const char *eol = memchr(p, '\n', (size_t)(end - p));
+            size_t n = eol ? (size_t)(eol - p) + 1 : (size_t)(end - p);
+            if (o + n + 1 > cap) {
+                cap = cap * 2 + n;
+                char *no = (char *)realloc(out, cap);
+                if (!no) { free(out); return NULL; }
+                out = no;
+            }
+            memcpy(out + o, p, n);
+            o += n;
+            p += n;
+            line_start = 1;
+            continue;
+        }
+        if (pp_is_ident_start(*p)) {
+            const char *s = p;
+            size_t ilen = 0;
+            while (p < end && (pp_is_ident_char(*p) || pp_is_digit(*p))) {
+                p++;
+                ilen++;
+            }
+            const char *val = NULL;
+            for (uint32_t i = 0; i < mcount; i++) {
+                if (strlen(names[i]) == ilen &&
+                    memcmp(names[i], s, ilen) == 0) {
+                    val = vals[i];
+                    break;
+                }
+            }
+            if (val) {
+                size_t vlen = strlen(val);
+                if (o + vlen + 1 > cap) {
+                    cap = cap * 2 + vlen;
+                    char *no = (char *)realloc(out, cap);
+                    if (!no) { free(out); return NULL; }
+                    out = no;
+                }
+                memcpy(out + o, val, vlen);
+                o += vlen;
+            } else {
+                if (o + ilen + 1 > cap) {
+                    cap = cap * 2 + ilen;
+                    char *no = (char *)realloc(out, cap);
+                    if (!no) { free(out); return NULL; }
+                    out = no;
+                }
+                memcpy(out + o, s, ilen);
+                o += ilen;
+            }
+            continue;
+        }
+        if (o + 1 >= cap) {
+            cap *= 2;
+            char *no = (char *)realloc(out, cap);
+            if (!no) { free(out); return NULL; }
+            out = no;
+        }
+        out[o++] = *p;
+        if (*p == '\n') line_start = 1;
+        else line_start = 0;
+        p++;
+    }
+    out[o] = 0;
+    if (getenv("MGL_PP_DBG")) {
+        fprintf(stderr, "PP macros=%u o=%zu len=%zu\n", mcount, o, len);
+        for (size_t di = 0; di < o && di < 130; di++) {
+            fprintf(stderr, "%02x%c", (unsigned char)out[di],
+                    (di + 1) % 16 ? ' ' : '\n');
+        }
+        fprintf(stderr, "\n");
+    }
+    return out;
+}
+
 MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
 {
+    char *expanded = preprocess_macros(src, len);
+    const char *esrc = expanded ? expanded : src;
+    size_t elen = expanded ? strlen(expanded) : len;
     MGLTokenStream ts;
     memset(&ts, 0, sizeof(ts));
-    if (tokenize(&ts, src, len) != 0) {
+    if (tokenize(&ts, esrc, elen) != 0) {
+        free(expanded);
         return NULL;
     }
     preprocess_tokens(&ts);
@@ -1379,6 +1551,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     MGLTranslationUnit *tu = (MGLTranslationUnit *)calloc(1, sizeof(*tu));
     if (!tu) {
         token_stream_free(&ts);
+        free(expanded);
         return NULL;
     }
 
@@ -1427,6 +1600,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
     }
 
     token_stream_free(&ts);
+    free(expanded);
     return tu;
 }
 

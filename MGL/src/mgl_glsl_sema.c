@@ -50,6 +50,16 @@ static MGLIRType *scratch_type(Sema *s, MGLIRType *t)
     if (!t || !s) {
         return t;
     }
+    /* An array type owns its elem_type (mglIRTypeDestroy recurses); if
+     * that element was tracked separately it would be freed twice. */
+    if (t->kind == MGLIR_TYPE_ARRAY && t->elem_type) {
+        for (uint32_t i = 0; i < s->tmp_count; i++) {
+            if (s->tmp_types[i] == t->elem_type) {
+                s->tmp_types[i] = s->tmp_types[--s->tmp_count];
+                break;
+            }
+        }
+    }
     if (s->tmp_count == s->tmp_cap) {
         uint32_t ncap = s->tmp_cap ? s->tmp_cap * 2 : 16;
         MGLIRType **n = (MGLIRType **)realloc(
@@ -291,28 +301,39 @@ static int parse_opaque_name(const char *name, size_t n, int is_sampler,
     /* Normalize "sampler2D" -> prefix "2d", suffix handled below. */
     const char *p = name;
     size_t len = n;
-    if (len > 0 && p[0] == 's' && is_sampler && len >= 7 &&
-        memcmp(p, "sampler", 7) == 0) {
+    int is_unsigned = 0;
+    int is_signed = 0;
+    int is_shadow = 0;
+    if (len > 0 && p[0] == 'u' && is_sampler && len >= 8 &&
+        memcmp(p, "usampler", 8) == 0) {
+        is_unsigned = 1;
+        p += 8;
+        len -= 8;
+    } else if (len > 0 && p[0] == 'i' && is_sampler && len >= 8 &&
+               memcmp(p, "isampler", 8) == 0) {
+        is_signed = 1;
+        p += 8;
+        len -= 8;
+    } else if (len > 0 && p[0] == 's' && is_sampler && len >= 7 &&
+               memcmp(p, "sampler", 7) == 0) {
         p += 7;
         len -= 7;
     } else if (len > 0 && p[0] == 'i' && !is_sampler && len >= 5 &&
                memcmp(p, "image", 5) == 0) {
         p += 5;
         len -= 5;
+    } else if (len > 0 && p[0] == 'u' && !is_sampler && len >= 5 &&
+               memcmp(p, "uimage", 6) == 0) {
+        p += 6;
+        len -= 6;
+        is_unsigned = 1;
+    } else if (len > 0 && p[0] == 'i' && !is_sampler && len >= 6 &&
+               memcmp(p, "iimage", 6) == 0) {
+        p += 6;
+        len -= 6;
+        is_signed = 1;
     } else {
         return -1;
-    }
-    int is_unsigned = 0;
-    int is_signed = 0;
-    int is_shadow = 0;
-    if (len > 0 && p[0] == 'u') {
-        is_unsigned = 1;
-        p++;
-        len--;
-    } else if (len > 0 && p[0] == 'i') {
-        is_signed = 1;
-        p++;
-        len--;
     }
     int dims = 0;
     /* Optional '2D'|'3D'|'Cube'|'1D' */
@@ -650,8 +671,9 @@ static int ir_type_equal(const MGLIRType *a, const MGLIRType *b)
  * Boolean conversions only via explicit constructors. */
 static int implicit_convert(const MGLIRType *from, const MGLIRType *to)
 {
-    if (!from || !to || from->kind != MGLIR_TYPE_SCALAR ||
-        to->kind != MGLIR_TYPE_SCALAR) {
+    if (!from || !to ||
+        (from->kind != MGLIR_TYPE_SCALAR && from->kind != MGLIR_TYPE_VECTOR) ||
+        (to->kind != MGLIR_TYPE_SCALAR && to->kind != MGLIR_TYPE_VECTOR)) {
         return 0;
     }
     if (from->scalar == to->scalar) {
@@ -837,8 +859,17 @@ static int check_assign_op(MGLIRType *dst, MGLIRType *src)
         return dst->cols == src->cols &&
                (src->scalar == dst->scalar || implicit_convert(src, dst));
     }
+    /* Scalar broadcast: vec *= float etc. (GLSL 4.60 5.4.2). */
+    if (dst->kind == MGLIR_TYPE_VECTOR && src->kind == MGLIR_TYPE_SCALAR) {
+        return implicit_convert(src, dst);
+    }
     if (dst->kind == MGLIR_TYPE_MATRIX && src->kind == MGLIR_TYPE_MATRIX) {
         return dst->cols == src->cols && dst->rows == src->rows;
+    }
+    if (dst->kind == MGLIR_TYPE_ARRAY && src->kind == MGLIR_TYPE_ARRAY) {
+        /* Unsized array (size 0) accepts any sized array initializer. */
+        return (dst->array_size == 0 || dst->array_size == src->array_size) &&
+               ir_type_equal(dst->elem_type, src->elem_type);
     }
     return ir_type_equal(dst, src);
 }
@@ -882,6 +913,7 @@ typedef enum {
     BI_ARG_S2D,     /* sampler2D */
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
+    BI_ARG_SBUF,    /* samplerBuffer */
 } BiArgKind;
 
 typedef enum {
@@ -893,6 +925,7 @@ typedef enum {
     BI_RET_VEC3,    /* vec3 */
     BI_RET_VEC4,    /* vec4 */
     BI_RET_IVEC2,   /* ivec2 */
+    BI_RET_SAMP,    /* texture fetch: vec4/ivec4/uvec4 per sampler storage */
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
     BI_RET_MAT4,    /* mat4 */
@@ -907,15 +940,22 @@ typedef struct {
 
 static const BiFn kBuiltins[] = {
     { "texture",    3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureProj", 2, { BI_ARG_S2D, BI_ARG_VEC4 }, BI_RET_VEC4 },
     { "texture",    3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "texture",    3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "texture",    2, { BI_ARG_S2D,   BI_ARG_VEC2 }, BI_RET_VEC4 },
     { "texture",    2, { BI_ARG_S3D,   BI_ARG_VEC3 }, BI_RET_VEC4 },
     { "texture",    2, { BI_ARG_SCUBE, BI_ARG_VEC3 }, BI_RET_VEC4 },
     { "textureLod", 3, { BI_ARG_S2D,   BI_ARG_VEC2, BI_ARG_FLOAT }, BI_RET_VEC4 },
+    { "textureGrad", 4, { BI_ARG_S2D, BI_ARG_VEC2, BI_ARG_VEC2, BI_ARG_VEC2 }, BI_RET_VEC4 },
+    { "dFdx", 1, { BI_ARG_GENF }, BI_RET_GENF },
+    { "dFdy", 1, { BI_ARG_GENF }, BI_RET_GENF },
     { "textureLod", 3, { BI_ARG_S3D,   BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "textureLod", 3, { BI_ARG_SCUBE, BI_ARG_VEC3, BI_ARG_FLOAT }, BI_RET_VEC4 },
     { "textureSize", 2, { BI_ARG_S2D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
+    { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
+    { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -1098,6 +1138,9 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_SCUBE:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_CUBE &&
                !t->tex_depth;
+    case BI_ARG_SBUF:
+        return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_BUFFER &&
+               !t->tex_depth;
     default:
         return 0;
     }
@@ -1164,6 +1207,16 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
         case BI_RET_IVEC2:
             return mglIRTypeVector(MGLIR_SCALAR_INT, 2);
+        case BI_RET_SAMP: {
+            MGLIRScalar st = MGLIR_SCALAR_FLOAT;
+            for (uint32_t j = 0; j < f->argc; j++) {
+                if (arg_types[j] && arg_types[j]->kind == MGLIR_TYPE_SAMPLER) {
+                    st = arg_types[j]->tex_storage;
+                    break;
+                }
+            }
+            return mglIRTypeVector(st, 4);
+        }
         case BI_RET_MAT2:
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 2, 2);
         case BI_RET_MAT3:
@@ -1285,6 +1338,13 @@ static int check_constructor(Sema *s, uint32_t line, const char *tname,
                 ats[0]->rows == r) {
                 return 1;
             }
+            if (ats[0]->kind == MGLIR_TYPE_MATRIX && ats[0]->cols <= c &&
+                ats[0]->rows <= r) {
+                /* matNxN(matMxM) with M<N: embed the smaller matrix in the
+                 * upper-left, identity on the remaining diagonal
+                 * (GLSL 4.60 §5.4.2). */
+                return 1;
+            }
             sema_error(s, line, "constructor 'mat%ux%u' cannot take a single "
                        "%s argument", c, r,
                        ir_type_str(ats[0], (char[64]){0}, 64));
@@ -1359,6 +1419,17 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 /* Vertex built-in; the AIR backend maps it to a
                  * vertex_id argument (capture variants). */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_FragCoord") == 0) {
+                /* Fragment built-in window coordinate; the AIR backend
+                 * maps it to the fragment position argument. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_PointSize") == 0) {
+                /* Vertex built-in point size; the AIR backend maps it to
+                 * the air.point_size output member. */
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
             }
             sema_error(s, e->line, "undeclared identifier '%s'",
                        e->u.var_ref.name);
@@ -1453,8 +1524,73 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         return NULL;
     }
     case MGL_EXPR_CALL: {
-        /* Look up the function; single-definition match at skeleton stage. */
+        /* Look up the function; overload resolution is by arity. */
         Sym *sym = symtab_lookup(tab, e->u.call.name);
+        if (sym && sym->kind == SYM_FUNCTION) {
+            Sym *hit = NULL;
+            for (Sym *c = sym; c; c = c->next) {
+                if (c->kind == SYM_FUNCTION &&
+                    strcmp(c->name, e->u.call.name) == 0 &&
+                    c->param_count == e->u.call.arg_count) {
+                    hit = c;
+                    break;
+                }
+            }
+            if (!hit) {
+                sema_error(s, e->line, "function '%s' expects %u argument(s), got %u",
+                           e->u.call.name, sym->param_count, e->u.call.arg_count);
+                return NULL;
+            }
+            sym = hit;
+            for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                MGLIRType *at = check_expr(s, tab, e->u.call.args[i]);
+                if (at && sym->param_types && sym->param_types[i]) {
+                    if (!check_assign_op(sym->param_types[i], at)) {
+                        sema_error(s, e->line, "argument %u of '%s' expects %s, got %s",
+                                   i + 1, e->u.call.name,
+                                   ir_type_str(sym->param_types[i], ta, sizeof(ta)),
+                                   ir_type_str(at, tb, sizeof(tb)));
+                    }
+                }
+            }
+            return sym->ret_type;
+        }
+        /* A local variable may shadow a function of the same name
+         * (Mojang's notGamma pattern); fall back to the module's
+         * function symbols before giving up. */
+        {
+            const MGLIRSymbol *fs = NULL;
+            for (uint32_t mi = 0; mi < s->module->symbol_count; mi++) {
+                MGLIRSymbol *ms = s->module->symbols[mi];
+                if (ms->is_function &&
+                    strcmp(ms->name, e->u.call.name) == 0) {
+                    fs = ms;
+                    break;
+                }
+            }
+            if (fs) {
+                if (e->u.call.arg_count != fs->param_count) {
+                    sema_error(s, e->line,
+                               "function '%s' expects %u argument(s), got %u",
+                               e->u.call.name, fs->param_count,
+                               e->u.call.arg_count);
+                    return NULL;
+                }
+                for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                    MGLIRType *at = check_expr(s, tab, e->u.call.args[i]);
+                    if (at && fs->param_types && fs->param_types[i] &&
+                        !check_assign_op(fs->param_types[i], at)) {
+                        sema_error(s, e->line,
+                                   "argument %u of '%s' expects %s, got %s",
+                                   i + 1, e->u.call.name,
+                                   ir_type_str(fs->param_types[i], ta,
+                                               sizeof(ta)),
+                                   ir_type_str(at, tb, sizeof(tb)));
+                    }
+                }
+                return fs->return_type;
+            }
+        }
         if (!sym || sym->kind != SYM_FUNCTION) {
             /* builtin constructors / type conversions: T(...) yields type T.
              * Recognise every builtin type name plus user struct types. */
@@ -1478,6 +1614,24 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                         e->u.call.arg_count, sizeof(MGLIRType *));
                     for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
                         ats[i] = check_expr(s, tab, e->u.call.args[i]);
+                    }
+                    if (e->u.call.is_array_ctor) {
+                        /* vecN[](a, b, ...): array constructor. */
+                        if (!is_struct_ctor && e->u.call.arg_count > 0) {
+                            for (uint32_t i = 0; i < e->u.call.arg_count; i++) {
+                                if (!ats[i] ||
+                                    !check_assign_op(t, ats[i])) {
+                                    sema_error(s, e->line,
+                                               "array constructor element %u "
+                                               "has incompatible type",
+                                               i + 1);
+                                    break;
+                                }
+                            }
+                        }
+                        free(ats);
+                        return scratch_type(
+                            s, mglIRTypeArray(t, e->u.call.arg_count));
                     }
                     if (!is_struct_ctor) {
                         check_constructor(s, e->line, e->u.call.name, t,
@@ -1744,9 +1898,18 @@ static void analyze_function(Sema *s, SymTab *tab, const MGLDecl *d)
         }
     }
     if (symtab_lookup_local(tab, d->name) != NULL) {
-        sema_error(s, d->line, "redeclaration of '%s'", d->name);
-        sym_free(sym);
-        return;
+        /* Overloads (same name, different parameter count) are legal. */
+        Sym *prev = symtab_lookup_local(tab, d->name);
+        int is_overload = 0;
+        if (prev && prev->kind == SYM_FUNCTION &&
+            prev->param_count != d->param_count) {
+            is_overload = 1;
+        }
+        if (!is_overload) {
+            sema_error(s, d->line, "redeclaration of '%s'", d->name);
+            sym_free(sym);
+            return;
+        }
     }
     symtab_insert(tab, sym);
 

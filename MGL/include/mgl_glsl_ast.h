@@ -138,6 +138,7 @@ struct MGLExpr {
             char *name;      /* owned */
             MGLExpr **args;
             uint32_t arg_count;
+            int is_array_ctor;   /* 1 = vecN[](...) array constructor */
         } call;
         struct {
             uint32_t op;     /* MGLExprOp */
