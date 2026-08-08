@@ -868,10 +868,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
-    glslang_program_t *glsl_program;
+    glslang_program_t *glsl_program = NULL;
     int err;
     bool link_ok = true;
     bool has_any_shader = false;
+    /* D4: AIR 路径跳过 glslang link/map_io（自研前端直出 metallib+反射），
+     * glsl_program 保持 NULL，仅 MSL 路径创建。 */
+    const bool use_air = (getenv("MGL_USE_AIR") != NULL);
 
     pptr = findProgram(ctx, program);
 
@@ -972,47 +975,54 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
     }
 
-    if (MGL_VERBOSE_PROGRAM_LOGS) {
-        fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
-    }
-    glsl_program = glslang_program_create();
-    if (!glsl_program) {
-        fprintf(stderr, "MGL Error: glslang_program_create failed\n");
-        pptr->linked_glsl_program = NULL;
-        ERROR_RETURN(GL_INVALID_OPERATION);
-        return;
+    if (use_air) {
+        /* AIR path: no glslang link (self-hosted frontend -> metallib). */
+        if (MGL_VERBOSE_PROGRAM_LOGS) {
+            fprintf(stderr, "MGL DEBUG: AIR link path (glslang skipped)\n");
+        }
+    } else {
+        if (MGL_VERBOSE_PROGRAM_LOGS) {
+            fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
+        }
+        glsl_program = glslang_program_create();
+        if (!glsl_program) {
+            fprintf(stderr, "MGL Error: glslang_program_create failed\n");
+            pptr->linked_glsl_program = NULL;
+            ERROR_RETURN(GL_INVALID_OPERATION);
+            return;
+        }
+
+        if (MGL_VERBOSE_PROGRAM_LOGS) {
+            fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
+        }
+        addShadersToProgram(ctx, pptr, glsl_program);
+        if (MGL_VERBOSE_PROGRAM_LOGS) {
+            fprintf(stderr, "MGL DEBUG: Shaders added\n");
+        }
+
+        err = glslang_program_link(glsl_program, GLSLANG_MSG_DEFAULT_BIT);
+        if (MGL_VERBOSE_PROGRAM_LOGS) {
+            fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
+        }
+        if (!err)
+        {
+            fprintf(stderr, "MGL Error: glslang_program_link failed err: %d\n", err);
+            fprintf(stderr, "MGL Error: glslang_program_SPIRV_get_messages:\n%s\n", glslang_program_SPIRV_get_messages(glsl_program));
+            fprintf(stderr, "MGL Error: glslang_program_get_info_log:\n%s\n", glslang_program_get_info_log(glsl_program));
+            fprintf(stderr, "MGL Error: glslang_program_get_info_debug_log:\n%s\n", glslang_program_get_info_debug_log(glsl_program));
+            glslang_program_delete(glsl_program);
+            pptr->linked_glsl_program = NULL;
+            return;
+        }
+
+        err = glslang_program_map_io(glsl_program);
+        if (!err)
+        {
+            fprintf(stderr, "MGL WARNING: glslang_program_map_io failed; continuing with linked program\n");
+        }
     }
 
-    if (MGL_VERBOSE_PROGRAM_LOGS) {
-        fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
-    }
-    addShadersToProgram(ctx, pptr, glsl_program);
-    if (MGL_VERBOSE_PROGRAM_LOGS) {
-        fprintf(stderr, "MGL DEBUG: Shaders added\n");
-    }
-
-    err = glslang_program_link(glsl_program, GLSLANG_MSG_DEFAULT_BIT);
-    if (MGL_VERBOSE_PROGRAM_LOGS) {
-        fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
-    }
-    if (!err)
-    {
-        fprintf(stderr, "MGL Error: glslang_program_link failed err: %d\n", err);
-        fprintf(stderr, "MGL Error: glslang_program_SPIRV_get_messages:\n%s\n", glslang_program_SPIRV_get_messages(glsl_program));
-        fprintf(stderr, "MGL Error: glslang_program_get_info_log:\n%s\n", glslang_program_get_info_log(glsl_program));
-        fprintf(stderr, "MGL Error: glslang_program_get_info_debug_log:\n%s\n", glslang_program_get_info_debug_log(glsl_program));
-        glslang_program_delete(glsl_program);
-        pptr->linked_glsl_program = NULL;
-        return;
-    }
-
-    err = glslang_program_map_io(glsl_program);
-    if (!err)
-    {
-        fprintf(stderr, "MGL WARNING: glslang_program_map_io failed; continuing with linked program\n");
-    }
-
-    if (getenv("MGL_USE_AIR")) {
+    if (use_air) {
         /* AIR path: self-hosted frontend -> metallib + reflection. */
         for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
             if (!mglAirCompileStage(ctx, pptr, stage)) {
@@ -1031,7 +1041,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
 
     if (!link_ok) {
-        glslang_program_delete(glsl_program);
+        if (glsl_program) glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -1043,7 +1053,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
                 "varying not found in program outputs\n",
                 pptr->name);
-        glslang_program_delete(glsl_program);
+        if (glsl_program) glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -1102,7 +1112,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: separable program %u has incompatible gl_PerVertex redeclarations\n",
                 pptr->name);
-        glslang_program_delete(glsl_program);
+        if (glsl_program) glslang_program_delete(glsl_program);
         pptr->linked_glsl_program = NULL;
         return;
     }
@@ -1202,7 +1212,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
 
         if (binding_error) {
-            glslang_program_delete(glsl_program);
+            if (glsl_program) glslang_program_delete(glsl_program);
             pptr->linked_glsl_program = NULL;
             return;
         }
@@ -1211,8 +1221,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     /* The glslang_program_t was only needed during linking for SPIR-V
      * generation and reflection.  Release it now; pptr->linked_glsl_program
      * is reused as a non-NULL linked-state marker (see callers that test
-     * `if (ptr->linked_glsl_program)` to check link status). */
-    glslang_program_delete(glsl_program);
+     * `if (ptr->linked_glsl_program)` to check link status).  AIR 路径
+     * glsl_program 为 NULL，跳过删除。 */
+    if (glsl_program) glslang_program_delete(glsl_program);
     /* linked_glsl_program is used as a linked-state marker only. */
     pptr->linked_glsl_program = (glslang_program_t *)pptr;
     pptr->dirty_bits |= DIRTY_PROGRAM;
