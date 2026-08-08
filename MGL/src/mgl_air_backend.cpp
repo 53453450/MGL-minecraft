@@ -3814,9 +3814,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::StructType::create(ctx, "struct._sampler_t");
     if (isCapture)
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
-    if (isVS) {
+    if (isVS && !isCapture) {
         /* Vertex attributes come first (matching the Metal ABI: stage_in
-         * value args precede buffers/textures). */
+         * value args precede buffers/textures).  Exception: the XFB
+         * capture variant must NOT place attributes at odd argument slots
+         * (right after the read_write capture buffer) -- Metal rejects
+         * that PSO with "Unsupported attribute type".  For capture we
+         * keep the legacy layout with attributes AFTER all buffers. */
         for (VarSym &v : syms)
             if (v.kind == VarSym::ATTR)
                 paramTys.push_back(llvmType(v.type, ctx));
@@ -3840,6 +3844,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         if (!isVS && !isCompute && v.kind == VarSym::VARYING)
             paramTys.push_back(llvmType(v.type, ctx));
     }
+    if (isVS && isCapture) {
+        /* XFB capture variant: attributes trail all buffers (see above). */
+        for (VarSym &v : syms)
+            if (v.kind == VarSym::ATTR)
+                paramTys.push_back(llvmType(v.type, ctx));
+    }
     if (isVS)
         paramTys.push_back(llvm::Type::getInt32Ty(ctx));
     else if (isCompute)
@@ -3860,7 +3870,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (hasBuffer) {
         unsigned bufIdx;
         if (isVS || isCompute)
-            bufIdx = (isCapture ? 1 : 0) + (isVS ? attrCount : 0);
+            bufIdx = (isCapture ? 1 : 0) + (isCapture ? 0 : attrCount);
         else {
             /* fragment: buffer sits after varyings, before the optional
              * fragCoord position arg */
@@ -3878,7 +3888,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         fn->addParamAttr(0, llvm::Attribute::AttrKind::NoAlias);
     {
         unsigned ssboIdx = (isCapture ? 1 : 0) +
-                           (isVS ? attrCount : 0) +
+                           (isCapture ? 0 : attrCount) +
                            ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
@@ -3903,14 +3913,17 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     cg.isVS = isVS;
     cg.isCompute = isCompute;
     /* Bind parameters by symbol: vertex = [attrs..., buffer, ssbo/ubo,
-     * tex/smp..., vertex_id]; fragment = [varyings..., buffer];
+     * tex/smp..., vertex_id] (attrs first, except XFB capture where they
+     * trail all buffers); fragment = [varyings..., buffer];
      * compute = [buffer, thread_position_in_grid]. */
     uint32_t argSlot = 0;
     if (isCapture)
         cg.captureBuf = fn->getArg(argSlot++);
-    for (VarSym &v : syms) {
-        if (isVS && v.kind == VarSym::ATTR)
-            cg.lvalues[v.name] = fn->getArg(argSlot++);
+    if (isVS && !isCapture) {
+        for (VarSym &v : syms) {
+            if (v.kind == VarSym::ATTR)
+                cg.lvalues[v.name] = fn->getArg(argSlot++);
+        }
     }
     if ((isVS || isCompute) && hasBuffer)
         cg.bufferPtr = fn->getArg(argSlot++);
@@ -3928,7 +3941,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.smpValues[v.name] = fn->getArg(argSlot++);
     }
     for (VarSym &v : syms) {
-        if (!isVS && !isCompute && v.kind == VarSym::VARYING)
+        if ((isVS && isCapture && v.kind == VarSym::ATTR) ||
+            (!isVS && !isCompute && v.kind == VarSym::VARYING))
             cg.lvalues[v.name] = fn->getArg(argSlot++);
     }
     if (isVS)
@@ -4145,9 +4159,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
 
     /* ---- AIR metadata ---- */
     std::vector<llvm::Metadata *> argNodes;
-    if (isVS) {
-        /* Vertex attributes are the first value arguments (Metal ABI). */
-        uint32_t mArgSlot = isCapture ? 1 : 0;
+    if (isVS && !isCapture) {
+        /* Vertex attributes are the first value arguments (Metal ABI:
+         * stage_in value args precede buffers/textures). */
+        uint32_t mArgSlot = 0;
         uint32_t attrLoc = 0;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::ATTR) continue;
@@ -4223,7 +4238,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Type *i32 = llvm::Type::getInt32Ty(ctx);
         unsigned idx;
         if (isVS || isCompute) {
-            idx = (isCapture ? 1 : 0) + (isVS ? attrCount : 0);
+            idx = (isCapture ? 1 : 0) + (isCapture ? 0 : attrCount);
         } else {
             /* fragment: [ssbo..., ubo..., tex/smp pairs..., varyings...,
              * buffer, fragCoord?] */
@@ -4274,10 +4289,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     {
         uint32_t loc = (isCapture ? 1 : 0) +
                        ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                       (isVS ? attrCount : 0);
+                       (isCapture ? 0 : attrCount);
         uint32_t ssboArg = (isCapture ? 1 : 0) +
                            ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                           (isVS ? attrCount : 0);
+                           (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::SSBO) continue;
             const MGLIRSymbol *sb = findSymbol(&mod, v.name.c_str());
@@ -4311,7 +4326,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     {
         uint32_t loc = (isCapture ? 1 : 0) +
                        ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                       ssboCount + (isVS ? attrCount : 0);
+                       ssboCount + (isCapture ? 0 : attrCount);
         uint32_t uboArg = loc;
         for (VarSym &v : syms) {
             if (v.kind != VarSym::UBO) continue;
@@ -4347,7 +4362,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t texLoc = 0, smpLoc = 0;
         uint32_t texArg = (isCapture ? 1 : 0) +
                           ((isVS || isCompute) ? (hasBuffer ? 1 : 0) : 0) +
-                          ssboCount + uboCount + (isVS ? attrCount : 0);
+                          ssboCount + uboCount + (isCapture ? 0 : attrCount);
         for (VarSym &v : syms) {
             if (v.kind != VarSym::TEXTURE) continue;
             const MGLIRSymbol *tss = findSymbol(&mod, v.name.c_str());
@@ -4381,6 +4396,35 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "sampler"),
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, v.name)}));
+        }
+    }
+    if (isVS && isCapture) {
+        /* XFB capture variant: vertex_input metadata emitted after all
+         * buffer/texture arguments (mirroring the argument order), so the
+         * stage_in value args sit at even slots (Metal rejects odd-slot
+         * value args directly after a buffer with "Unsupported attribute
+         * type"). */
+        uint32_t mArgSlot = 1 + (hasBuffer ? 1 : 0) + ssboCount + uboCount +
+                            2 * texCount;
+        uint32_t attrLoc = 0;
+        for (VarSym &v : syms) {
+            if (v.kind != VarSym::ATTR) continue;
+            uint32_t want = airAttribLocation(v.name.c_str(), attrib_names);
+            if (want != UINT32_MAX) attrLoc = want;
+            std::vector<llvm::Metadata *> elems = {
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), mArgSlot++)),
+                llvm::MDString::get(ctx, "air.vertex_input"),
+                llvm::MDString::get(ctx, "air.location_index"),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), attrLoc++)),
+                llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+                    llvm::Type::getInt32Ty(ctx), 1)),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, mslTypeName(v.type)),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, v.name)};
+            argNodes.push_back(llvm::MDNode::get(ctx, elems));
         }
     }
     uint32_t mArgSlot =

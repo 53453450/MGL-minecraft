@@ -17,6 +17,14 @@
 
 #include "mgl_shader_abi.h"
 
+// 独立 AIR 门禁：不链接 mgl_uniform_reflection.c（SPIRV-Cross 依赖树）。
+// sampler 合成 GL uniform location 仅 renderer 消费，门禁不校验；返回 -1。
+// （产品库中由 mgl_uniform_reflection.c:2149 提供真实实现。头文件在 extern "C" 块内。）
+extern "C" GLint mglSyntheticSamplerUniformLocation(int stage, int res_type, GLuint index) {
+    (void)stage; (void)res_type; (void)index;
+    return -1;
+}
+
 static const char *kVS =
     "#version 460 core\n"
     "uniform mat4 mvp;\n"
@@ -567,6 +575,12 @@ int main(int argc, const char *argv[]) {
             if (!xpso) {
                 fprintf(stderr, "XFB_PSO_FAIL: %s\n",
                         xerr.localizedDescription.UTF8String ?: "?");
+                NSDictionary *ui = xerr.userInfo;
+                for (NSString *k in ui) {
+                    fprintf(stderr, "  XFB userInfo[%s] = %s\n",
+                            k.UTF8String,
+                            [ui[k] description].UTF8String ?: "?");
+                }
                 return 1;
             }
             /* Identity MVP. */

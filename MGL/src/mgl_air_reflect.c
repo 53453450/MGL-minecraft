@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "mgl_uniform_reflection.h"
+
 GLuint mglAirGLTypeFromIR(const MGLIRType *t)
 {
     if (!t) {
@@ -198,6 +200,35 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t agg_count = 0;
     uint32_t agg_size = 0;
 
+    /* The AIR backend assigns buffer argument locations independently of
+     * the SPIRV-style binding decorations: vertex stages start SSBOs at
+     * hasBuffer + attrCount (plain-uniform pack first, then attributes),
+     * UBOs after the SSBOs; fragment stages start both from 0.  The
+     * exporter must mirror that so the renderer's Metal slots match the
+     * air.location_index values the metallib actually declares. */
+    int isVS = (stage == _VERTEX_SHADER);
+    uint32_t attrCount = 0, ssboCount = 0, hasPlain = 0;
+    for (uint32_t i = 0; i < mod->symbol_count; i++) {
+        const MGLIRSymbol *s = mod->symbols[i];
+        if (s->is_function) {
+            continue;
+        }
+        uint32_t q = s->qualifiers;
+        const MGLIRType *t = s->type;
+        if (isVS && (q & MGL_AST_Q_IN)) {
+            attrCount++;
+        } else if (q & MGL_AST_Q_BUFFER) {
+            ssboCount++;
+        } else if ((q & MGL_AST_Q_UNIFORM) &&
+                   t->kind != MGLIR_TYPE_SAMPLER && !s->block_name &&
+                   !(t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0)) {
+            hasPlain = 1;
+        }
+    }
+    uint32_t ssbo_binding = isVS ? (hasPlain + attrCount)
+                                 : ((stage == _COMPUTE_SHADER) ? hasPlain : 0);
+    uint32_t ubo_binding = ssbo_binding + ssboCount;
+
     /* Sampler bindings increment per sampler, matching the AIR metadata
      * texture location indices. */
     uint32_t sampler_binding = 0;
@@ -209,7 +240,6 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         const MGLIRType *t = s->type;
         uint32_t q = s->qualifiers;
         GLuint location = s->location != UINT32_MAX ? s->location : UINT32_MAX;
-        GLuint binding = s->binding != UINT32_MAX ? s->binding : 0;
 
         if (q & MGL_AST_Q_UNIFORM) {
             if (t->kind == MGLIR_TYPE_SAMPLER) {
@@ -221,6 +251,17 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 last->msl_active = GL_TRUE;
                 last->msl_has_combined_sampler = GL_TRUE;
                 last->msl_combined_sampler_binding = sampler_binding;
+                /* Sampler GL uniform locations live in the synthetic
+                 * namespace (mirrors the SPIRV-Cross path in
+                 * mglSamplerUniformLocationFromReflection) unless the GLSL
+                 * declares an explicit layout(location=N); otherwise MC's
+                 * glGetUniformLocation/glUniform1i sampler-unit setup
+                 * cannot target this resource. */
+                last->uniform_location =
+                    (s->location != UINT32_MAX)
+                        ? (GLint)s->location
+                        : mglSyntheticSamplerUniformLocation(
+                              stage, _SAMPLED_IMAGE_RES, sampler_binding);
                 sampler_binding++;
                 continue;
             }
@@ -230,7 +271,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             if (t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0) {
                 /* Uniform block: independent resource with members. */
                 push_resource(&lists[_UNIFORM_BUFFER_RES], s, t, location,
-                              binding, stage);
+                              ubo_binding++, stage);
                 continue;
             }
             /* Plain uniform: collect into the packed aggregate. */
@@ -252,7 +293,7 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         }
         if (q & MGL_AST_Q_BUFFER) {
             push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
-                          binding, stage);
+                          ssbo_binding++, stage);
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
              * declaration order (glslang AUTO_MAP_LOCATIONS). */
@@ -263,13 +304,13 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
             } else if (location == UINT32_MAX) {
                 location = lists[_STAGE_INPUT_RES].count;
             }
-            push_resource(&lists[_STAGE_INPUT_RES], s, t, location, binding,
+            push_resource(&lists[_STAGE_INPUT_RES], s, t, location, 0,
                           stage);
         } else if (q & MGL_AST_Q_OUT) {
             if (location == UINT32_MAX) {
                 location = lists[_STAGE_OUTPUT_RES].count;
             }
-            push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, binding,
+            push_resource(&lists[_STAGE_OUTPUT_RES], s, t, location, 0,
                           stage);
         }
     }

@@ -951,6 +951,8 @@ static MGLDecl *parse_declaration(MGLParser *p)
         return NULL;
     }
     d->line = line;
+    d->layout_location = -1;   /* "unspecified", per mgl_glsl_ast.h */
+    d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
 
     /* qualifiers and storage */
 more_qualifiers:
@@ -1418,7 +1420,7 @@ static char *preprocess_macros(const char *src, size_t len)
     const char *p = src;
     const char *end = src + len;
     while (p < end) {
-        const char *eol = memchr(p, '\n', (size_t)(end - p));
+        const char *eol = (const char *)memchr(p, '\n', (size_t)(end - p));
         if (!eol) eol = end;
         const char *line = p;
         size_t llen = (size_t)(eol - p);
@@ -1461,7 +1463,7 @@ static char *preprocess_macros(const char *src, size_t len)
     int line_start = 1;
     while (p < end) {
         if (line_start && *p == '#') {
-            const char *eol = memchr(p, '\n', (size_t)(end - p));
+            const char *eol = (const char *)memchr(p, '\n', (size_t)(end - p));
             size_t n = eol ? (size_t)(eol - p) + 1 : (size_t)(end - p);
             if (o + n + 1 > cap) {
                 cap = cap * 2 + n;

@@ -606,17 +606,23 @@ test-mglsema: $(build_dir)/test_mglsema
 LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
 LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
+	-IMGL/src \
 	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
-	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL
+	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL \
+	-Iexternal/metal-cpp
 LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
-# The two *.cpp sources (GLSL->metallib compiler) build with LLVM headers.
+# The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
+# with LLVM headers and metal-cpp (header-only).
 M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
 	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
-	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL
+	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL \
+	-Iexternal/metal-cpp
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
 CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
 # Product libs carry the M1 AIR backend, so they depend on the LLVM runtime.
-LIBS += $(LLVM_LDFLAGS)
+# -lobjc: mgl_render_cpp.cpp 等纯 C++ TU 内联调用 objc_msgSend，clang++ 不会
+# 像 ObjC 目标文件那样自动补链 ObjC runtime。
+LIBS += $(LLVM_LDFLAGS) -lobjc
 
 $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
@@ -634,6 +640,44 @@ $(build_dir)/test_mglair: test_legacy_compat/test_mglair.mm \
 
 test-mglair: $(build_dir)/test_mglair
 	$(build_dir)/test_mglair
+
+# MC-style shader repro: anonymous std140 UBO blocks + samplers through the
+# AIR backend.  C sources build as C (they are not valid C++).
+MCREPRO_CSRC := MGL/src/mgl_air_reflect.c MGL/src/mgl_glsl_sema.c \
+	MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
+MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
+
+$(build_dir)/mcrepro_%.o: MGL/src/%.c
+	$(LLVM_CXX) -x c -std=c11 -g -O0 -isysroot $(SDK_ROOT) -IMGL/include \
+		-IMGL/include/GL -Iexternal/glslang/glslang/Include \
+		-Iexternal/glslang/glslang/Public -Iexternal/glslang/SPIRV \
+		-Iexternal/SPIRV-Cross -c $< -o $@
+
+$(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
+	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+	$(MCREPRO_COBJ)
+	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
+		-framework Foundation \
+		test_legacy_compat/test_mcrepro.mm \
+		MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
+		-x none $(MCREPRO_COBJ) \
+		-o $@
+
+test-mcrepro: $(build_dir)/test_mcrepro
+	$(build_dir)/test_mcrepro
+
+# Phase 0 (METALCPP_RENDERER_PLAN): Metal-cpp 基础接入 smoke gate.
+# 桥接现有 id<MTLDevice> -> MTL::Device*，init/shutdown 幂等无崩溃。
+$(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
+	MGL/src/mgl_render_cpp.cpp
+	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
+		-framework Cocoa -framework Foundation -framework Metal \
+		test_legacy_compat/test_metalcpp_smoke.mm \
+		MGL/src/mgl_render_cpp.cpp \
+		-o $@
+
+test-metalcpp: $(build_dir)/test_metalcpp_smoke
+	$(build_dir)/test_metalcpp_smoke
 
 # AIR backend unit tests with GoogleTest (pure compile-time, no GPU).
 GTEST_ROOT ?= $(HOME)/googletest
