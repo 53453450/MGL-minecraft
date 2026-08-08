@@ -3,6 +3,8 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
+#include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
+#include "mgl_render_cpp.h"     /* METALCPP: mglRenderCppGetDevice() */
 
 #import <objc/message.h>
 
@@ -578,26 +580,54 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL) {
                     mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
                     mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
-                    dispatch_data_t data = dispatch_data_create(
-                        ptr->spirv[i].metallib_bytes,
-                        ptr->spirv[i].metallib_size, NULL,
-                        DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-                    __autoreleasing NSError *lerr = nil;
-                    id<MTLLibrary> library = [_device newLibraryWithData:data error:&lerr];
-                    if (!library) {
-                        NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %@",
-                              (unsigned)ptr->name, i,
-                              lerr.localizedDescription ?: (id)@"?");
-                        return false;
+                    if (getenv("MGL_USE_METALCPP")) {
+                        /* METALCPP 路径（Phase 1）：metallib 经 C++ 加载器
+                         * newLibrary(dispatch_data)，library/function 桥回
+                         * id<MTLLibrary>/id<MTLFunction> 语义（同地址）。
+                         * loader 返回 +1 对象，经 __bridge_transfer 转移
+                         * 给 ARC，再 CFBridgingRetain 存入 slot。 */
+                        void *devCPP = mglRenderCppGetDevice();
+                        void *libCPP = NULL;
+                        char lerr[256] = {0};
+                        if (!devCPP || mglAirLoadLibrary(devCPP,
+                                                         ptr->spirv[i].metallib_bytes,
+                                                         ptr->spirv[i].metallib_size,
+                                                         &libCPP, lerr, sizeof lerr) != 0 || !libCPP) {
+                            NSLog(@"MGL ERROR: AIR metallib load via Metal-cpp failed program=%u stage=%d: %s",
+                                  (unsigned)ptr->name, i, lerr[0] ? lerr : "?");
+                            return false;
+                        }
+                        id<MTLLibrary> library = (__bridge_transfer id<MTLLibrary>)libCPP;
+                        id<MTLFunction> function = [library newFunctionWithName:@"main"];
+                        if (!function) {
+                            NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib (Metal-cpp) program=%u stage=%d",
+                                  (unsigned)ptr->name, i);
+                            return false;
+                        }
+                        ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
+                        ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
+                    } else {
+                        dispatch_data_t data = dispatch_data_create(
+                            ptr->spirv[i].metallib_bytes,
+                            ptr->spirv[i].metallib_size, NULL,
+                            DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+                        __autoreleasing NSError *lerr = nil;
+                        id<MTLLibrary> library = [_device newLibraryWithData:data error:&lerr];
+                        if (!library) {
+                            NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %@",
+                                  (unsigned)ptr->name, i,
+                                  lerr.localizedDescription ?: (id)@"?");
+                            return false;
+                        }
+                        id<MTLFunction> function = [library newFunctionWithName:@"main"];
+                        if (!function) {
+                            NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib program=%u stage=%d",
+                                  (unsigned)ptr->name, i);
+                            return false;
+                        }
+                        ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
+                        ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
                     }
-                    id<MTLFunction> function = [library newFunctionWithName:@"main"];
-                    if (!function) {
-                        NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib program=%u stage=%d",
-                              (unsigned)ptr->name, i);
-                        return false;
-                    }
-                    ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
-                    ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
                 }
             } else if (!ptr->spirv[i].msl_str) {
                 NSLog(@"MGL WARNING: Program %u stage %d has reflection but no MSL; skipping Metal bind",

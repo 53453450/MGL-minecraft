@@ -7,6 +7,7 @@
 #import "mgl.h"
 #import "mgl_metal_bridge.h"
 #import "draw_command.h"
+#include "mgl_render_cpp.h" /* Metal-cpp 渲染门面（MGL_USE_METALCPP 路径） */
 
 /* KVO context shared by the observer registration in
  * createMGLRendererAndBindToContext:view: and observeValueForKeyPath:. */
@@ -227,6 +228,18 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     }
 
     NSLog(@"MGL INFO: Metal device created: %@", _device);
+
+    /* METALCPP 路径（Phase 1）：把现有 id<MTLDevice> 桥接给 C++ 渲染门面
+     * （+1 retain，shutdown 时 release）。AIR 加载器/PSO 走 MGL_USE_METALCPP=1
+     * 时经 mglRenderCppGetDevice() 取用。 */
+    if (getenv("MGL_USE_METALCPP")) {
+        if (mglRenderCppInit((__bridge void *)_device) != 0) {
+            NSLog(@"MGL ERROR: mglRenderCppInit failed (Metal-cpp bridge)");
+        } else {
+            NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
+                  mglRenderCppGetDevice());
+        }
+    }
     _pipelineCache.device = _device;
     [_pipelineCache initializeCompilerIfAvailableUnlessDisabled:
         mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER")];
@@ -652,6 +665,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL INFO: Releasing Metal device");
             _device = nil;
         }
+
+        /* METALCPP 路径：释放 C++ 渲染门面持有的 device 引用。 */
+        mglRenderCppShutdown();
 
         /* Task 4: Release all address-stable snapshot arena chunks. */
         mglDestroyBatchArena(&_batching.batchArena);
