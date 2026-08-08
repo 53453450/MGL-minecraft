@@ -63,6 +63,48 @@ enum {
     MGL_AST_MATRIX_ROW_MAJOR = 2,
 };
 
+/* Tessellation primitive modes (TES) and geometry input topologies (GS).
+ * `triangles` is shared. */
+enum {
+    MGL_AST_TES_DEFAULT    = 0,
+    MGL_AST_TES_TRIANGLES  = 1,
+    MGL_AST_TES_QUADS      = 2,
+    MGL_AST_TES_ISOLINES   = 3,
+};
+
+/* Geometry shader input topologies (GLSL 4.60 4.3.8.1). */
+enum {
+    MGL_AST_GS_IN_DEFAULT           = 0,
+    MGL_AST_GS_IN_POINTS            = 1,
+    MGL_AST_GS_IN_LINES             = 2,
+    MGL_AST_GS_IN_LINES_ADJACENCY   = 3,
+    MGL_AST_GS_IN_TRIANGLES         = 4,
+    MGL_AST_GS_IN_TRIANGLES_ADJACENCY = 5,
+};
+
+/* Geometry shader output topologies (GLSL 4.60 4.3.8.2). */
+enum {
+    MGL_AST_GS_OUT_DEFAULT      = 0,
+    MGL_AST_GS_OUT_POINTS       = 1,
+    MGL_AST_GS_OUT_LINE_STRIP   = 2,
+    MGL_AST_GS_OUT_TRIANGLE_STRIP = 3,
+};
+
+/* Tessellation spacing (TES, GLSL 4.60 4.3.8.2). */
+enum {
+    MGL_AST_SPACING_DEFAULT            = 0,
+    MGL_AST_SPACING_EQUAL              = 1,
+    MGL_AST_SPACING_FRACTIONAL_EVEN    = 2,
+    MGL_AST_SPACING_FRACTIONAL_ODD     = 3,
+};
+
+/* Tessellation winding order (TES). */
+enum {
+    MGL_AST_WINDING_DEFAULT = 0,
+    MGL_AST_WINDING_CW      = 1,
+    MGL_AST_WINDING_CCW     = 2,
+};
+
 /* Precision qualifiers (GLSL ES / desktop 4.30+). */
 enum {
     MGL_AST_PRECISION_NONE = 0,
@@ -246,6 +288,15 @@ struct MGLDecl {
     uint32_t matrix_major; /* MGL_AST_MATRIX_* */
     int32_t layout_location; /* layout(location=N), -1 if unspecified */
     int32_t layout_binding;  /* layout(binding=N), -1 if unspecified */
+    /* Tessellation/geometry layout (M3).  -1/0 = unspecified. */
+    int32_t  layout_vertices;       /* TCS: layout(vertices=N) */
+    uint32_t layout_primitive;      /* TES: MGL_AST_TES_* ; GS in: MGL_AST_GS_IN_* */
+    uint32_t layout_primitive_out;  /* GS out: MGL_AST_GS_OUT_* */
+    int32_t  layout_max_vertices;   /* GS: layout(max_vertices=N) */
+    int32_t  layout_invocations;    /* GS: layout(invocations=N), 1 if absent */
+    uint32_t layout_spacing;        /* TES: MGL_AST_SPACING_* */
+    uint32_t layout_winding;        /* TES: MGL_AST_WINDING_* */
+    uint32_t layout_point_mode;     /* TES: point_mode flag */
     uint32_t *array_dims;  /* element counts; NULL = not an array */
     uint32_t array_count;
     MGLExpr *init;         /* initializer or NULL */
@@ -266,6 +317,16 @@ typedef struct MGLTranslationUnit {
     uint32_t decl_count;
     char *error;               /* first parse error message or NULL (owned) */
     uint32_t error_line;
+    /* Stage-level tessellation/geometry layout (M3): set by layout-only
+     * declarations like `layout(vertices = 3) out;`.  -1/0 = unspecified. */
+    int32_t  layout_vertices;      /* TCS: patch vertex count */
+    int32_t  layout_max_vertices;  /* GS: max emitted vertices */
+    int32_t  layout_invocations;   /* GS: invocation count (1 default) */
+    uint32_t layout_primitive;     /* TES: MGL_AST_TES_* ; GS in: MGL_AST_GS_IN_* */
+    uint32_t layout_primitive_out; /* GS out: MGL_AST_GS_OUT_* */
+    uint32_t layout_spacing;       /* TES: MGL_AST_SPACING_* */
+    uint32_t layout_winding;       /* TES: MGL_AST_WINDING_* */
+    uint32_t layout_point_mode;    /* TES: point_mode flag */
 } MGLTranslationUnit;
 
 #ifdef __cplusplus

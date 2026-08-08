@@ -78,8 +78,11 @@ typedef struct MGLIRModule {
 /* Analyze a parsed translation unit.  Fills `module` with resolved/typed
  * global symbols (caller frees with mglIRModuleDestroy), and appends any
  * diagnostics to `errors` (caller frees each string).  Returns number of
- * hard errors (0 = clean). */
-int mglGLSLSemanticCheck(const MGLTranslationUnit *tu,
+ * hard errors (0 = clean).  `stage` is the AIR ABI stage (MGLShaderStage:
+ * MGL_STAGE_VERTEX/FRAGMENT/COMPUTE/TESS_CONTROL/TESS_EVALUATION/GEOMETRY);
+ * it drives tessellation/geometry builtins, gl_in[] sizing and layout
+ * validation. */
+int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
                          MGLIRModule *module,
                          MGLSemaError **errors,
                          uint32_t *error_count);

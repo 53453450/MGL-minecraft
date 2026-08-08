@@ -953,6 +953,14 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->line = line;
     d->layout_location = -1;   /* "unspecified", per mgl_glsl_ast.h */
     d->layout_binding = -1;    /* "unspecified", per mgl_glsl_ast.h */
+    d->layout_vertices = -1;   /* TCS: layout(vertices=N), unspecified */
+    d->layout_max_vertices = -1; /* GS: layout(max_vertices=N), unspecified */
+    d->layout_invocations = 1; /* GS: layout(invocations=N), GLSL default 1 */
+    d->layout_primitive = MGL_AST_TES_DEFAULT;      /* TES mode / GS in topology */
+    d->layout_primitive_out = MGL_AST_GS_OUT_DEFAULT;
+    d->layout_spacing = MGL_AST_SPACING_DEFAULT;
+    d->layout_winding = MGL_AST_WINDING_DEFAULT;
+    d->layout_point_mode = 0;
 
     /* qualifiers and storage */
 more_qualifiers:
@@ -1033,7 +1041,23 @@ more_qualifiers:
                 (n == 8 && memcmp(s, "invariant", 8) == 0) ||
                 (n == 13 && memcmp(s, "push_constant", 13) == 0) ||
                 (n == 17 && memcmp(s, "origin_upper_left", 17) == 0) ||
-                (n == 15 && memcmp(s, "local_size_x_id", 15) == 0);
+                (n == 15 && memcmp(s, "local_size_x_id", 15) == 0) ||
+                /* tessellation/geometry layout flags (M3) */
+                (n == 8 && memcmp(s, "isolines", 8) == 0) ||
+                (n == 5 && memcmp(s, "quads", 5) == 0) ||
+                (n == 9 && memcmp(s, "triangles", 9) == 0) ||
+                (n == 13 && memcmp(s, "equal_spacing", 13) == 0) ||
+                (n == 23 && memcmp(s, "fractional_even_spacing", 23) == 0) ||
+                (n == 22 && memcmp(s, "fractional_odd_spacing", 22) == 0) ||
+                (n == 2 && memcmp(s, "cw", 2) == 0) ||
+                (n == 3 && memcmp(s, "ccw", 3) == 0) ||
+                (n == 10 && memcmp(s, "point_mode", 10) == 0) ||
+                (n == 6 && memcmp(s, "points", 6) == 0) ||
+                (n == 5 && memcmp(s, "lines", 5) == 0) ||
+                (n == 10 && memcmp(s, "line_strip", 10) == 0) ||
+                (n == 15 && memcmp(s, "lines_adjacency", 15) == 0) ||
+                (n == 14 && memcmp(s, "triangle_strip", 14) == 0) ||
+                (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0);
             int has_value = at_peek_punct(p, 1, "=");
 
             if (!is_flag && !has_value) {
@@ -1054,6 +1078,36 @@ more_qualifiers:
                 d->matrix_major = MGL_AST_MATRIX_ROW_MAJOR;
             } else if (n == 11 && memcmp(s, "column_major", 11) == 0) {
                 d->matrix_major = MGL_AST_MATRIX_COL_MAJOR;
+            } else if (n == 8 && memcmp(s, "isolines", 8) == 0) {
+                d->layout_primitive = MGL_AST_TES_ISOLINES;
+            } else if (n == 5 && memcmp(s, "quads", 5) == 0) {
+                d->layout_primitive = MGL_AST_TES_QUADS;
+            } else if (n == 9 && memcmp(s, "triangles", 9) == 0) {
+                d->layout_primitive = MGL_AST_TES_TRIANGLES;
+            } else if (n == 13 && memcmp(s, "equal_spacing", 13) == 0) {
+                d->layout_spacing = MGL_AST_SPACING_EQUAL;
+            } else if (n == 23 && memcmp(s, "fractional_even_spacing", 23) == 0) {
+                d->layout_spacing = MGL_AST_SPACING_FRACTIONAL_EVEN;
+            } else if (n == 22 && memcmp(s, "fractional_odd_spacing", 22) == 0) {
+                d->layout_spacing = MGL_AST_SPACING_FRACTIONAL_ODD;
+            } else if (n == 2 && memcmp(s, "cw", 2) == 0) {
+                d->layout_winding = MGL_AST_WINDING_CW;
+            } else if (n == 3 && memcmp(s, "ccw", 3) == 0) {
+                d->layout_winding = MGL_AST_WINDING_CCW;
+            } else if (n == 10 && memcmp(s, "point_mode", 10) == 0) {
+                d->layout_point_mode = 1;
+            } else if (n == 6 && memcmp(s, "points", 6) == 0) {
+                d->layout_primitive = MGL_AST_GS_IN_POINTS;
+            } else if (n == 5 && memcmp(s, "lines", 5) == 0) {
+                d->layout_primitive = MGL_AST_GS_IN_LINES;
+            } else if (n == 10 && memcmp(s, "line_strip", 10) == 0) {
+                d->layout_primitive_out = MGL_AST_GS_OUT_LINE_STRIP;
+            } else if (n == 15 && memcmp(s, "lines_adjacency", 15) == 0) {
+                d->layout_primitive = MGL_AST_GS_IN_LINES_ADJACENCY;
+            } else if (n == 14 && memcmp(s, "triangle_strip", 14) == 0) {
+                d->layout_primitive_out = MGL_AST_GS_OUT_TRIANGLE_STRIP;
+            } else if (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) {
+                d->layout_primitive = MGL_AST_GS_IN_TRIANGLES_ADJACENCY;
             }
 
             if (has_value) {
@@ -1063,6 +1117,12 @@ more_qualifiers:
                         d->layout_location = (int32_t)cur_double(p);
                     } else if (n == 7 && memcmp(s, "binding", 7) == 0) {
                         d->layout_binding = (int32_t)cur_double(p);
+                    } else if (n == 8 && memcmp(s, "vertices", 8) == 0) {
+                        d->layout_vertices = (int32_t)cur_double(p);
+                    } else if (n == 12 && memcmp(s, "max_vertices", 12) == 0) {
+                        d->layout_max_vertices = (int32_t)cur_double(p);
+                    } else if (n == 11 && memcmp(s, "invocations", 11) == 0) {
+                        d->layout_invocations = (int32_t)cur_double(p);
                     }
                     advance(p);
                 } else if (at_any_ident(p)) {
@@ -1082,9 +1142,24 @@ more_qualifiers:
         goto more_qualifiers;
     }
 
-    /* Compute workgroup declaration `layout(local_size_x = N) in;` has no
-     * type or variable; skip it (the caller advances past the `;`). */
+    /* `layout(...) in/out;` stage-level declarations (compute workgroup
+     * size, TCS vertices, TES mode, GS topologies) have no type or
+     * variable; the caller advances past the `;`.  Tessellation/geometry
+     * layout is recorded on the translation unit for sema + backend. */
     if (ops_at(p, ";")) {
+        MGLTranslationUnit *tu = p->tu;
+        if (d->layout_vertices >= 0)          tu->layout_vertices = d->layout_vertices;
+        if (d->layout_max_vertices >= 0)      tu->layout_max_vertices = d->layout_max_vertices;
+        if (d->layout_invocations >= 1)       tu->layout_invocations = d->layout_invocations;
+        if (d->layout_primitive != MGL_AST_TES_DEFAULT)
+            tu->layout_primitive = d->layout_primitive;
+        if (d->layout_primitive_out != MGL_AST_GS_OUT_DEFAULT)
+            tu->layout_primitive_out = d->layout_primitive_out;
+        if (d->layout_spacing != MGL_AST_SPACING_DEFAULT)
+            tu->layout_spacing = d->layout_spacing;
+        if (d->layout_winding != MGL_AST_WINDING_DEFAULT)
+            tu->layout_winding = d->layout_winding;
+        if (d->layout_point_mode)             tu->layout_point_mode = 1;
         free(d);
         return NULL;
     }

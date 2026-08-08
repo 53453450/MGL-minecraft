@@ -822,13 +822,16 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     if (!shader || !shader->src) {
         return 1;
     }
-    /* Map the legacy stage numbering (VS=0, FS=4, CS=5) to the AIR ABI
-     * stages (VS=0, FS=1, CS=2).  TCS/TES/GS have no AIR path yet. */
+    /* Map the legacy stage numbering (VS=0, TCS=1, TES=2, GS=3, FS=4,
+     * CS=5) to the AIR ABI stages (VS=0, FS=1, CS=2, TCS/TES/GS M3). */
     int air_stage;
     switch (stage) {
     case _VERTEX_SHADER:        air_stage = MGL_STAGE_VERTEX; break;
     case _FRAGMENT_SHADER:      air_stage = MGL_STAGE_FRAGMENT; break;
     case _COMPUTE_SHADER:       air_stage = MGL_STAGE_COMPUTE; break;
+    case _TESS_CONTROL_SHADER:  air_stage = MGL_STAGE_TESS_CONTROL; break;
+    case _TESS_EVALUATION_SHADER: air_stage = MGL_STAGE_TESS_EVALUATION; break;
+    case _GEOMETRY_SHADER:      air_stage = MGL_STAGE_GEOMETRY; break;
     default:
         return 1;   /* unsupported stage: skip (link continues) */
     }

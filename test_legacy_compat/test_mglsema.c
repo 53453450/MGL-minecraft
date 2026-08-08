@@ -16,6 +16,7 @@
 #include "mgl_glsl_parser.h"
 #include "mgl_glsl_sema.h"
 #include "mgl_ir.h"
+#include "mgl_shader_abi.h" /* MGL_STAGE_* */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,7 +40,7 @@ static MGLIRModule module;
 static MGLSemaError *errors;
 static uint32_t error_count;
 
-static void analyze_ex(const char *src, MGLIRModule *mod,
+static void analyze_ex(const char *src, int stage, MGLIRModule *mod,
                        MGLSemaError **es, uint32_t *ec)
 {
     MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
@@ -55,13 +56,13 @@ static void analyze_ex(const char *src, MGLIRModule *mod,
     memset(mod, 0, sizeof(*mod));
     *es = NULL;
     *ec = 0;
-    mglGLSLSemanticCheck(tu, mod, es, ec);
+    mglGLSLSemanticCheck(tu, stage, mod, es, ec);
     mglGLSLTranslationUnitDestroy(tu);
 }
 
 static void analyze(const char *src)
 {
-    analyze_ex(src, &module, &errors, &error_count);
+    analyze_ex(src, MGL_STAGE_VERTEX, &module, &errors, &error_count);
 }
 
 static int has_error(const char *needle)
@@ -112,6 +113,47 @@ static void test_hello(void)
     CHECK(mainf && mainf->return_type &&
           mainf->return_type->scalar == MGLIR_SCALAR_VOID,
           "main returns void");
+    teardown();
+}
+
+static void test_tess_geom_m3(void)
+{
+    /* TCS: layout(vertices) + gl_in/gl_out/gl_TessLevel builtins */
+    analyze_ex("#version 450 core\n"
+               "layout(vertices = 3) out;\n"
+               "void main() {\n"
+               "    gl_out[gl_InvocationID].gl_Position =\n"
+               "        gl_in[gl_InvocationID].gl_Position;\n"
+               "    gl_TessLevelOuter[0] = 1.0;\n"
+               "    gl_TessLevelInner[0] = 1.0;\n"
+               "}\n",
+               MGL_STAGE_TESS_CONTROL, &module, &errors, &error_count);
+    CHECK(error_count == 0, "TCS layout/builtins parse+sema");
+    teardown();
+
+    /* TES: primitive mode layout + gl_TessCoord */
+    analyze_ex("#version 450 core\n"
+               "layout(quads, equal_spacing, cw) in;\n"
+               "void main() {\n"
+               "    gl_Position = vec4(gl_TessCoord, 1.0);\n"
+               "}\n",
+               MGL_STAGE_TESS_EVALUATION, &module, &errors, &error_count);
+    CHECK(error_count == 0, "TES layout/builtins parse+sema");
+    teardown();
+
+    /* GS: input/output topologies + EmitVertex/EndPrimitive + gl_in[] */
+    analyze_ex("#version 450 core\n"
+               "layout(triangles) in;\n"
+               "layout(triangle_strip, max_vertices = 3) out;\n"
+               "void main() {\n"
+               "    gl_Position = gl_in[0].gl_Position;\n"
+               "    EmitVertex();\n"
+               "    gl_Position = gl_in[1].gl_Position;\n"
+               "    EmitVertex();\n"
+               "    EndPrimitive();\n"
+               "}\n",
+               MGL_STAGE_GEOMETRY, &module, &errors, &error_count);
+    CHECK(error_count == 0, "GS layout/builtins parse+sema");
     teardown();
 }
 
@@ -533,6 +575,7 @@ int main(void)
 {
     printf("MGLGLSL sema skeleton tests\n");
     test_hello();
+    test_tess_geom_m3();
     test_swizzle_checks();
     test_undeclared();
     test_type_mismatch();

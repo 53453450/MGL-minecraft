@@ -3643,13 +3643,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         return -1;
     }
     if (stage != MGL_STAGE_VERTEX && stage != MGL_STAGE_FRAGMENT &&
-        stage != MGL_STAGE_COMPUTE) {
+        stage != MGL_STAGE_COMPUTE &&
+        stage != MGL_STAGE_TESS_CONTROL &&
+        stage != MGL_STAGE_TESS_EVALUATION &&
+        stage != MGL_STAGE_GEOMETRY) {
         if (err_buf && err_cap) snprintf(err_buf, err_cap, "unsupported stage");
         return -1;
     }
     const bool isVS = (stage == MGL_STAGE_VERTEX);
     const bool isCompute = (stage == MGL_STAGE_COMPUTE);
     const bool isCapture = capture && isVS;
+    /* M3: TCS/TES/GS pass the self-hosted frontend (parse+sema) so their
+     * syntax is validated, then fail codegen with an explicit message;
+     * the AIR codegen itself lands in M3-B (TCS factor kernel),
+     * M3-C (TES post-tessellation vertex) and M3-D (GS compute). */
+    const bool isM3Stage = (stage == MGL_STAGE_TESS_CONTROL ||
+                            stage == MGL_STAGE_TESS_EVALUATION ||
+                            stage == MGL_STAGE_GEOMETRY);
 
     MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
     if (!tu) {
@@ -3668,7 +3678,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     memset(&mod, 0, sizeof mod);
     MGLSemaError *errors = nullptr;
     uint32_t error_count = 0;
-    int hard = mglGLSLSemanticCheck(tu, &mod, &errors, &error_count);
+    int hard = mglGLSLSemanticCheck(tu, stage, &mod, &errors, &error_count);
     if (hard) {
         if (err_buf && err_cap && errors && error_count)
             snprintf(err_buf, err_cap, "line %u: %s",
@@ -3679,6 +3689,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         return -1;
     }
     mglGLSLSemanticCheckDestroy(errors, error_count);
+
+    /* M3-A: frontend validated; tessellation/geometry AIR codegen is not
+     * implemented yet (M3-B TCS factor kernel, M3-C TES post-tess vertex,
+     * M3-D GS compute).  Report explicitly instead of miscompiling. */
+    if (isM3Stage) {
+        if (err_buf && err_cap) {
+            snprintf(err_buf, err_cap,
+                     "stage %d: tessellation/geometry AIR codegen not "
+                     "implemented yet (M3)",
+                     stage);
+        }
+        mglIRModuleDestroy(&mod);
+        mglGLSLTranslationUnitDestroy(tu);
+        return -1;
+    }
 
     std::vector<Uniform> uniforms;
     uint32_t bufferSize = 0;
@@ -4671,7 +4696,7 @@ extern "C" int mglAirCompileGLSLWithReflect(
     memset(&mod, 0, sizeof mod);
     MGLSemaError *errors = nullptr;
     uint32_t error_count = 0;
-    int hard = mglGLSLSemanticCheck(tu, &mod, &errors, &error_count);
+    int hard = mglGLSLSemanticCheck(tu, stage, &mod, &errors, &error_count);
     if (hard) {
         if (err_buf && err_cap && errors && error_count) {
             snprintf(err_buf, err_cap, "line %u: %s",
@@ -4713,8 +4738,8 @@ extern "C" int mglShaderInterfaceCheck(const char *vs_src, const char *fs_src,
     memset(&fs, 0, sizeof fs);
     MGLSemaError *ve = nullptr, *fe = nullptr;
     uint32_t vc = 0, fc = 0;
-    int vhard = mglGLSLSemanticCheck(vtu, &vs, &ve, &vc);
-    int fhard = mglGLSLSemanticCheck(ftu, &fs, &fe, &fc);
+    int vhard = mglGLSLSemanticCheck(vtu, MGL_STAGE_VERTEX, &vs, &ve, &vc);
+    int fhard = mglGLSLSemanticCheck(ftu, MGL_STAGE_FRAGMENT, &fs, &fe, &fc);
     int rc = 0;
     if (vhard || fhard) {
         if (err_buf && err_cap) {

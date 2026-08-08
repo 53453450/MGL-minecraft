@@ -33,10 +33,13 @@
 
 typedef struct Sema {
     const MGLTranslationUnit *tu;
+    int stage;              /* AIR ABI stage (MGLShaderStage) */
     MGLIRModule *module;
     MGLSemaError *errors;
     uint32_t error_count;
     uint32_t error_cap;
+    /* cached gl_PerVertex struct type for gl_in[]/gl_out[] (M3) */
+    MGLIRType *per_vertex;
     /* scratch types created by expression typing (check_expr etc.); the M0
      * module does not hold typed expression IR, so these have no owner.
      * Collected here and destroyed together at the end of the check. */
@@ -82,6 +85,29 @@ static void scratch_destroy(Sema *s)
     free(s->tmp_types);
     s->tmp_types = NULL;
     s->tmp_count = s->tmp_cap = 0;
+}
+
+/* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;}
+ * used by gl_in[]/gl_out[] in TCS/TES/GS.  Each caller receives a NEW
+ * struct (never shared/cached): the array type created by gl_in_out_array
+ * owns it, and multiple arrays must not share one struct or the scratch
+ * arena double-frees it at teardown. */
+static MGLIRType *per_vertex_type(Sema *s)
+{
+    MGLIRType *pos = mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
+    MGLIRType *psz = mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
+    MGLIRType *members[2] = { pos, psz };
+    const char *names[2] = { "gl_Position", "gl_PointSize" };
+    MGLIRType *st = mglIRTypeStruct(members, names, 2, "gl_PerVertex");
+    s->per_vertex = st; /* informational only; ownership follows the array */
+    return st;
+}
+
+/* M3: runtime-sized gl_in[]/gl_out[] interface array of gl_PerVertex. */
+static MGLIRType *gl_in_out_array(Sema *s)
+{
+    MGLIRType *elem = per_vertex_type(s);
+    return scratch_type(s, mglIRTypeRuntimeArray(elem));
 }
 
 static void sema_error(Sema *s, uint32_t line, const char *fmt, ...)
@@ -929,6 +955,7 @@ typedef enum {
     BI_RET_MAT2,    /* mat2 */
     BI_RET_MAT3,    /* mat3 */
     BI_RET_MAT4,    /* mat4 */
+    BI_RET_VOID,    /* statement-only builtin (EmitVertex/EndPrimitive, M3) */
 } BiRetKind;
 
 typedef struct {
@@ -1043,6 +1070,11 @@ static const BiFn kBuiltins[] = {
     { "unpackHalf2x16",  1, { BI_ARG_INT }, BI_RET_VEC2 },
     /* atomic (compute) */
     { "atomicAdd", 2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
+    /* geometry shader (M3): statement-only, void */
+    { "EmitVertex",          0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "EndPrimitive",        0, { BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "EmitStreamVertex",    1, { BI_ARG_INT,  BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
+    { "EndStreamPrimitive",  1, { BI_ARG_INT,  BI_ARG_GENF, BI_ARG_GENF, BI_ARG_GENF }, BI_RET_VOID },
 };
 
 /* Does `t` satisfy a BI_ARG_GENF parameter?  Sets *gen_dim to the matched
@@ -1223,6 +1255,8 @@ static MGLIRType *builtin_call_type(const char *name,
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 3, 3);
         case BI_RET_MAT4:
             return mglIRTypeMatrix(MGLIR_SCALAR_FLOAT, 4, 4);
+        case BI_RET_VOID:
+            return mglIRTypeScalar(MGLIR_SCALAR_VOID);
         }
     }
     return NULL;
@@ -1430,6 +1464,37 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 /* Vertex built-in point size; the AIR backend maps it to
                  * the air.point_size output member. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
+            }
+            /* ---- M3 tessellation/geometry builtins ---- */
+            if (strcmp(e->u.var_ref.name, "gl_TessCoord") == 0) {
+                /* TES: barycentric/parametric coordinates. */
+                return scratch_type(s,
+                                    mglIRTypeVector(MGLIR_SCALAR_FLOAT, 3));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_PatchVerticesIn") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_InvocationID") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_TessLevelOuter") == 0) {
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 4));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_TessLevelInner") == 0) {
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 2));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_PrimitiveIDIn") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_in") == 0) {
+                /* gl_PerVertex interface array (TCS/TES/GS). */
+                return gl_in_out_array(s);
+            }
+            if (strcmp(e->u.var_ref.name, "gl_out") == 0) {
+                /* gl_PerVertex output array (TCS only). */
+                return gl_in_out_array(s);
             }
             sema_error(s, e->line, "undeclared identifier '%s'",
                        e->u.var_ref.name);
@@ -2187,7 +2252,8 @@ static void analyze_stmt(Sema *s, SymTab *tab, const MGLStmt *st)
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
-int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, MGLIRModule *module,
+int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, int stage,
+                         MGLIRModule *module,
                          MGLSemaError **errors, uint32_t *error_count)
 {
     if (!tu || !module) {
@@ -2198,6 +2264,7 @@ int mglGLSLSemanticCheck(const MGLTranslationUnit *tu, MGLIRModule *module,
     Sema s;
     memset(&s, 0, sizeof(s));
     s.tu = tu;
+    s.stage = stage;
     s.module = module;
 
     SymTab tab;

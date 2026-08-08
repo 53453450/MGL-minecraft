@@ -38,6 +38,11 @@ typedef enum MGLShaderStage {
     MGL_STAGE_VERTEX = 0,
     MGL_STAGE_FRAGMENT,
     MGL_STAGE_COMPUTE,
+    /* M3: tessellation + geometry (Metal 4: native tessellation factors +
+     * post-tessellation vertex; GS via compute expansion). */
+    MGL_STAGE_TESS_CONTROL,
+    MGL_STAGE_TESS_EVALUATION,
+    MGL_STAGE_GEOMETRY,
 } MGLShaderStage;
 
 /* Compile a GLSL source string for one stage into a .metallib byte blob.

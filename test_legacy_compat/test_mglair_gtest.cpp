@@ -21,13 +21,13 @@ extern "C" {
 
 namespace {
 
-MGLIRModule *semacheck(const char *src, MGLTranslationUnit **tu_out) {
+MGLIRModule *semacheck(const char *src, int stage, MGLTranslationUnit **tu_out) {
     MGLTranslationUnit *tu = mglGLSLParse(src, strlen(src));
     if (!tu || tu->error) return nullptr;
     MGLIRModule *mod = (MGLIRModule *)calloc(1, sizeof(MGLIRModule));
     MGLSemaError *errs = nullptr;
     uint32_t ec = 0;
-    mglGLSLSemanticCheck(tu, mod, &errs, &ec);
+    mglGLSLSemanticCheck(tu, stage, mod, &errs, &ec);
     mglGLSLSemanticCheckDestroy(errs, ec);
     *tu_out = tu;
     return mod;
@@ -275,7 +275,7 @@ TEST(Reflect, VertexResources) {
         "    vUV = inUV;\n"
         "}\n";
     MGLTranslationUnit *tu = nullptr;
-    MGLIRModule *mod = semacheck(src, &tu);
+    MGLIRModule *mod = semacheck(src, MGL_STAGE_VERTEX, &tu);
     ASSERT_NE(nullptr, mod);
     SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
     ASSERT_EQ(0, mglAirReflectModule(mod, _VERTEX_SHADER, lists, nullptr, 0));
@@ -317,7 +317,7 @@ TEST(Reflect, ComputeResources) {
         "    b.data[0] = 1.0;\n"
         "}\n";
     MGLTranslationUnit *tu = nullptr;
-    MGLIRModule *mod = semacheck(src, &tu);
+    MGLIRModule *mod = semacheck(src, MGL_STAGE_COMPUTE, &tu);
     ASSERT_NE(nullptr, mod);
     SpirvResourceList lists[_MAX_SPIRV_RES] = {{0}};
     ASSERT_EQ(0, mglAirReflectModule(mod, _COMPUTE_SHADER, lists, nullptr, 0));
