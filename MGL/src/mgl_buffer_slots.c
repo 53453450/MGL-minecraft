@@ -33,6 +33,17 @@ GLboolean mglBufferSlotIsReservedForStage(GLuint slot, int stage)
         return (stage == MGL_STAGE_TESS_CONTROL || stage < 0) ? GL_TRUE : GL_FALSE;
     }
 
+    /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel owns
+     * slot 24 (VS capture input), 28 (expanded output), 29 (counts) and
+     * 30 (XFB, reserved).  Slots 28-30 overlap the tessellation / VS/FS
+     * emulation paths but the encoders are disjoint; a UBO/SSBO bound for
+     * the geometry stage at any of these would corrupt the expansion. */
+    if (stage == MGL_STAGE_GEOMETRY || stage < 0) {
+        if (slot == 24u || slot == 28u || slot == 29u || slot == 30u) {
+            return GL_TRUE;
+        }
+    }
+
     /* No other slot is *always* reserved regardless of stage.  Slots 26-30
      * are reserved only within specific paths (TCS/TES compute vs VS/FS
      * draw), and whether a user buffer binding collides depends on whether
@@ -75,6 +86,25 @@ GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot)
     }
 }
 
+GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot)
+{
+    /* GS compute-expansion path (mgl_air_gs_abi.h §1): the GS kernel
+     * reserves slot 24 (VS capture input), 28 (expanded output), 29
+     * (counts / indirect args) and 30 (GS XFB, reserved for P1).  A
+     * UBO/SSBO bound at any of these slots in a geometry program would
+     * silently corrupt the expansion.  The stage-specific check is also
+     * handled by mglBufferSlotIsReservedForStage. */
+    switch (slot) {
+        case 24u:  /* GS input records */
+        case 28u:  /* GS output records */
+        case 29u:  /* GS counts / indirect args */
+        case 30u:  /* GS XFB output */
+            return GL_TRUE;
+        default:
+            return GL_FALSE;
+    }
+}
+
 GLboolean mglBufferSlotIsReservedForCullDistance(GLuint slot)
 {
     /* VS cull-distance emulation path reserves slot 28 (params constant) and
@@ -104,7 +134,7 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 15:
             return "kMGLPointSizeBufferIndex (VS point size) / kMGLLodBiasBufferIndex (FS LOD_BIAS)";
         case 24:
-            return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement)";
+            return "kMGLBufferSlot_TCSStageInRepl (TCS [[stage_in]] replacement) / MGL_AIR_GS_SLOT_INPUT (GS compute expansion)";
         case 25:
             return "MGL_BUFFER_SIZE_BUFFER_INDEX (SPIRV-Cross runtime-sized SSBO sizing)";
         case 26:
@@ -112,11 +142,11 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 27:
             return "kMGLBufferSlot_PatchOutput (TCS/TES compute path)";
         case 28:
-            return "kMGLBufferSlot_PatchInfo / kMGLCullDistanceParamsBufferIndex (TCS/TES compute OR VS cull-distance)";
+            return "kMGLBufferSlot_PatchInfo / kMGLCullDistanceParamsBufferIndex / MGL_AIR_GS_SLOT_OUTPUT (TCS/TES compute OR VS cull-distance OR GS expansion)";
         case 29:
-            return "kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex (TCS/TES compute OR VS cull-distance)";
+            return "kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex / MGL_AIR_GS_SLOT_COUNTS (TCS/TES compute OR VS cull-distance OR GS expansion)";
         case 30:
-            return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex (TES gl_in OR FS gl_FragCoord fixup)";
+            return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex / MGL_AIR_GS_SLOT_XFB (TES gl_in OR FS gl_FragCoord fixup OR GS XFB)";
         default:
             return NULL;
     }

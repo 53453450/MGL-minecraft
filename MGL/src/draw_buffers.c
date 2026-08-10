@@ -1615,21 +1615,9 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 
     /* Geometry expansion rotates render/compute encoders and therefore cannot
      * be replayed as an ordinary deferred render draw.  Preserve ordering by
-     * draining older commands, then let the renderer's GS helper either run
-     * the AIR compute route or explicitly block an unsupported array shape. */
+     * draining older commands, then let the renderer's GS helper run the AIR
+     * compute route for both array and indexed shapes (P1). */
     Program *geometryProgram = mglCurrentExpandedGeometryDrawProgram(ctx);
-    if (indexed && geometryProgram) {
-        static uint64_t s_indexedGeometryDrawCount = 0;
-        uint64_t hit = ++s_indexedGeometryDrawCount;
-        if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            fprintf(stderr,
-                    "MGL GS WARNING: blocking indexed draw program=%u "
-                    "type=%u hit=%llu\n",
-                    geometryProgram->name, (unsigned)cmd->type,
-                    (unsigned long long)hit);
-        }
-        return;
-    }
     if (geometryProgram) {
         mglFlushCommandBuffer(ctx);
         switch (cmd->type) {
@@ -1646,6 +1634,41 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
                 ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(
                     ctx, cmd->mode, cmd->first, cmd->count,
                     cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS:
+                ctx->mtl_funcs.mtlDrawElements(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+                ctx->mtl_funcs.mtlDrawElementsInstanced(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+                ctx->mtl_funcs.mtlDrawElementsBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
                 return;
             default:
                 break;

@@ -63,8 +63,23 @@
 #include "mgl_air_reflect.h"
 #include "mgl_buffer_slots.h"
 #include "mgl_shader_abi.h"
+#include "mgl_air_gs_abi.h"
+#include "mgl_air_tess_abi.h"
 
 namespace {
+
+/* Map the frontend's GS output primitive enum to the backend-neutral
+ * ABI enum used by the fixed record-layout helpers. */
+static MGLAIRGSOutputPrimitive airGSOutputFromAST(uint32_t ast)
+{
+    switch (ast) {
+    case MGL_AST_GS_OUT_POINTS: return MGL_AIR_GS_OUT_POINTS;
+    case MGL_AST_GS_OUT_LINE_STRIP: return MGL_AIR_GS_OUT_LINE_STRIP;
+    case MGL_AST_GS_OUT_TRIANGLE_STRIP:
+    default: return MGL_AIR_GS_OUT_TRIANGLE_STRIP;
+    }
+}
+
 
 /* Lightweight type model for codegen.  Mirrors the MGLIR scalar/vector/
  * matrix shapes; the LLVM types are derived on demand. */
@@ -143,6 +158,8 @@ struct Codegen {
     llvm::Value *geometryInputPtr = nullptr;  /* GS primitive records */
     llvm::Value *geometryOutputPtr = nullptr; /* GS expanded records */
     llvm::Value *geometryCountPtr = nullptr;  /* GS indirect draw args */
+    llvm::Value *geometryGatherPtr = nullptr; /* GS indexed gather stream */
+    llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
     llvm::Value *geometryWorkItemId = nullptr;
     llvm::Value *geometryPrimitiveId = nullptr;
     llvm::Value *geometryInvocationId = nullptr;
@@ -1552,6 +1569,11 @@ static bool emitPatchVaryingStore(Codegen &cg, const VarSym &sym,
     return true;
 }
 
+/* Forward decl: GS gl_in record index (defined below, after the
+ * tess control/eval array loaders). */
+static llvm::Value *geometryInputRecordIndex(Codegen &cg,
+                                             llvm::Value *vertexIndex);
+
 static llvm::Value *emitTessStageArrayLoad(
     Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
     const std::map<std::string, MType> &locals)
@@ -1569,10 +1591,7 @@ static llvm::Value *emitTessStageArrayLoad(
     if (cg.isGeometry) {
         if (!cg.geometryInputPtr || !cg.geometryPrimitiveId) return nullptr;
         index = coerceScalar(cg, index, MGLIR_SCALAR_UINT);
-        record = cg.b->CreateAdd(
-            cg.b->CreateMul(cg.geometryPrimitiveId,
-                            cg.b->getInt32(cg.geometryInputVertices)),
-            index);
+        record = geometryInputRecordIndex(cg, index);
         base = cg.geometryInputPtr;
     } else {
         if (!cg.stageInPtr || !cg.patchPos || !cg.indirectPtr) return nullptr;
@@ -1632,12 +1651,9 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
         llvm::Value *iv = emitExpr(cg, index, mod, locals);
         if (!iv) return nullptr;
         iv = coerceScalar(cg, iv, MGLIR_SCALAR_UINT);
-        llvm::Value *prim = cg.geometryPrimitiveId
-            ? cg.geometryPrimitiveId : cg.b->getInt32(0);
-        llvm::Value *flat = cg.b->CreateAdd(
-            cg.b->CreateMul(prim, cg.b->getInt32(cg.geometryInputVertices)), iv);
+        llvm::Value *record = geometryInputRecordIndex(cg, iv);
         llvm::Value *off = cg.b->CreateMul(
-            cg.b->CreateZExt(flat, cg.b->getInt64Ty()),
+            cg.b->CreateZExt(record, cg.b->getInt64Ty()),
             cg.b->getInt64(cg.stageInStride));
         off = cg.b->CreateAdd(off,
                               cg.b->getInt64(perVertexFieldOffset(field)));
@@ -1772,12 +1788,92 @@ static bool emitPerVertexStore(Codegen &cg, const MGLExpr *lhs, llvm::Value *val
 
 static llvm::Value *geometryCounterPtr(Codegen &cg, uint32_t field)
 {
+    /* ABI (mgl_air_gs_abi.h §3): each work item owns a 28-byte counts
+     * record = MGLAIRGSIndirectArgs (words 0..3) + kernel scratch
+     * (words 4..6).  Counter 0 is the only draw parameter the kernel
+     * writes (indirect-args vertex count); the strip/emit state rolls in
+     * the scratch words so instance_count/base_vertex stay renderer
+     * preset (1/0) and the rasterizing indirect draw is well-defined. */
+    uint32_t word = (field == MGL_AIR_GS_COUNT_VERTEX_COUNT)
+        ? 0u
+        : (MGL_AIR_GS_COUNTS_ARGS_WORDS + (field - 1u));
     llvm::Value *record = cg.b->CreateMul(
-        cg.geometryWorkItemId, cg.b->getInt32(4));
-    llvm::Value *index = cg.b->CreateAdd(record, cg.b->getInt32(field));
+        cg.geometryWorkItemId,
+        cg.b->getInt32(MGL_AIR_GS_COUNTS_RECORD_WORDS));
+    llvm::Value *index = cg.b->CreateAdd(record, cg.b->getInt32(word));
     llvm::Value *base = cg.b->CreateBitCast(
         cg.geometryCountPtr, cg.b->getInt32Ty()->getPointerTo(1));
     return cg.b->CreateGEP(cg.b->getInt32Ty(), base, index);
+}
+
+/* GS gl_in record index (mgl_air_gs_abi.h §7).  Array path:
+ * globPrim*inputVertices + vertex.  Indexed path (runtime
+ * gather_enabled): gather[globPrim*inputVertices + vertex] -
+ * first_vertex + instance * vertices_per_instance.  The capture record
+ * stream is sparse ([instance][vertex_id]); the gather entry carries the
+ * raw index value so the kernel can locate each gl_in[]. */
+static llvm::Value *geometryInputRecordIndex(Codegen &cg,
+                                             llvm::Value *vertexIndex)
+{
+    if (!cg.geometryInputPtr || !cg.geometryPrimitiveId) return nullptr;
+    llvm::Value *globPrim = cg.geometryPrimitiveId;
+    llvm::Value *arrayIdx = cg.b->CreateAdd(
+        cg.b->CreateMul(globPrim, cg.b->getInt32(cg.geometryInputVertices)),
+        vertexIndex);
+    if (!cg.geometryGatherPtr || !cg.geometryGatherParamsPtr) {
+        return arrayIdx;
+    }
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Value *params = cg.b->CreateBitCast(
+        cg.geometryGatherParamsPtr, i32->getPointerTo(1));
+    llvm::Value *gatherEnabled = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(3)),
+        llvm::Align(4));
+    llvm::Value *enabled = cg.b->CreateICmpNE(
+        gatherEnabled, cg.b->getInt32(0));
+    llvm::BasicBlock *gatherBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_gather", cg.fn);
+    llvm::BasicBlock *arrayBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_array", cg.fn);
+    llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_gather_merge", cg.fn);
+    cg.b->CreateCondBr(enabled, gatherBB, arrayBB);
+    cg.b->SetInsertPoint(gatherBB);
+    llvm::Value *vertsPerInst = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(0)),
+        llvm::Align(4));
+    llvm::Value *primsPerInst = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(1)),
+        llvm::Align(4));
+    llvm::Value *firstVertex = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(2)),
+        llvm::Align(4));
+    /* Instance decomposition: globPrim = instanceIdx * primsPerInst +
+     * primInInst.  The gather stream is shared across instances (one
+     * entry per input vertex of a per-instance primitive). */
+    llvm::Value *instanceIdx = cg.b->CreateUDiv(globPrim, primsPerInst);
+    llvm::Value *primInInst = cg.b->CreateURem(globPrim, primsPerInst);
+    llvm::Value *gatherSlot = cg.b->CreateAdd(
+        cg.b->CreateMul(primInInst, cg.b->getInt32(cg.geometryInputVertices)),
+        vertexIndex);
+    llvm::Value *gatherBase = cg.b->CreateBitCast(
+        cg.geometryGatherPtr, i32->getPointerTo(1));
+    llvm::Value *vid = cg.b->CreateAlignedLoad(
+        i32,
+        cg.b->CreateGEP(i32, gatherBase,
+                        cg.b->CreateZExt(gatherSlot, cg.b->getInt64Ty())),
+        llvm::Align(4));
+    llvm::Value *gatherIdx = cg.b->CreateAdd(
+        cg.b->CreateSub(vid, firstVertex),
+        cg.b->CreateMul(instanceIdx, vertsPerInst));
+    cg.b->CreateBr(mergeBB);
+    cg.b->SetInsertPoint(arrayBB);
+    cg.b->CreateBr(mergeBB);
+    cg.b->SetInsertPoint(mergeBB);
+    llvm::PHINode *phi = cg.b->CreatePHI(i32, 2);
+    phi->addIncoming(gatherIdx, gatherBB);
+    phi->addIncoming(arrayIdx, arrayBB);
+    return phi;
 }
 
 static llvm::Value *geometryRecordPtr(Codegen &cg, llvm::Value *record)
@@ -3206,6 +3302,8 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                     args.push_back(cg.geometryInputPtr);
                     args.push_back(cg.geometryOutputPtr);
                     args.push_back(cg.geometryCountPtr);
+                    args.push_back(cg.geometryGatherPtr);
+                    args.push_back(cg.geometryGatherParamsPtr);
                     args.push_back(cg.geometryWorkItemId);
                     args.push_back(cg.geometryPrimitiveId);
                     args.push_back(cg.geometryInvocationId);
@@ -5575,11 +5673,16 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         for (int i = 0; i < 5; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isGS) {
-        /* P1 GS compute ABI: primitive input records, expanded output
-         * records, and one 16-byte MTLDrawPrimitivesIndirectArguments record
-         * per input primitive, all in device address space. */
+        /* P1 GS compute ABI (mgl_air_gs_abi.h): primitive input records,
+         * expanded output records, one 28-byte counts record per work
+         * item, the optional indexed gather stream, and the gather params
+         * constant.  All buffers in device address space. */
         for (int i = 0; i < 3; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        /* Gather stream + params are bound only for indexed draws; the
+         * kernel branches on gather_params.gather_enabled at runtime. */
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
+        paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     }
     if (isTES) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -5774,6 +5877,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.geometryInputPtr = fn->getArg(argSlot++);
         cg.geometryOutputPtr = fn->getArg(argSlot++);
         cg.geometryCountPtr = fn->getArg(argSlot++);
+        cg.geometryGatherPtr = fn->getArg(argSlot++);
+        cg.geometryGatherParamsPtr = fn->getArg(argSlot++);
     }
     if (isTessCapture) {
         cg.cullParams = fn->getArg(argSlot++);
@@ -5837,16 +5942,14 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         cg.geometryOutputType = tu->layout_primitive_out;
         cg.geometryMaxVertices = tu->layout_max_vertices > 0
             ? (uint32_t)tu->layout_max_vertices : 1u;
-        if (cg.geometryOutputType == MGL_AST_GS_OUT_POINTS) {
-            cg.geometryOutputVertices = cg.geometryMaxVertices;
-        } else if (cg.geometryOutputType == MGL_AST_GS_OUT_LINE_STRIP) {
-            cg.geometryOutputVertices = cg.geometryMaxVertices > 1u
-                ? 2u * (cg.geometryMaxVertices - 1u) : 0u;
-        } else {
-            cg.geometryOutputVertices = cg.geometryMaxVertices > 2u
-                ? 3u * (cg.geometryMaxVertices - 2u) : 0u;
-        }
-        cg.geometryRecordCount = 2u + cg.geometryOutputVertices;
+        /* Fixed ABI layout (mgl_air_gs_abi.h): the output record run is
+         * 2 header records + the expanded primitive vertices. */
+        const MGLAIRGSOutputPrimitive outPrim =
+            airGSOutputFromAST(cg.geometryOutputType);
+        cg.geometryOutputVertices =
+            mglAIRGSExpandedVertices(outPrim, cg.geometryMaxVertices);
+        cg.geometryRecordCount =
+            mglAIRGSRecordsPerPrimitive(outPrim, cg.geometryMaxVertices);
     }
     /* Patch BUFFER sym offsets into uniforms */
     for (Uniform &u : uniforms) {
@@ -5998,6 +6101,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 fc.geometryInputPtr = f->getArg(hidx++);
                 fc.geometryOutputPtr = f->getArg(hidx++);
                 fc.geometryCountPtr = f->getArg(hidx++);
+                fc.geometryGatherPtr = f->getArg(hidx++);
+                fc.geometryGatherParamsPtr = f->getArg(hidx++);
                 fc.geometryWorkItemId = f->getArg(hidx++);
                 fc.geometryPrimitiveId = f->getArg(hidx++);
                 fc.geometryInvocationId = f->getArg(hidx++);
@@ -6110,12 +6215,19 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (cg.err != 2) {
         if (isKernel) {
             if (isGS && cg.geometryCountPtr && cg.geometryWorkItemId) {
+                /* ABI (mgl_air_gs_abi.h §3): finalize the per-work-item
+                 * MGLAIRGSIndirectArgs — instance_count=1, base_vertex=0,
+                 * base_instance=0 — so the rasterizing indirect draw is
+                 * well-defined.  The scratch strip/emit counters live in
+                 * words 4..6 and are deliberately NOT touched here. */
                 llvm::Value *off = b.CreateMul(
                     b.CreateZExt(cg.geometryWorkItemId, b.getInt64Ty()),
-                    b.getInt64(16));
-                llvm::Value *p = b.CreateGEP(b.getInt8Ty(),
-                                             cg.geometryCountPtr, off);
-                p = b.CreateBitCast(p, b.getInt32Ty()->getPointerTo(1));
+                    b.getInt64(MGL_AIR_GS_COUNTS_RECORD_WORDS));
+                llvm::Value *p = b.CreateGEP(
+                    b.getInt32Ty(),
+                    b.CreateBitCast(cg.geometryCountPtr,
+                                    b.getInt32Ty()->getPointerTo(1)),
+                    off);
                 llvm::Value *instanceCount = b.CreateGEP(
                     b.getInt32Ty(), p, b.getInt32(1));
                 llvm::Value *vertexStart = b.CreateGEP(
@@ -6612,9 +6724,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
-        const uint32_t locs[3] = {24u, 28u, 29u};
-        const char *names[3] = {"gs_input", "gs_output", "gs_count"};
-        for (int i = 0; i < 3; i++) {
+        /* Fixed ABI slots (mgl_air_gs_abi.h §1/§7): input, output, counts,
+         * indexed gather stream and gather params.  The gather buffer is
+         * read-only; the params constant is read-only. */
+        const uint32_t locs[5] = {24u, 28u, 29u, 30u, 25u};
+        const char *names[5] = {"gs_input", "gs_output", "gs_count",
+                                "gs_gather", "gs_gather_params"};
+        for (int i = 0; i < 5; i++) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), arg++)),
@@ -6639,7 +6755,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         ((isVS || isTES || isKernel) ? (hasBuffer ? 1 : 0) : 0) + ssboCount +
         uboCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount + imageCount;
     if (isTCS) mArgSlot += 5;
-    else if (isGS) mArgSlot += 3;
+    else if (isGS) mArgSlot += 5;  /* input/output/counts/gather/params */
     if (isVS) {
         /* Vertex attribute metadata already emitted above. */
     } else if (isTES) {

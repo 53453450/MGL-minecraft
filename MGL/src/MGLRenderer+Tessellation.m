@@ -13,6 +13,8 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 #include "mgl_shader_abi.h"
+#include "mgl_air_gs_abi.h"
+#include "mgl_air_tess_abi.h"
 
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx, GLuint64 generated, GLuint64 written);
 
@@ -740,15 +742,9 @@ typedef struct {
 
 -(bool) dispatchTessControlShader:(GLMContext) glm_ctx
                           program:(Program *) tcsProgram
-                            first:(GLint) first
-                            count:(GLsizei) count
-                        indexType:(GLenum) indexType
-                          indices:(const void *) indices
-                       baseVertex:(GLint) baseVertex
-                     instanceCount:(GLsizei) drawInstanceCount
-                     baseInstance:(GLuint) baseInstance
+                         contract:(const MGLAIRTessDrawContract *) contract
 {
-    if (!tcsProgram || !glm_ctx) {
+    if (!tcsProgram || !glm_ctx || !contract) {
         return false;
     }
 
@@ -964,9 +960,9 @@ typedef struct {
 
     /* Create indirect params buffer (buffer 29).
      * spvIndirectParams[0] = vertexCount, [1] = instanceCount. */
-    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(ctx)->var.patch_vertices);
-    GLuint vertexCount = (GLuint)count;
-    GLuint instanceCount = (drawInstanceCount > 0) ? (GLuint)drawInstanceCount : 1u;
+    const GLuint patchVertices = MAX(1u, contract->patch_vertices);
+    const GLuint vertexCount = contract->vertex_count;
+    const GLuint instanceCount = MAX(1u, contract->instance_count);
 
     /* Create TCS per-vertex output buffer (buffer 28 = spvOut).
      * TCS writes: spvOut[gl_PrimitiveID * outputVertices + invocationID]
@@ -993,7 +989,12 @@ typedef struct {
     }
     memset(_tessellation.tcsOutputBuffer.contents, 0, tcsOutSize);
     _tessellation.tcsOutputOffset = 0u;
-    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0, 28);
+    /* TCS stage output (spvOut) binds at slot 28 — the same numeric slot as
+     * the TES patch-info constant, reused across disjoint encoders.  The
+     * TCS kernel's fixed ABI is stage_in(24) factors(26) patchOut(27)
+     * stageOut(28) indirect(29); see mgl_air_tess_abi.h. */
+    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0,
+                            MGL_AIR_TESS_SLOT_TCS_OUTPUT);
 
     /* Create TCS per-patch output buffer (buffer 27 = spvPatchOut).
      * Patch varyings use the same stable location ABI as other stage
@@ -1004,12 +1005,7 @@ typedef struct {
          * per-vertex outputs; SpvDecorationPatch is reflected as is_per_patch. */
         SpirvResourceList *outs =
             &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
-        for (GLuint i = 0; outs->list && i < outs->count; i++) {
-            if (!outs->list[i].is_per_patch) continue;
-            if (outs->list[i].location >= 0x0fffffffu) continue;
-            NSUInteger end = ((NSUInteger)outs->list[i].location + 1u) * 16u;
-            if (end > tcsPatchStride) tcsPatchStride = end;
-        }
+        tcsPatchStride = mglAIRPatchVaryingStride(outs);
     }
     NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
     _tessellation.tcsPatchOutBuffer = mglTessCreateBuffer(
@@ -1020,7 +1016,8 @@ typedef struct {
         return false;
     }
     memset(_tessellation.tcsPatchOutBuffer.contents, 0, tcsPatchSize);
-    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0, 27);
+    mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0,
+                            MGL_AIR_TESS_SLOT_PATCH_OUT);
 
     GLuint indirectParams[2] = { patchVertices, instanceCount };
     id<MTLBuffer> indirectBuf = mglTessCreateBufferWithBytes(
@@ -1031,13 +1028,15 @@ typedef struct {
         [self clearStageBindingCopyBacks:&stageCopyBacks];
         return false;
     }
-    mglTessSetComputeBuffer(computeEncoder, indirectBuf, 0, 29);
+    mglTessSetComputeBuffer(computeEncoder, indirectBuf, 0,
+                            MGL_AIR_TESS_SLOT_INDIRECT);
 
     /* Create tessellation factor buffer (buffer 26).
-     * MTLQuadTessellationFactorsHalf = 4 edge + 2 inner half-floats = 12 bytes/patch. */
-    GLuint patchCount = vertexCount / patchVertices;
-    if (patchCount == 0u) patchCount = 1u;
-    NSUInteger tessFactorSize = (NSUInteger)patchCount * 12u;
+     * The compute path always uses the quad-half layout: 4 edge + 2 inner
+     * half-floats = 12 bytes/patch (MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES). */
+    const GLuint patchCount = MAX(1u, contract->patch_count);
+    NSUInteger tessFactorSize =
+        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
     id<MTLBuffer> tessFactorBuf = mglTessCreateBuffer(
         _device, tessFactorSize, MTLResourceStorageModeShared);
     if (!tessFactorBuf || !tessFactorBuf.contents) {
@@ -1046,7 +1045,8 @@ typedef struct {
         return false;
     }
     memset(tessFactorBuf.contents, 0, tessFactorSize);
-    mglTessSetComputeBuffer(computeEncoder, tessFactorBuf, 0, 26);
+    mglTessSetComputeBuffer(computeEncoder, tessFactorBuf, 0,
+                            MGL_AIR_TESS_SLOT_TESS_FACTOR);
 
     NSUInteger tcsInStride = 0u;
     id<MTLBuffer> tcsStageInBuffer = _tessellation.tessVertexCaptureBuffer;
@@ -1059,12 +1059,12 @@ typedef struct {
         tcsStageInBuffer =
             [self newTCSStageInBufferForContext:glm_ctx
                                         program:tcsProgram
-                                          first:first
-                                          count:count
-                                      indexType:indexType
-                                        indices:indices
-                                     baseVertex:baseVertex
-                                   baseInstance:baseInstance
+                                          first:contract->first
+                                          count:(GLsizei)contract->vertex_count
+                                      indexType:contract->index_type
+                                        indices:(const void *)(uintptr_t)contract->index_source
+                                     baseVertex:contract->base_vertex
+                                   baseInstance:contract->base_instance
                                   patchVertices:patchVertices
                                      patchCount:patchCount
                                       outStride:&tcsInStride];
@@ -1079,7 +1079,7 @@ typedef struct {
     }
     mglTessSetComputeBuffer(computeEncoder, tcsStageInBuffer,
                             tcsStageInOffset,
-                            kMGLTCSStageInReplBufferIndex);
+                            MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
 
     /* Dispatch: one threadgroup per patch, tcsOutVertices threads per threadgroup (one thread per TCS output vertex = gl_InvocationID). */
     MTLSize threadgroups = MTLSizeMake(patchCount, 1, 1);
@@ -1181,10 +1181,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
  * per threadgroup, so each invocation handles one patch. */
 -(bool) dispatchTessEvaluationShader:(GLMContext) glm_ctx
                             program:(Program *) tesProgram
-                              first:(GLint) first
-                              count:(GLsizei) count
+                           contract:(const MGLAIRTessDrawContract *) contract
 {
-    if (!tesProgram || !glm_ctx) {
+    if (!tesProgram || !glm_ctx || !contract) {
         return false;
     }
 
@@ -1394,10 +1393,9 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     /* Dispatch: one threadgroup per patch, 1 thread per threadgroup.
      * gl_PrimitiveID → threadgroup_position_in_grid gives the patch index.
      * TessCoord → thread_position_in_threadgroup is 0 (1 thread per TG). */
-    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(ctx)->var.patch_vertices);
-    GLuint vertexCount = (GLuint)count;
-    GLuint patchCount = vertexCount / patchVertices;
-    if (patchCount == 0u) patchCount = 1u;
+    const GLuint patchVertices = MAX(1u, contract->patch_vertices);
+    const GLuint vertexCount = contract->vertex_count;
+    const GLuint patchCount = MAX(1u, contract->patch_count);
 
     /* Bind patch info to buffer(28): {patch_vertices_in, tcs_out_vertices}.
      * _mgl_patch_info.x = patch vertices (gl_in.size() replacement)
@@ -1405,7 +1403,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     {
         GLuint patchInfo[2] = { patchVertices, _tessellation.tcsOutVertices };
         if (patchInfo[1] == 0) patchInfo[1] = patchVertices;
-        mglTessSetComputeBytes(computeEncoder, patchInfo, sizeof(patchInfo), 28);
+        mglTessSetComputeBytes(computeEncoder, patchInfo, sizeof(patchInfo),
+                               MGL_AIR_TESS_SLOT_PATCH_INFO);
     }
 
     /* Bind TCS output buffer to buffer(30) for TES gl_in.
@@ -1415,7 +1414,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * point to the same buffer.  The MSL rewriter changed TES's [[stage_in]]
      * to "device <type> *gl_in [[buffer(30)]]". */
     if (_tessellation.tcsOutputBuffer) {
-        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0, 30);
+        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsOutputBuffer, 0,
+                                MGL_AIR_TESS_SLOT_GL_IN);
     }
 
     /* Bind TCS patch output buffer to buffer(27) for TES patchIn.
@@ -1424,7 +1424,8 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
      * TCS spvPatchOut and TES patchIn, which is correct since the data flows
      * TCS → TES. */
     if (_tessellation.tcsPatchOutBuffer) {
-        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0, 27);
+        mglTessSetComputeBuffer(computeEncoder, _tessellation.tcsPatchOutBuffer, 0,
+                                MGL_AIR_TESS_SLOT_PATCH_OUT);
     }
 
     /* Compute vertsPerPatch from tessellation factors.

@@ -25,6 +25,8 @@
 #define MGLRenderer_Draw_Private_h
 
 #import "MGLRenderer.h"
+#include "mgl_air_tess_abi.h"
+#include "mgl_air_gs_abi.h"
 
 /* Encode target passed explicitly to the issue and bind methods instead of
  * read from _renderPassManager.state->currentRenderEncoder. */
@@ -292,17 +294,10 @@ typedef struct {
 - (bool)processBuffer:(Buffer *)ptr;
 - (bool)dispatchTessControlShader:(GLMContext)glm_ctx
                           program:(Program *)tcsProgram
-                            first:(GLint)first
-                            count:(GLsizei)count
-                        indexType:(GLenum)indexType
-                          indices:(const void *)indices
-                       baseVertex:(GLint)baseVertex
-                     instanceCount:(GLsizei)drawInstanceCount
-                     baseInstance:(GLuint)baseInstance;
+                         contract:(const MGLAIRTessDrawContract *)contract;
 - (bool)dispatchTessEvaluationShader:(GLMContext)glm_ctx
                             program:(Program *)tesProgram
-                              first:(GLint)first
-                            count:(GLsizei)count;
+                           contract:(const MGLAIRTessDrawContract *)contract;
 
 - (void)issueMDIBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
         encodeContext:(const MGLEncodeContext *)encCtx;
@@ -395,13 +390,26 @@ typedef struct {
                                instanceCount:(GLsizei)instanceCount
                                 baseInstance:(GLuint)baseInstance
                                        label:(const char *)label;
-- (BOOL)handleGeometryShaderArrayDrawIfNeeded:(GLMContext)drawCtx
-                                         mode:(GLenum)mode
-                                        first:(GLint)first
-                                        count:(GLsizei)count
-                                instanceCount:(GLsizei)instanceCount
-                                 baseInstance:(GLuint)baseInstance
-                                        label:(const char *)label;
+- (BOOL)handleGeometryDrawIfNeeded:(GLMContext)drawCtx
+                              mode:(GLenum)mode
+                             first:(GLint)first
+                             count:(GLsizei)count
+                         indexType:(GLenum)indexType
+                           indices:(const void *)indices
+                        baseVertex:(GLint)baseVertex
+                     instanceCount:(GLsizei)instanceCount
+                      baseInstance:(GLuint)baseInstance
+                             label:(const char *)label;
+- (id<MTLBuffer>)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
+                                                  indexBuffer:(id<MTLBuffer>)indexBuffer
+                                                    indexType:(MTLIndexType)indexType
+                                                  indexOffset:(NSUInteger)indexOffset
+                                                        count:(GLsizei)count
+                                                    baseVertex:(GLint)baseVertex
+                                                 instanceCount:(GLsizei)instanceCount
+                                                  baseInstance:(GLuint)baseInstance
+                                                     maxIndex:(uint32_t)maxIndex
+                                                     outOffset:(NSUInteger *)outOffset;
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program;
 - (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
                                stage:(int)stage

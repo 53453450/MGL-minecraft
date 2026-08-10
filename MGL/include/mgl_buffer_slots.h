@@ -160,6 +160,12 @@ GLboolean mglBufferSlotIsReservedForTessellation(GLuint slot);
  * reserved by the VS cull-distance emulation path. */
 GLboolean mglBufferSlotIsReservedForCullDistance(GLuint slot);
 
+/* Returns GL_TRUE if `slot` is reserved for a program with a geometry
+ * shader running on the M3 compute-expansion path (mgl_air_gs_abi.h).
+ * Slots 24 (VS capture input), 28 (expanded output), 29 (counts) and
+ * 30 (GS XFB, reserved) are owned by the GS compute kernel. */
+GLboolean mglBufferSlotIsReservedForGeometry(GLuint slot);
+
 /* Returns GL_TRUE if `slot` is reserved for a program whose fragment shader
  * uses the gl_FragCoord fixup.  Slot 30 is reserved by the FS FragCoord
  * params path. */

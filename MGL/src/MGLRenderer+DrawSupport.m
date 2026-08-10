@@ -9,11 +9,84 @@
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp_objc.h"
 #include "mgl_shader_abi.h"
+#include "mgl_air_gs_abi.h"
+#include "mgl_air_tess_abi.h"
 
 static BOOL mglDrawSupportUsesMetalCpp(void)
 {
     return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
            mglRenderCppGetDevice() != NULL;
+}
+
+/* CPU index gather for direct indexed GS draws (mgl_air_gs_abi.h §7).
+ * Reads `count` indices of `indexType` from indexBytes, splits the stream
+ * at primitive-restart markers (dropping the incomplete primitive before a
+ * marker), re-groups vertices into input primitives (dropping the trailing
+ * incomplete group), and emits a per-instance uint32 gather array of raw
+ * index values (baseVertex NOT applied — Metal's vertex_id for indexed
+ * draws is the index value, and stage_in fetch applies baseVertex).
+ * Fills *outGather (malloc'd; caller frees) and the count/max outputs.
+ * Returns false (with *outGather NULL) if nothing can be gathered. */
+static bool mglGeometryGatherIndices(const uint8_t *indexBytes,
+                                     GLenum indexType,
+                                     GLsizei count,
+                                     int32_t baseVertex,
+                                     bool restartEnabled,
+                                     uint32_t restartIndex,
+                                     uint32_t inputVertices,
+                                     uint32_t **outGather,
+                                     uint32_t *outGatherCount,
+                                     uint32_t *outPrimitiveCount,
+                                     uint32_t *outMaxIndex)
+{
+    if (!indexBytes || count <= 0 || inputVertices == 0u || !outGather ||
+        !outGatherCount || !outPrimitiveCount || !outMaxIndex) {
+        return false;
+    }
+    (void)baseVertex; /* gather stores raw index values (vertex_id) */
+    const uint32_t elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
+        : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+    uint32_t *gather = malloc((size_t)count * sizeof(uint32_t));
+    if (!gather) return false;
+    uint32_t gathered = 0u;
+    uint32_t primitives = 0u;
+    uint32_t maxIndex = 0u;
+    uint32_t inPrimitive = 0u;
+    for (GLsizei i = 0; i < count; i++) {
+        uint32_t index = 0u;
+        if (elemBytes == 1u) {
+            index = ((const uint8_t *)indexBytes)[i];
+        } else if (elemBytes == 2u) {
+            index = ((const uint16_t *)indexBytes)[i];
+        } else {
+            index = ((const uint32_t *)indexBytes)[i];
+        }
+        if (restartEnabled && index == restartIndex) {
+            /* Primitive restart: drop the partial primitive and start a
+             * fresh group. */
+            inPrimitive = 0u;
+            continue;
+        }
+        gather[gathered++] = index;
+        if (index > maxIndex) maxIndex = index;
+        if (++inPrimitive == inputVertices) {
+            primitives++;
+            inPrimitive = 0u;
+        }
+    }
+    if (gathered == 0u || primitives == 0u) {
+        free(gather);
+        return false;
+    }
+    /* Drop the trailing incomplete group. */
+    if (inPrimitive != 0u) {
+        gathered -= inPrimitive;
+    }
+    *outGather = gather;
+    *outGatherCount = gathered;
+    *outPrimitiveCount = primitives;
+    *outMaxIndex = maxIndex;
+    return true;
 }
 
 static id<MTLBuffer> mglDrawSupportCreateBuffer(
@@ -104,6 +177,36 @@ static void mglDrawSupportDrawIndexedPrimitives(
                       baseInstance:baseInstance];
 }
 
+/* Variant that honors the GL index type (UInt8/UInt16/UInt32).  Used by the
+ * GS indexed capture so the original EBO drives vertex fetch directly. */
+static void mglDrawSupportDrawIndexedPrimitivesType(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger indexCount,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    NSUInteger instanceCount,
+    NSInteger baseVertex,
+    NSUInteger baseInstance)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                       indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
 static void mglDrawSupportDrawPrimitives(
     id<MTLRenderCommandEncoder> encoder,
     MTLPrimitiveType primitiveType,
@@ -181,6 +284,20 @@ static void mglDrawSupportSetComputeBuffer(
         return;
     }
     [encoder setBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglDrawSupportSetComputeBytes(
+    id<MTLComputeCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetComputeBytes((__bridge void *)encoder, bytes,
+                                    length, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setBytes:bytes length:length atIndex:index];
 }
 
 static void mglDrawSupportDispatchCompute(
@@ -771,13 +888,87 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     return capture;
 }
 
-- (BOOL)handleGeometryShaderArrayDrawIfNeeded:(GLMContext)drawCtx
-                                         mode:(GLenum)mode
-                                        first:(GLint)first
-                                        count:(GLsizei)count
-                                instanceCount:(GLsizei)instanceCount
-                                 baseInstance:(GLuint)baseInstance
-                                        label:(const char *)label
+/* Indexed variant of the VS capture for direct indexed GS draws
+ * (mgl_air_gs_abi.h §7).  Runs drawIndexedPrimitives against the original
+ * EBO so Metal's baseVertex is applied to stage_in fetch; the capture
+ * kernel's vertex_id is the raw index value, so records are sparse
+ * ([instance][vertex_id], span = maxIndex+1 per instance). */
+- (id<MTLBuffer>)captureAIRVertexPositionsForGeometryIndexed:(GLMContext)drawCtx
+                                                  indexBuffer:(id<MTLBuffer>)indexBuffer
+                                                    indexType:(MTLIndexType)indexType
+                                                  indexOffset:(NSUInteger)indexOffset
+                                                        count:(GLsizei)count
+                                                    baseVertex:(GLint)baseVertex
+                                                 instanceCount:(GLsizei)instanceCount
+                                                  baseInstance:(GLuint)baseInstance
+                                                     maxIndex:(uint32_t)maxIndex
+                                                     outOffset:(NSUInteger *)outOffset
+{
+    if (outOffset) *outOffset = 0u;
+    if (!drawCtx || count <= 0 || instanceCount <= 0 || !indexBuffer) {
+        return nil;
+    }
+
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    if (!vertexProgram || ![self bindMTLProgram:vertexProgram] ||
+        !vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function) {
+        return nil;
+    }
+
+    NSUInteger captureSize = 0u;
+    NSUInteger captureOffset = 0u;
+    NSUInteger captureStride = mglAIRPerVertexStrideForResources(
+        &vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+    const NSUInteger recordsPerInstance = (NSUInteger)maxIndex + 1u;
+    if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
+                                   captureStride, &captureSize,
+                                   &captureOffset)) {
+        return nil;
+    }
+    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+        _device, captureSize, MTLResourceStorageModeShared);
+    if (!capture) return nil;
+
+    self->ctx = drawCtx;
+    _tessellation.tessVertexCaptureActive = YES;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        !_renderPassManager.state->currentRenderEncoder) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return nil;
+    }
+
+    id<MTLRenderCommandEncoder> encoder =
+        _renderPassManager.state->currentRenderEncoder;
+    mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
+    const uint32_t captureParams[3] = {
+        0u, (uint32_t)recordsPerInstance, baseInstance,
+    };
+    mglDrawSupportSetVertexBytes(
+        encoder, captureParams, sizeof(captureParams), 28u);
+    mglDrawSupportDrawIndexedPrimitivesType(
+        encoder, MTLPrimitiveTypePoint, (NSUInteger)count, indexType,
+        indexBuffer, indexOffset, (NSUInteger)instanceCount,
+        (NSInteger)baseVertex, (NSUInteger)baseInstance);
+    _currentCBHasWork = YES;
+    [self endRenderEncoding];
+    _tessellation.tessVertexCaptureActive = NO;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (outOffset) *outOffset = captureOffset;
+    return capture;
+}
+
+- (BOOL)handleGeometryDrawIfNeeded:(GLMContext)drawCtx
+                              mode:(GLenum)mode
+                             first:(GLint)first
+                             count:(GLsizei)count
+                         indexType:(GLenum)indexType
+                           indices:(const void *)indices
+                        baseVertex:(GLint)baseVertex
+                     instanceCount:(GLsizei)instanceCount
+                      baseInstance:(GLuint)baseInstance
+                             label:(const char *)label
 {
     if (!drawCtx) {
         return NO;
@@ -821,18 +1012,24 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         ? MTLPrimitiveTypePoint
         : gsOutputMode == GL_LINE_STRIP ? MTLPrimitiveTypeLine
         : MTLPrimitiveTypeTriangle;
-    if (mode != gsInputMode || count <= 0 || first < 0 ||
-        instanceCount <= 0 ||
-        (count % (GLsizei)inputVertices) != 0) {
+    const BOOL indexedDraw = (indexType != 0u);
+    if (mode != gsInputMode || count <= 0 || instanceCount <= 0 ||
+        (!indexedDraw && (first < 0 ||
+                          (count % (GLsizei)inputVertices) != 0))) {
         static uint64_t unsupportedDrawCount = 0;
         uint64_t hit = ++unsupportedDrawCount;
         if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL GS WARNING: blocking unsupported array draw %@ "
+            NSLog(@"MGL GS ERROR: blocking unsupported %s draw %@ "
                    "mode=0x%x count=%d instances=%d baseInstance=%u",
+                  indexedDraw ? "indexed" : "array",
                   label ? [NSString stringWithUTF8String:label] : @"draw",
                   (unsigned)mode, (int)count, (int)instanceCount,
                   (unsigned)baseInstance);
         }
+        /* P0 contract: never drop a GS draw silently.  A draw whose mode
+         * does not match the GS input topology is an invalid operation. */
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_INVALID_OPERATION);
         return YES;
     }
     if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
@@ -842,60 +1039,152 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         static uint64_t unsupportedCount = 0;
         uint64_t hit = ++unsupportedCount;
         if (hit <= 16ull || (hit % 512ull) == 0ull) {
-            NSLog(@"MGL GS WARNING: blocking %@; AIR compute route unavailable program=%u",
+            NSLog(@"MGL GS ERROR: blocking %@; AIR compute route unavailable program=%u",
                   label ? [NSString stringWithUTF8String:label] : @"draw",
                   (unsigned)program->name);
         }
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_INVALID_OPERATION);
         return YES;
     }
     if (![self bindMTLProgram:program] ||
         !program->spirv[_GEOMETRY_SHADER].mtl_function) {
         NSLog(@"MGL GS ERROR: failed to load AIR kernel program=%u",
               (unsigned)program->name);
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_INVALID_OPERATION);
         return YES;
     }
 
     self->ctx = drawCtx;
     if (![self ensureAIRGeometryPassthroughFunctionForProgram:program]) {
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
         return YES;
     }
 
-    const GLuint primitiveCount = (GLuint)count / inputVertices;
+    /* Indexed draws first gather the element stream (mgl_air_gs_abi.h §7):
+     * restart markers split the stream, vertices re-group into input
+     * primitives, and the resulting per-instance uint32 gather array carries
+     * raw index values so the GS kernel can locate sparse capture records. */
+    uint32_t *gatherArray = NULL;
+    uint32_t gatherCount = 0u;
+    uint32_t gatherPrimitives = 0u;
+    uint32_t gatherMaxIndex = 0u;
+    const uint8_t *indexBytes = NULL;
+    id<MTLBuffer> eboMetal = nil;
+    NSUInteger indexOffsetBytes = 0u;
+    MTLIndexType captureIndexType = MTLIndexTypeUInt32;
+    id<MTLBuffer> gatherBuf = nil;
+    MGLAIRGSGatherParams gparams;
+    memset(&gparams, 0, sizeof(gparams));
+    if (indexedDraw) {
+        Buffer *ebo = getElementBuffer(drawCtx);
+        if (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data) {
+            mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                             GL_INVALID_OPERATION);
+            return YES;
+        }
+        eboMetal = (__bridge id<MTLBuffer>)ebo->data.mtl_data;
+        indexOffsetBytes = (NSUInteger)(uintptr_t)indices;
+        indexBytes = mglElementIndexSourceForDraw(ebo, eboMetal, indexType,
+                                                  indexOffsetBytes, count);
+        if (!indexBytes) {
+            mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                             GL_INVALID_OPERATION);
+            return YES;
+        }
+        uint32_t restartIndex = 0u;
+        bool restartEnabled = false;
+        restartEnabled = mglPrimitiveRestartIndexForType(
+            drawCtx, indexType, &restartIndex);
+        if (!mglGeometryGatherIndices(indexBytes, indexType, count,
+                                      baseVertex, restartEnabled, restartIndex,
+                                      inputVertices, &gatherArray,
+                                      &gatherCount, &gatherPrimitives,
+                                      &gatherMaxIndex)) {
+            /* Nothing drawable after gather/restart handling — a valid
+             * empty draw, not an error. */
+            return YES;
+        }
+        captureIndexType = getMTLIndexType(indexType);
+        gatherBuf = mglDrawSupportCreateBufferWithBytes(
+            _device, gatherArray, (NSUInteger)gatherCount * 4u,
+            MTLResourceStorageModeShared);
+        free(gatherArray);
+        gatherArray = NULL;
+        if (!gatherBuf) {
+            mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                             GL_OUT_OF_MEMORY);
+            return YES;
+        }
+        gparams.vertices_per_instance = gatherMaxIndex + 1u;
+        gparams.primitives_per_instance = gatherPrimitives;
+        gparams.first_vertex = 0u;
+        gparams.gather_enabled = 1u;
+    }
+
+    const GLuint primitiveCount = indexedDraw
+        ? gatherPrimitives : (GLuint)count / inputVertices;
     if ((GLuint)instanceCount > UINT32_MAX / primitiveCount) {
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
         return YES;
     }
     const GLuint drawPrimitiveCount =
         primitiveCount * (GLuint)instanceCount;
     const GLuint invocationCount = MAX(1u, program->geometry_invocations);
     if (drawPrimitiveCount > UINT32_MAX / invocationCount) {
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
         return YES;
     }
     const GLuint workItemCount = drawPrimitiveCount * invocationCount;
     const NSUInteger outputStride = mglAIRPerVertexStrideForResources(
         &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
-    const NSUInteger maxVertices = (NSUInteger)program->geometry_vertices_out;
-    const NSUInteger expandedVertices = gsOutputMode == GL_POINTS
-        ? maxVertices
-        : gsOutputMode == GL_LINE_STRIP
-        ? (maxVertices > 1u ? 2u * (maxVertices - 1u) : 0u)
-        : (maxVertices > 2u ? 3u * (maxVertices - 2u) : 0u);
-    const NSUInteger recordsPerPrimitive = 2u + expandedVertices;
+    const uint32_t maxVertices = program->geometry_vertices_out;
+    /* Fixed ABI layout (mgl_air_gs_abi.h §2): 2 header records + the
+     * expanded primitive vertices per work item. */
+    const MGLAIRGSOutputPrimitive gsAirOutput = gsOutputMode == GL_POINTS
+        ? MGL_AIR_GS_OUT_POINTS
+        : gsOutputMode == GL_LINE_STRIP ? MGL_AIR_GS_OUT_LINE_STRIP
+        : MGL_AIR_GS_OUT_TRIANGLE_STRIP;
+    const NSUInteger expandedVertices =
+        mglAIRGSExpandedVertices(gsAirOutput, maxVertices);
+    const NSUInteger recordsPerPrimitive =
+        mglAIRGSRecordsPerPrimitive(gsAirOutput, maxVertices);
     if (primitiveCount == 0u ||
         recordsPerPrimitive >
             (NSUIntegerMax / outputStride) / workItemCount) {
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
         return YES;
     }
 
     /* Run the real VS once into the shared per-vertex records used by the AIR GS
      * kernel.  This helper closes the render encoder before compute begins. */
     NSUInteger inputOffset = 0u;
-    id<MTLBuffer> input = [self captureAIRVertexPositionsForTessellation:
-                                     drawCtx
-                                             first:first
-                                             count:count
-                                     instanceCount:instanceCount
-                                      baseInstance:baseInstance
-                                        outOffset:&inputOffset];
+    id<MTLBuffer> input = nil;
+    if (indexedDraw) {
+        input = [self captureAIRVertexPositionsForGeometryIndexed:drawCtx
+                                                      indexBuffer:eboMetal
+                                                        indexType:captureIndexType
+                                                      indexOffset:indexOffsetBytes
+                                                            count:count
+                                                        baseVertex:baseVertex
+                                                     instanceCount:instanceCount
+                                                      baseInstance:baseInstance
+                                                         maxIndex:gatherMaxIndex
+                                                         outOffset:&inputOffset];
+    } else {
+        input = [self captureAIRVertexPositionsForTessellation:
+                         drawCtx
+                                 first:first
+                                 count:count
+                         instanceCount:instanceCount
+                          baseInstance:baseInstance
+                            outOffset:&inputOffset];
+    }
     if (!input) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
@@ -931,16 +1220,28 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         (NSUInteger)workItemCount * recordsPerPrimitive * outputStride;
     id<MTLBuffer> output = mglDrawSupportCreateBuffer(
         _device, outputSize, MTLResourceStorageModeShared);
-    const NSUInteger indirectStride = sizeof(MTLDrawPrimitivesIndirectArguments);
+    /* ABI (mgl_air_gs_abi.h §3): one 28-byte counts record per work item —
+     * 16-byte indirect args + 12 bytes kernel scratch. */
+    const NSUInteger countsRecordBytes = MGL_AIR_GS_COUNTS_RECORD_BYTES;
     id<MTLBuffer> counts = mglDrawSupportCreateBuffer(
-        _device, (NSUInteger)workItemCount * indirectStride,
+        _device, (NSUInteger)workItemCount * countsRecordBytes,
         MTLResourceStorageModeShared);
     if (!output || !counts || !output.contents || !counts.contents) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
         return YES;
     }
     memset(output.contents, 0, outputSize);
-    memset(counts.contents, 0, (NSUInteger)workItemCount * indirectStride);
+    memset(counts.contents, 0, (NSUInteger)workItemCount * countsRecordBytes);
+    /* Preset the draw parameters the kernel never touches: instance_count=1,
+     * base_vertex=0, base_instance=0 (memset already zeroed the rest). */
+    {
+        uint32_t *countsWords = (uint32_t *)counts.contents;
+        for (NSUInteger w = 0; w < workItemCount; w++) {
+            countsWords[w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1] = 1u;
+        }
+    }
 
     for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
         Texture *image = MGL_STATE(drawCtx)->image_units[unit].tex;
@@ -964,9 +1265,20 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
     mglDrawSupportSetComputePipeline(compute, pipeline);
-    mglDrawSupportSetComputeBuffer(compute, input, inputOffset, 24u);
-    mglDrawSupportSetComputeBuffer(compute, output, 0u, 28u);
-    mglDrawSupportSetComputeBuffer(compute, counts, 0u, 29u);
+    mglDrawSupportSetComputeBuffer(compute, input, inputOffset,
+                                   MGL_AIR_GS_SLOT_INPUT);
+    mglDrawSupportSetComputeBuffer(compute, output, 0u,
+                                   MGL_AIR_GS_SLOT_OUTPUT);
+    mglDrawSupportSetComputeBuffer(compute, counts, 0u,
+                                   MGL_AIR_GS_SLOT_COUNTS);
+    /* Gather ABI (mgl_air_gs_abi.h §7): the kernel always receives a
+     * gather slot + params; array draws bind gather_enabled=0 and a dummy
+     * gather buffer (counts works — the kernel never reads it). */
+    mglDrawSupportSetComputeBuffer(compute,
+                                   indexedDraw ? gatherBuf : counts, 0u,
+                                   MGL_AIR_GS_SLOT_GATHER);
+    mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
+                                  MGL_AIR_GS_SLOT_GATHER_PARAMS);
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
                                                copyBacks:&stageCopyBacks];
@@ -1005,11 +1317,12 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         _renderPassManager.state->currentRenderEncoder;
     for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
         NSUInteger offset =
-            ((NSUInteger)primitive * recordsPerPrimitive + 2u) * outputStride;
+            ((NSUInteger)primitive * recordsPerPrimitive +
+             MGL_AIR_GS_HEADER_RECORDS) * outputStride;
         mglDrawSupportSetVertexBuffer(encoder, output, offset, 0u);
         mglDrawSupportDrawPrimitivesIndirect(
             encoder, outputPrimitive, counts,
-            (NSUInteger)primitive * indirectStride);
+            (NSUInteger)primitive * countsRecordBytes);
     }
     _currentCBHasWork = YES;
     mglRecordActivePrimitiveQueryDraw(
@@ -1820,6 +2133,47 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         return YES;
     }
 
+    /* P0 contract (mgl_air_tess_abi.h): the whole GL_PATCHES draw is
+     * described by one value-state struct consumed by the TCS/TES
+     * dispatchers — no more threading six scalars and re-deriving
+     * per-patch layout numbers at each call site. */
+    uint32_t restartIndex = 0u;
+    bool restartEnabled = false;
+    if (indexType != 0u) {
+        restartEnabled =
+            mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
+    }
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    MGLAIRTessDrawContract contract;
+    memset(&contract, 0, sizeof(contract));
+    contract.patch_vertices = patchVertices;
+    contract.vertex_count = (uint32_t)count;
+    contract.patch_count = patchCount;
+    contract.instance_count = instanceCount > 0 ? (uint32_t)instanceCount : 1u;
+    contract.base_instance = baseInstance;
+    contract.first = first;
+    contract.index_type = indexType;
+    contract.index_source = (uint64_t)(uintptr_t)indices;
+    contract.index_count = indexType != 0u ? (uint64_t)count : 0u;
+    contract.base_vertex = baseVertex;
+    contract.primitive_restart = restartEnabled ? 1u : 0u;
+    contract.restart_index = restartIndex;
+    contract.tess_factor_bytes_per_patch = MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
+    contract.tess_gen_mode = tesProgram
+        ? (uint32_t)tesProgram->tess_gen_mode : (uint32_t)GL_TRIANGLES;
+    contract.point_mode = tesProgram
+        ? (uint32_t)tesProgram->tess_gen_point_mode : 0u;
+    contract.tcs_out_vertices =
+        tcsProgram && tcsProgram->tess_control_output_vertices > 0u
+            ? tcsProgram->tess_control_output_vertices : patchVertices;
+    contract.per_vertex_out_stride = vertexProgram
+        ? mglAIRPerVertexStrideForResources(
+              &vertexProgram->spirv_resources_list[_VERTEX_SHADER]
+                                                   [_STAGE_OUTPUT_RES])
+        : MGL_AIR_PER_VERTEX_STRIDE;
+    contract.patch_out_stride = 16u; /* refined by the TCS dispatcher */
+
     _tessellation.tessVertexCaptureBuffer = nil;
     _tessellation.tessVertexCaptureOffset = 0u;
     if (nativeTES) {
@@ -1848,13 +2202,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             _tessellation.tessVertexCaptureBuffer;
         _tessellation.tcsOutputOffset =
             _tessellation.tessVertexCaptureOffset;
-        Program *vertexProgram = mglResolveProgramForStageFromState(
-            drawCtx, _VERTEX_SHADER);
-        _tessellation.tcsOutputStride = vertexProgram
-            ? mglAIRPerVertexStrideForResources(
-                  &vertexProgram->spirv_resources_list[_VERTEX_SHADER]
-                                                       [_STAGE_OUTPUT_RES])
-            : MGL_AIR_PER_VERTEX_STRIDE;
+        _tessellation.tcsOutputStride = contract.per_vertex_out_stride;
         _tessellation.tcsOutVertices = patchVertices;
         _tessellation.tessFactorBuffer = mglDefaultTessFactorBuffer(
             _device, MGL_STATE(drawCtx), patchCount);
@@ -1867,13 +2215,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (tcsProgram) {
         if (![self dispatchTessControlShader:drawCtx
                                      program:tcsProgram
-                                       first:first
-                                       count:count
-                                   indexType:indexType
-                                     indices:indices
-                                  baseVertex:baseVertex
-                               instanceCount:instanceCount
-                                baseInstance:baseInstance]) {
+                                    contract:&contract]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             _tessellation.tessVertexCaptureBuffer = nil;
             _tessellation.tessVertexCaptureOffset = 0u;
@@ -1889,6 +2231,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             _tessellation.tcsOutputStride < MGL_AIR_PER_VERTEX_STRIDE) {
             NSLog(@"MGL TESS ERROR: invalid native TES buffers program=%u",
                   (unsigned)tesProgram->name);
+            mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                             GL_OUT_OF_MEMORY);
             drawCtx->state.dirty_bits = DIRTY_ALL;
             _tessellation.tessVertexCaptureBuffer = nil;
             _tessellation.tessVertexCaptureOffset = 0u;
@@ -1965,6 +2309,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u%s",
               (unsigned)tesProgram->name,
               forceComputeTES ? " (AIR has no compute fallback variant)" : "");
+        /* P0 contract: an unsupported tessellation draw must surface a GL
+         * error, not silently drop the patch stream. */
+        mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                         GL_INVALID_OPERATION);
         drawCtx->state.dirty_bits = DIRTY_ALL;
         _tessellation.tessVertexCaptureBuffer = nil;
         _tessellation.tessVertexCaptureOffset = 0u;
@@ -1974,8 +2322,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (tesProgram) {
         if (![self dispatchTessEvaluationShader:drawCtx
                                            program:tesProgram
-                                             first:first
-                                             count:count]) {
+                                          contract:&contract]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
             return YES;
         }

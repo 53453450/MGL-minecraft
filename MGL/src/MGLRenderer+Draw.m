@@ -180,13 +180,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawArrays"]) {
         return;
     }
-    if ([self handleGeometryShaderArrayDrawIfNeeded:ctx
+    if ([self handleGeometryDrawIfNeeded:ctx
                                                  mode:mode
-                                                first:first
-                                                count:count
-                                        instanceCount:1
-                                         baseInstance:0u
-                                                label:"drawArrays"]) {
+                                                 first:first
+                                                 count:count
+                                                 indexType:0
+                                                 indices:NULL
+                                                 baseVertex:0
+                                                 instanceCount:1
+                                                 baseInstance:0u
+                                                 label:"drawArrays"]) {
         return;
     }
 
@@ -726,6 +729,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:1
                                      baseInstance:0
                                             label:"drawElements"]) {
+        return;
+    }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:0
+                           instanceCount:1
+                            baseInstance:0
+                                   label:"drawElements"]) {
         return;
     }
     if ([self processGLStateLocked: true] == false) {
@@ -1901,6 +1917,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawRangeElements"]) {
         return;
     }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:0
+                           instanceCount:1
+                            baseInstance:0
+                                   label:"drawRangeElements"]) {
+        return;
+    }
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
         return;
@@ -2069,13 +2098,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawArraysInstanced"]) {
         return;
     }
-    if ([self handleGeometryShaderArrayDrawIfNeeded:glm_ctx
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
                                                  mode:mode
-                                                first:first
-                                                count:count
-                                        instanceCount:instancecount
-                                         baseInstance:0u
-                                                label:"drawArraysInstanced"]) {
+                                                 first:first
+                                                 count:count
+                                                 indexType:0
+                                                 indices:NULL
+                                                 baseVertex:0
+                                                 instanceCount:instancecount
+                                                 baseInstance:0u
+                                                 label:"drawArraysInstanced"]) {
         return;
     }
 
@@ -2186,6 +2218,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:instancecount
                                      baseInstance:0
                                             label:"drawElementsInstanced"]) {
+        return;
+    }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:0
+                           instanceCount:instancecount
+                            baseInstance:0
+                                   label:"drawElementsInstanced"]) {
         return;
     }
 
@@ -2366,6 +2411,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:basevertex
+                           instanceCount:1
+                            baseInstance:0
+                                   label:"drawElementsBaseVertex"]) {
+        return;
+    }
+
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
         return;
@@ -2538,6 +2596,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:basevertex
+                           instanceCount:1
+                            baseInstance:0
+                                   label:"drawRangeElementsBaseVertex"]) {
+        return;
+    }
+
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
         return;
@@ -2706,6 +2777,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:instancecount
                                      baseInstance:0
                                             label:"drawElementsInstancedBaseVertex"]) {
+        return;
+    }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:basevertex
+                           instanceCount:instancecount
+                            baseInstance:0
+                                   label:"drawElementsInstancedBaseVertex"]) {
         return;
     }
 
@@ -3277,13 +3361,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawArraysInstancedBaseInstance"]) {
         return;
     }
-    if ([self handleGeometryShaderArrayDrawIfNeeded:glm_ctx
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
                                                  mode:mode
-                                                first:first
-                                                count:count
-                                        instanceCount:instancecount
-                                         baseInstance:baseinstance
-                                                label:"drawArraysInstancedBaseInstance"]) {
+                                                 first:first
+                                                 count:count
+                                                 indexType:0
+                                                 indices:NULL
+                                                 baseVertex:0
+                                                 instanceCount:instancecount
+                                                 baseInstance:baseinstance
+                                                 label:"drawArraysInstancedBaseInstance"]) {
         return;
     }
 
@@ -3395,6 +3482,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:instancecount
                                      baseInstance:baseinstance
                                             label:"drawElementsInstancedBaseInstance"]) {
+        return;
+    }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:0
+                           instanceCount:instancecount
+                            baseInstance:baseinstance
+                                   label:"drawElementsInstancedBaseInstance"]) {
         return;
     }
 
@@ -3574,6 +3674,19 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:instancecount
                                      baseInstance:baseinstance
                                             label:"drawElementsInstancedBaseVertexBaseInstance"]) {
+        return;
+    }
+
+    if ([self handleGeometryDrawIfNeeded:glm_ctx
+                                    mode:mode
+                                   first:0
+                                   count:count
+                               indexType:type
+                                 indices:indices
+                              baseVertex:basevertex
+                           instanceCount:instancecount
+                            baseInstance:baseinstance
+                                   label:"drawElementsInstancedBaseVertexBaseInstance"]) {
         return;
     }
 

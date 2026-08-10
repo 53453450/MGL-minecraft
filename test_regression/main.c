@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 34
+#define MAX_TESTS 36
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -3835,6 +3835,228 @@ cleanup:
     return result;
 }
 
+/* P0 negative test (docs/AIR_M3_CPP_TODO.md §3 P0): an unsupported GS draw
+ * must surface GL_INVALID_OPERATION instead of silently dropping the draw.
+ * Draw with GL_POINTS against a GS declared `layout(triangles) in;` — the
+ * mode/topology mismatch must be reported.  A following matching
+ * GL_TRIANGLES draw must NOT report an error. */
+static int test_air_gs_unsupported(unsigned char *pixels,
+                                   const char *out_path)
+{
+    (void)pixels;
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position; EmitVertex();\n"
+        "  gl_Position = gl_in[1].gl_Position; EmitVertex();\n"
+        "  gl_Position = gl_in[2].gl_Position; EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u;
+    int result = 1;
+    if (!program) goto cleanup;
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(program);
+
+    /* Drain any prior errors, then issue the mismatched draw. */
+    while (glGetError() != GL_NO_ERROR) { }
+
+    glDrawArrays(GL_POINTS, 0, 3);
+    if (glGetError() != GL_INVALID_OPERATION) {
+        fprintf(stderr,
+                "air_gs_unsupported: mode/topology mismatch did not raise "
+                "GL_INVALID_OPERATION\n");
+        goto cleanup;
+    }
+
+    /* The matching draw must be accepted without error. */
+    while (glGetError() != GL_NO_ERROR) { }
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr,
+                "air_gs_unsupported: matching GL_TRIANGLES draw raised an "
+                "unexpected error\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    return result;
+}
+
+/* P1 regression (docs/AIR_M3_CPP_TODO.md §3 P1): direct indexed GS draws.
+ * GS points-in expands each indexed input vertex into a triangle.  Covers
+ * plain glDrawElements, glDrawElementsBaseVertex and primitive restart. */
+static int test_air_geometry_indexed(unsigned char *pixels,
+                                     const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy;\n"
+        "  gl_Position = vec4(p + vec2(-0.3, -0.4), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(p + vec2( 0.3, -0.4), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(p + vec2( 0.0,  0.4), 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[8] = {
+        -0.5f, -0.5f,  /* 0: lower-left  */
+         0.5f, -0.5f,  /* 1: lower-right */
+         0.0f,  0.5f,  /* 2: top-center  */
+         0.7f,  0.7f,  /* 3: top-right   */
+    };
+    static const uint32_t indices[4] = {0u, 1u, 2u, 3u};
+    static const uint32_t restartIndices[5] = {
+        0u, 3u, 0xFFFFFFFFu, 1u, 2u,
+    };
+    /* Triangle centroid for input point p: (p.x, p.y - 1/15) because the GS
+     * expands to p+(-0.3,-0.4),(0.3,-0.4),(0,0.4) — centroid (p.x, p.y-0.1333). */
+    static const float expected[3][2] = {
+        {-0.5f, -0.6333f}, /* point 0  */
+        {0.5f, -0.6333f},  /* point 1  */
+        {0.0f,  0.3667f},  /* point 2  */
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u, vbo = 0u, ebo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
+                 GL_STATIC_DRAW);
+    glUseProgram(program);
+
+    /* 1) Plain indexed draw: points 0..3, expect green at centroids 0/1/2. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElements(GL_POINTS, 4, GL_UNSIGNED_INT, (void *)0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    for (int i = 0; i < 3; i++) {
+        int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+        int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+        if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_indexed: plain indexed centroid %d "
+                    "expected green, got (%u,%u,%u)\n",
+                    i, px[0], px[1], px[2]);
+            goto cleanup;
+        }
+    }
+
+    /* 2) Base-vertex: indices 2..3 resolve to points 2..3 (top area). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElementsBaseVertex(GL_POINTS, 2, GL_UNSIGNED_INT, (void *)0, 2);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int sx = (int)((expected[2][0] + 1.0) * 0.5 * REG_W);
+        int sy = (int)((expected[2][1] + 1.0) * 0.5 * REG_H);
+        if (sx >= 0 && sx < REG_W && sy >= 0 && sy < REG_H) {
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_geometry_indexed: base-vertex centroid expected "
+                        "green, got (%u,%u,%u)\n",
+                        px[0], px[1], px[2]);
+                goto cleanup;
+            }
+        }
+        /* The base-vertex draw must NOT cover point 0's centroid. */
+        sx = (int)((expected[0][0] + 1.0) * 0.5 * REG_W);
+        sy = (int)((expected[0][1] + 1.0) * 0.5 * REG_H);
+        if (sx >= 0 && sx < REG_W && sy >= 0 && sy < REG_H) {
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[1] > 20u) {
+                fprintf(stderr,
+                        "air_geometry_indexed: base-vertex leaked into point 0 "
+                        "region, got (%u,%u,%u)\n",
+                        px[0], px[1], px[2]);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* 3) Primitive restart: [0, 3, restart, 1, 2] splits into [0,3] and
+     * [1,2]; all four points expand (each index is one points-in primitive
+     * per segment). */
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(restartIndices),
+                 restartIndices, GL_STATIC_DRAW);
+    glEnable(GL_PRIMITIVE_RESTART);
+    glPrimitiveRestartIndex(0xFFFFFFFFu);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElements(GL_POINTS, 5, GL_UNSIGNED_INT, (void *)0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glDisable(GL_PRIMITIVE_RESTART);
+    for (int i = 0; i < 3; i++) {
+        int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+        int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+        if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_indexed: restart centroid %d expected "
+                    "green, got (%u,%u,%u)\n",
+                    i, px[0], px[1], px[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_tessellation_varying(unsigned char *pixels,
                                          const char *out_path)
 {
@@ -3952,6 +4174,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_varying", test_air_geometry_varying),
     SELF_CHECK_TEST("air_geometry_resources", test_air_geometry_resources),
     SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),
+    SELF_CHECK_TEST("air_gs_unsupported", test_air_gs_unsupported),
+    SELF_CHECK_TEST("air_geometry_indexed", test_air_geometry_indexed),
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
