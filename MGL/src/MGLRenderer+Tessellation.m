@@ -168,12 +168,46 @@ static void mglTessSetComputeBuffer(id<MTLComputeCommandEncoder> encoder,
 {
     if (mglTessUsesMetalCpp() &&
         mglRenderCppSetComputeBuffer((__bridge void *)encoder,
-                                     (__bridge void *)buffer,
-                                     (uint64_t)offset,
+                                     (__bridge void *)buffer, offset,
                                      (uint32_t)index) == 0) {
         return;
     }
     [encoder setBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglTessSetRenderVertexBuffer(id<MTLRenderCommandEncoder> encoder,
+                                         id<MTLBuffer> buffer,
+                                         NSUInteger offset,
+                                         NSUInteger index)
+{
+    if (mglTessUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer((__bridge void *)encoder,
+                                    (__bridge void *)buffer, offset,
+                                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                                    (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglTessDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
+                                  MTLPrimitiveType type,
+                                  NSUInteger vertexStart,
+                                  NSUInteger vertexCount,
+                                  NSUInteger instanceCount,
+                                  NSUInteger baseInstance)
+{
+    if (mglTessUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives((__bridge void *)encoder,
+                                   (uint32_t)type, vertexStart, vertexCount,
+                                   instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:type
+                vertexStart:vertexStart
+                vertexCount:vertexCount
+              instanceCount:instanceCount
+               baseInstance:baseInstance];
 }
 
 static void mglTessSetComputeTexture(id<MTLComputeCommandEncoder> encoder,
@@ -1166,6 +1200,448 @@ static bool mglCheckedNSUIntegerProduct(NSUInteger a,
     }
     *result = a * b;
     return true;
+}
+
+/* Per-patch expanded item count for the isolines/point-mode TES kernel.
+ * Must stay in lockstep with the u/v decomposition injected by
+ * mgl_air_backend.cpp (isTESCompute pre-main block).  Returns 0 when the
+ * factor record is missing (caller falls back to 1). */
+static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
+                                          const void *factorRecord)
+{
+    GLenum genMode = tesProgram ? tesProgram->tess_gen_mode : GL_TRIANGLES;
+    GLboolean pointMode = tesProgram ? tesProgram->tess_gen_point_mode : GL_FALSE;
+    const struct {
+        uint16_t edge[4];
+        uint16_t inside[2];
+    } __attribute__((packed)) *tf = (const void *)factorRecord;
+    if (!tf) return 0u;
+    if (genMode == GL_ISOLINES) {
+        float e0 = *(const __fp16 *)&tf->edge[0];
+        float e1 = *(const __fp16 *)&tf->edge[1];
+        if (e0 < 1.0f) e0 = 1.0f;
+        if (e1 < 1.0f) e1 = 1.0f;
+        return (GLuint)ceilf(e0) * (GLuint)ceilf(e1) * 2u;
+    }
+    float i0 = *(const __fp16 *)&tf->inside[0];
+    if (i0 < 1.0f) i0 = 1.0f;
+    if (pointMode && genMode == GL_QUADS) {
+        float i1 = *(const __fp16 *)&tf->inside[1];
+        if (i1 < 1.0f) i1 = 1.0f;
+        return (GLuint)ceilf(i0) * (GLuint)ceilf(i1);
+    }
+    if (pointMode) { /* triangles */
+        return (GLuint)ceilf(i0) * (GLuint)ceilf(i0);
+    }
+    return 0u;
+}
+
+/* Isolines / point-mode TES: expand one vertex record per work item with
+ * the AIR TES compute kernel (backend ABI: stage_in(24) factors(26)
+ * patchInputs(27) stageOut(28) indirect(29), one dispatch per patch), then
+ * rasterize through the passthrough vertex stage as lines / points.
+ * Each patch owns a contiguous item span; per-patch item counts differ,
+ * so the runtime dispatches per patch with the patch id and output base in
+ * the contract buffer (slot 29: {patch_id, gl_in_vertices, items,
+ * output_item_base}). */
+- (BOOL)dispatchAIRTessEvalCompute:(GLMContext)glm_ctx
+                          program:(Program *)tesProgram
+                         contract:(const MGLAIRTessDrawContract *)contract
+                       patchCount:(GLuint)patchCount
+                    instanceCount:(GLsizei)instanceCount
+                     baseInstance:(GLuint)baseInstance
+{
+    if (!tesProgram || !glm_ctx || !contract || patchCount == 0u ||
+        instanceCount <= 0) {
+        return false;
+    }
+
+    Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
+    if (!tesShader || !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function) {
+        NSLog(@"MGL TESS WARNING: TES program %u has no compiled function",
+              tesProgram->name);
+        return false;
+    }
+
+    void *tesPipelineHandle = NULL;
+    char tesPipelineError[512] = {0};
+    int tesPipelineResult = mglGetOrCreateProgramComputePipeline(
+        tesProgram, _TESS_EVALUATION_SHADER, &tesPipelineHandle,
+        tesPipelineError, sizeof(tesPipelineError));
+    id<MTLComputePipelineState> tesPipeline =
+        tesPipelineResult == 0 && tesPipelineHandle
+            ? (__bridge_transfer id<MTLComputePipelineState>)tesPipelineHandle
+            : nil;
+    if (!tesPipeline) {
+        NSLog(@"MGL TESS ERROR: failed to create TES compute pipeline for program %u: %s",
+              tesProgram->name,
+              tesPipelineError[0] ? tesPipelineError : "unknown error");
+        return false;
+    }
+
+    /* Inputs: gl_in is the post-TCS control point stream (or the VS capture
+     * when there is no TCS, which the draw path already aliased into
+     * tcsOutputBuffer).  Factors and per-patch inputs come from the TCS
+     * dispatch (or defaults). */
+    id<MTLBuffer> glInBuffer = _tessellation.tcsOutputBuffer;
+    NSUInteger glInOffset = _tessellation.tcsOutputOffset;
+    NSUInteger glInStride = _tessellation.tcsOutputStride;
+    GLuint glInVertices = _tessellation.tcsOutVertices;
+    if (!glInBuffer) {
+        glInBuffer = _tessellation.tessVertexCaptureBuffer;
+        glInOffset = _tessellation.tessVertexCaptureOffset;
+        glInStride = contract->per_vertex_out_stride;
+        glInVertices = MAX(1u, contract->patch_vertices);
+    }
+    if (!glInBuffer || !_tessellation.tessFactorBuffer) {
+        NSLog(@"MGL TESS ERROR: missing TES compute inputs program=%u",
+              (unsigned)tesProgram->name);
+        return false;
+    }
+    if (glInStride < MGL_AIR_PER_VERTEX_STRIDE) {
+        glInStride = MGL_AIR_PER_VERTEX_STRIDE;
+    }
+    if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
+
+    /* Compute per-patch item counts and the per-instance total. */
+    const uint16_t *factorBytes =
+        (const uint16_t *)_tessellation.tessFactorBuffer.contents;
+    NSUInteger factorByteCount =
+        (NSUInteger)patchCount * MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES;
+    if ((NSUInteger)_tessellation.tessFactorBuffer.length < factorByteCount) {
+        NSLog(@"MGL TESS ERROR: factor buffer too small for %u patches",
+              (unsigned)patchCount);
+        return false;
+    }
+    const GLuint instanceCountU = (GLuint)instanceCount;
+    uint64_t itemsPerInstance = 0u;
+    for (GLuint p = 0u; p < patchCount; p++) {
+        const void *record =
+            (const void *)((const uint8_t *)factorBytes +
+                           (NSUInteger)p *
+                               MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+        GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
+        if (items == 0u) items = 1u;
+        itemsPerInstance += (uint64_t)items;
+    }
+    if (itemsPerInstance == 0u ||
+        itemsPerInstance > 0xffffffffull) {
+        NSLog(@"MGL TESS ERROR: TES compute item count overflow program=%u",
+              (unsigned)tesProgram->name);
+        return false;
+    }
+    const GLuint itemsPerInstanceU = (GLuint)itemsPerInstance;
+
+    NSUInteger outStride = mglAIRPerVertexStrideForResources(
+        &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+                                             [_STAGE_OUTPUT_RES]);
+    if (outStride < MGL_AIR_PER_VERTEX_STRIDE) {
+        outStride = MGL_AIR_PER_VERTEX_STRIDE;
+    }
+    NSUInteger instanceBytes = 0u;
+    NSUInteger outSize = 0u;
+    if (!mglCheckedNSUIntegerProduct(itemsPerInstanceU, outStride,
+                                     &instanceBytes) ||
+        !mglCheckedNSUIntegerProduct(instanceBytes, instanceCountU, &outSize)) {
+        NSLog(@"MGL TESS ERROR: TES compute output size overflow program=%u",
+              (unsigned)tesProgram->name);
+        return false;
+    }
+    id<MTLBuffer> outBuffer = mglTessCreateBuffer(
+        _device, outSize, MTLResourceStorageModeShared);
+    if (!outBuffer || !outBuffer.contents) {
+        NSLog(@"MGL TESS ERROR: failed to allocate TES compute output "
+              "(%lu bytes) program=%u",
+              (unsigned long)outSize, (unsigned)tesProgram->name);
+        return false;
+    }
+    memset(outBuffer.contents, 0, outSize);
+
+    /* PASS 1: pre-resolve textures before opening the compute encoder. */
+    if (_renderPassManager.state->currentRenderEncoder) {
+        [self endRenderEncoding];
+    }
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer) >=
+            MTLCommandBufferStatusCommitted) {
+        if (![self newCommandBuffer]) {
+            NSLog(@"MGL TESS ERROR: failed to create command buffer for TES compute");
+            return false;
+        }
+    }
+
+    GLuint tesImgCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
+                                                  type:_STORAGE_IMAGE_RES];
+    for (GLuint i = 0; i < tesImgCount; i++) {
+        SpirvResource *resource = NULL;
+        if (i <
+            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource =
+                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+        }
+        if (mglShouldSkipStageTextureResource(tesProgram,
+                                              _TESS_EVALUATION_SHADER,
+                                              _STORAGE_IMAGE_RES,
+                                              resource)) {
+            continue;
+        }
+        GLuint glUnit = resource ? resource->gl_binding
+                                 : [self getProgramGLBinding:_TESS_EVALUATION_SHADER
+                                                        type:_STORAGE_IMAGE_RES
+                                                       index:(int)i];
+        if (glUnit >= TEXTURE_UNITS) {
+            continue;
+        }
+        Texture *ptr = MGL_STATE(glm_ctx)->image_units[glUnit].tex;
+        if (ptr && !ptr->mtl_data) {
+            [self bindMTLTexture:ptr];
+        }
+    }
+
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    MGLTessStageBufferBindingList stageBufferBindings = {0};
+    if (![self prepareTessStageBufferBindings:&stageBufferBindings
+                                         stage:_TESS_EVALUATION_SHADER
+                                     copyBacks:&stageCopyBacks]) {
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+
+    id<MTLComputeCommandEncoder> computeEncoder =
+        mglTessCreateComputeEncoder(
+            _renderPassManager.state->currentCommandBuffer);
+    if (!computeEncoder) {
+        NSLog(@"MGL TESS ERROR: failed to create compute encoder for TES compute");
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+    mglTessSetComputePipeline(computeEncoder, tesPipeline);
+
+    /* PASS 2: bind storage images for the TES stage. */
+    for (GLuint i = 0; i < tesImgCount; i++) {
+        SpirvResource *resource = NULL;
+        if (i <
+            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource =
+                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+        }
+        if (mglShouldSkipStageTextureResource(tesProgram,
+                                              _TESS_EVALUATION_SHADER,
+                                              _STORAGE_IMAGE_RES,
+                                              resource)) {
+            continue;
+        }
+        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
+                                    : [self getProgramBinding:_TESS_EVALUATION_SHADER
+                                                        type:_STORAGE_IMAGE_RES
+                                                       index:(int)i];
+        GLuint glUnit = resource ? resource->gl_binding
+                                 : [self getProgramGLBinding:_TESS_EVALUATION_SHADER
+                                                        type:_STORAGE_IMAGE_RES
+                                                       index:(int)i];
+        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
+            continue;
+        }
+        Texture *ptr = MGL_STATE(glm_ctx)->image_units[glUnit].tex;
+        if (ptr && !ptr->mtl_data) {
+            [self bindMTLTexture:ptr];
+        }
+        id<MTLTexture> texture = ptr ? (__bridge id<MTLTexture>)(ptr->mtl_data) : nil;
+        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+    }
+
+    /* Bind sampled textures + combined samplers for the TES stage. */
+    for (GLuint i = 0; i < TEXTURE_UNITS; i++) {
+        SpirvResource *resource = NULL;
+        if (i <
+            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
+            resource =
+                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
+        }
+        if (mglShouldSkipStageTextureResource(tesProgram,
+                                              _TESS_EVALUATION_SHADER,
+                                              _SAMPLED_IMAGE_RES,
+                                              resource)) {
+            continue;
+        }
+        GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
+                                    : [self getProgramBinding:_TESS_EVALUATION_SHADER
+                                                        type:_SAMPLED_IMAGE_RES
+                                                       index:(int)i];
+        GLuint glUnit = resource ? resource->gl_binding
+                                 : [self getProgramGLBinding:_TESS_EVALUATION_SHADER
+                                                        type:_SAMPLED_IMAGE_RES
+                                                       index:(int)i];
+        if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
+            continue;
+        }
+        Texture *ptr = MGL_STATE(glm_ctx)->active_textures[glUnit];
+        if (ptr && !ptr->mtl_data) {
+            [self bindMTLTexture:ptr];
+        }
+        id<MTLTexture> texture = ptr ? (__bridge id<MTLTexture>)(ptr->mtl_data) : nil;
+        mglTessSetComputeTexture(computeEncoder, texture, metalSlot);
+        if (resource && resource->has_combined_sampler) {
+            id<MTLSamplerState> sampler = nil;
+            if (MGL_STATE(glm_ctx)->texture_samplers[glUnit]) {
+                Sampler *glSampler =
+                    MGL_STATE(glm_ctx)->texture_samplers[glUnit];
+                if (glSampler->dirty_bits && glSampler->mtl_data) {
+                    mglSafeReleaseMetalObj((void **)&glSampler->mtl_data);
+                }
+                if (!glSampler->mtl_data && ptr) {
+                    glSampler->mtl_data = (void *)CFBridgingRetain(
+                        [self createMTLSamplerForTexParam:&glSampler->params
+                                                  target:ptr->target]);
+                    glSampler->dirty_bits = 0;
+                }
+                sampler = (__bridge id<MTLSamplerState>)(glSampler->mtl_data);
+            } else if (ptr && ptr->params.mtl_data) {
+                sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
+            }
+            if (!sampler) {
+                sampler = mglTessCreateSampler(
+                    _device, [MTLSamplerDescriptor new]);
+            }
+            if (sampler) {
+                mglTessSetComputeSampler(computeEncoder, sampler,
+                                         mglMetalCombinedSamplerSlot(resource));
+            }
+        }
+    }
+
+    if (![self bindPreparedTessStageBufferBindings:&stageBufferBindings
+                                  toComputeEncoder:computeEncoder]) {
+        mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+    [self bindPointSizeParamsToComputeEncoder:computeEncoder
+                                      program:tesProgram
+                                        stage:_TESS_EVALUATION_SHADER];
+
+    /* Fixed ABI buffers (backend mgl_air_tess_abi.h §3): stage_in(24) is
+     * the control point stream, factors(26) the quad-half records, patch
+     * inputs(27) the TCS per-patch output, stageOut(28) the expanded
+     * vertex records, indirect(29) the per-dispatch contract. */
+    mglTessSetComputeBuffer(computeEncoder, glInBuffer, glInOffset,
+                            MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
+    mglTessSetComputeBuffer(computeEncoder, _tessellation.tessFactorBuffer,
+                            0u, MGL_AIR_TESS_SLOT_TESS_FACTOR);
+    id<MTLBuffer> patchInputs = _tessellation.tcsPatchOutBuffer;
+    mglTessSetComputeBuffer(computeEncoder, patchInputs ? patchInputs : outBuffer,
+                            0u, MGL_AIR_TESS_SLOT_PATCH_OUT);
+    mglTessSetComputeBuffer(computeEncoder, outBuffer, 0u,
+                            MGL_AIR_TESS_SLOT_TCS_OUTPUT);
+
+    /* Dispatch per patch (item counts differ per patch).  The contract
+     * {patch_id, gl_in_vertices, items, output_item_base} is written for
+     * each dispatch; output_item_base spans instances first so each
+     * instance owns a contiguous [instance*itemsPerInstance] span. */
+    uint32_t *patchBases = (uint32_t *)malloc(
+        (size_t)(patchCount + 1u) * sizeof(uint32_t));
+    if (!patchBases) {
+        mglTessEndComputeEncoder(computeEncoder);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        return false;
+    }
+    {
+        uint32_t base = 0u;
+        for (GLuint p = 0u; p < patchCount; p++) {
+            patchBases[p] = base;
+            const void *record =
+                (const void *)((const uint8_t *)factorBytes +
+                               (NSUInteger)p *
+                                   MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+            GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
+            if (items == 0u) items = 1u;
+            base += items;
+        }
+        patchBases[patchCount] = base;
+    }
+    uint32_t contractWords[4];
+    contractWords[1] = glInVertices;
+    for (GLuint inst = 0u; inst < instanceCountU; inst++) {
+        for (GLuint p = 0u; p < patchCount; p++) {
+            const void *record =
+                (const void *)((const uint8_t *)factorBytes +
+                               (NSUInteger)p *
+                                   MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES);
+            GLuint items = mglAIRTessEvalItemsPerPatch(tesProgram, record);
+            if (items == 0u) items = 1u;
+            contractWords[0] = p;
+            contractWords[2] = items;
+            contractWords[3] = inst * itemsPerInstanceU + patchBases[p];
+            mglTessSetComputeBytes(computeEncoder, contractWords,
+                                   sizeof(contractWords),
+                                   MGL_AIR_TESS_SLOT_INDIRECT);
+            mglTessDispatchCompute(computeEncoder,
+                                   MTLSizeMake(items, 1u, 1u),
+                                   MTLSizeMake(64u, 1u, 1u));
+        }
+    }
+    free(patchBases);
+    mglTessEndComputeEncoder(computeEncoder);
+    if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                     requireCPUVisibility:YES]) {
+        NSLog(@"MGL TESS ERROR: failed to synchronize TES compute buffer writes");
+        return false;
+    }
+
+    /* Rasterize through the passthrough vertex stage. */
+    if (![self ensureAIRTessEvalPassthroughFunctionForProgram:tesProgram]) {
+        NSLog(@"MGL TESS ERROR: TES passthrough vertex unavailable program=%u",
+              (unsigned)tesProgram->name);
+        return false;
+    }
+    const GLenum genMode = tesProgram->tess_gen_mode;
+    const GLboolean pointMode = tesProgram->tess_gen_point_mode;
+    MTLPrimitiveType primType = pointMode ? MTLPrimitiveTypePoint
+        : (genMode == GL_ISOLINES ? MTLPrimitiveTypeLine
+                                  : MTLPrimitiveTypePoint);
+    const uint64_t primitivesPerInstance =
+        pointMode ? itemsPerInstanceU
+                  : (genMode == GL_ISOLINES ? itemsPerInstanceU / 2u
+                                            : itemsPerInstanceU / 3u);
+
+    _tessellation.tessComputeActive = YES;
+    _tessellation.tessComputeOutputBuffer = outBuffer;
+    _tessellation.tessComputeOutputStride = outStride;
+    _tessellation.tessComputeItems = itemsPerInstanceU;
+    _tessellation.tessComputePrimitiveType = primType;
+    _tessellation.tessComputeProgram = tesProgram;
+    BOOL stateReady = [self processGLState:true];
+    if (!stateReady || !_renderPassManager.state->currentRenderEncoder ||
+        [self currentDrawRasterizationIsEmpty]) {
+        _tessellation.tessComputeActive = NO;
+        _tessellation.tessComputeOutputBuffer = nil;
+        _tessellation.tessComputeProgram = NULL;
+        return NO;
+    }
+
+    [self applyPolygonOffsetForDrawMode:genMode == GL_ISOLINES
+                                            ? GL_LINES
+                                            : GL_POINTS];
+    id<MTLRenderCommandEncoder> encoder =
+        _renderPassManager.state->currentRenderEncoder;
+    for (GLsizei i = 0; i < instanceCount; i++) {
+        NSUInteger instanceOffset =
+            (NSUInteger)i * (NSUInteger)itemsPerInstanceU * outStride;
+        mglTessSetRenderVertexBuffer(encoder, outBuffer, instanceOffset, 0u);
+        mglTessDrawPrimitives(
+            encoder, primType, 0u, (NSUInteger)itemsPerInstanceU, 1u,
+            (NSUInteger)baseInstance + (NSUInteger)i);
+    }
+    _currentCBHasWork = YES;
+    mglRecordActivePrimitiveQueryDraw(
+        glm_ctx,
+        (GLuint64)instanceCount * primitivesPerInstance,
+        (GLuint64)instanceCount * primitivesPerInstance);
+    _tessellation.tessComputeActive = NO;
+    _tessellation.tessComputeOutputBuffer = nil;
+    _tessellation.tessComputeProgram = NULL;
+    return YES;
 }
 
 /* Dispatch a TES (Tessellation Evaluation Shader) when there is no TCS and

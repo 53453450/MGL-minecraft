@@ -1585,11 +1585,66 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
      * rgb10a2_shadow textures exist; fixes omission in 7/11 old entries). */
     mglInvalidateColorShadowsForDraw(ctx);
 
-    /* S11: GL_PATCHES bypasses deferred (tessellation compute kernel path).
-     * Only applies to non-instanced arrays (matches original mglDrawArrays). */
-    if (cmd->type == MGL_CMD_DRAW_ARRAYS && cmd->mode == GL_PATCHES) {
-        ctx->mtl_funcs.mtlDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
-        return;
+    /* S11: GL_PATCHES bypasses deferred (tessellation compute kernel path /
+     * native TES).  All draw shapes — arrays, indexed, base-vertex, instanced
+     * — route through the renderer's tessellation handler, which either runs
+     * the AIR compute/native path or reports a GL error for unsupported
+     * shapes.  Batch replay has no tessellation expansion, so recording an
+     * indexed patch draw here would drop the patch stream silently. */
+    if (cmd->mode == GL_PATCHES) {
+        switch (cmd->type) {
+            case MGL_CMD_DRAW_ARRAYS:
+                ctx->mtl_funcs.mtlDrawArrays(
+                    ctx, cmd->mode, cmd->first, cmd->count);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+                ctx->mtl_funcs.mtlDrawArraysInstanced(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS:
+                ctx->mtl_funcs.mtlDrawElements(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+                ctx->mtl_funcs.mtlDrawElementsInstanced(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+                ctx->mtl_funcs.mtlDrawElementsBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertex(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawElementsInstancedBaseVertexBaseInstance(
+                    ctx, cmd->mode, cmd->count, cmd->indexType,
+                    (const void *)(uintptr_t)cmd->indexBufferOffset,
+                    cmd->instanceCount, cmd->baseVertex, cmd->baseInstance);
+                return;
+            default:
+                break;
+        }
     }
 
     /* Geometry expansion rotates render/compute encoders and therefore cannot

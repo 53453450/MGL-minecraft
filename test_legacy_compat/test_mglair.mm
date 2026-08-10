@@ -869,8 +869,10 @@ int main(int argc, const char *argv[]) {
                 fprintf(stderr, "newFunctionWithName FAIL (tes)\n");
                 return 1;
             }
+            /* The metallib TESS tag carries 4*controlPointCount + patchKind;
+             * without a TCS the GL default patch size (3) is encoded. */
             if (tesFn.patchType != MTLPatchTypeTriangle ||
-                tesFn.patchControlPointCount != 0u) {
+                tesFn.patchControlPointCount != 3u) {
                 fprintf(stderr,
                         "TES_ABI_FAIL: patchType=%lu controlPoints=%lu\n",
                         (unsigned long)tesFn.patchType,

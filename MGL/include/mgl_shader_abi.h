@@ -49,6 +49,8 @@ typedef enum MGLShaderStage {
  * the C ABI boundary so Program does not depend on parser-private enums. */
 typedef struct MGLAIRStageInfo {
     uint32_t tess_control_output_vertices;
+    uint32_t tess_patch_vertices;   /* TES: control points per patch
+                                     * (TCS output or glPatchParameteri) */
     uint32_t tess_gen_mode;
     uint32_t tess_gen_spacing;
     uint32_t tess_gen_vertex_order;

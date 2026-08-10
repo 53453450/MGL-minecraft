@@ -162,6 +162,25 @@ typedef struct MGLTessellationState_t {
     GLuint tcsOutVertices;
     BOOL nativeTESActive;
     Program *nativeTESProgram;
+    /* Indexed native TES: sparse VS capture records [vertex_id] +
+     * CPU gather buffer fed as Metal controlPointIndexBuffer. */
+    id<MTLBuffer> __strong tessControlPointIndexBuffer;
+    BOOL tessIndexedDraw;
+    /* 256-aligned per-instance record span of the VS capture, used as the
+     * per-instance draw offset when instanced native TES loops instances. */
+    NSUInteger tessInstanceRecords;
+    /* Isolines / point-mode TES: vertices expanded by the AIR TES compute
+     * kernel (per-patch dispatch, contract at slot 29) and consumed by a
+     * passthrough vertex stage drawing lines / points. */
+    BOOL tessComputeActive;
+    id<MTLBuffer> __strong tessComputeOutputBuffer;
+    NSUInteger tessComputeOutputStride;
+    GLuint tessComputeItems;
+    MTLPrimitiveType tessComputePrimitiveType;
+    Program *tessComputeProgram;
+    id<MTLLibrary> __strong tessPassthroughLibrary;
+    id<MTLFunction> __strong tessPassthroughFunction;
+    uint64_t tessPassthroughProgramInstanceId;
 } MGLTessellationState;
 
 typedef struct MGLGeometryState_t {

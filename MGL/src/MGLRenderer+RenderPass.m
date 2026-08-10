@@ -771,6 +771,98 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     return YES;
 }
 
+/* TES-compute twin of ensureAIRGeometryPassthroughFunctionForProgram: the
+ * isolines/point-mode TES kernel expands one vertex record per work item,
+ * so the raster stage is a GLSL passthrough vertex reading the same
+ * record layout as the GS expansion (position at 0, point size at 1,
+ * varyings at MGL_AIR_PER_VERTEX_STRIDE + location*16).  The records come
+ * from the TES stage output resource list. */
+- (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program
+{
+    if (!program) return NO;
+    if (_tessellation.tessPassthroughLibrary &&
+        _tessellation.tessPassthroughFunction &&
+        _tessellation.tessPassthroughProgramInstanceId ==
+            program->pipeline_cache_instance_id) {
+        return YES;
+    }
+    _tessellation.tessPassthroughLibrary = nil;
+    _tessellation.tessPassthroughFunction = nil;
+    _tessellation.tessPassthroughProgramInstanceId = 0u;
+
+    SpirvResourceList *outputs =
+        &program->spirv_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
+    NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
+    NSUInteger vec4Stride = recordStride / 16u;
+    NSMutableString *source = [NSMutableString stringWithString:
+        @"#version 460 core\n"
+         "layout(std430, binding = 0) buffer MGLTESOutput {\n"
+         "    vec4 records[];\n"
+         "} mgl_tes_output;\n"];
+    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+        SpirvResource *output = &outputs->list[i];
+        if (output->is_per_patch) continue;
+        const char *type = mglGeometryPassthroughType(output->gl_type);
+        if (!type || !output->name) {
+            NSLog(@"MGL TESS ERROR: unsupported passthrough varying type 0x%x",
+                  (unsigned)output->gl_type);
+            return NO;
+        }
+        [source appendFormat:@"layout(location = %u) out %s %s;\n",
+                             (unsigned)output->location, type, output->name];
+    }
+    [source appendFormat:
+        @"void main() {\n"
+         "    int mgl_base = gl_VertexID * %lu;\n"
+         "    gl_Position = mgl_tes_output.records[mgl_base];\n"
+         "    vec4 mgl_point_size = "
+         "mgl_tes_output.records[mgl_base + 1];\n"
+         "    gl_PointSize = mgl_point_size.x;\n",
+         (unsigned long)vec4Stride];
+    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+        SpirvResource *output = &outputs->list[i];
+        if (output->is_per_patch) continue;
+        const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
+        if (!swizzle || !output->name) return NO;
+        [source appendFormat:
+            @"    vec4 mgl_slot_%u = "
+             "mgl_tes_output.records[mgl_base + %u];\n"
+             "    %s = mgl_slot_%u%s;\n",
+            (unsigned)i,
+            (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+            output->name, (unsigned)i,
+            swizzle];
+    }
+    [source appendString:@"}\n"];
+    unsigned char *bytes = NULL;
+    size_t size = 0u;
+    char errorText[512] = {0};
+    if (mglShaderCompileGLSL(source.UTF8String, MGL_STAGE_VERTEX, &bytes, &size,
+                             errorText, sizeof(errorText)) != 0 ||
+        !bytes || size == 0u) {
+        NSLog(@"MGL TESS ERROR: failed to compile AIR TES passthrough vertex: %s",
+              errorText[0] ? errorText : "?");
+        mglShaderFree(bytes);
+        return NO;
+    }
+    id<MTLLibrary> library = nil;
+    id<MTLFunction> function = nil;
+    BOOL loaded = mglLoadAIRMainFunction(
+        _device, bytes, size, &library, &function,
+        errorText, sizeof(errorText));
+    mglShaderFree(bytes);
+    if (!loaded || !library || !function) {
+        NSLog(@"MGL TESS ERROR: failed to load AIR TES passthrough vertex: %s",
+              errorText[0] ? errorText : "?");
+        return NO;
+    }
+    _tessellation.tessPassthroughLibrary = library;
+    _tessellation.tessPassthroughFunction = function;
+    _tessellation.tessPassthroughProgramInstanceId =
+        program->pipeline_cache_instance_id;
+    return YES;
+}
+
 
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
 {
@@ -3830,6 +3922,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     const BOOL cullDistanceCapture =
         _tessellation.cullDistanceCaptureActive;
     const BOOL geometryExpansion = _geometry.expansionActive;
+    const BOOL tessCompute = _tessellation.tessComputeActive;
     const int vertexStage = nativeTES ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
     Program *vertexProgram = nativeTES
         ? _tessellation.nativeTESProgram
@@ -3886,6 +3979,8 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
 
 	    void *vertexFunctionPtr = geometryExpansion
             ? (__bridge void *)_geometry.passthroughFunction
+            : tessCompute
+            ? (__bridge void *)_tessellation.tessPassthroughFunction
             : cullDistanceCapture
             ? vertexProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function
             : tessVertexCapture
@@ -3939,8 +4034,12 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
         pipelineStateDescriptor.tessellationFactorScaleEnabled = NO;
         pipelineStateDescriptor.tessellationFactorFormat =
             MTLTessellationFactorFormatHalf;
+        /* Indexed native TES feeds the CPU gather stream (uint32) as
+         * controlPointIndexBuffer; non-indexed uses None. */
         pipelineStateDescriptor.tessellationControlPointIndexType =
-            MTLTessellationControlPointIndexTypeNone;
+            _tessellation.tessIndexedDraw
+                ? MTLTessellationControlPointIndexTypeUInt32
+                : MTLTessellationControlPointIndexTypeNone;
         pipelineStateDescriptor.tessellationFactorStepFunction =
             MTLTessellationFactorStepFunctionPerPatch;
         pipelineStateDescriptor.tessellationOutputWindingOrder =
@@ -5373,7 +5472,8 @@ stencil_format_ok:;
             // create vertex descriptor
             MTLVertexDescriptor *vertexDescriptor;
 
-            vertexDescriptor = _geometry.expansionActive
+            vertexDescriptor = (_geometry.expansionActive ||
+                                _tessellation.tessComputeActive)
                 ? [[MTLVertexDescriptor alloc] init]
                 : [self generateVertexDescriptor];
 	            if (!vertexDescriptor) {
@@ -5405,8 +5505,8 @@ stencil_format_ok:;
                       (unsigned long)ca0.alphaBlendOperation);
             }
 
-	            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
-	            BOOL hasPipelineCacheKey = NO;
+            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
+            BOOL hasPipelineCacheKey = NO;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
             uint64_t vertexSig = 0;
@@ -5428,7 +5528,8 @@ stencil_format_ok:;
                                      | (_tessellation.nativeTESActive ? (1ull << 23) : 0ull)
                                      | (_tessellation.tessVertexCaptureActive ? (1ull << 22) : 0ull)
                                      | (_geometry.expansionActive ? (1ull << 21) : 0ull)
-                                     | (_tessellation.cullDistanceCaptureActive ? (1ull << 20) : 0ull));
+                                     | (_tessellation.cullDistanceCaptureActive ? (1ull << 20) : 0ull)
+                                     | (_tessellation.tessComputeActive ? (1ull << 19) : 0ull));
                 uint64_t vertexInstance = currentVertexProgram
                     ? currentVertexProgram->pipeline_cache_instance_id : 0u;
                 uint64_t vertexGeneration = currentVertexProgram
@@ -5665,8 +5766,11 @@ stencil_format_ok:;
                 _tessellation.nativeTESActive ? _TESS_EVALUATION_SHADER
                                                : _VERTEX_SHADER,
                 currentFragmentProgram, finalDescriptor, vertexDescriptor,
-                _geometry.expansionActive
-                    ? (__bridge void *)_geometry.passthroughLibrary
+                (_geometry.expansionActive ||
+                 _tessellation.tessComputeActive)
+                    ? (_tessellation.tessComputeActive
+                       ? (__bridge void *)_tessellation.tessPassthroughLibrary
+                       : (__bridge void *)_geometry.passthroughLibrary)
                     : _tessellation.cullDistanceCaptureActive
                     ? currentVertexProgram->spirv[_VERTEX_SHADER]
                           .mtl_cull_capture_library

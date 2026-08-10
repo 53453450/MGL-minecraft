@@ -411,6 +411,7 @@ typedef struct {
                                                      maxIndex:(uint32_t)maxIndex
                                                      outOffset:(NSUInteger *)outOffset;
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program;
+- (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
 - (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
                                stage:(int)stage
                            copyBacks:(MGLStageBindingCopyBackList *)copyBacks;

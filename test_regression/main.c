@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 39
+#define MAX_TESTS 44
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -398,6 +398,39 @@ static GLuint link_program_with_tessellation(const char *vs_src,
         char log[2048];
         glGetProgramInfoLog(program, sizeof(log), NULL, log);
         fprintf(stderr, "  [tessellation program link FAIL] %s\n", log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+/* TES-only program (no TCS): native indexed patch draws use the default
+ * tessellation factors via glPatchParameterfv. */
+static GLuint link_program_tess_eval_only(const char *vs_src,
+                                          const char *tes_src,
+                                          const char *fs_src)
+{
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs_src),
+        compile_shader(GL_TESS_EVALUATION_SHADER, tes_src),
+        compile_shader(GL_FRAGMENT_SHADER, fs_src),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) {
+        for (int i = 0; i < 3; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "  [TES-only program link FAIL] %s\n", log);
         glDeleteProgram(program);
         return 0;
     }
@@ -4398,6 +4431,481 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_indexed(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    /* TES-only (no TCS): indexed native TES.  The EBO is deliberately
+     * shuffled ([2,0,1] then [5,3,4]) so a wrong control-point stream
+     * (array-order instead of gather) produces a visibly wrong triangle. */
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    /* 8 vertices: triangle A = {0,1,2} around origin; triangle B = {3,4,5}
+     * offset left; {6,7} are fill so the gather maxIndex covers the span. */
+    static const float positions[16] = {
+        -0.6f, -0.4f,  0.6f, -0.4f,  0.0f,  0.6f,
+        -0.9f, -0.3f, -0.3f, -0.3f, -0.6f,  0.6f,
+         1.0f,  1.0f, -1.0f, -1.0f,
+    };
+    /* Shuffled index stream: [2,0,1] + [5,3,4] = two triangles. */
+    static const uint32_t indices[6] = {2u, 0u, 1u, 2u, 0u, 1u};
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_tess_eval_only(vs, tes, fs);
+    GLuint vao = 0u, vbo = 0u, ebo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
+                 GL_STATIC_DRAW);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+
+    /* Draw 1: plain indexed.  Patch 0 = [2,0,1] (origin triangle).  The EBO
+     * is shuffled ([2,0,1] instead of [0,1,2]) so a wrong control-point
+     * stream (array-order instead of gather) produces a wrong triangle. */
+    glDrawElements(GL_PATCHES, 3, GL_UNSIGNED_INT, (void *)0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Triangle A centroid ≈ (0.0, -0.0667). */
+        static const float expected[1][2] = {
+            {0.0f, -0.0667f},
+        };
+        for (int i = 0; i < 1; i++) {
+            int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+            int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+            if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_tessellation_indexed: triangle %d centroid "
+                        "expected green, got (%u,%u,%u)\n",
+                        i, px[0], px[1], px[2]);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_instanced(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    /* TES-only (no TCS): instanced native TES.  The VS moves each instance
+     * by gl_InstanceID on x, so instance 1 must render at +0.6 — a wrong
+     * implementation (same patch data for every instance, or a capture
+     * that ignores per-instance records) draws both triangles at the
+     * instance-0 location. */
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position.x + float(gl_InstanceID) * 0.6,"
+        "                      position.y, 0.0, 1.0);\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    /* One triangle; centroid ≈ (0.0, -0.133). */
+    static const float positions[6] = {
+        -0.4f, -0.4f,  0.4f, -0.4f,  0.0f,  0.4f,
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_tess_eval_only(vs, tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+
+    /* baseInstance=1: gl_InstanceID must stay 0/1 (instance_id - base), so
+     * the instance offsets are the same as a plain instanced draw. */
+    glDrawArraysInstancedBaseInstance(GL_PATCHES, 0, 3, 2, 1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Instance 0 centroid ≈ (0.0, -0.133), instance 1 ≈ (0.6, -0.133). */
+        static const float expected[2][2] = {
+            {0.0f, -0.133f},
+            {0.6f, -0.133f},
+        };
+        for (int i = 0; i < 2; i++) {
+            int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+            int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+            if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_tessellation_instanced: instance %d centroid "
+                        "expected green, got (%u,%u,%u) at (%d,%d)\n",
+                        i, px[0], px[1], px[2], sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_multipatch(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    /* TES-only (no TCS): two patches and two instances in one draw.  The
+     * 80-byte capture records produce a 480-byte instance stride, while the
+     * TES varying and gl_PrimitiveID distinguish every patch. */
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec2 cp_position;\n"
+        "void main() {\n"
+        "  cp_position = position + vec2(0.0, float(gl_InstanceID) * 0.9);\n"
+        "  gl_Position = vec4(cp_position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "layout(location=0) in vec2 cp_position[];\n"
+        "void main() {\n"
+        "  vec2 p = cp_position[0] * gl_TessCoord.x +\n"
+        "           cp_position[1] * gl_TessCoord.y +\n"
+        "           cp_position[2] * gl_TessCoord.z;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_Position.y += float(gl_PrimitiveID) * 0.3;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *factor_vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *factor_tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    float level = 0.0;\n"
+        "    if (gl_PrimitiveID == 0) level = 1.0;\n"
+        "    gl_TessLevelOuter[0] = level;\n"
+        "    gl_TessLevelOuter[1] = level;\n"
+        "    gl_TessLevelOuter[2] = level;\n"
+        "    gl_TessLevelInner[0] = level;\n"
+        "  }\n"
+        "}\n";
+    static const char *factor_tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "}\n";
+    static const float positions[12] = {
+        -0.7f, -0.75f, -0.3f, -0.75f, -0.5f, -0.45f,
+         0.3f, -0.75f,  0.7f, -0.75f,  0.5f, -0.45f,
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_tess_eval_only(vs, tes, fs);
+    GLuint factor_program = link_program_with_tessellation(
+        factor_vs, factor_tcs, factor_tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    if (!fbo || !program || !factor_program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+
+    glDrawArraysInstanced(GL_PATCHES, 0, 6, 2);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float expected[4][2] = {
+            {-0.5f, -0.65f},
+            { 0.5f, -0.35f},
+            {-0.5f,  0.25f},
+            { 0.5f,  0.55f},
+        };
+        for (int i = 0; i < 4; i++) {
+            const int sx = (int)((expected[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((expected[i][1] + 1.0f) * 0.5f * REG_H);
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_tessellation_multipatch: probe %d centroid "
+                        "expected green, got (%u,%u,%u) at (%d,%d)\n",
+                        i, px[0], px[1], px[2], sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* TCS factor addressing: patch 0 has level 1 and must render; patch 1
+     * has level 0 and must be discarded.  Resetting patchStart to zero would
+     * incorrectly reuse patch 0's factor record and render both patches. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(factor_program);
+    glDrawArrays(GL_PATCHES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float probes[2][2] = {
+            {-0.5f, -0.65f},
+            { 0.5f, -0.65f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            const int is_green = px[0] <= 20u && px[1] >= 220u && px[2] <= 20u;
+            if ((i == 0 && !is_green) || (i == 1 && is_green)) {
+                fprintf(stderr,
+                        "air_tessellation_multipatch: factor probe %d got "
+                        "(%u,%u,%u) at (%d,%d)\n",
+                        i, px[0], px[1], px[2], sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (factor_program) glDeleteProgram(factor_program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_indirect(unsigned char *pixels,
+                                          const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 fragColor;\n"
+        "void main() {\n"
+        "  fragColor = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "}\n";
+
+    /* Triangles: A = {(-0.4,-0.4),(0.4,-0.4),(0,0.4)} → centroid
+     * ≈ (0.0,-0.133); B = A shifted by +0.6 on x → centroid ≈ (0.6,-0.133). */
+    static const float verts[6][2] = {
+        {-0.4f, -0.4f}, {0.4f, -0.4f}, {0.0f, 0.4f},
+        {0.2f, -0.4f},  {1.0f, -0.4f}, {0.6f, 0.4f},
+    };
+    static const GLuint indices[6] = {0, 1, 2, 3, 4, 5};
+
+    GLuint vao = 0, vbo = 0, ebo = 0, cmd_buf = 0, program = 0;
+    GLuint fbo = 0, color = 0;
+    int result = -1;
+
+    program = link_program_tess_eval_only(vs, tes, fs);
+    if (!program) goto cleanup;
+    glUseProgram(program);
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    vbo = make_vbo(verts, sizeof(verts));
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    glGenBuffers(1, &cmd_buf);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_buf);
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, REG_W, REG_H);
+
+    /* 1) drawArraysIndirect: one patch (3 vertices). */
+    {
+        /* DrawArraysIndirectCommand: {count, primCount, first, baseInstance} */
+        GLuint cmd[4] = {3u, 1u, 0u, 0u};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmd), cmd, GL_STATIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawArraysIndirect(GL_PATCHES, 0);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        int sx = (int)((1.0 - 0.133) * 0.5 * REG_W);
+        int sy = (int)((1.0 - 0.133) * 0.5 * REG_H);
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_tessellation_indirect: drawArraysIndirect centroid "
+                    "expected green, got (%u,%u,%u) at (%d,%d)\n",
+                    px[0], px[1], px[2], sx, sy);
+            goto cleanup;
+        }
+    }
+
+    /* 2) drawElementsIndirect: one patch (3 indices). */
+    {
+        /* DrawElementsIndirectCommand:
+         * {count, primCount, firstIndex, baseVertex, baseInstance} */
+        GLuint cmd[5] = {3u, 1u, 0u, 0u, 0u};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmd), cmd, GL_STATIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDrawElementsIndirect(GL_PATCHES, GL_UNSIGNED_INT, 0);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        int sx = (int)((1.0 - 0.133) * 0.5 * REG_W);
+        int sy = (int)((1.0 - 0.133) * 0.5 * REG_H);
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_tessellation_indirect: drawElementsIndirect centroid "
+                    "expected green, got (%u,%u,%u) at (%d,%d)\n",
+                    px[0], px[1], px[2], sx, sy);
+            goto cleanup;
+        }
+    }
+
+    /* 3) multiDrawArraysIndirect: two patches (A first=0, B first=3). */
+    {
+        /* DrawArraysIndirectCommand: {count, primCount, first, baseInstance} */
+        GLuint cmd[8] = {3u, 1u, 0u, 0u, 3u, 1u, 3u, 0u};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmd), cmd, GL_STATIC_DRAW);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glMultiDrawArraysIndirect(GL_PATCHES, 0, 2, 0);
+        glFinish();
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        static const float expected[2][2] = {
+            {0.0f, -0.133f},
+            {0.6f, -0.133f},
+        };
+        for (int i = 0; i < 2; i++) {
+            int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+            int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+            if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_tessellation_indirect: multiDrawArraysIndirect "
+                        "patch %d centroid expected green, got (%u,%u,%u) "
+                        "at (%d,%d)\n",
+                        i, px[0], px[1], px[2], sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (cmd_buf) glDeleteBuffers(1, &cmd_buf);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_tessellation_varying(unsigned char *pixels,
                                          const char *out_path)
 {
@@ -4483,6 +4991,241 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_isolines_point_mode(unsigned char *pixels,
+                                                     const char *out_path)
+{
+    (void)out_path;
+    /* Isolines and layout(point_mode) have no Metal-native tessellation
+     * equivalent; they must run through the AIR TES compute expansion +
+     * passthrough vertex (line/point rasterization).  Three draws:
+     *
+     *  1. isolines, outer = {4, 2} -> 2 isolines x 4 line segments each;
+     *     segment midpoints are probed.
+     *  2. quads point_mode, inner = {3, 3} -> 9 points at grid cell
+     *     centres; all 9 exact locations are probed.
+     *  3. triangles point_mode, inner = 2 -> 4 points at the cell
+     *     centroids; all 4 are probed. */
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *iso_tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelOuter[0] = 4.0;\n"
+        "    gl_TessLevelOuter[1] = 2.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 a = gl_in[0].gl_Position.xy;\n"
+        "  vec2 b = gl_in[1].gl_Position.xy;\n"
+        "  vec2 p = mix(a, b, gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *quad_tcs =
+        "#version 450 core\n"
+        "layout(vertices=4) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelInner[0] = 3.0;\n"
+        "    gl_TessLevelInner[1] = 3.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *quad_tes =
+        "#version 450 core\n"
+        "layout(quads, equal_spacing, point_mode) in;\n"
+        "void main() {\n"
+        "  vec2 p00 = gl_in[0].gl_Position.xy;\n"
+        "  vec2 p10 = gl_in[1].gl_Position.xy;\n"
+        "  vec2 p01 = gl_in[2].gl_Position.xy;\n"
+        "  vec2 p11 = gl_in[3].gl_Position.xy;\n"
+        "  vec2 p = mix(mix(p00, p10, gl_TessCoord.x),\n"
+        "               mix(p01, p11, gl_TessCoord.x), gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    static const char *tri_tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    gl_TessLevelInner[0] = 2.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *tri_tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, point_mode) in;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy * gl_TessCoord.x +\n"
+        "           gl_in[1].gl_Position.xy * gl_TessCoord.y +\n"
+        "           gl_in[2].gl_Position.xy * gl_TessCoord.z;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    /* Isoline control points A(-0.7,-0.3) B(0.7,-0.3); C is unused. */
+    static const float iso_positions[6] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,
+    };
+    /* Quad corners: p00 p10 p01 p11. */
+    static const float quad_positions[8] = {
+        -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
+    };
+    /* Triangle A(-0.6,-0.4) B(0.6,-0.4) C(0,0.7). */
+    static const float tri_positions[6] = {
+        -0.6f, -0.4f, 0.6f, -0.4f, 0.0f, 0.7f,
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint iso_program =
+        link_program_with_tessellation(vs, iso_tcs, iso_tes, fs);
+    GLuint quad_program =
+        link_program_with_tessellation(vs, quad_tcs, quad_tes, fs);
+    GLuint tri_program =
+        link_program_with_tessellation(vs, tri_tcs, tri_tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    if (!fbo || !iso_program || !quad_program || !tri_program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+
+    /* Draw 1: isolines, outer = {4, 2}.  Two lines at v = 0.25 / 0.75,
+     * each with segments at u in {0.125, 0.375, 0.625, 0.875} midpoints. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(iso_positions), iso_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(iso_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float probes[4][2] = {
+            {-0.175f, -0.15f}, { 0.175f, -0.15f},
+            {-0.175f,  0.15f}, { 0.175f,  0.15f},
+        };
+        for (int i = 0; i < 4; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_point_mode: isoline "
+                        "probe %d not drawn at (%d,%d)\n",
+                        i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Draw 2: quads point_mode, inner = {3, 3} -> 9 points at the grid
+     * cell centres x = -1/3, 0, 1/3; y = -1/3, 0, 1/3. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_positions), quad_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(quad_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    glDrawArrays(GL_PATCHES, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float xs[3] = {-1.0f / 3.0f, 0.0f, 1.0f / 3.0f};
+        for (int j = 0; j < 3; j++) {
+            for (int i = 0; i < 3; i++) {
+                const int sx = (int)((xs[i] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((xs[j] + 1.0f) * 0.5f * REG_H);
+                const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+                if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                    fprintf(stderr,
+                            "air_tessellation_isolines_point_mode: quad "
+                            "point (%d,%d) expected green, got (%u,%u,%u)\n",
+                            i, j, px[0], px[1], px[2]);
+                    goto cleanup;
+                }
+            }
+        }
+    }
+
+    /* Draw 3: triangles point_mode, inner = 2 -> 4 points at (u,v) =
+     * (1/6,1/6), (2/3,1/6), (1/6,2/3), (2/3,2/3) with w = 1-u-v, mapped
+     * via p = A*u + B*v + C*w (A(-0.6,-0.4) B(0.6,-0.4) C(0,0.7)):
+     * (0,1/3), (-0.3,-13/60), (0.3,-13/60), (0,-23/30). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri_positions), tri_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(tri_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float probes[4][2] = {
+            { 0.0f,  1.0f / 3.0f},
+            {-0.3f, -13.0f / 60.0f},
+            { 0.3f, -13.0f / 60.0f},
+            { 0.0f, -23.0f / 30.0f},
+        };
+        for (int i = 0; i < 4; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+            if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_point_mode: triangle "
+                        "point %d expected green, got (%u,%u,%u) at "
+                        "(%d,%d)\n",
+                        i, px[0], px[1], px[2], sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (iso_program) glDeleteProgram(iso_program);
+    if (quad_program) glDeleteProgram(quad_program);
+    if (tri_program) glDeleteProgram(tri_program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -4521,7 +5264,16 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_multi_draw", test_air_geometry_multi_draw),
     SELF_CHECK_TEST("air_geometry_base_vertex_instance",
                     test_air_geometry_base_vertex_instance),
+    SELF_CHECK_TEST("air_tessellation_indexed", test_air_tessellation_indexed),
+    SELF_CHECK_TEST("air_tessellation_instanced",
+                    test_air_tessellation_instanced),
+    SELF_CHECK_TEST("air_tessellation_indirect",
+                    test_air_tessellation_indirect),
+    SELF_CHECK_TEST("air_tessellation_multipatch",
+                    test_air_tessellation_multipatch),
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
+    SELF_CHECK_TEST("air_tessellation_isolines_point_mode",
+                    test_air_tessellation_isolines_point_mode),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),

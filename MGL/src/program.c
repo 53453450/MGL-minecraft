@@ -844,6 +844,17 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
         pptr->geometry_invocations = stage_info.geometry_invocations;
     }
+    if (stage == _TESS_EVALUATION_SHADER) {
+        /* The TES metallib TESS tag must carry the control points per
+         * patch (4*cpc + patchKind); Metal uses that compile-time value to
+         * compute the per-patch control-point offset, so a 0 here makes
+         * every patch read record 0.  Prefer the TCS output vertices when
+         * present, else the GL default patch size (3). */
+        stage_info.tess_patch_vertices =
+            pptr->tess_control_output_vertices > 0u
+                ? pptr->tess_control_output_vertices
+                : 3u;
+    }
     int air_rc = mglAirCompileGLSLWithReflectInfo(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
         pptr->spirv_resources_list[stage], &stage_info, err, sizeof err);

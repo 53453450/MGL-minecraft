@@ -369,6 +369,38 @@ static void mglDrawSupportDrawPatches(
             baseInstance:baseInstance];
 }
 
+static void mglDrawSupportDrawIndexedPatches(
+    id<MTLRenderCommandEncoder> encoder,
+    NSUInteger controlPointCount,
+    NSUInteger patchStart,
+    NSUInteger patchCount,
+    id<MTLBuffer> patchIndexBuffer,
+    NSUInteger patchIndexBufferOffset,
+    id<MTLBuffer> controlPointIndexBuffer,
+    NSUInteger controlPointIndexBufferOffset,
+    NSUInteger instanceCount,
+    NSUInteger baseInstance)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPatches(
+            (__bridge void *)encoder, controlPointCount, patchStart,
+            patchCount, (__bridge void *)patchIndexBuffer,
+            patchIndexBufferOffset,
+            (__bridge void *)controlPointIndexBuffer,
+            controlPointIndexBufferOffset, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPatches:controlPointCount
+                     patchStart:patchStart
+                     patchCount:patchCount
+               patchIndexBuffer:patchIndexBuffer
+         patchIndexBufferOffset:patchIndexBufferOffset
+        controlPointIndexBuffer:controlPointIndexBuffer
+  controlPointIndexBufferOffset:controlPointIndexBufferOffset
+                   instanceCount:instanceCount
+                    baseInstance:baseInstance];
+}
+
 extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
                                                GLuint64 generated,
                                                GLuint64 written);
@@ -417,7 +449,20 @@ static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
         tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function;
     MTLPatchType expected = tesProgram->tess_gen_mode == GL_QUADS
         ? MTLPatchTypeQuad : MTLPatchTypeTriangle;
-    return function.patchType == expected && function.patchControlPointCount == 0u;
+    if (function.patchType != expected) {
+        return NO;
+    }
+    /* The metallib TESS tag now carries 4*controlPointCount + patchKind;
+     * a non-zero patchControlPointCount is the real per-patch control
+     * point count and must agree with the TCS output vertices.  Zero
+     * (legacy encoding) is also tolerated. */
+    if (function.patchControlPointCount > 0 &&
+        tcsProgram &&
+        (NSInteger)tcsProgram->tess_control_output_vertices !=
+            function.patchControlPointCount) {
+        return NO;
+    }
+    return YES;
 }
 
 static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
@@ -851,7 +896,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     NSUInteger captureOffset = 0u;
     NSUInteger captureStride = mglAIRPerVertexStrideForResources(
         &vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
-    if (!mglCheckedTessCaptureSize(count, instanceCount, captureStride, &captureSize,
+    const NSUInteger recordsPerInstance = (NSUInteger)count;
+    if (!mglCheckedTessCaptureSize(recordsPerInstance, instanceCount,
+                                   captureStride, &captureSize,
                                    &captureOffset)) {
         return nil;
     }
@@ -872,7 +919,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         _renderPassManager.state->currentRenderEncoder;
     mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
     const uint32_t captureParams[3] = {
-        (uint32_t)first, (uint32_t)count, baseInstance,
+        (uint32_t)first, (uint32_t)recordsPerInstance, baseInstance,
     };
     mglDrawSupportSetVertexBytes(
         encoder, captureParams, sizeof(captureParams), 28u);
@@ -902,7 +949,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                                  instanceCount:(GLsizei)instanceCount
                                                   baseInstance:(GLuint)baseInstance
                                                      maxIndex:(uint32_t)maxIndex
-                                                     outOffset:(NSUInteger *)outOffset
+                                                    outOffset:(NSUInteger *)outOffset
 {
     if (outOffset) *outOffset = 0u;
     if (!drawCtx || count <= 0 || instanceCount <= 0 || !indexBuffer) {
@@ -1174,7 +1221,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                                      instanceCount:instanceCount
                                                       baseInstance:baseInstance
                                                          maxIndex:gatherMaxIndex
-                                                         outOffset:&inputOffset];
+                                                        outOffset:&inputOffset];
     } else {
         input = [self captureAIRVertexPositionsForTessellation:
                          drawCtx
@@ -1182,7 +1229,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                  count:count
                          instanceCount:instanceCount
                           baseInstance:baseInstance
-                            outOffset:&inputOffset];
+                           outOffset:&inputOffset];
     }
     if (!input) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -2175,9 +2222,85 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     _tessellation.tessVertexCaptureBuffer = nil;
     _tessellation.tessVertexCaptureOffset = 0u;
+    _tessellation.tessControlPointIndexBuffer = nil;
+    _tessellation.tessIndexedDraw = NO;
+    _tessellation.tessInstanceRecords = 0u;
     if (nativeTES) {
-        if (indexType != 0u || instanceCount != 1) {
+        const BOOL indexedDraw = (indexType != 0u);
+        if (indexedDraw && tcsProgram) {
+            /* TCS consumes the VS capture with continuous per-patch
+             * addressing; indexed (sparse) input needs a gather path in the
+             * TCS kernel, which is a separate follow-up. */
             nativeTES = NO;
+        } else if (indexedDraw) {
+            /* Indexed native TES (no TCS): capture the VS once into sparse
+             * per-vertex records [instance][vertex_id] and let the CPU
+             * gather buffer (raw index stream) drive Metal's
+             * controlPointIndexBuffer.  baseVertex is already applied by the
+             * indexed capture draw.  Instances are drawn one at a time from
+             * their contiguous capture spans because Metal drawPatches has no
+             * per-instance patch-data offset. */
+            Buffer *ebo = getElementBuffer(drawCtx);
+            if (!ebo || ![self processBuffer:ebo] || !ebo->data.mtl_data) {
+                nativeTES = NO;
+            } else {
+                id<MTLBuffer> eboMetal =
+                    (__bridge id<MTLBuffer>)ebo->data.mtl_data;
+                const NSUInteger indexOffsetBytes =
+                    (NSUInteger)(uintptr_t)indices;
+                const uint8_t *indexBytes = mglElementIndexSourceForDraw(
+                    ebo, eboMetal, indexType, indexOffsetBytes, count);
+                uint32_t *gatherArray = NULL;
+                uint32_t gatherCount = 0u;
+                uint32_t gatherPrimitives = 0u;
+                uint32_t gatherMaxIndex = 0u;
+                if (!indexBytes ||
+                    !mglGeometryGatherIndices(indexBytes, indexType, count,
+                                              baseVertex, restartEnabled,
+                                              restartIndex, patchVertices,
+                                              &gatherArray, &gatherCount,
+                                              &gatherPrimitives,
+                                              &gatherMaxIndex)) {
+                    nativeTES = NO;
+                } else {
+                    id<MTLBuffer> gatherBuf =
+                        mglDrawSupportCreateBufferWithBytes(
+                            _device, gatherArray,
+                            (NSUInteger)gatherCount * 4u,
+                            MTLResourceStorageModeShared);
+                    free(gatherArray);
+                    if (!gatherBuf) {
+                        nativeTES = NO;
+                    } else {
+                        NSUInteger captureOffset = 0u;
+                        id<MTLBuffer> capture = [self
+                            captureAIRVertexPositionsForGeometryIndexed:drawCtx
+                                                            indexBuffer:eboMetal
+                                                              indexType:getMTLIndexType(indexType)
+                                                            indexOffset:indexOffsetBytes
+                                                                  count:count
+                                                              baseVertex:baseVertex
+                                                           instanceCount:instanceCount
+                                                            baseInstance:baseInstance
+                                                               maxIndex:gatherMaxIndex
+                                                               outOffset:&captureOffset];
+                        if (!capture) {
+                            nativeTES = NO;
+                        } else {
+                            _tessellation.tessVertexCaptureBuffer = capture;
+                            _tessellation.tessVertexCaptureOffset = captureOffset;
+                            _tessellation.tessControlPointIndexBuffer = gatherBuf;
+                            _tessellation.tessIndexedDraw = YES;
+                            _tessellation.tessInstanceRecords =
+                                (NSUInteger)gatherMaxIndex + 1u;
+                            /* The gather stream is already re-grouped into
+                             * complete patches, so it is the real count. */
+                            patchCount = gatherPrimitives;
+                            contract.patch_count = patchCount;
+                        }
+                    }
+                }
+            }
         } else {
             NSUInteger captureOffset = 0u;
             id<MTLBuffer> capture =
@@ -2192,6 +2315,7 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             } else {
                 _tessellation.tessVertexCaptureBuffer = capture;
                 _tessellation.tessVertexCaptureOffset = captureOffset;
+                _tessellation.tessInstanceRecords = (NSUInteger)count;
             }
         }
     }
@@ -2258,36 +2382,71 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
             id<MTLRenderCommandEncoder> encoder =
                 _renderPassManager.state->currentRenderEncoder;
-            mglDrawSupportSetVertexBuffer(
-                encoder, _tessellation.tcsOutputBuffer,
-                _tessellation.tcsOutputOffset, 0u);
-            [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
-                                       offset:_tessellation.tcsOutputOffset
-                                      atIndex:0u];
-            mglDrawSupportSetVertexBuffer(
-                encoder, _tessellation.tcsOutputBuffer,
-                _tessellation.tcsOutputOffset, 30u);
-            [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
-                                       offset:_tessellation.tcsOutputOffset
-                                      atIndex:30u];
-            GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
-            if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
-            mglDrawSupportSetVertexBytes(
-                encoder, patchInfo, sizeof(patchInfo), 28u);
-            if (_tessellation.tcsPatchOutBuffer) {
-                mglDrawSupportSetVertexBuffer(
-                    encoder, _tessellation.tcsPatchOutBuffer, 0u, 27u);
-                [self recordLastBoundVertexBuffer:
-                          _tessellation.tcsPatchOutBuffer
-                                           offset:0u
-                                          atIndex:27u];
-            }
+            /* Metal does not advance the post-tessellation control-point
+             * pointer correctly for patchStart. Draw each patch separately:
+             * slot 0 is rebased to the patch, while slot 30 stays at the
+             * instance base so TES varyings can apply patchId exactly once. */
+            const NSUInteger instanceRecords =
+                _tessellation.tessInstanceRecords;
+            const NSUInteger instanceStrideBytes =
+                instanceRecords * _tessellation.tcsOutputStride;
             mglDrawSupportSetTessellationFactors(
                 encoder, nativeFactors, 0u, 0u);
-            mglDrawSupportDrawPatches(
-                encoder, _tessellation.tcsOutVertices, 0u, patchCount,
-                nil, 0u, (NSUInteger)instanceCount,
-                (NSUInteger)baseInstance);
+            for (GLsizei i = 0; i < instanceCount; i++) {
+                const NSUInteger instanceOffset =
+                    _tessellation.tessVertexCaptureOffset +
+                    (NSUInteger)i * instanceStrideBytes;
+                mglDrawSupportSetVertexBuffer(
+                    encoder, _tessellation.tcsOutputBuffer,
+                    instanceOffset, 0u);
+                [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                                           offset:instanceOffset
+                                          atIndex:0u];
+                mglDrawSupportSetVertexBuffer(
+                    encoder, _tessellation.tcsOutputBuffer,
+                    instanceOffset, 30u);
+                [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                                           offset:instanceOffset
+                                          atIndex:30u];
+                GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
+                if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
+                mglDrawSupportSetVertexBytes(
+                    encoder, patchInfo, sizeof(patchInfo), 28u);
+                if (_tessellation.tcsPatchOutBuffer) {
+                    mglDrawSupportSetVertexBuffer(
+                        encoder, _tessellation.tcsPatchOutBuffer, 0u, 27u);
+                    [self recordLastBoundVertexBuffer:
+                              _tessellation.tcsPatchOutBuffer
+                                               offset:0u
+                                              atIndex:27u];
+                }
+                if (_tessellation.tessIndexedDraw) {
+                    mglDrawSupportDrawIndexedPatches(
+                        encoder, _tessellation.tcsOutVertices, 0u, patchCount,
+                        nil, 0u,
+                        _tessellation.tessControlPointIndexBuffer, 0u,
+                        1u, (NSUInteger)baseInstance + (NSUInteger)i);
+                } else {
+                    const NSUInteger cpcStride =
+                        (NSUInteger)_tessellation.tcsOutVertices *
+                        _tessellation.tcsOutputStride;
+                    for (GLuint p = 0u; p < patchCount; p++) {
+                        const NSUInteger patchOffset =
+                            instanceOffset + (NSUInteger)p * cpcStride;
+                        mglDrawSupportSetVertexBuffer(
+                            encoder, _tessellation.tcsOutputBuffer,
+                            patchOffset, 0u);
+                        [self recordLastBoundVertexBuffer:
+                                  _tessellation.tcsOutputBuffer
+                                                   offset:patchOffset
+                                                  atIndex:0u];
+                        mglDrawSupportDrawPatches(
+                            encoder, _tessellation.tcsOutVertices, p, 1u,
+                            nil, 0u, 1u,
+                            (NSUInteger)baseInstance + (NSUInteger)i);
+                    }
+                }
+            }
             _currentCBHasWork = YES;
 
             GLuint64 primitives = mglNativeTessPrimitiveCount(
@@ -2300,11 +2459,32 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         _tessellation.nativeTESProgram = NULL;
         _tessellation.tessVertexCaptureBuffer = nil;
         _tessellation.tessVertexCaptureOffset = 0u;
+        _tessellation.tessControlPointIndexBuffer = nil;
+        _tessellation.tessIndexedDraw = NO;
+        _tessellation.tessInstanceRecords = 0u;
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
 
     if (airTES) {
+        /* Isolines and layout(point_mode) have no Metal-native equivalent
+         * (MTLPatchType is triangle/quad only and drawPatches has no output
+         * primitive type), so those programs run as an AIR compute kernel
+         * expansion + passthrough vertex (line/point rasterization). */
+        if (tesProgram && (tesProgram->tess_gen_point_mode ||
+                           tesProgram->tess_gen_mode == GL_ISOLINES)) {
+            const BOOL dispatched =
+                [self dispatchAIRTessEvalCompute:drawCtx
+                                        program:tesProgram
+                                       contract:&contract
+                                     patchCount:patchCount
+                                  instanceCount:instanceCount
+                                   baseInstance:baseInstance];
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            _tessellation.tessVertexCaptureBuffer = nil;
+            _tessellation.tessVertexCaptureOffset = 0u;
+            return YES;
+        }
         NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u%s",
               (unsigned)tesProgram->name,
               forceComputeTES ? " (AIR has no compute fallback variant)" : "");

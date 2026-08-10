@@ -3118,11 +3118,32 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_PATCHES) {
-        /* Indirect patch draws would require command decoding before TCS/TES
-         * dispatch. Keep them explicit until a real caller needs this path. */
-        mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-        NSLog(@"MGL WARNING: drawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
+        /* Indirect tessellation: read the single command back and route
+         * through the normal patch draw path (mtlDrawArraysInstancedBaseInstance
+         * contains handleTessellationPatchDrawIfNeeded). */
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawArraysIndirect.patches"]) {
+            return;
+        }
+        DrawArraysIndirectCommand cmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &cmd,
+                                sizeof(cmd),
+                                "drawArraysIndirect.patches")) {
+            return;
+        }
+        if (cmd.count == 0u || cmd.instanceCount == 0u) return;
+        if (cmd.count > (uint32_t)INT_MAX ||
+            cmd.first > (uint32_t)INT_MAX ||
+            cmd.instanceCount > (uint32_t)INT_MAX) {
+            return;
+        }
+        [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                            mode:mode
+                                           first:(GLint)cmd.first
+                                           count:(GLsizei)cmd.count
+                                   instancecount:(GLsizei)cmd.instanceCount
+                                    baseinstance:cmd.baseInstance];
         return;
     }
 
@@ -3374,11 +3395,40 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_PATCHES) {
-        /* Indirect patch draws would require command decoding before TCS/TES
-         * dispatch. Keep them explicit until a real caller needs this path. */
-        mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-        NSLog(@"MGL WARNING: drawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
+        /* Indirect tessellation: read the single command back and route
+         * through the normal indexed patch draw path
+         * (mtlDrawElementsInstancedBaseVertexBaseInstance contains
+         * handleTessellationPatchDrawIfNeeded). */
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawElementsIndirect.patches"]) {
+            return;
+        }
+        DrawElementsIndirectCommand cmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &cmd,
+                                sizeof(cmd),
+                                "drawElementsIndirect.patches")) {
+            return;
+        }
+        if (cmd.count == 0u || cmd.instanceCount == 0u) return;
+        if (cmd.count > (uint32_t)INT_MAX ||
+            cmd.instanceCount > (uint32_t)INT_MAX) {
+            return;
+        }
+        const NSUInteger indexStride = mglGLIndexElementSize(type);
+        if (indexStride == 0u ||
+            (NSUInteger)cmd.first > NSUIntegerMax / indexStride) {
+            return;
+        }
+        const NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
+        [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                        mode:mode
+                                                       count:(GLsizei)cmd.count
+                                                        type:type
+                                                     indices:(const void *)(uintptr_t)elementOffset
+                                               instancecount:(GLsizei)cmd.instanceCount
+                                                   basevertex:cmd.baseVertex
+                                                    baseinstance:cmd.baseInstance];
         return;
     }
 
@@ -4735,11 +4785,34 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_PATCHES) {
-        /* Indirect patch draws would require command decoding before TCS/TES
-         * dispatch. Keep them explicit until a real caller needs this path. */
-        mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-        NSLog(@"MGL WARNING: multiDrawArraysIndirect GL_PATCHES is not emulated yet; skipping draw");
+        /* Indirect tessellation: decode every command on the CPU and route
+         * each through the normal patch draw path. */
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawArraysIndirect.patches"]) {
+            return;
+        }
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride : sizeof(DrawArraysIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) break;
+            DrawArraysIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawArraysIndirect.patches")) break;
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.first > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX) continue;
+            [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                                mode:mode
+                                               first:(GLint)cmd.first
+                                               count:(GLsizei)cmd.count
+                                       instancecount:(GLsizei)cmd.instanceCount
+                                        baseinstance:cmd.baseInstance];
+        }
         return;
     }
 
@@ -5041,11 +5114,39 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     if (mode == GL_PATCHES) {
-        /* Indirect patch draws would require command decoding before TCS/TES
-         * dispatch. Keep them explicit until a real caller needs this path. */
-        mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=patches_not_emulated program=%u",
-                    (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-        NSLog(@"MGL WARNING: multiDrawElementsIndirect GL_PATCHES is not emulated yet; skipping draw");
+        /* Indirect tessellation: decode every command on the CPU and route
+         * each through the normal indexed patch draw path. */
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawElementsIndirect.patches"]) {
+            return;
+        }
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride : sizeof(DrawElementsIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        const NSUInteger indexStride = mglGLIndexElementSize(type);
+        if (indexStride == 0u) return;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) break;
+            DrawElementsIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawElementsIndirect.patches")) break;
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX) continue;
+            if ((NSUInteger)cmd.first > NSUIntegerMax / indexStride) continue;
+            const NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
+            [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                            mode:mode
+                                                           count:(GLsizei)cmd.count
+                                                            type:type
+                                                         indices:(const void *)(uintptr_t)elementOffset
+                                                   instancecount:(GLsizei)cmd.instanceCount
+                                                       basevertex:cmd.baseVertex
+                                                     baseinstance:cmd.baseInstance];
+        }
         return;
     }
 

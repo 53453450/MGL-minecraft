@@ -1174,6 +1174,16 @@ int mglRenderCppDrawPatches(void *render_encoder,
                             uint64_t patch_index_buffer_offset,
                             uint64_t instance_count,
                             uint64_t base_instance);
+int mglRenderCppDrawIndexedPatches(void *render_encoder,
+                                   uint64_t control_point_count,
+                                   uint64_t patch_start,
+                                   uint64_t patch_count,
+                                   void *patch_index_buffer,
+                                   uint64_t patch_index_buffer_offset,
+                                   void *control_point_index_buffer,
+                                   uint64_t control_point_index_buffer_offset,
+                                   uint64_t instance_count,
+                                   uint64_t base_instance);
 
 int mglRenderCppCreateIndirectCommandBuffer(
     uint32_t command_types,

@@ -6415,6 +6415,33 @@ int mglRenderCppDrawPatches(void* render_encoder,
     return 0;
 }
 
+int mglRenderCppDrawIndexedPatches(void* render_encoder,
+                                   uint64_t control_point_count,
+                                   uint64_t patch_start,
+                                   uint64_t patch_count,
+                                   void* patch_index_buffer,
+                                   uint64_t patch_index_buffer_offset,
+                                   void* control_point_index_buffer,
+                                   uint64_t control_point_index_buffer_offset,
+                                   uint64_t instance_count,
+                                   uint64_t base_instance) {
+    MTL::RenderCommandEncoder* encoder =
+        static_cast<MTL::RenderCommandEncoder*>(render_encoder);
+    if (!encoder || patch_count == 0 || instance_count == 0 ||
+        !control_point_index_buffer) return -1;
+    encoder->drawIndexedPatches(
+        static_cast<NS::UInteger>(control_point_count),
+        static_cast<NS::UInteger>(patch_start),
+        static_cast<NS::UInteger>(patch_count),
+        static_cast<MTL::Buffer*>(patch_index_buffer),
+        static_cast<NS::UInteger>(patch_index_buffer_offset),
+        static_cast<MTL::Buffer*>(control_point_index_buffer),
+        static_cast<NS::UInteger>(control_point_index_buffer_offset),
+        static_cast<NS::UInteger>(instance_count),
+        static_cast<NS::UInteger>(base_instance));
+    return 0;
+}
+
 int mglRenderCppCreateIndirectCommandBuffer(
     uint32_t command_types,
     int inherit_pipeline_state,

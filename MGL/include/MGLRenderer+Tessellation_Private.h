@@ -33,7 +33,21 @@
 
 #import "MGLRenderer.h"
 
+struct MGLAIRTessDrawContract;
+typedef struct MGLAIRTessDrawContract MGLAIRTessDrawContract;
+
 @interface MGLRenderer ()
+
+/* Isolines / point-mode TES: expand one vertex record per work item with
+ * the AIR TES compute kernel, then rasterize through the passthrough
+ * vertex stage as lines / points.  Called from the airTES branch of the
+ * GL_PATCHES draw path (MGLRenderer+DrawSupport.m). */
+- (BOOL)dispatchAIRTessEvalCompute:(GLMContext)glm_ctx
+                          program:(Program *)tesProgram
+                         contract:(const MGLAIRTessDrawContract *)contract
+                       patchCount:(GLuint)patchCount
+                    instanceCount:(GLsizei)instanceCount
+                     baseInstance:(GLuint)baseInstance;
 
 @end
 
