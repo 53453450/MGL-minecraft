@@ -75,7 +75,7 @@ bool mglRendererSamplerNameLooksSamplerLike(const char *name);
 
 /* Heuristic: does the SPIR-V resource look like a sampler that must be
  * bound to a Metal texture+sampler pair?  Considers resource type and,
- * for SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, image_dim / uniform_location
+ * for _UNIFORM_CONSTANT_RES, image_dim / uniform_location
  * / name heuristics. */
 bool mglRendererResourceLooksSamplerLike(const SpirvResource *res, int resType);
 

@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 /* Resolve the GL client buffer binding (UBO/SSBO/plain-uniform index) for
- * a SPIR-V reflected resource.  For plain uniforms (SPVC_RESOURCE_TYPE_
+ * a SPIR-V reflected resource.  For plain uniforms (resource type
  * UNIFORM_CONSTANT) this consults the Minecraft plain-uniform binding
  * table (ModelViewMat=0, ProjMat=1, ...) and falls back to
  * uniform_location / location / gl_binding.  For UBOs/SSBOs this returns
@@ -68,7 +68,7 @@ GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
  * and inventory icons. */
 bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res);
 
-/* Human-readable name for a SPVC_RESOURCE_TYPE_* constant, or "resource"
+/* Human-readable name for a MGL resource type constant, or "resource"
  * for unknown types.  Used by diagnostic/logging paths. */
 const char *mglSpirvResourceTypeName(int type);
 

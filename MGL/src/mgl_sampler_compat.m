@@ -17,7 +17,7 @@
  *
  * External dependencies:
  *   - Program / SpirvResource / SpirvResourceList types (glm_context.h).
- *   - SPVC_RESOURCE_TYPE_* constants (spirv_cross_c.h, pulled through
+ *   - MGL resource type constants (spirv_cross_c.h, pulled through
  *     MGLRenderer.m's include chain).
  *   - _MAX_SHADER_TYPES / _MAX_SPIRV_RES / _VERTEX_SHADER (glm_context.h).
  *   - TEXTURE_UNITS (glm_limits.h).
@@ -25,7 +25,6 @@
 
 #import "mgl_sampler_compat.h"
 #import <Foundation/Foundation.h>
-#import "spirv_cross_c.h"
 #import "mgl_trace_log.h"
 #include <string.h>
 
@@ -38,9 +37,9 @@ bool mglProgramHasImageDim(Program *program, GLuint imageDim)
     }
 
     const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _STORAGE_IMAGE_RES
     };
 
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
@@ -148,12 +147,12 @@ bool mglRendererResourceLooksSamplerLike(const SpirvResource *res, int resType)
     }
 
     switch (resType) {
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
-        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+        case _SAMPLED_IMAGE_RES:
+        case _SEPARATE_IMAGE_RES:
+        case _SEPARATE_SAMPLERS_RES:
+        case _STORAGE_IMAGE_RES:
             return true;
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
+        case _UNIFORM_CONSTANT_RES:
             return res->image_dim != 0u ||
                    res->uniform_location >= 0x4000 ||
                    mglRendererSamplerNameLooksSamplerLike(res->name);
@@ -167,11 +166,11 @@ SpirvResource *mglFindSamplerResourceForMetalBinding(Program *program,
                                                      GLuint metalBinding)
 {
     static const int samplerResourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-        SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+        _UNIFORM_CONSTANT_RES,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
+        _STORAGE_IMAGE_RES
     };
 
     if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || metalBinding >= TEXTURE_UNITS) {
@@ -275,11 +274,11 @@ bool mglProgramSamplesTextureUnit(Program *program, GLuint unit)
                sizeof(program->sampled_texture_unit_mask));
 
         static const int samplerResourceTypes[] = {
-            SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-            SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-            SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-            SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-            SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+            _UNIFORM_CONSTANT_RES,
+            _SAMPLED_IMAGE_RES,
+            _SEPARATE_IMAGE_RES,
+            _SEPARATE_SAMPLERS_RES,
+            _STORAGE_IMAGE_RES
         };
 
         for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {

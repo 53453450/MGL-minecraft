@@ -9,7 +9,6 @@
 #import "mgl_spirv_resource.h"
 
 #import <Foundation/Foundation.h>
-#import "spirv_cross_c.h"
 
 #include <string.h>
 
@@ -80,7 +79,7 @@ GLuint mglClientBufferBindingForResource(int resourceType, const SpirvResource *
      * slots. Use the GL uniform location to find the client-side buffer, then
      * map that location to the reflected Metal slot later.
      */
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+    if (resourceType == _UNIFORM_CONSTANT_RES) {
         if (knownPlainUniformBinding >= 0) {
             return (GLuint)knownPlainUniformBinding;
         }
@@ -105,18 +104,18 @@ GLuint mglMetalResourceSlot(const SpirvResource *res)
 
 GLuint mglStageBufferResourceElementCount(int resourceType, const SpirvResource *res)
 {
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+    if (resourceType == _UNIFORM_BUFFER_RES &&
         res &&
         res->ubo_array_size > 1u) {
         return res->ubo_array_size;
     }
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+    if (resourceType == _UNIFORM_CONSTANT_RES &&
         res &&
         res->ubo_members &&
         res->gl_array_size > 1) {
         return (GLuint)res->gl_array_size;
     }
-    if (resourceType == SPVC_RESOURCE_TYPE_STORAGE_BUFFER &&
+    if (resourceType == _STORAGE_BUFFER_RES &&
         res &&
         res->gl_array_size > 1) {
         return (GLuint)res->gl_array_size;
@@ -131,7 +130,7 @@ GLuint mglClientBufferBindingForResourceElement(int resourceType,
 {
     GLuint baseBinding = mglClientBufferBindingForResource(resourceType, res);
 
-    if (resourceType == SPVC_RESOURCE_TYPE_UNIFORM_BUFFER &&
+    if (resourceType == _UNIFORM_BUFFER_RES &&
         res &&
         res->ubo_array_bindings &&
         element < res->ubo_array_size) {
@@ -148,10 +147,10 @@ GLuint mglMetalResourceSlotForElement(const SpirvResource *res, GLuint element)
 
 GLuint mglMetalCombinedSamplerSlot(const SpirvResource *res)
 {
-    if (!res || !res->msl_has_combined_sampler) {
+    if (!res || !res->has_combined_sampler) {
         return 0u;
     }
-    return res->msl_combined_sampler_binding;
+    return res->combined_sampler_binding;
 }
 
 GLuint mglMetalCombinedSamplerSlotForElement(const SpirvResource *res,
@@ -189,15 +188,15 @@ bool mglPlainUniformAllowsGlobalFallback(const SpirvResource *res)
 const char *mglSpirvResourceTypeName(int type)
 {
     switch (type) {
-        case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER: return "uniform_buffer";
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT: return "uniform_constant";
-        case SPVC_RESOURCE_TYPE_STORAGE_BUFFER: return "storage_buffer";
-        case SPVC_RESOURCE_TYPE_STAGE_INPUT: return "stage_input";
-        case SPVC_RESOURCE_TYPE_STAGE_OUTPUT: return "stage_output";
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE: return "sampled_image";
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE: return "separate_image";
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS: return "separate_sampler";
-        case SPVC_RESOURCE_TYPE_PUSH_CONSTANT: return "push_constant";
+        case _UNIFORM_BUFFER_RES: return "uniform_buffer";
+        case _UNIFORM_CONSTANT_RES: return "uniform_constant";
+        case _STORAGE_BUFFER_RES: return "storage_buffer";
+        case _STAGE_INPUT_RES: return "stage_input";
+        case _STAGE_OUTPUT_RES: return "stage_output";
+        case _SAMPLED_IMAGE_RES: return "sampled_image";
+        case _SEPARATE_IMAGE_RES: return "separate_image";
+        case _SEPARATE_SAMPLERS_RES: return "separate_sampler";
+        case _PUSH_CONSTANT_RES: return "push_constant";
         default: return "resource";
     }
 }
