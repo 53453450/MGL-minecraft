@@ -10,28 +10,19 @@
 
 #include "mgl_spirv_resource.h"
 #include "mgl_sampler_compat.h"
-#include "spirv_cross_c.h"
+#include "mgl_program_resource.h"
 
 #include <stdlib.h>
 #include <string.h>
-
-/* mgl_msl_compat.h pulls in mgl_texture_compat.h, which uses NS_ENUM
- * (Foundation) and cannot be included by this pure-C TU.  Forward-declare
- * the one function we need from it instead.  See mgl_msl_compat.h for the
- * full contract. */
-bool mglShouldSkipStageBufferResource(Program *program,
-                                      int stage,
-                                      int resourceType,
-                                      const SpirvResource *resource);
 
 /* The four SPIR-V resource types whose bindings are resolved each draw
  * in mapShaderBufferResourcesToBufferMap.  Matches the mapped_types[]
  * table in that function. */
 static const int kMappedSpvcTypes[4] = {
-    SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-    SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-    SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-    SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
+    _UNIFORM_BUFFER_RES,
+    _UNIFORM_CONSTANT_RES,
+    _STORAGE_BUFFER_RES,
+    _ATOMIC_COUNTER_RES
 };
 
 /* ------------------------------------------------------------------ */
@@ -104,7 +95,7 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
     /* Detect plain uniform struct packing path (mirrors
      * mapShaderBufferResourcesToBufferMap lines 775-778). */
     GLboolean is_struct_packed = GL_FALSE;
-    if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+    if (spvc_type == _UNIFORM_CONSTANT_RES &&
         resource->ubo_members && resource->ubo_member_count > 0 &&
         resource->required_size > 0 &&
         !mglRendererResourceLooksSamplerLike(resource, spvc_type)) {
@@ -112,7 +103,7 @@ static void mglBuildPlanEntry(MGLBufferPlanEntry *entry,
         flags |= MGL_BP_FLAG_STRUCT_PACKED;
     }
 
-    if (spvc_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT) {
+    if (spvc_type == _UNIFORM_CONSTANT_RES) {
         if (mglPlainUniformAllowsGlobalFallback(resource)) {
             flags |= MGL_BP_FLAG_ALLOW_FALLBACK;
         }

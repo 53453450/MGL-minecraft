@@ -75,11 +75,11 @@ enum {
 /* Geometry shader input topologies (GLSL 4.60 4.3.8.1). */
 enum {
     MGL_AST_GS_IN_DEFAULT           = 0,
-    MGL_AST_GS_IN_POINTS            = 1,
-    MGL_AST_GS_IN_LINES             = 2,
-    MGL_AST_GS_IN_LINES_ADJACENCY   = 3,
-    MGL_AST_GS_IN_TRIANGLES         = 4,
-    MGL_AST_GS_IN_TRIANGLES_ADJACENCY = 5,
+    MGL_AST_GS_IN_POINTS            = 16,
+    MGL_AST_GS_IN_LINES             = 17,
+    MGL_AST_GS_IN_LINES_ADJACENCY   = 18,
+    MGL_AST_GS_IN_TRIANGLES         = 19,
+    MGL_AST_GS_IN_TRIANGLES_ADJACENCY = 20,
 };
 
 /* Geometry shader output topologies (GLSL 4.60 4.3.8.2). */

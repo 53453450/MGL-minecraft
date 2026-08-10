@@ -72,7 +72,7 @@ typedef struct MGLBufferPlanStructMember {
 /* ------------------------------------------------------------------ */
 typedef struct MGLBufferPlanEntry {
     /* Resource identity */
-    uint16_t resource_type;          /* SPVC_RESOURCE_TYPE_* (UBO/UNIFORM_CONSTANT/SSBO/ATOMIC_COUNTER) */
+    uint16_t resource_type;          /* MGL resource type (UBO/UNIFORM_CONSTANT/SSBO/ATOMIC_COUNTER) */
     uint16_t resource_index;          /* index in spirv_resources_list[stage][type].list */
     uint16_t element_count;           /* mglStageBufferResourceElementCount */
     uint16_t struct_member_count;     /* 0 unless MGL_BP_FLAG_STRUCT_PACKED */

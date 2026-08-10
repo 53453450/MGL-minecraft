@@ -26,9 +26,6 @@
 #include <stdint.h>
 
 #include <mach/vm_types.h>
-#include <glslang_c_interface.h>
-#include <glslang_c_shader_types.h>
-
 #include "glm_dispatch.h"
 
 #include "draw_command.h"

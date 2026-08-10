@@ -34,11 +34,6 @@
 #include "hash_table.h"
 #include "draw_command.h"
 
-typedef struct GLSLState_t {
-    glslang_resource_t  resrc;
-    glslang_limits_t    limits;
-} GLSLState;
-
 enum {
     dirtyVAO = 0,
     dirtyState,
@@ -176,9 +171,6 @@ typedef struct {
 
     BufferBase  buffer_base[_MAX_BUFFER_TYPES];
 
-    // glsl info
-    GLSLState   glsl;
-
     // pixel pack unpack
     PixelStore  pack;
     PixelStore  unpack;
@@ -312,11 +304,11 @@ _Static_assert(offsetof(GLMState, shaders) - offsetof(GLMState, sync_table)
                == 11 * sizeof(HashTable),
                "GLMState HashTable block changed; revisit mglCopyHotStateFields region boundaries");
 
-/* The gap [buffer_base, glsl) skipped between regions 4 and 5 must be exactly
- * buffer_base[_MAX_BUFFER_TYPES]; region 5 assumes glsl follows the array. */
-_Static_assert(offsetof(GLMState, glsl) - offsetof(GLMState, buffer_base)
+/* The gap [buffer_base, pack) skipped between regions 4 and 5 must be exactly
+ * buffer_base[_MAX_BUFFER_TYPES]; region 5 assumes pack follows the array. */
+_Static_assert(offsetof(GLMState, pack) - offsetof(GLMState, buffer_base)
                == _MAX_BUFFER_TYPES * sizeof(BufferBase),
-               "field inserted between buffer_base and glsl; revisit mglCopyHotStateFields region 5");
+               "field inserted between buffer_base and pack; revisit mglCopyHotStateFields region 5");
 
 /* The hot list (mglCopyHotStateFields) and cold list are both expanded from
  * the X-macros in mgl_types_buffer.h; this checks that together they cover
@@ -351,9 +343,9 @@ static inline void mglCopyHotStateFields(GLMState *dst, const GLMState *src)
     MGL_SNAPSHOT_HOT_BUFFER_BASE_TYPES(MGL_SNAPSHOT_COPY_HOT)
 #undef MGL_SNAPSHOT_COPY_HOT
 
-    /* Region 5: [glsl, end) — everything after buffer_base. */
+    /* Region 5: [pack, end) — everything after buffer_base. */
     {
-        size_t post_start = offsetof(GLMState, glsl);
+        size_t post_start = offsetof(GLMState, pack);
         size_t post_size  = sizeof(GLMState) - post_start;
         memcpy((char *)dst + post_start,
                (char *)src + post_start,

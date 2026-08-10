@@ -27,24 +27,18 @@
 #include <malloc/malloc.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include "mgl_shader_abi.h"
-#include <glslang_c_interface.h>
-#include <glslang_c_shader_types.h>
-#include "spirv-tools/libspirv.h"
-#include "spirv_cross_c.h"
-#include "spirv.h"
 
 #include "glm_context.h"
 #include "shaders.h"
 #include "buffers.h"
 #include "mgl_safety.h"
 #include "mgl_buffer_slots.h"
-#include "mgl_ir_postprocess.h"
-#include "msl_patch_pipeline.h"
 #include "mgl_metal_ref.h"
 #include "mgl_uniform_reflection.h"
-#include "mgl_spirv_compile.h"
+#include "mgl_program_reflection.h"
 #include "mgl_sampler_compat.h"
 #include "mgl_buffer_plan.h"
+#include "mgl_render_cpp.h"
 
 
 static _Atomic uint64_t mglNextMSLTextureCacheInstanceID = 1u;
@@ -204,7 +198,7 @@ Program *newProgram(GLMContext ctx, GLuint program)
     bzero(ptr, sizeof(Program));
 
     ptr->name = program;
-    ptr->msl_texture_cache_instance_id =
+    ptr->pipeline_cache_instance_id =
         atomic_fetch_add_explicit(&mglNextMSLTextureCacheInstanceID,
                                   1u,
                                   memory_order_relaxed);
@@ -303,12 +297,7 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         deleteHashElement(&STATE(program_table), ptr->name);
     }
 
-    /* linked_glsl_program is a non-NULL linked-state marker (set to
-     * (glslang_program_t*)ptr on successful link), NOT a real glslang
-     * program.  The real glslang_program_t is deleted at the end of
-     * mglLinkProgram.  Do NOT call glslang_program_delete here — it would
-     * dereference the marker as if it were a glslang object. */
-    ptr->linked_glsl_program = NULL;
+    ptr->link_success = GL_FALSE;
 
     /* Free the buffer binding plan cache before releasing the spirv
      * resources it was built from.  The plan copies reflection values
@@ -319,27 +308,28 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
      * so no owned allocations beyond the array itself). */
     mglFreeActiveUniformCache(ptr);
 
+    mglRenderCppInvalidateProgramPipelines(
+        ptr->pipeline_cache_instance_id);
+
     mglSafeReleaseMetalObj((void **)&ptr->mtl_data);
 
     for(int i=0; i<_MAX_SHADER_TYPES; i++)
     {
         // CRITICAL FIX: Add NULL checks before all free/release operations to prevent double-frees
-        if (ptr->spirv[i].ir) {
-            free(ptr->spirv[i].ir);
-            ptr->spirv[i].ir = NULL;
-        }
-        if (ptr->spirv[i].msl_str) {
-            free(ptr->spirv[i].msl_str);
-            ptr->spirv[i].msl_str = NULL;
-        }
-        if (ptr->spirv[i].msl_str_capture) {
-            free(ptr->spirv[i].msl_str_capture);
-            ptr->spirv[i].msl_str_capture = NULL;
-        }
         if (ptr->spirv[i].metallib_bytes) {
             free(ptr->spirv[i].metallib_bytes);
             ptr->spirv[i].metallib_bytes = NULL;
             ptr->spirv[i].metallib_size = 0;
+        }
+        if (ptr->spirv[i].metallib_tess_capture_bytes) {
+            free(ptr->spirv[i].metallib_tess_capture_bytes);
+            ptr->spirv[i].metallib_tess_capture_bytes = NULL;
+            ptr->spirv[i].metallib_tess_capture_size = 0;
+        }
+        if (ptr->spirv[i].metallib_cull_capture_bytes) {
+            free(ptr->spirv[i].metallib_cull_capture_bytes);
+            ptr->spirv[i].metallib_cull_capture_bytes = NULL;
+            ptr->spirv[i].metallib_cull_capture_size = 0;
         }
         if (ptr->spirv[i].entry_point) {
             free(ptr->spirv[i].entry_point);
@@ -348,12 +338,10 @@ void mglFreeProgram(GLMContext ctx, Program *ptr)
         mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_compute_pipeline);
         mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
         mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_zero_to_one_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_zero_to_one_library);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_library);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_zero_to_one_function);
-        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_upper_left_zero_to_one_library);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_tess_capture_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_tess_capture_library);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_cull_capture_function);
+        mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_cull_capture_library);
         
         for(int j=0; j<_MAX_SPIRV_RES; j++)
         {
@@ -462,7 +450,7 @@ GLboolean mglProgramPointerUsableForName(GLMContext ctx, Program *program, GLuin
      */
     if (program->delete_status &&
         program->refcount > 0 &&
-        program->linked_glsl_program != NULL) {
+        program->link_success) {
         return GL_TRUE;
     }
 
@@ -710,7 +698,7 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
 
     if (pptr->attached_shader_counts[index] == 0u) {
         pptr->attached_shader_mask &= ~(1u << index);
-        if (!pptr->linked_glsl_program) {
+        if (!pptr->link_success) {
             pptr->shader_slots[index] = NULL;
         }
     } else if (pptr->shader_slots[index] == sptr) {
@@ -722,7 +710,7 @@ void mglDetachShader(GLMContext ctx, GLuint program, GLuint shader)
      * deletion. Keep the shader object as the executable's backing storage;
      * it is released when replaced or when the program is destroyed.
      */
-    if (!pptr->linked_glsl_program) {
+    if (!pptr->link_success) {
         sptr->refcount--;
 
         if (sptr->refcount == 0 && sptr->delete_status)
@@ -778,7 +766,7 @@ static bool mglValidateTransformFeedbackVaryings(Program *pptr)
     }
 
     SpirvResourceList *outputs =
-        &pptr->spirv_resources_list[feedback_stage][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+        &pptr->spirv_resources_list[feedback_stage][_STAGE_OUTPUT_RES];
 
     for (GLsizei i = 0; i < pptr->transform_feedback_varying_count; i++)
     {
@@ -847,9 +835,18 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
             attrib_snapshot[ai] = strdup(pptr->attrib_location_names[ai]);
         }
     }
-    int air_rc = mglAirCompileGLSLWithReflect(
+    MGLAIRStageInfo stage_info = {0};
+    if (stage == _GEOMETRY_SHADER &&
+        mglAirReflectGLSLStageInfo(shader->src, air_stage, &stage_info,
+                                   err, sizeof err) == 0) {
+        pptr->geometry_input_type = stage_info.geometry_input_type;
+        pptr->geometry_output_type = stage_info.geometry_output_type;
+        pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_invocations = stage_info.geometry_invocations;
+    }
+    int air_rc = mglAirCompileGLSLWithReflectInfo(
         shader->src, air_stage, attrib_snapshot, &bytes, &size,
-        pptr->spirv_resources_list[stage], err, sizeof err);
+        pptr->spirv_resources_list[stage], &stage_info, err, sizeof err);
     for (int ai = 0; ai < MAX_ATTRIBS; ai++) {
         free((void *)attrib_snapshot[ai]);
     }
@@ -861,23 +858,73 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
     }
     pptr->spirv[stage].metallib_bytes = bytes;
     pptr->spirv[stage].metallib_size = size;
+    pptr->spirv[stage].needs_buffer_size_buffer =
+        stage_info.needs_buffer_size_buffer ? GL_TRUE : GL_FALSE;
+    if (stage == _VERTEX_SHADER) {
+        pptr->uses_cull_distance = stage_info.uses_cull_distance
+            ? GL_TRUE : GL_FALSE;
+        pptr->cull_distance_count = stage_info.cull_distance_count;
+        pptr->ir_uses_cull_distance = pptr->uses_cull_distance;
+        unsigned char *capture_bytes = NULL;
+        size_t capture_size = 0;
+        char capture_err[512] = {0};
+        if (mglShaderCompileGLSLTessCapture(
+                shader->src, &capture_bytes, &capture_size,
+                capture_err, sizeof capture_err) == 0) {
+            pptr->spirv[stage].metallib_tess_capture_bytes = capture_bytes;
+            pptr->spirv[stage].metallib_tess_capture_size = capture_size;
+        } else {
+            fprintf(stderr,
+                    "MGL WARNING: AIR tess VS capture compile failed "
+                    "program %u: %s\n",
+                    pptr->name, capture_err);
+        }
+        if (stage_info.uses_cull_distance) {
+            unsigned char *cull_capture_bytes = NULL;
+            size_t cull_capture_size = 0;
+            char cull_capture_err[512] = {0};
+            if (mglShaderCompileGLSLCullDistanceCapture(
+                    shader->src, &cull_capture_bytes, &cull_capture_size,
+                    cull_capture_err, sizeof cull_capture_err) == 0) {
+                pptr->spirv[stage].metallib_cull_capture_bytes =
+                    cull_capture_bytes;
+                pptr->spirv[stage].metallib_cull_capture_size =
+                    cull_capture_size;
+            } else {
+                fprintf(stderr,
+                        "MGL WARNING: AIR cull-distance capture compile failed "
+                        "program %u: %s\n",
+                        pptr->name, cull_capture_err);
+            }
+        }
+    }
     if (pptr->spirv[stage].entry_point) {
         free(pptr->spirv[stage].entry_point);
     }
     pptr->spirv[stage].entry_point = strdup("main");
+    if (stage == _TESS_CONTROL_SHADER) {
+        pptr->tess_control_output_vertices =
+            stage_info.tess_control_output_vertices;
+    } else if (stage == _TESS_EVALUATION_SHADER) {
+        pptr->tess_gen_mode = stage_info.tess_gen_mode;
+        pptr->tess_gen_spacing = stage_info.tess_gen_spacing;
+        pptr->tess_gen_vertex_order = stage_info.tess_gen_vertex_order;
+        pptr->tess_gen_point_mode =
+            stage_info.tess_gen_point_mode ? GL_TRUE : GL_FALSE;
+    } else if (stage == _GEOMETRY_SHADER) {
+        pptr->geometry_input_type = stage_info.geometry_input_type;
+        pptr->geometry_output_type = stage_info.geometry_output_type;
+        pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
+        pptr->geometry_invocations = stage_info.geometry_invocations;
+    }
     return 1;
 }
 
 void mglLinkProgram(GLMContext ctx, GLuint program)
 {
     Program *pptr;
-    glslang_program_t *glsl_program = NULL;
-    int err;
     bool link_ok = true;
     bool has_any_shader = false;
-    /* D4: AIR 路径跳过 glslang link/map_io（自研前端直出 metallib+反射），
-     * glsl_program 保持 NULL，仅 MSL 路径创建。 */
-    const bool use_air = (getenv("MGL_USE_AIR") != NULL);
 
     pptr = findProgram(ctx, program);
 
@@ -890,19 +937,24 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         return;
     }
 
+    pptr->link_success = GL_FALSE;
+
     mglFlushPendingDraws(ctx);
+
+    /* C++ compute PSOs retain functions from the previous link generation.
+     * Drop them before stage objects and metallib libraries are replaced. */
+    mglRenderCppInvalidateProgramPipelines(
+        pptr->pipeline_cache_instance_id);
 
     pptr->uses_vertex_id = GL_FALSE;
     pptr->uses_primitive_id = GL_FALSE;
     /* Invalidate MSL query result cache; repopulated from the freshly generated MSL
      * after the stage compile loop succeeds. */
-    pptr->mslCacheValid = GL_FALSE;
     pptr->usesFragCoordParams = GL_FALSE;
     pptr->vertexAttribUsageMask = 0u;
     pptr->uses_point_size_params = GL_FALSE;
     pptr->uses_cull_distance = GL_FALSE;
-    memset(pptr->msl_named_argument_cache, 0, sizeof(pptr->msl_named_argument_cache));
-    pptr->msl_named_argument_cache_next = 0u;
+    pptr->cull_distance_count = 0u;
     memset(pptr->validated_resource_lists, 0, sizeof(pptr->validated_resource_lists));
     memset(pptr->validated_resource_list_storage, 0, sizeof(pptr->validated_resource_list_storage));
     memset(pptr->validated_resource_list_counts, 0, sizeof(pptr->validated_resource_list_counts));
@@ -931,10 +983,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * conflict detection.  Lazily recomputed on first
      * mglBufferSlotConflictsForProgram call during resource binding. */
     pptr->ir_cache_valid = GL_FALSE;
-    /* Bump the per-Program MSL texture type cache generation so the renderer
-     * (_mslTextureTypeCache) invalidates any entries cached against the
-     * previous MSL; the key includes this generation value. */
-    pptr->msl_texture_cache_generation++;
+    /* Bump the per-Program cache generation so renderer pipeline keys cannot
+     * reuse objects from the previous linked executable. */
+    pptr->pipeline_cache_generation++;
     for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
         if (mglProgramAttachedShaderCount(pptr, (GLuint)stage) > 0u) {
             has_any_shader = true;
@@ -944,7 +995,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
 
     if (!has_any_shader) {
         fprintf(stderr, "MGL WARNING: mglLinkProgram called with no attached shaders\n");
-        pptr->linked_glsl_program = NULL;
         return;
     }
 
@@ -953,7 +1003,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: mglLinkProgram failed program %u: compute shaders cannot be linked with non-compute stages\n",
                 pptr->name);
-        pptr->linked_glsl_program = NULL;
         return;
     }
 
@@ -967,85 +1016,24 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             Shader *shader = (pptr->attached_shader_counts[stage] > 0u)
                 ? pptr->attached_shader_slots[stage][attached]
                 : pptr->shader_slots[stage];
-            if (!shader || !shader->compiled_glsl_shader) {
+            if (!shader || !shader->compile_success) {
                 fprintf(stderr,
                         "MGL WARNING: mglLinkProgram failed program %u: shader stage %d is not compiled\n",
                         pptr->name,
                         stage);
-                pptr->linked_glsl_program = NULL;
                 return;
             }
         }
     }
 
-    if (use_air) {
-        /* AIR path: no glslang link (self-hosted frontend -> metallib). */
-        if (MGL_VERBOSE_PROGRAM_LOGS) {
-            fprintf(stderr, "MGL DEBUG: AIR link path (glslang skipped)\n");
-        }
-    } else {
-        if (MGL_VERBOSE_PROGRAM_LOGS) {
-            fprintf(stderr, "MGL DEBUG: Creating glslang program for full-link\n");
-        }
-        glsl_program = glslang_program_create();
-        if (!glsl_program) {
-            fprintf(stderr, "MGL Error: glslang_program_create failed\n");
-            pptr->linked_glsl_program = NULL;
-            ERROR_RETURN(GL_INVALID_OPERATION);
-            return;
-        }
-
-        if (MGL_VERBOSE_PROGRAM_LOGS) {
-            fprintf(stderr, "MGL DEBUG: Adding shaders to program\n");
-        }
-        addShadersToProgram(ctx, pptr, glsl_program);
-        if (MGL_VERBOSE_PROGRAM_LOGS) {
-            fprintf(stderr, "MGL DEBUG: Shaders added\n");
-        }
-
-        err = glslang_program_link(glsl_program, GLSLANG_MSG_DEFAULT_BIT);
-        if (MGL_VERBOSE_PROGRAM_LOGS) {
-            fprintf(stderr, "MGL DEBUG: Program link returned %d\n", err);
-        }
-        if (!err)
-        {
-            fprintf(stderr, "MGL Error: glslang_program_link failed err: %d\n", err);
-            fprintf(stderr, "MGL Error: glslang_program_SPIRV_get_messages:\n%s\n", glslang_program_SPIRV_get_messages(glsl_program));
-            fprintf(stderr, "MGL Error: glslang_program_get_info_log:\n%s\n", glslang_program_get_info_log(glsl_program));
-            fprintf(stderr, "MGL Error: glslang_program_get_info_debug_log:\n%s\n", glslang_program_get_info_debug_log(glsl_program));
-            glslang_program_delete(glsl_program);
-            pptr->linked_glsl_program = NULL;
-            return;
-        }
-
-        err = glslang_program_map_io(glsl_program);
-        if (!err)
-        {
-            fprintf(stderr, "MGL WARNING: glslang_program_map_io failed; continuing with linked program\n");
-        }
-    }
-
-    if (use_air) {
-        /* AIR path: self-hosted frontend -> metallib + reflection. */
-        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
-            if (!mglAirCompileStage(ctx, pptr, stage)) {
-                link_ok = false;
-                break;
-            }
-        }
-    } else {
-        for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++)
-        {
-            if (!compileStageFromLinkedProgram(ctx, pptr, glsl_program, stage)) {
-                link_ok = false;
-                break;
-            }
+    for (int stage = 0; stage < _MAX_SHADER_TYPES; stage++) {
+        if (!mglAirCompileStage(ctx, pptr, stage)) {
+            link_ok = false;
+            break;
         }
     }
 
     if (!link_ok) {
-        if (glsl_program) glslang_program_delete(glsl_program);
-        pptr->linked_glsl_program = NULL;
         return;
     }
 
@@ -1056,8 +1044,6 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
                 "MGL WARNING: mglLinkProgram failed program %u: transform feedback "
                 "varying not found in program outputs\n",
                 pptr->name);
-        if (glsl_program) glslang_program_delete(glsl_program);
-        pptr->linked_glsl_program = NULL;
         return;
     }
 
@@ -1092,19 +1078,47 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
     }
     mglUnifySamplerUniformLocations(pptr);
 
-    /* Geometry shader execution route.  P0 has no execution path; the
-     * decision structure exists so later stages (compute expansion, mesh)
-     * and the capability reporting can key off it. */
+    /* The AIR compute expansion consumes fixed 32-byte input records
+     * (position + point size).  It accepts every core GS input topology and
+     * expands point/line/triangle strips to Metal list primitives. */
     if (pptr->attached_shader_mask & GEOMETRY_SHADER_MASK_BIT) {
-        static uint64_t s_gsUnsupportedNotice = 0;
-        uint64_t hit = ++s_gsUnsupportedNotice;
-        if (hit <= 4ull) {
-            fprintf(stderr,
-                    "MGL WARNING: program %u has a geometry shader; GS "
-                    "execution is not available yet (route=unsupported)\n",
-                    pptr->name);
+        bool computeRoute =
+            pptr->spirv[_GEOMETRY_SHADER].metallib_bytes != NULL &&
+            (pptr->geometry_input_type == GL_POINTS ||
+             pptr->geometry_input_type == GL_LINES ||
+             pptr->geometry_input_type == GL_LINES_ADJACENCY ||
+             pptr->geometry_input_type == GL_TRIANGLES ||
+             pptr->geometry_input_type == GL_TRIANGLES_ADJACENCY) &&
+            (pptr->geometry_output_type == GL_POINTS ||
+             pptr->geometry_output_type == GL_LINE_STRIP ||
+             pptr->geometry_output_type == GL_TRIANGLE_STRIP) &&
+            pptr->geometry_vertices_out > 0u &&
+            pptr->geometry_vertices_out <= 1024u &&
+            pptr->geometry_invocations > 0u &&
+            pptr->geometry_invocations <= 32u &&
+            pptr->transform_feedback_varying_count == 0;
+        /* GS expansion uses the shared compute-stage binders for UBOs,
+         * SSBOs, atomics, sampled textures and storage images.  Resource
+         * presence is therefore no longer a route restriction. */
+        pptr->gs_route = computeRoute
+            ? MGL_GS_ROUTE_COMPUTE : MGL_GS_ROUTE_UNSUPPORTED;
+        if (!computeRoute) {
+            static uint64_t s_gsUnsupportedNotice = 0;
+            uint64_t hit = ++s_gsUnsupportedNotice;
+            if (hit <= 4ull) {
+                fprintf(stderr,
+                        "MGL WARNING: program %u geometry shader is outside "
+                        "the AIR compute-expansion subset "
+                        "(air=%d in=0x%x out=0x%x max=%u inv=%u xfb=%d)\n",
+                        pptr->name,
+                        pptr->spirv[_GEOMETRY_SHADER].metallib_bytes != NULL,
+                        pptr->geometry_input_type,
+                        pptr->geometry_output_type,
+                        pptr->geometry_vertices_out,
+                        pptr->geometry_invocations,
+                        pptr->transform_feedback_varying_count);
+            }
         }
-        pptr->gs_route = MGL_GS_ROUTE_UNSUPPORTED;
     } else {
         pptr->gs_route = MGL_GS_ROUTE_NONE;
     }
@@ -1115,15 +1129,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         fprintf(stderr,
                 "MGL WARNING: separable program %u has incompatible gl_PerVertex redeclarations\n",
                 pptr->name);
-        if (glsl_program) glslang_program_delete(glsl_program);
-        pptr->linked_glsl_program = NULL;
         return;
     }
 
     /* Validate layout(binding=N) values against GL implementation limits.
      * The GL spec requires that the link fail if a binding point exceeds
-     * the corresponding MAX_*_BINDINGS limit.  glslang does not know the
-     * implementation limits, so MGL must enforce them here. */
+     * the corresponding MAX_*_BINDINGS limit.  the compiler frontend does not know the
+     * implementation limits, so MGL enforces them here. */
     {
         bool binding_error = false;
         for (int stage = 0; stage < _MAX_SHADER_TYPES && !binding_error; stage++) {
@@ -1134,7 +1146,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             /* Uniform blocks: GL_MAX_UNIFORM_BUFFER_BINDINGS */
             {
                 SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_UNIFORM_BUFFER];
+                    &pptr->spirv_resources_list[stage][_UNIFORM_BUFFER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     GLuint n = rl->list[i].ubo_array_size > 0
@@ -1156,7 +1168,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             /* Shader storage buffers: GL_MAX_SHADER_STORAGE_BUFFER_BINDINGS */
             if (!binding_error) {
                 SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_BUFFER];
+                    &pptr->spirv_resources_list[stage][_STORAGE_BUFFER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_shader_storage_buffer_bindings) {
@@ -1176,7 +1188,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             /* Storage images: GL_MAX_IMAGE_UNITS */
             if (!binding_error) {
                 SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
+                    &pptr->spirv_resources_list[stage][_STORAGE_IMAGE_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_image_units) {
@@ -1196,7 +1208,7 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             /* Atomic counters: GL_MAX_ATOMIC_COUNTER_BUFFER_BINDINGS */
             if (!binding_error) {
                 SpirvResourceList *rl =
-                    &pptr->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_ATOMIC_COUNTER];
+                    &pptr->spirv_resources_list[stage][_ATOMIC_COUNTER_RES];
                 for (GLuint i = 0; i < rl->count; i++) {
                     GLuint b = rl->list[i].gl_binding;
                     if (b >= ctx->state.var.max_atomic_counter_buffer_bindings) {
@@ -1215,20 +1227,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         }
 
         if (binding_error) {
-            if (glsl_program) glslang_program_delete(glsl_program);
-            pptr->linked_glsl_program = NULL;
             return;
         }
     }
 
-    /* The glslang_program_t was only needed during linking for SPIR-V
-     * generation and reflection.  Release it now; pptr->linked_glsl_program
-     * is reused as a non-NULL linked-state marker (see callers that test
-     * `if (ptr->linked_glsl_program)` to check link status).  AIR 路径
-     * glsl_program 为 NULL，跳过删除。 */
-    if (glsl_program) glslang_program_delete(glsl_program);
-    /* linked_glsl_program is used as a linked-state marker only. */
-    pptr->linked_glsl_program = (glslang_program_t *)pptr;
+    pptr->link_success = GL_TRUE;
     pptr->dirty_bits |= DIRTY_PROGRAM;
     /* Relink rebuilds the SPIR-V resource list, so the program-level
      * sampled-texture-unit bitmap is stale (mglLinkProgram invalidated it
@@ -1240,33 +1243,13 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
         ctx->active_state->active_sampled_texture_unit_mask_valid = 0u;
     }
 
-    /* Populate the MSL query result cache from the finalized per-stage MSL.
-     * Scanning once here lets the per-draw paths skip repeated strstr() over
-     * the source strings when MGL_MSL_CACHE=1.  mslCacheValid gates readers;
-     * it is only set after both fields below reflect the current MSL. */
+    /* Populate renderer feature caches from AIR reflection. */
     {
-        const char *fs_msl = pptr->spirv[_FRAGMENT_SHADER].msl_str;
-        pptr->usesFragCoordParams =
-            (fs_msl && strstr(fs_msl, MGL_FRAG_COORD_PARAMS_MSL_NAME))
-                ? GL_TRUE : GL_FALSE;
-
-        const char *vs_msl = pptr->spirv[_VERTEX_SHADER].msl_str;
         uint32_t attr_mask = 0u;
-        if (vs_msl) {
-            for (GLuint a = 0; a < MAX_ATTRIBS; a++) {
-                char attr_pattern[32];
-                snprintf(attr_pattern, sizeof(attr_pattern),
-                         "[[attribute(%u)]]", a);
-                if (strstr(vs_msl, attr_pattern)) {
-                    attr_mask |= (1u << a);
-                }
-            }
-        } else if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
-            /* AIR path: attribute usage comes from the reflected stage
-             * inputs instead of the (absent) MSL text. */
+        if (pptr->spirv[_VERTEX_SHADER].metallib_bytes) {
             SpirvResourceList *ins =
                 &pptr->spirv_resources_list[_VERTEX_SHADER]
-                                           [SPVC_RESOURCE_TYPE_STAGE_INPUT];
+                                           [_STAGE_INPUT_RES];
             for (GLuint i = 0; i < ins->count; i++) {
                 GLuint loc = ins->list[i].location;
                 if (loc < MAX_ATTRIBS) {
@@ -1275,37 +1258,9 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             }
         }
         pptr->vertexAttribUsageMask = attr_mask;
-
-        /* Cache point_size_params / cull_distance presence to avoid
-         * per-draw strstr() over the full MSL source.  Same contract as
-         * usesFragCoordParams: valid only when mslCacheValid == GL_TRUE. */
+        pptr->usesFragCoordParams = GL_FALSE;
         pptr->uses_point_size_params = GL_FALSE;
-        {
-            int ps_stages[] = { _VERTEX_SHADER, _TESS_EVALUATION_SHADER, _GEOMETRY_SHADER };
-            for (size_t si = 0; si < sizeof(ps_stages)/sizeof(ps_stages[0]); si++) {
-                const char *ps_msl = pptr->spirv[ps_stages[si]].msl_str;
-                if (ps_msl && strstr(ps_msl, "_mgl_point_size_params")) {
-                    pptr->uses_point_size_params = GL_TRUE;
-                    break;
-                }
-            }
-        }
-        {
-            const char *vs_msl_cull = pptr->spirv[_VERTEX_SHADER].msl_str;
-            pptr->uses_cull_distance = (vs_msl_cull && strstr(vs_msl_cull, "mgl_CullDistance"))
-                ? GL_TRUE : GL_FALSE;
-        }
-
-        /* Detect LOD bias injection in the fragment MSL so the renderer
-         * knows to bind the _mglLodBias / _mglLodBiasMax buffers at slots
-         * 15 / 14.  Without this, uses_lod_bias stays GL_FALSE (initialized
-         * at link start) and the per-draw path skips buffer binding,
-         * leaving the shader to read from unbound buffers → garbage bias
-         * → wrong mip level → dark/blank output. */
-        pptr->uses_lod_bias = (fs_msl && strstr(fs_msl, "_mglLodBias"))
-            ? GL_TRUE : GL_FALSE;
-
-        pptr->mslCacheValid = GL_TRUE;
+        pptr->uses_lod_bias = GL_FALSE;
     }
 
     /* Precompute the sampler-binding-shared table.
@@ -1315,11 +1270,11 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
      * = 1 so mglMetalSamplerSlotSharedAcrossResources can answer in O(1). */
     {
         static const int sampler_res_types[] = {
-            SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-            SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-            SPVC_RESOURCE_TYPE_SEPARATE_IMAGE,
-            SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
-            SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+            _UNIFORM_CONSTANT_RES,
+            _SAMPLED_IMAGE_RES,
+            _SEPARATE_IMAGE_RES,
+            _SEPARATE_SAMPLERS_RES,
+            _STORAGE_IMAGE_RES
         };
         unsigned slot_hits[TEXTURE_UNITS];
         memset(slot_hits, 0, sizeof(slot_hits));
@@ -1450,7 +1405,7 @@ void mglUseProgram(GLMContext ctx, GLuint program)
             return;
         }
 
-        if (!pptr->linked_glsl_program)
+        if (!pptr->link_success)
         {
             // Compatibility fallback: some pipelines can probe/use programs before
             // link is completed/available in this backend. Skip instead of poisoning
@@ -1511,10 +1466,6 @@ void mglUseProgram(GLMContext ctx, GLuint program)
      */
     ctx->state.program_name = program;
 
-    if (MGL_VERBOSE_PROGRAM_LOGS) {
-        fprintf(stderr, "MGL UseProgram program=%u resolved=%p\n",
-                program, (void *)ctx->state.program);
-    }
 }
 
 void mglBindAttribLocation(GLMContext ctx, GLuint program, GLuint index, const GLchar *name)
@@ -1566,7 +1517,7 @@ void mglGetActiveAttrib(GLMContext ctx, GLuint program, GLuint index, GLsizei bu
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (ptr->linked_glsl_program == NULL) {
+    if (!ptr->link_success) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -1626,7 +1577,7 @@ void mglGetActiveUniform(GLMContext ctx, GLuint program, GLuint index, GLsizei b
         ERROR_RETURN(GL_INVALID_VALUE);
         return;
     }
-    if (ptr->linked_glsl_program == NULL) {
+    if (!ptr->link_success) {
         ERROR_RETURN(GL_INVALID_OPERATION);
         return;
     }
@@ -1712,7 +1663,7 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 		return -1;
 	}
 
-	if (ptr->linked_glsl_program == NULL)
+	if (!ptr->link_success)
 	{
 		ERROR_RETURN(GL_INVALID_OPERATION);
 
@@ -1720,7 +1671,7 @@ GLint  mglGetAttribLocation(GLMContext ctx, GLuint program, const GLchar *name)
 	}
 
     SpirvResourceList *vertex_inputs =
-        &ptr->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &ptr->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
 
     /* Fast path: exact name match. */
     for (GLuint i = 0; vertex_inputs->list && i < vertex_inputs->count; i++)
@@ -1766,7 +1717,7 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
     
     switch (pname) {
         case GL_LINK_STATUS:
-            *params = pptr->linked_glsl_program ? GL_TRUE : GL_FALSE;
+            *params = pptr->link_success ? GL_TRUE : GL_FALSE;
             break;
         case GL_DELETE_STATUS:
             *params = GL_FALSE;  /* Programs are not deleted by default */
@@ -1811,7 +1762,7 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
              * generate an error.  GL_INVALID_OPERATION is raised when the
              * program itself is not linked.
              */
-            if (!pptr->linked_glsl_program) {
+            if (!pptr->link_success) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
@@ -1832,18 +1783,24 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
         case GL_GEOMETRY_OUTPUT_TYPE:       /* 0x8918 */
         case GL_GEOMETRY_VERTICES_OUT:      /* 0x8916 */
         case GL_GEOMETRY_SHADER_INVOCATIONS:/* 0x887F */
-            /* Geometry-shader reflection queries.  MGL does not execute GS on
-             * Metal, but the program still carries the GS layout metadata
-             * captured at compile/link time.  Return 0 when no GS is
-             * attached so the queries are at least well-defined. */
-            if (!pptr->linked_glsl_program) {
+            if (!pptr->link_success) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
-            *params = 0;
+            if (!pptr->shader_slots[_GEOMETRY_SHADER]) {
+                *params = 0;
+            } else if (pname == GL_GEOMETRY_INPUT_TYPE) {
+                *params = (GLint)pptr->geometry_input_type;
+            } else if (pname == GL_GEOMETRY_OUTPUT_TYPE) {
+                *params = (GLint)pptr->geometry_output_type;
+            } else if (pname == GL_GEOMETRY_VERTICES_OUT) {
+                *params = (GLint)pptr->geometry_vertices_out;
+            } else {
+                *params = (GLint)pptr->geometry_invocations;
+            }
             break;
         case GL_TESS_CONTROL_OUTPUT_VERTICES:  /* 0x8E75 */
-            if (!pptr->linked_glsl_program) {
+            if (!pptr->link_success) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }
@@ -1857,7 +1814,7 @@ void mglGetProgramiv(GLMContext ctx, GLuint program, GLenum pname, GLint *params
             /* TES execution-mode reflection.  Returns the layout(...) values
              * captured from SPIR-V OpExecutionMode at link time.  0 when no
              * TES is attached. */
-            if (!pptr->linked_glsl_program) {
+            if (!pptr->link_success) {
                 ERROR_RETURN(GL_INVALID_OPERATION);
                 return;
             }

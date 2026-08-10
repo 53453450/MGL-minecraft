@@ -31,7 +31,6 @@
 #include "mgl_frame_activity.h"
 #include "mgl_trace_log.h"
 #include "mgl_sampler_compat.h"
-#include "spirv_cross_c.h"
 
 /* === Task 4: Snapshot Arena (bump allocator) === */
 
@@ -1390,25 +1389,25 @@ static int mglSamplerSnapshotTargetIndex(const SpirvResource *resource)
 {
     if (!resource) return -1;
 
-    switch ((SpvDim)resource->image_dim) {
-        case SpvDim1D:
+    switch ((MGLImageDimension)resource->image_dim) {
+        case MGL_IMAGE_DIM_1D:
             return resource->image_arrayed ? _TEXTURE_1D_ARRAY : _TEXTURE_1D;
-        case SpvDim2D:
+        case MGL_IMAGE_DIM_2D:
             if (resource->image_multisampled) {
                 return resource->image_arrayed
                     ? _TEXTURE_2D_MULTISAMPLE_ARRAY
                     : _TEXTURE_2D_MULTISAMPLE;
             }
             return resource->image_arrayed ? _TEXTURE_2D_ARRAY : _TEXTURE_2D;
-        case SpvDim3D:
+        case MGL_IMAGE_DIM_3D:
             return _TEXTURE_3D;
-        case SpvDimCube:
+        case MGL_IMAGE_DIM_CUBE:
             return resource->image_arrayed
                 ? _TEXTURE_CUBE_MAP_ARRAY
                 : _TEXTURE_CUBE_MAP;
-        case SpvDimRect:
+        case MGL_IMAGE_DIM_RECT:
             return _TEXTURE_RECTANGLE;
-        case SpvDimBuffer:
+        case MGL_IMAGE_DIM_BUFFER:
             return _TEXTURE_BUFFER_TARGET;
         default:
             return -1;
@@ -1520,25 +1519,25 @@ static bool mglCaptureProgramSamplerSnapshots(GLMContext ctx,
     if (!program) return true;
 
     SpirvResourceList *separate =
-        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
+        &program->spirv_resources_list[stage][_SEPARATE_SAMPLERS_RES];
     for (GLuint i = 0; separate->list && i < separate->count; i++) {
-        if (separate->list[i].msl_active) return false;
+        if (separate->list[i].resource_active) return false;
     }
 
     SpirvResourceList *sampled =
-        &program->spirv_resources_list[stage][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+        &program->spirv_resources_list[stage][_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; sampled->list && i < sampled->count; i++) {
         SpirvResource *resource = &sampled->list[i];
-        if (!resource->msl_active || !resource->msl_has_combined_sampler) continue;
+        if (!resource->resource_active || !resource->has_combined_sampler) continue;
         if (resource->is_array || resource->gl_array_size > 1 ||
-            resource->msl_combined_sampler_binding == (GLuint)-1) {
+            resource->combined_sampler_binding == (GLuint)-1) {
             return false;
         }
 
         GLint unit = mglResolveSamplerResourceUnit(program,
                                                    resource,
                                                    stage,
-                                                   SPVC_RESOURCE_TYPE_SAMPLED_IMAGE);
+                                                   _SAMPLED_IMAGE_RES);
         int target_index = mglSamplerSnapshotTargetIndex(resource);
         if (unit < 0 || unit >= TEXTURE_UNITS || target_index < 0) return false;
 
@@ -1548,7 +1547,7 @@ static bool mglCaptureProgramSamplerSnapshots(GLMContext ctx,
             if (!mglAppendSamplerSnapshotEntry(cb,
                                                set,
                                                stage,
-                                               resource->msl_combined_sampler_binding,
+                                               resource->combined_sampler_binding,
                                                (GLuint)unit,
                                                target_index,
                                                NULL,
@@ -1564,7 +1563,7 @@ static bool mglCaptureProgramSamplerSnapshots(GLMContext ctx,
         if (!mglAppendSamplerSnapshotEntry(cb,
                                            set,
                                            stage,
-                                           resource->msl_combined_sampler_binding,
+                                           resource->combined_sampler_binding,
                                            (GLuint)unit,
                                            target_index,
                                            params,
@@ -1579,13 +1578,13 @@ static bool mglProgramHasUnsupportedStageSamplers(Program *program, int stage)
 {
     if (!program) return false;
     const int types[] = {
-        SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
-        SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+        _SAMPLED_IMAGE_RES,
+        _SEPARATE_SAMPLERS_RES,
     };
     for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
         SpirvResourceList *list = &program->spirv_resources_list[stage][types[t]];
         for (GLuint i = 0; list->list && i < list->count; i++) {
-            if (list->list[i].msl_active) return true;
+            if (list->list[i].resource_active) return true;
         }
     }
     return false;
@@ -4184,4 +4183,3 @@ bool mglDrawCommandUsesElements(const MGLDrawCommand *cmd)
             return true;
     }
 }
-

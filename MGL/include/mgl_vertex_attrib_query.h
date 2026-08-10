@@ -13,7 +13,7 @@
  *
  * Dependencies: glm_context.h (Program, SpirvResource, SpirvResourceList,
  * VertexArray, MAX_ATTRIBS, _VERTEX_SHADER) + spirv_cross_c.h
- * (SPVC_RESOURCE_TYPE_STAGE_INPUT) + <strings.h> (strcasecmp).
+ * (_STAGE_INPUT_RES) + <strings.h> (strcasecmp).
  */
 
 #ifndef MGL_VERTEX_ATTRIB_QUERY_H

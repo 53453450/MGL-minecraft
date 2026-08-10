@@ -16,25 +16,18 @@
  * mgl_types_program.h
  * MGL
  *
- * Shader / program / SPIRV domain type definitions split from glm_context.h.
+ * Shader / program domain type definitions split from glm_context.h.
  */
 
 #ifndef mgl_types_program_h
 #define mgl_types_program_h
 
-#include <glslang_c_interface.h>
-#include <glslang_c_shader_types.h>
+#include <stddef.h>
+
 #include "mgl_types_buffer.h"
 #include "mgl_types_texture.h"
 
 typedef struct GLMContextRec_t *GLMContext;
-
-typedef enum MGLMSLBindingKind {
-    MGL_MSL_BINDING_NONE = 0,
-    MGL_MSL_BINDING_TEXTURE,
-    MGL_MSL_BINDING_BUFFER,
-    MGL_MSL_BINDING_SAMPLER
-} MGLMSLBindingKind;
 
 enum {
     _VERTEX_SHADER = 0,
@@ -46,9 +39,7 @@ enum {
     _MAX_SHADER_TYPES
 };
 
-/* Resource-type indices into spirv_resources_list.  Values match the
- * SPVC_RESOURCE_TYPE_* enum (spirv_cross_c.h) so the renderer can index
- * the list directly with SPIRV-Cross constants. */
+/* Stable resource-type indices into the program reflection tables. */
 enum {
     _UNKNOWN_RES = 0,
     _UNIFORM_BUFFER_RES,
@@ -67,6 +58,29 @@ enum {
     _RAY_QUERY,
     _MAX_SPIRV_RES
 };
+
+/* Texture dimensionality stored in SpirvResource::image_dim.  The numeric
+ * values intentionally match the historical SPIR-V Dim encoding so existing
+ * serialized/reflected resource data remains compatible without importing
+ * SPIR-V headers. */
+typedef enum MGLImageDimension {
+    MGL_IMAGE_DIM_NONE = 0,
+    MGL_IMAGE_DIM_1D = 0,
+    MGL_IMAGE_DIM_2D = 1,
+    MGL_IMAGE_DIM_3D = 2,
+    MGL_IMAGE_DIM_CUBE = 3,
+    MGL_IMAGE_DIM_RECT = 4,
+    MGL_IMAGE_DIM_BUFFER = 5,
+    MGL_IMAGE_DIM_SUBPASS_DATA = 6
+} MGLImageDimension;
+
+typedef enum MGLShaderTextureDataKind {
+    MGL_SHADER_TEXTURE_DATA_UNKNOWN = 0,
+    MGL_SHADER_TEXTURE_DATA_FLOAT = 1,
+    MGL_SHADER_TEXTURE_DATA_SINT = 2,
+    MGL_SHADER_TEXTURE_DATA_UINT = 3,
+    MGL_SHADER_TEXTURE_DATA_DEPTH = 4
+} MGLShaderTextureDataKind;
 
 #define SHADER_MASK_BIT(_TYPE_)    (0x1 << _TYPE_)
 #define VERTEX_SHADER_MASK_BIT  SHADER_MASK_BIT(_VERTEX_SHADER)
@@ -94,52 +108,34 @@ typedef struct Shader_t {
     const char *mtl_shader_type_name;
     size_t src_len;
     const char *src;
-    glslang_shader_t *compiled_glsl_shader;
+    GLboolean compile_success;
     const char *entry_point;
     char *log;
     int refcount;
     GLboolean delete_status;
-    struct {
-        void *function;
-        void *library;
-        void *zero_to_one_function;
-        void *zero_to_one_library;
-        void *upper_left_function;
-        void *upper_left_library;
-        void *upper_left_zero_to_one_function;
-        void *upper_left_zero_to_one_library;
-    } mtl_data;
 } Shader;
 
 typedef struct Spirv_t {
     GLuint stage;
-    size_t size;
-    unsigned int *ir;
-    char *msl_str;
     char *entry_point;
     /* AIR backend output: serialized metallib (bitcode container). */
     unsigned char *metallib_bytes;
     size_t metallib_size;
+    unsigned char *metallib_tess_capture_bytes;
+    size_t metallib_tess_capture_size;
+    unsigned char *metallib_cull_capture_bytes;
+    size_t metallib_cull_capture_size;
     void *mtl_function;
     void *mtl_library;
+    void *mtl_tess_capture_function;
+    void *mtl_tess_capture_library;
+    void *mtl_cull_capture_function;
+    void *mtl_cull_capture_library;
     void *mtl_compute_pipeline;
-    void *mtl_zero_to_one_function;
-    void *mtl_zero_to_one_library;
-    void *mtl_upper_left_function;
-    void *mtl_upper_left_library;
-    void *mtl_upper_left_zero_to_one_function;
-    void *mtl_upper_left_zero_to_one_library;
     GLboolean mgl_injected_framebuffer_yflip; /* true if MGL injected a
                                                * texCoord Y-flip for sampled
                                                * framebuffer in this shader */
-    GLboolean needs_buffer_size_buffer; /* true if SPIRV-Cross MSL uses
-                                         * spvBufferSizeConstants for
-                                         * runtime-sized SSBO arrays */
-    char *msl_str_capture; /* MSL variant compiled with SPIRV-Cross output-capture
-                            * options for GPU transform feedback. NULL unless
-                            * MGL_XFB_GPU_CAPTURE is set and the stage is the
-                            * program's feedback stage. The renderer dispatch
-                            * that consumes this variant is not yet wired. */
+    GLboolean needs_buffer_size_buffer;
 } Spirv;
 
 typedef struct SpirvUBOMember_t {
@@ -161,20 +157,10 @@ typedef struct SpirvResource_t {
     GLuint  base_type_id;
     GLuint  type_id;
     const char *name;
-    /* Final identifier and argument kind emitted by SPIRV-Cross for active
-     * resources. `name` remains the original GL-facing reflection name. */
-    char   *msl_name;
-    /* Exact final MSL declarators for resources expanded into more than one
-     * argument (for example, UBO arrays lowered to block_0, block_1, ...).
-     * msl_name remains the first argument name for existing callers. */
-    char  **msl_argument_names;
-    GLuint  msl_argument_count;
-    char   *msl_combined_sampler_name;
     /* Metal allocates texture and sampler indices in independent namespaces. */
-    GLuint  msl_combined_sampler_binding;
-    GLboolean msl_active;
-    GLboolean msl_has_combined_sampler;
-    MGLMSLBindingKind msl_binding_kind;
+    GLuint  combined_sampler_binding;
+    GLboolean resource_active;
+    GLboolean has_combined_sampler;
     GLuint  set;
     /* GL client binding point. For UBOs, glUniformBlockBinding updates this. */
     GLuint  gl_binding;
@@ -199,28 +185,15 @@ typedef struct SpirvResource_t {
     GLuint  image_dim;
     GLuint  image_arrayed;
     GLuint  image_multisampled;
+    GLuint  texture_data_kind;
     /* True for tessellation patch variables (SpvDecorationPatch). */
     GLboolean is_per_patch;
-    /* UBO member uniforms (only valid for SPVC_RESOURCE_TYPE_UNIFORM_BUFFER). */
+    /* UBO member uniforms (only valid for _UNIFORM_BUFFER_RES). */
     SpirvUBOMember       *ubo_members;
     GLuint                ubo_member_count;
     /* When this resource is used as a placeholder during active-uniform
      * enumeration of UBO members, this points to the specific member. */
     const SpirvUBOMember *ubo_member;
-    /* Per-resource MSL texture type / data kind cache.  The MSL string is
-     * immutable post-link, so the type for a given resource never changes
-     * between relinks.  Stored on the resource itself (rather than an
-     * external NSString→NSNumber NSCache) to eliminate per-draw
-     * stringWithFormat + NSDictionary lookup cost.
-     *
-     * cached_msl_texture_type_valid: 0 = uncached, 1 = cached.
-     * MTLTextureType1D == 0 on this SDK, so a separate valid flag is needed
-     * for the texture type.  MGLTextureDataKindUnknown == 0, but the cached
-     * value is always the *resolved* kind (>= 1), so 0 reliably means
-     * uncached for the data kind. */
-    uint32_t cached_msl_texture_type;
-    uint8_t  cached_msl_texture_type_valid;
-    uint32_t cached_msl_data_kind;
 } SpirvResource;
 
 typedef struct SpirvResourceList_t {
@@ -239,16 +212,6 @@ typedef struct MGLActiveUniformEntry_t {
 } MGLActiveUniformEntry;
 
 #define MAX_ATTACHED_SHADERS_PER_STAGE 8
-#define MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY 64u
-
-typedef struct {
-    const char *name;
-    GLuint binding;
-    uint8_t stage;
-    uint8_t attribute_kind;
-    GLboolean result;
-} MGLMSLNamedArgumentCacheEntry;
-
 /* Forward declaration: full type defined in mgl_buffer_plan.h.  The plan
  * caches static reflection-derived buffer binding data (metal slots, client
  * bindings, struct packing metadata) so per-draw paths can skip repeated name
@@ -265,7 +228,7 @@ typedef struct Program_t {
     Shader *attached_shader_slots[_MAX_SHADER_TYPES][MAX_ATTACHED_SHADERS_PER_STAGE];
     GLuint attached_shader_counts[_MAX_SHADER_TYPES];
     GLbitfield attached_shader_mask;
-    glslang_program_t *linked_glsl_program;
+    GLboolean link_success;
     Spirv spirv[_MAX_SHADER_TYPES];
     SpirvResourceList spirv_resources_list[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
     struct {
@@ -274,6 +237,10 @@ typedef struct Program_t {
     GLuint tess_control_output_vertices;  /* from TCS layout(vertices=N) out; */
     /* Geometry shader execution route, decided at link time. */
     MGLGSRoute gs_route;
+    GLenum geometry_input_type;
+    GLenum geometry_output_type;
+    GLuint geometry_vertices_out;
+    GLuint geometry_invocations;
     /* TES execution mode reflection: layout(...) in; */
     GLenum tess_gen_mode;        /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES */
     GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */
@@ -307,34 +274,23 @@ typedef struct Program_t {
     uint8_t  sampler_location_bitmap_valid;
     GLboolean uses_vertex_id;
     GLboolean uses_primitive_id;
-    /* MSL query result cache (env-gated by MGL_MSL_CACHE, default ON; =0 off).
-     * mslCacheValid is GL_FALSE until mglLinkProgram scans the generated MSL
-     * once and populates usesFragCoordParams / vertexAttribUsageMask; while
-     * GL_FALSE the per-draw paths fall back to their original strstr() scan.
-     * Invalidated at the start of every mglLinkProgram and repopulated on
-     * successful link, so the cache always reflects the current MSL. */
-    GLboolean mslCacheValid;
-    GLboolean usesFragCoordParams;   /* FS: gl_FragCoord params present?  */
-    uint32_t vertexAttribUsageMask;  /* VS: bit N set => [[attribute(N)]] */
-    GLboolean uses_point_size_params; /* VS/TES/GS: _mgl_point_size_params in MSL */
-    GLboolean uses_cull_distance;     /* VS: mgl_CullDistance in MSL */
-    GLboolean uses_lod_bias;          /* FS: _mglLodBias injected in MSL */
+    GLboolean usesFragCoordParams;
+    uint32_t vertexAttribUsageMask;
+    GLboolean uses_point_size_params;
+    GLboolean uses_cull_distance;
+    uint32_t cull_distance_count;
+    GLboolean uses_lod_bias;
     /* IR-level reflection cache for mglBufferSlotConflictsForProgram.
      * Computed lazily on first call during link-time resource binding, then
      * reused for all subsequent slot checks.  Invalidated at link start. */
     GLboolean ir_cache_valid;
     GLboolean ir_uses_cull_distance;
     GLboolean ir_uses_frag_coord;
-    MGLMSLNamedArgumentCacheEntry
-        msl_named_argument_cache[MGL_MSL_NAMED_ARGUMENT_CACHE_CAPACITY];
-    uint8_t msl_named_argument_cache_next;
     SpirvResourceList *validated_resource_lists[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
     SpirvResource *validated_resource_list_storage[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
     GLuint validated_resource_list_counts[_MAX_SHADER_TYPES][_MAX_SPIRV_RES];
-    /* Process-unique lifetime ID and per-link generation used by the
-     * renderer's bounded MSL texture type cache. */
-    uint64_t msl_texture_cache_instance_id;
-    uint64_t msl_texture_cache_generation;
+    uint64_t pipeline_cache_instance_id;
+    uint64_t pipeline_cache_generation;
     GLboolean program_separable;
     BufferBaseTarget plain_uniform_buffers[MAX_BINDABLE_BUFFERS];
     /* Active-binding bitmap for plain_uniform_buffers: bit i is set iff

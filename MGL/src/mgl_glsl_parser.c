@@ -108,6 +108,29 @@ typedef struct MGLParser {
 static unsigned int tk_line(MGLParser *p);
 static const MGLGLSLToken *tk(MGLParser *p, int offset);
 
+/* Image formats are layout qualifiers, not declaration qualifiers.  The
+ * AIR type carries the image's element scalar kind; Metal obtains the actual
+ * pixel format from the bound texture, so no extra AST field is needed. */
+static int is_image_format_layout(const char *s, size_t n)
+{
+    static const char *const formats[] = {
+        "r8", "r16", "r32f", "rg8", "rg16", "rg32f",
+        "rgba8", "rgba16", "rgba32f", "rgba8_snorm",
+        "rgba16_snorm", "rg8_snorm", "rg16_snorm", "r8_snorm",
+        "r16_snorm", "r11f_g11f_b10f", "rgb10_a2",
+        "r8i", "r16i", "r32i", "rg8i", "rg16i", "rg32i",
+        "rgba8i", "rgba16i", "rgba32i", "r8ui", "r16ui",
+        "r32ui", "rg8ui", "rg16ui", "rg32ui", "rgba8ui",
+        "rgba16ui", "rgba32ui", "rgb10_a2ui",
+    };
+    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); i++) {
+        if (strlen(formats[i]) == n && memcmp(s, formats[i], n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void parse_error(MGLParser *p, const char *fmt, ...)
 {
     if (p->tu->error) {
@@ -464,11 +487,41 @@ static MGLExpr *parse_postfix(MGLParser *p)
                 parse_error(p, "expected field name at line %u", tk_line(p));
                 break;
             }
+            char *field = dup_current(p);
+            advance(p);
+            if (field && strcmp(field, "length") == 0 && ops_at(p, "(")) {
+                MGLExpr *call = expr_alloc(p, MGL_EXPR_CALL, e->line);
+                if (!call) {
+                    free(field);
+                    break;
+                }
+                call->u.call.name = strdup("__mgl_array_length");
+                call->u.call.args = (MGLExpr **)calloc(1, sizeof(MGLExpr *));
+                if (!call->u.call.name || !call->u.call.args) {
+                    free(call->u.call.name);
+                    free(call->u.call.args);
+                    free(call);
+                    free(field);
+                    break;
+                }
+                call->u.call.args[0] = e;
+                call->u.call.arg_count = 1;
+                eat_punct(p, "(");
+                if (!ops_at(p, ")")) {
+                    parse_error(p, "array length() takes no arguments at line %u",
+                                tk_line(p));
+                }
+                expect_punct(p, ")");
+                free(field);
+                e = call;
+                continue;
+            }
             MGLExpr *m = expr_alloc(p, MGL_EXPR_MEMBER, e->line);
             if (m) {
                 m->u.member.object = e;
-                m->u.member.field = dup_current(p);
-                advance(p);
+                m->u.member.field = field;
+            } else {
+                free(field);
             }
             e = m;
         } else if (ops_at(p, "[")) {
@@ -1057,7 +1110,8 @@ more_qualifiers:
                 (n == 10 && memcmp(s, "line_strip", 10) == 0) ||
                 (n == 15 && memcmp(s, "lines_adjacency", 15) == 0) ||
                 (n == 14 && memcmp(s, "triangle_strip", 14) == 0) ||
-                (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0);
+                (n == 19 && memcmp(s, "triangles_adjacency", 19) == 0) ||
+                is_image_format_layout(s, n);
             int has_value = at_peek_punct(p, 1, "=");
 
             if (!is_flag && !has_value) {
@@ -1148,6 +1202,14 @@ more_qualifiers:
      * layout is recorded on the translation unit for sema + backend. */
     if (ops_at(p, ";")) {
         MGLTranslationUnit *tu = p->tu;
+        /* `points` is valid on both sides of a geometry stage declaration.
+         * The layout parser sees the token before it sees the trailing
+         * storage qualifier, so classify it here once `in`/`out` is known. */
+        if ((d->qualifiers & MGL_AST_Q_OUT) &&
+            d->layout_primitive == MGL_AST_GS_IN_POINTS) {
+            d->layout_primitive = MGL_AST_TES_DEFAULT;
+            d->layout_primitive_out = MGL_AST_GS_OUT_POINTS;
+        }
         if (d->layout_vertices >= 0)          tu->layout_vertices = d->layout_vertices;
         if (d->layout_max_vertices >= 0)      tu->layout_max_vertices = d->layout_max_vertices;
         if (d->layout_invocations >= 1)       tu->layout_invocations = d->layout_invocations;

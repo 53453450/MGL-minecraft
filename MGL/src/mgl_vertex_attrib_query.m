@@ -12,7 +12,6 @@
 
 #import "mgl_vertex_attrib_query.h"
 
-#import "spirv_cross_c.h"   /* SPVC_RESOURCE_TYPE_STAGE_INPUT */
 
 #include <strings.h>        /* strcasecmp */
 
@@ -26,7 +25,7 @@ BOOL mglRendererProgramUsesVertexAttrib(Program *program, GLuint attribute)
     }
 
     SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     if (!inputs->list || inputs->count == 0) {
         return NO;
     }
@@ -62,7 +61,7 @@ SpirvResource *mglRendererProgramVertexAttribResource(Program *program, GLuint a
     }
 
     SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     if (!inputs->list || inputs->count == 0) {
         return NULL;
     }

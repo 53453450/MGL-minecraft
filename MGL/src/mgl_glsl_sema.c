@@ -21,6 +21,7 @@
 
 #include "mgl_glsl_sema.h"
 #include "mgl_glsl_ast.h"
+#include "mgl_shader_abi.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -87,7 +88,8 @@ static void scratch_destroy(Sema *s)
     s->tmp_count = s->tmp_cap = 0;
 }
 
-/* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;}
+/* gl_PerVertex interface struct {vec4 gl_Position; float gl_PointSize;
+ * float gl_CullDistance[8];}
  * used by gl_in[]/gl_out[] in TCS/TES/GS.  Each caller receives a NEW
  * struct (never shared/cached): the array type created by gl_in_out_array
  * owns it, and multiple arrays must not share one struct or the scratch
@@ -96,9 +98,14 @@ static MGLIRType *per_vertex_type(Sema *s)
 {
     MGLIRType *pos = mglIRTypeVector(MGLIR_SCALAR_FLOAT, 4);
     MGLIRType *psz = mglIRTypeScalar(MGLIR_SCALAR_FLOAT);
-    MGLIRType *members[2] = { pos, psz };
-    const char *names[2] = { "gl_Position", "gl_PointSize" };
-    MGLIRType *st = mglIRTypeStruct(members, names, 2, "gl_PerVertex");
+    MGLIRType *cull = mglIRTypeArray(
+        mglIRTypeScalar(MGLIR_SCALAR_FLOAT),
+        MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT);
+    MGLIRType *members[3] = { pos, psz, cull };
+    const char *names[3] = {
+        "gl_Position", "gl_PointSize", "gl_CullDistance"
+    };
+    MGLIRType *st = mglIRTypeStruct(members, names, 3, "gl_PerVertex");
     s->per_vertex = st; /* informational only; ownership follows the array */
     return st;
 }
@@ -940,6 +947,7 @@ typedef enum {
     BI_ARG_S3D,     /* sampler3D */
     BI_ARG_SCUBE,   /* samplerCube */
     BI_ARG_SBUF,    /* samplerBuffer */
+    BI_ARG_I2D,     /* image2D */
 } BiArgKind;
 
 typedef enum {
@@ -983,6 +991,9 @@ static const BiFn kBuiltins[] = {
     { "texelFetch", 3, { BI_ARG_S2D, BI_ARG_GENI, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 3, { BI_ARG_SBUF, BI_ARG_INT, BI_ARG_INT }, BI_RET_SAMP },
     { "texelFetch", 2, { BI_ARG_SBUF, BI_ARG_INT }, BI_RET_SAMP },
+    { "imageLoad", 2, { BI_ARG_I2D, BI_ARG_GENI }, BI_RET_SAMP },
+    { "imageStore", 3, { BI_ARG_I2D, BI_ARG_GENI, BI_ARG_VEC4 }, BI_RET_VOID },
+    { "imageSize", 1, { BI_ARG_I2D }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_S3D,   BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "textureSize", 2, { BI_ARG_SCUBE, BI_ARG_FLOAT }, BI_RET_IVEC2 },
     { "normalize", 1, { BI_ARG_GENF }, BI_RET_GENF },
@@ -1173,6 +1184,8 @@ static int bif_arg_matches(const MGLIRType *t, BiArgKind k, uint32_t *gen_dim)
     case BI_ARG_SBUF:
         return t->kind == MGLIR_TYPE_SAMPLER && t->tex_kind == MGLIR_TEX_BUFFER &&
                !t->tex_depth;
+    case BI_ARG_I2D:
+        return t->kind == MGLIR_TYPE_IMAGE && t->tex_kind == MGLIR_TEX_2D;
     default:
         return 0;
     }
@@ -1242,7 +1255,9 @@ static MGLIRType *builtin_call_type(const char *name,
         case BI_RET_SAMP: {
             MGLIRScalar st = MGLIR_SCALAR_FLOAT;
             for (uint32_t j = 0; j < f->argc; j++) {
-                if (arg_types[j] && arg_types[j]->kind == MGLIR_TYPE_SAMPLER) {
+                if (arg_types[j] &&
+                    (arg_types[j]->kind == MGLIR_TYPE_SAMPLER ||
+                     arg_types[j]->kind == MGLIR_TYPE_IMAGE)) {
                     st = arg_types[j]->tex_storage;
                     break;
                 }
@@ -1454,6 +1469,10 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * vertex_id argument (capture variants). */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_InstanceID") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_BaseInstance") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
             if (strcmp(e->u.var_ref.name, "gl_FragCoord") == 0) {
                 /* Fragment built-in window coordinate; the AIR backend
                  * maps it to the fragment position argument. */
@@ -1465,6 +1484,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                  * the air.point_size output member. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_FLOAT));
             }
+            if (strcmp(e->u.var_ref.name, "gl_CullDistance") == 0) {
+                /* Primitive culling is emulated in the AIR vertex path;
+                 * this builtin is therefore represented as a fixed float
+                 * array instead of air.clip_distance output metadata. */
+                return scratch_type(s, mglIRTypeArray(
+                    mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 8));
+            }
             /* ---- M3 tessellation/geometry builtins ---- */
             if (strcmp(e->u.var_ref.name, "gl_TessCoord") == 0) {
                 /* TES: barycentric/parametric coordinates. */
@@ -1475,6 +1501,9 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strcmp(e->u.var_ref.name, "gl_InvocationID") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_PrimitiveID") == 0) {
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strcmp(e->u.var_ref.name, "gl_TessLevelOuter") == 0) {
@@ -1589,6 +1618,35 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
         return NULL;
     }
     case MGL_EXPR_CALL: {
+        if (strcmp(e->u.call.name, "__mgl_array_length") == 0) {
+            if (e->u.call.arg_count != 1) {
+                sema_error(s, e->line, "array length() takes no arguments");
+                return NULL;
+            }
+            MGLIRType *array = check_expr(s, tab, e->u.call.args[0]);
+            if (!array || array->kind != MGLIR_TYPE_ARRAY) {
+                sema_error(s, e->line,
+                           "length() requires an array expression");
+                return NULL;
+            }
+            if (array->array_size == 0) {
+                const MGLExpr *root = e->u.call.args[0];
+                while (root && (root->kind == MGL_EXPR_MEMBER ||
+                                root->kind == MGL_EXPR_INDEX)) {
+                    root = root->kind == MGL_EXPR_MEMBER
+                        ? root->u.member.object : root->u.index.object;
+                }
+                Sym *owner = root && root->kind == MGL_EXPR_VAR_REF
+                    ? symtab_lookup(tab, root->u.var_ref.name) : NULL;
+                if (!owner || !(owner->qualifiers & MGL_AST_Q_BUFFER)) {
+                    sema_error(s, e->line,
+                               "runtime array length() requires the final member of a shader storage block");
+                    return NULL;
+                }
+            }
+            return scratch_type(s,
+                                mglIRTypeScalar(MGLIR_SCALAR_INT));
+        }
         /* Look up the function; overload resolution is by arity. */
         Sym *sym = symtab_lookup(tab, e->u.call.name);
         if (sym && sym->kind == SYM_FUNCTION) {
@@ -1921,6 +1979,17 @@ static void layout_block(Sema *s, const MGLDecl *d, MGLIRType *block_type)
     case MGL_AST_LAYOUT_SHARED: std = MGLIR_LAYOUT_SHARED; break;
     case MGL_AST_LAYOUT_PACKED: std = MGLIR_LAYOUT_PACKED; break;
     default: std = MGLIR_LAYOUT_STD140; break;
+    }
+    for (uint32_t i = 0; i < block_type->member_count; i++) {
+        MGLIRType *member = block_type->members[i];
+        if (member && member->kind == MGLIR_TYPE_ARRAY &&
+            member->array_size == 0 &&
+            (!(d->qualifiers & MGL_AST_Q_BUFFER) ||
+             i + 1 != block_type->member_count)) {
+            sema_error(s, d->line,
+                       "runtime array '%s' must be the final member of a shader storage block",
+                       block_type->member_names[i]);
+        }
     }
     uint32_t size = 0;
     if (mglIRComputeLayout(block_type, std, &size) != 0) {

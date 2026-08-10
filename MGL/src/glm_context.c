@@ -196,7 +196,6 @@ GLMContext createGLMContext(GLenum format, GLenum type,
 {
     GLMContext ctx = (GLMContext)malloc(sizeof(GLMContextRec));
     GLMContext save = _ctx;
-    int err;
 
     if (!ctx) {
         /* OOM: no GLMContext exists yet, so ctx->error_func cannot be called.
@@ -616,14 +615,6 @@ GLMContext createGLMContext(GLenum format, GLenum type,
     ctx->error_func = error_func;
 
     ctx->temp_element_buffer = NULL;
-    
-    err = glslang_initialize_process();
-    if (!err)
-    {
-        // Do not abort the host process during dynamic loading.
-        // Shader compilation may fail later, but the library remains loadable.
-        fprintf(stderr, "MGL WARN: glslang_initialize_process failed; continuing without hard abort\n");
-    }
     
     _ctx = save;
 
