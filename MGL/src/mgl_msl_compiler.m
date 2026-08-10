@@ -9,6 +9,8 @@
 #import "mgl_msl_compiler.h"
 #import "mgl_frame_activity.h"
 #import "mgl_metal_ref.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
 
 #include <string.h>
 #include <stdatomic.h>
@@ -58,6 +60,61 @@ static NSString *mglMSLCompileCacheKey(id<MTLDevice> device,
     return key;
 }
 
+static NSError *mglMSLMetalCppError(const char *message)
+{
+    NSString *description = message && message[0]
+        ? [NSString stringWithUTF8String:message]
+        : @"Metal-cpp library compilation failed";
+    return [NSError errorWithDomain:@"MGLMSLCompiler"
+                               code:1
+                           userInfo:@{NSLocalizedDescriptionKey: description}];
+}
+
+static id<MTLLibrary> mglCompileMSLWithMetalCpp(
+    id compiler,
+    NSString *source,
+    MTLCompileOptions *options,
+    NSString *label,
+    NSError **error)
+{
+    void *library = NULL;
+    char message[1024] = {0};
+    if (mglRenderCppCompileLibrary(
+            compiler ? (__bridge void *)compiler : NULL,
+            (__bridge void *)source,
+            options ? (__bridge void *)options : NULL,
+            label.UTF8String,
+            &library, message, sizeof(message)) != 0 || !library) {
+        if (error) {
+            *error = mglMSLMetalCppError(message);
+        }
+        return nil;
+    }
+    if (error) {
+        *error = nil;
+    }
+    return (__bridge_transfer id<MTLLibrary>)library;
+}
+
+static id<MTLFunction> mglCreateFunctionWithMetalCpp(
+    id<MTLLibrary> library,
+    NSString *entryName,
+    MTLFunctionConstantValues *values,
+    NSError **error)
+{
+    void *function = NULL;
+    char message[1024] = {0};
+    if (mglRenderCppCreateFunction(
+            (__bridge void *)library, entryName.UTF8String,
+            values ? (__bridge void *)values : NULL,
+            &function, message, sizeof(message)) != 0 || !function) {
+        if (error) *error = mglMSLMetalCppError(message);
+        return nil;
+    }
+    if (error) *error = nil;
+    return (__bridge_transfer id<MTLFunction>)function;
+}
+
 static NSMutableDictionary<NSString *, id<MTLFunction>> *mglFunctionCacheForLibrary(id<MTLLibrary> library)
 {
     static const char kMGLFunctionCacheAssociationKey = 0;
@@ -90,6 +147,7 @@ static NSString *mglFunctionCacheKey(NSString *entryName, BOOL needsR32UI)
 static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
                                              NSString *source,
                                              MTLCompileOptions *options,
+                                             NSString *label,
                                              NSError **error)
 {
     if (mglPerfSummaryEnabled()) {
@@ -99,7 +157,14 @@ static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
         dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
 
         uint64_t compile_start = mach_absolute_time();
-        id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:error];
+        id<MTLLibrary> library =
+            mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+                    mglRenderCppGetDevice()
+                ? mglCompileMSLWithMetalCpp(nil, source, options, label,
+                                            error)
+                : [device newLibraryWithSource:source
+                                       options:options
+                                         error:error];
         uint64_t compile_end = mach_absolute_time();
         double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
         MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
@@ -110,6 +175,10 @@ static id<MTLLibrary> mglCompileMSLWithTiming(id<MTLDevice> device,
         return library;
     }
 
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice()) {
+        return mglCompileMSLWithMetalCpp(nil, source, options, label, error);
+    }
     return [device newLibraryWithSource:source options:options error:error];
 }
 
@@ -161,10 +230,16 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
                 !mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER") &&
                 atomic_load_explicit(&s_mtl4FailCount, memory_order_relaxed) < kMTL4FallbackThreshold) {
                 if (@available(macOS 26.0, *)) {
-                    MTL4LibraryDescriptor *descriptor = [[MTL4LibraryDescriptor alloc] init];
-                    descriptor.source = source;
-                    descriptor.options = options;
-                    descriptor.name = label;
+                    BOOL useMetalCpp =
+                        mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+                        mglRenderCppGetDevice();
+                    MTL4LibraryDescriptor *descriptor = nil;
+                    if (!useMetalCpp) {
+                        descriptor = [[MTL4LibraryDescriptor alloc] init];
+                        descriptor.source = source;
+                        descriptor.options = options;
+                        descriptor.name = label;
+                    }
 
                     id<MTLLibrary> library = nil;
                     if (mglPerfSummaryEnabled()) {
@@ -174,13 +249,29 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
                         dispatch_once(&s_tbOnce, ^{ mach_timebase_info(&s_tb); });
 
                         uint64_t compile_start = mach_absolute_time();
-                        library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:&capturedError];
+                        if (useMetalCpp) {
+                            library = mglCompileMSLWithMetalCpp(
+                                mtl4Compiler, source, options, label,
+                                &capturedError);
+                        } else {
+                            library = [mtl4Compiler
+                                newLibraryWithDescriptor:descriptor
+                                                  error:&capturedError];
+                        }
                         uint64_t compile_end = mach_absolute_time();
                         double elapsed = (double)(compile_end - compile_start) * s_tb.numer / s_tb.denom / 1e9;
                         MGL_FRAME_ADD(g_mglShaderCompileTimeSinceSwap, elapsed);
                         MGL_FRAME_INC(g_mglShaderCompilesSinceSwap);
                     } else {
-                        library = [mtl4Compiler newLibraryWithDescriptor:descriptor error:&capturedError];
+                        if (useMetalCpp) {
+                            library = mglCompileMSLWithMetalCpp(
+                                mtl4Compiler, source, options, label,
+                                &capturedError);
+                        } else {
+                            library = [mtl4Compiler
+                                newLibraryWithDescriptor:descriptor
+                                                  error:&capturedError];
+                        }
                     }
                     if (library) {
                         mglMetalCountCreate(MGLMetalKindLibrary);
@@ -205,7 +296,8 @@ id<MTLLibrary> mglCompileMSL(id<MTLDevice> device,
 #endif
             if (!result) {
                 capturedError = nil;
-                result = mglCompileMSLWithTiming(device, source, options, &capturedError);
+                result = mglCompileMSLWithTiming(
+                    device, source, options, label, &capturedError);
                 if (result && cacheKey) {
                     [mglMSLLibraryCache() setObject:result forKey:cacheKey];
                 }
@@ -256,9 +348,15 @@ id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,
         [values setConstantValue:&alignment type:MTLDataTypeUInt atIndex:65535];
 
         __autoreleasing NSError *error = nil;
-        function = [library newFunctionWithName:entryName
-                                 constantValues:values
-                                          error:&error];
+        if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+            mglRenderCppGetDevice()) {
+            function = mglCreateFunctionWithMetalCpp(
+                library, entryName, values, &error);
+        } else {
+            function = [library newFunctionWithName:entryName
+                                     constantValues:values
+                                              error:&error];
+        }
         if (function) {
             mglMetalCountCreate(MGLMetalKindFunction);
         }
@@ -268,7 +366,13 @@ id<MTLFunction> mglNewFunctionFromLibrary(id<MTLLibrary> library,
                   error.localizedDescription ?: error);
         }
     } else {
-        function = [library newFunctionWithName:entryName];
+        if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+            mglRenderCppGetDevice()) {
+            function = mglCreateFunctionWithMetalCpp(
+                library, entryName, nil, nil);
+        } else {
+            function = [library newFunctionWithName:entryName];
+        }
     }
 
     if (function && cacheKey && functionCache) {
