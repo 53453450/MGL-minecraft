@@ -13,6 +13,8 @@ typedef struct SyncList_t {
 } SyncList;
 
 typedef struct MGLCommandState_t {
+    void *_Nullable renderPassIdentityOwner;
+    void *_Nullable renderPassStateOwner;
     MTLRenderPassDescriptor *__strong _Nullable renderPassDescriptor;
     Framebuffer *_Nullable renderPassFramebuffer;
     GLuint renderPassFramebufferName;
@@ -22,11 +24,16 @@ typedef struct MGLCommandState_t {
     uint64_t traceReplayFlushId;
     uint32_t traceReplayBatchIndex;
     GLuint dontCareFrameGeneration;
+    void *_Nullable currentCommandBufferOwner;
+    void *_Nullable detachedCommandBufferSubmission;
+    void *_Nullable detachedCommandBuffer;
     id<MTLCommandBuffer> __strong _Nullable currentCommandBuffer;
     SyncList *_Nullable currentCommandBufferSyncList;
+    void *_Nullable mdiArgsScratchOwner;
     id<MTLBuffer> __strong _Nullable mdiArgsScratchBuffer;
     NSUInteger mdiArgsScratchCapacity;
     NSUInteger mdiArgsScratchOffset;
+    void *_Nullable currentRenderEncoderOwner;
     id<MTLRenderCommandEncoder> __strong _Nullable currentRenderEncoder;
     id<MTLTexture> __strong _Nullable fallbackRenderTargetTexture;
     id<MTLTexture> __strong _Nullable transientDepthTexture;
@@ -65,6 +72,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable id<MTLCommandBuffer>)installNewCommandBufferFromQueue:(nullable id<MTLCommandQueue>)commandQueue;
 - (nullable id<MTLCommandBuffer>)detachCurrentCommandBufferForSubmission;
 - (void)discardCurrentCommandBuffer;
+- (BOOL)commitDetachedCommandBufferIfOwned:(nullable id<MTLCommandBuffer>)commandBuffer;
+- (void)releaseDetachedCommandBufferIfOwned:(nullable id<MTLCommandBuffer>)commandBuffer;
 - (BOOL)appendSyncToCurrentCommandBuffer:(Sync *)sync;
 - (void)clearCurrentCommandBufferSyncListEntries;
 - (nullable id<MTLEvent>)preparePendingEventWithDevice:(id<MTLDevice>)device
@@ -72,6 +81,8 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable id<MTLEvent>)detachPendingEventWithSyncName:(nullable GLuint *)syncNameOut;
 - (void)clearPendingEvent;
 - (void)installRenderEncoder:(nullable id<MTLRenderCommandEncoder>)renderEncoder;
+- (nullable id<MTLRenderCommandEncoder>)createRenderEncoderWithDescriptor:(nullable MTLRenderPassDescriptor *)descriptor;
+- (void)endCurrentRenderEncoder;
 - (void)clearCurrentRenderEncoder;
 - (BOOL)beginCommandBufferCommit;
 - (void)endCommandBufferCommit;

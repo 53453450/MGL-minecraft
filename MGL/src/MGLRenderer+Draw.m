@@ -4,6 +4,102 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static BOOL mglDrawUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static void mglDrawPrimitives(id<MTLRenderCommandEncoder> encoder,
+                              MTLPrimitiveType primitiveType,
+                              NSUInteger vertexStart,
+                              NSUInteger vertexCount,
+                              NSUInteger instanceCount,
+                              NSUInteger baseInstance)
+{
+    if (mglDrawUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            vertexStart, vertexCount, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+                vertexStart:vertexStart
+                vertexCount:vertexCount
+              instanceCount:instanceCount
+               baseInstance:baseInstance];
+}
+
+static void mglDrawIndexedPrimitives(id<MTLRenderCommandEncoder> encoder,
+                                     MTLPrimitiveType primitiveType,
+                                     NSUInteger indexCount,
+                                     MTLIndexType indexType,
+                                     id<MTLBuffer> indexBuffer,
+                                     NSUInteger indexBufferOffset,
+                                     NSUInteger instanceCount,
+                                     NSInteger baseVertex,
+                                     NSUInteger baseInstance)
+{
+    if (mglDrawUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
+static void mglDrawPrimitivesIndirect(id<MTLRenderCommandEncoder> encoder,
+                                      MTLPrimitiveType primitiveType,
+                                      id<MTLBuffer> indirectBuffer,
+                                      NSUInteger indirectBufferOffset)
+{
+    if (mglDrawUsesMetalCpp() &&
+        mglRenderCppDrawPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (__bridge void *)indirectBuffer, indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+             indirectBuffer:indirectBuffer
+       indirectBufferOffset:indirectBufferOffset];
+}
+
+static void mglDrawIndexedPrimitivesIndirect(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    id<MTLBuffer> indirectBuffer,
+    NSUInteger indirectBufferOffset)
+{
+    if (mglDrawUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, (__bridge void *)indirectBuffer,
+            indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                    indirectBuffer:indirectBuffer
+              indirectBufferOffset:indirectBufferOffset];
+}
 
 /* === C helpers used by Draw and Batch methods === */
 /* mglRendererProgramHasSampledResourceNamed is non-static so
@@ -82,6 +178,15 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                     instanceCount:1
                                      baseInstance:0
                                             label:"drawArrays"]) {
+        return;
+    }
+    if ([self handleGeometryShaderArrayDrawIfNeeded:ctx
+                                                 mode:mode
+                                                first:first
+                                                count:count
+                                        instanceCount:1
+                                         baseInstance:0u
+                                                label:"drawArrays"]) {
         return;
     }
 
@@ -219,7 +324,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
         @try {
             [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-            [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
+            mglRenderCppBindingSetPipelineState(
+                _bindingStateOwner,
+                (__bridge void *)_pipelineCache.state->pipelineState);
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays - setRenderPipelineState failed after recovery: %@", exception);
@@ -250,6 +357,20 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
     BOOL emulateLineLoop = (mode == GL_LINE_LOOP);
     BOOL emulateQuads = (mode == GL_QUADS && !polygonModePoint);
+    BOOL usesCullDistance =
+        activeProgram && activeProgram->uses_cull_distance;
+    if (usesCullDistance &&
+        [self captureAIRCullDistancesForArrayDraw:ctx
+                                            first:first
+                                            count:count
+                                    instanceCount:1
+                                     baseInstance:0u]) {
+        if (![self processGLState:true] ||
+            !_renderPassManager.state->currentRenderEncoder) {
+            MGL_FRAME_INC(g_mglDrawArraysSkippedSinceSwap);
+            return;
+        }
+    }
     if (polygonModePoint) {
         if (!mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
                                         _device,
@@ -295,14 +416,34 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         @try {
-            [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                              indexCount:fanIndexCount
-                                               indexType:MTLIndexTypeUInt32
-                                             indexBuffer:fanIndexBuffer
-                                       indexBufferOffset:0
-                                           instanceCount:1
-                                              baseVertex:first
-                                            baseInstance:0];
+            if (usesCullDistance) {
+                const NSUInteger primitiveCount = fanIndexCount / 3u;
+                for (NSUInteger primitive = 0u;
+                     primitive < primitiveCount; primitive++) {
+                    const GLuint vertices[3] = {
+                        (GLuint)first,
+                        (GLuint)first + (GLuint)primitive + 1u,
+                        (GLuint)first + (GLuint)primitive + 2u,
+                    };
+                    MGLEncodeContext encCtx = {
+                        .encoder = _renderPassManager.state->currentRenderEncoder
+                    };
+                    [self bindCullDistanceEmulationBuffers:mode
+                                                firstVertex:(GLuint)first
+                                           explicitVertices:vertices
+                                         explicitVertexCount:3u
+                                              encodeContext:&encCtx];
+                    mglDrawIndexedPrimitives(
+                        encCtx.encoder, MTLPrimitiveTypeTriangle, 3u,
+                        MTLIndexTypeUInt32, fanIndexBuffer,
+                        primitive * 3u * sizeof(uint32_t), 1, first, 0);
+                }
+            } else {
+                mglDrawIndexedPrimitives(
+                    _renderPassManager.state->currentRenderEncoder,
+                    MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
+                    fanIndexBuffer, 0, 1, first, 0);
+            }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays triangle fan drawIndexedPrimitives failed: %@", exception);
             if (traceLogDraw) {
@@ -341,14 +482,33 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         @try {
-            [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                                              indexCount:loopIndexCount
-                                               indexType:MTLIndexTypeUInt32
-                                             indexBuffer:loopIndexBuffer
-                                       indexBufferOffset:0
-                                           instanceCount:1
-	                                              baseVertex:0
-                                            baseInstance:0];
+            if (usesCullDistance) {
+                for (NSUInteger primitive = 0u;
+                     primitive + 1u < loopIndexCount; primitive++) {
+                    const GLuint vertices[2] = {
+                        (GLuint)first + (GLuint)primitive,
+                        (GLuint)first +
+                            (GLuint)((primitive + 1u) % (NSUInteger)count),
+                    };
+                    MGLEncodeContext encCtx = {
+                        .encoder = _renderPassManager.state->currentRenderEncoder
+                    };
+                    [self bindCullDistanceEmulationBuffers:mode
+                                                firstVertex:(GLuint)first
+                                           explicitVertices:vertices
+                                         explicitVertexCount:2u
+                                              encodeContext:&encCtx];
+                    mglDrawIndexedPrimitives(
+                        encCtx.encoder, MTLPrimitiveTypeLine, 2u,
+                        MTLIndexTypeUInt32, loopIndexBuffer,
+                        primitive * sizeof(uint32_t), 1, 0, 0);
+                }
+            } else {
+                mglDrawIndexedPrimitives(
+                    _renderPassManager.state->currentRenderEncoder,
+                    MTLPrimitiveTypeLineStrip, loopIndexCount,
+                    MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
+            }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: mtlDrawArrays line loop drawIndexedPrimitives failed: %@", exception);
             if (traceLogDraw) {
@@ -359,6 +519,16 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             return;
         }
     } else if (emulateQuads) {
+        if (usesCullDistance) {
+            MGLEncodeContext encCtx = {
+                .encoder = _renderPassManager.state->currentRenderEncoder
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:NULL
+                                 explicitVertexCount:0u
+                                      encodeContext:&encCtx];
+        }
         if (!mglEncodeArrayQuads(_renderPassManager.state->currentRenderEncoder,
                                  _device,
                                  count,
@@ -391,12 +561,14 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     /* Cull distance emulation: if the active vertex shader uses
      * mgl_CullDistance, bind the vertex buffer and params so the injected
      * shader code can read sibling-vertex cull distance values. */
-    if (activeProgram && (activeProgram->mslCacheValid
-            ? activeProgram->uses_cull_distance
-            : (activeProgram->spirv[_VERTEX_SHADER].msl_str &&
-               strstr(activeProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
+    if (usesCullDistance && mode != GL_TRIANGLE_STRIP &&
+        mode != GL_LINE_STRIP) {
         MGLEncodeContext encCtx = { .encoder = _renderPassManager.state->currentRenderEncoder };
-        [self bindCullDistanceEmulationBuffers:mode encodeContext:&encCtx];
+        [self bindCullDistanceEmulationBuffers:mode
+                                    firstVertex:(GLuint)first
+                               explicitVertices:NULL
+                             explicitVertexCount:0u
+                                  encodeContext:&encCtx];
     }
 
     @try {
@@ -408,9 +580,54 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                     (int)count,
                     _renderPassManager.state->currentRenderEncoder,
                     _pipelineCache.state->pipelineState);
-        [_renderPassManager.state->currentRenderEncoder drawPrimitives: primitiveType
-                                 vertexStart: first
-                                 vertexCount: count];
+        if (usesCullDistance && mode == GL_TRIANGLE_STRIP && count >= 3) {
+            NSUInteger stripIndexCount = 0u;
+            id<MTLBuffer> stripIndexBuffer =
+                mglNewTriangleStripArrayIndexBuffer(
+                    _device, (NSUInteger)count, &stripIndexCount);
+            if (!stripIndexBuffer || stripIndexCount == 0u) {
+                @throw [NSException
+                    exceptionWithName:@"MGLCullDistanceTriangleStrip"
+                               reason:@"failed to expand triangle strip"
+                             userInfo:nil];
+            }
+            for (NSUInteger primitive = 0u;
+                 primitive * 3u < stripIndexCount; primitive++) {
+                const GLuint vertices[3] = {
+                    (GLuint)first + (GLuint)primitive,
+                    (GLuint)first + (GLuint)primitive + 1u,
+                    (GLuint)first + (GLuint)primitive + 2u,
+                };
+                MGLEncodeContext encCtx = {
+                    .encoder = _renderPassManager.state->currentRenderEncoder
+                };
+                [self bindCullDistanceEmulationBuffers:mode
+                                            firstVertex:(GLuint)first
+                                       explicitVertices:vertices
+                                     explicitVertexCount:3u
+                                          encodeContext:&encCtx];
+                mglDrawIndexedPrimitives(
+                    encCtx.encoder, MTLPrimitiveTypeTriangle, 3u,
+                    MTLIndexTypeUInt32, stripIndexBuffer,
+                    primitive * 3u * sizeof(uint32_t), 1, first, 0);
+            }
+        } else if (usesCullDistance && mode == GL_LINE_STRIP && count >= 2) {
+            for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
+                MGLEncodeContext encCtx = {
+                    .encoder = _renderPassManager.state->currentRenderEncoder
+                };
+                [self bindCullDistanceEmulationBuffers:mode
+                                            firstVertex:(GLuint)(first + primitive)
+                                       explicitVertices:NULL
+                                     explicitVertexCount:0u
+                                          encodeContext:&encCtx];
+                mglDrawPrimitives(encCtx.encoder, MTLPrimitiveTypeLine,
+                                  first + primitive, 2u, 1u, 0u);
+            }
+        } else {
+            mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+                              primitiveType, first, count, 1, 0);
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: mtlDrawArrays - drawPrimitives failed: %@", exception);
         // Don't crash, just return gracefully
@@ -511,7 +728,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawElements"]) {
         return;
     }
-
     if ([self processGLStateLocked: true] == false) {
         s_drawElementsProcessStateFailCount++;
         MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
@@ -585,10 +801,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         VertexArray *validVAO = mglRendererGetValidatedVAO(ctx, "drawElements.enabledMask");
         GLuint enabledAttribMask = validVAO ? validVAO->enabled_attribs : 0u;
         drawProgramUsesCloudFaces =
-            mglProgramHasResourceNamed(drawVertexProgram, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, "CloudFaces") ||
-            mglProgramHasResourceNamed(drawVertexProgram, _VERTEX_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "CloudFaces") ||
-            mglProgramHasResourceNamed(drawFragmentProgram, _FRAGMENT_SHADER, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, "CloudFaces") ||
-            mglProgramHasResourceNamed(drawFragmentProgram, _FRAGMENT_SHADER, SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT, "CloudFaces");
+            mglProgramHasResourceNamed(drawVertexProgram, _VERTEX_SHADER, _SAMPLED_IMAGE_RES, "CloudFaces") ||
+            mglProgramHasResourceNamed(drawVertexProgram, _VERTEX_SHADER, _UNIFORM_CONSTANT_RES, "CloudFaces") ||
+            mglProgramHasResourceNamed(drawFragmentProgram, _FRAGMENT_SHADER, _SAMPLED_IMAGE_RES, "CloudFaces") ||
+            mglProgramHasResourceNamed(drawFragmentProgram, _FRAGMENT_SHADER, _UNIFORM_CONSTANT_RES, "CloudFaces");
 
         mglObserveProgramDrawForFocus(activeProgramName, count, enabledAttribMask);
 
@@ -828,6 +1044,24 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                activeProgramName:activeProgramName
                                         minIndex:minIndexForDraw
                                         maxIndex:maxIndexForDraw]) {
+            return;
+        }
+    }
+
+    BOOL usesCullDistance =
+        drawVertexProgram && drawVertexProgram->uses_cull_distance;
+    if (usesCullDistance && indexBytesForValidation &&
+        [self captureAIRCullDistancesForElementDraw:ctx
+                                         indexBytes:indexBytesForValidation +
+                                                    indexOffset
+                                          indexType:type
+                                              count:count
+                                         baseVertex:0
+                                      instanceCount:1
+                                       baseInstance:0u]) {
+        if (![self processGLStateLocked:true] ||
+            !_renderPassManager.state->currentRenderEncoder) {
+            MGL_FRAME_INC(g_mglDrawElementsSkippedSinceSwap);
             return;
         }
     }
@@ -1442,6 +1676,25 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                            emulateQuads:(BOOL)emulateQuads
 {
     @try {
+        if (!polygonModePoint &&
+            [self encodeCullDistanceElementDraw:mode
+                                      indexBytes:(indexBytesForValidation
+                                                      ? indexBytesForValidation +
+                                                            indexOffset
+                                                      : NULL)
+                                       indexType:type
+                                           count:count
+                                      baseVertex:0
+                                   instanceCount:1
+                                    baseInstance:0u
+                                 polygonLineMode:mglPolygonModeLineForDrawMode(
+                                                     ctx, mode)
+                                   encodeContext:&(MGLEncodeContext){
+                                       .encoder = _renderPassManager.state
+                                                      ->currentRenderEncoder
+                                   }]) {
+            return YES;
+        }
         MGLPrimitiveRestartEncodeResult restartResult =
             mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                    _device,
@@ -1527,12 +1780,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 return NO;
             }
 
-            [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                              indexCount:fanIndexCount
-                                               indexType:MTLIndexTypeUInt32
-                                             indexBuffer:fanIndexBuffer
-                                       indexBufferOffset:0
-                                           instanceCount:1];
+            mglDrawIndexedPrimitives(
+                _renderPassManager.state->currentRenderEncoder,
+                MTLPrimitiveTypeTriangle, fanIndexCount, MTLIndexTypeUInt32,
+                fanIndexBuffer, 0, 1, 0, 0);
         } else if (emulateLineLoop) {
             if (count < 2) {
                 if (traceLogDraw) {
@@ -1567,12 +1818,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 return NO;
             }
 
-            [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                                              indexCount:loopIndexCount
-                                               indexType:MTLIndexTypeUInt32
-                                             indexBuffer:loopIndexBuffer
-                                       indexBufferOffset:0
-                                           instanceCount:1];
+            mglDrawIndexedPrimitives(
+                _renderPassManager.state->currentRenderEncoder,
+                MTLPrimitiveTypeLineStrip, loopIndexCount,
+                MTLIndexTypeUInt32, loopIndexBuffer, 0, 1, 0, 0);
         } else if (emulateQuads) {
             if (!mglEncodeElementQuads(_renderPassManager.state->currentRenderEncoder,
                                        _device,
@@ -1614,8 +1863,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                 }
                 return NO;
             }
-            [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType
-                                             indexBuffer:drawIndexBuffer indexBufferOffset:drawIndexOffset instanceCount:1];
+            mglDrawIndexedPrimitives(
+                _renderPassManager.state->currentRenderEncoder,
+                primitiveType, count, drawIndexType, drawIndexBuffer,
+                drawIndexOffset, 1, 0, 0);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: drawElements call=%llu drawIndexedPrimitives exception: %@",
@@ -1650,7 +1901,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawRangeElements"]) {
         return;
     }
-
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
         return;
@@ -1676,6 +1926,20 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:0
+                                             instanceCount:1
+                                              baseInstance:0u
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -1783,8 +2047,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType
-                                     indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, 1, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
 }
 
@@ -1804,6 +2069,21 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawArraysInstanced"]) {
         return;
     }
+    if ([self handleGeometryShaderArrayDrawIfNeeded:glm_ctx
+                                                 mode:mode
+                                                first:first
+                                                count:count
+                                        instanceCount:instancecount
+                                         baseInstance:0u
+                                                label:"drawArraysInstanced"]) {
+        return;
+    }
+
+    [self captureAIRCullDistancesForArrayDraw:glm_ctx
+                                         first:first
+                                         count:count
+                                 instanceCount:instancecount
+                                  baseInstance:0u];
 
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
@@ -1815,6 +2095,21 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     [self applyPolygonOffsetForDrawMode:mode];
 
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
+    if (!polygonModePoint &&
+        [self encodeCullDistanceArrayDraw:mode
+                                    first:first
+                                    count:count
+                            instanceCount:instancecount
+                             baseInstance:0u
+                            encodeContext:&(MGLEncodeContext){
+                                .encoder = _renderPassManager.state
+                                               ->currentRenderEncoder,
+                            }]) {
+        [self recordArrayDrawSubmittedMode:mode
+                               vertexCount:(uint64_t)MAX(count, 0) *
+                                           (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     if (polygonModePoint) {
         if (mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
                                        _device,
@@ -1871,7 +2166,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    [_renderPassManager.state->currentRenderEncoder drawPrimitives:primitiveType vertexStart:first vertexCount:count instanceCount:instancecount];
+    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+                      primitiveType, first, count, instancecount, 0);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -1918,6 +2214,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:0
+                                             instanceCount:instancecount
+                                              baseInstance:0u
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode
+                                  indexCount:(uint64_t)MAX(count, 0) *
+                                             (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -2030,8 +2342,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType
-                                     indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:instancecount];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, instancecount, 0, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -2078,6 +2391,20 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:basevertex
+                                             instanceCount:1
+                                              baseInstance:0u
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -2185,7 +2512,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives: primitiveType indexCount:count indexType: drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1 baseVertex:basevertex baseInstance:0];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
 }
 
@@ -2234,6 +2563,20 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:basevertex
+                                             instanceCount:1
+                                              baseInstance:0u
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -2341,7 +2684,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives: primitiveType indexCount:count indexType: drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1 baseVertex:basevertex baseInstance:0];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, 1, basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0)];
 }
 
@@ -2389,6 +2734,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, (GLsizei)count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:(GLsizei)count
+                                                baseVertex:basevertex
+                                             instanceCount:instancecount
+                                              baseInstance:0u
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode
+                                  indexCount:(uint64_t)count *
+                                             (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -2496,7 +2857,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:instancecount baseVertex:basevertex baseInstance:0];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, instancecount,
+                             basevertex, 0);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)count * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -2507,8 +2871,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p program=%u",
                 (unsigned)mode, indirect,
                 (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-
-    mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
@@ -2541,6 +2903,36 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"drawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *indirectVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (indirectVertexProgram && indirectVertexProgram->uses_cull_distance) {
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawArraysIndirect.cullDistance"]) {
+            return;
+        }
+        DrawArraysIndirectCommand cmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &cmd,
+                                sizeof(cmd),
+                                "drawArraysIndirect.cullDistance")) {
+            return;
+        }
+        if (cmd.count == 0u || cmd.instanceCount == 0u) return;
+        if (cmd.count > (uint32_t)INT_MAX ||
+            cmd.first > (uint32_t)INT_MAX ||
+            cmd.instanceCount > (uint32_t)INT_MAX) {
+            NSLog(@"MGL WARNING: drawArraysIndirect CullDistance command exceeds GLsizei range");
+            return;
+        }
+        [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                            mode:mode
+                                           first:(GLint)cmd.first
+                                           count:(GLsizei)cmd.count
+                                   instancecount:(GLsizei)cmd.instanceCount
+                                    baseinstance:cmd.baseInstance];
         return;
     }
 
@@ -2626,9 +3018,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
-    [_renderPassManager.state->currentRenderEncoder drawPrimitives:primitiveType
-                           indirectBuffer:indirectBuffer
-                     indirectBufferOffset:(NSUInteger)(uintptr_t)indirect];
+    mglDrawPrimitivesIndirect(
+        _renderPassManager.state->currentRenderEncoder, primitiveType,
+        indirectBuffer, (NSUInteger)(uintptr_t)indirect);
     [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_SUBMIT path=native mode=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, indirect, (unsigned long)(NSUInteger)(uintptr_t)indirect,
@@ -2643,8 +3035,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
                 (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-
-    mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "drawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
@@ -2701,6 +3091,44 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *indirectVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (indirectVertexProgram && indirectVertexProgram->uses_cull_distance) {
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawElementsIndirect.cullDistance"]) {
+            return;
+        }
+        DrawElementsIndirectCommand cmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &cmd,
+                                sizeof(cmd),
+                                "drawElementsIndirect.cullDistance")) {
+            return;
+        }
+        if (cmd.count == 0u || cmd.instanceCount == 0u) return;
+        if (cmd.count > (uint32_t)INT_MAX ||
+            cmd.instanceCount > (uint32_t)INT_MAX) {
+            NSLog(@"MGL WARNING: drawElementsIndirect CullDistance command exceeds GLsizei range");
+            return;
+        }
+        const NSUInteger indexStride = mglGLIndexElementSize(type);
+        if (indexStride == 0u ||
+            (NSUInteger)cmd.first > NSUIntegerMax / indexStride) {
+            NSLog(@"MGL WARNING: drawElementsIndirect CullDistance firstIndex overflow");
+            return;
+        }
+        const NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
+        [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                        mode:mode
+                                                       count:(GLsizei)cmd.count
+                                                        type:type
+                                                     indices:(const void *)(uintptr_t)elementOffset
+                                               instancecount:(GLsizei)cmd.instanceCount
+                                                   basevertex:cmd.baseVertex
+                                                 baseinstance:cmd.baseInstance];
         return;
     }
 
@@ -2822,12 +3250,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     }
 
     // draw indexed primitive
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType
-                                       indexType:drawIndexType
-                                     indexBuffer:drawIndexBuffer
-                               indexBufferOffset:indexBufferOffset
-                                  indirectBuffer:indirectBuffer
-                            indirectBufferOffset:(NSUInteger)(uintptr_t)indirect];
+    mglDrawIndexedPrimitivesIndirect(
+        _renderPassManager.state->currentRenderEncoder, primitiveType,
+        drawIndexType, drawIndexBuffer, indexBufferOffset, indirectBuffer,
+        (NSUInteger)(uintptr_t)indirect);
     [self recordElementDrawSubmittedMode:mode indexCount:0u];
     mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SUBMIT path=native mode=0x%x type=0x%x indirect=%p offset=%lu program=%u",
                 (unsigned)mode, (unsigned)type, indirect,
@@ -2851,6 +3277,21 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
                                             label:"drawArraysInstancedBaseInstance"]) {
         return;
     }
+    if ([self handleGeometryShaderArrayDrawIfNeeded:glm_ctx
+                                                 mode:mode
+                                                first:first
+                                                count:count
+                                        instanceCount:instancecount
+                                         baseInstance:baseinstance
+                                                label:"drawArraysInstancedBaseInstance"]) {
+        return;
+    }
+
+    [self captureAIRCullDistancesForArrayDraw:glm_ctx
+                                         first:first
+                                         count:count
+                                 instanceCount:instancecount
+                                  baseInstance:baseinstance];
 
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
@@ -2862,6 +3303,21 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     [self applyPolygonOffsetForDrawMode:mode];
 
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
+    if (!polygonModePoint &&
+        [self encodeCullDistanceArrayDraw:mode
+                                    first:first
+                                    count:count
+                            instanceCount:instancecount
+                             baseInstance:baseinstance
+                            encodeContext:&(MGLEncodeContext){
+                                .encoder = _renderPassManager.state
+                                               ->currentRenderEncoder,
+                            }]) {
+        [self recordArrayDrawSubmittedMode:mode
+                               vertexCount:(uint64_t)MAX(count, 0) *
+                                           (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     if (polygonModePoint) {
         if (mglEncodeArrayPolygonPoint(_renderPassManager.state->currentRenderEncoder,
                                        _device,
@@ -2918,7 +3374,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     primitiveType = mglPolygonModePointForDrawMode(ctx, mode) ? MTLPrimitiveTypePoint : getMTLPrimitiveType(mode);
     if ((GLuint)primitiveType == 0xFFFFFFFF) { NSLog(@"MGL WARNING: Unsupported primitive mode=0x%x, skipping draw call", mode); return; }
 
-    [_renderPassManager.state->currentRenderEncoder drawPrimitives:primitiveType vertexStart:first vertexCount:count instanceCount:instancecount baseInstance:baseinstance];
+    mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+                      primitiveType, first, count, instancecount,
+                      baseinstance);
     [self recordArrayDrawSubmittedMode:mode vertexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -2965,6 +3423,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:0
+                                             instanceCount:instancecount
+                                              baseInstance:baseinstance
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode
+                                  indexCount:(uint64_t)MAX(count, 0) *
+                                             (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -3077,7 +3551,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:instancecount baseVertex:0 baseInstance:baseinstance];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, instancecount, 0,
+                             baseinstance);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -3125,6 +3602,22 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
 
     NSUInteger offset = (NSUInteger)(uintptr_t)indices;
+    const uint8_t *cullIndexBytes = mglElementIndexSourceForDraw(
+        gl_element_buffer, indexBuffer, type, offset, count);
+    if (!polygonModePoint &&
+        [self prepareAndEncodeDirectCullDistanceElementDraw:mode
+                                                indexBytes:cullIndexBytes
+                                                 indexType:type
+                                                     count:count
+                                                baseVertex:basevertex
+                                             instanceCount:instancecount
+                                              baseInstance:baseinstance
+                                           polygonLineMode:mglPolygonModeLineForDrawMode(ctx, mode)]) {
+        [self recordElementDrawSubmittedMode:mode
+                                  indexCount:(uint64_t)MAX(count, 0) *
+                                             (uint64_t)MAX(instancecount, 0)];
+        return;
+    }
     MGLPrimitiveRestartEncodeResult restartResult =
         mglEncodePrimitiveRestartedElementDraw(_renderPassManager.state->currentRenderEncoder,
                                                _device,
@@ -3237,7 +3730,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     // in the future it would be an idea to use temp buffers for large buffers that would wire
     // to much memory down.. like a million point galaxy drawing
     //
-    [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count indexType:drawIndexType indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:instancecount baseVertex:basevertex baseInstance:baseinstance];
+    mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                             primitiveType, count, drawIndexType,
+                             drawIndexBuffer, offset, instancecount,
+                             basevertex, baseinstance);
     [self recordElementDrawSubmittedMode:mode indexCount:(uint64_t)MAX(count, 0) * (uint64_t)MAX(instancecount, 0)];
 }
 
@@ -3283,6 +3779,20 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
+
+    Program *multiDrawVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (multiDrawVertexProgram && multiDrawVertexProgram->uses_cull_distance) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            [self mtlDrawArraysInstanced:glm_ctx
+                                    mode:mode
+                                   first:first[i]
+                                   count:count[i]
+                           instancecount:1];
+        }
+        return;
+    }
 
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     if (polygonModePoint) {
@@ -3368,9 +3878,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     uint64_t submittedVertices = 0u;
     for(int i=0; i<drawcount; i++)
     {
-         [_renderPassManager.state->currentRenderEncoder drawPrimitives: primitiveType
-                                  vertexStart: first[i]
-                                  vertexCount: count[i]];
+         mglDrawPrimitives(_renderPassManager.state->currentRenderEncoder,
+                           primitiveType, first[i], count[i], 1, 0);
          submittedVertices += (uint64_t)MAX(count[i], 0);
     }
     if (submittedVertices > 0u) {
@@ -3421,6 +3930,23 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
+
+    Program *multiDrawVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (multiDrawVertexProgram && multiDrawVertexProgram->uses_cull_distance) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                            mode:mode
+                                                           count:count[i]
+                                                            type:type
+                                                         indices:indices[i]
+                                                   instancecount:1
+                                                       basevertex:0
+                                                     baseinstance:0u];
+        }
+        return;
+    }
 
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
@@ -3544,8 +4070,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
 
-        [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count[i] indexType:drawIndexType
-                                     indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1];
+        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                                 primitiveType, count[i], drawIndexType,
+                                 drawIndexBuffer, offset, 1, 0, 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
     }
     if (submittedIndices > 0u) {
@@ -3596,6 +4123,23 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
     [self applyPolygonOffsetForDrawMode:mode];
+
+    Program *multiDrawVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (multiDrawVertexProgram && multiDrawVertexProgram->uses_cull_distance) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                            mode:mode
+                                                           count:count[i]
+                                                            type:type
+                                                         indices:indices[i]
+                                                   instancecount:1
+                                                       basevertex:basevertex[i]
+                                                     baseinstance:0u];
+        }
+        return;
+    }
 
     BOOL polygonModePoint = mglPolygonModePointForDrawMode(ctx, mode);
     BOOL emulateTriangleFan = (mode == GL_TRIANGLE_FAN && !polygonModePoint);
@@ -3721,8 +4265,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             continue;
         }
 
-        [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexCount:count[i] indexType:drawIndexType
-                                     indexBuffer:drawIndexBuffer indexBufferOffset:offset instanceCount:1 baseVertex:basevertex[i] baseInstance:0];
+        mglDrawIndexedPrimitives(_renderPassManager.state->currentRenderEncoder,
+                                 primitiveType, count[i], drawIndexType,
+                                 drawIndexBuffer, offset, 1, basevertex[i], 0);
         submittedIndices += (uint64_t)MAX(count[i], 0);
     }
     if (submittedIndices > 0u) {
@@ -3737,8 +4282,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, indirect, (int)drawcount, (int)stride,
                 (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-
-    mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawArraysIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
@@ -3771,6 +4314,48 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"multiDrawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *indirectVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (indirectVertexProgram && indirectVertexProgram->uses_cull_distance) {
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawArraysIndirect.cullDistance"]) {
+            return;
+        }
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride
+            : sizeof(DrawArraysIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) {
+                NSLog(@"MGL WARNING: multiDrawArraysIndirect CullDistance command offset overflow");
+                break;
+            }
+            DrawArraysIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawArraysIndirect.cullDistance")) {
+                break;
+            }
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.first > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX) {
+                NSLog(@"MGL WARNING: multiDrawArraysIndirect CullDistance command exceeds GLsizei range draw=%d",
+                      (int)i);
+                continue;
+            }
+            [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                                mode:mode
+                                               first:(GLint)cmd.first
+                                               count:(GLsizei)cmd.count
+                                       instancecount:(GLsizei)cmd.instanceCount
+                                        baseinstance:cmd.baseInstance];
+        }
         return;
     }
 
@@ -3892,7 +4477,9 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
             offset = (char *)((char *)indirect + i * sizeof(DrawArraysIndirectCommand)) - (char *)NULL;
         }
 
-        [_renderPassManager.state->currentRenderEncoder drawPrimitives:primitiveType indirectBuffer:indirectBuffer indirectBufferOffset:offset];
+        mglDrawPrimitivesIndirect(
+            _renderPassManager.state->currentRenderEncoder, primitiveType,
+            indirectBuffer, offset);
     }
     if (drawcount > 0) {
         [self recordArrayDrawSubmittedMode:mode vertexCount:0u];
@@ -3910,8 +4497,6 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_ENTRY mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                 (unsigned)mode, (unsigned)type, indirect, (int)drawcount, (int)stride,
                 (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
-
-    mglResolvePassthroughPatchModeForContext(glm_ctx, &mode, "multiDrawElementsIndirect");
 
     if (![self processGLState: true]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=process_gl_state program=%u",
@@ -3967,6 +4552,53 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *indirectVertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (indirectVertexProgram && indirectVertexProgram->uses_cull_distance) {
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawElementsIndirect.cullDistance"]) {
+            return;
+        }
+        const NSUInteger indexStride = mglGLIndexElementSize(type);
+        if (indexStride == 0u) return;
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride
+            : sizeof(DrawElementsIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) {
+                NSLog(@"MGL WARNING: multiDrawElementsIndirect CullDistance command offset overflow");
+                break;
+            }
+            DrawElementsIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawElementsIndirect.cullDistance")) {
+                break;
+            }
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX ||
+                (NSUInteger)cmd.first > NSUIntegerMax / indexStride) {
+                NSLog(@"MGL WARNING: multiDrawElementsIndirect CullDistance command exceeds supported range draw=%d",
+                      (int)i);
+                continue;
+            }
+            const NSUInteger elementOffset = (NSUInteger)cmd.first * indexStride;
+            [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                            mode:mode
+                                                           count:(GLsizei)cmd.count
+                                                            type:type
+                                                         indices:(const void *)(uintptr_t)elementOffset
+                                                   instancecount:(GLsizei)cmd.instanceCount
+                                                       basevertex:cmd.baseVertex
+                                                     baseinstance:cmd.baseInstance];
+        }
         return;
     }
 
@@ -4127,7 +4759,10 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
 
         // draw indexed primitive
-        [_renderPassManager.state->currentRenderEncoder drawIndexedPrimitives:primitiveType indexType:drawIndexType indexBuffer: drawIndexBuffer indexBufferOffset:indexBufferOffset indirectBuffer:indirectBuffer indirectBufferOffset:offset];
+        mglDrawIndexedPrimitivesIndirect(
+            _renderPassManager.state->currentRenderEncoder, primitiveType,
+            drawIndexType, drawIndexBuffer, indexBufferOffset,
+            indirectBuffer, offset);
     }
     if (drawcount > 0) {
         [self recordElementDrawSubmittedMode:mode indexCount:0u];

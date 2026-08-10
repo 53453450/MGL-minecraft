@@ -197,6 +197,7 @@ extern _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap;
 int mglPerfSummaryEnabled(void);
 int mglPerfLockTimingEnabled(void);
 uint64_t mglPerfSummaryInterval(void);
+void mglRecordBufferCowSnapshot(uint64_t bytes);
 
 /* === os_signpost instrumentation (gated by MGL_SIGNPOST=1 env var) ===
  *

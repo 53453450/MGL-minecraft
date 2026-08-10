@@ -1,17 +1,24 @@
 #ifndef mgl_compute_pipeline_cache_h
 #define mgl_compute_pipeline_cache_h
 
-#import <Foundation/Foundation.h>
-#import <Metal/Metal.h>
+#include <stddef.h>
 
 typedef struct Program_t Program;
 
-/* Returns the default compute pipeline owned by a linked Program stage.
- * MGL_COMPUTE_PSO_CACHE=0 bypasses the Program slot and recreates the PSO. */
-id<MTLComputePipelineState> mglGetOrCreateProgramComputePipeline(
-    id<MTLDevice> device,
-    Program *program,
-    int stage,
-    NSError **error);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Returns an independent +1 Metal compute-pipeline reference. The renderer's
+ * C++ cache retains its own reference and owns cache synchronization. */
+int mglGetOrCreateProgramComputePipeline(Program *program,
+                                         int stage,
+                                         void **pipeline_out,
+                                         char *err,
+                                         size_t errcap);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* mgl_compute_pipeline_cache_h */

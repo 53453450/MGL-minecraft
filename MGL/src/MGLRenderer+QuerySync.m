@@ -3,6 +3,26 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+QuerySync_Private.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp_objc.h"
+
+static void mglQuerySyncWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+{
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != NULL &&
+        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+        return;
+    }
+    [commandBuffer waitUntilCompleted];
+}
+
+static void *mglQueryVisibilityBuffer(void *queryStateOwner)
+{
+    void *buffer = NULL;
+    return queryStateOwner &&
+           mglRenderCppGetQueryVisibilityBuffer(queryStateOwner, &buffer) == 0
+        ? buffer : NULL;
+}
 
 @implementation MGLRenderer (QuerySync)
 #pragma mark Metal visibility result (GL occlusion query)
@@ -17,8 +37,12 @@
     /* GL 4.6 §17.3.5: SAMPLES_PASSED counts passing samples, so it needs
      * Metal's Counting visibility mode; ANY_SAMPLES_PASSED* only needs the
      * cheaper Boolean mode. */
-    if (![_queryManager beginSampleQueryWithDevice:_device
-                                          counting:(target == GL_SAMPLES_PASSED)]) {
+    void *visibilityBuffer = NULL;
+    if (!_queryStateOwner ||
+        mglRenderCppBeginSampleQuery(
+            _queryStateOwner, target == GL_SAMPLES_PASSED ? 1u : 0u,
+            "MGL Visibility Result", &visibilityBuffer) != 0 ||
+        !visibilityBuffer) {
         NSLog(@"MGL ERROR: Failed to allocate visibility result buffer");
         return;
     }
@@ -44,7 +68,14 @@
         id<MTLRenderCommandEncoder> encoder = _renderPassManager.state->currentRenderEncoder;
         MTLRenderPassDescriptor *rpDesc = _renderPassManager.state->renderPassDescriptor;
         if (encoder && rpDesc && rpDesc.visibilityResultBuffer) {
-            [_queryManager configureRenderEncoder:encoder];
+            uint32_t mode = 0;
+            uint64_t offset = 0;
+            if (mglRenderCppAcquireSampleQuerySlot(
+                    _queryStateOwner, &mode, &offset) != 0 ||
+                mglRenderCppSetVisibilityResultMode(
+                    (__bridge void *)encoder, mode, offset) != 0) {
+                [self endRenderEncodingLocked];
+            }
         } else {
             [self endRenderEncodingLocked];
         }
@@ -70,20 +101,22 @@
 
     /* Now that the encoder with visibility mode has been ended, clear the
      * flag so subsequent render encoders are created without it. */
-    [_queryManager endSampleQuery];
+    mglRenderCppEndSampleQuery(_queryStateOwner);
 
     /* Flush and wait for the GPU to complete so the buffer is readable. */
-    if ([_queryManager hasSampleQueryResultBuffer]) {
+    if (mglQueryVisibilityBuffer(_queryStateOwner)) {
         [self flushCommandBuffer:YES];
     }
-    return [_queryManager sampleQueryResult];
+    uint64_t result = 0;
+    return mglRenderCppGetSampleQueryResult(
+               _queryStateOwner, &result) == 0 ? result : 0;
 }
 
 #pragma mark Metal GPU timer query (GL_TIME_ELAPSED / GL_TIMESTAMP)
 
 /* Called from glBeginQuery(GL_TIME_ELAPSED).  Flushes all pending GPU
  * work so the GPU is idle, then samples the GPU timestamp.  The timestamp
- * is stored by MGLQueryManager and used by mtlEndTimerQuery to compute
+ * is stored by the C++ QueryStateOwner and used by mtlEndTimerQuery to compute
  * the elapsed GPU time.
  *
  * The flush ensures the begin timestamp is taken before any commands
@@ -95,7 +128,9 @@
     /* Flush and wait for all pending GPU work to complete so the GPU
      * is idle when we sample the begin timestamp. */
     [self flushCommandBuffer:YES];
-    [_queryManager beginTimerQueryWithDevice:_device];
+    if (mglRenderCppBeginTimerQuery(_queryStateOwner) != 0) {
+        NSLog(@"MGL ERROR: failed to begin Metal-cpp timer query");
+    }
 }
 
 /* Called from glEndQuery(GL_TIME_ELAPSED).  Flushes all pending GPU work
@@ -107,7 +142,9 @@
     (void)glm_ctx;
     /* Flush and wait for all GPU work submitted between begin and end. */
     [self flushCommandBuffer:YES];
-    return [_queryManager endTimerQueryWithDevice:_device];
+    uint64_t elapsed = 0;
+    return mglRenderCppEndTimerQuery(
+               _queryStateOwner, &elapsed) == 0 ? elapsed : 0;
 }
 
 /* Returns the current GPU timestamp in nanoseconds.  Used by
@@ -119,7 +156,10 @@
 {
     (void)glm_ctx;
     [self flushCommandBuffer:YES];
-    return [_queryManager gpuTimestampWithDevice:_device];
+    uint64_t cpuTimestamp = 0;
+    uint64_t gpuTimestamp = 0;
+    return mglRenderCppSampleTimestamps(
+               &cpuTimestamp, &gpuTimestamp) == 0 ? gpuTimestamp : 0;
 }
 
 #pragma mark C interface to mtlGetSync
@@ -178,9 +218,13 @@
     // is stored in sync->mtl_command_buffer so mtlWaitForSync can block on its
     // completion via waitUntilCompleted. This runs regardless of
     // kMGLDisableSharedEventSync (which only gates the legacy shared-event path).
-    if (_renderPassManager.state->currentCommandBuffer &&
-        _renderPassManager.state->currentCommandBuffer.status == MTLCommandBufferStatusNotEnqueued &&
-        !_renderPassManager.state->currentCommandBuffer.error) {
+    id<MTLCommandBuffer> currentCommandBuffer =
+        _renderPassManager.state->currentCommandBuffer;
+    MGLRenderCppCommandBufferState currentState =
+        mglRenderCommandBufferState(currentCommandBuffer);
+    if (currentCommandBuffer &&
+        currentState.status == MTLCommandBufferStatusNotEnqueued &&
+        !currentState.has_error) {
         id<MTLCommandBuffer> cbToCommit =
             [_renderPassManager detachCurrentCommandBufferForSubmission];
         sync->mtl_command_buffer = (void *)CFBridgingRetain(cbToCommit);
@@ -275,8 +319,9 @@
     if (sync->mtl_command_buffer) {
         id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
         @try {
-            if (cb.status != MTLCommandBufferStatusCompleted) {
-                [cb waitUntilCompleted];
+            if (mglRenderCommandBufferStatus(cb) !=
+                MTLCommandBufferStatusCompleted) {
+                mglQuerySyncWaitCommandBuffer(cb);
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: Exception waiting on fence command buffer: %@", exception);
@@ -320,7 +365,8 @@
 
     id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)sync->mtl_command_buffer;
     @try {
-        if (cb.status == MTLCommandBufferStatusCompleted) {
+        if (mglRenderCommandBufferStatus(cb) ==
+            MTLCommandBufferStatusCompleted) {
             return GL_SIGNALED;
         }
     } @catch (NSException *exception) {

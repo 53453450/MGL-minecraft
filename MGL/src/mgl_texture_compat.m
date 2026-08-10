@@ -32,12 +32,52 @@
 #include <string.h>
 
 #import "mgl_trace_log.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
 
 /* GL format introspection helpers implemented in pixel_utils.c.  Declared
  * here so this module does not need to include the full MGLRenderer private
  * header. */
 GLuint numComponentsForFormat(GLenum format);
 GLuint sizeForInternalFormat(GLenum internalformat, GLenum format, GLenum type);
+
+static id<MTLTexture> mglTextureCompatCreateView(
+    id<MTLTexture> texture,
+    NSRange levels,
+    NSRange slices,
+    BOOL useSwizzle,
+    MTLTextureSwizzleChannels swizzle)
+{
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != NULL) {
+        void *view = NULL;
+        if (mglRenderCppCreateTextureViewRange(
+                (__bridge void *)texture,
+                (uint32_t)texture.pixelFormat,
+                (uint32_t)texture.textureType,
+                levels.location, levels.length,
+                slices.location, slices.length,
+                useSwizzle ? 1 : 0,
+                (uint32_t)swizzle.red,
+                (uint32_t)swizzle.green,
+                (uint32_t)swizzle.blue,
+                (uint32_t)swizzle.alpha,
+                &view) == 0 && view) {
+            return (__bridge_transfer id<MTLTexture>)view;
+        }
+    }
+    if (useSwizzle) {
+        return [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                          textureType:texture.textureType
+                                               levels:levels
+                                               slices:slices
+                                              swizzle:swizzle];
+    }
+    return [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                      textureType:texture.textureType
+                                           levels:levels
+                                           slices:slices];
+}
 
 static bool mglTextureMinFilterUsesMipmaps(GLenum minFilter)
 {
@@ -175,25 +215,27 @@ id<MTLTexture> mglSampledTextureViewForBaseLevel(Texture *ptr,
 
     id<MTLTexture> levelView = nil;
     if (swizzleIsIdentity) {
-        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                textureType:texture.textureType
-                                                     levels:NSMakeRange(baseLevel, levelCount)
-                                                     slices:NSMakeRange(0, sliceCount)];
+        levelView = mglTextureCompatCreateView(
+            texture, NSMakeRange(baseLevel, levelCount),
+            NSMakeRange(0, sliceCount), NO,
+            MTLTextureSwizzleChannelsMake(
+                MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
+                MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha));
     } else if (@available(macOS 10.15, *)) {
         MTLTextureSwizzleChannels swizzle = MTLTextureSwizzleChannelsMake(sw_r, sw_g, sw_b, sw_a);
-        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                textureType:texture.textureType
-                                                     levels:NSMakeRange(baseLevel, levelCount)
-                                                     slices:NSMakeRange(0, sliceCount)
-                                                    swizzle:swizzle];
+        levelView = mglTextureCompatCreateView(
+            texture, NSMakeRange(baseLevel, levelCount),
+            NSMakeRange(0, sliceCount), YES, swizzle);
     } else {
         /* Pre-10.15 fallback: swizzle-aware view API unavailable.  The view
          * will sample with identity swizzle; the source texture's baked-in
          * swizzle is lost on the view.  This matches the prior behavior. */
-        levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                textureType:texture.textureType
-                                                     levels:NSMakeRange(baseLevel, levelCount)
-                                                     slices:NSMakeRange(0, sliceCount)];
+        levelView = mglTextureCompatCreateView(
+            texture, NSMakeRange(baseLevel, levelCount),
+            NSMakeRange(0, sliceCount), NO,
+            MTLTextureSwizzleChannelsMake(
+                MTLTextureSwizzleRed, MTLTextureSwizzleGreen,
+                MTLTextureSwizzleBlue, MTLTextureSwizzleAlpha));
     }
     if (levelView) {
         /* Store in cache, releasing the old view if any. */

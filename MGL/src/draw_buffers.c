@@ -29,10 +29,10 @@
 #include "draw_command.h"
 #include "mgl.h"
 #include "mgl_safety.h"
+#include "mgl_program_reflection.h"
 
 extern void mglInvalidateColorShadowsForDraw(GLMContext ctx);
 #include "mgl_trace_log.h"
-#include "spirv_cross_c.h"   /* SPVC_RESOURCE_TYPE_STAGE_INPUT/OUTPUT constants */
 
 static bool mglSkipOrRecordConditionalDraw(GLMContext ctx)
 {
@@ -683,7 +683,7 @@ static SpirvResource *mglCPUFeedbackFindVertexOutput(Program *program, const cha
     }
 
     SpirvResourceList *outputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_OUTPUT];
+        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES];
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         SpirvResource *output = &outputs->list[i];
         if (output->name && strcmp(output->name, name) == 0) {
@@ -700,7 +700,7 @@ static SpirvResource *mglCPUFeedbackFindVertexInputAtLocation(Program *program, 
     }
 
     SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
         if (inputs->list[i].location == location) {
             return &inputs->list[i];
@@ -716,7 +716,7 @@ static SpirvResource *mglCPUFeedbackFindVertexInputByName(Program *program, cons
     }
 
     SpirvResourceList *inputs =
-        &program->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &program->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
     for (GLuint i = 0; inputs->list && i < inputs->count; i++) {
         if (inputs->list[i].name && strcmp(inputs->list[i].name, name) == 0) {
             return &inputs->list[i];
@@ -1481,6 +1481,48 @@ static inline bool mglCmdIsInstanced(MGLDrawCommandType t)
            t == MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE;
 }
 
+static Program *mglCurrentGeometryDrawProgram(GLMContext ctx)
+{
+    if (!ctx) {
+        return NULL;
+    }
+    if (ctx->state.program_name != 0u) {
+        Program *program = ctx->state.program;
+        return program && program->shader_slots[_GEOMETRY_SHADER]
+            ? program : NULL;
+    }
+    ProgramPipeline *pipeline = ctx->state.program_pipeline;
+    return pipeline ? pipeline->stage_programs[_GEOMETRY_SHADER] : NULL;
+}
+
+static Program *mglCurrentExpandedGeometryDrawProgram(GLMContext ctx)
+{
+    Program *program = mglCurrentGeometryDrawProgram(ctx);
+    return program && !mglProgramHasPassthroughGeometryShader(program)
+        ? program : NULL;
+}
+
+static bool mglBlockUnsupportedGeometryDraw(GLMContext ctx, const char *label)
+{
+    Program *program = mglCurrentExpandedGeometryDrawProgram(ctx);
+    if (!program) {
+        return false;
+    }
+
+    static uint64_t s_unsupportedGeometryDrawCount = 0;
+    uint64_t hit = ++s_unsupportedGeometryDrawCount;
+    if (hit <= 16ull || (hit % 512ull) == 0ull) {
+        fprintf(stderr,
+                "MGL GS WARNING: blocking unsupported %s program=%u hit=%llu\n",
+                label ? label : "draw", program->name,
+                (unsigned long long)hit);
+    }
+    mglTraceLogExternal("GS_DRAW_BLOCK label=%s program=%u hit=%llu",
+                        label ? label : "draw", (unsigned)program->name,
+                        (unsigned long long)hit);
+    return true;
+}
+
 /* The 8-step unified draw frontend (S1-S11 + S14/S15). */
 static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 {
@@ -1569,6 +1611,45 @@ static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
     if (cmd->type == MGL_CMD_DRAW_ARRAYS && cmd->mode == GL_PATCHES) {
         ctx->mtl_funcs.mtlDrawArrays(ctx, cmd->mode, cmd->first, cmd->count);
         return;
+    }
+
+    /* Geometry expansion rotates render/compute encoders and therefore cannot
+     * be replayed as an ordinary deferred render draw.  Preserve ordering by
+     * draining older commands, then let the renderer's GS helper either run
+     * the AIR compute route or explicitly block an unsupported array shape. */
+    Program *geometryProgram = mglCurrentExpandedGeometryDrawProgram(ctx);
+    if (indexed && geometryProgram) {
+        static uint64_t s_indexedGeometryDrawCount = 0;
+        uint64_t hit = ++s_indexedGeometryDrawCount;
+        if (hit <= 16ull || (hit % 512ull) == 0ull) {
+            fprintf(stderr,
+                    "MGL GS WARNING: blocking indexed draw program=%u "
+                    "type=%u hit=%llu\n",
+                    geometryProgram->name, (unsigned)cmd->type,
+                    (unsigned long long)hit);
+        }
+        return;
+    }
+    if (geometryProgram) {
+        mglFlushCommandBuffer(ctx);
+        switch (cmd->type) {
+            case MGL_CMD_DRAW_ARRAYS:
+                ctx->mtl_funcs.mtlDrawArrays(
+                    ctx, cmd->mode, cmd->first, cmd->count);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+                ctx->mtl_funcs.mtlDrawArraysInstanced(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount);
+                return;
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+                ctx->mtl_funcs.mtlDrawArraysInstancedBaseInstance(
+                    ctx, cmd->mode, cmd->first, cmd->count,
+                    cmd->instanceCount, cmd->baseInstance);
+                return;
+            default:
+                break;
+        }
     }
 
     /* S14: deferred path — record command for batch replay */
@@ -1813,6 +1894,10 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
         return;
     }
 
+    if (mglBlockUnsupportedGeometryDraw(ctx, "drawArraysIndirect")) {
+        return;
+    }
+
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
                         (unsigned)mode, indirect, (unsigned)mglTraceDrawProgram(ctx));
@@ -1871,6 +1956,10 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
     if (mglSkipOrRecordConditionalDraw(ctx)) {
         mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_SKIP reason=conditional_render program=%u",
                             (unsigned)mglTraceDrawProgram(ctx));
+        return;
+    }
+
+    if (mglBlockUnsupportedGeometryDraw(ctx, "drawElementsIndirect")) {
         return;
     }
 
@@ -1943,6 +2032,10 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
+    if (mglBlockUnsupportedGeometryDraw(ctx, "multiDrawArrays")) {
+        return;
+    }
+
     if (ctx->draw_defer_enabled) {
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
@@ -1989,6 +2082,10 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
     }
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+
+    if (mglBlockUnsupportedGeometryDraw(ctx, "multiDrawElements")) {
+        return;
+    }
 
     if (ctx->draw_defer_enabled) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
@@ -2039,6 +2136,11 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
     }
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
+
+    if (mglBlockUnsupportedGeometryDraw(ctx,
+                                        "multiDrawElementsBaseVertex")) {
+        return;
+    }
 
     if (ctx->draw_defer_enabled) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
@@ -2119,6 +2221,11 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
         return;
     }
 
+    if (mglBlockUnsupportedGeometryDraw(ctx,
+                                        "multiDrawArraysIndirect")) {
+        return;
+    }
+
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
                         (unsigned)mode, indirect, (int)drawcount, (int)stride, (unsigned)mglTraceDrawProgram(ctx));
@@ -2189,6 +2296,11 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
                                          drawcount,
                                          stride,
                                          (GLsizeiptr)sizeof(DrawElementsIndirectCommand))) {
+        return;
+    }
+
+    if (mglBlockUnsupportedGeometryDraw(ctx,
+                                        "multiDrawElementsIndirect")) {
         return;
     }
 

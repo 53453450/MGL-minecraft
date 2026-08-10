@@ -2,6 +2,8 @@
 // Metal GPU error recovery methods extracted from MGLRenderer+RenderPass.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp_objc.h"
 
 @implementation MGLRenderer (GPURecovery)
 
@@ -30,7 +32,11 @@
         static NSUInteger maxErrorsPerWindow = 3;
 
         // Get current error tracking from command buffer if available
-        if (_renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentCommandBuffer.error) {
+        MGLRenderCppCommandBufferState currentState =
+            mglRenderCommandBufferState(
+                _renderPassManager.state->currentCommandBuffer);
+        if (_renderPassManager.state->currentCommandBuffer &&
+            currentState.has_error) {
             NSTimeInterval currentTime = [[NSDate date] timeIntervalSince1970];
 
             // Check if this is within the throttle window
@@ -95,7 +101,9 @@
     // PROPER FIX: Safe command buffer cleanup
     @try {
         if (_renderPassManager.state->currentCommandBuffer) {
-            if (_renderPassManager.state->currentCommandBuffer.status == MTLCommandBufferStatusCommitted) {
+            if (mglRenderCommandBufferStatus(
+                    _renderPassManager.state->currentCommandBuffer) ==
+                MTLCommandBufferStatusCommitted) {
                 // Do not block indefinitely here; cleanup can be invoked on the render thread.
                 // Command buffers retain resources until completion, so dropping the reference is safe.
                 if (kMGLVerboseFrameLoopLogs) {
@@ -106,7 +114,13 @@
         }
 
         if (_renderPassManager.state->currentRenderEncoder) {
-            [_renderPassManager.state->currentRenderEncoder endEncoding];
+            id<MTLRenderCommandEncoder> encoder =
+                _renderPassManager.state->currentRenderEncoder;
+            if (!(mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+                  mglRenderCppGetDevice() &&
+                  mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0)) {
+                [encoder endEncoding];
+            }
             [_renderPassManager clearCurrentRenderEncoder];
         }
     } @catch (NSException *exception) {
@@ -129,7 +143,14 @@
     // CRITICAL: Recreate command queue to clear AGX driver error state
     NSLog(@"MGL AGX RECOVERY: Recreating command queue to clear GPU error state");
     _commandQueue = nil;
-    _commandQueue = [_device newCommandQueue];
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") && mglRenderCppGetDevice()) {
+        _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
+            &_commandQueueOwner, 0u);
+    }
+    if (!_commandQueue) {
+        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
+        _commandQueue = [_device newCommandQueue];
+    }
     if (!_commandQueue) {
         NSLog(@"MGL CRITICAL: Failed to recreate command queue during AGX recovery");
     } else {
@@ -162,18 +183,26 @@
         return;
     }
 
+    @try {
+
     if (traceCommit) {
         mglTraceLogNSString(@"MGL TRACE commit.begin call=%llu cb=%p status=%s label=%@",
               (unsigned long long)commitCall,
               commandBuffer,
-              mglCommandBufferStatusName(commandBuffer.status),
+              mglCommandBufferStatusName(
+                  mglRenderCommandBufferStatus(commandBuffer)),
               commandBuffer.label ?: @"(no-label)");
     }
     uint64_t commitQueuedAtNS = mglTraceClockNS();
 
     // Pre-commit validation for AGX driver
-    if (commandBuffer.error) {
-        NSLog(@"MGL AGX WARNING: Command buffer has pre-commit error: %@", commandBuffer.error);
+    MGLRenderCppCommandBufferState preCommitState =
+        mglRenderCommandBufferState(commandBuffer);
+    if (preCommitState.has_error) {
+        NSLog(@"MGL AGX WARNING: Command buffer has pre-commit error: %s (domain=%s code=%lld)",
+              preCommitState.error_description,
+              preCommitState.error_domain,
+              (long long)preCommitState.error_code);
         [self recordGPUError];
     }
 
@@ -181,22 +210,36 @@
     __block typeof(self) blockSelf = self;
     uint64_t commitCallForBlock = commitCall;
     bool traceCommitForBlock = traceCommit;
-    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
-            double completeElapsedUs = (mglTraceClockNS() - commitQueuedAtNS) / 1000.0;
-            if (traceCommitForBlock || buffer.error || completeElapsedUs >= 50000.0) {
+    mglRenderAddCommandBufferCompletion(
+        commandBuffer,
+        ^(const MGLRenderCppCommandBufferState *completionState) {
+            double completeElapsedUs =
+                (mglTraceClockNS() - commitQueuedAtNS) / 1000.0;
+            if (traceCommitForBlock || completionState->has_error ||
+                completeElapsedUs >= 50000.0) {
                 mglTraceLogNSString(@"MGL TRACE commit.completed call=%llu status=%s elapsed=%.1fus error=%@",
                       (unsigned long long)commitCallForBlock,
-                      mglCommandBufferStatusName(buffer.status),
+                      mglCommandBufferStatusName(
+                          (MTLCommandBufferStatus)completionState->status),
                       completeElapsedUs,
-                      buffer.error);
+                      completionState->has_error
+                          ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",
+                               completionState->error_description,
+                               completionState->error_domain,
+                               (long long)completionState->error_code]
+                          : nil);
             }
-            if (buffer.error) {
-                NSLog(@"MGL AGX ERROR: Command buffer completed with error: %@", buffer.error);
+            if (completionState->has_error) {
+                NSLog(@"MGL AGX ERROR: Command buffer completed with error: %s (domain=%s code=%lld)",
+                      completionState->error_description,
+                      completionState->error_domain,
+                      (long long)completionState->error_code);
                 [blockSelf recordGPUError];
 
                 // Specific handling for AGX driver rejection
-                if ([buffer.error.domain isEqualToString:@"MTLCommandBufferErrorDomain"] &&
-                    buffer.error.code == 4) { // "Ignored (for causing prior/excessive GPU errors)"
+                if (strcmp(completionState->error_domain,
+                           "MTLCommandBufferErrorDomain") == 0 &&
+                    completionState->error_code == 4) { // "Ignored (for causing prior/excessive GPU errors)"
                 /* Owned by the Metal completion-handler thread (this block):
                  * never touched from the GL thread or the main queue. */
                 static NSTimeInterval s_lastDriverRejectionReset = 0.0;
@@ -228,7 +271,7 @@
             }
             os_unfair_lock_unlock(&blockSelf->_gpuRecovery.gpuErrorLock);
         }
-    }];
+    });
 
     // CRITICAL FIX: Enhanced command buffer validation before commit
     // Prevents MTLReleaseAssertionFailure in AGX driver
@@ -238,7 +281,7 @@
     }
 
     // Check command buffer status before commit
-    MTLCommandBufferStatus status = [commandBuffer status];
+    MTLCommandBufferStatus status = mglRenderCommandBufferStatus(commandBuffer);
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL AGX WARNING: Command buffer already committed (status: %ld) - skipping commit", (long)status);
         if (traceCommit) {
@@ -270,7 +313,16 @@
         if (kMGLVerboseFrameLoopLogs) {
             NSLog(@"MGL AGX: Committing command buffer (status: %ld)", (long)status);
         }
-        [commandBuffer commit];
+        if ([_renderPassManager
+                commitDetachedCommandBufferIfOwned:commandBuffer]) {
+            /* C++ submission consumed the detached +1 reference. */
+        } else if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+            mglRenderCppGetDevice() &&
+            mglRenderCppCommitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+            /* Metal-cpp commit completed. */
+        } else {
+            [commandBuffer commit];
+        }
         /* Centralized tracking of the most recently committed CB, covering
          * every commit routed through this function. */
         _lastCommittedCB = commandBuffer;
@@ -296,8 +348,13 @@
             mglTraceLogNSString(@"MGL TRACE commit.end call=%llu cb=%p finalStatus=%s",
                   (unsigned long long)commitCall,
                   commandBuffer,
-                  mglCommandBufferStatusName(commandBuffer.status));
+                  mglCommandBufferStatusName(
+                      mglRenderCommandBufferStatus(commandBuffer)));
         }
+    }
+    } @finally {
+        [_renderPassManager
+            releaseDetachedCommandBufferIfOwned:commandBuffer];
     }
 }
 

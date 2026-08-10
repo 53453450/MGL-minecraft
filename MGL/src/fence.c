@@ -19,6 +19,7 @@
  */
 
 #include <strings.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include "glm_context.h"

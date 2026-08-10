@@ -33,6 +33,7 @@
  * Sync, GLMState, MGLBatchPath, MGLDrawBatch, MAX_COLOR_ATTACHMENTS,
  * TEXTURE_UNITS, and GL types (GLenum, GLuint, GLsizei, ...). */
 #include "glm_context.h"
+#include "mgl_render_cpp.h"
 #import "mgl_capability.h"          // ivar type: MGLCapability
 #import "mgl_texture_compat.h"      // MGLTextureDataKind
 #import "mgl_trace_strategy.h"      // ivar type: MGLFragmentTextureTraceBinding
@@ -42,13 +43,10 @@
 #import "mgl_rt_sync.h"
 #import "mgl_blit_clip.h"
 #import "mgl_state_compat.h"
-#import "mgl_msl_compat.h"
+#import "mgl_program_resource.h"
 #import "mgl_safety.h"
 #import "mgl_vertex_format.h"
 #import "mgl_thread_affinity.h"      // MGL_ASSERT_GL_THREAD / mglClaimGLThread
-/* Kept: many .m files transitively rely on this header for SPVC_* constants
- * (SPVC_RESOURCE_TYPE_*, spvc_compiler_*).  Removing it breaks 7+ categories. */
-#include "spirv_cross_c.h"
 #define MGL_NO_MTL_PIXEL_FORMAT
 #import "pixel_utils.h"
 #undef MGL_NO_MTL_PIXEL_FORMAT
@@ -73,8 +71,6 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
 /* State container types and independent renderer subsystems. */
 #import "MGLRenderer_State.h"
 #import "MGLPipelineCache.h"
-#import "MGLBindingSync.h"
-#import "MGLQueryManager.h"
 #import "MGLRenderPassManager.h"
 
 /* Shared helpers — declared here because inline functions in per-category
@@ -83,6 +79,42 @@ extern Texture *findTexture(GLMContext ctx, GLuint texture);
  * mglEnvFlagEnabledDefaultOn: unset → ON; =0/false/no/off → OFF. */
 BOOL mglEnvFlagEnabled(const char *name);
 BOOL mglEnvFlagEnabledDefaultOn(const char *name);
+
+static inline BOOL mglBindingStateIsValid(void *owner)
+{
+    uint32_t valid = 0;
+    return owner && mglRenderCppBindingGetValid(owner, &valid) == 0 && valid;
+}
+
+static inline BOOL mglBindingStateBufferMatches(void *owner,
+                                                uint32_t stage,
+                                                void *buffer,
+                                                uint64_t offset,
+                                                uint32_t index)
+{
+    void *current = NULL;
+    uint64_t currentOffset = 0;
+    return owner && mglRenderCppBindingGetBuffer(
+                        owner, stage, index, &current, &currentOffset) == 0 &&
+           current == buffer && currentOffset == offset;
+}
+
+static inline BOOL mglBindingStatePipelineMatches(void *owner, void *pipeline)
+{
+    void *current = NULL;
+    return owner &&
+           mglRenderCppBindingGetPipelineState(owner, &current) == 0 &&
+           current == pipeline;
+}
+
+static inline int mglBindingStateTextureSlotCount(void *owner)
+{
+    uint64_t mask[2] = {0, 0};
+    if (!owner || mglRenderCppBindingGetTextureSlotMask(owner, mask) != 0) {
+        return 0;
+    }
+    return __builtin_popcountll(mask[0]) + __builtin_popcountll(mask[1]);
+}
 
 /* MGL_MIP_DIAG=1 reports the effective sampler and mip chain of sampled
  * textures.  Independent of MGL_TRACE_LOG because the per-binding trace lines
@@ -175,12 +207,13 @@ static inline double mglTraceNowSeconds(void)
     __weak NSWindow *_observedWindow;    MGLRendererCoreState _core;
     MGLGPURecoveryState _gpuRecovery;
     MGLPipelineCache *_pipelineCache;
-    MGLQueryManager *_queryManager;
+    void *_queryStateOwner;
     MGLRenderPassManager *_renderPassManager;
     MGLResourceFallbackState _resourceFallback;
     MGLBlitState _blit;
-    MGLBindingSync *_bindingSync;
+    void *_bindingStateOwner;
     MGLTessellationState _tessellation;
+    MGLGeometryState _geometry;
     MGLBatchingState _batching;
     /* Command buffer that needs waitUntilCompleted after METAL_UNLOCK.
      * Set by flushCommandBufferLocked: when finish=true, consumed by
@@ -288,6 +321,7 @@ static inline double mglTraceNowSeconds(void)
 #define _proactiveTextures _core.proactiveTextures
 #define _drawBuffers _core.drawBuffers
 #define _defaultDrawableWrittenSinceLastSwap _core.defaultDrawableWrittenSinceLastSwap
+#define _commandQueueOwner _core.commandQueueOwner
 #define _commandQueue _core.commandQueue
 #define _deviceResetRequested _core.deviceResetRequested
 #define _pendingDrawableW _core.pendingDrawableW

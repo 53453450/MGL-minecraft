@@ -10,6 +10,215 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+SwapDiagnostics_Private.h"
 #import "MGLRenderer+Blit_Private.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp_objc.h"
+
+static BOOL mglSwapDiagnosticsUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static id<MTLBuffer> mglSwapDiagnosticsCreateBuffer(
+    id<MTLDevice> device,
+    NSUInteger length)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp()) {
+        void *bufferCPP = NULL;
+        if (mglRenderCppCreateBuffer(
+                length, MTLResourceStorageModeShared,
+                "MGL Swap Diagnostic Sample", &bufferCPP) == 0 &&
+            bufferCPP) {
+            return (__bridge_transfer id<MTLBuffer>)bufferCPP;
+        }
+    }
+    return [device newBufferWithLength:length
+                               options:MTLResourceStorageModeShared];
+}
+
+static id<MTLRenderCommandEncoder> mglSwapDiagnosticsCreateRenderEncoder(
+    id<MTLCommandBuffer> commandBuffer,
+    id<MTLTexture> colorTexture)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() && commandBuffer && colorTexture) {
+        void *encoderCPP = NULL;
+        MGLRenderCppRenderPassState state = {0};
+        state.color[0].attachment.texture =
+            (__bridge void *)colorTexture;
+        state.color[0].attachment.load_action = MTLLoadActionDontCare;
+        state.color[0].attachment.store_action = MTLStoreActionStore;
+        if (mglRenderCppCreateRenderEncoderFromState(
+                (__bridge void *)commandBuffer, &state, &encoderCPP) == 0 &&
+            encoderCPP) {
+            return (__bridge id<MTLRenderCommandEncoder>)encoderCPP;
+        }
+    }
+    MTLRenderPassDescriptor *descriptor =
+        [MTLRenderPassDescriptor renderPassDescriptor];
+    descriptor.colorAttachments[0].texture = colorTexture;
+    descriptor.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    return commandBuffer
+        ? [commandBuffer renderCommandEncoderWithDescriptor:descriptor]
+        : nil;
+}
+
+static void mglSwapDiagnosticsSetRenderPipeline(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLRenderPipelineState> pipeline)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderPipelineState((__bridge void *)encoder,
+                                            (__bridge void *)pipeline) == 0) {
+        return;
+    }
+    [encoder setRenderPipelineState:pipeline];
+}
+
+static void mglSwapDiagnosticsSetRenderBytes(
+    id<MTLRenderCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    uint32_t stage)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
+                                   stage, 0) == 0) {
+        return;
+    }
+    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+        [encoder setVertexBytes:bytes length:length atIndex:0];
+    } else {
+        [encoder setFragmentBytes:bytes length:length atIndex:0];
+    }
+}
+
+static void mglSwapDiagnosticsSetFragmentTexture(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLTexture> texture)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderTexture(
+            (__bridge void *)encoder, (__bridge void *)texture,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0) == 0) {
+        return;
+    }
+    [encoder setFragmentTexture:texture atIndex:0];
+}
+
+static void mglSwapDiagnosticsSetFragmentSampler(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLSamplerState> sampler)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderSampler(
+            (__bridge void *)encoder, (__bridge void *)sampler,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, 0) == 0) {
+        return;
+    }
+    [encoder setFragmentSamplerState:sampler atIndex:0];
+}
+
+static void mglSwapDiagnosticsSetViewport(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLViewport viewport)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderViewport(
+            (__bridge void *)encoder, viewport.originX, viewport.originY,
+            viewport.width, viewport.height, viewport.znear, viewport.zfar) == 0) {
+        return;
+    }
+    [encoder setViewport:viewport];
+}
+
+static void mglSwapDiagnosticsSetScissor(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLScissorRect scissor)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppSetRenderScissor(
+            (__bridge void *)encoder, scissor.x, scissor.y,
+            scissor.width, scissor.height) == 0) {
+        return;
+    }
+    [encoder setScissorRect:scissor];
+}
+
+static void mglSwapDiagnosticsDrawTriangleStrip(
+    id<MTLRenderCommandEncoder> encoder)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives(
+            (__bridge void *)encoder, (uint32_t)MTLPrimitiveTypeTriangleStrip,
+            0, 4, 1, 0) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:MTLPrimitiveTypeTriangleStrip
+                vertexStart:0
+                vertexCount:4];
+}
+
+static void mglSwapDiagnosticsEndRenderEncoder(
+    id<MTLRenderCommandEncoder> encoder)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
+
+static id<MTLBlitCommandEncoder> mglSwapDiagnosticsCreateBlitEncoder(
+    id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp()) {
+        void *encoderCPP = NULL;
+        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
+                                          &encoderCPP) == 0 &&
+            encoderCPP) {
+            return (__bridge id<MTLBlitCommandEncoder>)encoderCPP;
+        }
+    }
+    return [commandBuffer blitCommandEncoder];
+}
+
+static void mglSwapDiagnosticsCopyTextureToBuffer(
+    id<MTLBlitCommandEncoder> encoder,
+    id<MTLTexture> texture,
+    MTLOrigin origin,
+    MTLSize size,
+    id<MTLBuffer> buffer,
+    NSUInteger bytesPerRow,
+    NSUInteger bytesPerImage)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppBlitCopyTextureToBuffer(
+            (__bridge void *)encoder, (__bridge void *)texture, 0, 0,
+            origin.x, origin.y, origin.z, size.width, size.height, size.depth,
+            (__bridge void *)buffer, 0, bytesPerRow, bytesPerImage) == 0) {
+        return;
+    }
+    [encoder copyFromTexture:texture
+                 sourceSlice:0
+                 sourceLevel:0
+                sourceOrigin:origin
+                  sourceSize:size
+                    toBuffer:buffer
+           destinationOffset:0
+      destinationBytesPerRow:bytesPerRow
+    destinationBytesPerImage:bytesPerImage];
+}
+
+static void mglSwapDiagnosticsEndBlitEncoder(
+    id<MTLBlitCommandEncoder> encoder)
+{
+    if (mglSwapDiagnosticsUsesMetalCpp() &&
+        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
 
 @implementation MGLRenderer (SwapDiagnostics)
 
@@ -62,34 +271,36 @@
                     params.forceOpaqueAlpha = 1.0f;
                     params._padding = (vector_float3){0.0f, 0.0f, 0.0f};
 
-                    MTLRenderPassDescriptor *copyPass = [MTLRenderPassDescriptor renderPassDescriptor];
-                    copyPass.colorAttachments[0].texture = drawableTexture;
-                    copyPass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
-                    copyPass.colorAttachments[0].storeAction = MTLStoreActionStore;
-
-                    id<MTLRenderCommandEncoder> copyEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:copyPass];
+                    id<MTLRenderCommandEncoder> copyEncoder =
+                        mglSwapDiagnosticsCreateRenderEncoder(
+                            _renderPassManager.state->currentCommandBuffer,
+                            drawableTexture);
                     if (copyEncoder) {
-                        [copyEncoder setRenderPipelineState:pipeline];
-                        [copyEncoder setVertexBytes:&params length:sizeof(params) atIndex:0];
-                        [copyEncoder setFragmentBytes:&params length:sizeof(params) atIndex:0];
-                        [copyEncoder setFragmentTexture:rpColor0 atIndex:0];
-                        [copyEncoder setFragmentSamplerState:sampler atIndex:0];
-                        [copyEncoder setViewport:(MTLViewport){
+                        mglSwapDiagnosticsSetRenderPipeline(copyEncoder, pipeline);
+                        mglSwapDiagnosticsSetRenderBytes(
+                            copyEncoder, &params, sizeof(params),
+                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX);
+                        mglSwapDiagnosticsSetRenderBytes(
+                            copyEncoder, &params, sizeof(params),
+                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT);
+                        mglSwapDiagnosticsSetFragmentTexture(copyEncoder, rpColor0);
+                        mglSwapDiagnosticsSetFragmentSampler(copyEncoder, sampler);
+                        mglSwapDiagnosticsSetViewport(copyEncoder, (MTLViewport){
                             .originX = 0.0,
                             .originY = 0.0,
                             .width = (double)copyWidth,
                             .height = (double)copyHeight,
                             .znear = 0.0,
                             .zfar = 1.0
-                        }];
-                        [copyEncoder setScissorRect:(MTLScissorRect){
+                        });
+                        mglSwapDiagnosticsSetScissor(copyEncoder, (MTLScissorRect){
                             .x = 0,
                             .y = 0,
                             .width = copyWidth,
                             .height = copyHeight
-                        }];
-                        [copyEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-                        [copyEncoder endEncoding];
+                        });
+                        mglSwapDiagnosticsDrawTriangleStrip(copyEncoder);
+                        mglSwapDiagnosticsEndRenderEncoder(copyEncoder);
                     } else {
                         NSLog(@"MGL WARNING: swap.copyToDrawable failed to create shader copy encoder");
                     }
@@ -183,8 +394,9 @@
                         : 0u;
                 }
 
-                id<MTLBuffer> sampleBuffer = [_device newBufferWithLength:sampleBytesPerImage
-                                                                   options:MTLResourceStorageModeShared];
+                id<MTLBuffer> sampleBuffer =
+                    mglSwapDiagnosticsCreateBuffer(_device,
+                                                   sampleBytesPerImage);
                 if (!sampleBuffer) {
                     NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(alloc size=%lu)",
                           sampleTag,
@@ -193,7 +405,9 @@
                     return;
                 }
 
-                id<MTLBlitCommandEncoder> sampleEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
+                id<MTLBlitCommandEncoder> sampleEncoder =
+                    mglSwapDiagnosticsCreateBlitEncoder(
+                        _renderPassManager.state->currentCommandBuffer);
                 if (!sampleEncoder) {
                     NSLog(@"MGL WARNING: swap.sample.%@ call=%llu failed(create blit encoder)",
                           sampleTag,
@@ -201,16 +415,12 @@
                     return;
                 }
 
-                [sampleEncoder copyFromTexture:sampleTexture
-                                   sourceSlice:0
-                                   sourceLevel:0
-                                  sourceOrigin:MTLOriginMake(clampedOriginX, clampedOriginY, 0)
-                                    sourceSize:MTLSizeMake(sampleWidth, sampleHeight, 1)
-                                      toBuffer:sampleBuffer
-                             destinationOffset:0
-                        destinationBytesPerRow:sampleBytesPerRow
-                      destinationBytesPerImage:sampleBytesPerImage];
-                [sampleEncoder endEncoding];
+                mglSwapDiagnosticsCopyTextureToBuffer(
+                    sampleEncoder, sampleTexture,
+                    MTLOriginMake(clampedOriginX, clampedOriginY, 0),
+                    MTLSizeMake(sampleWidth, sampleHeight, 1), sampleBuffer,
+                    sampleBytesPerRow, sampleBytesPerImage);
+                mglSwapDiagnosticsEndBlitEncoder(sampleEncoder);
 
                 uint64_t sampleSwapCall = swapCall;
                 NSString *sampleTagCopy = [sampleTag copy];
@@ -219,14 +429,23 @@
                 NSUInteger sampleOriginX = clampedOriginX;
                 NSUInteger sampleOriginY = clampedOriginY;
                 [sampleBuffer addDebugMarker:@"mgl_swap_sample" range:NSMakeRange(0, sampleBytesPerImage)];
-                [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> sampleCB) {
+                mglRenderAddCommandBufferCompletion(
+                    _renderPassManager.state->currentCommandBuffer,
+                    ^(const MGLRenderCppCommandBufferState *sampleState) {
+                    NSString *sampleError = sampleState->has_error
+                        ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",
+                             sampleState->error_description,
+                             sampleState->error_domain,
+                             (long long)sampleState->error_code]
+                        : nil;
                     const uint8_t *p = (const uint8_t *)sampleBuffer.contents;
                     if (!p) {
                         mglTraceLogNSString(@"MGL TRACE swap.sample.%@ call=%llu unavailable(contents=nil) status=%s error=%@",
                               sampleTagCopy,
                               (unsigned long long)sampleSwapCall,
-                              mglCommandBufferStatusName(sampleCB.status),
-                              sampleCB.error);
+                              mglCommandBufferStatusName(
+                                  (MTLCommandBufferStatus)sampleState->status),
+                              sampleError);
                         return;
                     }
 
@@ -285,8 +504,9 @@
                           pixelXor,
                           (unsigned long)diffFromFirst,
                           appearsSolid ? 1 : 0,
-                          mglCommandBufferStatusName(sampleCB.status),
-                          sampleCB.error);
+                          mglCommandBufferStatusName(
+                              (MTLCommandBufferStatus)sampleState->status),
+                          sampleError);
 
                     if ([sampleTagCopy isEqualToString:@"src.center"]) {
                         static uint32_t s_lastCenterPixel = 0u;
@@ -308,7 +528,7 @@
                                   (unsigned long)diffFromFirst);
                         }
                     }
-                }];
+                });
             };
 
         scheduleTextureSample(rpColor0, @"src.tl", 0u, 0u);

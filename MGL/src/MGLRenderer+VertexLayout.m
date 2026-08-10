@@ -2,8 +2,32 @@
 // Vertex descriptor and blend-state construction extracted from MGLRenderer+RenderPass.m
 
 #import "MGLRenderer_Private.h"
+#include "mgl_shader_abi.h"
 
 #import <objc/message.h>
+
+static MTLVertexFormat mglTessControlPointFormat(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT: return MTLVertexFormatFloat;
+        case GL_FLOAT_VEC2: return MTLVertexFormatFloat2;
+        case GL_FLOAT_VEC3: return MTLVertexFormatFloat3;
+        case GL_FLOAT_VEC4: return MTLVertexFormatFloat4;
+        case GL_INT: return MTLVertexFormatInt;
+        case GL_INT_VEC2: return MTLVertexFormatInt2;
+        case GL_INT_VEC3: return MTLVertexFormatInt3;
+        case GL_INT_VEC4: return MTLVertexFormatInt4;
+        case GL_UNSIGNED_INT:
+        case GL_BOOL: return MTLVertexFormatUInt;
+        case GL_UNSIGNED_INT_VEC2:
+        case GL_BOOL_VEC2: return MTLVertexFormatUInt2;
+        case GL_UNSIGNED_INT_VEC3:
+        case GL_BOOL_VEC3: return MTLVertexFormatUInt3;
+        case GL_UNSIGNED_INT_VEC4:
+        case GL_BOOL_VEC4: return MTLVertexFormatUInt4;
+        default: return MTLVertexFormatInvalid;
+    }
+}
 
 @implementation MGLRenderer (VertexLayout)
 
@@ -13,6 +37,40 @@
     if (!vertexDescriptor) {
         NSLog(@"MGL VERTEX ERROR: failed to allocate MTLVertexDescriptor");
         return nil;
+    }
+    if (_tessellation.nativeTESActive) {
+        [vertexDescriptor reset];
+        vertexDescriptor.attributes[0].format = MTLVertexFormatFloat4;
+        vertexDescriptor.attributes[0].offset = 0u;
+        vertexDescriptor.attributes[0].bufferIndex = 0u;
+        vertexDescriptor.layouts[0].stride = _tessellation.tcsOutputStride;
+        vertexDescriptor.layouts[0].stepFunction =
+            MTLVertexStepFunctionPerPatchControlPoint;
+        vertexDescriptor.layouts[0].stepRate = 1u;
+        Program *tesProgram = _tessellation.nativeTESProgram;
+        SpirvResourceList *inputs = tesProgram
+            ? &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+                                                      [_STAGE_INPUT_RES]
+            : NULL;
+        for (GLuint i = 0; inputs && inputs->list && i < inputs->count; i++) {
+            SpirvResource *input = &inputs->list[i];
+            if (input->is_per_patch || input->location >= 30u) continue;
+            MTLVertexFormat format = mglTessControlPointFormat(input->gl_type);
+            if (format == MTLVertexFormatInvalid) {
+                NSLog(@"MGL TESS ERROR: unsupported control-point varying type "
+                      "0x%x for %@", (unsigned)input->gl_type,
+                      input->name ? [NSString stringWithUTF8String:input->name]
+                                  : @"?");
+                return nil;
+            }
+            NSUInteger attribute = (NSUInteger)input->location + 1u;
+            vertexDescriptor.attributes[attribute].format = format;
+            vertexDescriptor.attributes[attribute].offset =
+                MGL_AIR_PER_VERTEX_STRIDE +
+                (NSUInteger)input->location * 16u;
+            vertexDescriptor.attributes[attribute].bufferIndex = 0u;
+        }
+        return vertexDescriptor;
     }
     VertexArray *vao = mglRendererGetValidatedVAO(ctx, __FUNCTION__);
     Program *activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
@@ -32,32 +90,12 @@
     [vertexDescriptor reset]; // ??? debug
     maxAttribs = MAX_ATTRIBS;
 
-    // Get the vertex shader MSL source to check which attributes are actually used.
-    // SPIRV-Cross may report attributes in the reflection that are not used in the MSL
-    // (e.g., when the GLSL declares an attribute but doesn't use it in the shader body).
-    const char *vsMslStr = NULL;
-    if (activeProgram) {
-        vsMslStr = activeProgram->spirv[_VERTEX_SHADER].msl_str;
-    }
-
     // we can bind a new vertex descriptor without creating a new renderbuffer
     bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     for (GLuint i = 0; i < maxAttribs; i++)
     {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, i)) {
             continue;
-        }
-        // Skip attributes that are in the reflection but not in the MSL source.
-        // SPIRV-Cross optimizes away unused attributes from the MSL input struct,
-        // but still reports them in the reflection. Configuring a vertex descriptor
-        // entry for an attribute the shader doesn't use can cause Metal to silently
-        // produce no rasterization output.
-        if (vsMslStr) {
-            char attrPattern[32];
-            snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", i);
-            if (!strstr(vsMslStr, attrPattern)) {
-                continue;
-            }
         }
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, i);
         MGLResolvedVertexAttribBinding resolved = {0};

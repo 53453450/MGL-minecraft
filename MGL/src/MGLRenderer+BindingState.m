@@ -5,6 +5,125 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static BOOL mglBindingStateUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static id<MTLBuffer> mglBindingStateCreateBuffer(
+    id<MTLDevice> device,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglBindingStateUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+            buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithLength:length options:options];
+}
+
+static id<MTLBuffer> mglBindingStateCreateBufferWithBytes(
+    id<MTLDevice> device,
+    const void *bytes,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglBindingStateUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                              &buffer) == 0 && buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithBytes:bytes length:length options:options];
+}
+
+static id<MTLTexture> mglBindingStateCreateTextureLevelView(
+    id<MTLTexture> texture,
+    NSUInteger level,
+    NSUInteger sliceCount)
+{
+    if (mglBindingStateUsesMetalCpp()) {
+        void *view = NULL;
+        if (mglRenderCppCreateTextureViewRange(
+                (__bridge void *)texture, (uint32_t)texture.pixelFormat,
+                (uint32_t)texture.textureType, level, 1, 0, sliceCount,
+                0, 0, 0, 0, 0, &view) == 0 && view) {
+            return (__bridge_transfer id<MTLTexture>)view;
+        }
+    }
+    return [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                      textureType:texture.textureType
+                                           levels:NSMakeRange(level, 1)
+                                           slices:NSMakeRange(0, sliceCount)];
+}
+
+static void mglBindingStateSetVertexBuffer(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (mglBindingStateUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglBindingStateSetVertexBytes(
+    id<MTLRenderCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (mglBindingStateUsesMetalCpp() &&
+        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
+                                   MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                                   (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setVertexBytes:bytes length:length atIndex:index];
+}
+
+static void mglBindingStateSetFragmentBuffer(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (mglBindingStateUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setFragmentBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglBindingStateSetFragmentBytes(
+    id<MTLRenderCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (mglBindingStateUsesMetalCpp() &&
+        mglRenderCppSetRenderBytes((__bridge void *)encoder, bytes, length,
+                                   MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                                   (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setFragmentBytes:bytes length:length atIndex:index];
+}
 
 @implementation MGLRenderer (Draw)
 
@@ -51,7 +170,9 @@
         NSLog(@"MGL VBIND skip: vao nil/invalid");
         return false;
     }
-    activeProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    activeProgram = _tessellation.nativeTESActive
+        ? _tessellation.nativeTESProgram
+        : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
 
     if (kMGLVerboseBindLogs) {
         NSLog(@"MGL VBIND vao=%p magic=0x%x", vao, vao->magic);
@@ -75,25 +196,9 @@
     // overwrite shader-required vertex input slots.
     bool attribsEnabledByApp = (vao->enabled_attribs != 0u);
     GLuint reserveMaxAttribs = MAX_ATTRIBS;
-    // Get the vertex shader MSL source to check which attributes are actually used.
-    const char *vsMslStr = activeProgram ? activeProgram->spirv[_VERTEX_SHADER].msl_str : NULL;
     for (GLuint attrib = 0; attrib < reserveMaxAttribs; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
             continue;
-        }
-        // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
-        if (vsMslStr) {
-            bool attribInMSL;
-            if (_resourceFallback.mslCacheEnabled && activeProgram && activeProgram->mslCacheValid) {
-                attribInMSL = ((activeProgram->vertexAttribUsageMask & (1u << attrib)) != 0u);
-            } else {
-                char attrPattern[32];
-                snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
-                attribInMSL = (strstr(vsMslStr, attrPattern) != NULL);
-            }
-            if (!attribInMSL) {
-                continue;
-            }
         }
 
         int mappedIndex = [self getVertexBufferIndexWithAttributeSet:(int)attrib];
@@ -200,24 +305,27 @@
 
         if (!ptr) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has invalid/NULL buffer pointer, skipping", i);
-            [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearVertexBufferSlot:bindingIndex];
+            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
+                                                  (uint32_t)bindingIndex);
             continue;
         }
 
         if (offset < 0) {
             NSLog(@"MGL WARNING: Vertex buffer map[%d] has negative offset=%lld, skipping",
                   i, (long long)offset);
-            [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearVertexBufferSlot:bindingIndex];
+            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
+                                                  (uint32_t)bindingIndex);
             continue;
         }
 
         if (ptr->size < 0) {
             NSLog(@"MGL WARNING: Vertex buffer %u has invalid size=%lld, skipping",
                   ptr->name, (long long)ptr->size);
-            [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearVertexBufferSlot:bindingIndex];
+            mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0, bindingIndex);
+            mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
+                                                  (uint32_t)bindingIndex);
             continue;
         }
 
@@ -248,7 +356,7 @@
          * allocates a zero-padded isolated buffer per draw on top of it.
          * Padding here reproduces exactly what that isolated buffer held. */
         if (isBaseBinding &&
-            map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+            map->resource_type == _UNIFORM_CONSTANT_RES &&
             ptr->data.buffer_data &&
             offset == 0 &&
             requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
@@ -263,9 +371,8 @@
                     memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
                     inlineBytes = padded;
                 }
-                [encCtx->encoder setVertexBytes:inlineBytes
-                                        length:inlineLength
-                                       atIndex:bindingIndex];
+                mglBindingStateSetVertexBytes(encCtx->encoder, inlineBytes,
+                                              inlineLength, bindingIndex);
                 [self invalidateLastBoundVertexBufferAtIndex:bindingIndex];
                 anyBindingPresent[bindingIndex] = true;
                 /* Only clear while no MTLBuffer exists: an existing one would
@@ -317,15 +424,18 @@
                       (unsigned long)bindingIndex,
                       (unsigned long)requiredBindingBytes,
                       (unsigned long)availableBytes);
-                [encCtx->encoder setVertexBuffer:nil offset:0 atIndex:bindingIndex];
-                [_bindingSync clearVertexBufferSlot:bindingIndex];
+                mglBindingStateSetVertexBuffer(encCtx->encoder, nil, 0,
+                                               bindingIndex);
+                mglRenderCppBindingClearVertexBuffer(_bindingStateOwner,
+                                                      (uint32_t)bindingIndex);
                 continue;
             }
 
-            [encCtx->encoder setVertexBuffer:isolated
-                                            offset:0
-                                           atIndex:bindingIndex];
-            [_bindingSync updateVertexBufferSlot:bindingIndex buffer:isolated offset:0];
+            mglBindingStateSetVertexBuffer(encCtx->encoder, isolated, 0,
+                                           bindingIndex);
+            mglRenderCppBindingUpdateVertexBuffer(
+                _bindingStateOwner, (__bridge void *)isolated, 0,
+                (uint32_t)bindingIndex);
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             anyBindingPresent[bindingIndex] = true;
             if (kMGLVerboseBindLogs) {
@@ -340,13 +450,16 @@
             continue;
         }
 
-        if (!_bindingSync.state->lastBoundValid ||
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != buffer ||
-            _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != (NSUInteger)offset) {
-            [encCtx->encoder setVertexBuffer:buffer offset:offset atIndex:bindingIndex];
-            [_bindingSync updateVertexBufferSlot:bindingIndex
-                                   buffer:buffer
-                                   offset:(NSUInteger)offset];
+        if (!mglBindingStateIsValid(_bindingStateOwner) ||
+            !mglBindingStateBufferMatches(
+                _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                (__bridge void *)buffer, (NSUInteger)offset,
+                (uint32_t)bindingIndex)) {
+            mglBindingStateSetVertexBuffer(encCtx->encoder, buffer,
+                                           (NSUInteger)offset, bindingIndex);
+            mglRenderCppBindingUpdateVertexBuffer(
+                _bindingStateOwner, (__bridge void *)buffer,
+                (NSUInteger)offset, (uint32_t)bindingIndex);
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             mglNoteBufferEncoded(ptr);
         } else {
@@ -396,7 +509,6 @@
 
     if (![self bindVertexAttributesFromVAO:vao
                               activeProgram:activeProgram
-                                  vsMslStr:vsMslStr
                         attribsEnabledByApp:attribsEnabledByApp
                         attribBindingIndex:attribBindingIndex
                           anyBindingPresent:anyBindingPresent
@@ -421,7 +533,8 @@
             boundVertexBufferMask |= 1U << i;
         }
     }
-    [_bindingSync orVertexBufferMask:boundVertexBufferMask];
+    mglRenderCppBindingOrVertexBufferMask(_bindingStateOwner,
+                                          boundVertexBufferMask);
 
     if (mglEnvFlagEnabled("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_vbind_trace_count = 0;
@@ -460,7 +573,7 @@
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
      * binds can be skipped when the resource and offset are unchanged. */
-    [_bindingSync setBoundValid:YES];
+    mglRenderCppBindingSetValid(_bindingStateOwner, 1);
     return true;
 }
 
@@ -469,7 +582,6 @@
  * 500-line limit.  Pure mechanical extraction — no behavior change. */
 - (bool)bindVertexAttributesFromVAO:(VertexArray *)vao
                       activeProgram:(Program *)activeProgram
-                          vsMslStr:(const char *)vsMslStr
                 attribsEnabledByApp:(bool)attribsEnabledByApp
                 attribBindingIndex:(int *)attribBindingIndex
                   anyBindingPresent:(bool *)anyBindingPresent
@@ -483,20 +595,6 @@
     for (GLuint attrib = 0; attrib < maxAttribs; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
             continue;
-        }
-        // Skip attributes not present in the MSL source (same check as generateVertexDescriptor).
-        if (vsMslStr) {
-            bool attribInMSL;
-            if (_resourceFallback.mslCacheEnabled && activeProgram && activeProgram->mslCacheValid) {
-                attribInMSL = ((activeProgram->vertexAttribUsageMask & (1u << attrib)) != 0u);
-            } else {
-                char attrPattern[32];
-                snprintf(attrPattern, sizeof(attrPattern), "[[attribute(%u)]]", attrib);
-                attribInMSL = (strstr(vsMslStr, attrPattern) != NULL);
-            }
-            if (!attribInMSL) {
-                continue;
-            }
         }
         BOOL usesCurrentValue = mglRendererVertexAttribUsesCurrentValue(vao, attrib);
         MGLResolvedVertexAttribBinding resolved = {0};
@@ -554,9 +652,9 @@
                 for (NSUInteger v = 0; v < kMGLCurrentAttribRepeatCount; v++) {
                     memcpy(dst + v * attribStride, attribBytes, MIN((NSUInteger)16u, attribStride));
                 }
-                currentAttribBuffer = [_device newBufferWithBytes:repeated.bytes
-                                                            length:repeated.length
-                                                           options:MTLResourceStorageModeShared];
+                currentAttribBuffer = mglBindingStateCreateBufferWithBytes(
+                    _device, repeated.bytes, repeated.length,
+                    MTLResourceStorageModeShared);
                 if (!currentAttribBuffer) {
                     NSLog(@"MGL VBIND skip attrib=%u: failed to allocate current vertex attrib Metal buffer", attrib);
                     continue;
@@ -567,15 +665,16 @@
                 _currentAttribCacheStride[attrib] = attribStride;
                 _currentAttribCacheValid[attrib] = YES;
             }
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != currentAttribBuffer ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                [encCtx->encoder setVertexBuffer:currentAttribBuffer
-                                                offset:0
-                                               atIndex:bindingIndex];
-                [_bindingSync updateVertexBufferSlot:bindingIndex
-                                       buffer:currentAttribBuffer
-                                       offset:0];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)currentAttribBuffer, 0, (uint32_t)bindingIndex)) {
+                mglBindingStateSetVertexBuffer(encCtx->encoder,
+                                               currentAttribBuffer, 0,
+                                               bindingIndex);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)currentAttribBuffer, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -747,13 +846,15 @@
                       attribBuffer->name);
                 continue;
             }
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                [_bindingSync updateVertexBufferSlot:bindingIndex
-                                       buffer:convertedBuffer
-                                       offset:0];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
+                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
+                                               0, bindingIndex);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -776,13 +877,15 @@
                       attribBuffer->name);
                 continue;
             }
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                [_bindingSync updateVertexBufferSlot:bindingIndex
-                                       buffer:convertedBuffer
-                                       offset:0];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
+                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
+                                               0, bindingIndex);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -813,13 +916,15 @@
                       attrib, attribBuffer->name, (unsigned)attribState->type);
                 continue;
             }
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                [_bindingSync updateVertexBufferSlot:bindingIndex
-                                       buffer:convertedBuffer
-                                       offset:0];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
+                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
+                                               0, bindingIndex);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -844,13 +949,15 @@
                       (int)integerConvDstIsInt);
                 continue;
             }
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != convertedBuffer ||
-                _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != 0) {
-                [encCtx->encoder setVertexBuffer:convertedBuffer offset:0 atIndex:bindingIndex];
-                [_bindingSync updateVertexBufferSlot:bindingIndex
-                                       buffer:convertedBuffer
-                                       offset:0];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)convertedBuffer, 0, (uint32_t)bindingIndex)) {
+                mglBindingStateSetVertexBuffer(encCtx->encoder, convertedBuffer,
+                                               0, bindingIndex);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)convertedBuffer, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
             } else {
                 MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -896,13 +1003,15 @@
          * relativeoffset, so pass VERTEX_BINDING_OFFSET here. */
         NSUInteger metalBindOffset =
             _batching.absoluteVertexBindingOffsets ? attribBindingOffset : 0u;
-	    if (!_bindingSync.state->lastBoundValid ||
-	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].buffer != attribMetalBuffer ||
-	        _bindingSync.state->lastBoundVertexBuffers[bindingIndex].offset != metalBindOffset) {
-	        [encCtx->encoder setVertexBuffer:attribMetalBuffer offset:metalBindOffset atIndex:bindingIndex];
-	        [_bindingSync updateVertexBufferSlot:bindingIndex
-	                               buffer:attribMetalBuffer
-	                               offset:metalBindOffset];
+	    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)attribMetalBuffer, metalBindOffset, (uint32_t)bindingIndex)) {
+	        mglBindingStateSetVertexBuffer(encCtx->encoder, attribMetalBuffer,
+	                                       metalBindOffset, bindingIndex);
+	        mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)attribMetalBuffer, metalBindOffset,
+                    (uint32_t)bindingIndex);
 	        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
 	        mglNoteBufferEncoded(attribBuffer);
 	    } else {
@@ -971,31 +1080,34 @@
                                          encodeContext:(const MGLEncodeContext *)encCtx
 {
     static id<MTLBuffer> fallbackBindingBuffer = nil;
+    const int vertexStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
     if (!fallbackBindingBuffer) {
-        fallbackBindingBuffer = [_device newBufferWithLength:kMGLDefaultStageFallbackBufferSize
-                                                     options:MTLResourceStorageModeShared];
+        fallbackBindingBuffer = mglBindingStateCreateBuffer(
+            _device, kMGLDefaultStageFallbackBufferSize,
+            MTLResourceStorageModeShared);
     }
 
     // Bind fallback buffer for required stage buffer bindings that were not mapped.
     // This prevents Metal validation aborts on missing buffer slots.
     const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-        SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
+        _UNIFORM_BUFFER_RES,
+        _UNIFORM_CONSTANT_RES,
+        _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES
     };
     for (int t = 0; t < 4; t++) {
         int resourceType = resourceTypes[t];
-        int count = [self getProgramBindingCount:_VERTEX_SHADER type:resourceType];
+        int count = [self getProgramBindingCount:vertexStage type:resourceType];
         Program *program = activeProgram;
         for (int i = 0; i < count; i++) {
             if (!program || resourceType < 0 || resourceType >= _MAX_SPIRV_RES ||
-                i >= (int)program->spirv_resources_list[_VERTEX_SHADER][resourceType].count) {
+                i >= (int)program->spirv_resources_list[vertexStage][resourceType].count) {
                 continue;
             }
-            SpirvResource *resource = &program->spirv_resources_list[_VERTEX_SHADER][resourceType].list[i];
-            if (mglShouldSkipStageBufferResource(program, _VERTEX_SHADER, resourceType, resource)) {
+            SpirvResource *resource = &program->spirv_resources_list[vertexStage][resourceType].list[i];
+            if (mglShouldSkipStageBufferResource(program, vertexStage, resourceType, resource)) {
                 continue;
             }
             GLuint elementCount = mglStageBufferResourceElementCount(resourceType, resource);
@@ -1012,13 +1124,16 @@
                 }
                 if (!anyBindingPresent[(NSUInteger)metalBinding] && fallbackBindingBuffer) {
                     NSUInteger _slot = (NSUInteger)metalBinding;
-                    if (!_bindingSync.state->lastBoundValid ||
-                        _bindingSync.state->lastBoundVertexBuffers[_slot].buffer != fallbackBindingBuffer ||
-                        _bindingSync.state->lastBoundVertexBuffers[_slot].offset != 0) {
-                        [encCtx->encoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
-                        [_bindingSync updateVertexBufferSlot:_slot
-                                               buffer:fallbackBindingBuffer
-                                               offset:0];
+                    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
+                        mglBindingStateSetVertexBuffer(encCtx->encoder,
+                                                       fallbackBindingBuffer,
+                                                       0, _slot);
+                        mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    (uint32_t)_slot);
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -1036,13 +1151,15 @@
     if (kMGLEnableVertexAllSlotFallback && fallbackBindingBuffer) {
         for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
-                if (!_bindingSync.state->lastBoundValid ||
-                    _bindingSync.state->lastBoundVertexBuffers[s].buffer != fallbackBindingBuffer ||
-                    _bindingSync.state->lastBoundVertexBuffers[s].offset != 0) {
-                    [encCtx->encoder setVertexBuffer:fallbackBindingBuffer offset:0 atIndex:s];
-                    [_bindingSync updateVertexBufferSlot:s
-                                           buffer:fallbackBindingBuffer
-                                           offset:0];
+                if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
+                    mglBindingStateSetVertexBuffer(encCtx->encoder,
+                                                   fallbackBindingBuffer, 0, s);
+                    mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    (uint32_t)s);
                     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 } else {
                     MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
@@ -1065,18 +1182,9 @@
     for (NSUInteger ps = 0; ps < sizeof(pointSizeStages) / sizeof(pointSizeStages[0]); ps++) {
         Program *pointProgram = mglResolveProgramForStageFromState(ctx, pointSizeStages[ps]);
         if (!pointProgram) continue;
-        /* use cached scan result when mslCacheValid; fall back to strstr. */
-        if (pointProgram->mslCacheValid) {
-            if (pointProgram->uses_point_size_params) {
-                needsPointSizeParams = YES;
-                break;
-            }
-        } else {
-            const char *pointMsl = pointProgram->spirv[pointSizeStages[ps]].msl_str;
-            if (pointMsl && strstr(pointMsl, "_mgl_point_size_params")) {
-                needsPointSizeParams = YES;
-                break;
-            }
+        if (pointProgram->uses_point_size_params) {
+            needsPointSizeParams = YES;
+            break;
         }
     }
     if (needsPointSizeParams) {
@@ -1084,9 +1192,9 @@
             ctx && MGL_STATE(ctx)->var.point_size > 0.0f ? MGL_STATE(ctx)->var.point_size : 1.0f,
             ctx && MGL_STATE(ctx)->caps.program_point_size ? 1.0f : 0.0f
         };
-        [encCtx->encoder setVertexBytes:pointSizeParams
-                                      length:sizeof(pointSizeParams)
-                                      atIndex:kMGLPointSizeParamBufferIndex];
+        mglBindingStateSetVertexBytes(encCtx->encoder, pointSizeParams,
+                                      sizeof(pointSizeParams),
+                                      kMGLPointSizeParamBufferIndex);
         [self invalidateLastBoundVertexBufferAtIndex:kMGLPointSizeParamBufferIndex];
         anyBindingPresent[kMGLPointSizeParamBufferIndex] = true;
     }
@@ -1182,16 +1290,20 @@
         if (!ptr) {
             NSLog(@"MGL FBIND skip slot=%u: invalid/NULL candidate=%p", i, map->buf);
             map->buf = NULL;
-            [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                             bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
             continue;
         }
 
         if (offset < 0) {
             NSLog(@"MGL FBIND skip slot=%u buffer=%u: negative offset=%lld",
                   i, ptr->name, (long long)offset);
-            [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+            mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                             bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
             continue;
         }
 
@@ -1208,9 +1320,12 @@
                 if (cpuData < 0x100000000ULL) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: suspicious CPU pointer=%p",
                           ptr->name, i, (void *)ptr->data.buffer_data);
-                    [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                     bindingIndex);
+                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
                     continue;
                 }
 
@@ -1219,15 +1334,19 @@
                 if (bindOffset >= bufferSize) {
                     NSLog(@"MGL FBIND skip small buffer=%u slot=%u: offset=%lu bufferSize=%lu",
                           ptr->name, i, (unsigned long)bindOffset, (unsigned long)bufferSize);
-                    [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                     bindingIndex);
+                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
                     continue;
                 }
 
                 size_t bindLength = bufferSize - bindOffset;
                 const uint8_t *bindPtr = ((const uint8_t *)ptr->data.buffer_data) + bindOffset;
-                [encCtx->encoder setFragmentBytes:bindPtr length:bindLength atIndex:bindingIndex];
+                mglBindingStateSetFragmentBytes(encCtx->encoder, bindPtr,
+                                                bindLength, bindingIndex);
                 [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                 if (kMGLVerboseBindLogs) {
                     NSLog(@"MGL FBIND ok(slot=%lu) setFragmentBytes buffer=%u len=%lu offset=%lu",
@@ -1241,9 +1360,12 @@
                 if ((uintptr_t)ptr->data.mtl_data < 0x100000000ULL) {
                     NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: suspicious mtl_data pointer=%p",
                           ptr->name, i, ptr->data.mtl_data);
-                    [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                     bindingIndex);
+                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
                     continue;
                 }
                 id<MTLBuffer> fallbackBuffer = (__bridge id<MTLBuffer>)(ptr->data.mtl_data);
@@ -1253,19 +1375,25 @@
                     if (bindOffset >= metalLen) {
                         NSLog(@"MGL FBIND skip small MTL buffer=%u slot=%u: offset=%lu length=%lu",
                               ptr->name, i, (unsigned long)bindOffset, (unsigned long)metalLen);
-                        [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                        mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                         bindingIndex);
+                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
                         continue;
                     }
 
-                    if (!_bindingSync.state->lastBoundValid ||
-                        _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer != fallbackBuffer ||
-                        _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
-                        [encCtx->encoder setFragmentBuffer:fallbackBuffer offset:offset atIndex:bindingIndex];
-                        [_bindingSync updateFragmentBufferSlot:bindingIndex
-                                               buffer:fallbackBuffer
-                                               offset:(NSUInteger)offset];
+                    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                    (__bridge void *)fallbackBuffer, (NSUInteger)offset, (uint32_t)bindingIndex)) {
+                        mglBindingStateSetFragmentBuffer(
+                            encCtx->encoder, fallbackBuffer,
+                            (NSUInteger)offset, bindingIndex);
+                        mglRenderCppBindingUpdateFragmentBuffer(
+                    _bindingStateOwner, (__bridge void *)fallbackBuffer, (NSUInteger)offset,
+                    (uint32_t)bindingIndex);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1281,8 +1409,10 @@
                     anyBindingPresent[bindingIndex] = true;
                 }
             } else {
-                [encCtx->encoder setFragmentBuffer:nil offset:0 atIndex:bindingIndex];
-            [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                 bindingIndex);
+            mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
             }
             
             // clear buffer data dirty bits
@@ -1316,7 +1446,7 @@
              * otherwise costs a copy-on-write snapshot per glUniform* upload
              * plus a zero-padded isolated buffer per draw. */
             if (isBaseBinding &&
-                map->resource_type == SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT &&
+                map->resource_type == _UNIFORM_CONSTANT_RES &&
                 ptr->data.buffer_data &&
                 offset == 0 &&
                 requiredBindingBytes <= kMGLStageBindingStackScratchSize) {
@@ -1331,9 +1461,9 @@
                         memset(padded + visibleBytes, 0, inlineLength - visibleBytes);
                         inlineBytes = padded;
                     }
-                    [encCtx->encoder setFragmentBytes:inlineBytes
-                                               length:inlineLength
-                                              atIndex:bindingIndex];
+                    mglBindingStateSetFragmentBytes(encCtx->encoder,
+                                                    inlineBytes, inlineLength,
+                                                    bindingIndex);
                     [self invalidateLastBoundFragmentBufferAtIndex:bindingIndex];
                     anyBindingPresent[bindingIndex] = true;
                     if (!ptr->data.mtl_data) {
@@ -1380,19 +1510,18 @@
                           (unsigned long)bindingIndex,
                           (unsigned long)requiredBindingBytes,
                           (unsigned long)availableBytes);
-                    [encCtx->encoder setFragmentBuffer:nil
-                                                      offset:0
-                                                     atIndex:bindingIndex];
-                    [_bindingSync clearFragmentBufferSlot:bindingIndex];
+                    mglBindingStateSetFragmentBuffer(encCtx->encoder, nil, 0,
+                                                     bindingIndex);
+                    mglRenderCppBindingClearFragmentBuffer(_bindingStateOwner,
+                                                         (uint32_t)bindingIndex);
                     continue;
                 }
 
-                [encCtx->encoder setFragmentBuffer:isolated
-                                                  offset:0
-                                                 atIndex:bindingIndex];
-                [_bindingSync updateFragmentBufferSlot:bindingIndex
-                                       buffer:isolated
-                                       offset:0];
+                mglBindingStateSetFragmentBuffer(encCtx->encoder, isolated, 0,
+                                                 bindingIndex);
+                mglRenderCppBindingUpdateFragmentBuffer(
+                    _bindingStateOwner, (__bridge void *)isolated, 0,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 anyBindingPresent[bindingIndex] = true;
                 if (kMGLVerboseBindLogs) {
@@ -1407,13 +1536,16 @@
                 continue;
             }
             
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].buffer != buffer ||
-                _bindingSync.state->lastBoundFragmentBuffers[bindingIndex].offset != (NSUInteger)offset) {
-                [encCtx->encoder setFragmentBuffer:buffer offset:offset atIndex:bindingIndex];
-                [_bindingSync updateFragmentBufferSlot:bindingIndex
-                                       buffer:buffer
-                                       offset:(NSUInteger)offset];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                    (__bridge void *)buffer, (NSUInteger)offset, (uint32_t)bindingIndex)) {
+                mglBindingStateSetFragmentBuffer(encCtx->encoder, buffer,
+                                                 (NSUInteger)offset,
+                                                 bindingIndex);
+                mglRenderCppBindingUpdateFragmentBuffer(
+                    _bindingStateOwner, (__bridge void *)buffer, (NSUInteger)offset,
+                    (uint32_t)bindingIndex);
                 MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 mglNoteBufferEncoded(ptr);
             } else {
@@ -1484,13 +1616,13 @@
             boundFragmentBufferMask |= 1U << i;
         }
     }
-    [_bindingSync orFragmentBufferMask:boundFragmentBufferMask];
+    mglRenderCppBindingOrFragmentBufferMask(_bindingStateOwner, boundFragmentBufferMask);
 
     if (mglEnvFlagEnabled("MGL_TRACE_SPARSE_BINDING")) {
         static uint64_t s_fbind_trace_count = 0;
         if ((++s_fbind_trace_count % 500) == 1) {
-            int textureSlotCount = __builtin_popcountll(_bindingSync.state->lastBoundTextureSlotMask[0]) +
-                                   __builtin_popcountll(_bindingSync.state->lastBoundTextureSlotMask[1]);
+            int textureSlotCount =
+                mglBindingStateTextureSlotCount(_bindingStateOwner);
             NSLog(@"MGL SPARSE FBIND: fbuf=0x%x(%d/31) textureSlots=%d/128",
                   boundFragmentBufferMask,
                   __builtin_popcount(boundFragmentBufferMask),
@@ -1519,7 +1651,7 @@
 
     /* Mark the dedup cache as valid for the current encoder so subsequent
      * binds can be skipped when the resource and offset are unchanged. */
-    [_bindingSync setBoundValid:YES];
+    mglRenderCppBindingSetValid(_bindingStateOwner, 1);
     return true;
 }
 
@@ -1535,16 +1667,17 @@
     static id<MTLBuffer> fallbackBindingBuffer = nil;
 
     if (!fallbackBindingBuffer) {
-        fallbackBindingBuffer = [_device newBufferWithLength:kMGLDefaultStageFallbackBufferSize
-                                                     options:MTLResourceStorageModeShared];
+        fallbackBindingBuffer = mglBindingStateCreateBuffer(
+            _device, kMGLDefaultStageFallbackBufferSize,
+            MTLResourceStorageModeShared);
     }
 
     // Bind fallback buffer for required stage buffer bindings that were not mapped.
     const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-        SPVC_RESOURCE_TYPE_ATOMIC_COUNTER
+        _UNIFORM_BUFFER_RES,
+        _UNIFORM_CONSTANT_RES,
+        _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES
     };
     for (int t = 0; t < 4; t++) {
         int resourceType = resourceTypes[t];
@@ -1573,13 +1706,15 @@
                 }
                 if (!anyBindingPresent[(NSUInteger)metalBinding] && fallbackBindingBuffer) {
                     NSUInteger _slot = (NSUInteger)metalBinding;
-                    if (!_bindingSync.state->lastBoundValid ||
-                        _bindingSync.state->lastBoundFragmentBuffers[_slot].buffer != fallbackBindingBuffer ||
-                        _bindingSync.state->lastBoundFragmentBuffers[_slot].offset != 0) {
-                        [encCtx->encoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:_slot];
-                        [_bindingSync updateFragmentBufferSlot:_slot
-                                               buffer:fallbackBindingBuffer
-                                               offset:0];
+                    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)_slot)) {
+                        mglBindingStateSetFragmentBuffer(
+                            encCtx->encoder, fallbackBindingBuffer, 0, _slot);
+                        mglRenderCppBindingUpdateFragmentBuffer(
+                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    (uint32_t)_slot);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                     } else {
                         MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1594,13 +1729,15 @@
     if (fallbackBindingBuffer) {
         for (NSUInteger s = 0; s < kMGLMaxMetalVertexBufferCount; s++) {
             if (!anyBindingPresent[s]) {
-                if (!_bindingSync.state->lastBoundValid ||
-                    _bindingSync.state->lastBoundFragmentBuffers[s].buffer != fallbackBindingBuffer ||
-                    _bindingSync.state->lastBoundFragmentBuffers[s].offset != 0) {
-                    [encCtx->encoder setFragmentBuffer:fallbackBindingBuffer offset:0 atIndex:s];
-                    [_bindingSync updateFragmentBufferSlot:s
-                                           buffer:fallbackBindingBuffer
-                                           offset:0];
+                if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                    (__bridge void *)fallbackBindingBuffer, 0, (uint32_t)s)) {
+                    mglBindingStateSetFragmentBuffer(
+                        encCtx->encoder, fallbackBindingBuffer, 0, s);
+                    mglRenderCppBindingUpdateFragmentBuffer(
+                    _bindingStateOwner, (__bridge void *)fallbackBindingBuffer, 0,
+                    (uint32_t)s);
                     MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                 } else {
                     MGL_PERF_INC(g_mglSetFragmentBufferSkipsSinceSwap);
@@ -1669,7 +1806,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
 
-    vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    const int vertexResourceStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    vertexProgram = _tessellation.nativeTESActive
+        ? _tessellation.nativeTESProgram
+        : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
     fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     vertexProgramName = vertexProgram ? vertexProgram->name : mglCurrentRenderProgramKey(ctx);
     fragmentProgramName = fragmentProgram ? fragmentProgram->name : mglCurrentRenderProgramKey(ctx);
@@ -1721,7 +1862,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
     // Metal validates every active stage resource. Bind vertex-stage sampled
     // images as well, even though most Minecraft pipelines only sample in FS.
-    vertexSampledCount = [self getProgramBindingCount:_VERTEX_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+    vertexSampledCount = [self getProgramBindingCount:vertexResourceStage
+                                                  type:_SAMPLED_IMAGE_RES];
     if (![self bindVertexSampledTexturesToEncoder:vertexProgram
                                   vertexProgramName:vertexProgramName
                                      defaultSampler:defaultSampler
@@ -1809,6 +1951,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 {
     GLuint vertexBoundTextures = *boundCount;
     GLuint vertexFallbackTextures = *fallbackCount;
+    const int vertexStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
 
     for (GLuint i = 0; i < vertexSampledCount; i++)
     {
@@ -1816,8 +1960,8 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         SpirvResource *sampledResource = NULL;
         const char *sampledName = "";
         if (currentProgram &&
-            i < currentProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].count) {
-            sampledResource = &currentProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
+            i < currentProgram->spirv_resources_list[vertexStage][_SAMPLED_IMAGE_RES].count) {
+            sampledResource = &currentProgram->spirv_resources_list[vertexStage][_SAMPLED_IMAGE_RES].list[i];
             sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
@@ -1830,23 +1974,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             continue;
         }
         if (mglShouldSkipStageTextureResource(currentProgram,
-                                              _VERTEX_SHADER,
-                                              SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+                                              vertexStage,
+                                              _SAMPLED_IMAGE_RES,
                                               sampledResource)) {
             continue;
         }
         GLuint textureUnit = [self textureUnitForSampledResource:sampledResource
                                                         program:currentProgram
                                                     metalBinding:spirvBinding
-                                                           stage:_VERTEX_SHADER];
+                                                           stage:vertexStage];
         /* derive texture types/data kind directly from sampledResource
          * via C helpers, skipping per-resource mglResolveProgramForStageFromState. */
-        MTLTextureType expectedType = mglExpectedTextureTypeForResource(currentProgram, _VERTEX_SHADER, sampledResource);
+        MTLTextureType expectedType = mglExpectedTextureTypeForResource(currentProgram, vertexStage, sampledResource);
         MTLTextureType lookupType = mglDeclaredTextureTypeFromResource(sampledResource);
-        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(currentProgram, _VERTEX_SHADER, sampledResource);
+        MGLTextureDataKind expectedKind = mglExpectedTextureDataKindForResource(currentProgram, vertexStage, sampledResource);
         Texture *ptr = [self textureForSampledResource:sampledResource
                                           metalBinding:spirvBinding
-                                                  stage:_VERTEX_SHADER
+                                                  stage:vertexStage
                                            expectedType:(lookupType ? lookupType : expectedType)
                                           textureUnit:textureUnit];
         id<MTLTexture> texture = nil;
@@ -2093,11 +2237,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         [self setVertexTextureIfNeeded:texture atIndex:spirvBinding];
-        GLuint samplerBinding = sampledResource && sampledResource->msl_has_combined_sampler
+        GLuint samplerBinding = sampledResource && sampledResource->has_combined_sampler
             ? mglMetalCombinedSamplerSlot(sampledResource)
             : spirvBinding;
         if (sampler &&
-            (!sampledResource || sampledResource->msl_has_combined_sampler) &&
+            (!sampledResource || sampledResource->has_combined_sampler) &&
             samplerBinding < kMaxFragmentSamplerSlots) {
             [self setVertexSamplerStateIfNeeded:sampler atIndex:samplerBinding];
         }
@@ -2279,15 +2423,15 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     GLuint boundSampledSamplers = *boundSampledSamplersPtr;
 
     // Bind sampled images (texture + sampler).
-    *sampledCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+    *sampledCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; i < *sampledCount; i++)
     {
         Program *sampleProgram = fragmentProgram;
         SpirvResource *sampledResource = NULL;
         const char *sampledName = "";
         if (sampleProgram &&
-            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].count) {
-            sampledResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].list[i];
+            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].count) {
+            sampledResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SAMPLED_IMAGE_RES].list[i];
             sampledName = sampledResource->name;
         }
         /* read binding/gl_binding directly from the already-resolved
@@ -2299,7 +2443,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
         if (mglShouldSkipStageTextureResource(sampleProgram,
                                               _FRAGMENT_SHADER,
-                                              SPVC_RESOURCE_TYPE_SAMPLED_IMAGE,
+                                              _SAMPLED_IMAGE_RES,
                                               sampledResource)) {
             continue;
         }
@@ -2641,11 +2785,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         } else {
             nilSampledTextures++;
         }
-        GLuint samplerBinding = sampledResource && sampledResource->msl_has_combined_sampler
+        GLuint samplerBinding = sampledResource && sampledResource->has_combined_sampler
             ? mglMetalCombinedSamplerSlot(sampledResource)
             : spirvBinding;
         if (sampler &&
-            (!sampledResource || sampledResource->msl_has_combined_sampler) &&
+            (!sampledResource || sampledResource->has_combined_sampler) &&
             samplerBinding < kMaxFragmentSamplerSlots) {
             [self setFragmentSamplerStateIfNeeded:sampler atIndex:samplerBinding];
             boundSampledSamplers++;
@@ -3444,24 +3588,26 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
     /* Vertex-stage storage image binding (two-pass, same pattern as fragment). */
-    GLuint vertexStorageImageCount = [self getProgramBindingCount:_VERTEX_SHADER
-                                                            type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
+    const int vertexStage = _tessellation.nativeTESActive
+        ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    GLuint vertexStorageImageCount = [self getProgramBindingCount:vertexStage
+                                                            type:_STORAGE_IMAGE_RES];
     for (GLuint i = 0; i < vertexStorageImageCount; i++)
     {
         SpirvResource *resource = NULL;
         if (vertexProgram &&
-            i < vertexProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].count) {
-            resource = &vertexProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].list[i];
+            i < vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
+            resource = &vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
-                                              _VERTEX_SHADER,
-                                              SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+                                              vertexStage,
+                                              _STORAGE_IMAGE_RES,
                                               resource)) {
             continue;
         }
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:_VERTEX_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                 : [self getProgramGLBinding:vertexStage
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         if (glUnit >= TEXTURE_UNITS) {
             continue;
@@ -3478,22 +3624,22 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     {
         SpirvResource *resource = NULL;
         if (vertexProgram &&
-            i < vertexProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].count) {
-            resource = &vertexProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].list[i];
+            i < vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].count) {
+            resource = &vertexProgram->spirv_resources_list[vertexStage][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(vertexProgram,
-                                              _VERTEX_SHADER,
-                                              SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+                                              vertexStage,
+                                              _STORAGE_IMAGE_RES,
                                               resource)) {
             continue;
         }
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
-                                    : [self getProgramBinding:_VERTEX_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                    : [self getProgramBinding:vertexStage
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                 : [self getProgramGLBinding:_VERTEX_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                 : [self getProgramGLBinding:vertexStage
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
@@ -3510,10 +3656,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     texture.textureType == MTLTextureTypeCubeArray) {
                     sliceCount = texture.arrayLength * 6u;
                 }
-                id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                                       textureType:texture.textureType
-                                                                            levels:NSMakeRange(imgLevel, 1)
-                                                                            slices:NSMakeRange(0, sliceCount)];
+                id<MTLTexture> levelView =
+                    mglBindingStateCreateTextureLevelView(
+                        texture, imgLevel, sliceCount);
                 if (levelView) {
                     texture = levelView;
                 }
@@ -3523,7 +3668,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     GLuint fragmentStorageImageCount = [self getProgramBindingCount:_FRAGMENT_SHADER
-                                                               type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
+                                                               type:_STORAGE_IMAGE_RES];
     /* Two-pass storage image binding:
      *
      * Pass 1: Pre-resolve every storage image's Metal texture via
@@ -3544,19 +3689,19 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     {
         SpirvResource *resource = NULL;
         if (fragmentProgram &&
-            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].count) {
-            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].list[i];
+            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
-                                              SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+                                              _STORAGE_IMAGE_RES,
                                               resource)) {
             continue;
         }
 
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
                                  : [self getProgramGLBinding:_FRAGMENT_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         if (glUnit >= TEXTURE_UNITS) {
             continue;
@@ -3577,23 +3722,23 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     {
         SpirvResource *resource = NULL;
         if (fragmentProgram &&
-            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].count) {
-            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE].list[i];
+            i < fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &fragmentProgram->spirv_resources_list[_FRAGMENT_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(fragmentProgram,
                                               _FRAGMENT_SHADER,
-                                              SPVC_RESOURCE_TYPE_STORAGE_IMAGE,
+                                              _STORAGE_IMAGE_RES,
                                               resource)) {
             continue;
         }
 
         GLuint metalSlot = resource ? mglMetalResourceSlot(resource)
                                     : [self getProgramBinding:_FRAGMENT_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         GLuint glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
                                  : [self getProgramGLBinding:_FRAGMENT_SHADER
-                                                        type:SPVC_RESOURCE_TYPE_STORAGE_IMAGE
+                                                        type:_STORAGE_IMAGE_RES
                                                        index:(int)i];
         if (metalSlot >= TEXTURE_UNITS || glUnit >= TEXTURE_UNITS) {
             continue;
@@ -3622,10 +3767,9 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                     texture.textureType == MTLTextureTypeCubeArray) {
                     sliceCount = texture.arrayLength * 6u;
                 }
-                id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                                       textureType:texture.textureType
-                                                                            levels:NSMakeRange(imgLevel, 1)
-                                                                            slices:NSMakeRange(0, sliceCount)];
+                id<MTLTexture> levelView =
+                    mglBindingStateCreateTextureLevelView(
+                        texture, imgLevel, sliceCount);
                 if (levelView) {
                     texture = levelView;
                 }
@@ -3648,24 +3792,24 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
                            boundSeparateSamplers:(GLuint *)boundSeparateSamplers
 {
     // Bind separate samplers explicitly.
-    *separateSamplerCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS];
+    *separateSamplerCount = [self getProgramBindingCount:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES];
     *boundSeparateSamplers = 0;
     for (GLuint i = 0; i < *separateSamplerCount; i++)
     {
-        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS index:(int)i];
-        GLuint glBinding = [self getProgramGLBinding:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS index:(int)i];
+        GLuint spirvBinding = [self getProgramBinding:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES index:(int)i];
+        GLuint glBinding = [self getProgramGLBinding:_FRAGMENT_SHADER type:_SEPARATE_SAMPLERS_RES index:(int)i];
         if (spirvBinding >= TEXTURE_UNITS || glBinding >= TEXTURE_UNITS) {
             continue;
         }
         Program *sampleProgram = fragmentProgram;
         SpirvResource *samplerResource = NULL;
         if (sampleProgram &&
-            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS].count) {
-            samplerResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS].list[i];
+            i < sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].count) {
+            samplerResource = &sampleProgram->spirv_resources_list[_FRAGMENT_SHADER][_SEPARATE_SAMPLERS_RES].list[i];
         }
         if (mglShouldSkipStageSamplerResource(sampleProgram,
                                               _FRAGMENT_SHADER,
-                                              SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS,
+                                              _SEPARATE_SAMPLERS_RES,
                                               samplerResource)) {
             continue;
         }
@@ -3705,7 +3849,11 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
     }
 
     Program *arrayPrograms[] = { vertexProgram, fragmentProgram };
-    int arrayStages[] = { _VERTEX_SHADER, _FRAGMENT_SHADER };
+    int arrayStages[] = {
+        _tessellation.nativeTESActive
+            ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER,
+        _FRAGMENT_SHADER
+    };
     for (NSUInteger programIndex = 0; programIndex < 2; programIndex++) {
         Program *arrayProgram = arrayPrograms[programIndex];
         int arrayStage = arrayStages[programIndex];
@@ -3714,7 +3862,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
         }
 
         SpirvResourceList *arrayResources =
-            &arrayProgram->spirv_resources_list[arrayStage][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+            &arrayProgram->spirv_resources_list[arrayStage][_SAMPLED_IMAGE_RES];
         for (GLuint resourceIndex = 0; arrayResources->list && resourceIndex < arrayResources->count; resourceIndex++) {
             SpirvResource *resource = &arrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
@@ -3722,7 +3870,7 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
             }
 
             MTLTextureType expectedType = [self getProgramExpectedTextureType:arrayStage
-                                                                         type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                                                                         type:_SAMPLED_IMAGE_RES
                                                                         index:(int)resourceIndex];
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
@@ -3763,13 +3911,13 @@ static const NSUInteger kMaxFragmentSamplerSlots = 16;
 
                 if (arrayStage == _VERTEX_SHADER) {
                     [self setVertexTextureIfNeeded:metalTexture atIndex:metalSlot];
-                    if (resource->msl_has_combined_sampler && metalSampler &&
+                    if (resource->has_combined_sampler && metalSampler &&
                         samplerSlot < kMaxFragmentSamplerSlots) {
                         [self setVertexSamplerStateIfNeeded:metalSampler atIndex:samplerSlot];
                     }
                 } else {
                     [self setFragmentTextureIfNeeded:metalTexture atIndex:metalSlot];
-                    if (resource->msl_has_combined_sampler && metalSampler &&
+                    if (resource->has_combined_sampler && metalSampler &&
                         samplerSlot < kMaxFragmentSamplerSlots) {
                         [self setFragmentSamplerStateIfNeeded:metalSampler atIndex:samplerSlot];
                     }

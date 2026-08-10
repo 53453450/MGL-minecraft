@@ -5,8 +5,1027 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
+#import "mgl_compute_pipeline_cache.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp_objc.h"
+#include "mgl_shader_abi.h"
+
+static BOOL mglDrawSupportUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static id<MTLBuffer> mglDrawSupportCreateBuffer(
+    id<MTLDevice> device,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglDrawSupportUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+            buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithLength:length options:options];
+}
+
+static id<MTLBuffer> mglDrawSupportCreateBufferWithBytes(
+    id<MTLDevice> device,
+    const void *bytes,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglDrawSupportUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                              &buffer) == 0 && buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithBytes:bytes length:length options:options];
+}
+
+static void mglDrawSupportSetVertexBuffer(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglDrawSupportSetVertexBytes(
+    id<MTLRenderCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetRenderBytes(
+            (__bridge void *)encoder, bytes, length,
+            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setVertexBytes:bytes length:length atIndex:index];
+}
+
+static void mglDrawSupportDrawIndexedPrimitives(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger indexCount,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    NSUInteger instanceCount,
+    NSInteger baseVertex,
+    NSUInteger baseInstance)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)MTLIndexTypeUInt32, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                       indexType:MTLIndexTypeUInt32
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
+static void mglDrawSupportDrawPrimitives(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger vertexStart,
+    NSUInteger vertexCount,
+    NSUInteger instanceCount,
+    NSUInteger baseInstance)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, vertexStart,
+            vertexCount, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+                vertexStart:vertexStart
+                vertexCount:vertexCount
+              instanceCount:instanceCount
+               baseInstance:baseInstance];
+}
+
+static void mglDrawSupportDrawPrimitivesIndirect(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    id<MTLBuffer> indirectBuffer,
+    NSUInteger indirectBufferOffset)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (__bridge void *)indirectBuffer, indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+             indirectBuffer:indirectBuffer
+       indirectBufferOffset:indirectBufferOffset];
+}
+
+static id<MTLComputeCommandEncoder> mglDrawSupportCreateComputeEncoder(
+    id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglDrawSupportUsesMetalCpp()) {
+        void *encoderCPP = NULL;
+        if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
+                                              &encoderCPP) == 0 &&
+            encoderCPP) {
+            return (__bridge id<MTLComputeCommandEncoder>)encoderCPP;
+        }
+    }
+    return [commandBuffer computeCommandEncoder];
+}
+
+static void mglDrawSupportSetComputePipeline(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLComputePipelineState> pipeline)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetComputePipelineState((__bridge void *)encoder,
+                                            (__bridge void *)pipeline) == 0) {
+        return;
+    }
+    [encoder setComputePipelineState:pipeline];
+}
+
+static void mglDrawSupportSetComputeBuffer(
+    id<MTLComputeCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    NSUInteger index)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetComputeBuffer((__bridge void *)encoder,
+                                     (__bridge void *)buffer, offset,
+                                     (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglDrawSupportDispatchCompute(
+    id<MTLComputeCommandEncoder> encoder,
+    MTLSize groups,
+    MTLSize threads)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDispatchCompute(
+            (__bridge void *)encoder, (uint32_t)groups.width,
+            (uint32_t)groups.height, (uint32_t)groups.depth,
+            (uint32_t)threads.width, (uint32_t)threads.height,
+            (uint32_t)threads.depth) == 0) {
+        return;
+    }
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+}
+
+static void mglDrawSupportEndComputeEncoder(
+    id<MTLComputeCommandEncoder> encoder)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
+
+static void mglDrawSupportSetTessellationFactors(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    NSUInteger instanceStride)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppSetTessellationFactorBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            instanceStride) == 0) {
+        return;
+    }
+    [encoder setTessellationFactorBuffer:buffer
+                                  offset:offset
+                          instanceStride:instanceStride];
+}
+
+static void mglDrawSupportDrawPatches(
+    id<MTLRenderCommandEncoder> encoder,
+    NSUInteger controlPointCount,
+    NSUInteger patchStart,
+    NSUInteger patchCount,
+    id<MTLBuffer> patchIndexBuffer,
+    NSUInteger patchIndexBufferOffset,
+    NSUInteger instanceCount,
+    NSUInteger baseInstance)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppDrawPatches(
+            (__bridge void *)encoder, controlPointCount, patchStart,
+            patchCount, (__bridge void *)patchIndexBuffer,
+            patchIndexBufferOffset, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPatches:controlPointCount
+              patchStart:patchStart
+              patchCount:patchCount
+        patchIndexBuffer:patchIndexBuffer
+  patchIndexBufferOffset:patchIndexBufferOffset
+           instanceCount:instanceCount
+            baseInstance:baseInstance];
+}
+
+extern void mglRecordActivePrimitiveQueryDraw(GLMContext ctx,
+                                               GLuint64 generated,
+                                               GLuint64 written);
+
+static BOOL mglCheckedTessCaptureSize(GLsizei count, GLsizei instanceCount,
+                                      NSUInteger stride,
+                                      NSUInteger *sizeOut,
+                                      NSUInteger *offsetOut)
+{
+    if (count <= 0 || instanceCount <= 0 ||
+        stride < MGL_AIR_PER_VERTEX_STRIDE ||
+        !sizeOut || !offsetOut) return NO;
+    NSUInteger records = (NSUInteger)count * (NSUInteger)instanceCount;
+    if (records / (NSUInteger)count != (NSUInteger)instanceCount ||
+        records > NSUIntegerMax / stride) return NO;
+    *sizeOut = records * stride;
+    *offsetOut = 0u;
+    return YES;
+}
+
+static BOOL mglNativeTESInterfaceSupported(Program *tcsProgram,
+                                           Program *tesProgram)
+{
+    if (!tesProgram ||
+        !tesProgram->spirv[_TESS_EVALUATION_SHADER].metallib_bytes ||
+        !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function ||
+        tesProgram->tess_gen_point_mode ||
+        tesProgram->transform_feedback_varying_count > 0) {
+        return NO;
+    }
+
+    if (tcsProgram &&
+        (!tcsProgram->spirv[_TESS_CONTROL_SHADER].metallib_bytes ||
+         !tcsProgram->spirv[_TESS_CONTROL_SHADER].mtl_function ||
+         tcsProgram->tess_control_output_vertices == 0u ||
+         tcsProgram->tess_control_output_vertices > 32u)) {
+        return NO;
+    }
+
+    if (tesProgram->tess_gen_mode != GL_TRIANGLES &&
+        tesProgram->tess_gen_mode != GL_QUADS) {
+        return NO;
+    }
+
+    id<MTLFunction> function = (__bridge id<MTLFunction>)
+        tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function;
+    MTLPatchType expected = tesProgram->tess_gen_mode == GL_QUADS
+        ? MTLPatchTypeQuad : MTLPatchTypeTriangle;
+    return function.patchType == expected && function.patchControlPointCount == 0u;
+}
+
+static id<MTLBuffer> mglDefaultTessFactorBuffer(id<MTLDevice> device,
+                                                GLMState *state,
+                                                GLuint patchCount)
+{
+    if (!device || !state || patchCount == 0u) return nil;
+    const NSUInteger stride = 12u;
+    if ((NSUInteger)patchCount > NSUIntegerMax / stride) return nil;
+    id<MTLBuffer> buffer = mglDrawSupportCreateBuffer(
+        device, (NSUInteger)patchCount * stride,
+        MTLResourceStorageModeShared);
+    if (!buffer || !buffer.contents) return nil;
+    __fp16 *dst = (__fp16 *)buffer.contents;
+    for (GLuint patch = 0u; patch < patchCount; patch++) {
+        for (GLuint i = 0u; i < 4u; i++) {
+            dst[patch * 6u + i] =
+                (__fp16)state->var.patch_default_outer_level[i];
+        }
+        for (GLuint i = 0u; i < 2u; i++) {
+            dst[patch * 6u + 4u + i] =
+                (__fp16)state->var.patch_default_inner_level[i];
+        }
+    }
+    return buffer;
+}
+
+static id<MTLBuffer> mglNativeTessFactorBuffer(id<MTLDevice> device,
+                                                id<MTLBuffer> canonical,
+                                                GLenum mode,
+                                                GLuint patchCount)
+{
+    const NSUInteger canonicalStride = 12u;
+    if (!device || !canonical || !canonical.contents || patchCount == 0u ||
+        canonical.length < (NSUInteger)patchCount * canonicalStride) {
+        return nil;
+    }
+    if (mode == GL_QUADS) {
+        return canonical;
+    }
+    if (mode != GL_TRIANGLES) {
+        return nil;
+    }
+
+    const NSUInteger triangleStride = 8u;
+    id<MTLBuffer> result = mglDrawSupportCreateBuffer(
+        device, (NSUInteger)patchCount * triangleStride,
+        MTLResourceStorageModeShared);
+    if (!result || !result.contents) {
+        return nil;
+    }
+    const uint16_t *src = (const uint16_t *)canonical.contents;
+    uint16_t *dst = (uint16_t *)result.contents;
+    for (GLuint patch = 0u; patch < patchCount; patch++) {
+        const uint16_t *in = src + patch * 6u;
+        uint16_t *out = dst + patch * 4u;
+        out[0] = in[0];
+        out[1] = in[1];
+        out[2] = in[2];
+        out[3] = in[4];
+    }
+    return result;
+}
+
+static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
+                                             Program *tesProgram,
+                                             GLuint patchCount,
+                                             GLuint instanceCount)
+{
+    if (!canonical || !canonical.contents || !tesProgram || patchCount == 0u) {
+        return 0u;
+    }
+    const uint16_t *factors = (const uint16_t *)canonical.contents;
+    GLuint64 total = 0u;
+    for (GLuint patch = 0u; patch < patchCount; patch++) {
+        const uint16_t *record = factors + patch * 6u;
+        float inside0 = *(const __fp16 *)&record[4];
+        float inside1 = *(const __fp16 *)&record[5];
+        inside0 = MAX(inside0, 1.0f);
+        inside1 = MAX(inside1, 1.0f);
+        GLuint64 perPatch = tesProgram->tess_gen_mode == GL_QUADS
+            ? 2ull * (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside1)
+            : (GLuint64)ceilf(inside0) * (GLuint64)ceilf(inside0);
+        total += MAX(perPatch, 1ull);
+    }
+    return total * (GLuint64)instanceCount;
+}
 
 @implementation MGLRenderer (Draw)
+
+- (BOOL)captureAIRCullDistancesForArrayDraw:(GLMContext)drawCtx
+                                      first:(GLint)first
+                                      count:(GLsizei)count
+                              instanceCount:(GLsizei)instanceCount
+                               baseInstance:(GLuint)baseInstance
+{
+    _tessellation.cullDistanceCaptureBuffer = nil;
+    _tessellation.cullDistanceCaptureFirstInstance = 0u;
+    _tessellation.cullDistanceCaptureInstanceStride = 0u;
+    if (!drawCtx || first < 0 || count <= 0 || instanceCount <= 0) return NO;
+
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    if (!vertexProgram || !vertexProgram->uses_cull_distance ||
+        ![self bindMTLProgram:vertexProgram] ||
+        !vertexProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function) {
+        return NO;
+    }
+    const uint64_t endVertex = (uint64_t)(uint32_t)first +
+                               (uint64_t)(uint32_t)count;
+    const uint64_t lastCaptureIndex =
+        (uint64_t)((uint32_t)instanceCount - 1u) * (uint64_t)(uint32_t)count +
+        endVertex;
+    if (endVertex == 0u || lastCaptureIndex == 0u ||
+        lastCaptureIndex > NSUIntegerMax / 32u) return NO;
+    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+        _device, (NSUInteger)(lastCaptureIndex * 32u),
+        MTLResourceStorageModeShared);
+    if (!capture) return NO;
+
+    self->ctx = drawCtx;
+    _tessellation.cullDistanceCaptureActive = YES;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        !_renderPassManager.state->currentRenderEncoder) {
+        _tessellation.cullDistanceCaptureActive = NO;
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return NO;
+    }
+    id<MTLRenderCommandEncoder> encoder =
+        _renderPassManager.state->currentRenderEncoder;
+    MGLCullDistanceEmuParams params = {
+        .prim_vertex_count = 1u,
+        .culldist_offset = 0u,
+        .vertex_stride = 32u,
+        .culldist_size = MIN(vertexProgram->cull_distance_count, 8u),
+        .first_vertex = (uint32_t)first,
+        .first_instance = baseInstance,
+        .instance_stride = (uint32_t)count,
+    };
+    mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
+    mglDrawSupportSetVertexBytes(
+        encoder, &params, sizeof(params), kMGLCullDistanceParamsBufferIndex);
+    mglDrawSupportDrawPrimitives(encoder, MTLPrimitiveTypePoint,
+                                 (NSUInteger)first, (NSUInteger)count,
+                                 (NSUInteger)instanceCount,
+                                 (NSUInteger)baseInstance);
+    _currentCBHasWork = YES;
+    [self endRenderEncoding];
+    _tessellation.cullDistanceCaptureActive = NO;
+    _tessellation.cullDistanceCaptureBuffer = capture;
+    _tessellation.cullDistanceCaptureFirstInstance = baseInstance;
+    _tessellation.cullDistanceCaptureInstanceStride = (uint32_t)count;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    return YES;
+}
+
+- (BOOL)captureAIRCullDistancesForElementDraw:(GLMContext)drawCtx
+                                    indexBytes:(const uint8_t *)indexBytes
+                                     indexType:(GLenum)indexType
+                                         count:(GLsizei)count
+                                    baseVertex:(GLint)baseVertex
+                                 instanceCount:(GLsizei)instanceCount
+                                  baseInstance:(GLuint)baseInstance
+{
+    if (!drawCtx || !indexBytes || count <= 0 || instanceCount <= 0) return NO;
+    uint32_t restartIndex = 0u;
+    const bool restartEnabled =
+        mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex);
+    uint32_t minIndex = 0u;
+    uint32_t maxIndex = 0u;
+    if (!mglScanIndexRangeIgnoringRestart(
+            indexBytes, indexType, count, restartEnabled, restartIndex,
+            &minIndex, &maxIndex)) {
+        return NO;
+    }
+    const int64_t first = (int64_t)minIndex + (int64_t)baseVertex;
+    const int64_t last = (int64_t)maxIndex + (int64_t)baseVertex;
+    if (first < 0 || last < first || last > INT32_MAX) return NO;
+    const uint64_t vertexCount = (uint64_t)(last - first) + 1u;
+    if (vertexCount > INT32_MAX) return NO;
+    return [self captureAIRCullDistancesForArrayDraw:drawCtx
+                                               first:(GLint)first
+                                               count:(GLsizei)vertexCount
+                                       instanceCount:instanceCount
+                                        baseInstance:baseInstance];
+}
+
+- (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
+                                           indexBytes:(const uint8_t *)indexBytes
+                                            indexType:(GLenum)indexType
+                                                count:(GLsizei)count
+                                           baseVertex:(GLint)baseVertex
+                                        instanceCount:(GLsizei)instanceCount
+                                         baseInstance:(GLuint)baseInstance
+                                      polygonLineMode:(BOOL)polygonLineMode
+{
+    Program *activeProgram =
+        ctx ? mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER) : NULL;
+    if (!activeProgram || !activeProgram->uses_cull_distance) return NO;
+    if (!indexBytes || count <= 0 || instanceCount <= 0) return YES;
+
+    if (activeProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function) {
+        if (![self captureAIRCullDistancesForElementDraw:ctx
+                                             indexBytes:indexBytes
+                                              indexType:indexType
+                                                  count:count
+                                             baseVertex:baseVertex
+                                          instanceCount:instanceCount
+                                           baseInstance:baseInstance] ||
+            ![self processGLState:true] ||
+            !_renderPassManager.state->currentRenderEncoder) {
+            return YES;
+        }
+    }
+
+    MGLEncodeContext encCtx = {
+        .encoder = _renderPassManager.state->currentRenderEncoder,
+    };
+    return [self encodeCullDistanceElementDraw:mode
+                                    indexBytes:indexBytes
+                                     indexType:indexType
+                                         count:count
+                                    baseVertex:baseVertex
+                                 instanceCount:instanceCount
+                                  baseInstance:baseInstance
+                               polygonLineMode:polygonLineMode
+                                 encodeContext:&encCtx];
+}
+
+- (BOOL)encodeCullDistanceArrayDraw:(GLenum)mode
+                               first:(GLint)first
+                               count:(GLsizei)count
+                       instanceCount:(GLsizei)instanceCount
+                        baseInstance:(GLuint)baseInstance
+                       encodeContext:(const MGLEncodeContext *)encCtx
+{
+    Program *activeProgram =
+        ctx ? mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER) : NULL;
+    if (!activeProgram || !activeProgram->uses_cull_distance ||
+        !encCtx || !encCtx->encoder) {
+        return NO;
+    }
+
+    if (mode == GL_TRIANGLE_STRIP && count >= 3) {
+        NSUInteger indexCount = 0u;
+        id<MTLBuffer> indexBuffer = mglNewTriangleStripArrayIndexBuffer(
+            _device, (NSUInteger)count, &indexCount);
+        if (!indexBuffer || indexCount == 0u) return YES;
+        for (NSUInteger primitive = 0u; primitive * 3u < indexCount;
+             primitive++) {
+            const GLuint vertices[3] = {
+                (GLuint)first + (GLuint)primitive,
+                (GLuint)first + (GLuint)primitive + 1u,
+                (GLuint)first + (GLuint)primitive + 2u,
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:3u
+                                      encodeContext:encCtx];
+            mglDrawSupportDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
+                primitive * 3u * sizeof(uint32_t),
+                (NSUInteger)instanceCount, (NSInteger)first,
+                (NSUInteger)baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_TRIANGLE_FAN && count >= 3) {
+        NSUInteger indexCount = 0u;
+        id<MTLBuffer> indexBuffer = mglNewTriangleFanArrayIndexBuffer(
+            _device, (NSUInteger)count, &indexCount);
+        if (!indexBuffer || indexCount == 0u) return YES;
+        for (NSUInteger primitive = 0u; primitive * 3u < indexCount;
+             primitive++) {
+            const GLuint vertices[3] = {
+                (GLuint)first,
+                (GLuint)first + (GLuint)primitive + 1u,
+                (GLuint)first + (GLuint)primitive + 2u,
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:3u
+                                      encodeContext:encCtx];
+            mglDrawSupportDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u, indexBuffer,
+                primitive * 3u * sizeof(uint32_t),
+                (NSUInteger)instanceCount, (NSInteger)first,
+                (NSUInteger)baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_LINE_STRIP && count >= 2) {
+        for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)(first + primitive)
+                                   explicitVertices:NULL
+                                 explicitVertexCount:0u
+                                      encodeContext:encCtx];
+            mglDrawSupportDrawPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeLine,
+                (NSUInteger)(first + primitive), 2u,
+                (NSUInteger)instanceCount, (NSUInteger)baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_LINE_LOOP && count >= 2) {
+        NSUInteger indexCount = 0u;
+        id<MTLBuffer> indexBuffer = mglNewLineLoopArrayIndexBuffer(
+            _device, (NSUInteger)first, (NSUInteger)count, &indexCount);
+        if (!indexBuffer || indexCount == 0u) return YES;
+        for (NSUInteger primitive = 0u; primitive + 1u < indexCount;
+             primitive++) {
+            const GLuint vertices[2] = {
+                (GLuint)first + (GLuint)primitive,
+                (GLuint)first +
+                    (GLuint)((primitive + 1u) % (NSUInteger)count),
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:2u
+                                      encodeContext:encCtx];
+            mglDrawSupportDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeLine, 2u, indexBuffer,
+                primitive * sizeof(uint32_t), (NSUInteger)instanceCount, 0,
+                (NSUInteger)baseInstance);
+        }
+        return YES;
+    }
+
+    [self bindCullDistanceEmulationBuffers:mode
+                                firstVertex:(GLuint)first
+                           explicitVertices:NULL
+                         explicitVertexCount:0u
+                              encodeContext:encCtx];
+    return NO;
+}
+
+- (BOOL)encodeCullDistanceElementDraw:(GLenum)mode
+                            indexBytes:(const uint8_t *)indexBytes
+                             indexType:(GLenum)indexType
+                                 count:(GLsizei)count
+                            baseVertex:(GLint)baseVertex
+                         instanceCount:(GLsizei)instanceCount
+                          baseInstance:(GLuint)baseInstance
+                       polygonLineMode:(BOOL)polygonLineMode
+                         encodeContext:(const MGLEncodeContext *)encCtx
+{
+    Program *activeProgram =
+        ctx ? mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER) : NULL;
+    if (!activeProgram || !activeProgram->uses_cull_distance) return NO;
+    if (activeProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function &&
+        !_tessellation.cullDistanceCaptureBuffer) {
+        return YES;
+    }
+    if (!indexBytes || count <= 0 || instanceCount <= 0 ||
+        !encCtx || !encCtx->encoder) {
+        return YES;
+    }
+
+    uint32_t restartIndex = 0u;
+    const bool restartEnabled =
+        mglPrimitiveRestartIndexForType(ctx, indexType, &restartIndex);
+    void *planOwner = NULL;
+    void *indexBufferHandle = NULL;
+    uint64_t primitiveCount = 0u;
+    if (mglRenderCppCreateCullDistanceIndexPlan(
+            (__bridge void *)_device, indexBytes, indexType,
+            (uint64_t)count, mode,
+            restartEnabled ? 1 : 0, restartIndex, baseVertex,
+            polygonLineMode ? 1 : 0, &planOwner, &indexBufferHandle,
+            &primitiveCount) != 0 || !planOwner) {
+        return YES;
+    }
+
+    id<MTLBuffer> indexBuffer =
+        (__bridge id<MTLBuffer>)indexBufferHandle;
+    @try {
+        for (uint64_t primitiveIndex = 0u;
+             primitiveIndex < primitiveCount; ++primitiveIndex) {
+            MGLRenderCppCullDistancePrimitive primitive = {0};
+            if (mglRenderCppGetCullDistanceIndexPrimitive(
+                    planOwner, primitiveIndex, &primitive) != 0) {
+                break;
+            }
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:0u
+                                   explicitVertices:primitive.vertices
+                                 explicitVertexCount:primitive.vertex_count
+                                      encodeContext:encCtx];
+            mglDrawSupportDrawIndexedPrimitives(
+                encCtx->encoder,
+                (MTLPrimitiveType)primitive.primitive_type,
+                (NSUInteger)primitive.index_count,
+                indexBuffer,
+                (NSUInteger)primitive.index_buffer_offset,
+                (NSUInteger)instanceCount,
+                0,
+                (NSUInteger)baseInstance);
+        }
+    } @finally {
+        mglRenderCppDestroyCullDistanceIndexPlan(&planOwner);
+    }
+    return YES;
+}
+
+- (id<MTLBuffer>)captureAIRVertexPositionsForTessellation:(GLMContext)drawCtx
+                                                    first:(GLint)first
+                                                    count:(GLsizei)count
+                                            instanceCount:(GLsizei)instanceCount
+                                             baseInstance:(GLuint)baseInstance
+                                               outOffset:(NSUInteger *)outOffset
+{
+    if (outOffset) *outOffset = 0u;
+    if (!drawCtx || first < 0 || count <= 0 || instanceCount <= 0) return nil;
+
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(drawCtx, _VERTEX_SHADER);
+    if (!vertexProgram || ![self bindMTLProgram:vertexProgram] ||
+        !vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function) {
+        return nil;
+    }
+
+    NSUInteger captureSize = 0u;
+    NSUInteger captureOffset = 0u;
+    NSUInteger captureStride = mglAIRPerVertexStrideForResources(
+        &vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES]);
+    if (!mglCheckedTessCaptureSize(count, instanceCount, captureStride, &captureSize,
+                                   &captureOffset)) {
+        return nil;
+    }
+    id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
+        _device, captureSize, MTLResourceStorageModeShared);
+    if (!capture) return nil;
+
+    self->ctx = drawCtx;
+    _tessellation.tessVertexCaptureActive = YES;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        !_renderPassManager.state->currentRenderEncoder) {
+        _tessellation.tessVertexCaptureActive = NO;
+        return nil;
+    }
+
+    id<MTLRenderCommandEncoder> encoder =
+        _renderPassManager.state->currentRenderEncoder;
+    mglDrawSupportSetVertexBuffer(encoder, capture, 0u, 29u);
+    const uint32_t captureParams[3] = {
+        (uint32_t)first, (uint32_t)count, baseInstance,
+    };
+    mglDrawSupportSetVertexBytes(
+        encoder, captureParams, sizeof(captureParams), 28u);
+    mglDrawSupportDrawPrimitives(encoder, MTLPrimitiveTypePoint,
+                                 (NSUInteger)first, (NSUInteger)count,
+                                 (NSUInteger)instanceCount,
+                                 (NSUInteger)baseInstance);
+    _currentCBHasWork = YES;
+    [self endRenderEncoding];
+    _tessellation.tessVertexCaptureActive = NO;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (outOffset) *outOffset = captureOffset;
+    return capture;
+}
+
+- (BOOL)handleGeometryShaderArrayDrawIfNeeded:(GLMContext)drawCtx
+                                         mode:(GLenum)mode
+                                        first:(GLint)first
+                                        count:(GLsizei)count
+                                instanceCount:(GLsizei)instanceCount
+                                 baseInstance:(GLuint)baseInstance
+                                        label:(const char *)label
+{
+    if (!drawCtx) {
+        return NO;
+    }
+
+    Program *program = mglResolveProgramForStageFromState(
+        drawCtx, _GEOMETRY_SHADER);
+    Shader *geometryShader = program
+        ? program->shader_slots[_GEOMETRY_SHADER] : NULL;
+    if (!program || !geometryShader) {
+        return NO;
+    }
+    /* Keep the old narrow passthrough optimization.  It does not need a
+     * compute expansion and remains a normal VS->FS draw. */
+    const char *geometrySource = geometryShader->src;
+    if (geometrySource && strstr(geometrySource, "EmitVertex()") &&
+        strstr(geometrySource, "EndPrimitive()") &&
+        strstr(geometrySource, "gl_Position = gl_in[n_vertex_index].gl_Position") &&
+        !strstr(geometrySource, "gl_PrimitiveID") &&
+        !strstr(geometrySource, "gl_Layer") &&
+        !strstr(geometrySource, "gl_ViewportIndex")) {
+        return NO;
+    }
+    GLenum gsInputMode = program->geometry_input_type;
+    if (gsInputMode != GL_POINTS && gsInputMode != GL_LINES &&
+        gsInputMode != GL_LINES_ADJACENCY &&
+        gsInputMode != GL_TRIANGLES &&
+        gsInputMode != GL_TRIANGLES_ADJACENCY) {
+        gsInputMode = GL_TRIANGLES;
+    }
+    GLenum gsOutputMode = program->geometry_output_type;
+    if (gsOutputMode != GL_POINTS && gsOutputMode != GL_LINE_STRIP &&
+        gsOutputMode != GL_TRIANGLE_STRIP) {
+        gsOutputMode = GL_TRIANGLE_STRIP;
+    }
+    GLuint inputVertices = gsInputMode == GL_POINTS ? 1u
+        : gsInputMode == GL_LINES ? 2u
+        : gsInputMode == GL_LINES_ADJACENCY ? 4u
+        : (gsInputMode == GL_TRIANGLES_ADJACENCY) ? 6u : 3u;
+    MTLPrimitiveType outputPrimitive = gsOutputMode == GL_POINTS
+        ? MTLPrimitiveTypePoint
+        : gsOutputMode == GL_LINE_STRIP ? MTLPrimitiveTypeLine
+        : MTLPrimitiveTypeTriangle;
+    if (mode != gsInputMode || count <= 0 || first < 0 ||
+        instanceCount <= 0 ||
+        (count % (GLsizei)inputVertices) != 0) {
+        static uint64_t unsupportedDrawCount = 0;
+        uint64_t hit = ++unsupportedDrawCount;
+        if (hit <= 16ull || (hit % 512ull) == 0ull) {
+            NSLog(@"MGL GS WARNING: blocking unsupported array draw %@ "
+                   "mode=0x%x count=%d instances=%d baseInstance=%u",
+                  label ? [NSString stringWithUTF8String:label] : @"draw",
+                  (unsigned)mode, (int)count, (int)instanceCount,
+                  (unsigned)baseInstance);
+        }
+        return YES;
+    }
+    if (program->gs_route != MGL_GS_ROUTE_COMPUTE ||
+        !program->spirv[_GEOMETRY_SHADER].metallib_bytes ||
+        program->geometry_vertices_out == 0u ||
+        program->geometry_vertices_out > 1024u) {
+        static uint64_t unsupportedCount = 0;
+        uint64_t hit = ++unsupportedCount;
+        if (hit <= 16ull || (hit % 512ull) == 0ull) {
+            NSLog(@"MGL GS WARNING: blocking %@; AIR compute route unavailable program=%u",
+                  label ? [NSString stringWithUTF8String:label] : @"draw",
+                  (unsigned)program->name);
+        }
+        return YES;
+    }
+    if (![self bindMTLProgram:program] ||
+        !program->spirv[_GEOMETRY_SHADER].mtl_function) {
+        NSLog(@"MGL GS ERROR: failed to load AIR kernel program=%u",
+              (unsigned)program->name);
+        return YES;
+    }
+
+    self->ctx = drawCtx;
+    if (![self ensureAIRGeometryPassthroughFunctionForProgram:program]) {
+        return YES;
+    }
+
+    const GLuint primitiveCount = (GLuint)count / inputVertices;
+    if ((GLuint)instanceCount > UINT32_MAX / primitiveCount) {
+        return YES;
+    }
+    const GLuint drawPrimitiveCount =
+        primitiveCount * (GLuint)instanceCount;
+    const GLuint invocationCount = MAX(1u, program->geometry_invocations);
+    if (drawPrimitiveCount > UINT32_MAX / invocationCount) {
+        return YES;
+    }
+    const GLuint workItemCount = drawPrimitiveCount * invocationCount;
+    const NSUInteger outputStride = mglAIRPerVertexStrideForResources(
+        &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES]);
+    const NSUInteger maxVertices = (NSUInteger)program->geometry_vertices_out;
+    const NSUInteger expandedVertices = gsOutputMode == GL_POINTS
+        ? maxVertices
+        : gsOutputMode == GL_LINE_STRIP
+        ? (maxVertices > 1u ? 2u * (maxVertices - 1u) : 0u)
+        : (maxVertices > 2u ? 3u * (maxVertices - 2u) : 0u);
+    const NSUInteger recordsPerPrimitive = 2u + expandedVertices;
+    if (primitiveCount == 0u ||
+        recordsPerPrimitive >
+            (NSUIntegerMax / outputStride) / workItemCount) {
+        return YES;
+    }
+
+    /* Run the real VS once into the shared per-vertex records used by the AIR GS
+     * kernel.  This helper closes the render encoder before compute begins. */
+    NSUInteger inputOffset = 0u;
+    id<MTLBuffer> input = [self captureAIRVertexPositionsForTessellation:
+                                     drawCtx
+                                             first:first
+                                             count:count
+                                     instanceCount:instanceCount
+                                      baseInstance:baseInstance
+                                        outOffset:&inputOffset];
+    if (!input) {
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+
+    void *pipelineHandle = NULL;
+    char pipelineError[512] = {0};
+    int pipelineResult = mglGetOrCreateProgramComputePipeline(
+        program, _GEOMETRY_SHADER, &pipelineHandle,
+        pipelineError, sizeof(pipelineError));
+    id<MTLComputePipelineState> pipeline =
+        pipelineResult == 0 && pipelineHandle
+            ? (__bridge_transfer id<MTLComputePipelineState>)pipelineHandle
+            : nil;
+    if (!pipeline) {
+        NSLog(@"MGL GS ERROR: compute PSO failed program=%u: %s",
+              (unsigned)program->name,
+              pipelineError[0] ? pipelineError : "unknown error");
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+
+    if (!_renderPassManager.state->currentCommandBuffer ||
+        mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer) >=
+            MTLCommandBufferStatusCommitted) {
+        if (![self newCommandBuffer]) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+    }
+    const NSUInteger outputSize =
+        (NSUInteger)workItemCount * recordsPerPrimitive * outputStride;
+    id<MTLBuffer> output = mglDrawSupportCreateBuffer(
+        _device, outputSize, MTLResourceStorageModeShared);
+    const NSUInteger indirectStride = sizeof(MTLDrawPrimitivesIndirectArguments);
+    id<MTLBuffer> counts = mglDrawSupportCreateBuffer(
+        _device, (NSUInteger)workItemCount * indirectStride,
+        MTLResourceStorageModeShared);
+    if (!output || !counts || !output.contents || !counts.contents) {
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+    memset(output.contents, 0, outputSize);
+    memset(counts.contents, 0, (NSUInteger)workItemCount * indirectStride);
+
+    for (NSUInteger unit = 0; unit < TEXTURE_UNITS; unit++) {
+        Texture *image = MGL_STATE(drawCtx)->image_units[unit].tex;
+        Texture *sampled = MGL_STATE(drawCtx)->active_textures[unit];
+        if (image && ![self bindMTLTexture:image]) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+        if (sampled && ![self bindMTLTexture:sampled]) {
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+    }
+
+    MGLStageBindingCopyBackList stageCopyBacks = {0};
+    id<MTLComputeCommandEncoder> compute =
+        mglDrawSupportCreateComputeEncoder(
+            _renderPassManager.state->currentCommandBuffer);
+    if (!compute) {
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+    mglDrawSupportSetComputePipeline(compute, pipeline);
+    mglDrawSupportSetComputeBuffer(compute, input, inputOffset, 24u);
+    mglDrawSupportSetComputeBuffer(compute, output, 0u, 28u);
+    mglDrawSupportSetComputeBuffer(compute, counts, 0u, 29u);
+    bool buffersOK = [self bindBuffersToComputeEncoder:compute
+                                                   stage:_GEOMETRY_SHADER
+                                               copyBacks:&stageCopyBacks];
+    bool texturesOK = buffersOK && [self bindTexturesToComputeEncoder:compute
+                                                                stage:_GEOMETRY_SHADER];
+    if (!buffersOK || !texturesOK) {
+        mglDrawSupportEndComputeEncoder(compute);
+        [self clearStageBindingCopyBacks:&stageCopyBacks];
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+    mglDrawSupportDispatchCompute(
+        compute, MTLSizeMake(workItemCount, 1u, 1u),
+        MTLSizeMake(1u, 1u, 1u));
+    mglDrawSupportEndComputeEncoder(compute);
+    if (![self flushStageBindingCopyBacks:&stageCopyBacks
+                     requireCPUVisibility:NO]) {
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+    _geometry.expansionActive = YES;
+    _geometry.program = program;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    if (![self processGLState:true] ||
+        !_renderPassManager.state->currentRenderEncoder ||
+        [self currentDrawRasterizationIsEmpty] ||
+        [self currentDrawModeIsFullyCulled:gsOutputMode]) {
+        _geometry.expansionActive = NO;
+        _geometry.program = NULL;
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+
+    [self applyPolygonOffsetForDrawMode:gsOutputMode];
+    id<MTLRenderCommandEncoder> encoder =
+        _renderPassManager.state->currentRenderEncoder;
+    for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
+        NSUInteger offset =
+            ((NSUInteger)primitive * recordsPerPrimitive + 2u) * outputStride;
+        mglDrawSupportSetVertexBuffer(encoder, output, offset, 0u);
+        mglDrawSupportDrawPrimitivesIndirect(
+            encoder, outputPrimitive, counts,
+            (NSUInteger)primitive * indirectStride);
+    }
+    _currentCBHasWork = YES;
+    mglRecordActivePrimitiveQueryDraw(
+        drawCtx, outputPrimitive == MTLPrimitiveTypePoint
+            ? (GLuint64)workItemCount * expandedVertices
+            : (GLuint64)workItemCount * expandedVertices /
+                  (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u),
+        outputPrimitive == MTLPrimitiveTypePoint
+            ? (GLuint64)workItemCount * expandedVertices
+            : (GLuint64)workItemCount * expandedVertices /
+                  (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u));
+    _geometry.expansionActive = NO;
+    _geometry.program = NULL;
+    drawCtx->state.dirty_bits = DIRTY_ALL;
+    return YES;
+}
 
 - (bool) validateDrawArraysVertexInputs:(GLMContext)drawCtx
                                     mode:(GLenum)mode
@@ -538,19 +1557,15 @@
         float _bias = MGL_STATE(ctx)->var.polygon_offset_units;
         float _slope = MGL_STATE(ctx)->var.polygon_offset_factor;
         float _clamp = 0.0f;
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != _bias ||
-            _bindingSync.state->lastDepthBiasClamp != _clamp || _bindingSync.state->lastDepthSlopeScale != _slope) {
-            [_renderPassManager.state->currentRenderEncoder setDepthBias:_bias
-                                     slopeScale:_slope
-                                          clamp:_clamp];
-            [_bindingSync setLastDepthBias:_bias clamp:_clamp slopeScale:_slope];
-        }
+        mglRenderCppBindingSetDepthBiasIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            _bias, _clamp, _slope);
     } else {
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != 0.0f ||
-            _bindingSync.state->lastDepthBiasClamp != 0.0f || _bindingSync.state->lastDepthSlopeScale != 0.0f) {
-            [_renderPassManager.state->currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-            [_bindingSync setLastDepthBias:0.0f clamp:0.0f slopeScale:0.0f];
-        }
+        mglRenderCppBindingSetDepthBiasIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            0.0f, 0.0f, 0.0f);
     }
 }
 
@@ -563,6 +1578,9 @@
 }
 
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
+                             firstVertex:(GLuint)firstVertex
+                        explicitVertices:(const GLuint *)explicitVertices
+                      explicitVertexCount:(GLuint)explicitVertexCount
                            encodeContext:(const MGLEncodeContext *)encCtx
 {
     if (!ctx || !encCtx->encoder) {
@@ -576,6 +1594,7 @@
     if (!activeProgram) {
         return;
     }
+    explicitVertexCount = MIN(explicitVertexCount, 4u);
 
     /* Determine primitive vertex count from the draw mode. */
     uint32_t prim_vertex_count = 0;
@@ -587,7 +1606,41 @@
         case GL_LINE_STRIP: prim_vertex_count = 2; break;
         case GL_LINE_LOOP: prim_vertex_count = 2; break;
         case GL_POINTS: prim_vertex_count = 1; break;
+        case GL_QUADS: prim_vertex_count = 4; break;
         default: prim_vertex_count = 1; break;
+    }
+
+    if (_tessellation.cullDistanceCaptureBuffer) {
+        MGLCullDistanceEmuParams params = {
+            .prim_vertex_count = prim_vertex_count,
+            .culldist_offset = 0u,
+            .vertex_stride = 32u,
+            .culldist_size = MIN(activeProgram->cull_distance_count, 8u),
+            .first_vertex = firstVertex,
+            .explicit_vertex_count = explicitVertexCount,
+            .first_instance =
+                _tessellation.cullDistanceCaptureFirstInstance,
+            .instance_stride =
+                _tessellation.cullDistanceCaptureInstanceStride,
+        };
+        if (explicitVertices) {
+            memcpy(params.explicit_vertices, explicitVertices,
+                   explicitVertexCount * sizeof(params.explicit_vertices[0]));
+        }
+        mglDrawSupportSetVertexBuffer(
+            encCtx->encoder, _tessellation.cullDistanceCaptureBuffer, 0u,
+            kMGLCullDistanceVertexBufferIndex);
+        [self recordLastBoundVertexBuffer:
+                  _tessellation.cullDistanceCaptureBuffer
+                                   offset:0
+                                  atIndex:kMGLCullDistanceVertexBufferIndex];
+        MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
+        mglDrawSupportSetVertexBytes(
+            encCtx->encoder, &params, sizeof(params),
+            kMGLCullDistanceParamsBufferIndex);
+        [self invalidateLastBoundVertexBufferAtIndex:
+                  kMGLCullDistanceParamsBufferIndex];
+        return;
     }
 
     /* Scan enabled attributes for cull distance entries. The GLSL source
@@ -601,7 +1654,7 @@
     GLintptr cullFirstRelativeOffset = -1;
 
     SpirvResourceList *vsInputs =
-        &activeProgram->spirv_resources_list[_VERTEX_SHADER][SPVC_RESOURCE_TYPE_STAGE_INPUT];
+        &activeProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_INPUT_RES];
 
     for (GLuint attrib = 0; attrib < MAX_ATTRIBS; attrib++) {
         if (!mglRendererProgramUsesVertexAttrib(activeProgram, attrib)) {
@@ -667,9 +1720,8 @@
         static dispatch_once_t onceToken;
         dispatch_once(&onceToken, ^{
             float dummy[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-            sDummyCullBuffer = [_device newBufferWithBytes:dummy
-                                                    length:sizeof(dummy)
-                                                   options:MTLResourceStorageModeShared];
+            sDummyCullBuffer = mglDrawSupportCreateBufferWithBytes(
+                _device, dummy, sizeof(dummy), MTLResourceStorageModeShared);
         });
         cullMtlBuffer = sDummyCullBuffer;
         cullBindingOffset = 0;
@@ -682,22 +1734,29 @@
      * the relative offset of the first cull distance attribute. */
     uint32_t culldist_offset = (uint32_t)(cullBindingOffset + (cullFirstRelativeOffset >= 0 ? cullFirstRelativeOffset : 0));
 
-    MGLCullDistanceEmuParams params;
+    MGLCullDistanceEmuParams params = {0};
     params.prim_vertex_count = prim_vertex_count;
     params.culldist_offset = culldist_offset;
     params.vertex_stride = (uint32_t)cullStride;
     params.culldist_size = cullDistSize;
+    params.first_vertex = firstVertex;
+    params.explicit_vertex_count = explicitVertexCount;
+    memset(params.explicit_vertices, 0, sizeof(params.explicit_vertices));
+    if (explicitVertices) {
+        memcpy(params.explicit_vertices, explicitVertices,
+               explicitVertexCount * sizeof(params.explicit_vertices[0]));
+    }
 
-    [encCtx->encoder setVertexBuffer:cullMtlBuffer
-                                    offset:0
-                                   atIndex:kMGLCullDistanceVertexBufferIndex];
+    mglDrawSupportSetVertexBuffer(
+        encCtx->encoder, cullMtlBuffer, 0,
+        kMGLCullDistanceVertexBufferIndex);
     [self recordLastBoundVertexBuffer:cullMtlBuffer
                                offset:0
                               atIndex:kMGLCullDistanceVertexBufferIndex];
     MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
-    [encCtx->encoder setVertexBytes:&params
-                                    length:sizeof(params)
-                                   atIndex:kMGLCullDistanceParamsBufferIndex];
+    mglDrawSupportSetVertexBytes(
+        encCtx->encoder, &params, sizeof(params),
+        kMGLCullDistanceParamsBufferIndex);
     [self invalidateLastBoundVertexBufferAtIndex:kMGLCullDistanceParamsBufferIndex];
 }
 
@@ -719,22 +1778,93 @@
         return YES;
     }
 
-    if (mglResolvePassthroughPatchModeForContext(drawCtx, mode, label)) {
-        return NO;
-    }
-
     self->ctx = drawCtx;
 
     Program *tcsProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_CONTROL_SHADER);
     Program *tesProgram = mglResolveProgramForStageFromState(drawCtx, _TESS_EVALUATION_SHADER);
+    if (tcsProgram && !tcsProgram->shader_slots[_TESS_CONTROL_SHADER]) {
+        tcsProgram = NULL;
+    }
+    if (tesProgram && !tesProgram->shader_slots[_TESS_EVALUATION_SHADER]) {
+        tesProgram = NULL;
+    }
     if (!tcsProgram && !tesProgram) {
         return NO;
+    }
+
+    if (instanceCount <= 0) {
+        return YES;
     }
 
     if (tcsProgram) {
         if (tcsProgram->dirty_bits) {
             [self bindMTLProgram:tcsProgram];
         }
+    }
+
+    if (tesProgram) {
+        if (tesProgram->dirty_bits) {
+            [self bindMTLProgram:tesProgram];
+        }
+    }
+
+    const BOOL airTES = tesProgram &&
+        tesProgram->spirv[_TESS_EVALUATION_SHADER].metallib_bytes != NULL;
+    const BOOL forceComputeTES = mglEnvFlagEnabled("MGL_TESS_COMPUTE_FALLBACK");
+    BOOL nativeTES = !forceComputeTES &&
+        mglNativeTESInterfaceSupported(tcsProgram, tesProgram);
+
+    GLuint patchVertices = MAX(1u, (GLuint)MGL_STATE(drawCtx)->var.patch_vertices);
+    GLuint patchCount = (GLuint)count / patchVertices;
+    if (patchCount == 0u) {
+        return YES;
+    }
+
+    _tessellation.tessVertexCaptureBuffer = nil;
+    _tessellation.tessVertexCaptureOffset = 0u;
+    if (nativeTES) {
+        if (indexType != 0u || instanceCount != 1) {
+            nativeTES = NO;
+        } else {
+            NSUInteger captureOffset = 0u;
+            id<MTLBuffer> capture =
+                [self captureAIRVertexPositionsForTessellation:drawCtx
+                                                         first:first
+                                                         count:count
+                                                 instanceCount:instanceCount
+                                                  baseInstance:baseInstance
+                                                    outOffset:&captureOffset];
+            if (!capture) {
+                nativeTES = NO;
+            } else {
+                _tessellation.tessVertexCaptureBuffer = capture;
+                _tessellation.tessVertexCaptureOffset = captureOffset;
+            }
+        }
+    }
+
+    if (nativeTES && !tcsProgram) {
+        _tessellation.tcsOutputBuffer =
+            _tessellation.tessVertexCaptureBuffer;
+        _tessellation.tcsOutputOffset =
+            _tessellation.tessVertexCaptureOffset;
+        Program *vertexProgram = mglResolveProgramForStageFromState(
+            drawCtx, _VERTEX_SHADER);
+        _tessellation.tcsOutputStride = vertexProgram
+            ? mglAIRPerVertexStrideForResources(
+                  &vertexProgram->spirv_resources_list[_VERTEX_SHADER]
+                                                       [_STAGE_OUTPUT_RES])
+            : MGL_AIR_PER_VERTEX_STRIDE;
+        _tessellation.tcsOutVertices = patchVertices;
+        _tessellation.tessFactorBuffer = mglDefaultTessFactorBuffer(
+            _device, MGL_STATE(drawCtx), patchCount);
+        if (!_tessellation.tcsOutputBuffer ||
+            !_tessellation.tessFactorBuffer) {
+            nativeTES = NO;
+        }
+    }
+
+    if (tcsProgram) {
         if (![self dispatchTessControlShader:drawCtx
                                      program:tcsProgram
                                        first:first
@@ -745,14 +1875,103 @@
                                instanceCount:instanceCount
                                 baseInstance:baseInstance]) {
             drawCtx->state.dirty_bits = DIRTY_ALL;
+            _tessellation.tessVertexCaptureBuffer = nil;
+            _tessellation.tessVertexCaptureOffset = 0u;
             return YES;
         }
     }
 
-    if (tesProgram) {
-        if (tesProgram->dirty_bits) {
-            [self bindMTLProgram:tesProgram];
+    if (nativeTES) {
+        id<MTLBuffer> nativeFactors = mglNativeTessFactorBuffer(
+            _device, _tessellation.tessFactorBuffer,
+            tesProgram->tess_gen_mode, patchCount);
+        if (!nativeFactors || !_tessellation.tcsOutputBuffer ||
+            _tessellation.tcsOutputStride < MGL_AIR_PER_VERTEX_STRIDE) {
+            NSLog(@"MGL TESS ERROR: invalid native TES buffers program=%u",
+                  (unsigned)tesProgram->name);
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            _tessellation.tessVertexCaptureBuffer = nil;
+            _tessellation.tessVertexCaptureOffset = 0u;
+            return YES;
         }
+
+        _tessellation.nativeTessFactorBuffer = nativeFactors;
+        _tessellation.nativeTESProgram = tesProgram;
+        _tessellation.nativeTESActive = YES;
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+
+        BOOL stateReady = [self processGLState:true];
+        if (!stateReady || !_renderPassManager.state->currentRenderEncoder) {
+            _tessellation.nativeTESActive = NO;
+            _tessellation.nativeTESProgram = NULL;
+            _tessellation.tessVertexCaptureBuffer = nil;
+            _tessellation.tessVertexCaptureOffset = 0u;
+            drawCtx->state.dirty_bits = DIRTY_ALL;
+            return YES;
+        }
+
+        if (![self currentDrawRasterizationIsEmpty] &&
+            ![self currentDrawModeIsFullyCulled:GL_TRIANGLES]) {
+            [self applyPolygonOffsetForDrawMode:GL_TRIANGLES];
+            id<MTLRenderCommandEncoder> encoder =
+                _renderPassManager.state->currentRenderEncoder;
+            mglDrawSupportSetVertexBuffer(
+                encoder, _tessellation.tcsOutputBuffer,
+                _tessellation.tcsOutputOffset, 0u);
+            [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                                       offset:_tessellation.tcsOutputOffset
+                                      atIndex:0u];
+            mglDrawSupportSetVertexBuffer(
+                encoder, _tessellation.tcsOutputBuffer,
+                _tessellation.tcsOutputOffset, 30u);
+            [self recordLastBoundVertexBuffer:_tessellation.tcsOutputBuffer
+                                       offset:_tessellation.tcsOutputOffset
+                                      atIndex:30u];
+            GLuint patchInfo[2] = {patchVertices, _tessellation.tcsOutVertices};
+            if (patchInfo[1] == 0u) patchInfo[1] = patchVertices;
+            mglDrawSupportSetVertexBytes(
+                encoder, patchInfo, sizeof(patchInfo), 28u);
+            if (_tessellation.tcsPatchOutBuffer) {
+                mglDrawSupportSetVertexBuffer(
+                    encoder, _tessellation.tcsPatchOutBuffer, 0u, 27u);
+                [self recordLastBoundVertexBuffer:
+                          _tessellation.tcsPatchOutBuffer
+                                           offset:0u
+                                          atIndex:27u];
+            }
+            mglDrawSupportSetTessellationFactors(
+                encoder, nativeFactors, 0u, 0u);
+            mglDrawSupportDrawPatches(
+                encoder, _tessellation.tcsOutVertices, 0u, patchCount,
+                nil, 0u, (NSUInteger)instanceCount,
+                (NSUInteger)baseInstance);
+            _currentCBHasWork = YES;
+
+            GLuint64 primitives = mglNativeTessPrimitiveCount(
+                _tessellation.tessFactorBuffer, tesProgram, patchCount,
+                (GLuint)instanceCount);
+            mglRecordActivePrimitiveQueryDraw(drawCtx, primitives, primitives);
+        }
+
+        _tessellation.nativeTESActive = NO;
+        _tessellation.nativeTESProgram = NULL;
+        _tessellation.tessVertexCaptureBuffer = nil;
+        _tessellation.tessVertexCaptureOffset = 0u;
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
+
+    if (airTES) {
+        NSLog(@"MGL TESS ERROR: native AIR TES interface unsupported for program %u%s",
+              (unsigned)tesProgram->name,
+              forceComputeTES ? " (AIR has no compute fallback variant)" : "");
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        _tessellation.tessVertexCaptureBuffer = nil;
+        _tessellation.tessVertexCaptureOffset = 0u;
+        return YES;
+    }
+
+    if (tesProgram) {
         if (![self dispatchTessEvaluationShader:drawCtx
                                            program:tesProgram
                                              first:first
@@ -763,6 +1982,8 @@
     }
 
     drawCtx->state.dirty_bits = DIRTY_ALL;
+    _tessellation.tessVertexCaptureBuffer = nil;
+    _tessellation.tessVertexCaptureOffset = 0u;
     (void)label;
     return YES;
 }

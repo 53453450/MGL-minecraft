@@ -25,7 +25,6 @@
 #define MGLRenderer_Draw_Private_h
 
 #import "MGLRenderer.h"
-#import "msl_patch_pipeline.h"
 
 /* Encode target passed explicitly to the issue and bind methods instead of
  * read from _renderPassManager.state->currentRenderEncoder. */
@@ -61,6 +60,11 @@ typedef struct {
     uint32_t culldist_offset;
     uint32_t vertex_stride;
     uint32_t culldist_size;
+    uint32_t first_vertex;
+    uint32_t explicit_vertex_count;
+    uint32_t explicit_vertices[4];
+    uint32_t first_instance;
+    uint32_t instance_stride;
 } MGLCullDistanceEmuParams;
 
 /* === Diagnostic constants === */
@@ -328,7 +332,45 @@ typedef struct {
 - (void)recordArrayDrawSubmittedMode:(GLenum)mode vertexCount:(uint64_t)vertexCount;
 - (void)recordElementDrawSubmittedMode:(GLenum)mode indexCount:(uint64_t)indexCount;
 - (void)bindCullDistanceEmulationBuffers:(GLenum)mode
+                             firstVertex:(GLuint)firstVertex
+                        explicitVertices:(const GLuint *)explicitVertices
+                      explicitVertexCount:(GLuint)explicitVertexCount
                            encodeContext:(const MGLEncodeContext *)encCtx;
+- (BOOL)captureAIRCullDistancesForArrayDraw:(GLMContext)drawCtx
+                                      first:(GLint)first
+                                      count:(GLsizei)count
+                              instanceCount:(GLsizei)instanceCount
+                               baseInstance:(GLuint)baseInstance;
+- (BOOL)captureAIRCullDistancesForElementDraw:(GLMContext)drawCtx
+                                    indexBytes:(const uint8_t *)indexBytes
+                                     indexType:(GLenum)indexType
+                                         count:(GLsizei)count
+                                    baseVertex:(GLint)baseVertex
+                                 instanceCount:(GLsizei)instanceCount
+                                  baseInstance:(GLuint)baseInstance;
+- (BOOL)encodeCullDistanceElementDraw:(GLenum)mode
+                            indexBytes:(const uint8_t *)indexBytes
+                             indexType:(GLenum)indexType
+                                 count:(GLsizei)count
+                            baseVertex:(GLint)baseVertex
+                         instanceCount:(GLsizei)instanceCount
+                          baseInstance:(GLuint)baseInstance
+                       polygonLineMode:(BOOL)polygonLineMode
+                         encodeContext:(const MGLEncodeContext *)encCtx;
+- (BOOL)prepareAndEncodeDirectCullDistanceElementDraw:(GLenum)mode
+                                           indexBytes:(const uint8_t *)indexBytes
+                                            indexType:(GLenum)indexType
+                                                count:(GLsizei)count
+                                           baseVertex:(GLint)baseVertex
+                                        instanceCount:(GLsizei)instanceCount
+                                         baseInstance:(GLuint)baseInstance
+                                      polygonLineMode:(BOOL)polygonLineMode;
+- (BOOL)encodeCullDistanceArrayDraw:(GLenum)mode
+                               first:(GLint)first
+                               count:(GLsizei)count
+                       instanceCount:(GLsizei)instanceCount
+                        baseInstance:(GLuint)baseInstance
+                       encodeContext:(const MGLEncodeContext *)encCtx;
 - (bool)validateDrawArraysVertexInputs:(GLMContext)drawCtx
                                   mode:(GLenum)mode
                                  first:(GLint)first
@@ -353,6 +395,19 @@ typedef struct {
                                instanceCount:(GLsizei)instanceCount
                                 baseInstance:(GLuint)baseInstance
                                        label:(const char *)label;
+- (BOOL)handleGeometryShaderArrayDrawIfNeeded:(GLMContext)drawCtx
+                                         mode:(GLenum)mode
+                                        first:(GLint)first
+                                        count:(GLsizei)count
+                                instanceCount:(GLsizei)instanceCount
+                                 baseInstance:(GLuint)baseInstance
+                                        label:(const char *)label;
+- (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program;
+- (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+                               stage:(int)stage
+                           copyBacks:(MGLStageBindingCopyBackList *)copyBacks;
+- (bool)bindTexturesToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
+                                stage:(int)stage;
 
 @end
 

@@ -216,6 +216,13 @@ uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipelineSta
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.alphaToOneEnabled);
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.depthAttachmentPixelFormat);
     hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.stencilAttachmentPixelFormat);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationPartitionMode);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.maxTessellationFactor);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorScaleEnabled);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorFormat);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationControlPointIndexType);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationFactorStepFunction);
+    hash = mglHashStepU64(hash, (uint64_t)pipelineStateDescriptor.tessellationOutputWindingOrder);
 
     for (NSUInteger i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
         MTLRenderPipelineColorAttachmentDescriptor *attachment = pipelineStateDescriptor.colorAttachments[i];

@@ -185,6 +185,15 @@ _Atomic uint64_t g_mglDeltaDomainRenderStateSinceSwap     = 0;
 _Atomic uint64_t g_mglDeltaDomainRenderStateUboOnlySinceSwap = 0;
 _Atomic uint64_t g_mglStreamDemotedToDirectSinceSwap      = 0;
 
+void mglRecordBufferCowSnapshot(uint64_t bytes)
+{
+    if (!mglPerfSummaryEnabled()) return;
+    atomic_fetch_add_explicit(&g_mglBufferCowCountSinceSwap, 1,
+                              memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_mglBufferCowBytesSinceSwap, bytes,
+                              memory_order_relaxed);
+}
+
 #include <mach/mach_time.h>
 
 void mglPrintPerfSummary(double frame_interval_ms)

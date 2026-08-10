@@ -6,8 +6,127 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_byte_hash.h"
 #import "mgl_frame_activity.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
 
 static const NSUInteger kMaxFragmentSamplerSlots = 16;
+
+static BOOL mglBatchReplayUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static void mglBatchReplaySetRenderBuffer(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    uint32_t stage,
+    NSUInteger index)
+{
+    if (mglBatchReplayUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset,
+            stage, (uint32_t)index) == 0) {
+        return;
+    }
+    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+        [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+    } else {
+        [encoder setFragmentBuffer:buffer offset:offset atIndex:index];
+    }
+}
+
+static void mglBatchReplayDrawPrimitives(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger vertexStart,
+    NSUInteger vertexCount,
+    NSUInteger instanceCount,
+    NSUInteger baseInstance)
+{
+    if (mglBatchReplayUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, vertexStart,
+            vertexCount, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+                vertexStart:vertexStart
+                vertexCount:vertexCount
+              instanceCount:instanceCount
+               baseInstance:baseInstance];
+}
+
+static void mglBatchReplayDrawIndexedPrimitives(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger indexCount,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    NSUInteger instanceCount,
+    NSInteger baseVertex,
+    NSUInteger baseInstance)
+{
+    if (mglBatchReplayUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
+static void mglBatchReplayDrawPrimitivesIndirect(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    id<MTLBuffer> indirectBuffer,
+    NSUInteger indirectBufferOffset)
+{
+    if (mglBatchReplayUsesMetalCpp() &&
+        mglRenderCppDrawPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (__bridge void *)indirectBuffer, indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType
+             indirectBuffer:indirectBuffer
+       indirectBufferOffset:indirectBufferOffset];
+}
+
+static void mglBatchReplayDrawIndexedPrimitivesIndirect(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    id<MTLBuffer> indirectBuffer,
+    NSUInteger indirectBufferOffset)
+{
+    if (mglBatchReplayUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, (__bridge void *)indirectBuffer,
+            indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                    indirectBuffer:indirectBuffer
+              indirectBufferOffset:indirectBufferOffset];
+}
 
 static bool mglBuildDynamicVertexArray(const VertexArray *base,
                                        const MGLDrawCommand *cmd,
@@ -199,12 +318,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                   reason:"mdi_prepared_index"];
                 continue;
             }
-            [encCtx->encoder drawIndexedPrimitives:primType
-                                               indexType:drawIndexType
-                                             indexBuffer:drawIndexBuffer
-                                          indexBufferOffset:drawIndexOffset
-                                          indirectBuffer:indirectArgsBuffer
-                                    indirectBufferOffset:indirectArgsOffset + (i * argSize)];
+            mglBatchReplayDrawIndexedPrimitivesIndirect(
+                encCtx->encoder, primType, drawIndexType, drawIndexBuffer,
+                drawIndexOffset, indirectArgsBuffer,
+                indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
                              command:cmd
                              context:glm_ctx
@@ -226,9 +343,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         }
 
         for (uint32_t i = 0; i < batch->command_count; i++) {
-            [encCtx->encoder drawPrimitives:primType
-                                   indirectBuffer:indirectArgsBuffer
-                             indirectBufferOffset:indirectArgsOffset + (i * argSize)];
+            mglBatchReplayDrawPrimitivesIndirect(
+                encCtx->encoder, primType, indirectArgsBuffer,
+                indirectArgsOffset + (i * argSize));
             [self traceReplayCommand:batch
                              command:&batch->commands[i]
                              context:glm_ctx
@@ -359,15 +476,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
         for (GLuint stream = 0; stream < resolved_slot_count; stream++) {
             NSUInteger metal_slot = (NSUInteger)resolved_slots[stream];
-            if (!_bindingSync.state->lastBoundValid ||
-                _bindingSync.state->lastBoundVertexBuffers[metal_slot].buffer != metal_buffer ||
-                _bindingSync.state->lastBoundVertexBuffers[metal_slot].offset != dynamic_offset) {
-                [encCtx->encoder setVertexBuffer:metal_buffer
-                                                offset:dynamic_offset
-                                               atIndex:metal_slot];
-                [_bindingSync updateVertexBufferSlot:metal_slot
-                                       buffer:metal_buffer
-                                       offset:dynamic_offset];
+            if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                !mglBindingStateBufferMatches(
+                    _bindingStateOwner, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                    (__bridge void *)metal_buffer, dynamic_offset,
+                    (uint32_t)metal_slot)) {
+                mglBatchReplaySetRenderBuffer(
+                    encCtx->encoder, metal_buffer, dynamic_offset,
+                    MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
+                mglRenderCppBindingUpdateVertexBuffer(
+                    _bindingStateOwner, (__bridge void *)metal_buffer,
+                    dynamic_offset, (uint32_t)metal_slot);
                 MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                 mglNoteBufferEncoded(draw_buffer);
             } else {
@@ -444,30 +563,36 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 }
                 NSUInteger metal_slot = (NSUInteger)resolved_slot;
                 if (stages[stage_index] == _VERTEX_SHADER) {
-                    if (!_bindingSync.state->lastBoundValid ||
-                        _bindingSync.state->lastBoundVertexBuffers[metal_slot].buffer != metal_buffer ||
-                        _bindingSync.state->lastBoundVertexBuffers[metal_slot].offset != start) {
-                        [encCtx->encoder setVertexBuffer:metal_buffer
-                                                        offset:(NSUInteger)start
-                                                       atIndex:metal_slot];
-                        [_bindingSync updateVertexBufferSlot:metal_slot
-                                               buffer:metal_buffer
-                                               offset:(NSUInteger)start];
+                    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                        !mglBindingStateBufferMatches(
+                            _bindingStateOwner,
+                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                            (__bridge void *)metal_buffer, start,
+                            (uint32_t)metal_slot)) {
+                        mglBatchReplaySetRenderBuffer(
+                            encCtx->encoder, metal_buffer, (NSUInteger)start,
+                            MGL_RENDER_CPP_BINDING_STAGE_VERTEX, metal_slot);
+                        mglRenderCppBindingUpdateVertexBuffer(
+                            _bindingStateOwner, (__bridge void *)metal_buffer,
+                            start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                     } else {
                         MGL_PERF_INC(g_mglSetVertexBufferSkipsSinceSwap);
                     }
                 } else {
-                    if (!_bindingSync.state->lastBoundValid ||
-                        _bindingSync.state->lastBoundFragmentBuffers[metal_slot].buffer != metal_buffer ||
-                        _bindingSync.state->lastBoundFragmentBuffers[metal_slot].offset != start) {
-                        [encCtx->encoder setFragmentBuffer:metal_buffer
-                                                          offset:(NSUInteger)start
-                                                         atIndex:metal_slot];
-                        [_bindingSync updateFragmentBufferSlot:metal_slot
-                                               buffer:metal_buffer
-                                               offset:(NSUInteger)start];
+                    if (!mglBindingStateIsValid(_bindingStateOwner) ||
+                        !mglBindingStateBufferMatches(
+                            _bindingStateOwner,
+                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                            (__bridge void *)metal_buffer, start,
+                            (uint32_t)metal_slot)) {
+                        mglBatchReplaySetRenderBuffer(
+                            encCtx->encoder, metal_buffer, (NSUInteger)start,
+                            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, metal_slot);
+                        mglRenderCppBindingUpdateFragmentBuffer(
+                            _bindingStateOwner, (__bridge void *)metal_buffer,
+                            start, (uint32_t)metal_slot);
                         MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
                         mglNoteBufferEncoded(slot->buf);
                     } else {
@@ -490,25 +615,25 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
         int stage = stage_index == 0 ? _VERTEX_SHADER : _FRAGMENT_SHADER;
         Program *program = mglResolveProgramForStageFromState(glm_ctx, stage);
         GLuint sampled_count = [self getProgramBindingCount:stage
-                                                       type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+                                                       type:_SAMPLED_IMAGE_RES];
         for (GLuint resource_index = 0;
              resource_index < sampled_count;
              resource_index++) {
             GLuint metal_slot = [self getProgramBinding:stage
-                                                    type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                                                    type:_SAMPLED_IMAGE_RES
                                                    index:(int)resource_index];
             if (metal_slot >= TEXTURE_UNITS) continue;
 
             SpirvResource *resource = NULL;
             if (program &&
                 resource_index < program->spirv_resources_list[stage]
-                                           [SPVC_RESOURCE_TYPE_SAMPLED_IMAGE].count) {
+                                           [_SAMPLED_IMAGE_RES].count) {
                 resource = &program->spirv_resources_list[stage]
-                                   [SPVC_RESOURCE_TYPE_SAMPLED_IMAGE]
+                                   [_SAMPLED_IMAGE_RES]
                                    .list[resource_index];
             }
             if (mglShouldSkipStageTextureResource(
-                    program, stage, SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, resource)) {
+                    program, stage, _SAMPLED_IMAGE_RES, resource)) {
                 continue;
             }
             if (resource && resource->is_array) return false;
@@ -523,15 +648,15 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
 
             MTLTextureType expected_type =
                 [self getProgramExpectedTextureType:stage
-                                                type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                                                type:_SAMPLED_IMAGE_RES
                                                index:(int)resource_index];
             MTLTextureType lookup_type =
                 [self getProgramDeclaredTextureType:stage
-                                                type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                                                type:_SAMPLED_IMAGE_RES
                                                index:(int)resource_index];
             MGLTextureDataKind expected_kind =
                 [self getProgramExpectedTextureDataKind:stage
-                                                   type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                                                   type:_SAMPLED_IMAGE_RES
                                                   index:(int)resource_index];
             Texture *texture_object =
                 [self textureForSampledResource:resource
@@ -560,7 +685,7 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                 [self setFragmentTextureIfNeeded:texture atIndex:metal_slot];
             }
 
-            if (!resource || resource->msl_has_combined_sampler) {
+            if (!resource || resource->has_combined_sampler) {
                 id<MTLSamplerState> sampler = nil;
                 Sampler *bound_sampler =
                     MGL_STATE(glm_ctx)->texture_samplers[texture_unit];
@@ -855,6 +980,56 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     MGLEncodeContext liveEncCtx = *encCtx;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
+        Program *batchProgram =
+            mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+        BOOL capturedCullDistances = NO;
+        if (batchProgram && batchProgram->uses_cull_distance &&
+            (cmd->type == MGL_CMD_DRAW_ARRAYS ||
+             cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED ||
+             cmd->type == MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE)) {
+            capturedCullDistances =
+                [self captureAIRCullDistancesForArrayDraw:glm_ctx
+                                                    first:cmd->first
+                                                    count:cmd->count
+                                            instanceCount:cmd->instanceCount
+                                             baseInstance:cmd->baseInstance];
+        } else if (batchProgram && batchProgram->uses_cull_distance) {
+            Buffer *elementBuffer = NULL;
+            id<MTLBuffer> metalElementBuffer = nil;
+            if ([self resolveElementBufferForCommand:cmd
+                                                label:"cullDistanceCapture"
+                                              context:glm_ctx
+                                             glBuffer:&elementBuffer
+                                            mtlBuffer:&metalElementBuffer]) {
+                const uint8_t *source = mglElementIndexSourceForDraw(
+                    elementBuffer, metalElementBuffer, cmd->indexType,
+                    cmd->indexBufferOffset, cmd->count);
+                capturedCullDistances =
+                    [self captureAIRCullDistancesForElementDraw:glm_ctx
+                                                     indexBytes:source
+                                                      indexType:cmd->indexType
+                                                          count:cmd->count
+                                                     baseVertex:cmd->baseVertex
+                                                  instanceCount:cmd->instanceCount
+                                                   baseInstance:cmd->baseInstance];
+            }
+        }
+        if (capturedCullDistances) {
+            if (![self processGLState:true] ||
+                !_renderPassManager.state->currentRenderEncoder) {
+                [self traceReplayCommand:batch
+                                 command:cmd
+                                 context:glm_ctx
+                                 flushId:_renderPassManager.state->traceReplayFlushId
+                              batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                            commandIndex:i
+                                   phase:"SKIP"
+                                  reason:"cull_distance_capture_restore"];
+                continue;
+            }
+            liveEncCtx.encoder =
+                _renderPassManager.state->currentRenderEncoder;
+        }
         if (![self applyDynamicBindingsForCommand:cmd context:glm_ctx encodeContext:&liveEncCtx]) {
             [self traceReplayCommand:batch
                              command:cmd
@@ -973,6 +1148,126 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     }
 }
 
+- (BOOL)issueDirectBatchCullDistanceArrayDraw:(GLenum)mode
+                                         first:(GLint)first
+                                         count:(GLsizei)count
+                                 instanceCount:(GLsizei)instanceCount
+                                  baseInstance:(GLuint)baseInstance
+                                 encodeContext:(const MGLEncodeContext *)encCtx
+{
+    Program *batchProgram =
+        mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    if (!batchProgram || !batchProgram->uses_cull_distance ||
+        !encCtx || !encCtx->encoder) {
+        return NO;
+    }
+
+    if (mode == GL_TRIANGLE_STRIP && count >= 3) {
+        NSUInteger stripIndexCount = 0u;
+        id<MTLBuffer> stripIndexBuffer =
+            mglNewTriangleStripArrayIndexBuffer(
+                _device, (NSUInteger)count, &stripIndexCount);
+        if (!stripIndexBuffer || stripIndexCount == 0u) {
+            return YES;
+        }
+        for (NSUInteger primitive = 0u;
+             primitive * 3u < stripIndexCount; primitive++) {
+            const GLuint vertices[3] = {
+                (GLuint)first + (GLuint)primitive,
+                (GLuint)first + (GLuint)primitive + 1u,
+                (GLuint)first + (GLuint)primitive + 2u,
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:3u
+                                      encodeContext:encCtx];
+            mglBatchReplayDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u,
+                MTLIndexTypeUInt32, stripIndexBuffer,
+                primitive * 3u * sizeof(uint32_t), instanceCount, first,
+                baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_TRIANGLE_FAN && count >= 3) {
+        NSUInteger fanIndexCount = 0u;
+        id<MTLBuffer> fanIndexBuffer =
+            mglNewTriangleFanArrayIndexBuffer(
+                _device, (NSUInteger)count, &fanIndexCount);
+        if (!fanIndexBuffer || fanIndexCount == 0u) {
+            return YES;
+        }
+        const NSUInteger primitiveCount = fanIndexCount / 3u;
+        for (NSUInteger primitive = 0u;
+             primitive < primitiveCount; primitive++) {
+            const GLuint vertices[3] = {
+                (GLuint)first,
+                (GLuint)first + (GLuint)primitive + 1u,
+                (GLuint)first + (GLuint)primitive + 2u,
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:3u
+                                      encodeContext:encCtx];
+            mglBatchReplayDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeTriangle, 3u,
+                MTLIndexTypeUInt32, fanIndexBuffer,
+                primitive * 3u * sizeof(uint32_t), instanceCount, first,
+                baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_LINE_STRIP && count >= 2) {
+        for (GLsizei primitive = 0; primitive + 1 < count; primitive++) {
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)(first + primitive)
+                                   explicitVertices:NULL
+                                 explicitVertexCount:0u
+                                      encodeContext:encCtx];
+            mglBatchReplayDrawPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeLine, first + primitive, 2u,
+                instanceCount, baseInstance);
+        }
+        return YES;
+    }
+
+    if (mode == GL_LINE_LOOP && count >= 2) {
+        NSUInteger loopIndexCount = 0u;
+        id<MTLBuffer> loopIndexBuffer =
+            mglNewLineLoopArrayIndexBuffer(
+                _device, (NSUInteger)first, (NSUInteger)count,
+                &loopIndexCount);
+        if (!loopIndexBuffer || loopIndexCount == 0u) {
+            return YES;
+        }
+        for (NSUInteger primitive = 0u;
+             primitive + 1u < loopIndexCount; primitive++) {
+            const GLuint vertices[2] = {
+                (GLuint)first + (GLuint)primitive,
+                (GLuint)first +
+                    (GLuint)((primitive + 1u) % (NSUInteger)count),
+            };
+            [self bindCullDistanceEmulationBuffers:mode
+                                        firstVertex:(GLuint)first
+                                   explicitVertices:vertices
+                                 explicitVertexCount:2u
+                                      encodeContext:encCtx];
+            mglBatchReplayDrawIndexedPrimitives(
+                encCtx->encoder, MTLPrimitiveTypeLine, 2u,
+                MTLIndexTypeUInt32, loopIndexBuffer,
+                primitive * sizeof(uint32_t), instanceCount, 0,
+                baseInstance);
+        }
+        return YES;
+    }
+
+    return NO;
+}
+
 - (void)issueDirectBatchDrawArrays:(MGLDrawBatch *)batch
                            command:(MGLDrawCommand *)cmd
                             context:(GLMContext)glm_ctx
@@ -986,6 +1281,23 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                            primType:(MTLPrimitiveType)primType
                       encodeContext:(const MGLEncodeContext *)encCtx
 {
+    if (!polygonModePoint &&
+        [self issueDirectBatchCullDistanceArrayDraw:mode
+                                              first:cmd->first
+                                              count:count
+                                      instanceCount:1
+                                       baseInstance:0u
+                                      encodeContext:encCtx]) {
+        [self traceReplayCommand:batch
+                         command:cmd
+                         context:glm_ctx
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                    commandIndex:i
+                           phase:"SUBMIT"
+                          reason:"direct_arrays_cull_distance_split"];
+        return;
+    }
     if (polygonModePoint) {
         mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
                                    mode, cmd->first, count, 1u, 0u, "batch");
@@ -1003,14 +1315,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                                  indexCount:fanCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:fanBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:1
-                                                  baseVertex:cmd->first
-                                                baseInstance:0];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    MTLIndexTypeUInt32, fanBuf, 0, 1, cmd->first, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1045,14 +1352,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                                                  indexCount:loopCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:loopBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:1
-                                                  baseVertex:0
-                                                baseInstance:0];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    MTLIndexTypeUInt32, loopBuf, 0, 1, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1113,16 +1415,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && (batchProgram->mslCacheValid
-                    ? batchProgram->uses_cull_distance
-                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
-                [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
+            if (batchProgram && batchProgram->uses_cull_distance) {
+                [self bindCullDistanceEmulationBuffers:mode
+                                            firstVertex:(GLuint)cmd->first
+                                       explicitVertices:NULL
+                                     explicitVertexCount:0u
+                                          encodeContext:encCtx];
             }
         }
-        [encCtx->encoder drawPrimitives:primType
-                                 vertexStart:cmd->first
-                                 vertexCount:count];
+        mglBatchReplayDrawPrimitives(
+            encCtx->encoder, primType, cmd->first, count, 1, 0);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1148,6 +1450,23 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                     primType:(MTLPrimitiveType)primType
                                encodeContext:(const MGLEncodeContext *)encCtx
 {
+    if (!polygonModePoint &&
+        [self issueDirectBatchCullDistanceArrayDraw:mode
+                                              first:cmd->first
+                                              count:count
+                                      instanceCount:instanceCount
+                                       baseInstance:0u
+                                      encodeContext:encCtx]) {
+        [self traceReplayCommand:batch
+                         command:cmd
+                         context:glm_ctx
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                    commandIndex:i
+                           phase:"SUBMIT"
+                          reason:"direct_arrays_instanced_cull_distance_split"];
+        return;
+    }
     if (polygonModePoint) {
         mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
                                    mode, cmd->first, count,
@@ -1166,14 +1485,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                                  indexCount:fanCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:fanBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:instanceCount
-                                                  baseVertex:cmd->first
-                                                baseInstance:0];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
+                    cmd->first, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1208,14 +1523,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                                                  indexCount:loopCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:loopBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:instanceCount
-                                                  baseVertex:0
-                                                baseInstance:0];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0, 0);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1266,17 +1576,16 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && (batchProgram->mslCacheValid
-                    ? batchProgram->uses_cull_distance
-                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
-                [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
+            if (batchProgram && batchProgram->uses_cull_distance) {
+                [self bindCullDistanceEmulationBuffers:mode
+                                            firstVertex:(GLuint)cmd->first
+                                       explicitVertices:NULL
+                                     explicitVertexCount:0u
+                                          encodeContext:encCtx];
             }
         }
-        [encCtx->encoder drawPrimitives:primType
-                                 vertexStart:cmd->first
-                                 vertexCount:count
-                               instanceCount:instanceCount];
+        mglBatchReplayDrawPrimitives(
+            encCtx->encoder, primType, cmd->first, count, instanceCount, 0);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1302,6 +1611,23 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                                                  primType:(MTLPrimitiveType)primType
                                             encodeContext:(const MGLEncodeContext *)encCtx
 {
+    if (!polygonModePoint &&
+        [self issueDirectBatchCullDistanceArrayDraw:mode
+                                              first:cmd->first
+                                              count:count
+                                      instanceCount:instanceCount
+                                       baseInstance:cmd->baseInstance
+                                      encodeContext:encCtx]) {
+        [self traceReplayCommand:batch
+                         command:cmd
+                         context:glm_ctx
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                    commandIndex:i
+                           phase:"SUBMIT"
+                          reason:"direct_arrays_base_instance_cull_distance_split"];
+        return;
+    }
     if (polygonModePoint) {
         mglEncodeArrayPolygonPoint(encCtx->encoder, _device,
                                    mode, cmd->first, count,
@@ -1320,14 +1646,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> fanBuf = mglNewTriangleFanArrayIndexBuffer(
                 _device, (NSUInteger)count, &fanCount);
             if (fanBuf && fanCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                                                  indexCount:fanCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:fanBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:instanceCount
-                                                  baseVertex:cmd->first
-                                                baseInstance:cmd->baseInstance];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeTriangle, fanCount,
+                    MTLIndexTypeUInt32, fanBuf, 0, instanceCount,
+                    cmd->first, cmd->baseInstance);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1362,14 +1684,10 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
             id<MTLBuffer> loopBuf = mglNewLineLoopArrayIndexBuffer(
                 _device, (NSUInteger)cmd->first, (NSUInteger)count, &loopCount);
             if (loopBuf && loopCount > 0) {
-                [encCtx->encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                                                  indexCount:loopCount
-                                                   indexType:MTLIndexTypeUInt32
-                                                 indexBuffer:loopBuf
-                                                  indexBufferOffset:0
-                                               instanceCount:instanceCount
-                                                  baseVertex:0
-                                                baseInstance:cmd->baseInstance];
+                mglBatchReplayDrawIndexedPrimitives(
+                    encCtx->encoder, MTLPrimitiveTypeLineStrip, loopCount,
+                    MTLIndexTypeUInt32, loopBuf, 0, instanceCount, 0,
+                    cmd->baseInstance);
                 [self traceReplayCommand:batch
                                  command:cmd
                                  context:glm_ctx
@@ -1420,18 +1738,17 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
          * drawPrimitives in the deferred batch path. */
         {
             Program *batchProgram = mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
-            if (batchProgram && (batchProgram->mslCacheValid
-                    ? batchProgram->uses_cull_distance
-                    : (batchProgram->spirv[_VERTEX_SHADER].msl_str &&
-                       strstr(batchProgram->spirv[_VERTEX_SHADER].msl_str, "mgl_CullDistance")))) {
-                [self bindCullDistanceEmulationBuffers:mode encodeContext:encCtx];
+            if (batchProgram && batchProgram->uses_cull_distance) {
+                [self bindCullDistanceEmulationBuffers:mode
+                                            firstVertex:(GLuint)cmd->first
+                                       explicitVertices:NULL
+                                     explicitVertexCount:0u
+                                          encodeContext:encCtx];
             }
         }
-        [encCtx->encoder drawPrimitives:primType
-                                 vertexStart:cmd->first
-                                 vertexCount:count
-                               instanceCount:instanceCount
-                                baseInstance:cmd->baseInstance];
+        mglBatchReplayDrawPrimitives(
+            encCtx->encoder, primType, cmd->first, count, instanceCount,
+            cmd->baseInstance);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1486,6 +1803,31 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                     commandIndex:i
                            phase:"SKIP"
                           reason:"direct_index_type"];
+        return;
+    }
+
+    const uint8_t *cullDistanceIndexSource =
+        mglElementIndexSourceForDraw(glBuf, idxBuf, cmd->indexType,
+                                     idxOffset, count);
+    if (!polygonModePoint &&
+        [self encodeCullDistanceElementDraw:mode
+                                  indexBytes:cullDistanceIndexSource
+                                   indexType:cmd->indexType
+                                       count:count
+                                  baseVertex:cmd->baseVertex
+                               instanceCount:instanceCount
+                                baseInstance:cmd->baseInstance
+                             polygonLineMode:mglPolygonModeLineForDrawMode(
+                                                 glm_ctx, mode)
+                               encodeContext:encCtx]) {
+        [self traceReplayCommand:batch
+                         command:cmd
+                         context:glm_ctx
+                         flushId:_renderPassManager.state->traceReplayFlushId
+                      batchIndex:_renderPassManager.state->traceReplayBatchIndex
+                    commandIndex:i
+                           phase:"SUBMIT"
+                          reason:"direct_elements_cull_distance_split"];
         return;
     }
 
@@ -1598,14 +1940,9 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
                               reason:"direct_prepared_index"];
             return;
         }
-        [encCtx->encoder drawIndexedPrimitives:primType
-                                          indexCount:count
-                                           indexType:drawIndexType
-                                         indexBuffer:drawIndexBuffer
-                                   indexBufferOffset:idxOffset
-                                       instanceCount:instanceCount
-                                          baseVertex:cmd->baseVertex
-                                        baseInstance:cmd->baseInstance];
+        mglBatchReplayDrawIndexedPrimitives(
+            encCtx->encoder, primType, count, drawIndexType, drawIndexBuffer,
+            idxOffset, instanceCount, cmd->baseVertex, cmd->baseInstance);
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx

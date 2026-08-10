@@ -6,6 +6,203 @@
 #import "MGLRenderer+Draw_Private.h"
 #import "mgl_frame_activity.h"
 #import "mgl_sampler_compat.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static BOOL mglBatchUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static void mglBatchDrawIndexedPrimitives(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    NSUInteger indexCount,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    NSUInteger instanceCount,
+    NSInteger baseVertex,
+    NSUInteger baseInstance)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
+static void mglBatchDrawIndexedPrimitivesIndirect(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLPrimitiveType primitiveType,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    id<MTLBuffer> indirectBuffer,
+    NSUInteger indirectBufferOffset)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitivesIndirect(
+            (__bridge void *)encoder, (uint32_t)primitiveType,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, (__bridge void *)indirectBuffer,
+            indirectBufferOffset) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                    indirectBuffer:indirectBuffer
+              indirectBufferOffset:indirectBufferOffset];
+}
+
+static id<MTLIndirectCommandBuffer> mglBatchCreateIndirectCommandBuffer(
+    id<MTLDevice> device,
+    BOOL indexed,
+    NSUInteger maxCommandCount)
+{
+    if (mglBatchUsesMetalCpp()) {
+        void *bufferCPP = NULL;
+        uint32_t commandTypes = indexed
+            ? (uint32_t)MTLIndirectCommandTypeDrawIndexed
+            : (uint32_t)MTLIndirectCommandTypeDraw;
+        if (mglRenderCppCreateIndirectCommandBuffer(
+                commandTypes, 1, 1, 0, 0, maxCommandCount,
+                MTLResourceStorageModePrivate, &bufferCPP) == 0 &&
+            bufferCPP) {
+            return (__bridge_transfer id<MTLIndirectCommandBuffer>)bufferCPP;
+        }
+    }
+    MTLIndirectCommandBufferDescriptor *descriptor =
+        [[MTLIndirectCommandBufferDescriptor alloc] init];
+    descriptor.commandTypes = indexed
+        ? MTLIndirectCommandTypeDrawIndexed
+        : MTLIndirectCommandTypeDraw;
+    descriptor.inheritPipelineState = YES;
+    descriptor.inheritBuffers = YES;
+    descriptor.maxVertexBufferBindCount = 0;
+    descriptor.maxFragmentBufferBindCount = 0;
+    return [device newIndirectCommandBufferWithDescriptor:descriptor
+                                           maxCommandCount:maxCommandCount
+                                                   options:MTLResourceStorageModePrivate];
+}
+
+static void mglBatchResetIndirectCommandBuffer(
+    id<MTLIndirectCommandBuffer> indirectBuffer,
+    NSRange range)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppResetIndirectCommandBuffer(
+            (__bridge void *)indirectBuffer, range.location, range.length) == 0) {
+        return;
+    }
+    [indirectBuffer resetWithRange:range];
+}
+
+static id<MTLIndirectRenderCommand> mglBatchIndirectRenderCommand(
+    id<MTLIndirectCommandBuffer> indirectBuffer,
+    NSUInteger index)
+{
+    if (mglBatchUsesMetalCpp()) {
+        void *commandCPP = NULL;
+        if (mglRenderCppGetIndirectRenderCommand(
+                (__bridge void *)indirectBuffer, index, &commandCPP) == 0 &&
+            commandCPP) {
+            return (__bridge id<MTLIndirectRenderCommand>)commandCPP;
+        }
+    }
+    return [indirectBuffer indirectRenderCommandAtIndex:index];
+}
+
+static void mglBatchSetIndirectDrawIndexed(
+    id<MTLIndirectRenderCommand> command,
+    MTLPrimitiveType primitiveType,
+    NSUInteger indexCount,
+    MTLIndexType indexType,
+    id<MTLBuffer> indexBuffer,
+    NSUInteger indexBufferOffset,
+    NSUInteger instanceCount,
+    NSInteger baseVertex,
+    NSUInteger baseInstance)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppSetIndirectDrawIndexed(
+            (__bridge void *)command, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [command drawIndexedPrimitives:primitiveType
+                        indexCount:indexCount
+                         indexType:indexType
+                       indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount
+                        baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
+
+static void mglBatchSetIndirectDraw(
+    id<MTLIndirectRenderCommand> command,
+    MTLPrimitiveType primitiveType,
+    NSUInteger vertexStart,
+    NSUInteger vertexCount,
+    NSUInteger instanceCount,
+    NSUInteger baseInstance)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppSetIndirectDraw(
+            (__bridge void *)command, (uint32_t)primitiveType, vertexStart,
+            vertexCount, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [command drawPrimitives:primitiveType
+                vertexStart:vertexStart
+                vertexCount:vertexCount
+              instanceCount:instanceCount
+               baseInstance:baseInstance];
+}
+
+static void mglBatchUseRenderResource(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLResource> resource,
+    MTLResourceUsage usage,
+    MTLRenderStages stages)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppUseRenderResource(
+            (__bridge void *)encoder, (__bridge void *)resource,
+            (uint32_t)usage, (uint32_t)stages) == 0) {
+        return;
+    }
+    [encoder useResource:resource usage:usage stages:stages];
+}
+
+static void mglBatchExecuteIndirectCommands(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLIndirectCommandBuffer> indirectBuffer,
+    NSRange range)
+{
+    if (mglBatchUsesMetalCpp() &&
+        mglRenderCppExecuteIndirectCommands(
+            (__bridge void *)encoder, (__bridge void *)indirectBuffer,
+            range.location, range.length) == 0) {
+        return;
+    }
+    [encoder executeCommandsInBuffer:indirectBuffer withRange:range];
+}
 
 static BOOL mglTextureMayNeedUploadEncoderDuringReplay(Texture *tex)
 {
@@ -333,7 +530,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)invalidateLastBoundState
 {
-    [_bindingSync invalidate];
+    mglRenderCppBindingInvalidate(_bindingStateOwner);
 }
 
 /* DUAL-PROXY INVARIANT HELPERS: see MGLRenderer_Private.h.
@@ -370,65 +567,87 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
 - (void)recordLastBoundVertexBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    [_bindingSync recordVertexBuffer:buffer offset:offset atIndex:index];
+    mglRenderCppBindingRecordVertexBuffer(
+        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
 }
 
 - (void)recordLastBoundFragmentBuffer:(id<MTLBuffer>)buffer offset:(NSUInteger)offset atIndex:(NSUInteger)index
 {
-    [_bindingSync recordFragmentBuffer:buffer offset:offset atIndex:index];
+    mglRenderCppBindingRecordFragmentBuffer(
+        _bindingStateOwner, (__bridge void *)buffer, offset, (uint32_t)index);
 }
 
 - (void)invalidateLastBoundVertexBufferAtIndex:(NSUInteger)index
 {
-    [_bindingSync invalidateVertexBufferAtIndex:index];
+    mglRenderCppBindingInvalidateVertexBuffer(
+        _bindingStateOwner, (uint32_t)index);
 }
 
 - (void)invalidateLastBoundFragmentBufferAtIndex:(NSUInteger)index
 {
-    [_bindingSync invalidateFragmentBufferAtIndex:index];
+    mglRenderCppBindingInvalidateFragmentBuffer(
+        _bindingStateOwner, (uint32_t)index);
 }
 
 - (void)setVertexTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
 {
-    [_bindingSync setVertexTextureIfNeeded:texture
-                                   atIndex:index
-                                   encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetTexture(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+        (uint32_t)index);
 }
 
 - (void)setFragmentTextureIfNeeded:(id<MTLTexture>)texture atIndex:(NSUInteger)index
 {
-    [_bindingSync setFragmentTextureIfNeeded:texture
-                                     atIndex:index
-                                     encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetTexture(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        (__bridge void *)texture, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+        (uint32_t)index);
 }
 
 - (void)setVertexSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
 {
-    [_bindingSync setVertexSamplerIfNeeded:sampler
-                                   atIndex:index
-                                   encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetSampler(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+        (uint32_t)index);
 }
 
 - (void)setFragmentSamplerStateIfNeeded:(id<MTLSamplerState>)sampler atIndex:(NSUInteger)index
 {
-    [_bindingSync setFragmentSamplerIfNeeded:sampler
-                                     atIndex:index
-                                     encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetSampler(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        (__bridge void *)sampler, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+        (uint32_t)index);
 }
 
 - (void)setViewportIfNeeded:(MTLViewport)viewport
 {
-    [_bindingSync setViewportIfNeeded:viewport encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetViewport(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        viewport.originX, viewport.originY, viewport.width, viewport.height,
+        viewport.znear, viewport.zfar);
 }
 
 - (void)setScissorRectIfNeeded:(MTLScissorRect)rect
 {
-    [_bindingSync setScissorRectIfNeeded:rect encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetScissor(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        rect.x, rect.y, rect.width, rect.height);
 }
 
 - (void)setTriangleFillModeIfNeeded:(MTLTriangleFillMode)mode
 {
-    [_bindingSync setTriangleFillModeIfNeeded:mode encoder:_renderPassManager.state->currentRenderEncoder];
+    mglRenderCppBindingSetTriangleFill(
+        _bindingStateOwner,
+        (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+        (uint32_t)mode);
 }
 
 - (bool)syncResourceBindingsForContext:(GLMContext)glm_ctx
@@ -1002,7 +1221,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                 lastExecuteOk &&
                 !lastWasStreamBatch &&
                 _renderPassManager.state->currentRenderEncoder != nil &&
-                _bindingSync.state->lastBoundValid &&
+                mglBindingStateIsValid(_bindingStateOwner) &&
                 mglStateKeysEqual(&batch->key, &lastKey) &&
                 wantAbsoluteVertexOffsets == _batching.absoluteVertexBindingOffsets &&
                 [self currentRenderPassMatchesCurrentFramebuffer]) {
@@ -1013,7 +1232,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                  * (in evaluation order) so Plan-B can target the real cause. */
                 if (_renderPassManager.state->currentRenderEncoder == nil) {
                     MGL_PERF_INC(g_mglSkipFailNoEncoderSinceSwap);
-                } else if (!_bindingSync.state->lastBoundValid) {
+                } else if (!mglBindingStateIsValid(_bindingStateOwner)) {
                     MGL_PERF_INC(g_mglSkipFailBindInvalidSinceSwap);
                 } else if (!mglStateKeysEqual(&batch->key, &lastKey)) {
                     MGL_PERF_INC(g_mglSkipFailKeyDifferSinceSwap);
@@ -1172,6 +1391,15 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         return MGL_BATCH_PATH_DIRECT;
     }
 
+    Program *vertexProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (vertexProgram && vertexProgram->uses_cull_distance) {
+        /* CullDistance capture and per-primitive expansion are performed by
+         * issueDirectBatch. MDI/ICB/stream merge cannot preserve the hidden
+         * capture buffer and primitive-local sibling lookup. */
+        return MGL_BATCH_PATH_DIRECT;
+    }
+
     if (batch->stream_merged) {
         return MGL_BATCH_PATH_STREAM_MERGE;
     }
@@ -1273,7 +1501,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     BOOL canDelta = _batching.dirtyKeyDeltaEnabled &&
                     prevKeyValid &&
                     _renderPassManager.state->currentRenderEncoder != nil &&
-                    _bindingSync.state->lastBoundValid;
+                    mglBindingStateIsValid(_bindingStateOwner);
 
     if (canDelta) {
         const MGLStateKey *a = prevKey;
@@ -1332,7 +1560,7 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
         replayDirtyBits |= DIRTY_FBO;
     }
     /* Empty encoder cannot delta-bind — force full domains. */
-    if (_renderPassManager.state->currentRenderEncoder == nil || !_bindingSync.state->lastBoundValid) {
+    if (_renderPassManager.state->currentRenderEncoder == nil || !mglBindingStateIsValid(_bindingStateOwner)) {
         replayDirtyBits = kMGLFullReplayDirtyBits |
                           ((replayDirtyBits & DIRTY_FBO) ? DIRTY_FBO : 0);
         if ((replayFBO && (replayFBO->dirty_bits & DIRTY_FBO_BINDING)) ||
@@ -1598,14 +1826,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     MGLDrawCommand *firstCmd = &batch->commands[0];
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
 
-    [encCtx->encoder drawIndexedPrimitives:primType
-                                      indexCount:(NSUInteger)batch->stream_index_count
-                                       indexType:MTLIndexTypeUInt32
-                                     indexBuffer:mtlIndexBuffer
-                               indexBufferOffset:0
-                                   instanceCount:1
-                                      baseVertex:0
-                                    baseInstance:firstCmd->baseInstance];
+    mglBatchDrawIndexedPrimitives(
+        encCtx->encoder, primType, (NSUInteger)batch->stream_index_count,
+        MTLIndexTypeUInt32, mtlIndexBuffer, 0, 1, 0,
+        firstCmd->baseInstance);
     [self traceReplayCommand:batch
                      command:firstCmd
                      context:glm_ctx
@@ -1706,12 +1930,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
     MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
-        [encCtx->encoder drawIndexedPrimitives:primType
-                                           indexType:MTLIndexTypeUInt32
-                                         indexBuffer:mtlIndexBuffer
-                                   indexBufferOffset:(NSUInteger)cmd->indexBufferOffset
-                                      indirectBuffer:indirectArgsBuffer
-                                indirectBufferOffset:indirectArgsOffset + (i * argSize)];
+        mglBatchDrawIndexedPrimitivesIndirect(
+            encCtx->encoder, primType, MTLIndexTypeUInt32, mtlIndexBuffer,
+            (NSUInteger)cmd->indexBufferOffset, indirectArgsBuffer,
+            indirectArgsOffset + (i * argSize));
         [self traceReplayCommand:batch
                          command:cmd
                          context:glm_ctx
@@ -1760,18 +1982,10 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
 
     if (@available(macOS 10.14, *)) {
         BOOL indexed = batch->uses_elements ? YES : NO;
-        MTLIndirectCommandBufferDescriptor *descriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
-        descriptor.commandTypes = indexed ? MTLIndirectCommandTypeDrawIndexed : MTLIndirectCommandTypeDraw;
-        descriptor.inheritPipelineState = YES;
-        descriptor.inheritBuffers = YES;
-        descriptor.maxVertexBufferBindCount = 0;
-        descriptor.maxFragmentBufferBindCount = 0;
-
         id<MTLIndirectCommandBuffer> icb = nil;
         @try {
-            icb = [_device newIndirectCommandBufferWithDescriptor:descriptor
-                                                  maxCommandCount:(NSUInteger)batch->command_count
-                                                          options:MTLResourceStorageModePrivate];
+            icb = mglBatchCreateIndirectCommandBuffer(
+                _device, indexed, (NSUInteger)batch->command_count);
         } @catch (NSException *exception) {
             static uint64_t s_icbCreateExceptionCount = 0;
             uint64_t hit = ++s_icbCreateExceptionCount;
@@ -1800,7 +2014,8 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
             return NO;
         }
 
-        [icb resetWithRange:NSMakeRange(0, (NSUInteger)batch->command_count)];
+        mglBatchResetIndirectCommandBuffer(
+            icb, NSMakeRange(0, (NSUInteger)batch->command_count));
 
         MTLPrimitiveType primType = (MTLPrimitiveType)batch->key.primitive_type;
         if (indexed) {
@@ -1856,7 +2071,8 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                     return NO;
                 }
 
-                id<MTLIndirectRenderCommand> indirectCommand = [icb indirectRenderCommandAtIndex:(NSUInteger)i];
+                id<MTLIndirectRenderCommand> indirectCommand =
+                    mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
                                      command:cmd
@@ -1869,22 +2085,21 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                     return NO;
                 }
 
-                [indirectCommand drawIndexedPrimitives:primType
-                                            indexCount:(NSUInteger)cmd->count
-                                             indexType:drawIndexType
-                                           indexBuffer:drawIndexBuffer
-                                     indexBufferOffset:drawIndexOffset
-                                         instanceCount:(NSUInteger)cmd->instanceCount
-                                            baseVertex:(NSInteger)cmd->baseVertex
-                                          baseInstance:(NSUInteger)cmd->baseInstance];
-                [encCtx->encoder useResource:drawIndexBuffer
-                                             usage:MTLResourceUsageRead
-                                            stages:MTLRenderStageVertex];
+                mglBatchSetIndirectDrawIndexed(
+                    indirectCommand, primType, (NSUInteger)cmd->count,
+                    drawIndexType, drawIndexBuffer, drawIndexOffset,
+                    (NSUInteger)cmd->instanceCount,
+                    (NSInteger)cmd->baseVertex,
+                    (NSUInteger)cmd->baseInstance);
+                mglBatchUseRenderResource(
+                    encCtx->encoder, drawIndexBuffer, MTLResourceUsageRead,
+                    MTLRenderStageVertex);
             }
         } else {
             for (uint32_t i = 0; i < batch->command_count; i++) {
                 MGLDrawCommand *cmd = &batch->commands[i];
-                id<MTLIndirectRenderCommand> indirectCommand = [icb indirectRenderCommandAtIndex:(NSUInteger)i];
+                id<MTLIndirectRenderCommand> indirectCommand =
+                    mglBatchIndirectRenderCommand(icb, (NSUInteger)i);
                 if (!indirectCommand) {
                     [self traceReplayCommand:batch
                                      command:cmd
@@ -1896,19 +2111,19 @@ static BOOL mglBatchMayNeedTextureUploadEncoderDuringReplay(const MGLDrawBatch *
                                       reason:"icb_command_nil"];
                     return NO;
                 }
-                [indirectCommand drawPrimitives:primType
-                                    vertexStart:(NSUInteger)cmd->first
-                                    vertexCount:(NSUInteger)cmd->count
-                                  instanceCount:(NSUInteger)cmd->instanceCount
-                                   baseInstance:(NSUInteger)cmd->baseInstance];
+                mglBatchSetIndirectDraw(
+                    indirectCommand, primType, (NSUInteger)cmd->first,
+                    (NSUInteger)cmd->count, (NSUInteger)cmd->instanceCount,
+                    (NSUInteger)cmd->baseInstance);
             }
         }
 
-        [encCtx->encoder useResource:icb
-                                     usage:MTLResourceUsageRead
-                                    stages:MTLRenderStageVertex];
-        [encCtx->encoder executeCommandsInBuffer:icb
-                                             withRange:NSMakeRange(0, (NSUInteger)batch->command_count)];
+        mglBatchUseRenderResource(
+            encCtx->encoder, icb, MTLResourceUsageRead,
+            MTLRenderStageVertex);
+        mglBatchExecuteIndirectCommands(
+            encCtx->encoder, icb,
+            NSMakeRange(0, (NSUInteger)batch->command_count));
         for (uint32_t i = 0; i < batch->command_count; i++) {
             [self traceReplayCommand:batch
                              command:&batch->commands[i]

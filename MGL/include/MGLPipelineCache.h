@@ -77,6 +77,7 @@ NS_ASSUME_NONNULL_BEGIN
 @private
     MGLPipelineCacheState _state;
     id<MTLDevice> _device;
+    void *_cppOwner;
 }
 
 @property(nonatomic, readonly) const MGLPipelineCacheState *state;
@@ -98,6 +99,21 @@ NS_ASSUME_NONNULL_BEGIN
 - (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key;
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                          forKey:(MGLPipelineCacheKey *)key;
+/* Typed cache path used by the renderer. Metal-cpp mode stays allocation-free
+ * on hits; the ObjC key/dictionary path remains only as the temporary A/B
+ * baseline until the facade itself is deleted. */
+- (BOOL)lookupPipelineForWords:(const uint64_t * _Nonnull)words
+                      pipeline:(id<MTLRenderPipelineState> _Nullable * _Nonnull)pipelineOut
+                vertexFunction:(id<MTLFunction> _Nullable * _Nonnull)vertexFunctionOut
+              fragmentFunction:(id<MTLFunction> _Nullable * _Nonnull)fragmentFunctionOut;
+- (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
+    (const uint64_t * _Nonnull)words;
+- (NSUInteger)storePipeline:(id<MTLRenderPipelineState>)pipeline
+              vertexFunction:(nullable id<MTLFunction>)vertexFunction
+            fragmentFunction:(nullable id<MTLFunction>)fragmentFunction
+                    forWords:(const uint64_t * _Nonnull)words;
+- (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+                       forWords:(const uint64_t * _Nonnull)words;
 
 - (void)initializeCompilerIfAvailableUnlessDisabled:(BOOL)disabled;
 - (nullable id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source

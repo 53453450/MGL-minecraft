@@ -4,9 +4,499 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
-#include "mgl_render_cpp.h"     /* METALCPP: mglRenderCppGetDevice() */
+#include "mgl_render_cpp_objc.h" /* METALCPP: C ABI + ObjC state adapter */
+#include "mgl_shader_abi.h"
 
 #import <objc/message.h>
+
+static BOOL mglRenderPassUsesMetalCpp(void)
+{
+    return mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static MGLRenderCppRenderPassIdentityState mglRenderPassIdentitySnapshot(
+    const MGLCommandState *commandState)
+{
+    MGLRenderCppRenderPassIdentityState identity = {0};
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassIdentityOwner &&
+        mglRenderCppGetRenderPassIdentity(
+            commandState->renderPassIdentityOwner, &identity) == 0) {
+        return identity;
+    }
+    identity.framebuffer = commandState->renderPassFramebuffer;
+    identity.framebuffer_name = commandState->renderPassFramebufferName;
+    identity.draw_buffer = commandState->renderPassDrawBuffer;
+    identity.draw_buffer_count = commandState->renderPassDrawBufferCount;
+    for (uint32_t index = 0; index < MAX_COLOR_ATTACHMENTS; ++index) {
+        identity.draw_buffers[index] = commandState->renderPassDrawBuffers[index];
+    }
+    return identity;
+}
+
+static id<MTLTexture> mglRenderPassCreateTexture(
+    id<MTLDevice> device,
+    MTLTextureDescriptor *descriptor)
+{
+    if (mglRenderPassUsesMetalCpp()) {
+        void *texture = NULL;
+        MGLRenderCppTextureDescriptorState state =
+            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+            texture) {
+            return (__bridge_transfer id<MTLTexture>)texture;
+        }
+    }
+    return [device newTextureWithDescriptor:descriptor];
+}
+
+static id<MTLBuffer> mglRenderPassCreateBufferWithBytes(
+    id<MTLDevice> device,
+    const void *bytes,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglRenderPassUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                              &buffer) == 0 && buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithBytes:bytes length:length options:options];
+}
+
+static id<MTLCommandQueue> mglRenderPassCreateCommandQueue(
+    id<MTLDevice> device,
+    void **owner)
+{
+    if (mglRenderPassUsesMetalCpp()) {
+        id<MTLCommandQueue> queue =
+            mglRenderCppCreateOrResetCommandQueueOwner(owner, 0u);
+        if (queue) return queue;
+    }
+    mglRenderCppDestroyCommandQueueOwner(owner);
+    return [device newCommandQueue];
+}
+
+static id<MTLFunction> mglRenderPassCreateFunction(
+    id<MTLLibrary> library,
+    NSString *name,
+    char *errorText,
+    size_t errorCap)
+{
+    if (mglRenderPassUsesMetalCpp()) {
+        void *function = NULL;
+        if (mglRenderCppCreateFunction(
+                (__bridge void *)library, name.UTF8String, NULL,
+                &function, errorText, errorCap) == 0 && function) {
+            return (__bridge_transfer id<MTLFunction>)function;
+        }
+        return nil;
+    }
+    return [library newFunctionWithName:name];
+}
+
+static id<MTLRenderPipelineState> mglRenderPassCreatePipeline(
+    id<MTLDevice> device,
+    MTLRenderPipelineDescriptor *descriptor,
+    NSError **error)
+{
+    if (mglRenderPassUsesMetalCpp()) {
+        void *pipeline = NULL;
+        char message[512] = {0};
+        if (mglRenderCppCreateRenderPipelineState(
+                (__bridge void *)descriptor, &pipeline,
+                message, sizeof(message)) == 0 && pipeline) {
+            if (error) *error = nil;
+            return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
+        }
+        if (error) {
+            NSString *description = message[0]
+                ? [NSString stringWithUTF8String:message]
+                : @"Metal-cpp render pipeline creation failed";
+            *error = [NSError errorWithDomain:@"MGLRenderPipeline"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    description}];
+        }
+        return nil;
+    }
+    return [device newRenderPipelineStateWithDescriptor:descriptor error:error];
+}
+
+static void mglRenderPassSetDepthClipMode(
+    id<MTLRenderCommandEncoder> encoder,
+    MTLDepthClipMode mode)
+{
+    if (mglRenderPassUsesMetalCpp() &&
+        mglRenderCppSetDepthClipMode((__bridge void *)encoder,
+                                     (uint32_t)mode) == 0) {
+        return;
+    }
+    [encoder setDepthClipMode:mode];
+}
+
+static void mglRenderPassSetStencilReferenceValues(
+    id<MTLRenderCommandEncoder> encoder,
+    uint32_t frontReference,
+    uint32_t backReference)
+{
+    if (mglRenderPassUsesMetalCpp() &&
+        mglRenderCppSetStencilReferenceValues(
+            (__bridge void *)encoder, frontReference, backReference) == 0) {
+        return;
+    }
+    [encoder setStencilFrontReferenceValue:frontReference
+                        backReferenceValue:backReference];
+}
+
+static void mglRenderPassSetFragmentBytes(
+    id<MTLRenderCommandEncoder> encoder,
+    const void *bytes,
+    NSUInteger length,
+    NSUInteger index)
+{
+    if (mglRenderPassUsesMetalCpp() &&
+        mglRenderCppSetRenderBytes(
+            (__bridge void *)encoder, bytes, length,
+            MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT, (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setFragmentBytes:bytes length:length atIndex:index];
+}
+
+static void mglRenderPassSetBuffer(
+    id<MTLRenderCommandEncoder> encoder,
+    id<MTLBuffer> buffer,
+    NSUInteger offset,
+    uint32_t stage,
+    NSUInteger index)
+{
+    if (mglRenderPassUsesMetalCpp() &&
+        mglRenderCppSetRenderBuffer(
+            (__bridge void *)encoder, (__bridge void *)buffer, offset, stage,
+            (uint32_t)index) == 0) {
+        return;
+    }
+    if (stage == MGL_RENDER_CPP_BINDING_STAGE_VERTEX) {
+        [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+    } else {
+        [encoder setFragmentBuffer:buffer offset:offset atIndex:index];
+    }
+}
+
+static void mglRenderPassWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglRenderPassUsesMetalCpp() &&
+        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+        return;
+    }
+    [commandBuffer waitUntilCompleted];
+}
+
+static bool mglRenderPassGetPersistentState(
+    const MGLCommandState *commandState,
+    MGLRenderCppRenderPassState *stateOut)
+{
+    return commandState && stateOut && commandState->renderPassStateOwner &&
+           mglRenderCppGetRenderPassStateOwner(
+               commandState->renderPassStateOwner, stateOut) == 0;
+}
+
+static bool mglRenderPassGetPersistentAttachmentState(
+    const MGLCommandState *commandState,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MGLRenderCppRenderPassAttachmentState *attachmentOut)
+{
+    if (!attachmentOut) return false;
+    MGLRenderCppRenderPassState state = {0};
+    if (!mglRenderPassGetPersistentState(commandState, &state)) return false;
+    switch (attachmentKind) {
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+            if (colorIndex >= MAX_COLOR_ATTACHMENTS) return false;
+            *attachmentOut = state.color[colorIndex].attachment;
+            return true;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+            *attachmentOut = state.depth.attachment;
+            return true;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+            *attachmentOut = state.stencil.attachment;
+            return true;
+        default:
+            return false;
+    }
+}
+
+static const MGLRenderCppRenderPassAttachmentState *
+mglRenderPassAttachmentStateFromSnapshot(
+    const MGLRenderCppRenderPassState *state,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex)
+{
+    if (!state) return NULL;
+    switch (attachmentKind) {
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+            return colorIndex < MAX_COLOR_ATTACHMENTS
+                ? &state->color[colorIndex].attachment : NULL;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+            return &state->depth.attachment;
+        case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+            return &state->stencil.attachment;
+        default:
+            return NULL;
+    }
+}
+
+static id<MTLTexture> mglRenderPassTextureFromSnapshot(
+    const MGLRenderCppRenderPassState *state,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex)
+{
+    const MGLRenderCppRenderPassAttachmentState *attachment =
+        mglRenderPassAttachmentStateFromSnapshot(
+            state, attachmentKind, colorIndex);
+    return attachment && attachment->texture
+        ? (__bridge id<MTLTexture>)attachment->texture : nil;
+}
+
+static bool mglRenderPassSnapshotAttachmentMatchesSubresource(
+    const MGLRenderCppRenderPassState *state,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MGLMetalAttachmentSubresource subresource)
+{
+    const MGLRenderCppRenderPassAttachmentState *attachment =
+        mglRenderPassAttachmentStateFromSnapshot(
+            state, attachmentKind, colorIndex);
+    return attachment &&
+           attachment->level == subresource.level &&
+           attachment->slice == subresource.slice &&
+           attachment->depth_plane == subresource.depthPlane;
+}
+
+static void mglRenderPassSetPersistentAttachment(
+    const MGLCommandState *commandState,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    id<MTLTexture> texture,
+    NSUInteger level,
+    NSUInteger slice,
+    NSUInteger depthPlane)
+{
+    if (!commandState) return;
+    MTLRenderPassAttachmentDescriptor *attachment = nil;
+    if (commandState->renderPassDescriptor) {
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex >= MAX_COLOR_ATTACHMENTS) return;
+                attachment = commandState->renderPassDescriptor
+                    .colorAttachments[colorIndex];
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                attachment = commandState->renderPassDescriptor.depthAttachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                attachment = commandState->renderPassDescriptor.stencilAttachment;
+                break;
+            default:
+                return;
+        }
+        attachment.texture = texture;
+        attachment.level = level;
+        attachment.slice = slice;
+        attachment.depthPlane = depthPlane;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateAttachmentTexture(
+            commandState->renderPassStateOwner, attachmentKind,
+            (uint32_t)colorIndex, (__bridge void *)texture,
+            level, slice, depthPlane);
+    }
+}
+
+static void mglRenderPassSetPersistentDimensions(
+    const MGLCommandState *commandState,
+    NSUInteger width,
+    NSUInteger height)
+{
+    if (!commandState) return;
+    if (commandState->renderPassDescriptor) {
+        commandState->renderPassDescriptor.renderTargetWidth = width;
+        commandState->renderPassDescriptor.renderTargetHeight = height;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateDimensions(
+            commandState->renderPassStateOwner, width, height);
+    }
+}
+
+static void mglRenderPassSetPersistentActions(
+    const MGLCommandState *commandState,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MTLLoadAction loadAction,
+    MTLStoreAction storeAction)
+{
+    if (!commandState) return;
+    uint64_t storeActionOptions = 0u;
+    MTLRenderPassAttachmentDescriptor *attachment = nil;
+    if (commandState->renderPassDescriptor) {
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex >= MAX_COLOR_ATTACHMENTS) return;
+                attachment = commandState->renderPassDescriptor
+                    .colorAttachments[colorIndex];
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                attachment = commandState->renderPassDescriptor.depthAttachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                attachment = commandState->renderPassDescriptor.stencilAttachment;
+                break;
+            default:
+                return;
+        }
+        attachment.loadAction = loadAction;
+        attachment.storeAction = storeAction;
+        storeActionOptions = attachment.storeActionOptions;
+    } else {
+        MGLRenderCppRenderPassAttachmentState state = {0};
+        if (!mglRenderPassGetPersistentAttachmentState(
+                commandState, attachmentKind, colorIndex, &state)) {
+            return;
+        }
+        storeActionOptions = state.store_action_options;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateAttachmentActions(
+            commandState->renderPassStateOwner, attachmentKind,
+            (uint32_t)colorIndex, (uint32_t)loadAction,
+            (uint32_t)storeAction, storeActionOptions);
+    }
+}
+
+static void mglRenderPassSetPersistentLoadAction(
+    const MGLCommandState *commandState,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MTLLoadAction loadAction)
+{
+    MTLStoreAction storeAction = MTLStoreActionDontCare;
+    MGLRenderCppRenderPassAttachmentState state = {0};
+    if (mglRenderPassGetPersistentAttachmentState(
+            commandState, attachmentKind, colorIndex, &state)) {
+        storeAction = (MTLStoreAction)state.store_action;
+    } else if (commandState && commandState->renderPassDescriptor) {
+        MTLRenderPassAttachmentDescriptor *attachment = nil;
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex >= MAX_COLOR_ATTACHMENTS) return;
+                attachment = commandState->renderPassDescriptor
+                    .colorAttachments[colorIndex];
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                attachment = commandState->renderPassDescriptor.depthAttachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                attachment = commandState->renderPassDescriptor.stencilAttachment;
+                break;
+            default:
+                return;
+        }
+        storeAction = attachment.storeAction;
+    } else {
+        return;
+    }
+    mglRenderPassSetPersistentActions(
+        commandState, attachmentKind, colorIndex, loadAction, storeAction);
+}
+
+static void mglRenderPassSetPersistentStoreAction(
+    const MGLCommandState *commandState,
+    uint32_t attachmentKind,
+    NSUInteger colorIndex,
+    MTLStoreAction storeAction)
+{
+    MTLLoadAction loadAction = MTLLoadActionDontCare;
+    MGLRenderCppRenderPassAttachmentState state = {0};
+    if (mglRenderPassGetPersistentAttachmentState(
+            commandState, attachmentKind, colorIndex, &state)) {
+        loadAction = (MTLLoadAction)state.load_action;
+    } else if (commandState && commandState->renderPassDescriptor) {
+        MTLRenderPassAttachmentDescriptor *attachment = nil;
+        switch (attachmentKind) {
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR:
+                if (colorIndex >= MAX_COLOR_ATTACHMENTS) return;
+                attachment = commandState->renderPassDescriptor
+                    .colorAttachments[colorIndex];
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH:
+                attachment = commandState->renderPassDescriptor.depthAttachment;
+                break;
+            case MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL:
+                attachment = commandState->renderPassDescriptor.stencilAttachment;
+                break;
+            default:
+                return;
+        }
+        loadAction = attachment.loadAction;
+    } else {
+        return;
+    }
+    mglRenderPassSetPersistentActions(
+        commandState, attachmentKind, colorIndex, loadAction, storeAction);
+}
+
+static void mglRenderPassSetPersistentColorClear(
+    const MGLCommandState *commandState,
+    NSUInteger colorIndex,
+    MTLClearColor clearColor)
+{
+    if (!commandState || colorIndex >= MAX_COLOR_ATTACHMENTS) {
+        return;
+    }
+    if (commandState->renderPassDescriptor) {
+        commandState->renderPassDescriptor.colorAttachments[colorIndex].clearColor =
+            clearColor;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateColorClear(
+            commandState->renderPassStateOwner, (uint32_t)colorIndex,
+            clearColor.red, clearColor.green, clearColor.blue,
+            clearColor.alpha);
+    }
+}
+
+static void mglRenderPassSetPersistentDepthClear(
+    const MGLCommandState *commandState,
+    double clearDepth)
+{
+    if (!commandState) return;
+    if (commandState->renderPassDescriptor) {
+        commandState->renderPassDescriptor.depthAttachment.clearDepth = clearDepth;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateDepthClear(
+            commandState->renderPassStateOwner, clearDepth);
+    }
+}
+
+static void mglRenderPassSetPersistentStencilClear(
+    const MGLCommandState *commandState,
+    uint32_t clearStencil)
+{
+    if (!commandState) return;
+    if (commandState->renderPassDescriptor) {
+        commandState->renderPassDescriptor.stencilAttachment.clearStencil =
+            clearStencil;
+    }
+    if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
+        mglRenderCppSetRenderPassStateStencilClear(
+            commandState->renderPassStateOwner, clearStencil);
+    }
+}
 
 static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 {
@@ -30,7 +520,256 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
            !strstr(src, "gl_ViewportIndex");
 }
 
+static bool mglLoadAIRMainFunction(id<MTLDevice> device,
+                                   const unsigned char *bytes,
+                                   size_t size,
+                                   id<MTLLibrary> __strong *libraryOut,
+                                   id<MTLFunction> __strong *functionOut,
+                                   char *errorText,
+                                   size_t errorCap)
+{
+    if (!device || !bytes || size == 0u || !libraryOut || !functionOut) {
+        if (errorText && errorCap) snprintf(errorText, errorCap, "bad args");
+        return false;
+    }
+    id<MTLLibrary> library = nil;
+    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
+        void *libraryCPP = NULL;
+        void *deviceCPP = mglRenderCppGetDevice();
+        if (!deviceCPP ||
+            mglAirLoadLibrary(deviceCPP, bytes, size, &libraryCPP,
+                              errorText, errorCap) != 0 || !libraryCPP) {
+            return false;
+        }
+        library = (__bridge_transfer id<MTLLibrary>)libraryCPP;
+    } else {
+        dispatch_data_t data = dispatch_data_create(
+            bytes, size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+        __autoreleasing NSError *error = nil;
+        library = [device newLibraryWithData:data error:&error];
+        if (!library) {
+            if (errorText && errorCap) {
+                snprintf(errorText, errorCap, "%s",
+                         error.localizedDescription.UTF8String ?: "?");
+            }
+            return false;
+        }
+    }
+    id<MTLFunction> function =
+        mglRenderPassCreateFunction(library, @"main", errorText, errorCap);
+    if (!function) {
+        if (errorText && errorCap) snprintf(errorText, errorCap, "missing main");
+        return false;
+    }
+    *libraryOut = library;
+    *functionOut = function;
+    return true;
+}
+
+/* Build the same descriptor state used by the ObjC finalDescriptor and ask
+ * the Metal-cpp loader to create the PSO.  The C ABI carries only scalar
+ * Metal enum values; ObjC retains the returned PSO through bridge_transfer. */
+static id<MTLRenderPipelineState> mglCreateAIRRenderPipelineCpp(
+    id<MTLDevice> device, Program *vertexProgram, int vertexStage,
+    Program *fragmentProgram, MTLRenderPipelineDescriptor *descriptor,
+    MTLVertexDescriptor *vertexDescriptor, void *vertexLibraryOverride,
+    char *errorText, size_t errorCap)
+{
+    if (!device || !vertexProgram || !descriptor || !vertexDescriptor ||
+        !mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") || !mglRenderCppGetDevice()) {
+        return nil;
+    }
+    Spirv *vsSpirv = &vertexProgram->spirv[vertexStage];
+    Spirv *fsSpirv = fragmentProgram ?
+        &fragmentProgram->spirv[_FRAGMENT_SHADER] : NULL;
+    if ((!vertexLibraryOverride &&
+         (!vsSpirv->metallib_bytes || !vsSpirv->mtl_library)) ||
+        (fragmentProgram && (!fsSpirv->metallib_bytes || !fsSpirv->mtl_library))) {
+        return nil;
+    }
+
+    MGLPipelineDescriptorState state = {0};
+    state.vertex_program_instance =
+        vertexProgram->pipeline_cache_instance_id;
+    state.vertex_program_generation =
+        vertexProgram->pipeline_cache_generation;
+    state.fragment_program_instance = fragmentProgram
+        ? fragmentProgram->pipeline_cache_instance_id : 0u;
+    state.fragment_program_generation = fragmentProgram
+        ? fragmentProgram->pipeline_cache_generation : 0u;
+    state.color_count = MAX_COLOR_ATTACHMENTS;
+    for (uint32_t i = 0; i < state.color_count && i < 8u; i++) {
+        MTLRenderPipelineColorAttachmentDescriptor *ca =
+            descriptor.colorAttachments[i];
+        state.color_format[i] = (uint32_t)ca.pixelFormat;
+        state.color_write_mask[i] = (uint32_t)ca.writeMask;
+        state.source_rgb_blend_factor[i] = (uint32_t)ca.sourceRGBBlendFactor;
+        state.destination_rgb_blend_factor[i] = (uint32_t)ca.destinationRGBBlendFactor;
+        state.source_alpha_blend_factor[i] = (uint32_t)ca.sourceAlphaBlendFactor;
+        state.destination_alpha_blend_factor[i] = (uint32_t)ca.destinationAlphaBlendFactor;
+        state.rgb_blend_operation[i] = (uint32_t)ca.rgbBlendOperation;
+        state.alpha_blend_operation[i] = (uint32_t)ca.alphaBlendOperation;
+        if (ca.blendingEnabled) state.blending_enabled_mask |= 1u << i;
+    }
+    state.depth_format = (uint32_t)descriptor.depthAttachmentPixelFormat;
+    state.stencil_format = (uint32_t)descriptor.stencilAttachmentPixelFormat;
+    state.rasterization_enabled = descriptor.rasterizationEnabled ? 1 : 0;
+    state.icb_enabled = descriptor.supportIndirectCommandBuffers ? 1 : 0;
+    state.alpha_to_coverage_enabled = descriptor.alphaToCoverageEnabled ? 1 : 0;
+    state.alpha_to_one_enabled = descriptor.alphaToOneEnabled ? 1 : 0;
+    state.input_primitive_topology = (uint32_t)descriptor.inputPrimitiveTopology;
+    state.raster_sample_count = (uint32_t)descriptor.rasterSampleCount;
+    for (uint32_t i = 0; i < 31u; i++) {
+        MTLVertexAttributeDescriptor *a = vertexDescriptor.attributes[i];
+        if (a.format == MTLVertexFormatInvalid) {
+            continue;
+        }
+        state.attrib_count = i + 1u;
+        state.attrib_format[i] = (uint32_t)a.format;
+        state.attrib_offset[i] = (uint32_t)a.offset;
+        state.attrib_buffer_index[i] = (uint32_t)a.bufferIndex;
+        NSUInteger bi = a.bufferIndex < 31u ? a.bufferIndex : 0u;
+        state.attrib_stride[i] = (uint32_t)vertexDescriptor.layouts[bi].stride;
+        state.attrib_step_function[i] =
+            (uint32_t)vertexDescriptor.layouts[bi].stepFunction;
+        state.attrib_step_rate[i] =
+            (uint32_t)vertexDescriptor.layouts[bi].stepRate;
+    }
+    state.tessellation_partition_mode =
+        (uint32_t)descriptor.tessellationPartitionMode;
+    state.max_tessellation_factor =
+        (uint32_t)descriptor.maxTessellationFactor;
+    state.tessellation_factor_scale_enabled =
+        descriptor.tessellationFactorScaleEnabled ? 1 : 0;
+    state.tessellation_factor_format =
+        (uint32_t)descriptor.tessellationFactorFormat;
+    state.tessellation_control_point_index_type =
+        (uint32_t)descriptor.tessellationControlPointIndexType;
+    state.tessellation_factor_step_function =
+        (uint32_t)descriptor.tessellationFactorStepFunction;
+    state.tessellation_output_winding_order =
+        (uint32_t)descriptor.tessellationOutputWindingOrder;
+
+    void *pso = NULL;
+    void *deviceCPP = mglRenderCppGetDevice();
+    void *vsFunction = (__bridge void *)descriptor.vertexFunction;
+    void *fsFunction = descriptor.fragmentFunction
+        ? (__bridge void *)descriptor.fragmentFunction : NULL;
+    if (mglAirCreateRenderPipeline(deviceCPP, vsFunction, fsFunction, &state,
+                                   &pso, errorText, errorCap) != 0 || !pso) {
+        return nil;
+    }
+    return (__bridge_transfer id<MTLRenderPipelineState>)pso;
+}
+
 @implementation MGLRenderer (RenderPass)
+
+static const char *mglGeometryPassthroughType(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT: return "float";
+        case GL_FLOAT_VEC2: return "vec2";
+        case GL_FLOAT_VEC3: return "vec3";
+        case GL_FLOAT_VEC4: return "vec4";
+        default: return NULL;
+    }
+}
+
+static const char *mglGeometryPassthroughSwizzle(GLenum type)
+{
+    switch (type) {
+        case GL_FLOAT: return ".x";
+        case GL_FLOAT_VEC2: return ".xy";
+        case GL_FLOAT_VEC3: return ".xyz";
+        case GL_FLOAT_VEC4: return "";
+        default: return NULL;
+    }
+}
+
+- (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
+{
+    if (!program) return NO;
+    if (_geometry.passthroughLibrary && _geometry.passthroughFunction &&
+        _geometry.passthroughProgramInstanceId ==
+            program->pipeline_cache_instance_id) {
+        return YES;
+    }
+    _geometry.passthroughLibrary = nil;
+    _geometry.passthroughFunction = nil;
+    _geometry.passthroughProgramInstanceId = 0u;
+
+    SpirvResourceList *outputs =
+        &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
+    NSUInteger vec4Stride = recordStride / 16u;
+    NSMutableString *source = [NSMutableString stringWithString:
+        @"#version 460 core\n"
+         "layout(std430, binding = 0) buffer MGLGSOutput {\n"
+         "    vec4 records[];\n"
+         "} mgl_gs_output;\n"];
+    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+        SpirvResource *output = &outputs->list[i];
+        if (output->is_per_patch) continue;
+        const char *type = mglGeometryPassthroughType(output->gl_type);
+        if (!type || !output->name) {
+            NSLog(@"MGL GS ERROR: unsupported passthrough varying type 0x%x",
+                  (unsigned)output->gl_type);
+            return NO;
+        }
+        [source appendFormat:@"layout(location = %u) out %s %s;\n",
+                             (unsigned)output->location, type, output->name];
+    }
+    [source appendFormat:
+        @"void main() {\n"
+         "    int mgl_base = gl_VertexID * %lu;\n"
+         "    gl_Position = mgl_gs_output.records[mgl_base];\n"
+         "    vec4 mgl_point_size = "
+         "mgl_gs_output.records[mgl_base + 1];\n"
+         "    gl_PointSize = mgl_point_size.x;\n",
+         (unsigned long)vec4Stride];
+    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+        SpirvResource *output = &outputs->list[i];
+        if (output->is_per_patch) continue;
+        const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
+        if (!swizzle || !output->name) return NO;
+        [source appendFormat:
+            @"    vec4 mgl_slot_%u = "
+             "mgl_gs_output.records[mgl_base + %u];\n"
+             "    %s = mgl_slot_%u%s;\n",
+            (unsigned)i,
+            (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+            output->name, (unsigned)i,
+            swizzle];
+    }
+    [source appendString:@"}\n"];
+    unsigned char *bytes = NULL;
+    size_t size = 0u;
+    char errorText[512] = {0};
+    if (mglShaderCompileGLSL(source.UTF8String, MGL_STAGE_VERTEX, &bytes, &size,
+                             errorText, sizeof(errorText)) != 0 ||
+        !bytes || size == 0u) {
+        NSLog(@"MGL GS ERROR: failed to compile AIR passthrough vertex: %s",
+              errorText[0] ? errorText : "?");
+        mglShaderFree(bytes);
+        return NO;
+    }
+    id<MTLLibrary> library = nil;
+    id<MTLFunction> function = nil;
+    BOOL loaded = mglLoadAIRMainFunction(
+        _device, bytes, size, &library, &function,
+        errorText, sizeof(errorText));
+    mglShaderFree(bytes);
+    if (!loaded || !library || !function) {
+        NSLog(@"MGL GS ERROR: failed to load AIR passthrough vertex: %s",
+              errorText[0] ? errorText : "?");
+        return NO;
+    }
+    _geometry.passthroughLibrary = library;
+    _geometry.passthroughFunction = function;
+    _geometry.passthroughProgramInstanceId =
+        program->pipeline_cache_instance_id;
+    return YES;
+}
 
 
 - (void)mtlInvalidateRenderPass:(GLMContext)glm_ctx
@@ -46,8 +785,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
      * after a glBindFramebuffer round-trip).  Skip it — no content is lost.
      */
     Framebuffer *curFbo = MGL_STATE(glm_ctx)->framebuffer;
-    if (curFbo == _renderPassManager.state->renderPassFramebuffer &&
-        MGL_STATE(glm_ctx)->draw_buffer == _renderPassManager.state->renderPassDrawBuffer) {
+    MGLRenderCppRenderPassIdentityState identity =
+        mglRenderPassIdentitySnapshot(_renderPassManager.state);
+    if (curFbo == identity.framebuffer &&
+        MGL_STATE(glm_ctx)->draw_buffer == identity.draw_buffer) {
         return;
     }
 
@@ -116,7 +857,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool)currentRenderPassMatchesCurrentFramebuffer
 {
-    if (!ctx || !_renderPassManager.state->renderPassDescriptor) {
+    if (!ctx ||
+        (!_renderPassManager.state->renderPassDescriptor &&
+         !_renderPassManager.state->renderPassStateOwner)) {
         return true;
     }
 
@@ -127,10 +870,24 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
      * and render pass are unchanged.  Invalidated by MGLRenderPassManager on
      * encoder/descriptor/identity changes.  Default framebuffer is never
      * cached (its inputs change independently of fbo_attachment_generation). */
-    if (fbo != NULL && fboName != 0u &&
-        _renderPassManager.state->lastFboMatchFboName == fboName &&
-        _renderPassManager.state->lastFboMatchFboGeneration == fbo->fbo_attachment_generation) {
-        return _renderPassManager.state->lastFboMatchResult;
+    if (fbo != NULL && fboName != 0u) {
+        MGLRenderCppFboMatchCacheState cache = {0};
+        if (mglRenderPassUsesMetalCpp() &&
+            _renderPassManager.state->renderPassIdentityOwner &&
+            mglRenderCppGetFboMatchCache(
+                _renderPassManager.state->renderPassIdentityOwner,
+                &cache) == 0 &&
+            cache.fbo_name == fboName &&
+            cache.generation == fbo->fbo_attachment_generation) {
+            return cache.result != 0;
+        }
+        if ((!mglRenderPassUsesMetalCpp() ||
+             !_renderPassManager.state->renderPassIdentityOwner) &&
+            _renderPassManager.state->lastFboMatchFboName == fboName &&
+            _renderPassManager.state->lastFboMatchFboGeneration ==
+                fbo->fbo_attachment_generation) {
+            return _renderPassManager.state->lastFboMatchResult;
+        }
     }
 
     bool result = [self mglRenderPassMatchesFramebufferImpl:fbo name:fboName];
@@ -147,17 +904,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
 - (bool)mglRenderPassMatchesFramebufferImpl:(Framebuffer *)fbo name:(GLuint)fboName
 {
-    if (!ctx || !_renderPassManager.state->renderPassDescriptor) {
+    MGLRenderCppRenderPassState passState = {0};
+    bool hasPassState = mglRenderPassUsesMetalCpp() &&
+        mglRenderPassGetPersistentState(_renderPassManager.state, &passState);
+    if (!ctx ||
+        (!hasPassState && !_renderPassManager.state->renderPassDescriptor)) {
         return true;
     }
-    if (_renderPassManager.state->renderPassFramebuffer != fbo ||
-        _renderPassManager.state->renderPassFramebufferName != fboName ||
-        _renderPassManager.state->renderPassDrawBuffer != MGL_STATE(ctx)->draw_buffer ||
-        _renderPassManager.state->renderPassDrawBufferCount != mglMetalDrawBufferCount(ctx)) {
+    MGLRenderCppRenderPassIdentityState identity =
+        mglRenderPassIdentitySnapshot(_renderPassManager.state);
+    if (identity.framebuffer != fbo ||
+        identity.framebuffer_name != fboName ||
+        identity.draw_buffer != MGL_STATE(ctx)->draw_buffer ||
+        identity.draw_buffer_count != (uint32_t)mglMetalDrawBufferCount(ctx)) {
         return false;
     }
-    for (GLsizei i = 0; i < _renderPassManager.state->renderPassDrawBufferCount; ++i) {
-        if (_renderPassManager.state->renderPassDrawBuffers[i] != mglMetalDrawBufferAt(ctx, (GLuint)i)) {
+    for (uint32_t i = 0; i < identity.draw_buffer_count; ++i) {
+        if (identity.draw_buffers[i] != mglMetalDrawBufferAt(ctx, i)) {
             return false;
         }
     }
@@ -165,7 +928,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (!fbo) {
         GLuint mgl_drawbuffer = mglDefaultDrawBufferIndexForGL(MGL_STATE(ctx)->draw_buffer);
         id<MTLTexture> expectedColor0 = nil;
-        id<MTLTexture> actualColor0 = _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture;
+        id<MTLTexture> actualColor0 = hasPassState
+            ? mglRenderPassTextureFromSnapshot(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0)
+            : _renderPassManager.state->renderPassDescriptor
+                  .colorAttachments[0].texture;
 
         if (mgl_drawbuffer == _FRONT) {
             expectedColor0 = _drawable ? _drawable.texture : nil;
@@ -195,10 +962,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
         }
 
-        if (_renderPassManager.state->renderPassDescriptor.depthAttachment.texture != expectedDepth) {
+        id<MTLTexture> actualDepth = hasPassState
+            ? mglRenderPassTextureFromSnapshot(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
+            : _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
+        id<MTLTexture> actualStencil = hasPassState
+            ? mglRenderPassTextureFromSnapshot(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
+            : _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture;
+        if (actualDepth != expectedDepth) {
             return false;
         }
-        if (_renderPassManager.state->renderPassDescriptor.stencilAttachment.texture != expectedStencil) {
+        if (actualStencil != expectedStencil) {
             return false;
         }
 
@@ -231,21 +1006,45 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             expected = (__bridge id<MTLTexture>)(tex->mtl_data);
         }
 
-        id<MTLTexture> actual = _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].texture;
+        id<MTLTexture> actual = hasPassState
+            ? mglRenderPassTextureFromSnapshot(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                  colorSlot)
+            : _renderPassManager.state->renderPassDescriptor
+                  .colorAttachments[colorSlot].texture;
         if (actual != expected) {
             return false;
         }
 
         if (attachment && actual) {
             MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(attachment);
-            if (!mglMetalRenderPassColorAttachmentMatchesSubresource(_renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot], subresource)) {
+            bool matches = hasPassState
+                ? mglRenderPassSnapshotAttachmentMatchesSubresource(
+                      &passState,
+                      MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                      colorSlot, subresource)
+                : mglMetalRenderPassColorAttachmentMatchesSubresource(
+                      _renderPassManager.state->renderPassDescriptor
+                          .colorAttachments[colorSlot],
+                      subresource);
+            if (!matches) {
                 return false;
             }
         }
 
+        id<MTLTexture> nextColor = nil;
+        if (i + 1u < MAX_COLOR_ATTACHMENTS) {
+            nextColor = hasPassState
+                ? mglRenderPassTextureFromSnapshot(
+                      &passState,
+                      MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR,
+                      i + 1u)
+                : _renderPassManager.state->renderPassDescriptor
+                      .colorAttachments[i + 1u].texture;
+        }
         if (i + 1u >= MAX_COLOR_ATTACHMENTS ||
             (mglMetalDrawBufferAt(ctx, i + 1u) == GL_NONE &&
-             !_renderPassManager.state->renderPassDescriptor.colorAttachments[i + 1u].texture)) {
+             !nextColor)) {
             break;
         }
     }
@@ -261,12 +1060,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
         expectedDepth = depthTex ? (__bridge id<MTLTexture>)(depthTex->mtl_data) : nil;
     }
-    if (_renderPassManager.state->renderPassDescriptor.depthAttachment.texture != expectedDepth) {
+    id<MTLTexture> actualDepth = hasPassState
+        ? mglRenderPassTextureFromSnapshot(
+              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
+        : _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
+    if (actualDepth != expectedDepth) {
         return false;
     }
     if (fbo->depth.texture && expectedDepth) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
-        if (!mglMetalRenderPassDepthAttachmentMatchesSubresource(_renderPassManager.state->renderPassDescriptor.depthAttachment, subresource)) {
+        bool matches = hasPassState
+            ? mglRenderPassSnapshotAttachmentMatchesSubresource(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH,
+                  0, subresource)
+            : mglMetalRenderPassDepthAttachmentMatchesSubresource(
+                  _renderPassManager.state->renderPassDescriptor.depthAttachment,
+                  subresource);
+        if (!matches) {
             return false;
         }
     }
@@ -282,12 +1092,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
         expectedStencil = stencilTex ? (__bridge id<MTLTexture>)(stencilTex->mtl_data) : nil;
     }
-    if (_renderPassManager.state->renderPassDescriptor.stencilAttachment.texture != expectedStencil) {
+    id<MTLTexture> actualStencil = hasPassState
+        ? mglRenderPassTextureFromSnapshot(
+              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
+        : _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture;
+    if (actualStencil != expectedStencil) {
         return false;
     }
     if (fbo->stencil.texture && expectedStencil) {
         MGLMetalAttachmentSubresource subresource = mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
-        if (!mglMetalRenderPassStencilAttachmentMatchesSubresource(_renderPassManager.state->renderPassDescriptor.stencilAttachment, subresource)) {
+        bool matches = hasPassState
+            ? mglRenderPassSnapshotAttachmentMatchesSubresource(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL,
+                  0, subresource)
+            : mglMetalRenderPassStencilAttachmentMatchesSubresource(
+                  _renderPassManager.state->renderPassDescriptor.stencilAttachment,
+                  subresource);
+        if (!matches) {
             return false;
         }
     }
@@ -400,7 +1221,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     if (_renderPassManager.state->currentRenderEncoder) {
         return true;
     }
-    if (!ctx || !_renderPassManager.state->renderPassDescriptor) {
+    MGLRenderCppRenderPassState passState = {0};
+    bool hasPassState = mglRenderPassUsesMetalCpp() &&
+        mglRenderPassGetPersistentState(_renderPassManager.state, &passState);
+    if (!ctx ||
+        (!hasPassState && !_renderPassManager.state->renderPassDescriptor)) {
         return false;
     }
 
@@ -417,23 +1242,43 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
-        if (_renderPassManager.state->renderPassDescriptor.colorAttachments[i].texture) {
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[i].loadAction = MTLLoadActionLoad;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[i].storeAction = MTLStoreActionStore;
+        id<MTLTexture> texture = hasPassState
+            ? mglRenderPassTextureFromSnapshot(
+                  &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i)
+            : _renderPassManager.state->renderPassDescriptor
+                  .colorAttachments[i].texture;
+        if (texture) {
+            mglRenderPassSetPersistentActions(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                MTLLoadActionLoad, MTLStoreActionStore);
         }
     }
-    if (_renderPassManager.state->renderPassDescriptor.depthAttachment.texture) {
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+    id<MTLTexture> depthTexture = hasPassState
+        ? mglRenderPassTextureFromSnapshot(
+              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0)
+        : _renderPassManager.state->renderPassDescriptor.depthAttachment.texture;
+    if (depthTexture) {
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MTLLoadActionLoad, MTLStoreActionStore);
     }
-    if (_renderPassManager.state->renderPassDescriptor.stencilAttachment.texture) {
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+    id<MTLTexture> stencilTexture = hasPassState
+        ? mglRenderPassTextureFromSnapshot(
+              &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
+        : _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture;
+    if (stencilTexture) {
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MTLLoadActionLoad, MTLStoreActionStore);
     }
 
     @try {
         id<MTLRenderCommandEncoder> renderEncoder =
-            [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:_renderPassManager.state->renderPassDescriptor];
+            [_renderPassManager createRenderEncoderWithDescriptor:
+                _renderPassManager.state->renderPassDescriptor];
         [_renderPassManager installRenderEncoder:renderEncoder];
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to create encoder: %@",
@@ -475,9 +1320,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     @try {
-        [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-        [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
-        MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+        if (mglRenderCppBindingSetPipelineIfNeeded(
+                _bindingStateOwner,
+                (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                (__bridge void *)_pipelineCache.state->pipelineState) > 0) {
+            MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
+        } else {
+            MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: restoring render encoder after texture upload failed to bind pipeline: %@",
               exception.reason);
@@ -546,6 +1396,22 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         ptr->dirty_bits &= ~DIRTY_PROGRAM;
     }
 
+    if (mglRenderPassUsesMetalCpp()) {
+        int failedStage = -1;
+        char bindError[256] = {0};
+        int bindResult = mglRenderCppBindAIRProgram(
+            ptr, &failedStage, bindError, sizeof(bindError));
+        if (bindResult == MGL_RENDER_CPP_AIR_PROGRAM_BOUND) {
+            return true;
+        }
+        if (bindResult == MGL_RENDER_CPP_AIR_PROGRAM_ERROR) {
+            NSLog(@"MGL ERROR: Failed to bind AIR program=%u stage=%d: %s",
+                  (unsigned)ptr->name, failedStage,
+                  bindError[0] ? bindError : "?");
+            return false;
+        }
+    }
+
 	    // Compile linked Program stages on demand.
 	    for(int i=_VERTEX_SHADER; i<_MAX_SHADER_TYPES; i++)
 	    {
@@ -565,6 +1431,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                     }
                     continue;
                 }
+                if (ptr->gs_route == MGL_GS_ROUTE_COMPUTE &&
+                    ptr->spirv[i].metallib_bytes &&
+                    ptr->spirv[i].metallib_size > 0u) {
+                    /* The AIR geometry stage is a compute kernel.  Load it
+                     * below like TCS/CS; the draw helper owns dispatch and
+                     * expanded-output rendering. */
+                } else {
                 static uint64_t s_geometryShaderMetalSkipCount = 0;
                 uint64_t hit = ++s_geometryShaderMetalSkipCount;
                 if (hit <= 16ull || (hit % 512ull) == 0ull) {
@@ -573,6 +1446,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                           (unsigned long long)hit);
                 }
                 return false;
+                }
             }
             if (ptr->spirv[i].metallib_bytes && ptr->spirv[i].metallib_size > 0) {
                 /* AIR path: the stage was compiled by the self-hosted
@@ -580,276 +1454,75 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL) {
                     mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
                     mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
-                    if (getenv("MGL_USE_METALCPP")) {
-                        /* METALCPP 路径（Phase 1）：metallib 经 C++ 加载器
-                         * newLibrary(dispatch_data)，library/function 桥回
-                         * id<MTLLibrary>/id<MTLFunction> 语义（同地址）。
-                         * loader 返回 +1 对象，经 __bridge_transfer 转移
-                         * 给 ARC，再 CFBridgingRetain 存入 slot。 */
-                        void *devCPP = mglRenderCppGetDevice();
-                        void *libCPP = NULL;
-                        char lerr[256] = {0};
-                        if (!devCPP || mglAirLoadLibrary(devCPP,
-                                                         ptr->spirv[i].metallib_bytes,
-                                                         ptr->spirv[i].metallib_size,
-                                                         &libCPP, lerr, sizeof lerr) != 0 || !libCPP) {
-                            NSLog(@"MGL ERROR: AIR metallib load via Metal-cpp failed program=%u stage=%d: %s",
-                                  (unsigned)ptr->name, i, lerr[0] ? lerr : "?");
-                            return false;
-                        }
-                        id<MTLLibrary> library = (__bridge_transfer id<MTLLibrary>)libCPP;
-                        id<MTLFunction> function = [library newFunctionWithName:@"main"];
-                        if (!function) {
-                            NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib (Metal-cpp) program=%u stage=%d",
-                                  (unsigned)ptr->name, i);
-                            return false;
-                        }
-                        ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
-                        ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
-                    } else {
-                        dispatch_data_t data = dispatch_data_create(
-                            ptr->spirv[i].metallib_bytes,
-                            ptr->spirv[i].metallib_size, NULL,
-                            DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-                        __autoreleasing NSError *lerr = nil;
-                        id<MTLLibrary> library = [_device newLibraryWithData:data error:&lerr];
-                        if (!library) {
-                            NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %@",
-                                  (unsigned)ptr->name, i,
-                                  lerr.localizedDescription ?: (id)@"?");
-                            return false;
-                        }
-                        id<MTLFunction> function = [library newFunctionWithName:@"main"];
-                        if (!function) {
-                            NSLog(@"MGL ERROR: Failed to find 'main' in AIR metallib program=%u stage=%d",
-                                  (unsigned)ptr->name, i);
-                            return false;
-                        }
-                        ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
-                        ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
+                    id<MTLLibrary> library = nil;
+                    id<MTLFunction> function = nil;
+                    char loadError[256] = {0};
+                    if (!mglLoadAIRMainFunction(
+                            _device, ptr->spirv[i].metallib_bytes,
+                            ptr->spirv[i].metallib_size, &library, &function,
+                            loadError, sizeof loadError)) {
+                        NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %s",
+                              (unsigned)ptr->name, i,
+                              loadError[0] ? loadError : "?");
+                        return false;
                     }
+                    ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
+                    ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
                 }
-            } else if (!ptr->spirv[i].msl_str) {
-                NSLog(@"MGL WARNING: Program %u stage %d has reflection but no MSL; skipping Metal bind",
-                      (unsigned)ptr->name,
-                      i);
+                if (i == _VERTEX_SHADER &&
+                    ptr->spirv[i].metallib_tess_capture_bytes &&
+                    (!ptr->spirv[i].mtl_tess_capture_library ||
+                     !ptr->spirv[i].mtl_tess_capture_function)) {
+                    id<MTLLibrary> library = nil;
+                    id<MTLFunction> function = nil;
+                    char loadError[256] = {0};
+                    if (!mglLoadAIRMainFunction(
+                            _device,
+                            ptr->spirv[i].metallib_tess_capture_bytes,
+                            ptr->spirv[i].metallib_tess_capture_size,
+                            &library, &function, loadError,
+                            sizeof loadError)) {
+                        NSLog(@"MGL ERROR: Failed to load AIR tess VS capture program=%u: %s",
+                              (unsigned)ptr->name,
+                              loadError[0] ? loadError : "?");
+                        return false;
+                    }
+                    ptr->spirv[i].mtl_tess_capture_library =
+                        (void *)CFBridgingRetain(library);
+                    ptr->spirv[i].mtl_tess_capture_function =
+                        (void *)CFBridgingRetain(function);
+                }
+                if (i == _VERTEX_SHADER &&
+                    ptr->spirv[i].metallib_cull_capture_bytes &&
+                    (!ptr->spirv[i].mtl_cull_capture_library ||
+                     !ptr->spirv[i].mtl_cull_capture_function)) {
+                    id<MTLLibrary> library = nil;
+                    id<MTLFunction> function = nil;
+                    char loadError[256] = {0};
+                    if (!mglLoadAIRMainFunction(
+                            _device,
+                            ptr->spirv[i].metallib_cull_capture_bytes,
+                            ptr->spirv[i].metallib_cull_capture_size,
+                            &library, &function, loadError,
+                            sizeof loadError)) {
+                        NSLog(@"MGL ERROR: Failed to load AIR cull-distance "
+                              "capture program=%u: %s",
+                              (unsigned)ptr->name,
+                              loadError[0] ? loadError : "?");
+                        return false;
+                    }
+                    ptr->spirv[i].mtl_cull_capture_library =
+                        (void *)CFBridgingRetain(library);
+                    ptr->spirv[i].mtl_cull_capture_function =
+                        (void *)CFBridgingRetain(function);
+                }
+            } else {
+                NSLog(@"MGL ERROR: Program %u stage %d has no AIR metallib",
+                      (unsigned)ptr->name, i);
                 return false;
-            } else if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL)
-            {
-                id<MTLLibrary> library;
-                id<MTLFunction> function;
-
-                mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
-                mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
-
-                if (mglProgramExplicitlyTraced(ptr)) {
-                    mglWriteProgramMSLDump(ptr, @"explicit-trace");
-                }
-                const char *compileMSL = ptr->spirv[i].msl_str;
-                /* Cull distance emulation: Metal does not support gl_CullDistance
-                 * primitive culling natively. When the vertex shader writes to
-                 * mgl_CullDistance, inject code that reads the cull distance
-                 * values of all vertices in the same primitive and moves the
-                 * vertex off-screen if all vertices have a negative cull
-                 * distance for any single cull distance entry.
-                 *
-                 * The draw path binds the vertex buffer to slot 29 and a
-                 * params buffer to slot 28 so the shader can index into
-                 * sibling vertices. */
-                if (i == _VERTEX_SHADER && compileMSL && strstr(compileMSL, "mgl_CullDistance")) {
-                    NSString *mslNS = [NSString stringWithUTF8String:compileMSL];
-                    /* Inject the params struct definition after the includes. */
-                    NSString *structDef = @"\nstruct MGLCullDistanceParams {\n"
-                                           "    uint prim_vertex_count;\n"
-                                           "    uint culldist_offset;\n"
-                                           "    uint vertex_stride;\n"
-                                           "    uint culldist_size;\n"
-                                           "};\n";
-                    NSString *includeMarker = @"using namespace metal;";
-                    NSRange includeRange = [mslNS rangeOfString:includeMarker];
-                    if (includeRange.location != NSNotFound) {
-                        NSRange afterInclude = NSMakeRange(includeRange.location + includeRange.length, 0);
-                        mslNS = [mslNS stringByReplacingCharactersInRange:afterInclude withString:structDef];
-                    }
-                    BOOL cullParamsInjected = NO;
-                    NSRange closeParenRange =
-                        mglRendererFindMSLEntryParameterClose(mslNS, shader->entry_point);
-                    if (closeParenRange.location != NSNotFound) {
-                        NSString *cullParams = [NSString stringWithFormat:@", uint mgl_vid [[vertex_id]], "
-                                                 "device const float* mgl_cull_buf [[buffer(%d)]], "
-                                                 "constant MGLCullDistanceParams* mgl_cull_params [[buffer(%d)]])",
-                                                 kMGLCullDistanceVertexBufferIndex,
-                                                 kMGLCullDistanceParamsBufferIndex];
-                        mslNS = [mslNS stringByReplacingCharactersInRange:closeParenRange
-                                                               withString:cullParams];
-                        cullParamsInjected = YES;
-                    }
-                    /* Inject the cull check before "return out;". */
-                    NSString *cullCheck = @"\n    /* MGL cull distance emulation: if all vertices in this primitive "
-                                            "have a negative value for any single cull distance entry, move "
-                                            "the vertex off-screen to cull the entire primitive. For points "
-                                            "(prim_vertex_count==1) this degenerates to checking the single "
-                                            "vertex's own cull distance values. */\n"
-                                            "    {\n"
-                                            "        uint mgl_base = mgl_vid - (mgl_vid % mgl_cull_params->prim_vertex_count);\n"
-                                            "        bool mgl_should_cull = false;\n"
-                                            "        for (uint mgl_j = 0u; mgl_j < mgl_cull_params->culldist_size && !mgl_should_cull; mgl_j++) {\n"
-                                            "            bool mgl_all_neg = true;\n"
-                                            "            for (uint mgl_i = 0u; mgl_i < mgl_cull_params->prim_vertex_count; mgl_i++) {\n"
-                                            "                uint mgl_other = mgl_base + mgl_i;\n"
-                                            "                float mgl_d = mgl_cull_buf[mgl_other * (mgl_cull_params->vertex_stride / 4u) "
-                                            "+ (mgl_cull_params->culldist_offset / 4u) + mgl_j];\n"
-                                            "                if (mgl_d >= 0.0) { mgl_all_neg = false; break; }\n"
-                                            "            }\n"
-                                            "            if (mgl_all_neg) { mgl_should_cull = true; }\n"
-                                            "        }\n"
-                                            "        if (mgl_should_cull) {\n"
-                                            "            out.gl_Position = float4(2.0, 2.0, 2.0, 1.0);\n"
-                                            "        }\n"
-                                            "    }\n"
-                                            "    return out;";
-                    /* Replace the last "return out;" occurrence. SPIRV-Cross
-                     * vertex shaders always end with this.  Use NSBackwardsSearch
-                     * to find the last occurrence (the entry function's return),
-                     * and search for "return out;" without leading spaces because
-                     * mglInjectMSLPointSizeBuiltin may have inserted
-                     * "out.mgl_injected_point_size = 1.0; " before "return out;". */
-                    NSRange returnRange = [mslNS rangeOfString:@"return out;"
-                                                       options:NSBackwardsSearch];
-                    if (cullParamsInjected && returnRange.location != NSNotFound) {
-                        mslNS = [mslNS stringByReplacingCharactersInRange:returnRange withString:cullCheck];
-                        compileMSL = [mslNS UTF8String];
-                        if (getenv("MGL_DUMP_MSL_POST_PACK")) {
-                            FILE *cullFP = fopen("/tmp/mgl_cull_emulation.msl", "w");
-                            if (cullFP) { fputs(compileMSL, cullFP); fclose(cullFP); }
-                        }
-                    }
-                }
-                library = [self compileShader: compileMSL];
-                if (!library) {
-                    const char *stageName = "shader";
-                    switch (i) {
-                        case _VERTEX_SHADER: stageName = "vertex"; break;
-                        case _TESS_CONTROL_SHADER: stageName = "tess-control"; break;
-                        case _TESS_EVALUATION_SHADER: stageName = "tess-evaluation"; break;
-                        case _GEOMETRY_SHADER: stageName = "geometry"; break;
-                        case _FRAGMENT_SHADER: stageName = "fragment"; break;
-                        case _COMPUTE_SHADER: stageName = "compute"; break;
-                    }
-                    NSLog(@"MGL ERROR: Failed to compile %s shader, skipping render", stageName);
-                    return false;  // Signal shader compilation failure
-                }
-                NSString *entryName = [NSString stringWithUTF8String:shader->entry_point];
-                function = [self newFunctionFromLibrary:library
-                                              entryName:entryName
-                                                 source:ptr->spirv[i].msl_str
-                                                  label:entryName];
-                if (!function) {
-                    NSLog(@"MGL ERROR: Failed to find function '%s' in compiled shader", shader->entry_point);
-                    return false;  // Signal function lookup failure
-                }
-                ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
-	                ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
-	            }
-	        }
-	    }
-
-	    if (ctx &&
-	        MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE &&
-	        ptr->shader_slots[_VERTEX_SHADER] &&
-	        !ptr->spirv[_VERTEX_SHADER].metallib_bytes &&
-	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_library == NULL)
-	    {
-	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
-	        NSString *variantSource = mglZeroToOneVertexMSLSource(ptr, vertexShader);
-	        NSString *variantEntry = mglZeroToOneVertexEntryName(vertexShader);
-	        if (!variantSource || !variantEntry) {
-	            NSLog(@"MGL ERROR: Failed to create ZERO_TO_ONE vertex variant source for program=%u",
-	                  (unsigned)ptr->name);
-	            return false;
-	        }
-
-	        __autoreleasing NSError *error = nil;
-	        id<MTLLibrary> library = [self newMetalLibraryWithSource:variantSource
-	                                                         options:nil
-	                                                           label:@"MGL ZERO_TO_ONE vertex shader"
-	                                                           error:&error];
-	        if (!library) {
-	            NSLog(@"MGL ERROR: Failed to compile ZERO_TO_ONE vertex shader for program=%u: %@",
-	                  (unsigned)ptr->name,
-	                  error.localizedDescription ?: error);
-	            return false;
-	        }
-
-	        id<MTLFunction> function = [self newFunctionFromLibrary:library
-	                                                      entryName:variantEntry
-	                                                         source:variantSource.UTF8String
-	                                                          label:@"ZERO_TO_ONE vertex shader"];
-	        if (!function) {
-	            NSLog(@"MGL ERROR: Failed to find ZERO_TO_ONE vertex function '%@' for program=%u",
-	                  variantEntry,
-	                  (unsigned)ptr->name);
-	            return false;
-	        }
-
-	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_library = (void *)CFBridgingRetain(library);
-	        ptr->spirv[_VERTEX_SHADER].mtl_zero_to_one_function = (void *)CFBridgingRetain(function);
-	    }
-
-	    if (ctx &&
-	        MGL_STATE(ctx)->var.clip_origin == GL_UPPER_LEFT &&
-	        ptr->shader_slots[_VERTEX_SHADER] &&
-	        !ptr->spirv[_VERTEX_SHADER].metallib_bytes)
-	    {
-	        Shader *vertexShader = ptr->shader_slots[_VERTEX_SHADER];
-	        BOOL zeroToOneDepth = (MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE);
-	        BOOL needsVariant = zeroToOneDepth
-	            ? (ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_library == NULL)
-	            : (ptr->spirv[_VERTEX_SHADER].mtl_upper_left_library == NULL);
-
-	        if (needsVariant) {
-	            NSString *variantSource = mglUpperLeftVertexMSLSource(ptr, vertexShader, zeroToOneDepth);
-	            NSString *variantEntry = mglUpperLeftVertexEntryName(vertexShader, zeroToOneDepth);
-	            if (!variantSource || !variantEntry) {
-	                NSLog(@"MGL ERROR: Failed to create UPPER_LEFT vertex variant source for program=%u depthMode=0x%x",
-	                      (unsigned)ptr->name,
-	                      (unsigned)MGL_STATE(ctx)->var.clip_depth_mode);
-	                return false;
-	            }
-
-	            __autoreleasing NSError *error = nil;
-	            id<MTLLibrary> library = [self newMetalLibraryWithSource:variantSource
-	                                                             options:nil
-	                                                               label:@"MGL UPPER_LEFT vertex shader"
-	                                                               error:&error];
-	            if (!library) {
-	                NSLog(@"MGL ERROR: Failed to compile UPPER_LEFT vertex shader for program=%u depthMode=0x%x: %@",
-	                      (unsigned)ptr->name,
-	                      (unsigned)MGL_STATE(ctx)->var.clip_depth_mode,
-	                      error.localizedDescription ?: error);
-	                return false;
-	            }
-
-	            id<MTLFunction> function = [self newFunctionFromLibrary:library
-	                                                          entryName:variantEntry
-	                                                             source:variantSource.UTF8String
-	                                                              label:@"UPPER_LEFT vertex shader"];
-	            if (!function) {
-	                NSLog(@"MGL ERROR: Failed to find UPPER_LEFT vertex function '%@' for program=%u",
-	                      variantEntry,
-	                      (unsigned)ptr->name);
-	                return false;
-	            }
-
-	            if (zeroToOneDepth) {
-	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_library = (void *)CFBridgingRetain(library);
-	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function = (void *)CFBridgingRetain(function);
-	            } else {
-	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_library = (void *)CFBridgingRetain(library);
-	                ptr->spirv[_VERTEX_SHADER].mtl_upper_left_function = (void *)CFBridgingRetain(function);
-	            }
-	        }
-	    }
+            }
+        }
+    }
 
 	    return true;
 	}
@@ -957,15 +1630,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         id<MTLDepthStencilState> dsState =
             [_pipelineCache depthStencilStateForDescriptor:dsDesc];
 
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthStencilState != dsState) {
-            [_renderPassManager.state->currentRenderEncoder setDepthStencilState: dsState];
-            [_bindingSync setLastDepthStencilState:dsState];
+        if (mglRenderCppBindingSetDepthStencilIfNeeded(
+                _bindingStateOwner,
+                (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                (__bridge void *)dsState) > 0) {
         } else {
             MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
         }
         if (useStencilState) {
-            [_renderPassManager.state->currentRenderEncoder setStencilFrontReferenceValue:(uint32_t)state->var.stencil_ref
-                                              backReferenceValue:(uint32_t)state->var.stencil_back_ref];
+            mglRenderPassSetStencilReferenceValues(
+                _renderPassManager.state->currentRenderEncoder,
+                (uint32_t)state->var.stencil_ref,
+                (uint32_t)state->var.stencil_back_ref);
         }
     }
     else
@@ -977,9 +1653,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         id<MTLDepthStencilState> disabledDSState =
             [_pipelineCache depthStencilStateForDescriptor:disabledDSDesc];
         if (disabledDSState) {
-            if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthStencilState != disabledDSState) {
-                [_renderPassManager.state->currentRenderEncoder setDepthStencilState:disabledDSState];
-                [_bindingSync setLastDepthStencilState:disabledDSState];
+            if (mglRenderCppBindingSetDepthStencilIfNeeded(
+                    _bindingStateOwner,
+                    (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                    (__bridge void *)disabledDSState) > 0) {
             } else {
                 MGL_PERF_INC(g_mglDepthStencilStateSkipsSinceSwap);
             }
@@ -991,17 +1668,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         float bcGreen = state->var.blend_color[1];
         float bcBlue  = state->var.blend_color[2];
         float bcAlpha = state->var.blend_color[3];
-        if (!_bindingSync.state->lastBoundValid ||
-            _bindingSync.state->lastBlendColorRed   != bcRed ||
-            _bindingSync.state->lastBlendColorGreen != bcGreen ||
-            _bindingSync.state->lastBlendColorBlue  != bcBlue ||
-            _bindingSync.state->lastBlendColorAlpha != bcAlpha) {
-            [_renderPassManager.state->currentRenderEncoder setBlendColorRed:bcRed
-                                                                       green:bcGreen
-                                                                        blue:bcBlue
-                                                                       alpha:bcAlpha];
-            [_bindingSync setLastBlendColorRed:bcRed green:bcGreen blue:bcBlue alpha:bcAlpha];
-        }
+        mglRenderCppBindingSetBlendColorIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            bcRed, bcGreen, bcBlue, bcAlpha);
     }
 
     /* GL_SAMPLE_MASK: Metal does not expose a per-draw sample mask setter on
@@ -1020,7 +1690,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     BOOL defaultFramebufferSampledPass =
         state->framebuffer == NULL &&
         !state->caps.depth_test &&
-        [self getProgramBindingCount:_FRAGMENT_SHADER type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE] > 0;
+        [self getProgramBindingCount:_FRAGMENT_SHADER type:_SAMPLED_IMAGE_RES] > 0;
     BOOL rtSampledCopyDraw = _renderPassManager.state->currentDrawUsesRTSampledCopy;
 
     if (state->caps.cull_face && !defaultFramebufferSampledPass && !rtSampledCopyDraw)
@@ -1035,31 +1705,31 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 cull_mode = MTLCullModeNone;
         }
 
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastCullMode != cull_mode) {
-            [_renderPassManager.state->currentRenderEncoder setCullMode:cull_mode];
-            [_bindingSync setLastCullMode:cull_mode];
-        }
+        mglRenderCppBindingSetCullIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            (uint32_t)cull_mode);
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastFrontFacingWinding != _winding) {
-            [_renderPassManager.state->currentRenderEncoder setFrontFacingWinding:_winding];
-            [_bindingSync setLastFrontFacingWinding:_winding];
-        }
+        mglRenderCppBindingSetWindingIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            (uint32_t)_winding);
     }
     else
     {
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastCullMode != MTLCullModeNone) {
-            [_renderPassManager.state->currentRenderEncoder setCullMode:MTLCullModeNone];
-            [_bindingSync setLastCullMode:MTLCullModeNone];
-        }
+        mglRenderCppBindingSetCullIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            (uint32_t)MTLCullModeNone);
         MTLWinding _winding =
             mglMaybeInvertMTLWinding(mglMTLWindingForGL(state->var.front_face),
                                      state->var.clip_origin == GL_UPPER_LEFT);
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastFrontFacingWinding != _winding) {
-            [_renderPassManager.state->currentRenderEncoder setFrontFacingWinding:_winding];
-            [_bindingSync setLastFrontFacingWinding:_winding];
-        }
+        mglRenderCppBindingSetWindingIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            (uint32_t)_winding);
 
         if (state->caps.cull_face && defaultFramebufferSampledPass) {
             static uint64_t s_defaultSampledCullBypassCount = 0;
@@ -1093,7 +1763,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
     if (state->caps.depth_clamp)
     {
-        [_renderPassManager.state->currentRenderEncoder setDepthClipMode: MTLDepthClipModeClamp];
+        mglRenderPassSetDepthClipMode(
+            _renderPassManager.state->currentRenderEncoder,
+            MTLDepthClipModeClamp);
     }
 
     if (state->caps.polygon_offset_fill ||
@@ -1103,21 +1775,17 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         float _bias = state->var.polygon_offset_units;
         float _slope = state->var.polygon_offset_factor;
         float _clamp = 0.0f;
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != _bias ||
-            _bindingSync.state->lastDepthBiasClamp != _clamp || _bindingSync.state->lastDepthSlopeScale != _slope) {
-            [_renderPassManager.state->currentRenderEncoder setDepthBias:_bias
-                                     slopeScale:_slope
-                                          clamp:_clamp];
-            [_bindingSync setLastDepthBias:_bias clamp:_clamp slopeScale:_slope];
-        }
+        mglRenderCppBindingSetDepthBiasIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            _bias, _clamp, _slope);
     }
     else
     {
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastDepthBias != 0.0f ||
-            _bindingSync.state->lastDepthBiasClamp != 0.0f || _bindingSync.state->lastDepthSlopeScale != 0.0f) {
-            [_renderPassManager.state->currentRenderEncoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
-            [_bindingSync setLastDepthBias:0.0f clamp:0.0f slopeScale:0.0f];
-        }
+        mglRenderCppBindingSetDepthBiasIfNeeded(
+            _bindingStateOwner,
+            (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+            0.0f, 0.0f, 0.0f);
     }
 
     MTLTriangleFillMode triangleFillMode = MTLTriangleFillModeFill;
@@ -1176,8 +1844,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                 if (passTexture) {
                     passWidth = passTexture.width;
                     passHeight = passTexture.height;
-                    _renderPassManager.state->renderPassDescriptor.renderTargetWidth = passWidth;
-                    _renderPassManager.state->renderPassDescriptor.renderTargetHeight = passHeight;
+                    mglRenderPassSetPersistentDimensions(
+                        _renderPassManager.state, passWidth, passHeight);
                     if (kMGLVerboseFrameLoopLogs) {
                         NSLog(@"MGL INFO: Resolved render pass size from attachment %lux%lu (rtw/rth were unset)",
                               (unsigned long)passWidth, (unsigned long)passHeight);
@@ -1609,11 +2277,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->color_attachments[attachmentIndex]);
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].texture =
-                mglApplySRGBStateToRenderTarget((__bridge id<MTLTexture> _Nullable)(tex->mtl_data), ctx);
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].level = subresource.level;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].slice = subresource.slice;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].depthPlane = subresource.depthPlane;
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                mglApplySRGBStateToRenderTarget(
+                    (__bridge id<MTLTexture> _Nullable)(tex->mtl_data), ctx),
+                subresource.level, subresource.slice,
+                subresource.depthPlane);
 
             if (tex->target == GL_TEXTURE_2D_MULTISAMPLE_ARRAY ||
                 tex->target == GL_TEXTURE_2D_MULTISAMPLE ||
@@ -1631,14 +2301,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                  subresource.level);
             if (attWidth > 0 && attHeight > 0) {
                 if (_renderPassManager.state->renderPassDescriptor.renderTargetWidth == 0 || _renderPassManager.state->renderPassDescriptor.renderTargetHeight == 0) {
-                    _renderPassManager.state->renderPassDescriptor.renderTargetWidth = attWidth;
-                    _renderPassManager.state->renderPassDescriptor.renderTargetHeight = attHeight;
+                    mglRenderPassSetPersistentDimensions(
+                        _renderPassManager.state, attWidth, attHeight);
                 } else if (_renderPassManager.state->renderPassDescriptor.renderTargetWidth != attWidth ||
                            _renderPassManager.state->renderPassDescriptor.renderTargetHeight != attHeight) {
                     NSUInteger oldWidth = _renderPassManager.state->renderPassDescriptor.renderTargetWidth;
                     NSUInteger oldHeight = _renderPassManager.state->renderPassDescriptor.renderTargetHeight;
-                    _renderPassManager.state->renderPassDescriptor.renderTargetWidth = MIN(_renderPassManager.state->renderPassDescriptor.renderTargetWidth, attWidth);
-                    _renderPassManager.state->renderPassDescriptor.renderTargetHeight = MIN(_renderPassManager.state->renderPassDescriptor.renderTargetHeight, attHeight);
+                    mglRenderPassSetPersistentDimensions(
+                        _renderPassManager.state,
+                        MIN(_renderPassManager.state->renderPassDescriptor.renderTargetWidth,
+                            attWidth),
+                        MIN(_renderPassManager.state->renderPassDescriptor.renderTargetHeight,
+                            attHeight));
                     NSLog(@"MGL WARNING: FBO color attachment size mismatch slot=%d old=%lux%lu new=%lux%lu resolved=%lux%lu",
                           i,
                           (unsigned long)oldWidth,
@@ -1663,12 +2337,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
         }
         if (tex && tex->mtl_data) {
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->depth);
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.level = subresource.level;
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.slice = subresource.slice;
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.depthPlane = subresource.depthPlane;
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                (__bridge id<MTLTexture> _Nullable)(tex->mtl_data),
+                subresource.level, subresource.slice,
+                subresource.depthPlane);
         }
     }
 
@@ -1683,12 +2359,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             RETURN_FALSE_ON_FAILURE([self bindMTLTextureLocked: tex]);
         }
         if (tex && tex->mtl_data) {
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture = (__bridge id<MTLTexture> _Nullable)(tex->mtl_data);
             MGLMetalAttachmentSubresource subresource =
                 mglMetalAttachmentSubresourceForAttachment(&fbo->stencil);
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.level = subresource.level;
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.slice = subresource.slice;
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.depthPlane = subresource.depthPlane;
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                (__bridge id<MTLTexture> _Nullable)(tex->mtl_data),
+                subresource.level, subresource.slice,
+                subresource.depthPlane);
         }
     }
     return true;
@@ -1827,13 +2505,21 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
     }
 
-    _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture =
-        mglApplySRGBStateToRenderTarget(texture, ctx);
-    _renderPassManager.state->renderPassDescriptor.depthAttachment.texture = depth_texture;
-    _renderPassManager.state->renderPassDescriptor.stencilAttachment.texture = stencil_texture;
+    mglRenderPassSetPersistentAttachment(
+        _renderPassManager.state,
+        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+        mglApplySRGBStateToRenderTarget(texture, ctx), 0, 0, 0);
+    mglRenderPassSetPersistentAttachment(
+        _renderPassManager.state,
+        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+        depth_texture, 0, 0, 0);
+    mglRenderPassSetPersistentAttachment(
+        _renderPassManager.state,
+        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+        stencil_texture, 0, 0, 0);
 
-    _renderPassManager.state->renderPassDescriptor.renderTargetWidth = texture.width;
-    _renderPassManager.state->renderPassDescriptor.renderTargetHeight = texture.height;
+    mglRenderPassSetPersistentDimensions(
+        _renderPassManager.state, texture.width, texture.height);
     _drawBuffers[mgl_drawbuffer].width = (GLuint)texture.width;
     _drawBuffers[mgl_drawbuffer].height = (GLuint)texture.height;
     return true;
@@ -1866,7 +2552,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                    mipmapped:NO];
                 depthDesc.usage = MTLTextureUsageRenderTarget;
                 depthDesc.storageMode = MTLStorageModePrivate;
-                id<MTLTexture> transientDepth = [_device newTextureWithDescriptor:depthDesc];
+                id<MTLTexture> transientDepth =
+                    mglRenderPassCreateTexture(_device, depthDesc);
                 [_renderPassManager setTransientDepthTexture:transientDepth width:depthWidth height:depthHeight];
 
                 if (_renderPassManager.state->transientDepthTexture) {
@@ -1888,10 +2575,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
 
             if (_renderPassManager.state->transientDepthTexture) {
-                _renderPassManager.state->renderPassDescriptor.depthAttachment.texture = _renderPassManager.state->transientDepthTexture;
-                _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
-                _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionDontCare;
-                _renderPassManager.state->renderPassDescriptor.depthAttachment.clearDepth = MGL_STATE(ctx)->var.depth_clear_value;
+                mglRenderPassSetPersistentAttachment(
+                    _renderPassManager.state,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    _renderPassManager.state->transientDepthTexture,
+                    0, 0, 0);
+                mglRenderPassSetPersistentActions(
+                    _renderPassManager.state,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                    MTLLoadActionClear, MTLStoreActionDontCare);
+                mglRenderPassSetPersistentDepthClear(
+                    _renderPassManager.state,
+                    MGL_STATE(ctx)->var.depth_clear_value);
             }
         }
     }
@@ -1919,7 +2614,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                    &attachmentIndex) ||
             attachmentIndex >= MAX_COLOR_ATTACHMENTS ||
             ((fbo->color_attachment_bitfield >> attachmentIndex) & 1u) == 0u) {
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
+            mglRenderPassSetPersistentLoadAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MTLLoadActionLoad);
             continue;
         }
 
@@ -1970,13 +2668,16 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                             (ctx && MGL_STATE(ctx)->caps.depth_test) ? 1 : 0,
                             (ctx && MGL_STATE(ctx)->var.depth_writemask) ? 1 : 0);
             }
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].clearColor =
+            mglRenderPassSetPersistentColorClear(
+                _renderPassManager.state, colorSlot,
                 MTLClearColorMake(att->clear_color[0],
                                   att->clear_color[1],
                                   att->clear_color[2],
-                                  att->clear_color[3]);
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionClear;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].storeAction = MTLStoreActionStore;
+                                  att->clear_color[3]));
+            mglRenderPassSetPersistentActions(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MTLLoadActionClear, MTLStoreActionStore);
 
             att->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
             mglMarkTextureLevelRenderTargetWritten(attachmentTextureForClear, att->level);
@@ -1988,9 +2689,15 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                 firstUseThisFrame:colorFirstUseThisFrame]) {
             /* first render-target use this frame, no clear, no
              * blend — prior tile contents are dead, skip the load. */
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionDontCare;
+            mglRenderPassSetPersistentLoadAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MTLLoadActionDontCare);
         } else {
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[colorSlot].loadAction = MTLLoadActionLoad;
+            mglRenderPassSetPersistentLoadAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, colorSlot,
+                MTLLoadActionLoad);
         }
     }
 
@@ -2006,26 +2713,45 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     if (fbo->depth.clear_bitmask & GL_DEPTH_BUFFER_BIT) {
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.clearDepth = fbo->depth.clear_color[0];
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+        mglRenderPassSetPersistentDepthClear(
+            _renderPassManager.state, fbo->depth.clear_color[0]);
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MTLLoadActionClear, MTLStoreActionStore);
         fbo->depth.clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
+        mglRenderPassSetPersistentLoadAction(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MTLLoadActionLoad);
         if (_renderPassManager.state->renderPassDescriptor.depthAttachment.texture) {
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+            mglRenderPassSetPersistentStoreAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MTLStoreActionStore);
         }
     }
 
     if (fbo->stencil.clear_bitmask & GL_STENCIL_BUFFER_BIT) {
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.clearStencil = (uint32_t)fbo->stencil.clear_color[0];
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionClear;
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+        mglRenderPassSetPersistentStencilClear(
+            _renderPassManager.state,
+            (uint32_t)fbo->stencil.clear_color[0]);
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MTLLoadActionClear, MTLStoreActionStore);
         fbo->stencil.clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
     } else {
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
+        mglRenderPassSetPersistentLoadAction(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MTLLoadActionLoad);
         if (_renderPassManager.state->renderPassDescriptor.stencilAttachment.texture) {
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+            mglRenderPassSetPersistentStoreAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MTLStoreActionStore);
         }
     }
 }
@@ -2035,16 +2761,22 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
     GLbitfield defaultClearMask = MGL_STATE(ctx)->default_fbo_clear_bitmask;
     if (defaultClearMask & GL_COLOR_BUFFER_BIT) {
-        _renderPassManager.state->renderPassDescriptor.colorAttachments[0].clearColor =
+        mglRenderPassSetPersistentColorClear(
+            _renderPassManager.state, 0,
             MTLClearColorMake(MGL_STATE(ctx)->default_clear_color[0],
                               MGL_STATE(ctx)->default_clear_color[1],
                               MGL_STATE(ctx)->default_clear_color[2],
-                              MGL_STATE(ctx)->default_clear_color[3]);
-        _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionClear;
-        _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+                              MGL_STATE(ctx)->default_clear_color[3]));
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+            MTLLoadActionClear, MTLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
     } else {
-        _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        mglRenderPassSetPersistentLoadAction(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+            MTLLoadActionLoad);
         static uint64_t s_defaultFboLoadLogCount = 0;
         uint64_t hit = ++s_defaultFboLoadLogCount;
         if (hit <= 32ull || (hit % 256ull) == 0ull) {
@@ -2056,26 +2788,46 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     if (defaultClearMask & GL_DEPTH_BUFFER_BIT) {
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.clearDepth = MGL_STATE(ctx)->var.depth_clear_value;
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionClear;
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+        mglRenderPassSetPersistentDepthClear(
+            _renderPassManager.state,
+            MGL_STATE(ctx)->var.depth_clear_value);
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MTLLoadActionClear, MTLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
-        _renderPassManager.state->renderPassDescriptor.depthAttachment.loadAction = MTLLoadActionLoad;
+        mglRenderPassSetPersistentLoadAction(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+            MTLLoadActionLoad);
         if (_renderPassManager.state->renderPassDescriptor.depthAttachment.texture) {
-            _renderPassManager.state->renderPassDescriptor.depthAttachment.storeAction = MTLStoreActionStore;
+            mglRenderPassSetPersistentStoreAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_DEPTH, 0,
+                MTLStoreActionStore);
         }
     }
 
     if (defaultClearMask & GL_STENCIL_BUFFER_BIT) {
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.clearStencil = MGL_STATE(ctx)->var.stencil_clear_value;
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionClear;
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+        mglRenderPassSetPersistentStencilClear(
+            _renderPassManager.state,
+            MGL_STATE(ctx)->var.stencil_clear_value);
+        mglRenderPassSetPersistentActions(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MTLLoadActionClear, MTLStoreActionStore);
         MGL_STATE(ctx)->default_fbo_clear_bitmask &= ~GL_STENCIL_BUFFER_BIT;
     } else {
-        _renderPassManager.state->renderPassDescriptor.stencilAttachment.loadAction = MTLLoadActionLoad;
+        mglRenderPassSetPersistentLoadAction(
+            _renderPassManager.state,
+            MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+            MTLLoadActionLoad);
         if (_renderPassManager.state->renderPassDescriptor.stencilAttachment.texture) {
-            _renderPassManager.state->renderPassDescriptor.stencilAttachment.storeAction = MTLStoreActionStore;
+            mglRenderPassSetPersistentStoreAction(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0,
+                MTLStoreActionStore);
         }
     }
 }
@@ -2183,7 +2935,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
 - (bool) finalizeRenderPassDescriptorLocked:(uint64_t)renderEncoderCall
                           traceRenderEncoder:(bool)traceRenderEncoder
 {
-	    _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    mglRenderPassSetPersistentStoreAction(
+        _renderPassManager.state,
+        MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+        MTLStoreActionStore);
 
     if (kMGLDiagnosticStateLogs && traceRenderEncoder) {
         id<MTLTexture> c0Tex = _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture;
@@ -2248,16 +3003,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            [_renderPassManager setFallbackRenderTargetTexture:[_device newTextureWithDescriptor:fbDesc]];
+            [_renderPassManager setFallbackRenderTargetTexture:
+                mglRenderPassCreateTexture(_device, fbDesc)];
         }
 
         if (_renderPassManager.state->fallbackRenderTargetTexture) {
             NSLog(@"MGL WARNING: Render pass had no attachments; binding 1x1 fallback color target");
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture = _renderPassManager.state->fallbackRenderTargetTexture;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-            _renderPassManager.state->renderPassDescriptor.renderTargetWidth = 1;
-            _renderPassManager.state->renderPassDescriptor.renderTargetHeight = 1;
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                _renderPassManager.state->fallbackRenderTargetTexture,
+                0, 0, 0);
+            mglRenderPassSetPersistentActions(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MTLLoadActionLoad, MTLStoreActionStore);
+            mglRenderPassSetPersistentDimensions(
+                _renderPassManager.state, 1, 1);
         } else {
             NSLog(@"MGL ERROR: Failed to allocate fallback render target texture");
             [self recordGPUError];
@@ -2271,7 +3033,14 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         if (attTex && ((attTex.usage & MTLTextureUsageRenderTarget) == 0)) {
             NSLog(@"MGL WARNING: colorAttachment[%d] usage=0x%lx lacks RenderTarget; clearing attachment to avoid Metal assert",
                   i, (unsigned long)attTex.usage);
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[i].texture = nil;
+            MTLRenderPassColorAttachmentDescriptor *attachment =
+                _renderPassManager.state->renderPassDescriptor
+                    .colorAttachments[i];
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, i,
+                nil, attachment.level, attachment.slice,
+                attachment.depthPlane);
         }
     }
 
@@ -2281,9 +3050,19 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         for (int i = 1; i < MAX_COLOR_ATTACHMENTS; i++) {
             if (_renderPassManager.state->renderPassDescriptor.colorAttachments[i].texture) {
                 NSLog(@"MGL WARNING: colorAttachment[0] missing; remapping colorAttachment[%d] -> [0]", i);
-                _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture = _renderPassManager.state->renderPassDescriptor.colorAttachments[i].texture;
-                _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction = _renderPassManager.state->renderPassDescriptor.colorAttachments[i].loadAction;
-                _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction = _renderPassManager.state->renderPassDescriptor.colorAttachments[i].storeAction;
+                MTLRenderPassColorAttachmentDescriptor *sourceAttachment =
+                    _renderPassManager.state->renderPassDescriptor
+                        .colorAttachments[i];
+                mglRenderPassSetPersistentAttachment(
+                    _renderPassManager.state,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    sourceAttachment.texture, sourceAttachment.level,
+                    sourceAttachment.slice, sourceAttachment.depthPlane);
+                mglRenderPassSetPersistentActions(
+                    _renderPassManager.state,
+                    MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                    sourceAttachment.loadAction,
+                    sourceAttachment.storeAction);
                 break;
             }
         }
@@ -2299,16 +3078,23 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                                mipmapped:NO];
             fbDesc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
             fbDesc.storageMode = MTLStorageModeShared;
-            [_renderPassManager setFallbackRenderTargetTexture:[_device newTextureWithDescriptor:fbDesc]];
+            [_renderPassManager setFallbackRenderTargetTexture:
+                mglRenderPassCreateTexture(_device, fbDesc)];
         }
         if (_renderPassManager.state->fallbackRenderTargetTexture) {
             NSLog(@"MGL WARNING: colorAttachment[0] unavailable; binding 1x1 fallback");
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].texture = _renderPassManager.state->fallbackRenderTargetTexture;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            _renderPassManager.state->renderPassDescriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+            mglRenderPassSetPersistentAttachment(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                _renderPassManager.state->fallbackRenderTargetTexture,
+                0, 0, 0);
+            mglRenderPassSetPersistentActions(
+                _renderPassManager.state,
+                MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_COLOR, 0,
+                MTLLoadActionLoad, MTLStoreActionStore);
             if (_renderPassManager.state->renderPassDescriptor.renderTargetWidth == 0 || _renderPassManager.state->renderPassDescriptor.renderTargetHeight == 0) {
-                _renderPassManager.state->renderPassDescriptor.renderTargetWidth = 1;
-                _renderPassManager.state->renderPassDescriptor.renderTargetHeight = 1;
+                mglRenderPassSetPersistentDimensions(
+                    _renderPassManager.state, 1, 1);
             }
         } else {
             NSLog(@"MGL ERROR: Unable to allocate fallback colorAttachment[0] texture");
@@ -2349,8 +3135,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                           (unsigned long)texWidth,
                           (unsigned long)texHeight);
                 }
-                _renderPassManager.state->renderPassDescriptor.renderTargetWidth = texWidth;
-                _renderPassManager.state->renderPassDescriptor.renderTargetHeight = texHeight;
+                mglRenderPassSetPersistentDimensions(
+                    _renderPassManager.state, texWidth, texHeight);
             }
         }
     }
@@ -2373,7 +3159,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     }
 
     // Validate command buffer status. If already committed/completed, rotate to a new buffer.
-    MTLCommandBufferStatus bufferStatus = _renderPassManager.state->currentCommandBuffer.status;
+    MTLCommandBufferStatus bufferStatus =
+        mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer);
     if (bufferStatus >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL WARNING: Render encoder requested on finalized command buffer (status: %ld) - creating a fresh command buffer", (long)bufferStatus);
         if (![self newCommandBufferLocked]) {
@@ -2388,7 +3176,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             return false;
         }
 
-        bufferStatus = _renderPassManager.state->currentCommandBuffer.status;
+        bufferStatus = mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer);
         if (bufferStatus >= MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL ERROR: Fresh command buffer is still finalized (status: %ld)", (long)bufferStatus);
             [self recordGPUError];
@@ -2460,10 +3249,27 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         /* When a GL sample query (GL_SAMPLES_PASSED / GL_ANY_SAMPLES_PASSED)
          * is active, attach the visibility result buffer to the render pass
          * descriptor and zero it so the GPU accumulates a fresh count. */
-        [_queryManager configureRenderPassDescriptor:_renderPassManager.state->renderPassDescriptor];
+        void *queryVisibilityBuffer = NULL;
+        if (_queryStateOwner &&
+            mglRenderCppGetQueryVisibilityBuffer(
+                _queryStateOwner, &queryVisibilityBuffer) == 0 &&
+            queryVisibilityBuffer) {
+            uint32_t visibilityResultType =
+                _renderPassManager.state->renderPassDescriptor
+                    ? (uint32_t)_renderPassManager.state->renderPassDescriptor.visibilityResultType
+                    : 0u;
+            mglRenderCppSetRenderPassStateVisibility(
+                _renderPassManager.state->renderPassStateOwner,
+                queryVisibilityBuffer, visibilityResultType);
+            if (_renderPassManager.state->renderPassDescriptor) {
+                _renderPassManager.state->renderPassDescriptor.visibilityResultBuffer =
+                    (__bridge id<MTLBuffer>)queryVisibilityBuffer;
+            }
+        }
         @try {
             id<MTLRenderCommandEncoder> renderEncoder =
-                [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:_renderPassManager.state->renderPassDescriptor];
+                [_renderPassManager createRenderEncoderWithDescriptor:
+                    _renderPassManager.state->renderPassDescriptor];
             [_renderPassManager installRenderEncoder:renderEncoder];
             if (!_renderPassManager.state->currentRenderEncoder) {
             NSLog(@"MGL ERROR: Failed to create render encoder - invalid render pass descriptor or command buffer");
@@ -2474,7 +3280,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         /* Enable visibility result mode on the encoder for all draws in this
          * pass when a sample query is active. MTLVisibilityResultModeBoolean
          * writes 1 to the buffer if any samples pass per-fragment tests. */
-        [_queryManager configureRenderEncoder:_renderPassManager.state->currentRenderEncoder];
+        if (_queryStateOwner &&
+            _renderPassManager.state->currentRenderEncoder) {
+            uint32_t visibilityMode = 0;
+            uint64_t visibilityOffset = 0;
+            if (mglRenderCppAcquireSampleQuerySlot(
+                    _queryStateOwner, &visibilityMode,
+                    &visibilityOffset) == 0) {
+                mglRenderCppSetVisibilityResultMode(
+                    (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                    visibilityMode, visibilityOffset);
+            }
+        }
         [_renderPassManager updateRenderPassIdentityForContext:ctx];
         /* When trace is disabled, skip the full-struct memset and trace
          * call and clear only the functional flag fields. */
@@ -2776,7 +3593,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             Class queueClass = [_commandQueue class];
             if (!queueClass) {
                 NSLog(@"MGL AGX CRITICAL: _commandQueue is invalid (no class) - recreating");
-                _commandQueue = [_device newCommandQueue];
+                _commandQueue = mglRenderPassCreateCommandQueue(
+                    _device, &_commandQueueOwner);
                 if (!_commandQueue) {
                     NSLog(@"MGL AGX CRITICAL: Failed to recreate command queue");
                     [self recordGPUError];
@@ -2786,7 +3604,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         } @catch (NSException *exception) {
             NSLog(@"MGL AGX CRITICAL: _commandQueue validation exception: %@ - recreating", exception);
             [self recordGPUError];
-            _commandQueue = [_device newCommandQueue];
+            _commandQueue = mglRenderPassCreateCommandQueue(
+                _device, &_commandQueueOwner);
             if (!_commandQueue) {
                 NSLog(@"MGL AGX CRITICAL: Failed to recreate command queue after exception");
                 [self recordGPUError];
@@ -2805,14 +3624,20 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         _currentCBHasWork = NO;
 
         // AGX Driver Validation: Check if the command buffer is immediately invalid
-        if (_renderPassManager.state->currentCommandBuffer.error) {
-            NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %@", _renderPassManager.state->currentCommandBuffer.error);
+        MGLRenderCppCommandBufferState initialState =
+            mglRenderCommandBufferState(
+                _renderPassManager.state->currentCommandBuffer);
+        if (initialState.has_error) {
+            NSLog(@"MGL AGX WARNING: New command buffer has immediate error: %@",
+                  mglRenderCommandBufferErrorString(&initialState));
             [self recordGPUError];
             // Don't return false immediately - AGX sometimes creates error-state buffers that recover
         }
 
         // AGX DRIVER COMPATIBILITY: Enhanced validation to prevent rejections
-        if (_renderPassManager.state->currentCommandBuffer.status == MTLCommandBufferStatusError) {
+        if (mglRenderCommandBufferStatus(
+                _renderPassManager.state->currentCommandBuffer) ==
+            MTLCommandBufferStatusError) {
             NSLog(@"MGL AGX CRITICAL: Command buffer immediately in error state");
             [self recordGPUError];
             [_renderPassManager discardCurrentCommandBuffer];
@@ -2821,8 +3646,11 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
 
         // Additional AGX validation: Check for buffer properties that cause rejections
-        if (_renderPassManager.state->currentCommandBuffer.error) {
-            NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %@", _renderPassManager.state->currentCommandBuffer.error);
+        initialState = mglRenderCommandBufferState(
+            _renderPassManager.state->currentCommandBuffer);
+        if (initialState.has_error) {
+            NSLog(@"MGL AGX WARNING: Command buffer has immediate error: %@",
+                  mglRenderCommandBufferErrorString(&initialState));
             [self recordGPUError];
             [_renderPassManager discardCurrentCommandBuffer];
             [self resetMetalState];
@@ -2928,7 +3756,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         }
     }
 
-    MTLCommandBufferStatus status = _renderPassManager.state->currentCommandBuffer.status;
+    MTLCommandBufferStatus status =
+        mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer);
     if (status >= MTLCommandBufferStatusCommitted) {
         NSLog(@"MGL INFO: %s requested on finalized command buffer (status: %ld), rotating", reason ? reason : "operation", (long)status);
         [self endRenderEncodingLocked];
@@ -2937,7 +3767,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             return false;
         }
 
-        if (!_renderPassManager.state->currentCommandBuffer || _renderPassManager.state->currentCommandBuffer.status >= MTLCommandBufferStatusCommitted) {
+        if (!_renderPassManager.state->currentCommandBuffer ||
+            mglRenderCommandBufferStatus(
+                _renderPassManager.state->currentCommandBuffer) >=
+                MTLCommandBufferStatusCommitted) {
             NSLog(@"MGL ERROR: Unable to obtain writable command buffer for %s", reason ? reason : "operation");
             return false;
         }
@@ -2992,12 +3825,22 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return nil;
     }
 
-    Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    const BOOL nativeTES = _tessellation.nativeTESActive;
+    const BOOL tessVertexCapture = _tessellation.tessVertexCaptureActive;
+    const BOOL cullDistanceCapture =
+        _tessellation.cullDistanceCaptureActive;
+    const BOOL geometryExpansion = _geometry.expansionActive;
+    const int vertexStage = nativeTES ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    Program *vertexProgram = nativeTES
+        ? _tessellation.nativeTESProgram
+        : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *fragmentProgram = (tessVertexCapture || cullDistanceCapture)
+        ? NULL : mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
     GLuint renderProgramKey = mglCurrentRenderProgramKey(ctx);
     GLuint vertexProgramName = vertexProgram ? vertexProgram->name : 0u;
     GLuint fragmentProgramName = fragmentProgram ? fragmentProgram->name : 0u;
-    BOOL rasterizerDiscard = MGL_STATE(ctx)->caps.rasterizer_discard ? YES : NO;
+    BOOL rasterizerDiscard = tessVertexCapture || cullDistanceCapture ||
+        MGL_STATE(ctx)->caps.rasterizer_discard ? YES : NO;
 
     if (!vertexProgram || (!fragmentProgram && !rasterizerDiscard)) {
         NSLog(@"MGL PIPELINE DESC fail: missing stage program key=%u vs=%p fs=%p current=%u pipeline=%u",
@@ -3029,7 +3872,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return nil;
     }
 
-    Shader *vertex_shader = vertexProgram->shader_slots[_VERTEX_SHADER];
+    Shader *vertex_shader = vertexProgram->shader_slots[vertexStage];
     Shader *fragment_shader = fragmentProgram ? fragmentProgram->shader_slots[_FRAGMENT_SHADER] : NULL;
     if (!vertex_shader || (!fragment_shader && !rasterizerDiscard)) {
         NSLog(@"MGL PIPELINE DESC fail: missing shaders key=%u vsProgram=%u fsProgram=%u (vs=%p fs=%p)",
@@ -3041,19 +3884,13 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return nil;
     }
 
-	    void *vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_function;
-	    if (MGL_STATE(ctx)->var.clip_origin == GL_UPPER_LEFT) {
-	        if (MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE &&
-	            vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function) {
-	            vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_zero_to_one_function;
-	        } else if (MGL_STATE(ctx)->var.clip_depth_mode != GL_ZERO_TO_ONE &&
-	                   vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_function) {
-	            vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_upper_left_function;
-	        }
-	    } else if (MGL_STATE(ctx)->var.clip_depth_mode == GL_ZERO_TO_ONE &&
-	               vertexProgram->spirv[_VERTEX_SHADER].mtl_zero_to_one_function) {
-	        vertexFunctionPtr = vertexProgram->spirv[_VERTEX_SHADER].mtl_zero_to_one_function;
-	    }
+	    void *vertexFunctionPtr = geometryExpansion
+            ? (__bridge void *)_geometry.passthroughFunction
+            : cullDistanceCapture
+            ? vertexProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function
+            : tessVertexCapture
+            ? vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function
+            : vertexProgram->spirv[vertexStage].mtl_function;
 
 	    id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vertexFunctionPtr;
 	    id<MTLFunction> fragmentFunction = fragmentProgram
@@ -3083,6 +3920,33 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     pipelineStateDescriptor.label = @"GLSL Pipeline";
     pipelineStateDescriptor.vertexFunction = vertexFunction;
     pipelineStateDescriptor.fragmentFunction = fragmentFunction;
+    if (nativeTES) {
+        switch (vertexProgram->tess_gen_spacing) {
+            case GL_FRACTIONAL_EVEN:
+                pipelineStateDescriptor.tessellationPartitionMode =
+                    MTLTessellationPartitionModeFractionalEven;
+                break;
+            case GL_FRACTIONAL_ODD:
+                pipelineStateDescriptor.tessellationPartitionMode =
+                    MTLTessellationPartitionModeFractionalOdd;
+                break;
+            default:
+                pipelineStateDescriptor.tessellationPartitionMode =
+                    MTLTessellationPartitionModeInteger;
+                break;
+        }
+        pipelineStateDescriptor.maxTessellationFactor = 64u;
+        pipelineStateDescriptor.tessellationFactorScaleEnabled = NO;
+        pipelineStateDescriptor.tessellationFactorFormat =
+            MTLTessellationFactorFormatHalf;
+        pipelineStateDescriptor.tessellationControlPointIndexType =
+            MTLTessellationControlPointIndexTypeNone;
+        pipelineStateDescriptor.tessellationFactorStepFunction =
+            MTLTessellationFactorStepFunctionPerPatch;
+        pipelineStateDescriptor.tessellationOutputWindingOrder =
+            vertexProgram->tess_gen_vertex_order == GL_CW
+                ? MTLWindingClockwise : MTLWindingCounterClockwise;
+    }
     /* GL_RASTERIZER_DISCARD: When rasterizer discard is active, the
      * fragment function is nil.  Metal requires rasterizationEnabled to
      * match the vertex function's return type:
@@ -3091,8 +3955,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
      * SPIRV-Cross generates a void return type when the vertex shader has
      * no varying outputs (e.g. SSBO-only vertex shaders), and a struct
      * return type when it has varying outputs. */
-    if (rasterizerDiscard) {
-        GLuint vsOutputCount = vertexProgram->spirv_resources_list[_VERTEX_SHADER][_STAGE_OUTPUT_RES].count;
+    if (tessVertexCapture || cullDistanceCapture) {
+        pipelineStateDescriptor.rasterizationEnabled = NO;
+    } else if (rasterizerDiscard) {
+        GLuint vsOutputCount = vertexProgram->spirv_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
         pipelineStateDescriptor.rasterizationEnabled = (vsOutputCount > 0) ? YES : NO;
     } else {
         pipelineStateDescriptor.rasterizationEnabled = YES;
@@ -3426,7 +4292,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             if (kMGLVerboseFrameLoopLogs) {
                 NSLog(@"MGL DEBUG: Ending render encoder");
             }
-            [_renderPassManager.state->currentRenderEncoder endEncoding];
+            [_renderPassManager endCurrentRenderEncoder];
             [_renderPassManager clearCurrentRenderEncoder];
             /* When trace is disabled, skip the full-struct memset and
              * trace call and clear only the functional flag fields. */
@@ -3523,7 +4389,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return ok;
     }
 
-    if (_renderPassManager.state->currentCommandBuffer.status != MTLCommandBufferStatusNotEnqueued) {
+    if (mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer) !=
+        MTLCommandBufferStatusNotEnqueued) {
         BOOL ok = [self newCommandBuffer];
         return ok;
     }
@@ -3534,7 +4402,7 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     @try {
         [self commitCommandBufferWithAGXRecovery:commandBufferToCommit];
         _lastCommittedCB = commandBufferToCommit;
-        [commandBufferToCommit waitUntilCompleted];
+        mglRenderPassWaitCommandBuffer(commandBufferToCommit);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: failed to synchronize render pass for texture readback (%s): %@",
               reason ? reason : "texture_readback",
@@ -3544,10 +4412,12 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
         return NO;
     }
 
-    if (commandBufferToCommit.error) {
+    MGLRenderCppCommandBufferState committedState =
+        mglRenderCommandBufferState(commandBufferToCommit);
+    if (committedState.has_error) {
         NSLog(@"MGL ERROR: render pass texture readback sync failed (%s): %@",
               reason ? reason : "texture_readback",
-              commandBufferToCommit.error);
+              mglRenderCommandBufferErrorString(&committedState));
         [self recordGPUError];
         [self newCommandBuffer];
         return NO;
@@ -3780,7 +4650,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     // Keep command buffer lifecycle healthy: if the active one is already finalized,
     // rotate to a fresh buffer before any state processing.
     if (_renderPassManager.state->currentCommandBuffer && _renderPassManager.state->currentRenderEncoder == NULL) {
-        MTLCommandBufferStatus preStatus = _renderPassManager.state->currentCommandBuffer.status;
+        MTLCommandBufferStatus preStatus =
+            mglRenderCommandBufferStatus(
+                _renderPassManager.state->currentCommandBuffer);
         if (preStatus >= MTLCommandBufferStatusCommitted) {
             static uint64_t s_rotateFinalizedCount = 0;
             uint64_t rotateHit = ++s_rotateFinalizedCount;
@@ -3914,9 +4786,10 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
     RETURN_FALSE_ON_FAILURE([self validateRenderPassAttachmentsAndPipelineFormatsLocked:traceProcess]);
 
     @try {
-        if (!_bindingSync.state->lastBoundValid || _bindingSync.state->lastPipelineState != _pipelineCache.state->pipelineState) {
-            [_renderPassManager.state->currentRenderEncoder setRenderPipelineState:_pipelineCache.state->pipelineState];
-            [_bindingSync setLastPipelineState:_pipelineCache.state->pipelineState];
+        if (mglRenderCppBindingSetPipelineIfNeeded(
+                _bindingStateOwner,
+                (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                (__bridge void *)_pipelineCache.state->pipelineState) > 0) {
             MGL_PERF_INC(g_mglSetRenderPipelineStateCallsSinceSwap);
         } else {
             MGL_PERF_INC(g_mglSetRenderPipelineStateSkipsSinceSwap);
@@ -3945,13 +4818,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
                                                      alreadyDone:&resourceSyncWork]);
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    BOOL useFragCoordParams;
-    if (_resourceFallback.mslCacheEnabled && fragmentProgram && fragmentProgram->mslCacheValid) {
-        useFragCoordParams = (fragmentProgram->usesFragCoordParams == GL_TRUE);
-    } else {
-        const char *fragmentMSL = fragmentProgram ? fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str : NULL;
-        useFragCoordParams = (fragmentMSL && strstr(fragmentMSL, kMGLFragCoordParamsMSLName));
-    }
+    BOOL useFragCoordParams =
+        fragmentProgram && fragmentProgram->usesFragCoordParams == GL_TRUE;
     if (useFragCoordParams) {
         NSUInteger passHeight = _renderPassManager.state->renderPassDescriptor ? _renderPassManager.state->renderPassDescriptor.renderTargetHeight : 0;
         if (passHeight == 0 && _renderPassManager.state->renderPassDescriptor) {
@@ -3973,9 +4841,9 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             0.0f,
             0.0f
         };
-        [_renderPassManager.state->currentRenderEncoder setFragmentBytes:&fragCoordParams
-                                         length:sizeof(fragCoordParams)
-                                        atIndex:kMGLFragCoordParamsBufferIndex];
+        mglRenderPassSetFragmentBytes(
+            _renderPassManager.state->currentRenderEncoder, &fragCoordParams,
+            sizeof(fragCoordParams), kMGLFragCoordParamsBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLFragCoordParamsBufferIndex];
     }
 
@@ -3985,15 +4853,8 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
      *
      * Global single bias — scan bound textures, use first non-zero
      * lod_bias.  When all are zero, bind 0.0 (no-op, matches Metal default). */
-    BOOL useLodBias = NO;
-    if (fragmentProgram) {
-        if (_resourceFallback.mslCacheEnabled && fragmentProgram->mslCacheValid) {
-            useLodBias = (fragmentProgram->uses_lod_bias == GL_TRUE);
-        } else {
-            const char *fragmentMSL = fragmentProgram->spirv[_FRAGMENT_SHADER].msl_str;
-            useLodBias = (fragmentMSL && strstr(fragmentMSL, kMGLLodBiasMSLName));
-        }
-    }
+    BOOL useLodBias = fragmentProgram &&
+        fragmentProgram->uses_lod_bias == GL_TRUE;
     if (useLodBias) {
         /* P7: Per-texture LOD_BIAS array — one float per sampler slot.
          * GL 4.6 §8.14.1 eq 8.8 defines biastexobj as per-texture state.
@@ -4019,18 +4880,18 @@ static bool mglGeometryShaderIsPassthrough(const Shader *shader)
             }
             lodBiasArr[unit] = bias;
         }
-        [_renderPassManager.state->currentRenderEncoder setFragmentBytes:lodBiasArr
-                                         length:sizeof(lodBiasArr)
-                                        atIndex:kMGLLodBiasBufferIndex];
+        mglRenderPassSetFragmentBytes(
+            _renderPassManager.state->currentRenderEncoder, lodBiasArr,
+            sizeof(lodBiasArr), kMGLLodBiasBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasBufferIndex];
 
         /* Bind _mglLodBiasMax scalar (MAX_TEXTURE_LOD_BIAS) for the MSL
          * clamp(biastexobj + biasshader, -biasmax, biasmax) in
          * mglRewriteMSLBiasExpr and in the no-bias injected clamp().
          * GL 4.6 §8.14.1 eq 8.8. */
-        [_renderPassManager.state->currentRenderEncoder setFragmentBytes:&biasmax
-                                         length:sizeof(biasmax)
-                                        atIndex:kMGLLodBiasMaxBufferIndex];
+        mglRenderPassSetFragmentBytes(
+            _renderPassManager.state->currentRenderEncoder, &biasmax,
+            sizeof(biasmax), kMGLLodBiasMaxBufferIndex);
         [self invalidateLastBoundFragmentBufferAtIndex:kMGLLodBiasMaxBufferIndex];
     }
 
@@ -4403,23 +5264,29 @@ stencil_format_ok:;
              *
              * Task 5 gated fast path: when MGL_PSO_DEDUP is enabled (default ON)
              * and the render
-             * encoder is unchanged (_bindingSync.state->lastBoundValid == YES) and the resolved
+             * encoder is unchanged (the C++ binding cache is valid) and the resolved
              * pipeline state pointer is identical to the previously bound
-             * state (_pipelineCache.state->pipelineState == _bindingSync.state->lastPipelineState), the nil assignment
+             * state matches the C++ binding cache, the nil assignment
              * is skipped. This allows the dedup check in
              * processGLStateLocked:'s setRenderPipelineState: path to
              * recognize the encoder already has the correct PSO bound and
              * skip the redundant MTL call. If any condition is false, the
              * original conservative nil assignment executes. */
-            if (_pipelineCache.state->psoDedupEnabled && _bindingSync.state->lastBoundValid && (_pipelineCache.state->pipelineState == _bindingSync.state->lastPipelineState)) {
+            if (_pipelineCache.state->psoDedupEnabled &&
+                mglBindingStateIsValid(_bindingStateOwner) &&
+                mglBindingStatePipelineMatches(
+                    _bindingStateOwner,
+                    (__bridge void *)_pipelineCache.state->pipelineState)) {
                 MGL_PERF_INC(g_mglPSODedupHitsSinceSwap);
             } else {
-                [_bindingSync setLastPipelineState:nil];
+                mglRenderCppBindingSetPipelineState(_bindingStateOwner, NULL);
                 MGL_PERF_INC(g_mglPSODedupMissesSinceSwap);
             }
             CFTimeInterval now = CFAbsoluteTimeGetCurrent();
             bool skipPipelineBuild = false;
-            Program *currentVertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+            Program *currentVertexProgram = _tessellation.nativeTESActive
+                ? _tessellation.nativeTESProgram
+                : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
             Program *currentFragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
             GLuint currentProgramName = mglCurrentRenderProgramKey(ctx);
             VertexArray *currentVAO = state->vao;
@@ -4506,7 +5373,9 @@ stencil_format_ok:;
             // create vertex descriptor
             MTLVertexDescriptor *vertexDescriptor;
 
-            vertexDescriptor = [self generateVertexDescriptor];
+            vertexDescriptor = _geometry.expansionActive
+                ? [[MTLVertexDescriptor alloc] init]
+                : [self generateVertexDescriptor];
 	            if (!vertexDescriptor) {
 	                NSLog(@"MGL PIPELINE CREATE fail error=generateVertexDescriptor returned nil");
 	                [self invalidateCurrentPipelineStateForReason:@"vertex descriptor failure"];
@@ -4537,7 +5406,7 @@ stencil_format_ok:;
             }
 
 	            pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
-	            MGLPipelineCacheKey *pipelineCacheKey = nil;
+	            BOOL hasPipelineCacheKey = NO;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
             uint64_t vertexSig = 0;
@@ -4555,15 +5424,19 @@ stencil_format_ok:;
                  * without changing its name. */
                 uint64_t primaryKey = (((uint64_t)currentProgramName << 32)
                                      | (((uint64_t)state->var.clip_origin & 0xFu) << 28)
-                                     | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24));
+                                     | (((uint64_t)state->var.clip_depth_mode & 0xFu) << 24)
+                                     | (_tessellation.nativeTESActive ? (1ull << 23) : 0ull)
+                                     | (_tessellation.tessVertexCaptureActive ? (1ull << 22) : 0ull)
+                                     | (_geometry.expansionActive ? (1ull << 21) : 0ull)
+                                     | (_tessellation.cullDistanceCaptureActive ? (1ull << 20) : 0ull));
                 uint64_t vertexInstance = currentVertexProgram
-                    ? currentVertexProgram->msl_texture_cache_instance_id : 0u;
+                    ? currentVertexProgram->pipeline_cache_instance_id : 0u;
                 uint64_t vertexGeneration = currentVertexProgram
-                    ? currentVertexProgram->msl_texture_cache_generation : 0u;
+                    ? currentVertexProgram->pipeline_cache_generation : 0u;
                 uint64_t fragmentInstance = currentFragmentProgram
-                    ? currentFragmentProgram->msl_texture_cache_instance_id : 0u;
+                    ? currentFragmentProgram->pipeline_cache_instance_id : 0u;
                 uint64_t fragmentGeneration = currentFragmentProgram
-                    ? currentFragmentProgram->msl_texture_cache_generation : 0u;
+                    ? currentFragmentProgram->pipeline_cache_generation : 0u;
                 keyWords[0] = primaryKey;
                 keyWords[1] = vertexInstance;
                 keyWords[2] = vertexGeneration;
@@ -4575,41 +5448,20 @@ stencil_format_ok:;
                  * is only valid for lookups; the miss path below allocates a
                  * fresh key for the store/compile path so overwriteWords:
                  * cannot corrupt cache dictionaries. */
-                pipelineCacheKey = [_pipelineCache pipelineQueryKeyForWords:keyWords];
+                hasPipelineCacheKey = YES;
 
                 /* Two-level cache lookup:
                  * Level 1: PSO cache (fastest - compiled pipeline ready to use)
                  * Level 2: Descriptor cache (fast - skip expensive descriptor regeneration)
                  * On double miss: regenerate descriptor + compile PSO */
-                id cachedEntry = [_pipelineCache pipelineEntryForKey:pipelineCacheKey];
                 id<MTLRenderPipelineState> cachedPipeline = nil;
                 id<MTLFunction> cachedVertexFunction = nil;
                 id<MTLFunction> cachedFragmentFunction = nil;
-                BOOL cachedFunctionMetadataPresent = NO;
-                if (cachedEntry) {
-                    /* The wrapper validation is cheap and protects against a
-                     * malformed or stale entry even though the key is lossless. */
-                    if ([cachedEntry isKindOfClass:[NSDictionary class]]) {
-                        NSDictionary *entry = (NSDictionary *)cachedEntry;
-                        uint64_t cachedPSig = [entry[@"sig"] unsignedLongLongValue];
-                        uint64_t cachedVSig = [entry[@"vsig"] unsignedLongLongValue];
-                        if (cachedPSig == pipelineSig && cachedVSig == vertexSig) {
-                            cachedPipeline = entry[@"pipeline"];
-                            id cachedVertexEntry = entry[@"vertexFunction"];
-                            id cachedFragmentEntry = entry[@"fragmentFunction"];
-                            cachedFunctionMetadataPresent = cachedVertexEntry != nil;
-                            if (cachedVertexEntry != [NSNull null]) {
-                                cachedVertexFunction = cachedVertexEntry;
-                            }
-                            if (cachedFragmentEntry != [NSNull null]) {
-                                cachedFragmentFunction = cachedFragmentEntry;
-                            }
-                        }
-                    } else {
-                        /* Legacy bare pipeline entry (pre-migration). */
-                        cachedPipeline = (id<MTLRenderPipelineState>)cachedEntry;
-                    }
-                }
+                BOOL cachedFunctionMetadataPresent = [_pipelineCache
+                    lookupPipelineForWords:keyWords
+                    pipeline:&cachedPipeline
+                    vertexFunction:&cachedVertexFunction
+                    fragmentFunction:&cachedFragmentFunction];
                 if (cachedPipeline) {
                     /* PSO cache hit - fastest path */
                     static uint64_t s_pipelineCacheHitCount = 0;
@@ -4619,7 +5471,10 @@ stencil_format_ok:;
                             (s_pipelineCacheHitCount <= 128ull || (s_pipelineCacheHitCount % 1000ull) == 0ull)) {
                         NSLog(@"MGL PIPELINE CACHE hit program=%u vao=%p fbo=%u key=%@",
                               (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName,
-                              pipelineCacheKey);
+                              [NSString stringWithFormat:@"%016llx/%016llx/%016llx",
+                               (unsigned long long)keyWords[0],
+                               (unsigned long long)keyWords[5],
+                               (unsigned long long)keyWords[6]]);
                     }
 
                     [_pipelineCache activatePipelineState:cachedPipeline
@@ -4665,13 +5520,11 @@ stencil_format_ok:;
                  * never be retained by the cache dictionaries/LRU.  One heap
                  * allocation on a cache miss is negligible against the PSO
                  * compile itself. */
-                MGLPipelineCacheKey *storeKey =
-                    (currentProgramName != 0)
-                        ? [[MGLPipelineCacheKey alloc] initWithWords:keyWords]
-                        : nil;
+                const uint64_t *storeKeyWords = hasPipelineCacheKey
+                    ? keyWords : NULL;
                 return [self buildPipelineStateOnCacheMissWithDescriptor:pipelineStateDescriptor
                                                      vertexDescriptor:vertexDescriptor
-                                                            cacheKey:storeKey
+                                                        cacheKeyWords:storeKeyWords
                                                          pipelineSig:pipelineSig
                                                           vertexSig:vertexSig
                                                   builtColor0Format:builtColor0Format
@@ -4695,7 +5548,7 @@ stencil_format_ok:;
 
 - (bool)buildPipelineStateOnCacheMissWithDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
                                      vertexDescriptor:(MTLVertexDescriptor *)vertexDescriptor
-                                            cacheKey:(MGLPipelineCacheKey *)pipelineCacheKey
+                                       cacheKeyWords:(const uint64_t *)pipelineCacheKeyWords
                                          pipelineSig:(uint64_t)pipelineSig
                                           vertexSig:(uint64_t)vertexSig
                                   builtColor0Format:(MTLPixelFormat)builtColor0Format
@@ -4710,7 +5563,7 @@ stencil_format_ok:;
      * (mtlSwapBuffersLocked:) runs on the same thread, so no lock is needed. */
     return [self buildPipelineStateOnCacheMissUnlockedWithDescriptor:pipelineStateDescriptor
                                                     vertexDescriptor:vertexDescriptor
-                                                           cacheKey:pipelineCacheKey
+                                                      cacheKeyWords:pipelineCacheKeyWords
                                                         pipelineSig:pipelineSig
                                                          vertexSig:vertexSig
                                                  builtColor0Format:builtColor0Format
@@ -4722,7 +5575,7 @@ stencil_format_ok:;
 
 - (bool)buildPipelineStateOnCacheMissUnlockedWithDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor
                                             vertexDescriptor:(MTLVertexDescriptor *)vertexDescriptor
-                                                   cacheKey:(MGLPipelineCacheKey *)pipelineCacheKey
+                                              cacheKeyWords:(const uint64_t *)pipelineCacheKeyWords
                                                 pipelineSig:(uint64_t)pipelineSig
                                                  vertexSig:(uint64_t)vertexSig
                                          builtColor0Format:(MTLPixelFormat)builtColor0Format
@@ -4744,9 +5597,9 @@ stencil_format_ok:;
     BOOL descriptorFromCache = NO;
 
     /* Check descriptor cache on PSO miss; cache new descriptors for reuse. */
-    if (pipelineCacheKey) {
+    if (pipelineCacheKeyWords) {
         MTLRenderPipelineDescriptor *cachedDescriptor =
-        [_pipelineCache pipelineDescriptorForKey:pipelineCacheKey];
+        [_pipelineCache pipelineDescriptorForWords:pipelineCacheKeyWords];
         if (cachedDescriptor) {
             /* Descriptor cache hit - reuse cached descriptor instead of regenerating */
             finalDescriptor = cachedDescriptor;
@@ -4759,7 +5612,10 @@ stencil_format_ok:;
             if (kMGLVerbosePipelineLogs && s_descriptorCacheHitCount <= 64ull) {
                 NSLog(@"MGL DESCRIPTOR CACHE hit program=%u key=%@ (total %llu)",
                 (unsigned)currentProgramName,
-                pipelineCacheKey,
+                [NSString stringWithFormat:@"%016llx/%016llx/%016llx",
+                 (unsigned long long)pipelineCacheKeyWords[0],
+                 (unsigned long long)pipelineCacheKeyWords[5],
+                 (unsigned long long)pipelineCacheKeyWords[6]],
                 (unsigned long long)s_descriptorCacheHitCount);
             }
         }
@@ -4802,7 +5658,31 @@ stencil_format_ok:;
         }
 
         [_pipelineCache applyBinaryArchiveToDescriptor:finalDescriptor];
-        compiledPSO = [_device newRenderPipelineStateWithDescriptor:finalDescriptor error:&error];
+        char cppError[512] = {0};
+        if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
+            compiledPSO = mglCreateAIRRenderPipelineCpp(
+                _device, currentVertexProgram,
+                _tessellation.nativeTESActive ? _TESS_EVALUATION_SHADER
+                                               : _VERTEX_SHADER,
+                currentFragmentProgram, finalDescriptor, vertexDescriptor,
+                _geometry.expansionActive
+                    ? (__bridge void *)_geometry.passthroughLibrary
+                    : _tessellation.cullDistanceCaptureActive
+                    ? currentVertexProgram->spirv[_VERTEX_SHADER]
+                          .mtl_cull_capture_library
+                    : _tessellation.tessVertexCaptureActive
+                    ? currentVertexProgram->spirv[_VERTEX_SHADER]
+                          .mtl_tess_capture_library
+                    : NULL,
+                cppError, sizeof cppError);
+            if (!compiledPSO && cppError[0]) {
+                NSLog(@"MGL METALCPP PSO fallback: %s", cppError);
+            }
+        }
+        if (!compiledPSO) {
+            compiledPSO = mglRenderPassCreatePipeline(
+                _device, finalDescriptor, &error);
+        }
         if (compiledPSO) {
             mglMetalCountCreate(MGLMetalKindPSO);
             successfulDescriptor = finalDescriptor;
@@ -4958,11 +5838,21 @@ stencil_format_ok:;
                     simpleDescriptor.vertexFunction = pipelineStateDescriptor.vertexFunction;
                     simpleDescriptor.fragmentFunction = pipelineStateDescriptor.fragmentFunction;
                     simpleDescriptor.rasterizationEnabled = pipelineStateDescriptor.rasterizationEnabled;
+                    if (_tessellation.nativeTESActive) {
+                        simpleDescriptor.tessellationPartitionMode = pipelineStateDescriptor.tessellationPartitionMode;
+                        simpleDescriptor.maxTessellationFactor = pipelineStateDescriptor.maxTessellationFactor;
+                        simpleDescriptor.tessellationFactorScaleEnabled = pipelineStateDescriptor.tessellationFactorScaleEnabled;
+                        simpleDescriptor.tessellationFactorFormat = pipelineStateDescriptor.tessellationFactorFormat;
+                        simpleDescriptor.tessellationControlPointIndexType = pipelineStateDescriptor.tessellationControlPointIndexType;
+                        simpleDescriptor.tessellationFactorStepFunction = pipelineStateDescriptor.tessellationFactorStepFunction;
+                        simpleDescriptor.tessellationOutputWindingOrder = pipelineStateDescriptor.tessellationOutputWindingOrder;
+                    }
                     mglNormalizePipelineDepthStencilFormats(simpleDescriptor, "simple-fallback");
                     mglEnableIndirectCommandBuffersForPipeline(simpleDescriptor);
 
                     [_pipelineCache applyBinaryArchiveToDescriptor:simpleDescriptor];
-                    compiledPSO = [_device newRenderPipelineStateWithDescriptor:simpleDescriptor error:&error];
+                    compiledPSO = mglRenderPassCreatePipeline(
+                        _device, simpleDescriptor, &error);
                     if (compiledPSO) {
                         mglMetalCountCreate(MGLMetalKindPSO);
                         successfulDescriptor = simpleDescriptor;
@@ -5025,11 +5915,16 @@ stencil_format_ok:;
             error:&libraryError];
 
             if (vertLibrary && fragLibrary) {
-                safeDescriptor.vertexFunction = [vertLibrary newFunctionWithName:@"main"];
-                safeDescriptor.fragmentFunction = [fragLibrary newFunctionWithName:@"main"];
+                safeDescriptor.vertexFunction =
+                    mglRenderPassCreateFunction(
+                        vertLibrary, @"main", NULL, 0);
+                safeDescriptor.fragmentFunction =
+                    mglRenderPassCreateFunction(
+                        fragLibrary, @"main", NULL, 0);
 
                 [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                compiledPSO = [_device newRenderPipelineStateWithDescriptor:safeDescriptor error:&error];
+                compiledPSO = mglRenderPassCreatePipeline(
+                    _device, safeDescriptor, &error);
                 if (compiledPSO) {
                     mglMetalCountCreate(MGLMetalKindPSO);
                     successfulDescriptor = safeDescriptor;
@@ -5099,7 +5994,7 @@ stencil_format_ok:;
                 _gpuRecovery.interfaceMismatchBlockedStreak = 0u;
             }
 
-            [self insertPipelineIntoCacheWithKey:pipelineCacheKey
+            [self insertPipelineIntoCacheWithWords:pipelineCacheKeyWords
             pipelineSig:pipelineSig
             vertexSig:vertexSig
             descriptor:successfulDescriptor
@@ -5116,33 +6011,26 @@ stencil_format_ok:;
  * Pipeline cache insertion with LRU eviction, extracted from
  * syncPipelineStateWithDeferredBufferMap:.
  */
-- (void)insertPipelineIntoCacheWithKey:(MGLPipelineCacheKey *)pipelineCacheKey
+- (void)insertPipelineIntoCacheWithWords:(const uint64_t *)pipelineCacheKeyWords
                            pipelineSig:(uint64_t)pipelineSig
                              vertexSig:(uint64_t)vertexSig
                             descriptor:(MTLRenderPipelineDescriptor *)descriptor
                     descriptorFromCache:(BOOL)descriptorFromCache
 {
-    if (pipelineCacheKey && _pipelineCache.state->pipelineState) {
-            /* Retain the signatures in the value as a defensive consistency
-             * check in addition to the lossless string key. */
-            id vertexFunctionValue = descriptor.vertexFunction;
-            id fragmentFunctionValue = descriptor.fragmentFunction;
-            if (!vertexFunctionValue) vertexFunctionValue = [NSNull null];
-            if (!fragmentFunctionValue) fragmentFunctionValue = [NSNull null];
-            NSDictionary *entry = @{
-                @"pipeline": _pipelineCache.state->pipelineState,
-                @"sig": [NSNumber numberWithUnsignedLongLong:pipelineSig],
-                @"vsig": [NSNumber numberWithUnsignedLongLong:vertexSig],
-                @"vertexFunction": vertexFunctionValue,
-                @"fragmentFunction": fragmentFunctionValue
-            };
-            [_pipelineCache storePipelineEntry:entry forKey:pipelineCacheKey];
+    if (pipelineCacheKeyWords && _pipelineCache.state->pipelineState) {
+            (void)pipelineSig;
+            (void)vertexSig;
+            [_pipelineCache storePipeline:_pipelineCache.state->pipelineState
+                           vertexFunction:descriptor.vertexFunction
+                         fragmentFunction:descriptor.fragmentFunction
+                                 forWords:pipelineCacheKeyWords];
 
             /* Cache the descriptor for future PSO cache misses.
              * Only cache if descriptor was generated (not from cache).
              * This avoids redundant descriptor generation on next miss. */
             if (!descriptorFromCache && descriptor) {
-                [_pipelineCache storePipelineDescriptor:descriptor forKey:pipelineCacheKey];
+                [_pipelineCache storePipelineDescriptor:descriptor
+                                               forWords:pipelineCacheKeyWords];
             }
     }
 }
@@ -5187,14 +6075,17 @@ stencil_format_ok:;
          * draws in the same CB reference would corrupt them. */
         if (!_vertexSizeConstantsValid ||
             memcmp(_vertexSizeConstantsCache, sizeConstants, sizeof(sizeConstants)) != 0) {
-            _vertexSizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                     length:sizeof(sizeConstants)
-                                                    options:MTLResourceStorageModeShared];
+            _vertexSizeBuffer = mglRenderPassCreateBufferWithBytes(
+                _device, sizeConstants, sizeof(sizeConstants),
+                MTLResourceStorageModeShared);
             memcpy(_vertexSizeConstantsCache, sizeConstants, sizeof(sizeConstants));
             _vertexSizeConstantsValid = YES;
         }
         if (_vertexSizeBuffer) {
-            [_renderPassManager.state->currentRenderEncoder setVertexBuffer:_vertexSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            mglRenderPassSetBuffer(
+                _renderPassManager.state->currentRenderEncoder,
+                _vertexSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
+                MGL_BUFFER_SIZE_BUFFER_INDEX);
             [self recordLastBoundVertexBuffer:_vertexSizeBuffer
                                        offset:0
                                       atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
@@ -5225,14 +6116,17 @@ stencil_format_ok:;
         /* Content-comparison cache (see vertex note above). */
         if (!_fragmentSizeConstantsValid ||
             memcmp(_fragmentSizeConstantsCache, sizeConstants, sizeof(sizeConstants)) != 0) {
-            _fragmentSizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                       length:sizeof(sizeConstants)
-                                                      options:MTLResourceStorageModeShared];
+            _fragmentSizeBuffer = mglRenderPassCreateBufferWithBytes(
+                _device, sizeConstants, sizeof(sizeConstants),
+                MTLResourceStorageModeShared);
             memcpy(_fragmentSizeConstantsCache, sizeConstants, sizeof(sizeConstants));
             _fragmentSizeConstantsValid = YES;
         }
         if (_fragmentSizeBuffer) {
-            [_renderPassManager.state->currentRenderEncoder setFragmentBuffer:_fragmentSizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+            mglRenderPassSetBuffer(
+                _renderPassManager.state->currentRenderEncoder,
+                _fragmentSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
+                MGL_BUFFER_SIZE_BUFFER_INDEX);
             [self recordLastBoundFragmentBuffer:_fragmentSizeBuffer
                                          offset:0
                                         atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
@@ -5255,8 +6149,9 @@ stencil_format_ok:;
      * retains itself until completion. */
     if (finish && _pendingFinishCB != nil) {
         @try {
-            if (_pendingFinishCB.status != MTLCommandBufferStatusNotEnqueued) {
-                [_pendingFinishCB waitUntilCompleted];
+            if (mglRenderCommandBufferStatus(_pendingFinishCB) !=
+                MTLCommandBufferStatusNotEnqueued) {
+                mglRenderPassWaitCommandBuffer(_pendingFinishCB);
             }
         } @catch (NSException *exception) {
             NSLog(@"MGL ERROR: waitUntilCompleted failed outside lock: %@", exception);
@@ -5311,7 +6206,9 @@ stencil_format_ok:;
         return;
     }
 
-    MTLCommandBufferStatus currentStatus = _renderPassManager.state->currentCommandBuffer.status;
+    MTLCommandBufferStatus currentStatus =
+        mglRenderCommandBufferStatus(
+            _renderPassManager.state->currentCommandBuffer);
     if (currentStatus != MTLCommandBufferStatusNotEnqueued) {
         NSLog(@"MGL INFO: flushCommandBuffer found finalized buffer (status=%ld), rotating", (long)currentStatus);
         if (![self newCommandBufferLocked]) {
@@ -5320,8 +6217,12 @@ stencil_format_ok:;
         return;
     }
 
-    if (_renderPassManager.state->currentCommandBuffer.error) {
-        NSLog(@"MGL ERROR: Command buffer has error before commit: %@", _renderPassManager.state->currentCommandBuffer.error);
+    MGLRenderCppCommandBufferState preCommitState =
+        mglRenderCommandBufferState(
+            _renderPassManager.state->currentCommandBuffer);
+    if (preCommitState.has_error) {
+        NSLog(@"MGL ERROR: Command buffer has error before commit: %@",
+              mglRenderCommandBufferErrorString(&preCommitState));
         [self cleanupCommandBuffer];
         return;
     }

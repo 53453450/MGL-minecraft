@@ -7,7 +7,7 @@
 #import "mgl.h"
 #import "mgl_metal_bridge.h"
 #import "draw_command.h"
-#include "mgl_render_cpp.h" /* Metal-cpp 渲染门面（MGL_USE_METALCPP 路径） */
+#include "mgl_render_cpp_objc.h" /* C ABI + ObjC descriptor state adapter */
 
 /* KVO context shared by the observer registration in
  * createMGLRendererAndBindToContext:view: and observeValueForKeyPath:. */
@@ -33,6 +33,42 @@ static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
     return fallback;
 }
 
+static id<MTLTexture> mglLifecycleCreateTexture(
+    id<MTLDevice> device,
+    MTLTextureDescriptor *descriptor)
+{
+    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != NULL) {
+        void *texture = NULL;
+        MGLRenderCppTextureDescriptorState state =
+            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+            texture) {
+            return (__bridge_transfer id<MTLTexture>)texture;
+        }
+    }
+    return [device newTextureWithDescriptor:descriptor];
+}
+
+static void mglLifecycleReplaceTextureRegion(id<MTLTexture> texture,
+                                             MTLRegion region,
+                                             NSUInteger level,
+                                             const void *bytes,
+                                             NSUInteger bytesPerRow)
+{
+    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != NULL &&
+        mglRenderCppTextureReplaceRegion(
+            (__bridge void *)texture,
+            region.origin.x, region.origin.y, region.origin.z,
+            region.size.width, region.size.height, region.size.depth,
+            level, 0, bytes, bytesPerRow, 0, 0) == 0) {
+        return;
+    }
+    [texture replaceRegion:region mipmapLevel:level withBytes:bytes
+                bytesPerRow:bytesPerRow];
+}
+
 @implementation MGLRenderer (Lifecycle)
 
 #pragma mark C interface to context functions
@@ -55,6 +91,30 @@ static MTLPixelFormat mglMetalLayerPixelFormatForContext(GLMContext drawCtx)
     glm_ctx->mtl_funcs.field = cname;
     MGL_MTL_FUNC_LIST(MGL_MTL_FUNC_ASSIGN)
 #undef MGL_MTL_FUNC_ASSIGN
+
+    /* These callbacks release bridge-owned Metal objects directly through
+     * Metal-cpp and do not need the ObjC renderer target.  Owner-dependent
+     * callbacks remain on mgl_metal_bridge until their state moves to C++. */
+    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
+        if (mglRenderCppGetDevice() != NULL) {
+            glm_ctx->mtl_funcs.mtlBindBuffer = mglRenderCppBindBuffer;
+            glm_ctx->mtl_funcs.mtlBufferSubData =
+                mglRenderCppBufferSubData;
+            glm_ctx->mtl_funcs.mtlMapUnmapBuffer =
+                mglRenderCppMapUnmapBuffer;
+            glm_ctx->mtl_funcs.mtlReadBackBuffer =
+                mglRenderCppReadBackBuffer;
+            glm_ctx->mtl_funcs.mtlFlushBufferRange =
+                mglRenderCppFlushBufferRange;
+            glm_ctx->mtl_funcs.mtlBindProgram = mglRenderCppBindProgram;
+        }
+        glm_ctx->mtl_funcs.mtlDeleteMTLObj = mglRenderCppDeleteMTLObj;
+        glm_ctx->mtl_funcs.release_buffer_metal_data =
+            mglRenderCppReleaseBufferMetalData;
+        glm_ctx->mtl_funcs.mtlWaitForSync = mglRenderCppWaitForSync;
+        glm_ctx->mtl_funcs.mtlGetSyncStatus = mglRenderCppGetSyncStatus;
+        glm_ctx->mtl_funcs.mtlReleaseSync = mglRenderCppReleaseSync;
+    }
 }
 
 - (id) initMGLRendererFromContext: (void *)glm_ctx andBindToWindow: (NSWindow *)window;
@@ -150,7 +210,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
 {
     mglClaimGLThread();            /* idempotent; records the init thread as the GL thread */
     ctx = glm_ctx;
-    _queryManager = [MGLQueryManager new];
     _renderPassManager = [MGLRenderPassManager new];
 
     /* start the DontCare frame generation at 1 so it never matches a
@@ -163,12 +222,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _gpuRecovery.consecutiveGPUErrors = 0;
     _gpuRecovery.lastGPUErrorTime = 0;
     _gpuRecovery.gpuErrorRecoveryMode = NO;
-    // Kill-switchable opts: unset = ON, =0/false/no/off = OFF.
-    _resourceFallback.mslCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_MSL_CACHE");
-    // Bounded per-Program MSL texture type lookup cache (always on; no env var).
-    // Keys include a process-unique Program lifetime ID and link generation.
-    _resourceFallback.mslTextureTypeCache = [NSCache new];
-    _resourceFallback.mslTextureTypeCache.countLimit = 4096u;
     BOOL psoDedupEnabled = mglEnvFlagEnabledDefaultOn("MGL_PSO_DEDUP");
     BOOL depthStencilCacheEnabled = mglEnvFlagEnabledDefaultOn("MGL_DS_CACHE");
     BOOL binaryArchiveEnabled = mglEnvFlagEnabledDefaultOn("MGL_BINARY_ARCHIVE");
@@ -176,7 +229,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         initWithPSODedupEnabled:psoDedupEnabled
       depthStencilCacheEnabled:depthStencilCacheEnabled
            binaryArchiveEnabled:binaryArchiveEnabled];
-    _bindingSync = [MGLBindingSync new];
+    _bindingStateOwner = mglRenderCppBindingCreate(TEXTURE_UNITS);
+    if (!_bindingStateOwner) {
+        NSLog(@"MGL ERROR: failed to create Metal-cpp binding state owner");
+    }
     /* Snapshot arena: batch snapshot/commands from bump allocator. */
     _batching.arenaSnapshotEnabled = mglEnvFlagEnabledDefaultOn("MGL_ARENA_SNAPSHOT");
     if (_batching.arenaSnapshotEnabled) {
@@ -192,16 +248,15 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     _batching.skipSameKeyRestoreEnabled = mglEnvFlagEnabledDefaultOn("MGL_SKIP_SAME_KEY_RESTORE");
     _batching.dirtyKeyDeltaEnabled = mglEnvFlagEnabledDefaultOn("MGL_DIRTY_KEY_DELTA");
     /* Initialize last-bound render encoder dedup state to a clean slate.
-     * _bindingSync.state->lastBoundValid starts NO so the first bind on the first encoder is
+     * The C++ binding state's valid bit starts false so the first bind on the first encoder is
      * never incorrectly skipped. */
     [self invalidateLastBoundState];
     NSLog(@"MGL INFO: AGX GPU error tracking initialized");
-    NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d msl_cache=%d "
+    NSLog(@"MGL INFO: perf gates pso_dedup=%d ds_cache=%d arena=%d "
           "same_key_restore=%d dirty_key_delta=%d (set VAR=0 to disable)",
           _pipelineCache.state->psoDedupEnabled ? 1 : 0,
           _pipelineCache.state->dsCacheEnabled ? 1 : 0,
           _batching.arenaSnapshotEnabled ? 1 : 0,
-          _resourceFallback.mslCacheEnabled ? 1 : 0,
           _batching.skipSameKeyRestoreEnabled ? 1 : 0,
           _batching.dirtyKeyDeltaEnabled ? 1 : 0);
 
@@ -232,12 +287,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
     /* METALCPP 路径（Phase 1）：把现有 id<MTLDevice> 桥接给 C++ 渲染门面
      * （+1 retain，shutdown 时 release）。AIR 加载器/PSO 走 MGL_USE_METALCPP=1
      * 时经 mglRenderCppGetDevice() 取用。 */
-    if (getenv("MGL_USE_METALCPP")) {
-        if (mglRenderCppInit((__bridge void *)_device) != 0) {
-            NSLog(@"MGL ERROR: mglRenderCppInit failed (Metal-cpp bridge)");
-        } else {
-            NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
-                  mglRenderCppGetDevice());
+    if (mglRenderCppInit((__bridge void *)_device) != 0) {
+        NSLog(@"MGL ERROR: mglRenderCppInit failed (Metal-cpp bridge)");
+    } else {
+        NSLog(@"MGL INFO: Metal-cpp renderer bridge ready (%p)",
+              mglRenderCppGetDevice());
+        /* Rebind now that the C++ device exists.  The first bind above keeps
+         * early-failure cleanup valid; this bind selects migrated callbacks. */
+        [self bindObjFuncsToGLMContext:glm_ctx];
+        if (mglRenderCppCreateQueryStateOwner(256u, &_queryStateOwner) != 0) {
+            _queryStateOwner = NULL;
+            NSLog(@"MGL ERROR: failed to create Metal-cpp query state owner");
         }
     }
     _pipelineCache.device = _device;
@@ -268,7 +328,17 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             MGLCapabilityMaxConcurrentCommandBuffers(&_capability);
     }
 
-    _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
+    if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") && mglRenderCppGetDevice()) {
+        uint32_t maxCommandBuffers = isVirtualized
+            ? (uint32_t)MGLCapabilityMaxConcurrentCommandBuffers(&_capability)
+            : 0u;
+        _commandQueue = mglRenderCppCreateOrResetCommandQueueOwner(
+            &_commandQueueOwner, maxCommandBuffers);
+    }
+    if (!_commandQueue) {
+        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
+        _commandQueue = [_device newCommandQueueWithDescriptor:queueDescriptor];
+    }
     if (!_commandQueue) {
         NSLog(@"MGL ERROR: Failed to create Metal command queue");
         // Intentional early return on critical Metal initialization failure.
@@ -506,7 +576,8 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         proactiveDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
         proactiveDesc.storageMode = MTLStorageModeShared;
 
-        id<MTLTexture> proactiveTexture = [_device newTextureWithDescriptor:proactiveDesc];
+        id<MTLTexture> proactiveTexture =
+            mglLifecycleCreateTexture(_device, proactiveDesc);
         if (proactiveTexture) {
             // Create gradient pattern data
             uint32_t *gradientData = calloc(256 * 256, sizeof(uint32_t));
@@ -524,10 +595,9 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
                 }
 
                 MTLRegion region = MTLRegionMake2D(0, 0, 256, 256);
-                [proactiveTexture replaceRegion:region
-                                     mipmapLevel:0
-                                       withBytes:gradientData
-                                     bytesPerRow:256 * sizeof(uint32_t)];
+                mglLifecycleReplaceTextureRegion(
+                    proactiveTexture, region, 0, gradientData,
+                    256 * sizeof(uint32_t));
 
                 free(gradientData);
                 NSLog(@"MGL PROACTIVE SUCCESS: Created 256x256 gradient texture (prevents magenta screen)");
@@ -609,6 +679,10 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         /* Drop strong references held by the last-bound dedup cache before
          * releasing the underlying Metal resources below. */
         [self invalidateLastBoundState];
+        /* Destroy the per-context C++ binding state before final renderer
+         * shutdown releases any remaining renderer-owned Metal objects. */
+        mglRenderCppBindingDestroy(_bindingStateOwner);
+        _bindingStateOwner = NULL;
 
         // Cleanup command buffer and encoder
         if (_renderPassManager.state->currentCommandBuffer) {
@@ -624,8 +698,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         [_renderPassManager shutdown];
         _renderPassManager = nil;
 
-        [_queryManager shutdown];
-        _queryManager = nil;
+        mglRenderCppDestroyQueryStateOwner(&_queryStateOwner);
 
         if (_pipelineCache) {
             if (_pipelineCache.state->pipelineState) {
@@ -660,6 +733,7 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
             NSLog(@"MGL INFO: Releasing command queue");
             _commandQueue = nil;
         }
+        mglRenderCppDestroyCommandQueueOwner(&_commandQueueOwner);
 
         if (_device) {
             NSLog(@"MGL INFO: Releasing Metal device");

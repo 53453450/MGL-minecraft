@@ -39,4 +39,10 @@ static inline int mgl_env_flag_enabled(const char *name)
     return 1;
 }
 
+static inline int mgl_env_flag_enabled_default_on(const char *name)
+{
+    const char *value = name ? getenv(name) : NULL;
+    return (!value || value[0] == '\0') ? 1 : mgl_env_flag_enabled(name);
+}
+
 #endif /* MGL_ENV_FLAG_H */

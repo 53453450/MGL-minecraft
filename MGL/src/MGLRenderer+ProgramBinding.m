@@ -7,30 +7,25 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+ProgramBinding_Private.h"
 
-/* === program-resolved texture type / data kind helpers ===
- *
- * Extracted from the ObjC query methods below so the hot sampled-texture
- * binding loops can pass an already-resolved Program pointer and skip the
- * per-call mglResolveProgramForStageFromState.  Caching, MSL fallback, and
- * rate-limited override logging are preserved. */
+/* === AIR-reflected texture type / data kind helpers === */
 MTLTextureType mglDeclaredTextureTypeFromResource(const SpirvResource *res)
 {
     if (!res) {
         return 0;
     }
-    switch ((SpvDim)res->image_dim) {
-        case SpvDim1D:
+    switch ((MGLImageDimension)res->image_dim) {
+        case MGL_IMAGE_DIM_1D:
             return res->image_arrayed ? MTLTextureType1DArray : MTLTextureType1D;
-        case SpvDim2D:
+        case MGL_IMAGE_DIM_2D:
             if (res->image_multisampled) {
                 return res->image_arrayed ? MTLTextureType2DMultisampleArray : MTLTextureType2DMultisample;
             }
             return res->image_arrayed ? MTLTextureType2DArray : MTLTextureType2D;
-        case SpvDim3D:
+        case MGL_IMAGE_DIM_3D:
             return MTLTextureType3D;
-        case SpvDimCube:
+        case MGL_IMAGE_DIM_CUBE:
             return res->image_arrayed ? MTLTextureTypeCubeArray : MTLTextureTypeCube;
-        case SpvDimBuffer:
+        case MGL_IMAGE_DIM_BUFFER:
             return MTLTextureTypeTextureBuffer;
         default:
             return 0;
@@ -43,34 +38,7 @@ MTLTextureType mglExpectedTextureTypeForResource(Program *program, int stage, Sp
         return 0;
     }
 
-    MTLTextureType mslType;
-    if (res->cached_msl_texture_type_valid) {
-        mslType = (MTLTextureType)res->cached_msl_texture_type;
-    } else {
-        mslType = mglExpectedTextureTypeFromMSL(program->spirv[stage].msl_str, res->binding);
-        res->cached_msl_texture_type = (uint32_t)mslType;
-        res->cached_msl_texture_type_valid = 1u;
-    }
-
-    MTLTextureType spirvType = mglDeclaredTextureTypeFromResource(res);
-
-    if (mslType != 0 && mslType != spirvType) {
-        static uint64_t s_mslTextureTypeOverrideCount = 0;
-        uint64_t hit = ++s_mslTextureTypeOverrideCount;
-        if (hit <= 8ull || (hit % 2048ull) == 0ull) {
-            NSLog(@"MGL TEX EXPECT override from MSL stage=%d binding=%u name=%s spirvType=%lu mslType=%lu imageDim=%u hit=%llu",
-                  stage,
-                  (unsigned)res->binding,
-                  res->name ? res->name : "(null)",
-                  (unsigned long)spirvType,
-                  (unsigned long)mslType,
-                  (unsigned)res->image_dim,
-                  (unsigned long long)hit);
-        }
-        return mslType;
-    }
-
-    return mslType ? mslType : spirvType;
+    return mglDeclaredTextureTypeFromResource(res);
 }
 
 MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int stage, SpirvResource *res)
@@ -79,16 +47,9 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
         return MGLTextureDataKindUnknown;
     }
 
-    if (res->cached_msl_data_kind != 0u) {
-        return (MGLTextureDataKind)res->cached_msl_data_kind;
-    }
-
-    MGLTextureDataKind mslKind =
-        mglExpectedTextureDataKindFromMSL(program->spirv[stage].msl_str, res->binding);
-    MGLTextureDataKind resolvedKind =
-        mslKind != MGLTextureDataKindUnknown ? mslKind : MGLTextureDataKindFloat;
-    res->cached_msl_data_kind = (uint32_t)resolvedKind;
-    return resolvedKind;
+    return res->texture_data_kind != MGL_SHADER_TEXTURE_DATA_UNKNOWN
+        ? (MGLTextureDataKind)res->texture_data_kind
+        : MGLTextureDataKindFloat;
 }
 
 @implementation MGLRenderer (ProgramBinding)
@@ -104,17 +65,17 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     }
     switch(type)
     {
-        case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER:
-        case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-        case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
-        case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
-        case SPVC_RESOURCE_TYPE_PUSH_CONSTANT:
-        case SPVC_RESOURCE_TYPE_STAGE_INPUT:
-        case SPVC_RESOURCE_TYPE_STAGE_OUTPUT:
-        case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-        case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
-        case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+        case _UNIFORM_BUFFER_RES:
+        case _UNIFORM_CONSTANT_RES:
+        case _STORAGE_BUFFER_RES:
+        case _ATOMIC_COUNTER_RES:
+        case _PUSH_CONSTANT_RES:
+        case _STAGE_INPUT_RES:
+        case _STAGE_OUTPUT_RES:
+        case _SAMPLED_IMAGE_RES:
+        case _SEPARATE_IMAGE_RES:
+        case _SEPARATE_SAMPLERS_RES:
+        case _STORAGE_IMAGE_RES:
             break;
 
         default:
@@ -139,17 +100,17 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     }
     switch(type)
     {
-       case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER:
-       case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-       case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
-       case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
-       case SPVC_RESOURCE_TYPE_PUSH_CONSTANT:
-       case SPVC_RESOURCE_TYPE_STAGE_INPUT:
-       case SPVC_RESOURCE_TYPE_STAGE_OUTPUT:
-       case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-       case SPVC_RESOURCE_TYPE_SEPARATE_IMAGE:
-       case SPVC_RESOURCE_TYPE_SEPARATE_SAMPLERS:
-       case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+       case _UNIFORM_BUFFER_RES:
+       case _UNIFORM_CONSTANT_RES:
+       case _STORAGE_BUFFER_RES:
+       case _ATOMIC_COUNTER_RES:
+       case _PUSH_CONSTANT_RES:
+       case _STAGE_INPUT_RES:
+       case _STAGE_OUTPUT_RES:
+       case _SAMPLED_IMAGE_RES:
+       case _SEPARATE_IMAGE_RES:
+       case _SEPARATE_SAMPLERS_RES:
+       case _STORAGE_IMAGE_RES:
            break;
 
        default:
@@ -223,11 +184,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
 - (NSInteger)getProgramMetalBufferIndexForStage:(int)stage clientBinding:(GLuint)clientBinding
 {
     static const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-        SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
-        SPVC_RESOURCE_TYPE_PUSH_CONSTANT
+        _UNIFORM_BUFFER_RES,
+        _UNIFORM_CONSTANT_RES,
+        _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES,
+        _PUSH_CONSTANT_RES
     };
 
     Program *ptr = mglResolveProgramForStageFromState(ctx, stage);
@@ -327,11 +288,11 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
 - (NSUInteger)getProgramBindingRequiredSizeForStage:(int)stage clientBinding:(GLuint)clientBinding
 {
     static const int resourceTypes[] = {
-        SPVC_RESOURCE_TYPE_UNIFORM_BUFFER,
-        SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT,
-        SPVC_RESOURCE_TYPE_STORAGE_BUFFER,
-        SPVC_RESOURCE_TYPE_ATOMIC_COUNTER,
-        SPVC_RESOURCE_TYPE_PUSH_CONSTANT
+        _UNIFORM_BUFFER_RES,
+        _UNIFORM_CONSTANT_RES,
+        _STORAGE_BUFFER_RES,
+        _ATOMIC_COUNTER_RES,
+        _PUSH_CONSTANT_RES
     };
 
     if (stage < 0 || stage >= _MAX_SHADER_TYPES) {
@@ -384,14 +345,14 @@ MGLTextureDataKind mglExpectedTextureDataKindForResource(Program *program, int s
     }
     switch(type)
     {
-       case SPVC_RESOURCE_TYPE_UNIFORM_BUFFER:
-       case SPVC_RESOURCE_TYPE_UNIFORM_CONSTANT:
-       case SPVC_RESOURCE_TYPE_STORAGE_BUFFER:
-       case SPVC_RESOURCE_TYPE_ATOMIC_COUNTER:
-       case SPVC_RESOURCE_TYPE_PUSH_CONSTANT:
-       case SPVC_RESOURCE_TYPE_STAGE_INPUT:
-       case SPVC_RESOURCE_TYPE_SAMPLED_IMAGE:
-       case SPVC_RESOURCE_TYPE_STORAGE_IMAGE:
+       case _UNIFORM_BUFFER_RES:
+       case _UNIFORM_CONSTANT_RES:
+       case _STORAGE_BUFFER_RES:
+       case _ATOMIC_COUNTER_RES:
+       case _PUSH_CONSTANT_RES:
+       case _STAGE_INPUT_RES:
+       case _SAMPLED_IMAGE_RES:
+       case _STORAGE_IMAGE_RES:
            break;
 
        default:

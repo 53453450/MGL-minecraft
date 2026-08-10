@@ -4,6 +4,172 @@
 
 #import "MGLRenderer_Private.h"
 #import "mgl_compute_pipeline_cache.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static BOOL mglComputeUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static id<MTLBuffer> mglComputeCreateBufferWithBytes(
+    id<MTLDevice> device,
+    const void *bytes,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglComputeUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                              &buffer) == 0 && buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithBytes:bytes length:length options:options];
+}
+
+static id<MTLSamplerState> mglComputeCreateSampler(
+    id<MTLDevice> device,
+    MTLSamplerDescriptor *descriptor)
+{
+    if (mglComputeUsesMetalCpp()) {
+        void *sampler = NULL;
+        if (mglRenderCppCreateSampler((__bridge void *)descriptor,
+                                      &sampler) == 0 && sampler) {
+            return (__bridge_transfer id<MTLSamplerState>)sampler;
+        }
+    }
+    return [device newSamplerStateWithDescriptor:descriptor];
+}
+
+static id<MTLTexture> mglComputeCreateTextureLevelView(
+    id<MTLTexture> texture,
+    NSUInteger level,
+    NSUInteger sliceCount)
+{
+    if (mglComputeUsesMetalCpp()) {
+        void *view = NULL;
+        if (mglRenderCppCreateTextureViewRange(
+                (__bridge void *)texture, (uint32_t)texture.pixelFormat,
+                (uint32_t)texture.textureType, level, 1, 0, sliceCount,
+                0, 0, 0, 0, 0, &view) == 0 && view) {
+            return (__bridge_transfer id<MTLTexture>)view;
+        }
+    }
+    return [texture newTextureViewWithPixelFormat:texture.pixelFormat
+                                      textureType:texture.textureType
+                                           levels:NSMakeRange(level, 1)
+                                           slices:NSMakeRange(0, sliceCount)];
+}
+
+static void mglComputeSetBuffer(id<MTLComputeCommandEncoder> encoder,
+                                id<MTLBuffer> buffer,
+                                NSUInteger offset,
+                                NSUInteger index)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppSetComputeBuffer((__bridge void *)encoder,
+                                     (__bridge void *)buffer,
+                                     (uint64_t)offset,
+                                     (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setBuffer:buffer offset:offset atIndex:index];
+}
+
+static void mglComputeSetTexture(id<MTLComputeCommandEncoder> encoder,
+                                 id<MTLTexture> texture,
+                                 NSUInteger index)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppSetComputeTexture((__bridge void *)encoder,
+                                      (__bridge void *)texture,
+                                      (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setTexture:texture atIndex:index];
+}
+
+static void mglComputeSetSampler(id<MTLComputeCommandEncoder> encoder,
+                                 id<MTLSamplerState> sampler,
+                                 NSUInteger index)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppSetComputeSampler((__bridge void *)encoder,
+                                      (__bridge void *)sampler,
+                                      (uint32_t)index) == 0) {
+        return;
+    }
+    [encoder setSamplerState:sampler atIndex:index];
+}
+
+static void mglComputeSetPipeline(id<MTLComputeCommandEncoder> encoder,
+                                   id<MTLComputePipelineState> pipeline)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppSetComputePipelineState((__bridge void *)encoder,
+                                            (__bridge void *)pipeline) == 0) {
+        return;
+    }
+    [encoder setComputePipelineState:pipeline];
+}
+
+static void mglComputeDispatch(id<MTLComputeCommandEncoder> encoder,
+                               MTLSize groups,
+                               MTLSize threads)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppDispatchCompute((__bridge void *)encoder,
+                                    (uint32_t)groups.width,
+                                    (uint32_t)groups.height,
+                                    (uint32_t)groups.depth,
+                                    (uint32_t)threads.width,
+                                    (uint32_t)threads.height,
+                                    (uint32_t)threads.depth) == 0) {
+        return;
+    }
+    [encoder dispatchThreadgroups:groups threadsPerThreadgroup:threads];
+}
+
+static void mglComputeDispatchIndirect(id<MTLComputeCommandEncoder> encoder,
+                                       id<MTLBuffer> buffer,
+                                       NSUInteger offset,
+                                       MTLSize threads)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppDispatchComputeIndirect(
+            (__bridge void *)encoder, (__bridge void *)buffer,
+            (uint64_t)offset, (uint32_t)threads.width,
+            (uint32_t)threads.height, (uint32_t)threads.depth) == 0) {
+        return;
+    }
+    [encoder dispatchThreadgroupsWithIndirectBuffer:buffer
+                                  indirectBufferOffset:offset
+                                 threadsPerThreadgroup:threads];
+}
+
+static id<MTLComputeCommandEncoder> mglComputeCreateEncoder(
+    id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglComputeUsesMetalCpp()) {
+        void *encoder = NULL;
+        if (mglRenderCppCreateComputeEncoder((__bridge void *)commandBuffer,
+                                              &encoder) == 0 && encoder) {
+            return (__bridge id<MTLComputeCommandEncoder>)encoder;
+        }
+    }
+    return [commandBuffer computeCommandEncoder];
+}
+
+static void mglComputeEndEncoder(id<MTLComputeCommandEncoder> encoder)
+{
+    if (mglComputeUsesMetalCpp() &&
+        mglRenderCppEndComputeEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
 
 @interface MGLRenderer (ComputeLocked)
 - (void)mtlDispatchComputeLocked:(GLMContext)glm_ctx
@@ -19,6 +185,7 @@
 #pragma mark ----- compute utility ---------------------------------------------------------------------
 
 - (bool) bindBuffersToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                                stage:(int)stage
                               copyBacks:(MGLStageBindingCopyBackList *)copyBacks
 {
     if (!computeCommandEncoder || !copyBacks) {
@@ -26,20 +193,24 @@
         return false;
     }
 
-    RETURN_FALSE_ON_FAILURE([self mapGLBuffersToMTLBufferMap: &MGL_STATE(ctx)->compute_buffer_map_list stage:_COMPUTE_SHADER]);
+    BufferMapList localBufferMap = {0};
+    BufferMapList *bufferMap = stage == _COMPUTE_SHADER
+        ? &MGL_STATE(ctx)->compute_buffer_map_list : &localBufferMap;
+    RETURN_FALSE_ON_FAILURE(
+        [self mapGLBuffersToMTLBufferMap:bufferMap stage:stage]);
 
     // dirty buffer covers all buffer modifications
     if (MGL_STATE(ctx)->dirty_bits & DIRTY_BUFFER)
     {
         // updateDirtyBaseBufferList binds new mtl buffers or updates old ones
-        [self updateDirtyBaseBufferList: &MGL_STATE(ctx)->compute_buffer_map_list];
+        [self updateDirtyBaseBufferList:bufferMap];
 
         MGL_STATE(ctx)->dirty_bits &= ~DIRTY_BUFFER;
     }
 
-    for(int i=0; i<MGL_STATE(ctx)->compute_buffer_map_list.count; i++)
+    for(int i=0; i<bufferMap->count; i++)
     {
-        BufferMap *map = &MGL_STATE(ctx)->compute_buffer_map_list.buffers[i];
+        BufferMap *map = &bufferMap->buffers[i];
         Buffer *ptr;
         NSUInteger metalBindingIndex;
         NSUInteger bindOffset;
@@ -78,10 +249,10 @@
             : nil;
 
         NSUInteger requiredBytes =
-            [self getProgramBindingRequiredSize:_COMPUTE_SHADER
+            [self getProgramBindingRequiredSize:stage
                                            type:(int)map->resource_type
                                           index:(int)map->resource_index];
-        if (map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER &&
+        if (map->resource_type == _ATOMIC_COUNTER_RES &&
             requiredBytes < sizeof(uint32_t)) {
             requiredBytes = sizeof(uint32_t);
         }
@@ -112,8 +283,8 @@
             }
 
             BOOL writableResource =
-                map->resource_type == SPVC_RESOURCE_TYPE_STORAGE_BUFFER ||
-                map->resource_type == SPVC_RESOURCE_TYPE_ATOMIC_COUNTER;
+                map->resource_type == _STORAGE_BUFFER_RES ||
+                map->resource_type == _ATOMIC_COUNTER_RES;
             if (writableResource && buffer && availableBytes > 0 &&
                 ![self recordStageBindingCopyBack:copyBacks
                                            atIndex:metalBindingIndex
@@ -127,13 +298,13 @@
 
             /* Isolate the undefined suffix from page-alignment bytes. A
              * post-dispatch blit preserves writes to the legal prefix. */
-            [computeCommandEncoder setBuffer:isolated
-                                      offset:0
-                                     atIndex:metalBindingIndex];
+            mglComputeSetBuffer(computeCommandEncoder, isolated, 0,
+                                metalBindingIndex);
             continue;
         }
 
-        [computeCommandEncoder setBuffer:buffer offset:bindOffset atIndex:metalBindingIndex];
+        mglComputeSetBuffer(computeCommandEncoder, buffer, bindOffset,
+                            metalBindingIndex);
         mglNoteBufferEncoded(ptr);
     }
 
@@ -142,15 +313,15 @@
      * constant uint* buffer at MGL_BUFFER_SIZE_BUFFER_INDEX when a
      * shader uses .length() on unsized SSBO arrays. */
     {
-        Program *computeProgram = mglResolveProgramForStageFromState(ctx, _COMPUTE_SHADER);
-        if (computeProgram && computeProgram->spirv[_COMPUTE_SHADER].needs_buffer_size_buffer)
+        Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
+        if (computeProgram && computeProgram->spirv[stage].needs_buffer_size_buffer)
         {
             uint32_t sizeConstants[31];
             memset(sizeConstants, 0, sizeof(sizeConstants));
 
-            for (int i = 0; i < MGL_STATE(ctx)->compute_buffer_map_list.count; i++)
+            for (int i = 0; i < bufferMap->count; i++)
             {
-                BufferMap *map = &MGL_STATE(ctx)->compute_buffer_map_list.buffers[i];
+                BufferMap *map = &bufferMap->buffers[i];
                 if (!map->buf)
                     continue;
                 NSUInteger metalSlot = map->has_metal_binding
@@ -162,11 +333,12 @@
                 sizeConstants[metalSlot] = (uint32_t)visibleSize;
             }
 
-            id<MTLBuffer> sizeBuffer = [_device newBufferWithBytes:sizeConstants
-                                                                 length:sizeof(sizeConstants)
-                                                                options:MTLResourceStorageModeShared];
+            id<MTLBuffer> sizeBuffer = mglComputeCreateBufferWithBytes(
+                _device, sizeConstants, sizeof(sizeConstants),
+                MTLResourceStorageModeShared);
             if (sizeBuffer) {
-                [computeCommandEncoder setBuffer:sizeBuffer offset:0 atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+                mglComputeSetBuffer(computeCommandEncoder, sizeBuffer, 0,
+                                    MGL_BUFFER_SIZE_BUFFER_INDEX);
             }
         }
     }
@@ -175,6 +347,7 @@
 }
 
 - (bool) bindTexturesToComputeEncoder:(id <MTLComputeCommandEncoder>) computeCommandEncoder
+                                 stage:(int)stage
 {
     GLuint count;
     enum {
@@ -185,8 +358,8 @@
         int spvc_type;
         int gl_texture_type;
     } mapped_types[] = {
-        {SPVC_RESOURCE_TYPE_SAMPLED_IMAGE, _TEXTURE},
-        {SPVC_RESOURCE_TYPE_STORAGE_IMAGE, _IMAGE_TEXTURE},
+        {_SAMPLED_IMAGE_RES, _TEXTURE},
+        {_STORAGE_IMAGE_RES, _IMAGE_TEXTURE},
         {0,0}
     };
 
@@ -195,7 +368,7 @@
         return false;
     }
 
-    Program *computeProgram = mglResolveProgramForStageFromState(ctx, _COMPUTE_SHADER);
+    Program *computeProgram = mglResolveProgramForStageFromState(ctx, stage);
 
     for(int type=0; mapped_types[type].spvc_type; type++)
     {
@@ -206,7 +379,7 @@
         gl_texture_type = mapped_types[type].gl_texture_type;
 
         // iterate shader storage buffers
-        count = [self getProgramBindingCount: _COMPUTE_SHADER type: spvc_type];
+        count = [self getProgramBindingCount:stage type:spvc_type];
         if (count)
         {
             int textures_to_be_mapped = count;
@@ -218,21 +391,21 @@
             for (int i=0; i < (int)count && textures_to_be_mapped > 0; i++)
             {
                 SpirvResource *resource = NULL;
-                GLuint metalBinding = [self getProgramBinding:_COMPUTE_SHADER type:spvc_type index:i];
+                GLuint metalBinding = [self getProgramBinding:stage type:spvc_type index:i];
                 GLuint glUnit = 0u;
                 Texture *ptr = NULL;
 
                 if (computeProgram &&
                     spvc_type >= 0 && spvc_type < _MAX_SPIRV_RES &&
                     i >= 0 &&
-                    i < (int)computeProgram->spirv_resources_list[_COMPUTE_SHADER][spvc_type].count) {
-                    resource = &computeProgram->spirv_resources_list[_COMPUTE_SHADER][spvc_type].list[i];
+                    i < (int)computeProgram->spirv_resources_list[stage][spvc_type].count) {
+                    resource = &computeProgram->spirv_resources_list[stage][spvc_type].list[i];
                     metalBinding = mglMetalResourceSlot(resource);
                 }
 
                 if (metalBinding >= TEXTURE_UNITS ||
                     mglShouldSkipStageTextureResource(computeProgram,
-                                                      _COMPUTE_SHADER,
+                                                      stage,
                                                       spvc_type,
                                                       resource)) {
                     continue;
@@ -243,20 +416,20 @@
                     case _TEXTURE:
                         glUnit = [self textureUnitForSampledResource:resource
                                                          metalBinding:metalBinding
-                                                                stage:_COMPUTE_SHADER];
+                                                                stage:stage];
                         if (glUnit >= TEXTURE_UNITS) {
                             continue;
                         }
                         ptr = [self textureForSampledResource:resource
                                                  metalBinding:metalBinding
-                                                         stage:_COMPUTE_SHADER
-                                                  expectedType:[self getProgramDeclaredTextureType:_COMPUTE_SHADER
+                                                         stage:stage
+                                                  expectedType:[self getProgramDeclaredTextureType:stage
                                                                                               type:spvc_type
                                                                                              index:i]];
                         break;
                     case _IMAGE_TEXTURE:
                         glUnit = resource ? (resource->sampler_unit >= 0 ? (GLuint)resource->sampler_unit : resource->gl_binding)
-                                          : [self getProgramGLBinding:_COMPUTE_SHADER
+                                          : [self getProgramGLBinding:stage
                                                                                         type:spvc_type
                                                                                        index:i];
                         if (glUnit >= TEXTURE_UNITS) {
@@ -295,10 +468,9 @@
                                 texture.textureType == MTLTextureTypeCubeArray) {
                                 sliceCount = texture.arrayLength * 6u;
                             }
-                            id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                                                   textureType:texture.textureType
-                                                                                        levels:NSMakeRange(imgLevel, 1)
-                                                                                        slices:NSMakeRange(0, sliceCount)];
+                            id<MTLTexture> levelView =
+                                mglComputeCreateTextureLevelView(
+                                    texture, imgLevel, sliceCount);
                             if (levelView) {
                                 texture = levelView;
                             }
@@ -337,21 +509,24 @@
                     }
 
                     if (!sampler) {
-                        id<MTLSamplerState> fallbackSampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+                        id<MTLSamplerState> fallbackSampler =
+                            mglComputeCreateSampler(_device,
+                                                    [MTLSamplerDescriptor new]);
                         sampler = fallbackSampler;
                         if (!sampler) {
                             continue;
                         }
                     }
 
-                    [computeCommandEncoder setTexture:texture atIndex:metalBinding];
+                    mglComputeSetTexture(computeCommandEncoder, texture,
+                                         metalBinding);
                     if (gl_texture_type == _TEXTURE &&
-                        (!resource || resource->msl_has_combined_sampler)) {
+                        (!resource || resource->has_combined_sampler)) {
                         GLuint samplerBinding = resource
                             ? mglMetalCombinedSamplerSlot(resource)
                             : metalBinding;
-                        [computeCommandEncoder setSamplerState:sampler
-                                                       atIndex:samplerBinding];
+                        mglComputeSetSampler(computeCommandEncoder, sampler,
+                                             samplerBinding);
                     }
 
                     textures_to_be_mapped--;
@@ -370,7 +545,7 @@
 
     if (computeProgram) {
         SpirvResourceList *arrayResources =
-            &computeProgram->spirv_resources_list[_COMPUTE_SHADER][SPVC_RESOURCE_TYPE_SAMPLED_IMAGE];
+            &computeProgram->spirv_resources_list[stage][_SAMPLED_IMAGE_RES];
         for (GLuint resourceIndex = 0; arrayResources->list && resourceIndex < arrayResources->count; resourceIndex++) {
             SpirvResource *resource = &arrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
@@ -378,8 +553,8 @@
             }
 
             MTLTextureType expectedType =
-                [self getProgramDeclaredTextureType:_COMPUTE_SHADER
-                                               type:SPVC_RESOURCE_TYPE_SAMPLED_IMAGE
+                [self getProgramDeclaredTextureType:stage
+                                               type:_SAMPLED_IMAGE_RES
                                               index:(int)resourceIndex];
             for (GLint element = 1; element < resource->gl_array_size; element++) {
                 GLuint metalSlot = resource->binding + (GLuint)element;
@@ -392,10 +567,10 @@
 
                 GLuint glUnit = [self textureUnitForSampledResource:NULL
                                                         metalBinding:metalSlot
-                                                               stage:_COMPUTE_SHADER];
+                                                               stage:stage];
                 Texture *ptr = [self textureForSampledResource:NULL
                                                    metalBinding:metalSlot
-                                                           stage:_COMPUTE_SHADER
+                                                           stage:stage
                                                     expectedType:expectedType];
                 if (!ptr || ![self bindMTLTexture:ptr] || !ptr->mtl_data) {
                     continue;
@@ -415,12 +590,14 @@
                     sampler = (__bridge id<MTLSamplerState>)(ptr->params.mtl_data);
                 }
                 if (!sampler) {
-                    sampler = [_device newSamplerStateWithDescriptor:[MTLSamplerDescriptor new]];
+                    sampler = mglComputeCreateSampler(
+                        _device, [MTLSamplerDescriptor new]);
                 }
 
-                [computeCommandEncoder setTexture:texture atIndex:metalSlot];
-                if (resource->msl_has_combined_sampler && sampler) {
-                    [computeCommandEncoder setSamplerState:sampler atIndex:samplerSlot];
+                mglComputeSetTexture(computeCommandEncoder, texture, metalSlot);
+                if (resource->has_combined_sampler && sampler) {
+                    mglComputeSetSampler(computeCommandEncoder, sampler,
+                                         samplerSlot);
                 }
             }
         }
@@ -432,7 +609,7 @@
      * loop above only binds element 0; bind elements 1..N-1 here. */
     if (computeProgram) {
         SpirvResourceList *storageArrayResources =
-            &computeProgram->spirv_resources_list[_COMPUTE_SHADER][SPVC_RESOURCE_TYPE_STORAGE_IMAGE];
+            &computeProgram->spirv_resources_list[stage][_STORAGE_IMAGE_RES];
         for (GLuint resourceIndex = 0; storageArrayResources->list && resourceIndex < storageArrayResources->count; resourceIndex++) {
             SpirvResource *resource = &storageArrayResources->list[resourceIndex];
             if (resource->gl_array_size <= 1) {
@@ -466,16 +643,16 @@
                         texture.textureType == MTLTextureTypeCubeArray) {
                         sliceCount = texture.arrayLength * 6u;
                     }
-                    id<MTLTexture> levelView = [texture newTextureViewWithPixelFormat:texture.pixelFormat
-                                                                           textureType:texture.textureType
-                                                                                levels:NSMakeRange(imgLevel, 1)
-                                                                                slices:NSMakeRange(0, sliceCount)];
+                    id<MTLTexture> levelView =
+                        mglComputeCreateTextureLevelView(
+                            texture, imgLevel, sliceCount);
                     if (levelView) {
                         texture = levelView;
                     }
                 }
 
-                [computeCommandEncoder setTexture:texture atIndex:metalSlot];
+                mglComputeSetTexture(computeCommandEncoder, texture,
+                                     metalSlot);
             }
         }
     }
@@ -529,28 +706,33 @@
         return false;
     }
 
-    id <MTLComputePipelineState> computePipelineState;
-    NSError *errors = nil;
-    computePipelineState = mglGetOrCreateProgramComputePipeline(
-        _device,
-        program,
-        _COMPUTE_SHADER,
-        &errors);
+    void *computePipelineHandle = NULL;
+    char computePipelineError[512] = {0};
+    int computePipelineResult = mglGetOrCreateProgramComputePipeline(
+        program, _COMPUTE_SHADER, &computePipelineHandle,
+        computePipelineError, sizeof(computePipelineError));
+    id<MTLComputePipelineState> computePipelineState =
+        computePipelineResult == 0 && computePipelineHandle
+            ? (__bridge_transfer id<MTLComputePipelineState>)computePipelineHandle
+            : nil;
     if (!computePipelineState) {
-        NSLog(@"MGL COMPUTE ERROR: failed to create compute pipeline for program %u: %@",
+        NSLog(@"MGL COMPUTE ERROR: failed to create compute pipeline for program %u: %s",
               program->name,
-              errors);
+              computePipelineError[0] ? computePipelineError : "unknown error");
         return false;
     }
 
-    [computeCommandEncoder setComputePipelineState:computePipelineState];
+    mglComputeSetPipeline(computeCommandEncoder, computePipelineState);
 
     RETURN_FALSE_ON_FAILURE([self bindBuffersToComputeEncoder:computeCommandEncoder
+                                                    stage:_COMPUTE_SHADER
                                                    copyBacks:copyBacks]);
 
     //setTexture:atIndex:
     //setTextures:withRange:
-    RETURN_FALSE_ON_FAILURE([self bindTexturesToComputeEncoder: computeCommandEncoder]);
+    RETURN_FALSE_ON_FAILURE(
+        [self bindTexturesToComputeEncoder:computeCommandEncoder
+                                     stage:_COMPUTE_SHADER]);
 
     // setSamplerState:atIndex:
     // setSamplerState:lodMinClamp:lodMaxClamp:atIndex:
@@ -609,14 +791,15 @@
     }
 
     MGLStageBindingCopyBackList copyBacks = {0};
-    id <MTLComputeCommandEncoder> computeCommandEncoder = [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
+    id <MTLComputeCommandEncoder> computeCommandEncoder =
+        mglComputeCreateEncoder(_renderPassManager.state->currentCommandBuffer);
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder");
         return;
     }
 
     if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
-        [computeCommandEncoder endEncoding];
+        mglComputeEndEncoder(computeCommandEncoder);
         [self clearStageBindingCopyBacks:&copyBacks];
         return;
     }
@@ -628,7 +811,7 @@
     ptr = mglResolveProgramForStageFromState(glm_ctx, _COMPUTE_SHADER);
     if (!ptr) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchCompute with no current compute program after binding");
-        [computeCommandEncoder endEncoding];
+        mglComputeEndEncoder(computeCommandEncoder);
         [self clearStageBindingCopyBacks:&copyBacks];
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
@@ -643,19 +826,19 @@
         numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
         threadsPerThreadgroup = MTLSizeMake(local_x, local_y, local_z);
 
-        [computeCommandEncoder dispatchThreadgroups:numThreadgroups
-                                        threadsPerThreadgroup:threadsPerThreadgroup];
+        mglComputeDispatch(computeCommandEncoder, numThreadgroups,
+                           threadsPerThreadgroup);
     }
     else
     {
         numThreadgroups = MTLSizeMake(groups_x, groups_y, groups_z);
         threadsPerThreadgroup = MTLSizeMake(1, 1, 1);
 
-        [computeCommandEncoder dispatchThreadgroups:numThreadgroups
-                                        threadsPerThreadgroup:threadsPerThreadgroup];
+        mglComputeDispatch(computeCommandEncoder, numThreadgroups,
+                           threadsPerThreadgroup);
     }
 
-    [computeCommandEncoder endEncoding];
+    mglComputeEndEncoder(computeCommandEncoder);
     /* Without this, a dispatch with no copy-backs stays in the current
      * command buffer and flushCommandBufferLocked's empty-CB skip drops it:
      * glFinish then never executes the compute writes (SSBO stores vanish). */
@@ -772,14 +955,15 @@
     }
 
     MGLStageBindingCopyBackList copyBacks = {0};
-    id<MTLComputeCommandEncoder> computeCommandEncoder = [_renderPassManager.state->currentCommandBuffer computeCommandEncoder];
+    id<MTLComputeCommandEncoder> computeCommandEncoder =
+        mglComputeCreateEncoder(_renderPassManager.state->currentCommandBuffer);
     if (!computeCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create compute command encoder for indirect dispatch");
         return;
     }
 
     if (![self processCompute:computeCommandEncoder copyBacks:&copyBacks]) {
-        [computeCommandEncoder endEncoding];
+        mglComputeEndEncoder(computeCommandEncoder);
         [self clearStageBindingCopyBacks:&copyBacks];
         return;
     }
@@ -787,7 +971,7 @@
     Program *ptr = mglResolveProgramForStageFromState(glm_ctx, _COMPUTE_SHADER);
     if (!ptr) {
         NSLog(@"MGL COMPUTE ERROR: glDispatchComputeIndirect with no current compute program after binding");
-        [computeCommandEncoder endEncoding];
+        mglComputeEndEncoder(computeCommandEncoder);
         [self clearStageBindingCopyBacks:&copyBacks];
         mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
         return;
@@ -798,11 +982,10 @@
     GLuint local_z = ptr->local_workgroup_size.z ? ptr->local_workgroup_size.z : 1u;
     MTLSize threadsPerThreadgroup = MTLSizeMake(local_x, local_y, local_z);
 
-    [computeCommandEncoder dispatchThreadgroupsWithIndirectBuffer:indirectBuffer
-                                             indirectBufferOffset:indirectOffset
-                                            threadsPerThreadgroup:threadsPerThreadgroup];
+    mglComputeDispatchIndirect(computeCommandEncoder, indirectBuffer,
+                               indirectOffset, threadsPerThreadgroup);
 
-    [computeCommandEncoder endEncoding];
+    mglComputeEndEncoder(computeCommandEncoder);
     /* See mtlDispatchCompute — the empty-CB commit skip must not drop this
      * dispatch when it is the only work in the current command buffer. */
     _currentCBHasWork = YES;

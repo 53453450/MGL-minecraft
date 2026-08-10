@@ -4,6 +4,99 @@
 
 #import "mgl_frame_activity.h"
 #import "mgl_msl_compiler.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+@interface MGLPipelineCacheKey ()
+- (void)copyWords:(uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
+@end
+
+@interface MGLPipelineCache ()
+- (BOOL)ensureCppOwner;
+@end
+
+static BOOL mglPipelineCacheUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static NSError *mglPipelineCacheMetalCppError(const char *message,
+                                              NSInteger code)
+{
+    NSString *description = message && message[0]
+        ? [NSString stringWithUTF8String:message]
+        : @"Metal-cpp operation failed";
+    return [NSError errorWithDomain:@"MGLPipelineCache"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey: description}];
+}
+
+static id<MTLDepthStencilState> mglPipelineCacheCreateDepthStencilState(
+    id<MTLDevice> device,
+    MTLDepthStencilDescriptor *descriptor)
+{
+    if (mglPipelineCacheUsesMetalCpp()) {
+        void *state = NULL;
+        if (mglRenderCppCreateDepthStencilState(
+                (__bridge void *)descriptor, &state) == 0 && state) {
+            return (__bridge_transfer id<MTLDepthStencilState>)state;
+        }
+    }
+    return [device newDepthStencilStateWithDescriptor:descriptor];
+}
+
+static id<MTLBinaryArchive> mglPipelineCacheCreateBinaryArchive(
+    id<MTLDevice> device,
+    MTLBinaryArchiveDescriptor *descriptor,
+    NSError **error)
+{
+    if (mglPipelineCacheUsesMetalCpp()) {
+        void *archive = NULL;
+        char message[512] = {0};
+        if (mglRenderCppCreateBinaryArchive(
+                (__bridge void *)descriptor,
+                "MGL Pipeline Binary Archive", &archive,
+                message, sizeof(message)) == 0 && archive) {
+            return (__bridge_transfer id<MTLBinaryArchive>)archive;
+        }
+        if (error) {
+            *error = mglPipelineCacheMetalCppError(message, 11);
+        }
+        return nil;
+    }
+    return [device newBinaryArchiveWithDescriptor:descriptor error:error];
+}
+
+static MGLRenderCppStencilDescriptorState
+mglPipelineCacheStencilState(MTLStencilDescriptor *descriptor)
+{
+    if (!descriptor) return (MGLRenderCppStencilDescriptorState){0};
+    return (MGLRenderCppStencilDescriptorState){
+        .present = 1,
+        .compare_function = (uint32_t)descriptor.stencilCompareFunction,
+        .read_mask = descriptor.readMask,
+        .write_mask = descriptor.writeMask,
+        .stencil_failure_operation =
+            (uint32_t)descriptor.stencilFailureOperation,
+        .depth_failure_operation =
+            (uint32_t)descriptor.depthFailureOperation,
+        .depth_stencil_pass_operation =
+            (uint32_t)descriptor.depthStencilPassOperation,
+    };
+}
+
+static MGLRenderCppDepthStencilDescriptorState
+mglPipelineCacheDepthStencilState(MTLDepthStencilDescriptor *descriptor)
+{
+    return (MGLRenderCppDepthStencilDescriptorState){
+        .depth_compare_function =
+            (uint32_t)descriptor.depthCompareFunction,
+        .depth_write_enabled = descriptor.depthWriteEnabled ? 1u : 0u,
+        .front = mglPipelineCacheStencilState(descriptor.frontFaceStencil),
+        .back = mglPipelineCacheStencilState(descriptor.backFaceStencil),
+    };
+}
 
 @implementation MGLPipelineCacheKey {
     uint64_t _words[MGL_PIPELINE_CACHE_KEY_WORDS];
@@ -26,6 +119,11 @@
 - (void)overwriteWords:(const uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
 {
     memcpy(_words, words, sizeof(_words));
+}
+
+- (void)copyWords:(uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words
+{
+    memcpy(words, _words, sizeof(_words));
 }
 
 - (BOOL)isEqual:(id)object
@@ -250,12 +348,95 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     return &_state;
 }
 
+- (BOOL)ensureCppOwner
+{
+    if (_cppOwner) return YES;
+    if (!mglPipelineCacheUsesMetalCpp()) return NO;
+    if (mglRenderCppCreatePipelineCacheOwner(
+            _state.psoDedupEnabled ? 1 : 0,
+            _state.dsCacheEnabled ? 1 : 0,
+            _state.binaryArchiveEnabled ? 1 : 0,
+            &_cppOwner) != 0 || !_cppOwner) {
+        _cppOwner = NULL;
+        return NO;
+    }
+
+    for (NSUInteger index = 0; index < MAX_COLOR_ATTACHMENTS; ++index) {
+        MGLRenderCppPipelineBlendState blend = {
+            .source_rgb_factor =
+                (uint32_t)_state.src_blend_rgb_factor[index],
+            .destination_rgb_factor =
+                (uint32_t)_state.dst_blend_rgb_factor[index],
+            .source_alpha_factor =
+                (uint32_t)_state.src_blend_alpha_factor[index],
+            .destination_alpha_factor =
+                (uint32_t)_state.dst_blend_alpha_factor[index],
+            .rgb_operation =
+                (uint32_t)_state.rgb_blend_operation[index],
+            .alpha_operation =
+                (uint32_t)_state.alpha_blend_operation[index],
+            .color_write_mask = (uint32_t)_state.color_mask[index],
+        };
+        mglRenderCppSetPipelineBlendState(
+            _cppOwner, (uint32_t)index, &blend);
+    }
+    MGLRenderCppPipelineActiveState active = {
+        .pipeline_state = (__bridge void *)_state.pipelineState,
+        .vertex_function = (__bridge void *)_state.pipelineVertexFunction,
+        .fragment_function = (__bridge void *)_state.pipelineFragmentFunction,
+        .color0_format = (uint32_t)_state.pipelineColor0Format,
+        .depth_format = (uint32_t)_state.pipelineDepthFormat,
+        .stencil_format = (uint32_t)_state.pipelineStencilFormat,
+        .program_name = _state.pipelineProgramName,
+    };
+    mglRenderCppActivatePipelineState(_cppOwner, &active);
+    return YES;
+}
+
+- (id<MTLDevice>)device
+{
+    return _device;
+}
+
+- (void)setDevice:(id<MTLDevice>)device
+{
+    if (_device != device) {
+        mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
+    }
+    _device = device;
+    if (_device) [self ensureCppOwner];
+}
+
 - (id<MTLDepthStencilState>)depthStencilStateForDescriptor:
     (MTLDepthStencilDescriptor *)descriptor
 {
     if (!descriptor || !_device) return nil;
+    if ([self ensureCppOwner]) {
+        MGLRenderCppDepthStencilDescriptorState descriptorState =
+            mglPipelineCacheDepthStencilState(descriptor);
+        void *statePtr = NULL;
+        if (_state.dsCacheEnabled) {
+            int created = 0;
+            if (mglRenderCppGetOrCreateDepthStencilState(
+                    _cppOwner, &descriptorState, &statePtr, &created) == 0 &&
+                statePtr) {
+                if (created) {
+                    MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+                }
+                return (__bridge id<MTLDepthStencilState>)statePtr;
+            }
+            return nil;
+        }
+        if (mglRenderCppCreateDepthStencilStateFromState(
+                &descriptorState, &statePtr) == 0 && statePtr) {
+            MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
+            return (__bridge_transfer id<MTLDepthStencilState>)statePtr;
+        }
+        return nil;
+    }
     if (!_state.dsCacheEnabled) {
-        id<MTLDepthStencilState> state = [_device newDepthStencilStateWithDescriptor:descriptor];
+        id<MTLDepthStencilState> state =
+            mglPipelineCacheCreateDepthStencilState(_device, descriptor);
         MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
         return state;
     }
@@ -275,7 +456,8 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         return cached;
     }
 
-    id<MTLDepthStencilState> state = [_device newDepthStencilStateWithDescriptor:descriptor];
+    id<MTLDepthStencilState> state =
+        mglPipelineCacheCreateDepthStencilState(_device, descriptor);
     MGL_PERF_INC(g_mglDepthStencilStateCreatesSinceSwap);
     if (state) {
         MGLDepthStencilCacheKey *cacheKey = [key copy];
@@ -292,6 +474,26 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (id)pipelineEntryForKey:(MGLPipelineCacheKey *)key
 {
+    if ([self ensureCppOwner] && key) {
+        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
+        [key copyWords:words];
+        MGLRenderCppPipelineActiveState cached = {0};
+        if (mglRenderCppLookupPipeline(_cppOwner, words, &cached) != 1 ||
+            !cached.pipeline_state) {
+            return nil;
+        }
+        id vertexFunction = cached.vertex_function
+            ? (__bridge id)cached.vertex_function : [NSNull null];
+        id fragmentFunction = cached.fragment_function
+            ? (__bridge id)cached.fragment_function : [NSNull null];
+        return @{
+            @"pipeline": (__bridge id)cached.pipeline_state,
+            @"sig": @(words[5]),
+            @"vsig": @(words[6]),
+            @"vertexFunction": vertexFunction,
+            @"fragmentFunction": fragmentFunction,
+        };
+    }
     return _state.pipelineStateCache[key];
 }
 
@@ -309,6 +511,7 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)markPipelineEntryUsedForKey:(MGLPipelineCacheKey *)key
 {
+    if (_cppOwner) return;
     if (_state.pipelineStateCache[key]) {
         MGLTouchLRU(_state.pipelineStateCacheLRU, key);
     }
@@ -316,6 +519,16 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key
 {
+    if ([self ensureCppOwner] && key) {
+        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
+        [key copyWords:words];
+        void *descriptor = NULL;
+        if (mglRenderCppLookupPipelineDescriptor(
+                _cppOwner, words, &descriptor) == 1 && descriptor) {
+            return (__bridge MTLRenderPipelineDescriptor *)descriptor;
+        }
+        return nil;
+    }
     MTLRenderPipelineDescriptor *descriptor = _state.pipelineDescriptorCache[key];
     if (descriptor) MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
     return descriptor;
@@ -324,6 +537,34 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (NSUInteger)storePipelineEntry:(id)entry forKey:(MGLPipelineCacheKey *)key
 {
     if (!entry || !key) return 0;
+    if ([self ensureCppOwner]) {
+        id pipeline = entry;
+        id vertexFunction = nil;
+        id fragmentFunction = nil;
+        if ([entry isKindOfClass:[NSDictionary class]]) {
+            NSDictionary *dictionary = (NSDictionary *)entry;
+            pipeline = dictionary[@"pipeline"];
+            vertexFunction = dictionary[@"vertexFunction"];
+            fragmentFunction = dictionary[@"fragmentFunction"];
+            if (vertexFunction == [NSNull null]) vertexFunction = nil;
+            if (fragmentFunction == [NSNull null]) fragmentFunction = nil;
+        }
+        if (!pipeline) return 0;
+        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
+        [key copyWords:words];
+        MGLRenderCppPipelineActiveState state = {
+            .pipeline_state = (__bridge void *)pipeline,
+            .vertex_function = (__bridge void *)vertexFunction,
+            .fragment_function = (__bridge void *)fragmentFunction,
+        };
+        uint32_t removed = 0;
+        if (mglRenderCppStorePipeline(
+                _cppOwner, words, &state, &removed) != 0) {
+            return 0;
+        }
+        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
+        return (NSUInteger)removed;
+    }
     NSUInteger removed = 0;
     BOOL replacing = _state.pipelineStateCache[key] != nil;
     if (!replacing && _state.pipelineStateCache.count >= 256) {
@@ -342,6 +583,13 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                          forKey:(MGLPipelineCacheKey *)key
 {
     if (!descriptor || !key) return;
+    if ([self ensureCppOwner]) {
+        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
+        [key copyWords:words];
+        mglRenderCppStorePipelineDescriptor(
+            _cppOwner, words, (__bridge void *)descriptor);
+        return;
+    }
     _state.pipelineDescriptorCache[key] = [descriptor copy];
     MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
     if (_state.pipelineDescriptorCache.count > 128) {
@@ -351,6 +599,118 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     }
 }
 
+- (BOOL)lookupPipelineForWords:(const uint64_t *)words
+                      pipeline:(id<MTLRenderPipelineState> *)pipelineOut
+                vertexFunction:(id<MTLFunction> *)vertexFunctionOut
+              fragmentFunction:(id<MTLFunction> *)fragmentFunctionOut
+{
+    if (pipelineOut) *pipelineOut = nil;
+    if (vertexFunctionOut) *vertexFunctionOut = nil;
+    if (fragmentFunctionOut) *fragmentFunctionOut = nil;
+    if (!words || !pipelineOut || !vertexFunctionOut ||
+        !fragmentFunctionOut) {
+        return NO;
+    }
+    if ([self ensureCppOwner]) {
+        MGLRenderCppPipelineActiveState cached = {0};
+        if (mglRenderCppLookupPipeline(_cppOwner, words, &cached) != 1 ||
+            !cached.pipeline_state) {
+            return NO;
+        }
+        *pipelineOut = (__bridge id<MTLRenderPipelineState>)cached.pipeline_state;
+        *vertexFunctionOut = (__bridge id<MTLFunction>)cached.vertex_function;
+        *fragmentFunctionOut =
+            (__bridge id<MTLFunction>)cached.fragment_function;
+        return YES;
+    }
+
+    MGLPipelineCacheKey *key = [self pipelineQueryKeyForWords:words];
+    id entry = _state.pipelineStateCache[key];
+    if (!entry) return NO;
+    if ([entry isKindOfClass:[NSDictionary class]]) {
+        NSDictionary *dictionary = (NSDictionary *)entry;
+        id pipeline = dictionary[@"pipeline"];
+        id vertexFunction = dictionary[@"vertexFunction"];
+        id fragmentFunction = dictionary[@"fragmentFunction"];
+        if (!pipeline) return NO;
+        *pipelineOut = pipeline;
+        if (vertexFunction != [NSNull null]) {
+            *vertexFunctionOut = vertexFunction;
+        }
+        if (fragmentFunction != [NSNull null]) {
+            *fragmentFunctionOut = fragmentFunction;
+        }
+        return YES;
+    }
+    *pipelineOut = (id<MTLRenderPipelineState>)entry;
+    return YES;
+}
+
+- (MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
+    (const uint64_t *)words
+{
+    if (!words) return nil;
+    if ([self ensureCppOwner]) {
+        void *descriptor = NULL;
+        if (mglRenderCppLookupPipelineDescriptor(
+                _cppOwner, words, &descriptor) == 1 && descriptor) {
+            return (__bridge MTLRenderPipelineDescriptor *)descriptor;
+        }
+        return nil;
+    }
+    return [self pipelineDescriptorForKey:
+        [self pipelineQueryKeyForWords:words]];
+}
+
+- (NSUInteger)storePipeline:(id<MTLRenderPipelineState>)pipeline
+              vertexFunction:(id<MTLFunction>)vertexFunction
+            fragmentFunction:(id<MTLFunction>)fragmentFunction
+                    forWords:(const uint64_t *)words
+{
+    if (!pipeline || !words) return 0;
+    if ([self ensureCppOwner]) {
+        MGLRenderCppPipelineActiveState state = {
+            .pipeline_state = (__bridge void *)pipeline,
+            .vertex_function = (__bridge void *)vertexFunction,
+            .fragment_function = (__bridge void *)fragmentFunction,
+        };
+        uint32_t removed = 0;
+        if (mglRenderCppStorePipeline(
+                _cppOwner, words, &state, &removed) != 0) {
+            return 0;
+        }
+        MGL_PERF_ADD(g_mglPipelineCacheEvictionsSinceSwap, removed);
+        return (NSUInteger)removed;
+    }
+
+    MGLPipelineCacheKey *key =
+        [[MGLPipelineCacheKey alloc] initWithWords:words];
+    id vertexValue = vertexFunction ?: [NSNull null];
+    id fragmentValue = fragmentFunction ?: [NSNull null];
+    NSDictionary *entry = @{
+        @"pipeline": pipeline,
+        @"sig": @(words[5]),
+        @"vsig": @(words[6]),
+        @"vertexFunction": vertexValue,
+        @"fragmentFunction": fragmentValue,
+    };
+    return [self storePipelineEntry:entry forKey:key];
+}
+
+- (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
+                       forWords:(const uint64_t *)words
+{
+    if (!descriptor || !words) return;
+    if ([self ensureCppOwner]) {
+        mglRenderCppStorePipelineDescriptor(
+            _cppOwner, words, (__bridge void *)descriptor);
+        return;
+    }
+    MGLPipelineCacheKey *key =
+        [[MGLPipelineCacheKey alloc] initWithWords:words];
+    [self storePipelineDescriptor:descriptor forKey:key];
+}
+
 - (void)initializeCompilerIfAvailableUnlessDisabled:(BOOL)disabled
 {
 #if MGL_HAS_MTL4_COMPILER
@@ -358,9 +718,24 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     if (@available(macOS 26.0, *)) {
         if (![_device respondsToSelector:@selector(newCompilerWithDescriptor:error:)]) return;
         NSError *error = nil;
-        MTL4CompilerDescriptor *descriptor = [[MTL4CompilerDescriptor alloc] init];
-        descriptor.label = @"MGL Metal 4 shader compiler";
-        _state.mtl4Compiler = [_device newCompilerWithDescriptor:descriptor error:&error];
+        if (mglPipelineCacheUsesMetalCpp()) {
+            void *compiler = NULL;
+            char message[512] = {0};
+            if (mglRenderCppCreateMetal4Compiler(
+                    "MGL Metal 4 shader compiler", &compiler,
+                    message, sizeof(message)) == 0 && compiler) {
+                _state.mtl4Compiler =
+                    (__bridge_transfer id<MTL4Compiler>)compiler;
+            } else {
+                error = mglPipelineCacheMetalCppError(message, 10);
+            }
+        } else {
+            MTL4CompilerDescriptor *descriptor =
+                [[MTL4CompilerDescriptor alloc] init];
+            descriptor.label = @"MGL Metal 4 shader compiler";
+            _state.mtl4Compiler =
+                [_device newCompilerWithDescriptor:descriptor error:&error];
+        }
         if (_state.mtl4Compiler) {
             NSLog(@"MGL INFO: Metal 4 compiler enabled for shader libraries");
         } else if (error) {
@@ -431,8 +806,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         if (archiveExists) descriptor.url = archiveURL;
 
         NSError *loadError = nil;
-        id<MTLBinaryArchive> archive = [_device newBinaryArchiveWithDescriptor:descriptor
-                                                                         error:&loadError];
+        id<MTLBinaryArchive> archive =
+            mglPipelineCacheCreateBinaryArchive(_device, descriptor,
+                                                &loadError);
         if (!archive && archiveExists) {
             NSError *removeError = nil;
             if (![fileManager removeItemAtURL:archiveURL error:&removeError]) {
@@ -443,12 +819,15 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                   loadError.localizedDescription);
             descriptor = [[MTLBinaryArchiveDescriptor alloc] init];
             loadError = nil;
-            archive = [_device newBinaryArchiveWithDescriptor:descriptor error:&loadError];
+            archive = mglPipelineCacheCreateBinaryArchive(
+                _device, descriptor, &loadError);
             archiveExists = NO;
         }
 
         if (archive) {
-            archive.label = @"MGL Pipeline Binary Archive";
+            if (!mglPipelineCacheUsesMetalCpp()) {
+                archive.label = @"MGL Pipeline Binary Archive";
+            }
             if (!s_binaryArchives) s_binaryArchives = [NSMutableDictionary new];
             s_binaryArchives[archiveKey] = archive;
             _state.binaryArchive = archive;
@@ -476,7 +855,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     BOOL ok = NO;
     os_unfair_lock_lock(&s_binaryArchiveLock);
     @try {
-        ok = [_state.binaryArchive serializeToURL:archiveURL error:&serializeError];
+        if (mglPipelineCacheUsesMetalCpp()) {
+            char message[512] = {0};
+            ok = mglRenderCppSerializeBinaryArchive(
+                    (__bridge void *)_state.binaryArchive,
+                    (__bridge void *)archiveURL,
+                    message, sizeof(message)) == 0;
+            if (!ok) {
+                serializeError = mglPipelineCacheMetalCppError(message, 12);
+            }
+        } else {
+            ok = [_state.binaryArchive serializeToURL:archiveURL
+                                                error:&serializeError];
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL BINARY ARCHIVE: serialize exception: %@", exception.reason);
     } @finally {
@@ -493,6 +884,12 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (void)applyBinaryArchiveToDescriptor:(MTLRenderPipelineDescriptor *)descriptor
 {
     if (!_state.binaryArchiveEnabled || !_state.binaryArchive || !descriptor) return;
+    if (mglPipelineCacheUsesMetalCpp() &&
+        mglRenderCppSetRenderPipelineBinaryArchive(
+            (__bridge void *)descriptor,
+            (__bridge void *)_state.binaryArchive) == 0) {
+        return;
+    }
     descriptor.binaryArchives = @[_state.binaryArchive];
 }
 
@@ -502,7 +899,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     NSError *addError = nil;
     os_unfair_lock_lock(&s_binaryArchiveLock);
     @try {
-        [_state.binaryArchive addRenderPipelineFunctionsWithDescriptor:descriptor error:&addError];
+        if (mglPipelineCacheUsesMetalCpp()) {
+            char message[512] = {0};
+            if (mglRenderCppAddRenderPipelineFunctionsToBinaryArchive(
+                    (__bridge void *)_state.binaryArchive,
+                    (__bridge void *)descriptor,
+                    message, sizeof(message)) != 0) {
+                addError = mglPipelineCacheMetalCppError(message, 13);
+            }
+        } else {
+            [_state.binaryArchive
+                addRenderPipelineFunctionsWithDescriptor:descriptor
+                                                    error:&addError];
+        }
     } @catch (NSException *exception) {
         NSLog(@"MGL BINARY ARCHIVE: addRenderPipeline exception: %@", exception.reason);
     } @finally {
@@ -516,6 +925,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)invalidatePipelineState
 {
+    if ([self ensureCppOwner]) {
+        mglRenderCppInvalidatePipelineActiveState(_cppOwner);
+    }
     _state.pipelineState = nil;
     _state.pipelineColor0Format = MTLPixelFormatInvalid;
     _state.pipelineDepthFormat = MTLPixelFormatInvalid;
@@ -527,6 +939,10 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)setPipelineState:(id<MTLRenderPipelineState>)pipelineState
 {
+    if ([self ensureCppOwner]) {
+        mglRenderCppSetPipelineActiveObject(
+            _cppOwner, (__bridge void *)pipelineState);
+    }
     _state.pipelineState = pipelineState;
 }
 
@@ -538,6 +954,18 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                vertexFunction:(id<MTLFunction>)vertexFunction
              fragmentFunction:(id<MTLFunction>)fragmentFunction
 {
+    if ([self ensureCppOwner]) {
+        MGLRenderCppPipelineActiveState active = {
+            .pipeline_state = (__bridge void *)pipelineState,
+            .vertex_function = (__bridge void *)vertexFunction,
+            .fragment_function = (__bridge void *)fragmentFunction,
+            .color0_format = (uint32_t)color0Format,
+            .depth_format = (uint32_t)depthFormat,
+            .stencil_format = (uint32_t)stencilFormat,
+            .program_name = programName,
+        };
+        mglRenderCppActivatePipelineState(_cppOwner, &active);
+    }
     _state.pipelineState = pipelineState;
     _state.pipelineColor0Format = color0Format;
     _state.pipelineDepthFormat = depthFormat;
@@ -557,6 +985,19 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
                            colorMask:(MTLColorWriteMask)colorMask
 {
     if (index >= MAX_COLOR_ATTACHMENTS) return;
+    if ([self ensureCppOwner]) {
+        MGLRenderCppPipelineBlendState blend = {
+            .source_rgb_factor = (uint32_t)srcRgbFactor,
+            .destination_rgb_factor = (uint32_t)dstRgbFactor,
+            .source_alpha_factor = (uint32_t)srcAlphaFactor,
+            .destination_alpha_factor = (uint32_t)dstAlphaFactor,
+            .rgb_operation = (uint32_t)rgbOperation,
+            .alpha_operation = (uint32_t)alphaOperation,
+            .color_write_mask = (uint32_t)colorMask,
+        };
+        mglRenderCppSetPipelineBlendState(
+            _cppOwner, (uint32_t)index, &blend);
+    }
     _state.src_blend_rgb_factor[index] = srcRgbFactor;
     _state.src_blend_alpha_factor[index] = srcAlphaFactor;
     _state.dst_blend_rgb_factor[index] = dstRgbFactor;
@@ -568,11 +1009,15 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (void)disableBinaryArchive
 {
+    if ([self ensureCppOwner]) {
+        mglRenderCppDisablePipelineBinaryArchive(_cppOwner);
+    }
     _state.binaryArchiveEnabled = NO;
 }
 
 - (void)resetCaches
 {
+    mglRenderCppResetPipelineCacheOwner(_cppOwner);
     _state.pipelineState = nil;
     _state.pipelineVertexFunction = nil;
     _state.pipelineFragmentFunction = nil;
@@ -599,6 +1044,12 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.mtl4Compiler = nil;
 #endif
     _device = nil;
+    mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
+}
+
+- (void)dealloc
+{
+    mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
 }
 
 @end

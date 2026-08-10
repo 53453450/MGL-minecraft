@@ -3,6 +3,347 @@
 
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Texture_Private.h"
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp_objc.h"
+#include <stdatomic.h>
+
+typedef struct MGLTextureCompletionWaitContext_t {
+    atomic_uint references;
+    dispatch_semaphore_t semaphore;
+    MGLRenderCppCommandBufferState state;
+} MGLTextureCompletionWaitContext;
+
+static void mglTextureReleaseCompletionWaitContext(
+    MGLTextureCompletionWaitContext *context)
+{
+    if (!context) return;
+    if (atomic_fetch_sub_explicit(
+            &context->references, 1u, memory_order_acq_rel) == 1u) {
+        free(context);
+    }
+}
+
+static void mglTextureCompletionWait(
+    void *rawContext,
+    const MGLRenderCppCommandBufferState *state)
+{
+    MGLTextureCompletionWaitContext *context =
+        (MGLTextureCompletionWaitContext *)rawContext;
+    if (!context) return;
+    if (state) context->state = *state;
+    if (context->semaphore) dispatch_semaphore_signal(context->semaphore);
+}
+
+static void mglTextureDestroyCompletionWaitContext(void *rawContext)
+{
+    mglTextureReleaseCompletionWaitContext(
+        (MGLTextureCompletionWaitContext *)rawContext);
+}
+
+static MGLTextureCompletionWaitContext *mglTextureAddCompletionWait(
+    id<MTLCommandBuffer> commandBuffer,
+    dispatch_semaphore_t semaphore)
+{
+    if (!commandBuffer || !semaphore) return NULL;
+    MGLTextureCompletionWaitContext *context =
+        (MGLTextureCompletionWaitContext *)calloc(1, sizeof(*context));
+    if (!context) return NULL;
+    atomic_init(&context->references, 2u);
+    context->semaphore = semaphore;
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice()) {
+        if (mglRenderCppAddCommandBufferCompletion(
+                (__bridge void *)commandBuffer,
+                mglTextureCompletionWait,
+                context,
+                mglTextureDestroyCompletionWaitContext) == 0) {
+            return context;
+        }
+    }
+    [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        MGLRenderCppCommandBufferState state =
+            mglRenderCommandBufferState(cb);
+        mglTextureCompletionWait(context, &state);
+        mglTextureDestroyCompletionWaitContext(context);
+    }];
+    return context;
+}
+
+static BOOL mglTextureUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static id<MTLBuffer> mglTextureCreateBuffer(id<MTLDevice> device,
+                                            NSUInteger length,
+                                            MTLResourceOptions options)
+{
+    if (mglTextureUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBuffer(length, options, NULL, &buffer) == 0 &&
+            buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithLength:length options:options];
+}
+
+static id<MTLBuffer> mglTextureCreateBufferWithBytes(
+    id<MTLDevice> device,
+    const void *bytes,
+    NSUInteger length,
+    MTLResourceOptions options)
+{
+    if (mglTextureUsesMetalCpp()) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBufferWithBytes(bytes, length, options, NULL,
+                                              &buffer) == 0 && buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithBytes:bytes length:length options:options];
+}
+
+static id<MTLTexture> mglTextureCreateTexture(
+    id<MTLDevice> device,
+    MTLTextureDescriptor *descriptor)
+{
+    if (mglTextureUsesMetalCpp()) {
+        void *texture = NULL;
+        MGLRenderCppTextureDescriptorState state =
+            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+        if (mglRenderCppCreateTextureFromState(&state, NULL, &texture) == 0 &&
+            texture) {
+            return (__bridge_transfer id<MTLTexture>)texture;
+        }
+    }
+    return [device newTextureWithDescriptor:descriptor];
+}
+
+static id<MTLTexture> mglTextureCreateBufferTexture(
+    id<MTLBuffer> buffer,
+    MTLTextureDescriptor *descriptor,
+    NSUInteger offset,
+    NSUInteger bytesPerRow)
+{
+    if (mglTextureUsesMetalCpp()) {
+        void *texture = NULL;
+        MGLRenderCppTextureDescriptorState state =
+            mglRenderCppTextureDescriptorStateFromObjC(descriptor);
+        if (mglRenderCppCreateBufferTextureFromState(
+                (__bridge void *)buffer, &state, offset, bytesPerRow,
+                &texture) == 0 && texture) {
+            return (__bridge_transfer id<MTLTexture>)texture;
+        }
+        return nil;
+    }
+    return [buffer newTextureWithDescriptor:descriptor
+                                     offset:offset
+                                bytesPerRow:bytesPerRow];
+}
+
+static void mglTextureReplaceRegion(id<MTLTexture> texture,
+                                    MTLRegion region,
+                                    NSUInteger level,
+                                    NSUInteger slice,
+                                    const void *bytes,
+                                    NSUInteger bytesPerRow,
+                                    NSUInteger bytesPerImage,
+                                    BOOL useSlice)
+{
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppTextureReplaceRegion(
+            (__bridge void *)texture,
+            region.origin.x, region.origin.y, region.origin.z,
+            region.size.width, region.size.height, region.size.depth,
+            level, slice, bytes, bytesPerRow, bytesPerImage,
+            useSlice ? 1 : 0) == 0) {
+        return;
+    }
+    if (useSlice) {
+        [texture replaceRegion:region mipmapLevel:level slice:slice
+                      withBytes:bytes bytesPerRow:bytesPerRow
+                    bytesPerImage:bytesPerImage];
+    } else {
+        [texture replaceRegion:region mipmapLevel:level withBytes:bytes
+                    bytesPerRow:bytesPerRow];
+    }
+}
+
+static void mglTextureGetBytes(id<MTLTexture> texture,
+                               void *bytes,
+                               NSUInteger bytesPerRow,
+                               NSUInteger bytesPerImage,
+                               MTLRegion region,
+                               NSUInteger level,
+                               NSUInteger slice,
+                               BOOL useSlice)
+{
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppTextureGetBytes(
+            (__bridge void *)texture, bytes, bytesPerRow, bytesPerImage,
+            region.origin.x, region.origin.y, region.origin.z,
+            region.size.width, region.size.height, region.size.depth,
+            level, slice, useSlice ? 1 : 0) == 0) {
+        return;
+    }
+    if (useSlice) {
+        [texture getBytes:bytes bytesPerRow:bytesPerRow
+             bytesPerImage:bytesPerImage fromRegion:region
+            mipmapLevel:level slice:slice];
+    } else {
+        [texture getBytes:bytes bytesPerRow:bytesPerRow
+               fromRegion:region mipmapLevel:level];
+    }
+}
+
+static id<MTLSamplerState> mglTextureCreateSampler(
+    id<MTLDevice> device,
+    MTLSamplerDescriptor *descriptor)
+{
+    if (mglTextureUsesMetalCpp()) {
+        void *sampler = NULL;
+        if (mglRenderCppCreateSampler((__bridge void *)descriptor,
+                                      &sampler) == 0 && sampler) {
+            return (__bridge_transfer id<MTLSamplerState>)sampler;
+        }
+    }
+    return [device newSamplerStateWithDescriptor:descriptor];
+}
+
+static id<MTLCommandBuffer> mglTextureCreateCommandBuffer(
+    id<MTLCommandQueue> queue)
+{
+    if (mglTextureUsesMetalCpp() && queue) {
+        void *commandBufferCPP = NULL;
+        if (mglRenderCppCreateCommandBuffer((__bridge void *)queue,
+                                             &commandBufferCPP) == 0 &&
+            commandBufferCPP) {
+            return (__bridge id<MTLCommandBuffer>)commandBufferCPP;
+        }
+    }
+    return queue ? [queue commandBuffer] : nil;
+}
+
+static id<MTLBlitCommandEncoder> mglTextureCreateBlitEncoder(
+    id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglTextureUsesMetalCpp() && commandBuffer) {
+        void *encoderCPP = NULL;
+        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
+                                           &encoderCPP) == 0 && encoderCPP) {
+            return (__bridge id<MTLBlitCommandEncoder>)encoderCPP;
+        }
+    }
+    return commandBuffer ? [commandBuffer blitCommandEncoder] : nil;
+}
+
+static void mglTextureEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
+{
+    if (!encoder) return;
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
+
+static void mglTextureCommitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+{
+    if (!commandBuffer) return;
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppCommitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+        return;
+    }
+    [commandBuffer commit];
+}
+
+static void mglTextureWaitCommandBuffer(id<MTLCommandBuffer> commandBuffer)
+{
+    if (!commandBuffer) return;
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppWaitCommandBuffer((__bridge void *)commandBuffer) == 0) {
+        return;
+    }
+    [commandBuffer waitUntilCompleted];
+}
+
+static id<MTLRenderCommandEncoder> mglTextureCreateRenderEncoder(
+    id<MTLCommandBuffer> commandBuffer,
+    MTLRenderPassDescriptor *descriptor)
+{
+    return commandBuffer
+        ? [commandBuffer renderCommandEncoderWithDescriptor:descriptor]
+        : nil;
+}
+
+static void mglTextureEndRenderEncoder(id<MTLRenderCommandEncoder> encoder)
+{
+    if (!encoder) return;
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEndRenderEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
+
+static void mglTextureCopyBufferToTexture(
+    id<MTLBlitCommandEncoder> encoder,
+    id<MTLBuffer> source,
+    NSUInteger sourceOffset,
+    NSUInteger bytesPerRow,
+    NSUInteger bytesPerImage,
+    MTLSize sourceSize,
+    id<MTLTexture> destination,
+    NSUInteger destinationSlice,
+    NSUInteger destinationLevel,
+    MTLOrigin destinationOrigin)
+{
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppBlitCopyBufferToTexture(
+            (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
+            bytesPerRow, bytesPerImage, sourceSize.width, sourceSize.height,
+            sourceSize.depth, (__bridge void *)destination, destinationSlice,
+            destinationLevel, destinationOrigin.x, destinationOrigin.y,
+            destinationOrigin.z) == 0) {
+        return;
+    }
+    [encoder copyFromBuffer:source sourceOffset:sourceOffset
+            sourceBytesPerRow:bytesPerRow sourceBytesPerImage:bytesPerImage
+                 sourceSize:sourceSize toTexture:destination
+            destinationSlice:destinationSlice destinationLevel:destinationLevel
+           destinationOrigin:destinationOrigin];
+}
+
+static void mglTextureCopyTextureToBuffer(
+    id<MTLBlitCommandEncoder> encoder,
+    id<MTLTexture> source,
+    NSUInteger sourceSlice,
+    NSUInteger sourceLevel,
+    MTLOrigin sourceOrigin,
+    MTLSize sourceSize,
+    id<MTLBuffer> destination,
+    NSUInteger destinationOffset,
+    NSUInteger bytesPerRow,
+    NSUInteger bytesPerImage)
+{
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppBlitCopyTextureToBuffer(
+            (__bridge void *)encoder, (__bridge void *)source, sourceSlice,
+            sourceLevel, sourceOrigin.x, sourceOrigin.y, sourceOrigin.z,
+            sourceSize.width, sourceSize.height, sourceSize.depth,
+            (__bridge void *)destination, destinationOffset, bytesPerRow,
+            bytesPerImage) == 0) {
+        return;
+    }
+    [encoder copyFromTexture:source sourceSlice:sourceSlice
+                 sourceLevel:sourceLevel sourceOrigin:sourceOrigin
+                  sourceSize:sourceSize toBuffer:destination
+           destinationOffset:destinationOffset
+      destinationBytesPerRow:bytesPerRow
+    destinationBytesPerImage:bytesPerImage];
+}
 
 @implementation MGLRenderer (Texture)
 
@@ -39,42 +380,57 @@
             return false;
         }
 
-        id<MTLBlitCommandEncoder> blitEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
-        if (!blitEncoder) {
-            NSLog(@"MGL ERROR: failed to create ordered upload blit encoder for %s",
-                  reason ? reason : "texture_upload");
-            [self recordGPUError];
-            return false;
-        }
-
-        @try {
-            [blitEncoder copyFromBuffer:sourceBuffer
-                           sourceOffset:sourceOffset
-                       sourceBytesPerRow:sourceBytesPerRow
-                     sourceBytesPerImage:sourceBytesPerImage
-                              sourceSize:sourceSize
-                               toTexture:texture
-                        destinationSlice:destinationSlice
-                        destinationLevel:destinationLevel
-                       destinationOrigin:destinationOrigin];
-            [blitEncoder endEncoding];
-        } @catch (NSException *exception) {
-            NSLog(@"MGL ERROR: ordered upload encode failed (%s): %@",
-                  reason ? reason : "texture_upload", exception.reason);
-            @try {
-                [blitEncoder endEncoding];
-            } @catch (NSException *endException) {
-                NSLog(@"MGL WARNING: ordered upload endEncoding failed (%s): %@",
-                      reason ? reason : "texture_upload", endException.reason);
+        if (mglTextureUsesMetalCpp()) {
+            if (mglRenderCppEncodeTextureUpload(
+                    (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+                    (__bridge void *)sourceBuffer, sourceOffset,
+                    sourceBytesPerRow, sourceBytesPerImage,
+                    sourceSize.width, sourceSize.height, sourceSize.depth,
+                    (__bridge void *)texture, destinationSlice,
+                    destinationLevel, destinationOrigin.x,
+                    destinationOrigin.y, destinationOrigin.z) != 0) {
+                NSLog(@"MGL ERROR: C++ ordered upload encode failed (%s)",
+                      reason ? reason : "texture_upload");
+                [self recordGPUError];
+                return false;
             }
-            [self recordGPUError];
-            return false;
+        } else {
+            id<MTLBlitCommandEncoder> blitEncoder =
+                mglTextureCreateBlitEncoder(
+                    _renderPassManager.state->currentCommandBuffer);
+            if (!blitEncoder) {
+                NSLog(@"MGL ERROR: failed to create ordered upload blit encoder for %s",
+                      reason ? reason : "texture_upload");
+                [self recordGPUError];
+                return false;
+            }
+
+            @try {
+                mglTextureCopyBufferToTexture(
+                    blitEncoder, sourceBuffer, sourceOffset,
+                    sourceBytesPerRow, sourceBytesPerImage, sourceSize,
+                    texture, destinationSlice, destinationLevel,
+                    destinationOrigin);
+                mglTextureEndBlitEncoder(blitEncoder);
+            } @catch (NSException *exception) {
+                NSLog(@"MGL ERROR: ordered upload encode failed (%s): %@",
+                      reason ? reason : "texture_upload", exception.reason);
+                @try {
+                    mglTextureEndBlitEncoder(blitEncoder);
+                } @catch (NSException *endException) {
+                    NSLog(@"MGL WARNING: ordered upload endEncoding failed (%s): %@",
+                          reason ? reason : "texture_upload",
+                          endException.reason);
+                }
+                [self recordGPUError];
+                return false;
+            }
         }
 
         return true;
     }
 
-    id<MTLCommandBuffer> uploadCB = [_commandQueue commandBuffer];
+    id<MTLCommandBuffer> uploadCB = mglTextureCreateCommandBuffer(_commandQueue);
     if (!uploadCB) {
         NSLog(@"MGL ERROR: failed to create dedicated upload command buffer for %s",
               reason ? reason : "texture_upload");
@@ -88,50 +444,66 @@
         uploadCB.label = @"MGL.texture_upload";
     }
 
-    id<MTLBlitCommandEncoder> blitEncoder = [uploadCB blitCommandEncoder];
-    if (!blitEncoder) {
-        NSLog(@"MGL ERROR: failed to create dedicated upload blit encoder for %s",
-              reason ? reason : "texture_upload");
-        [self recordGPUError];
-        return false;
-    }
+    if (mglTextureUsesMetalCpp()) {
+        if (mglRenderCppEncodeTextureUpload(
+                (__bridge void *)uploadCB, (__bridge void *)sourceBuffer,
+                sourceOffset, sourceBytesPerRow, sourceBytesPerImage,
+                sourceSize.width, sourceSize.height, sourceSize.depth,
+                (__bridge void *)texture, destinationSlice,
+                destinationLevel, destinationOrigin.x,
+                destinationOrigin.y, destinationOrigin.z) != 0) {
+            NSLog(@"MGL ERROR: C++ dedicated upload encode failed (%s)",
+                  reason ? reason : "texture_upload");
+            [self recordGPUError];
+            return false;
+        }
+    } else {
+        id<MTLBlitCommandEncoder> blitEncoder =
+            mglTextureCreateBlitEncoder(uploadCB);
+        if (!blitEncoder) {
+            NSLog(@"MGL ERROR: failed to create dedicated upload blit encoder for %s",
+                  reason ? reason : "texture_upload");
+            [self recordGPUError];
+            return false;
+        }
 
-    @try {
-        [blitEncoder copyFromBuffer:sourceBuffer
-                       sourceOffset:sourceOffset
-                   sourceBytesPerRow:sourceBytesPerRow
-                 sourceBytesPerImage:sourceBytesPerImage
-                          sourceSize:sourceSize
-                           toTexture:texture
-                    destinationSlice:destinationSlice
-                    destinationLevel:destinationLevel
-                   destinationOrigin:destinationOrigin];
-        [blitEncoder endEncoding];
-    } @catch (NSException *exception) {
-        NSLog(@"MGL ERROR: dedicated upload encode failed (%s): %@",
-              reason ? reason : "texture_upload", exception.reason);
-        [blitEncoder endEncoding];
-        [self recordGPUError];
-        return false;
+        @try {
+            mglTextureCopyBufferToTexture(
+                blitEncoder, sourceBuffer, sourceOffset, sourceBytesPerRow,
+                sourceBytesPerImage, sourceSize, texture, destinationSlice,
+                destinationLevel, destinationOrigin);
+            mglTextureEndBlitEncoder(blitEncoder);
+        } @catch (NSException *exception) {
+            NSLog(@"MGL ERROR: dedicated upload encode failed (%s): %@",
+                  reason ? reason : "texture_upload", exception.reason);
+            mglTextureEndBlitEncoder(blitEncoder);
+            [self recordGPUError];
+            return false;
+        }
     }
 
     dispatch_semaphore_t completionSemaphore = kMGLSynchronizeTextureUploads
         ? dispatch_semaphore_create(0)
         : NULL;
+    __block BOOL uploadError = NO;
     __weak typeof(self) weakSelf = self;
-    [uploadCB addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        if (cb.error) {
+    mglRenderAddCommandBufferCompletion(
+        uploadCB,
+        ^(const MGLRenderCppCommandBufferState *uploadState) {
+        if (uploadState->has_error) {
+            uploadError = YES;
             NSLog(@"MGL ERROR: dedicated upload command buffer failed (%s): %@",
-                  reason ? reason : "texture_upload", cb.error);
+                  reason ? reason : "texture_upload",
+                  mglRenderCommandBufferErrorString(uploadState));
             [weakSelf recordGPUError];
         }
 
         if (completionSemaphore) {
             dispatch_semaphore_signal(completionSemaphore);
         }
-    }];
+    });
 
-    [uploadCB commit];
+    mglTextureCommitCommandBuffer(uploadCB);
 
     if (!kMGLSynchronizeTextureUploads) {
         // Keep uploads ordered on the same queue but avoid stalling the render thread.
@@ -146,7 +518,7 @@
         return true;
     }
 
-    return uploadCB.error == nil;
+    return !uploadError;
 }
 
 - (bool)uploadTextureSliceViaBlit:(id<MTLTexture>)texture
@@ -245,17 +617,12 @@
         @try {
             MTLRegion region = MTLRegionMake1D(0, width);
             if (textureType == MTLTextureType1DArray) {
-                [texture replaceRegion:region
-                            mipmapLevel:level
-                                  slice:slice
-                              withBytes:bytes
-                            bytesPerRow:bytesPerRow
-                          bytesPerImage:safeBytesPerImage];
+                mglTextureReplaceRegion(
+                    texture, region, level, slice, bytes, bytesPerRow,
+                    safeBytesPerImage, YES);
             } else {
-                [texture replaceRegion:region
-                            mipmapLevel:level
-                              withBytes:bytes
-                            bytesPerRow:bytesPerRow];
+                mglTextureReplaceRegion(
+                    texture, region, level, 0, bytes, bytesPerRow, 0, NO);
             }
             if (mglTraceLogIsEnabled() &&
                 texture.pixelFormat == MTLPixelFormatR8Unorm &&
@@ -318,12 +685,9 @@
 
         @try {
             MTLRegion region = MTLRegionMake3D(0, 0, 0, width, safeHeight, copyDepth);
-            [texture replaceRegion:region
-                        mipmapLevel:level
-                              slice:0
-                          withBytes:replaceBytes
-                        bytesPerRow:bytesPerRow
-                      bytesPerImage:expectedBytesPerImage];
+            mglTextureReplaceRegion(
+                texture, region, level, 0, replaceBytes, bytesPerRow,
+                expectedBytesPerImage, YES);
             free(tightlyPackedBytes);
             return true;
         } @catch (NSException *exception) {
@@ -358,9 +722,22 @@
         return false;
     }
 
-    id<MTLBuffer> uploadBuffer = [_device newBufferWithBytes:bytes
-                                                       length:bufferSize
-                                                      options:MTLResourceStorageModeShared];
+    void *stagingOwner = NULL;
+    void *borrowedStagingBuffer = NULL;
+    id<MTLBuffer> fallbackUploadBuffer = nil;
+    __unsafe_unretained id<MTLBuffer> uploadBuffer = nil;
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppCreateTextureStagingOwner(
+            bytes, bufferSize, MTLResourceStorageModeShared,
+            &stagingOwner, &borrowedStagingBuffer) == 0 &&
+        stagingOwner && borrowedStagingBuffer) {
+        uploadBuffer = (__bridge id<MTLBuffer>)borrowedStagingBuffer;
+    } else {
+        mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
+        fallbackUploadBuffer = mglTextureCreateBufferWithBytes(
+            _device, bytes, bufferSize, MTLResourceStorageModeShared);
+        uploadBuffer = fallbackUploadBuffer;
+    }
     if (!uploadBuffer) {
         NSLog(@"MGL WARNING: Failed to allocate upload buffer for texture blit");
         return false;
@@ -376,6 +753,9 @@
                                                       destinationLevel:level
                                                      destinationOrigin:MTLOriginMake(0, 0, 0)
                                                                 reason:"texture_upload_blit"];
+    /* The encoded blit retains its source resource until command-buffer
+     * completion; release the C++ staging owner as soon as encoding ends. */
+    mglRenderCppDestroyTextureStagingOwner(&stagingOwner);
     if (!uploaded) {
         NSLog(@"MGL WARNING: Dedicated texture upload failed (level=%lu slice=%lu)",
               (unsigned long)level, (unsigned long)slice);
@@ -539,6 +919,18 @@
         return;
     }
 
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEncodeColorClear(
+            (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+            (__bridge void *)texture, 0, 0, 0,
+            ctx->state.default_clear_color[0],
+            ctx->state.default_clear_color[1],
+            ctx->state.default_clear_color[2],
+            ctx->state.default_clear_color[3]) == 0) {
+        ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        return;
+    }
+
     MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
     clearPass.colorAttachments[0].texture = texture;
     clearPass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -549,9 +941,10 @@
                           ctx->state.default_clear_color[2],
                           ctx->state.default_clear_color[3]);
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = mglTextureCreateRenderEncoder(
+        _renderPassManager.state->currentCommandBuffer, clearPass);
     if (clearEncoder) {
-        [clearEncoder endEncoding];
+        mglTextureEndRenderEncoder(clearEncoder);
         ctx->state.default_fbo_clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
     } else {
         NSLog(@"MGL WARNING: readPixels failed to apply pending default framebuffer color clear");
@@ -570,6 +963,18 @@
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEncodeColorClear(
+            (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+            (__bridge void *)texture, subresource.level,
+            subresource.slice, subresource.depthPlane,
+            attachment->clear_color[0], attachment->clear_color[1],
+            attachment->clear_color[2], attachment->clear_color[3]) == 0) {
+        attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
+        mglMarkTextureLevelRenderTargetWritten(
+            textureObj, attachment->level);
+        return;
+    }
     MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
     clearPass.colorAttachments[0].texture = texture;
     clearPass.colorAttachments[0].level = subresource.level;
@@ -583,9 +988,10 @@
                           attachment->clear_color[2],
                           attachment->clear_color[3]);
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = mglTextureCreateRenderEncoder(
+        _renderPassManager.state->currentCommandBuffer, clearPass);
     if (clearEncoder) {
-        [clearEncoder endEncoding];
+        mglTextureEndRenderEncoder(clearEncoder);
         attachment->clear_bitmask &= ~GL_COLOR_BUFFER_BIT;
         mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
     } else {
@@ -723,9 +1129,11 @@
         return NO;
     }
 
-    id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
-                                                    options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
+        _device, stagingSize, MTLResourceStorageModeShared);
+    id<MTLBlitCommandEncoder> blitEncoder = readBuffer
+        ? mglTextureCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer)
+        : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create readback resources for %s",
               reason ? reason : "unknown");
@@ -735,25 +1143,18 @@
 
     BOOL blitEncoderEnded = NO;
     @try {
-        [blitEncoder copyFromTexture:sourceTexture
-                          sourceSlice:sourceSlice
-                          sourceLevel:sourceLevel
-                         sourceOrigin:MTLOriginMake((NSUInteger)metalSrcX,
-                                                    (NSUInteger)metalSrcY,
-                                                    sourceDepthPlane)
-                           sourceSize:MTLSizeMake((NSUInteger)copyW,
-                                                  (NSUInteger)copyH,
-                                                  1u)
-                             toBuffer:readBuffer
-                    destinationOffset:0u
-               destinationBytesPerRow:stagingBytesPerRow
-             destinationBytesPerImage:stagingSize];
-        [blitEncoder endEncoding];
+        mglTextureCopyTextureToBuffer(
+            blitEncoder, sourceTexture, sourceSlice, sourceLevel,
+            MTLOriginMake((NSUInteger)metalSrcX, (NSUInteger)metalSrcY,
+                          sourceDepthPlane),
+            MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u),
+            readBuffer, 0u, stagingBytesPerRow, stagingSize);
+        mglTextureEndBlitEncoder(blitEncoder);
         blitEncoderEnded = YES;
     } @catch (NSException *exception) {
         if (!blitEncoderEnded) {
             @try {
-                [blitEncoder endEncoding];
+                mglTextureEndBlitEncoder(blitEncoder);
             } @catch (NSException *endException) {
                 NSLog(@"MGL WARNING: readPixels failed to end blit encoder after copy exception for %s: %@",
                       reason ? reason : "unknown",
@@ -767,26 +1168,26 @@
         return NO;
     }
 
-    __block NSError *readbackError = nil;
     dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        readbackError = cb.error;
-        dispatch_semaphore_signal(readbackDone);
-    }];
-    [_renderPassManager.state->currentCommandBuffer commit];
+    MGLTextureCompletionWaitContext *readbackContext =
+        mglTextureAddCompletionWait(
+        _renderPassManager.state->currentCommandBuffer,
+        readbackDone);
+    mglTextureCommitCommandBuffer(_renderPassManager.state->currentCommandBuffer);
     _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
-    if (dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
+    if (!readbackContext ||
+        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
         NSLog(@"MGL WARNING: readPixels command buffer timed out for %s; returning zeroed data",
               reason ? reason : "unknown");
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         success = NO;
-    } else if (readbackError) {
+    } else if (readbackContext->state.has_error) {
         NSLog(@"MGL WARNING: readPixels command buffer failed for %s: %@; returning zeroed data",
               reason ? reason : "unknown",
-              readbackError);
+              mglRenderCommandBufferErrorString(&readbackContext->state));
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         success = NO;
     } else {
@@ -802,6 +1203,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 
     [self newCommandBuffer];
+    mglTextureReleaseCompletionWaitContext(readbackContext);
     return success;
 }
 
@@ -943,9 +1345,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return NO;
     }
 
-    id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
-                                                    options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blitEncoder = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
+        _device, stagingSize, MTLResourceStorageModeShared);
+    id<MTLBlitCommandEncoder> blitEncoder = readBuffer
+        ? mglTextureCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer)
+        : nil;
     if (!readBuffer || !blitEncoder) {
         NSLog(@"MGL WARNING: readPixels failed to create depth readback resources for %s",
               reason ? reason : "unknown");
@@ -955,25 +1359,18 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     BOOL blitEncoderEnded = NO;
     @try {
-        [blitEncoder copyFromTexture:sourceTexture
-                          sourceSlice:sourceSlice
-                          sourceLevel:sourceLevel
-                         sourceOrigin:MTLOriginMake((NSUInteger)metalSrcX,
-                                                    (NSUInteger)metalSrcY,
-                                                    sourceDepthPlane)
-                           sourceSize:MTLSizeMake((NSUInteger)copyW,
-                                                  (NSUInteger)copyH,
-                                                  1u)
-                             toBuffer:readBuffer
-                    destinationOffset:0u
-               destinationBytesPerRow:stagingBytesPerRow
-             destinationBytesPerImage:stagingSize];
-        [blitEncoder endEncoding];
+        mglTextureCopyTextureToBuffer(
+            blitEncoder, sourceTexture, sourceSlice, sourceLevel,
+            MTLOriginMake((NSUInteger)metalSrcX, (NSUInteger)metalSrcY,
+                          sourceDepthPlane),
+            MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u),
+            readBuffer, 0u, stagingBytesPerRow, stagingSize);
+        mglTextureEndBlitEncoder(blitEncoder);
         blitEncoderEnded = YES;
     } @catch (NSException *exception) {
         if (!blitEncoderEnded) {
             @try {
-                [blitEncoder endEncoding];
+                mglTextureEndBlitEncoder(blitEncoder);
             } @catch (NSException *endException) {
                 NSLog(@"MGL WARNING: readPixels failed to end depth blit encoder after copy exception for %s: %@",
                       reason ? reason : "unknown",
@@ -987,26 +1384,26 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return NO;
     }
 
-    __block NSError *readbackError = nil;
     dispatch_semaphore_t readbackDone = dispatch_semaphore_create(0);
-    [_renderPassManager.state->currentCommandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
-        readbackError = cb.error;
-        dispatch_semaphore_signal(readbackDone);
-    }];
-    [_renderPassManager.state->currentCommandBuffer commit];
+    MGLTextureCompletionWaitContext *readbackContext =
+        mglTextureAddCompletionWait(
+        _renderPassManager.state->currentCommandBuffer,
+        readbackDone);
+    mglTextureCommitCommandBuffer(_renderPassManager.state->currentCommandBuffer);
     _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
 
     dispatch_time_t readbackDeadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.25 * NSEC_PER_SEC));
     BOOL success = YES;
-    if (dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
+    if (!readbackContext ||
+        dispatch_semaphore_wait(readbackDone, readbackDeadline) != 0) {
         NSLog(@"MGL WARNING: readPixels depth command buffer timed out for %s",
               reason ? reason : "unknown");
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         success = NO;
-    } else if (readbackError) {
+    } else if (readbackContext->state.has_error) {
         NSLog(@"MGL WARNING: readPixels depth command buffer failed for %s: %@",
               reason ? reason : "unknown",
-              readbackError);
+              mglRenderCommandBufferErrorString(&readbackContext->state));
         mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
         success = NO;
     } else {
@@ -1038,6 +1435,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     }
 
     [self newCommandBuffer];
+    mglTextureReleaseCompletionWaitContext(readbackContext);
     return success;
 }
 
@@ -1250,9 +1648,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return NO;
     }
 
-    id<MTLBuffer> readBuffer = [_device newBufferWithLength:stagingSize
-                                                    options:MTLResourceStorageModeShared];
-    id<MTLBlitCommandEncoder> blit = readBuffer ? [_renderPassManager.state->currentCommandBuffer blitCommandEncoder] : nil;
+    id<MTLBuffer> readBuffer = mglTextureCreateBuffer(
+        _device, stagingSize, MTLResourceStorageModeShared);
+    id<MTLBlitCommandEncoder> blit = readBuffer
+        ? mglTextureCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer)
+        : nil;
     if (!readBuffer || !blit) {
         mglDispatchError(ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
         return NO;
@@ -1272,21 +1672,15 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     NSUInteger blitSrcY = isRenderTarget
         ? (levelHeight - (NSUInteger)maxY)
         : (NSUInteger)minY;
-    [blit copyFromTexture:sourceTexture
-              sourceSlice:mtlSlice
-              sourceLevel:mipmapLevel
-             sourceOrigin:MTLOriginMake((NSUInteger)minX,
-                                        blitSrcY,
-                                        0u)
-               sourceSize:MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u)
-                 toBuffer:readBuffer
-        destinationOffset:0u
-   destinationBytesPerRow:srcBytesPerRow
- destinationBytesPerImage:stagingSize];
-    [blit endEncoding];
-    [_renderPassManager.state->currentCommandBuffer commit];
+    mglTextureCopyTextureToBuffer(
+        blit, sourceTexture, mtlSlice, mipmapLevel,
+        MTLOriginMake((NSUInteger)minX, blitSrcY, 0u),
+        MTLSizeMake((NSUInteger)copyW, (NSUInteger)copyH, 1u), readBuffer,
+        0u, srcBytesPerRow, stagingSize);
+    mglTextureEndBlitEncoder(blit);
+    mglTextureCommitCommandBuffer(_renderPassManager.state->currentCommandBuffer);
     _lastCommittedCB = _renderPassManager.state->currentCommandBuffer;
-    [_renderPassManager.state->currentCommandBuffer waitUntilCompleted];
+    mglTextureWaitCommandBuffer(_renderPassManager.state->currentCommandBuffer);
 
     const uint8_t *src = (const uint8_t *)readBuffer.contents;
     NSUInteger dstX = (NSUInteger)(minX - (NSInteger)region.origin.x);
@@ -1429,6 +1823,17 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     MGLMetalAttachmentSubresource subresource =
         mglMetalAttachmentSubresourceForAttachment(attachment);
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEncodeDepthClear(
+            (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+            (__bridge void *)texture, subresource.level,
+            subresource.slice, subresource.depthPlane,
+            attachment->clear_color[0]) == 0) {
+        attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        mglMarkTextureLevelRenderTargetWritten(
+            textureObj, attachment->level);
+        return;
+    }
     MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
     clearPass.depthAttachment.texture = texture;
     clearPass.depthAttachment.level = subresource.level;
@@ -1438,9 +1843,10 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     clearPass.depthAttachment.storeAction = MTLStoreActionStore;
     clearPass.depthAttachment.clearDepth = attachment->clear_color[0];
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = mglTextureCreateRenderEncoder(
+        _renderPassManager.state->currentCommandBuffer, clearPass);
     if (clearEncoder) {
-        [clearEncoder endEncoding];
+        mglTextureEndRenderEncoder(clearEncoder);
         attachment->clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
         mglMarkTextureLevelRenderTargetWritten(textureObj, attachment->level);
     } else {
@@ -1455,15 +1861,25 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return;
     }
 
+    if (mglTextureUsesMetalCpp() &&
+        mglRenderCppEncodeDepthClear(
+            (__bridge void *)_renderPassManager.state->currentCommandBuffer,
+            (__bridge void *)texture, 0, 0, 0,
+            ctx->state.var.depth_clear_value) == 0) {
+        ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
+        return;
+    }
+
     MTLRenderPassDescriptor *clearPass = [MTLRenderPassDescriptor renderPassDescriptor];
     clearPass.depthAttachment.texture = texture;
     clearPass.depthAttachment.loadAction = MTLLoadActionClear;
     clearPass.depthAttachment.storeAction = MTLStoreActionStore;
     clearPass.depthAttachment.clearDepth = ctx->state.var.depth_clear_value;
 
-    id<MTLRenderCommandEncoder> clearEncoder = [_renderPassManager.state->currentCommandBuffer renderCommandEncoderWithDescriptor:clearPass];
+    id<MTLRenderCommandEncoder> clearEncoder = mglTextureCreateRenderEncoder(
+        _renderPassManager.state->currentCommandBuffer, clearPass);
     if (clearEncoder) {
-        [clearEncoder endEncoding];
+        mglTextureEndRenderEncoder(clearEncoder);
         ctx->state.default_fbo_clear_bitmask &= ~GL_DEPTH_BUFFER_BIT;
     } else {
         NSLog(@"MGL WARNING: readPixels failed to apply pending default framebuffer depth clear");
@@ -1838,14 +2254,17 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         id<MTLCommandBuffer> pendingCB =
             [_renderPassManager detachCurrentCommandBufferForSubmission];
         @try {
-            [pendingCB commit];
+            [self commitCommandBufferWithAGXRecovery:pendingCB];
             _lastCommittedCB = pendingCB;
-            [pendingCB waitUntilCompleted];
+            mglTextureWaitCommandBuffer(pendingCB);
         } @catch (NSException *e) {
             NSLog(@"MGL WARNING: mtlGetTexImage pre-readback flush failed: %@", e.reason);
         }
-        if (pendingCB.error) {
-            NSLog(@"MGL WARNING: mtlGetTexImage pre-readback command buffer error: %@", pendingCB.error);
+        MGLRenderCppCommandBufferState pendingState =
+            mglRenderCommandBufferState(pendingCB);
+        if (pendingState.has_error) {
+            NSLog(@"MGL WARNING: mtlGetTexImage pre-readback command buffer error: %@",
+                  mglRenderCommandBufferErrorString(&pendingState));
         }
         [self newCommandBuffer];
     }
@@ -1978,44 +2397,41 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
             totalBytes = bytesPerImage * readRegion.size.depth;
         }
 
-        id<MTLBuffer> stagingBuffer = [_device newBufferWithLength:totalBytes
-                                                           options:MTLResourceStorageModeShared];
+        id<MTLBuffer> stagingBuffer = mglTextureCreateBuffer(
+            _device, totalBytes, MTLResourceStorageModeShared);
         if (!stagingBuffer) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to allocate staging buffer for texture %u", tex->name);
             mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
             return;
         }
 
-        id<MTLCommandBuffer> blitCB = [_commandQueue commandBuffer];
+        id<MTLCommandBuffer> blitCB = mglTextureCreateCommandBuffer(_commandQueue);
         if (!blitCB) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit command buffer for texture %u", tex->name);
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
 
-        id<MTLBlitCommandEncoder> blitEncoder = [blitCB blitCommandEncoder];
+        id<MTLBlitCommandEncoder> blitEncoder = mglTextureCreateBlitEncoder(blitCB);
         if (!blitEncoder) {
             NSLog(@"MGL ERROR: mtlGetTexImage failed to create blit encoder for texture %u", tex->name);
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
 
-        [blitEncoder copyFromTexture:texture
-                          sourceSlice:slice
-                          sourceLevel:level
-                         sourceOrigin:readRegion.origin
-                           sourceSize:readRegion.size
-                             toBuffer:stagingBuffer
-                    destinationOffset:0
-               destinationBytesPerRow:rowBytes
-             destinationBytesPerImage:imageBytes];
+        mglTextureCopyTextureToBuffer(
+            blitEncoder, texture, slice, level, readRegion.origin,
+            readRegion.size, stagingBuffer, 0, rowBytes, imageBytes);
 
-        [blitEncoder endEncoding];
-        [blitCB commit];
-        [blitCB waitUntilCompleted];
+        mglTextureEndBlitEncoder(blitEncoder);
+        mglTextureCommitCommandBuffer(blitCB);
+        mglTextureWaitCommandBuffer(blitCB);
 
-        if (blitCB.error) {
-            NSLog(@"MGL ERROR: mtlGetTexImage blit failed for texture %u: %@", tex->name, blitCB.error);
+        MGLRenderCppCommandBufferState blitState =
+            mglRenderCommandBufferState(blitCB);
+        if (blitState.has_error) {
+            NSLog(@"MGL ERROR: mtlGetTexImage blit failed for texture %u: %@",
+                  tex->name, mglRenderCommandBufferErrorString(&blitState));
             mglDispatchError(glm_ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return;
         }
@@ -2100,12 +2516,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                 mglDispatchError(glm_ctx, __FUNCTION__, GL_OUT_OF_MEMORY);
                 return;
             }
-            [texture getBytes:readback.mutableBytes
-                  bytesPerRow:rowBytes
-                bytesPerImage:bytesPerImage
-                   fromRegion:readRegion
-                  mipmapLevel:level
-                        slice:slice];
+            mglTextureGetBytes(
+                texture, readback.mutableBytes, rowBytes, bytesPerImage,
+                readRegion, level, slice, YES);
             if (useBGRA8Conversion) {
                 if (!mglMetalCopyBGRA8CompatibleTextureBytesToGL((const uint8_t *)readback.bytes,
                                                                  rowBytes,
@@ -2133,12 +2546,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                                  YES);
             }
         } else {
-            [texture getBytes:pixelBytes
-                  bytesPerRow:bytesPerRow
-                bytesPerImage:bytesPerImage
-                   fromRegion:readRegion
-                  mipmapLevel:level
-                        slice:slice];
+            mglTextureGetBytes(
+                texture, pixelBytes, bytesPerRow, bytesPerImage,
+                readRegion, level, slice, YES);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: mtlGetTexImage texture read failed for texture %u: %@",
@@ -2183,21 +2593,27 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     // start blit encoder
     id<MTLBlitCommandEncoder> blitCommandEncoder;
-    blitCommandEncoder = [_renderPassManager.state->currentCommandBuffer blitCommandEncoder];
+    blitCommandEncoder =
+        mglTextureCreateBlitEncoder(_renderPassManager.state->currentCommandBuffer);
     if (!blitCommandEncoder) {
         NSLog(@"MGL ERROR: Failed to create blit encoder for mipmap generation");
         return;
     }
 
     @try {
-        [blitCommandEncoder generateMipmapsForTexture:texture];
-        [blitCommandEncoder endEncoding];
+        if (!(mglTextureUsesMetalCpp() &&
+              mglRenderCppBlitGenerateMipmaps(
+                  (__bridge void *)blitCommandEncoder,
+                  (__bridge void *)texture) == 0)) {
+            [blitCommandEncoder generateMipmapsForTexture:texture];
+        }
+        mglTextureEndBlitEncoder(blitCommandEncoder);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: generateMipmapsForTexture failed for texture %u: %@",
               tex->name,
               exception);
         @try {
-            [blitCommandEncoder endEncoding];
+            mglTextureEndBlitEncoder(blitCommandEncoder);
         } @catch (NSException *endException) {
             NSLog(@"MGL WARNING: failed to end mipmap blit encoder after exception: %@", endException);
         }
@@ -2435,9 +2851,10 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                             free(expanded);
                         }
                         if (expandOK) {
-                            id<MTLBuffer> uploadBuffer = [_device newBufferWithBytes:packedUpload.bytes
-                                                                                length:packedBytes
-                                                                               options:MTLResourceStorageModeShared];
+                            id<MTLBuffer> uploadBuffer =
+                                mglTextureCreateBufferWithBytes(
+                                    _device, packedUpload.bytes, packedBytes,
+                                    MTLResourceStorageModeShared);
                             if (uploadBuffer) {
                                 bool uploaded = [self encodeTextureBytesUpload:tex
                                                                         source:uploadBuffer
@@ -2696,9 +3113,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
     }
 
-    id<MTLBuffer> uploadBuffer = [_device newBufferWithBytes:packedUpload.bytes
-                                                      length:packedBytes
-                                                     options:MTLResourceStorageModeShared];
+    id<MTLBuffer> uploadBuffer = mglTextureCreateBufferWithBytes(
+        _device, packedUpload.bytes, packedBytes,
+        MTLResourceStorageModeShared);
     if (!uploadBuffer) {
         return false;
     }
@@ -3327,11 +3744,10 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
                                 // Create a temporary MTLBuffer with the texture data
 
-                                id<MTLBuffer> tempBuffer = [_device newBufferWithBytes:properData
-
-                                                                                length:fillSize
-
-                                                                               options:MTLResourceStorageModeShared];
+                                id<MTLBuffer> tempBuffer =
+                                    mglTextureCreateBufferWithBytes(
+                                        _device, properData, fillSize,
+                                        MTLResourceStorageModeShared);
 
 
                                 if (tempBuffer) {
@@ -3885,17 +4301,12 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
                                         MTLRegion simpleRegion = MTLRegionMake2D(0, 0, texture.width, texture.height);
 
-                                        [texture replaceRegion:simpleRegion
-
-                                                mipmapLevel:0
-
-                                                      slice:0
-
-                                                  withBytes:simpleData
-
-                                                bytesPerRow:texture.width * sizeof(uint32_t)
-
-                                              bytesPerImage:texture.width * texture.height * sizeof(uint32_t)];
+                                        mglTextureReplaceRegion(
+                                            texture, simpleRegion, 0, 0,
+                                            simpleData,
+                                            texture.width * sizeof(uint32_t),
+                                            texture.width * texture.height * sizeof(uint32_t),
+                                            YES);
 
 
                                         NSLog(@"MGL SUCCESS: Simple direct color fill completed");
@@ -5040,7 +5451,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     // CRITICAL FIX: Safe texture creation with proper validation
     @try {
-        texture = [_device newTextureWithDescriptor:tex_desc];
+        texture = mglTextureCreateTexture(_device, tex_desc);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Exception creating texture: %@", exception);
         [self recordGPUError];
@@ -5351,12 +5762,11 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 
     id<MTLTexture> bufferTexture = nil;
     @try {
-        bufferTexture = [_device newTextureWithDescriptor:bufferDesc];
+        bufferTexture = mglTextureCreateTexture(_device, bufferDesc);
         if (bufferTexture) {
-            [bufferTexture replaceRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
-                              mipmapLevel:0
-                                withBytes:uploadBytes
-                              bytesPerRow:bytesPerRow];
+            mglTextureReplaceRegion(
+                bufferTexture, MTLRegionMake2D(0, 0, texWidth, texHeight),
+                0, 0, uploadBytes, bytesPerRow, 0, NO);
         }
     } @catch (NSException *exception) {
         NSLog(@"MGL TEXBUFFER ERROR: failed creating/uploading tex=%u buffer=%u exception=%@",
@@ -5383,10 +5793,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     char readbackHead[64];
     readbackHead[0] = '\0';
     if (readbackData.mutableBytes) {
-        [bufferTexture getBytes:readbackData.mutableBytes
-                    bytesPerRow:bytesPerRow
-                     fromRegion:MTLRegionMake2D(0, 0, texWidth, texHeight)
-                    mipmapLevel:0];
+        mglTextureGetBytes(
+            bufferTexture, readbackData.mutableBytes, bytesPerRow, 0,
+            MTLRegionMake2D(0, 0, texWidth, texHeight), 0, 0, NO);
         readbackHash = mglTraceHashBytes(readbackData.bytes, packedBytes);
         mglTraceFormatBytes(readbackData.bytes, (size_t)MIN(packedBytes, (NSUInteger)64), readbackHead, sizeof(readbackHead));
     }
@@ -5656,7 +6065,8 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
         fallbackDesc.storageMode = MTLStorageModeShared;
 
-        id<MTLTexture> fallbackTexture = [_device newTextureWithDescriptor:fallbackDesc];
+        id<MTLTexture> fallbackTexture =
+            mglTextureCreateTexture(_device, fallbackDesc);
 
         if (fallbackTexture) {
             // Fill with simple gradient pattern using a simple approach
@@ -5679,8 +6089,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
                     }
 
                     MTLRegion region = MTLRegionMake2D(0, 0, width, height);
-                    [fallbackTexture replaceRegion:region mipmapLevel:0 withBytes:gradientData
-                               bytesPerRow:width * sizeof(uint32_t)];
+                    mglTextureReplaceRegion(
+                        fallbackTexture, region, 0, 0, gradientData,
+                        width * sizeof(uint32_t), 0, NO);
 
                     free(gradientData);
                     NSLog(@"MGL AGX: Fallback color texture created with gradient pattern");
@@ -5774,6 +6185,18 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
 - (id<MTLSamplerState>) createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target
 {
     mglMetalCountCreate(MGLMetalKindSampler);
+    if (mglTextureUsesMetalCpp()) {
+        void *sampler = NULL;
+        char error[256] = {0};
+        if (mglRenderCppCreateSamplerForGL(
+                tex_param, target, &sampler, error, sizeof(error)) == 0 &&
+            sampler) {
+            return (__bridge_transfer id<MTLSamplerState>)sampler;
+        }
+        NSLog(@"MGL SAMPLER ERROR: Metal-cpp sampler creation failed: %s",
+              error[0] ? error : "unknown");
+        return nil;
+    }
     MTLSamplerDescriptor *samplerDescriptor;
 
     if (!tex_param) {
@@ -6013,7 +6436,8 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     samplerDescriptor.lodMinClamp = (tex_param->min_lod < 0.0f) ? 0.0f : tex_param->min_lod;
     samplerDescriptor.lodMaxClamp = (tex_param->max_lod >= 1000.0f) ? 1e9f : tex_param->max_lod;
 
-    id<MTLSamplerState> sampler = [_device newSamplerStateWithDescriptor:samplerDescriptor];
+    id<MTLSamplerState> sampler =
+        mglTextureCreateSampler(_device, samplerDescriptor);
     if (!sampler) {
         NSLog(@"MGL SAMPLER ERROR: failed to create MTLSamplerState");
         return nil;
@@ -6063,13 +6487,14 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _resourceFallback.fallbackSampledTexture = [_device newTextureWithDescriptor:desc];
+    _resourceFallback.fallbackSampledTexture =
+        mglTextureCreateTexture(_device, desc);
     if (_resourceFallback.fallbackSampledTexture) {
         uint32_t pixel = 0xff000000u;
-        [_resourceFallback.fallbackSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                                                    mipmapLevel:0
-                                                      withBytes:&pixel
-                                                    bytesPerRow:sizeof(pixel)];
+        mglTextureReplaceRegion(
+            _resourceFallback.fallbackSampledTexture,
+            MTLRegionMake2D(0, 0, 1, 1), 0, 0, &pixel,
+            sizeof(pixel), 0, NO);
         NSLog(@"MGL INFO: Created 1x1 fallback sampled texture for missing shader resources");
     } else {
         NSLog(@"MGL ERROR: Failed to create fallback sampled texture");
@@ -6095,16 +6520,15 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    _resourceFallback.fallbackCubeSampledTexture = [_device newTextureWithDescriptor:desc];
+    _resourceFallback.fallbackCubeSampledTexture =
+        mglTextureCreateTexture(_device, desc);
     if (_resourceFallback.fallbackCubeSampledTexture) {
         uint32_t pixel = 0xff000000u;
         for (NSUInteger face = 0; face < 6; face++) {
-            [_resourceFallback.fallbackCubeSampledTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                                                             mipmapLevel:0
-                                                                   slice:face
-                                                               withBytes:&pixel
-                                                             bytesPerRow:sizeof(pixel)
-                                                           bytesPerImage:sizeof(pixel)];
+            mglTextureReplaceRegion(
+                _resourceFallback.fallbackCubeSampledTexture,
+                MTLRegionMake2D(0, 0, 1, 1), 0, face, &pixel,
+                sizeof(pixel), sizeof(pixel), YES);
         }
         NSLog(@"MGL INFO: Created 1x1 fallback cube sampled texture for missing shader resources");
     } else {
@@ -6124,8 +6548,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     static const NSUInteger kFallbackBytesPerTexel = 4;
 
     if (!_resourceFallback.fallbackTextureBufferStorage) {
-        _resourceFallback.fallbackTextureBufferStorage = [_device newBufferWithLength:(kFallbackTexelCount * kFallbackBytesPerTexel)
-                                                                               options:MTLResourceStorageModeShared];
+        _resourceFallback.fallbackTextureBufferStorage = mglTextureCreateBuffer(
+            _device, kFallbackTexelCount * kFallbackBytesPerTexel,
+            MTLResourceStorageModeShared);
         if (_resourceFallback.fallbackTextureBufferStorage && _resourceFallback.fallbackTextureBufferStorage.contents) {
             memset(_resourceFallback.fallbackTextureBufferStorage.contents, 0, kFallbackTexelCount * kFallbackBytesPerTexel);
         }
@@ -6147,9 +6572,10 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     desc.storageMode = MTLStorageModeShared;
 
     @try {
-        _resourceFallback.fallbackSintTextureBuffer = [_resourceFallback.fallbackTextureBufferStorage newTextureWithDescriptor:desc
-                                                                                                                        offset:0
-                                                                                                                   bytesPerRow:(kFallbackTexelCount * kFallbackBytesPerTexel)];
+        _resourceFallback.fallbackSintTextureBuffer =
+            mglTextureCreateBufferTexture(
+                _resourceFallback.fallbackTextureBufferStorage, desc, 0,
+                kFallbackTexelCount * kFallbackBytesPerTexel);
     } @catch (NSException *exception) {
         NSLog(@"MGL ERROR: Failed to create fallback texture-buffer texture: %@", exception);
         _resourceFallback.fallbackSintTextureBuffer = nil;
@@ -6213,7 +6639,7 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     desc.usage = MTLTextureUsageShaderRead;
     desc.storageMode = MTLStorageModeShared;
 
-    id<MTLTexture> texture = [_device newTextureWithDescriptor:desc];
+    id<MTLTexture> texture = mglTextureCreateTexture(_device, desc);
     if (!texture) {
         NSLog(@"MGL ERROR: Failed to create %@ fallback sampled texture type=%lu format=%lu",
               [NSString stringWithUTF8String:mglTextureDataKindName(dataKind)],
@@ -6230,26 +6656,18 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     if (textureType == MTLTextureTypeCube || textureType == MTLTextureTypeCubeArray) {
         NSUInteger sliceCount = (textureType == MTLTextureTypeCube) ? 6u : 6u;
         for (NSUInteger slice = 0; slice < sliceCount; slice++) {
-            [texture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
-                       mipmapLevel:0
-                             slice:slice
-                         withBytes:&pixel
-                       bytesPerRow:sizeof(pixel)
-                     bytesPerImage:sizeof(pixel)];
+            mglTextureReplaceRegion(
+                texture, MTLRegionMake2D(0, 0, 1, 1), 0, slice,
+                &pixel, sizeof(pixel), sizeof(pixel), YES);
         }
     } else if (textureType == MTLTextureType1DArray ||
                textureType == MTLTextureType2DArray) {
-        [texture replaceRegion:region
-                   mipmapLevel:0
-                         slice:0
-                     withBytes:&pixel
-                   bytesPerRow:sizeof(pixel)
-                 bytesPerImage:sizeof(pixel)];
+        mglTextureReplaceRegion(
+            texture, region, 0, 0, &pixel, sizeof(pixel),
+            sizeof(pixel), YES);
     } else {
-        [texture replaceRegion:region
-                   mipmapLevel:0
-                     withBytes:&pixel
-                   bytesPerRow:sizeof(pixel)];
+        mglTextureReplaceRegion(
+            texture, region, 0, 0, &pixel, sizeof(pixel), 0, NO);
     }
 
     _resourceFallback.fallbackSampledTextureCache[key] = texture;
@@ -6534,7 +6952,8 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
     desc.tAddressMode = MTLSamplerAddressModeClampToEdge;
     desc.rAddressMode = MTLSamplerAddressModeClampToEdge;
 
-    _resourceFallback.fallbackSamplerState = [_device newSamplerStateWithDescriptor:desc];
+    _resourceFallback.fallbackSamplerState =
+        mglTextureCreateSampler(_device, desc);
     if (!_resourceFallback.fallbackSamplerState) {
         NSLog(@"MGL ERROR: Failed to create fallback sampler state");
     }
@@ -6590,10 +7009,10 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return;
     }
 
-    id<MTLBuffer> readback = [_device newBufferWithLength:byteCount
-                                                  options:MTLResourceStorageModeShared];
-    id<MTLCommandBuffer> cb = [_commandQueue commandBuffer];
-    id<MTLBlitCommandEncoder> blit = cb ? [cb blitCommandEncoder] : nil;
+    id<MTLBuffer> readback = mglTextureCreateBuffer(
+        _device, byteCount, MTLResourceStorageModeShared);
+    id<MTLCommandBuffer> cb = mglTextureCreateCommandBuffer(_commandQueue);
+    id<MTLBlitCommandEncoder> blit = mglTextureCreateBlitEncoder(cb);
     if (!readback || !cb || !blit) {
         mglTraceLogNSString(@"MGL TRACE sampled.readback setup-fail program=%u binding=%u glTex=%u reason=%@ readback=%p cb=%p blit=%p hit=%llu",
               (unsigned)program,
@@ -6607,18 +7026,13 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         return;
     }
 
-    [blit copyFromTexture:texture
-              sourceSlice:0
-              sourceLevel:0
-             sourceOrigin:MTLOriginMake(0, 0, 0)
-               sourceSize:MTLSizeMake(sampleWidth, sampleHeight, 1)
-                 toBuffer:readback
-        destinationOffset:0
-   destinationBytesPerRow:bytesPerRow
- destinationBytesPerImage:byteCount];
-    [blit endEncoding];
-    [cb commit];
-    [cb waitUntilCompleted];
+    mglTextureCopyTextureToBuffer(
+        blit, texture, 0, 0, MTLOriginMake(0, 0, 0),
+        MTLSizeMake(sampleWidth, sampleHeight, 1), readback, 0,
+        bytesPerRow, byteCount);
+    mglTextureEndBlitEncoder(blit);
+    mglTextureCommitCommandBuffer(cb);
+    mglTextureWaitCommandBuffer(cb);
 
     const uint8_t *p = (const uint8_t *)readback.contents;
     uint64_t byteSum = 0;
@@ -6652,6 +7066,14 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
         }
     }
 
+    MGLRenderCppCommandBufferState sampledState =
+        mglRenderCommandBufferState(cb);
+    NSString *sampledError = sampledState.has_error
+        ? [NSString stringWithFormat:@"%s (domain=%s code=%lld)",
+             sampledState.error_description,
+             sampledState.error_domain,
+             (long long)sampledState.error_code]
+        : nil;
     mglTraceLogNSString(@"MGL TRACE sampled.readback stage=%@ program=%u binding=%u glTex=%u reason=%@ hit=%llu "
           "mtl=%p fmt=%lu type=%lu size=%lux%lu sample=%lux%lu status=%s error=%@ "
           "nonZero=%lu/%lu sum=%llu first=0x%08x min=0x%08x max=0x%08x xor=0x%08x "
@@ -6669,8 +7091,9 @@ mglMetalCopyTextureBytesToBGRA8((const uint8_t *)readBuffer.contents,
           (unsigned long)texHeight,
           (unsigned long)sampleWidth,
           (unsigned long)sampleHeight,
-          mglCommandBufferStatusName(cb.status),
-          cb.error,
+          mglCommandBufferStatusName(
+              (MTLCommandBufferStatus)sampledState.status),
+          sampledError,
           (unsigned long)nonZeroBytes,
           (unsigned long)byteCount,
           (unsigned long long)byteSum,

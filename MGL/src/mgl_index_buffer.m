@@ -12,6 +12,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <os/lock.h>
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static id<MTLBuffer> mglIndexCreateBuffer(id<MTLDevice> device,
+                                          NSUInteger length)
+{
+    if (mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+        mglRenderCppGetDevice() != NULL) {
+        void *buffer = NULL;
+        if (mglRenderCppCreateBuffer(
+                length, MTLResourceStorageModeShared, NULL, &buffer) == 0 &&
+            buffer) {
+            return (__bridge_transfer id<MTLBuffer>)buffer;
+        }
+    }
+    return [device newBufferWithLength:length
+                               options:MTLResourceStorageModeShared];
+}
 
 /* Allocate the MTLBuffer up front and write indices directly into its
  * .contents pointer, avoiding the calloc + newBufferWithBytes + free
@@ -24,8 +42,7 @@ static id<MTLBuffer> mglNewUninitializedIndexBuffer(id<MTLDevice> device,
     if (!device || byteCount == 0u || !outContents) {
         return nil;
     }
-    id<MTLBuffer> buffer = [device newBufferWithLength:byteCount
-                                              options:MTLResourceStorageModeShared];
+    id<MTLBuffer> buffer = mglIndexCreateBuffer(device, byteCount);
     if (!buffer) {
         return nil;
     }
@@ -226,8 +243,8 @@ id<MTLBuffer> mglNewTriangleStripArrayIndexBuffer(id<MTLDevice> device,
     }
 
     for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = (uint32_t)tri;
-        indices[(tri * 3u) + 1u] = (uint32_t)(tri + 1u);
+        indices[(tri * 3u) + 0u] = (uint32_t)(tri + (tri & 1u));
+        indices[(tri * 3u) + 1u] = (uint32_t)(tri + ((tri & 1u) ? 0u : 1u));
         indices[(tri * 3u) + 2u] = (uint32_t)(tri + 2u);
     }
 
@@ -314,8 +331,10 @@ id<MTLBuffer> mglNewTriangleStripElementIndexBuffer(id<MTLDevice> device,
     }
 
     for (NSUInteger tri = 0; tri < triangleCount; tri++) {
-        indices[(tri * 3u) + 0u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri);
-        indices[(tri * 3u) + 1u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 1u);
+        NSUInteger first = tri + (tri & 1u);
+        NSUInteger second = tri + ((tri & 1u) ? 0u : 1u);
+        indices[(tri * 3u) + 0u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, first);
+        indices[(tri * 3u) + 1u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, second);
         indices[(tri * 3u) + 2u] = mglReadGLIndexValue(sourceIndexBytes, sourceIndexType, tri + 2u);
     }
 

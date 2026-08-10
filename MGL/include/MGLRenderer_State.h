@@ -87,6 +87,7 @@ typedef struct MGLRendererCoreState_t {
     NSMutableArray *__strong proactiveTextures;
     MGLDrawable drawBuffers[_MAX_DRAW_BUFFERS];
     BOOL defaultDrawableWrittenSinceLastSwap;
+    void *commandQueueOwner;
     id<MTLCommandQueue> __strong commandQueue;
     /* Lock-free hand-off channels.  Written by the completion-handler thread
      * / main queue, drained (and resynchronized) on the GL thread. */
@@ -131,8 +132,6 @@ typedef struct MGLResourceFallbackState_t {
     uint16_t samplerSnapshotCacheCount;
     uint16_t samplerSnapshotCacheNext;
     MGLFragmentTextureTraceBinding fragmentTextureTraceBindings[TEXTURE_UNITS];
-    BOOL mslCacheEnabled;
-    NSCache<NSString *, NSNumber *> *__strong mslTextureTypeCache;
 } MGLResourceFallbackState;
 
 typedef struct MGLBlitState_t {
@@ -148,11 +147,30 @@ typedef struct MGLBlitState_t {
 
 typedef struct MGLTessellationState_t {
     id<MTLBuffer> __strong tessFactorBuffer;
+    id<MTLBuffer> __strong nativeTessFactorBuffer;
     id<MTLBuffer> __strong tcsOutputBuffer;
     id<MTLBuffer> __strong tcsPatchOutBuffer;
+    id<MTLBuffer> __strong tessVertexCaptureBuffer;
+    NSUInteger tessVertexCaptureOffset;
+    BOOL tessVertexCaptureActive;
+    id<MTLBuffer> __strong cullDistanceCaptureBuffer;
+    BOOL cullDistanceCaptureActive;
+    uint32_t cullDistanceCaptureFirstInstance;
+    uint32_t cullDistanceCaptureInstanceStride;
+    NSUInteger tcsOutputOffset;
     NSUInteger tcsOutputStride;
     GLuint tcsOutVertices;
+    BOOL nativeTESActive;
+    Program *nativeTESProgram;
 } MGLTessellationState;
+
+typedef struct MGLGeometryState_t {
+    id<MTLLibrary> __strong passthroughLibrary;
+    id<MTLFunction> __strong passthroughFunction;
+    uint64_t passthroughProgramInstanceId;
+    BOOL expansionActive;
+    Program *program;
+} MGLGeometryState;
 
 typedef struct MGLBatchingState_t {
     MGLBatchArena batchArena;

@@ -9,6 +9,56 @@
 #import "mgl_draw_encode.h"
 
 #include <stdlib.h>
+#include "mgl_env_flag.h"
+#include "mgl_render_cpp.h"
+
+static BOOL mglDrawEncodeUsesMetalCpp(void)
+{
+    return mgl_env_flag_enabled_default_on("MGL_USE_METALCPP") &&
+           mglRenderCppGetDevice() != NULL;
+}
+
+static void mglDrawEncodePrimitives(id<MTLRenderCommandEncoder> encoder,
+                                    MTLPrimitiveType primitiveType,
+                                    NSUInteger vertexStart,
+                                    NSUInteger vertexCount,
+                                    NSUInteger instanceCount,
+                                    NSUInteger baseInstance)
+{
+    if (mglDrawEncodeUsesMetalCpp() &&
+        mglRenderCppDrawPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, vertexStart,
+            vertexCount, instanceCount, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawPrimitives:primitiveType vertexStart:vertexStart
+                vertexCount:vertexCount instanceCount:instanceCount
+               baseInstance:baseInstance];
+}
+
+static void mglDrawEncodeIndexed(id<MTLRenderCommandEncoder> encoder,
+                                 MTLPrimitiveType primitiveType,
+                                 NSUInteger indexCount,
+                                 MTLIndexType indexType,
+                                 id<MTLBuffer> indexBuffer,
+                                 NSUInteger indexBufferOffset,
+                                 NSUInteger instanceCount,
+                                 NSInteger baseVertex,
+                                 NSUInteger baseInstance)
+{
+    if (mglDrawEncodeUsesMetalCpp() &&
+        mglRenderCppDrawIndexedPrimitives(
+            (__bridge void *)encoder, (uint32_t)primitiveType, indexCount,
+            (uint32_t)indexType, (__bridge void *)indexBuffer,
+            indexBufferOffset, instanceCount, baseVertex, baseInstance) == 0) {
+        return;
+    }
+    [encoder drawIndexedPrimitives:primitiveType indexCount:indexCount
+                         indexType:indexType indexBuffer:indexBuffer
+                 indexBufferOffset:indexBufferOffset
+                     instanceCount:instanceCount baseVertex:baseVertex
+                      baseInstance:baseInstance];
+}
 
 BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
                             GLMContext drawCtx,
@@ -45,14 +95,9 @@ BOOL mglEncodeArrayLineLoop(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                         indexCount:loopIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:loopIndexBuffer
-                  indexBufferOffset:0
-	                      instanceCount:instanceCount
-	                         baseVertex:0
-	                       baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypeLineStrip, loopIndexCount,
+                         MTLIndexTypeUInt32, loopIndexBuffer, 0,
+                         instanceCount, 0, baseInstance);
     return YES;
 }
 
@@ -80,14 +125,9 @@ BOOL mglEncodeArrayTriangleFan(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                         indexCount:fanIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:fanIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypeTriangle, fanIndexCount,
+                         MTLIndexTypeUInt32, fanIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -128,14 +168,9 @@ BOOL mglEncodeElementLineLoop(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeLineStrip
-                         indexCount:loopIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:loopIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypeLineStrip, loopIndexCount,
+                         MTLIndexTypeUInt32, loopIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -176,14 +211,9 @@ BOOL mglEncodeElementTriangleFan(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                         indexCount:fanIndexCount
-                          indexType:MTLIndexTypeUInt32
-                        indexBuffer:fanIndexBuffer
-                  indexBufferOffset:0
-                      instanceCount:instanceCount
-                         baseVertex:baseVertex
-                       baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypeTriangle, fanIndexCount,
+                         MTLIndexTypeUInt32, fanIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -212,14 +242,10 @@ BOOL mglEncodeArrayQuads(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
-                        indexCount:quadIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:quadIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+    mglDrawEncodeIndexed(
+        encoder, lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle,
+        quadIndexCount, MTLIndexTypeUInt32, quadIndexBuffer, 0,
+        instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -259,14 +285,10 @@ BOOL mglEncodeElementQuads(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:(lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle)
-                        indexCount:quadIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:quadIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+    mglDrawEncodeIndexed(
+        encoder, lineMode ? MTLPrimitiveTypeLine : MTLPrimitiveTypeTriangle,
+        quadIndexCount, MTLIndexTypeUInt32, quadIndexBuffer, 0,
+        instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -291,11 +313,8 @@ BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
         if (drawableCount == 0u) {
             return YES;
         }
-        [encoder drawPrimitives:MTLPrimitiveTypePoint
-                    vertexStart:first
-                    vertexCount:drawableCount
-                  instanceCount:instanceCount
-                   baseInstance:baseInstance];
+        mglDrawEncodePrimitives(encoder, MTLPrimitiveTypePoint, first,
+                                drawableCount, instanceCount, baseInstance);
         return YES;
     }
 
@@ -326,14 +345,9 @@ BOOL mglEncodeArrayPolygonPoint(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                        indexCount:pointIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:pointIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:first
-                      baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypePoint, pointIndexCount,
+                         MTLIndexTypeUInt32, pointIndexBuffer, 0,
+                         instanceCount, first, baseInstance);
     return YES;
 }
 
@@ -376,14 +390,10 @@ BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
             return NO;
         }
 
-        [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                            indexCount:drawableIndexCount
-                             indexType:drawIndexType
-                           indexBuffer:drawIndexBuffer
-                     indexBufferOffset:drawIndexOffset
-                         instanceCount:instanceCount
-                            baseVertex:baseVertex
-                          baseInstance:baseInstance];
+        mglDrawEncodeIndexed(encoder, MTLPrimitiveTypePoint,
+                             drawableIndexCount, drawIndexType,
+                             drawIndexBuffer, drawIndexOffset,
+                             instanceCount, baseVertex, baseInstance);
         return YES;
     }
 
@@ -427,14 +437,9 @@ BOOL mglEncodeElementPolygonPoint(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypePoint
-                        indexCount:pointIndexCount
-                         indexType:MTLIndexTypeUInt32
-                       indexBuffer:pointIndexBuffer
-                 indexBufferOffset:0
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, MTLPrimitiveTypePoint, pointIndexCount,
+                         MTLIndexTypeUInt32, pointIndexBuffer, 0,
+                         instanceCount, baseVertex, baseInstance);
     return YES;
 }
 
@@ -546,14 +551,10 @@ BOOL mglEncodeRestartSegment(id<MTLRenderCommandEncoder> encoder,
         return NO;
     }
 
-    [encoder drawIndexedPrimitives:primitiveType
-                        indexCount:segmentIndexCount
-                         indexType:preparedIndexType
-                       indexBuffer:preparedIndexBuffer
-                 indexBufferOffset:preparedByteOffset
-                     instanceCount:instanceCount
-                        baseVertex:baseVertex
-                      baseInstance:baseInstance];
+    mglDrawEncodeIndexed(encoder, primitiveType, segmentIndexCount,
+                         preparedIndexType, preparedIndexBuffer,
+                         preparedByteOffset, instanceCount, baseVertex,
+                         baseInstance);
     return YES;
 }
 
