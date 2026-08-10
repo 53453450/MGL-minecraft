@@ -2990,6 +2990,39 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         return;
     }
 
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        /* P1: GS compute expansion needs the indirect parameters
+         * synchronously; read the command back and route through the
+         * normal GS path (mtlDrawArraysInstancedBaseInstance contains
+         * handleGeometryDrawIfNeeded). */
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawArraysIndirect.geometry"]) {
+            return;
+        }
+        DrawArraysIndirectCommand gsCmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &gsCmd,
+                                sizeof(gsCmd),
+                                "drawArraysIndirect.geometry")) {
+            return;
+        }
+        if (gsCmd.count == 0u || gsCmd.instanceCount == 0u) return;
+        if (gsCmd.count > (uint32_t)INT_MAX ||
+            gsCmd.first > (uint32_t)INT_MAX ||
+            gsCmd.instanceCount > (uint32_t)INT_MAX) {
+            return;
+        }
+        [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                            mode:mode
+                                           first:(GLint)gsCmd.first
+                                           count:(GLsizei)gsCmd.count
+                                   instancecount:(GLsizei)gsCmd.instanceCount
+                                    baseinstance:gsCmd.baseInstance];
+        return;
+    }
+
     Program *indirectVertexProgram =
         mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
     if (indirectVertexProgram && indirectVertexProgram->uses_cull_distance) {
@@ -3175,6 +3208,45 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"drawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        /* P1: read the indirect command back and route through the normal
+         * GS path (mtlDrawElementsInstancedBaseVertexBaseInstance contains
+         * handleGeometryDrawIfNeeded). */
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"drawElementsIndirect.geometry"]) {
+            return;
+        }
+        DrawElementsIndirectCommand gsCmd = {0};
+        if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                (NSUInteger)(uintptr_t)indirect, &gsCmd,
+                                sizeof(gsCmd),
+                                "drawElementsIndirect.geometry")) {
+            return;
+        }
+        if (gsCmd.count == 0u || gsCmd.instanceCount == 0u) return;
+        if (gsCmd.count > (uint32_t)INT_MAX ||
+            gsCmd.instanceCount > (uint32_t)INT_MAX) {
+            return;
+        }
+        const NSUInteger gsIndexStride = mglGLIndexElementSize(type);
+        if (gsIndexStride == 0u ||
+            (NSUInteger)gsCmd.first > NSUIntegerMax / gsIndexStride) {
+            return;
+        }
+        const NSUInteger gsElementOffset = (NSUInteger)gsCmd.first * gsIndexStride;
+        [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                        mode:mode
+                                                       count:(GLsizei)gsCmd.count
+                                                        type:type
+                                                     indices:(const void *)(uintptr_t)gsElementOffset
+                                               instancecount:(GLsizei)gsCmd.instanceCount
+                                                   basevertex:gsCmd.baseVertex
+                                                    baseinstance:gsCmd.baseInstance];
         return;
     }
 
@@ -3884,6 +3956,28 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         }
     }
 
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            if (![self handleGeometryDrawIfNeeded:glm_ctx
+                                             mode:mode
+                                            first:first[i]
+                                            count:count[i]
+                                        indexType:0
+                                          indices:NULL
+                                       baseVertex:0
+                                    instanceCount:1
+                                     baseInstance:0
+                                            label:"multiDrawArrays"]) {
+                [self mtlDrawArrays:glm_ctx mode:mode first:first[i]
+                            count:count[i]];
+            }
+        }
+        return;
+    }
+
     RETURN_ON_FAILURE([self processGLState: true]);
     if ([self currentDrawRasterizationIsEmpty]) {
         return;
@@ -4033,6 +4127,29 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         if (handled || !sawPositiveCount) {
             return;
         }
+    }
+
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            if (![self handleGeometryDrawIfNeeded:glm_ctx
+                                             mode:mode
+                                            first:0
+                                            count:count[i]
+                                        indexType:type
+                                          indices:indices ? indices[i] : NULL
+                                       baseVertex:0
+                                    instanceCount:1
+                                     baseInstance:0
+                                            label:"multiDrawElements"]) {
+                [self mtlDrawElements:glm_ctx mode:mode count:count[i]
+                                type:type
+                             indices:indices ? indices[i] : NULL];
+            }
+        }
+        return;
     }
 
     RETURN_ON_FAILURE([self processGLState: true]);
@@ -4226,6 +4343,30 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
         if (handled || !sawPositiveCount) {
             return;
         }
+    }
+
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if (count[i] <= 0) continue;
+            if (![self handleGeometryDrawIfNeeded:glm_ctx
+                                             mode:mode
+                                            first:0
+                                            count:count[i]
+                                        indexType:type
+                                          indices:indices ? indices[i] : NULL
+                                       baseVertex:basevertex[i]
+                                    instanceCount:1
+                                     baseInstance:0
+                                            label:"multiDrawElementsBaseVertex"]) {
+                [self mtlDrawElementsBaseVertex:glm_ctx mode:mode
+                                          count:count[i] type:type
+                                        indices:indices ? indices[i] : NULL
+                                     basevertex:basevertex[i]];
+            }
+        }
+        return;
     }
 
     RETURN_ON_FAILURE([self processGLState: true]);
@@ -4427,6 +4568,40 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"multiDrawArraysIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        /* P1: decode every indirect command on the CPU and route each
+         * through the normal GS path. */
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawArraysIndirect.geometry"]) {
+            return;
+        }
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride : sizeof(DrawArraysIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) break;
+            DrawArraysIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawArraysIndirect.geometry")) break;
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.first > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX) continue;
+            [self mtlDrawArraysInstancedBaseInstance:glm_ctx
+                                                mode:mode
+                                               first:(GLint)cmd.first
+                                               count:(GLsizei)cmd.count
+                                       instancecount:(GLsizei)cmd.instanceCount
+                                        baseinstance:cmd.baseInstance];
+        }
         return;
     }
 
@@ -4665,6 +4840,45 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
     if (![self resolveIndirectBufferForDraw:"multiDrawElementsIndirect" context:ctx glBuffer:&gl_indirect_buffer mtlBuffer:&indirectBuffer]) {
         mglTraceLog("MULTI_DRAW_ELEMENTS_INDIRECT_MTL_SKIP reason=resolve_indirect_buffer program=%u",
                     (unsigned)(glm_ctx ? MGL_STATE(glm_ctx)->program_name : 0u));
+        return;
+    }
+
+    Program *gsProgram = mglResolveProgramForStageFromState(
+        glm_ctx, _GEOMETRY_SHADER);
+    if (gsProgram && gsProgram->shader_slots[_GEOMETRY_SHADER]) {
+        /* P1: decode every indirect command on the CPU and route each
+         * through the normal GS path. */
+        if (stride < 0 || drawcount <= 0) return;
+        if (![self prepareEmulatedIndirectCPURead:ctx
+                                           label:"multiDrawElementsIndirect.geometry"]) {
+            return;
+        }
+        const NSUInteger commandStride = stride
+            ? (NSUInteger)stride : sizeof(DrawElementsIndirectCommand);
+        const NSUInteger baseOffset = (NSUInteger)(uintptr_t)indirect;
+        const NSUInteger gsIndexStride = mglGLIndexElementSize(type);
+        if (gsIndexStride == 0u) return;
+        for (GLsizei i = 0; i < drawcount; i++) {
+            if ((NSUInteger)i > (NSUIntegerMax - baseOffset) / commandStride) break;
+            DrawElementsIndirectCommand cmd = {0};
+            const NSUInteger offset = baseOffset + (NSUInteger)i * commandStride;
+            if (!mglReadBufferBytes(gl_indirect_buffer, indirectBuffer,
+                                    offset, &cmd, sizeof(cmd),
+                                    "multiDrawElementsIndirect.geometry")) break;
+            if (cmd.count == 0u || cmd.instanceCount == 0u) continue;
+            if (cmd.count > (uint32_t)INT_MAX ||
+                cmd.instanceCount > (uint32_t)INT_MAX) continue;
+            if ((NSUInteger)cmd.first > NSUIntegerMax / gsIndexStride) continue;
+            const NSUInteger elementOffset = (NSUInteger)cmd.first * gsIndexStride;
+            [self mtlDrawElementsInstancedBaseVertexBaseInstance:glm_ctx
+                                                            mode:mode
+                                                           count:(GLsizei)cmd.count
+                                                            type:type
+                                                         indices:(const void *)(uintptr_t)elementOffset
+                                                   instancecount:(GLsizei)cmd.instanceCount
+                                                       basevertex:cmd.baseVertex
+                                                       baseinstance:cmd.baseInstance];
+        }
         return;
     }
 

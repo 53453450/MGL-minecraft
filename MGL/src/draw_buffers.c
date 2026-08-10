@@ -1502,27 +1502,6 @@ static Program *mglCurrentExpandedGeometryDrawProgram(GLMContext ctx)
         ? program : NULL;
 }
 
-static bool mglBlockUnsupportedGeometryDraw(GLMContext ctx, const char *label)
-{
-    Program *program = mglCurrentExpandedGeometryDrawProgram(ctx);
-    if (!program) {
-        return false;
-    }
-
-    static uint64_t s_unsupportedGeometryDrawCount = 0;
-    uint64_t hit = ++s_unsupportedGeometryDrawCount;
-    if (hit <= 16ull || (hit % 512ull) == 0ull) {
-        fprintf(stderr,
-                "MGL GS WARNING: blocking unsupported %s program=%u hit=%llu\n",
-                label ? label : "draw", program->name,
-                (unsigned long long)hit);
-    }
-    mglTraceLogExternal("GS_DRAW_BLOCK label=%s program=%u hit=%llu",
-                        label ? label : "draw", (unsigned)program->name,
-                        (unsigned long long)hit);
-    return true;
-}
-
 /* The 8-step unified draw frontend (S1-S11 + S14/S15). */
 static void mglDrawDispatch(GLMContext ctx, const MGLDrawCommand *cmd)
 {
@@ -1917,9 +1896,7 @@ void mglDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirect)
         return;
     }
 
-    if (mglBlockUnsupportedGeometryDraw(ctx, "drawArraysIndirect")) {
-        return;
-    }
+
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p program=%u",
@@ -1982,9 +1959,7 @@ void mglDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, const voi
         return;
     }
 
-    if (mglBlockUnsupportedGeometryDraw(ctx, "drawElementsIndirect")) {
-        return;
-    }
+
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p program=%u",
@@ -2055,7 +2030,12 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
-    if (mglBlockUnsupportedGeometryDraw(ctx, "multiDrawArrays")) {
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* P1: GS expansion cannot be replayed as a deferred batch; forward
+         * to the renderer which decodes each sub-draw through the GS path. */
+        ctx->mtl_funcs.mtlMultiDrawArrays(ctx, mode, first, count, drawcount);
         return;
     }
 
@@ -2106,7 +2086,12 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
-    if (mglBlockUnsupportedGeometryDraw(ctx, "multiDrawElements")) {
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* P1: GS expansion cannot be replayed as a deferred batch. */
+        ctx->mtl_funcs.mtlMultiDrawElements(ctx, mode, count, type, indices,
+                                            drawcount);
         return;
     }
 
@@ -2160,8 +2145,13 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
 
     ERROR_CHECK_RETURN(validate_program(ctx), GL_INVALID_OPERATION);
 
-    if (mglBlockUnsupportedGeometryDraw(ctx,
-                                        "multiDrawElementsBaseVertex")) {
+
+
+    if (mglCurrentExpandedGeometryDrawProgram(ctx)) {
+        /* P1: GS expansion cannot be replayed as a deferred batch. */
+        ctx->mtl_funcs.mtlMultiDrawElementsBaseVertex(ctx, mode, count, type,
+                                                      indices, drawcount,
+                                                      basevertex);
         return;
     }
 
@@ -2244,10 +2234,7 @@ void mglMultiDrawArraysIndirect(GLMContext ctx, GLenum mode, const void *indirec
         return;
     }
 
-    if (mglBlockUnsupportedGeometryDraw(ctx,
-                                        "multiDrawArraysIndirect")) {
-        return;
-    }
+
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ARRAYS_INDIRECT_FRONTEND_DISPATCH mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
@@ -2322,10 +2309,7 @@ void mglMultiDrawElementsIndirect(GLMContext ctx, GLenum mode, GLenum type, cons
         return;
     }
 
-    if (mglBlockUnsupportedGeometryDraw(ctx,
-                                        "multiDrawElementsIndirect")) {
-        return;
-    }
+
 
     mglFlushCommandBuffer(ctx);
     mglTraceLogExternal("MULTI_DRAW_ELEMENTS_INDIRECT_FRONTEND_DISPATCH mode=0x%x type=0x%x indirect=%p drawcount=%d stride=%d program=%u",
