@@ -12,22 +12,6 @@ APPLE_CLANG := $(strip $(APPLE_CLANG))
 HOST_ARCH ?= $(shell uname -m)
 HOST_ARCH := $(strip $(HOST_ARCH))
 
-# lets only install from external, devs complained about brew and we want the latest build from spirv
-spirv_cross_include_path ?= ./external/SPIRV-Cross
-spirv_cross_config_include_path ?= ./external/SPIRV-Cross
-spirv_cross_lib_path ?= ./external/SPIRV-Cross/build
-
-spirv_tools_include_path ?= ./external/SPIRV-Tools/include
-spirv_tools_path ?= ./external/SPIRV-Tools/build
-
-glslang_include_path ?= ./external/glslang/glslang/Include
-glslang_lib_path ?= ./external/glslang/build
-
-
-#glslang_path ?= glslang
-#glslang_include_path ?= $(glslang_path)/build/include/glslang $(glslang_path)/glslang/Include
-#glslang_lib_path ?= $(glslang_path)/build/glslang $(glslang_path)/build/OGLCompilersDLL $(glslang_path)/build/glslang/OSDependent/Unix $(glslang_path)/build/StandAlone $(glslang_path)/build/SPIRV
-
 # build dirs
 build_dir ?= build
 build_core_dir := $(build_dir)/core
@@ -46,20 +30,9 @@ LIBS += -arch $(HOST_ARCH)
 LIBS += -F$(SDK_ROOT)/System/Library/Frameworks
 LIBS += -framework Metal -framework OpenGL -framework Foundation
 
-CFLAGS += -I$(spirv_cross_include_path)
-CFLAGS += -I$(spirv_cross_config_include_path)
-CFLAGS += -I$(spirv_tools_include_path)
-CFLAGS += -I$(glslang_include_path)
-
-# lets only install from external, devs complained about brew
-# CFLAGS += $(shell pkg-config --cflags SPIRV-Tools)
-# CFLAGS += $(shell pkg-config --cflags glm)
-
 CFLAGS += -IMGL/include
 CFLAGS += -IMGL/include/GL # "glcorearb.h"
 CFLAGS += -IMGL/src        # "mgl_safety.h" lives in MGL/src/, used by MGLRenderer_Private.h
-CFLAGS += -IMGL/SPIRV/SPIRV-Cross
-CFLAGS += -DENABLE_OPT=0 -DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 -DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1
 
 # GLFW configuration for shared library build
 CFLAGS += -I./external/glfw/include -I./external/glfw/src
@@ -113,34 +86,6 @@ CFLAGS_GL_CORE += -isysroot $(SDK_ROOT)
 CFLAGS_GL_ES += -isysroot $(SDK_ROOT)
 endif
 
-SPIRV_CROSS_ARCHIVES := \
-	$(spirv_cross_lib_path)/libspirv-cross-c.a \
-	$(spirv_cross_lib_path)/libspirv-cross-msl.a \
-	$(spirv_cross_lib_path)/libspirv-cross-glsl.a \
-	$(spirv_cross_lib_path)/libspirv-cross-hlsl.a \
-	$(spirv_cross_lib_path)/libspirv-cross-cpp.a \
-	$(spirv_cross_lib_path)/libspirv-cross-reflect.a \
-	$(spirv_cross_lib_path)/libspirv-cross-util.a \
-	$(spirv_cross_lib_path)/libspirv-cross-core.a
-
-GLSLANG_ARCHIVES := \
-	$(glslang_lib_path)/glslang/libglslang.a \
-	$(glslang_lib_path)/glslang/libMachineIndependent.a \
-	$(glslang_lib_path)/glslang/libGenericCodeGen.a \
-	$(glslang_lib_path)/glslang/OSDependent/Unix/libOSDependent.a \
-	$(glslang_lib_path)/glslang/libglslang-default-resource-limits.a \
-	$(glslang_lib_path)/SPIRV/libSPIRV.a
-
-SPIRV_TOOLS_ARCHIVES := \
-	$(spirv_tools_path)/source/lint/libSPIRV-Tools-lint.a \
-	$(spirv_tools_path)/source/reduce/libSPIRV-Tools-reduce.a \
-	$(spirv_tools_path)/source/diff/libSPIRV-Tools-diff.a \
-	$(spirv_tools_path)/source/link/libSPIRV-Tools-link.a \
-	$(spirv_tools_path)/source/opt/libSPIRV-Tools-opt.a \
-	$(spirv_tools_path)/source/libSPIRV-Tools.a
-
-THIRD_PARTY_ARCHIVES := $(SPIRV_CROSS_ARCHIVES) $(GLSLANG_ARCHIVES) $(SPIRV_TOOLS_ARCHIVES)
-LIBS += $(THIRD_PARTY_ARCHIVES)
 LIBS += -L/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib
 LIBS += -lc++
 
@@ -161,7 +106,6 @@ help:
 		'  make test-benchmark   Run the benchmark smoke gate.' \
 		'  make test-regression  Build the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
-		'  make test-msl-bindings Run focused MSL binding reconciliation tests.' \
 		'  make clean            Remove local build outputs.'
 
 # mgl
@@ -200,10 +144,6 @@ mgl_es_arc_objs := $(addprefix $(build_es_dir)/arc/,$(mgl_es_arc_objs))
 
 # Define the directories and repositories
 EXT_DIRS = ./external/OpenGL-Registry \
-           ./external/SPIRV-Cross \
-           ./external/SPIRV-Headers \
-           ./external/SPIRV-Tools \
-           ./external/glslang \
            ./external/ezxml
 
 # Simplified index_of function - find position of directory in EXT_DIRS
@@ -215,11 +155,7 @@ endef
 # Simplified mapping for common directories
 define get_repo_url
 $(if $(filter $(1),./external/OpenGL-Registry),https://github.com/KhronosGroup/OpenGL-Registry.git, \
-$(if $(filter $(1),./external/SPIRV-Cross),https://github.com/53453450/SPIRV-Cross.git, \
-$(if $(filter $(1),./external/SPIRV-Headers),https://github.com/KhronosGroup/SPIRV-Headers.git, \
-$(if $(filter $(1),./external/SPIRV-Tools),https://github.com/KhronosGroup/SPIRV-Tools.git, \
-$(if $(filter $(1),./external/glslang),https://github.com/KhronosGroup/glslang.git, \
-https://github.com/lxfontes/ezxml.git)))))
+https://github.com/lxfontes/ezxml.git)
 endef
 
 # Function to check if a directory exists, and if not, clone it
@@ -231,12 +167,7 @@ define check_and_clone
 	echo "REPO resolved: $$REPO"; \
 	if [ ! -d $(1) ]; then \
 		echo "Cloning from $$REPO into $(1)..."; \
-		if [ "$(1)" = "./external/SPIRV-Cross" ]; then \
-			git clone $$REPO -b main $(1) --depth 1; \
-			echo "SPIRV-Cross pinned to 53453450 fork @ main (MSL text-patch compatibility)"; \
-		else \
-			git clone $$REPO $(1) --depth 1; \
-		fi; \
+		git clone $$REPO $(1) --depth 1; \
 	else \
 		echo "$(1) already exists, skipping."; \
 	fi
@@ -258,9 +189,6 @@ deps += $(glfw_objs:.o=.d)
 
 mgl_lib := $(build_dir)/libmgl.dylib
 mgl_es_lib := $(build_dir)/libmgl_es.dylib
-
-mgl_toolchain_obj := $(build_dir)/MGL/src/mgl_toolchain.o
-mgl_toolchain_lib := $(build_dir)/libmgl_toolchain.a
 
 mgl_core_link_objs := $(mgl_core_objs) $(mgl_core_arc_objs) $(mgl_core_obj)
 mgl_es_link_objs := $(mgl_es_objs) $(mgl_es_arc_objs) $(mgl_es_obj)
@@ -306,22 +234,18 @@ $(es_link_stamp):
 $(mgl_core_link_objs): $(core_compile_stamp)
 $(mgl_es_link_objs): $(es_compile_stamp)
 
-$(mgl_lib): $(mgl_core_link_objs) $(THIRD_PARTY_ARCHIVES) $(core_link_stamp)
+$(mgl_lib): $(mgl_core_link_objs) $(core_link_stamp)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -dynamiclib -o $@ $(mgl_core_link_objs) $(LIBS)
 	# loading dynamic library requires this
 	ln -fs $(mgl_lib) .
 
-$(mgl_es_lib): $(mgl_es_link_objs) $(THIRD_PARTY_ARCHIVES) $(es_link_stamp)
+$(mgl_es_lib): $(mgl_es_link_objs) $(es_link_stamp)
 	@mkdir -p $(dir $@)
 	$(CC) $(LDFLAGS) -dynamiclib -o $@ $(mgl_es_link_objs) $(LIBS)
 	# loading dynamic library requires this
 	ln -fs $(mgl_es_lib) .
 
-
-$(mgl_toolchain_lib): $(mgl_toolchain_obj)
-	@mkdir -p $(dir $@)
-	ar rcs $@ $^
 
 # Build GLFW shared library from pre-built static library
 $(build_dir)/libglfw.dylib: external/glfw/build/src/libglfw3.a $(mgl_lib)
@@ -347,8 +271,6 @@ es: $(mgl_es_lib)
 
 lib: core es
 
-toolchain: $(mgl_toolchain_lib)
-
 test_exe := $(build_dir)/test_mgl
 
 test: $(test_exe)
@@ -361,13 +283,8 @@ $(build_dir)/test_mgl: test_mgl/main.cpp $(mgl_lib) $(build_dir)/libglfw.dylib
 	$(CXX) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-I./external/glfw/include \
-		-I./external/glslang/glslang/Include \
-		-I./external/SPIRV-Cross \
-		-I./external/SPIRV-Tools/include \
-		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
-		-DMGL_GL_CORE -DENABLE_OPT=0 \
-		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
-		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-IMGL/include -IMGL/include/GL \
+		-DMGL_GL_CORE \
 		-isysroot $(SDK_ROOT) \
 		test_mgl/main.cpp \
 		-L$(build_dir) -lmgl -lglfw \
@@ -452,7 +369,7 @@ install-pkgdeps: download-pkgdeps compile-pkgdeps
 
 download-pkgdeps:
 
-	brew install glm glslang spirv-tools glfw
+	brew install glm glfw
 
 compile-pkgdeps:
 
@@ -505,13 +422,8 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 	$(APPLE_CLANG) -Wall -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
 		-I./external/glfw/include \
-		-I./external/glslang/glslang/Include \
-		-I./external/SPIRV-Cross \
-		-I./external/SPIRV-Tools/include \
-		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
-		-DMGL_GL_CORE -DENABLE_OPT=0 \
-		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
-		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-IMGL/include -IMGL/include/GL \
+		-DMGL_GL_CORE \
 		-isysroot $(SDK_ROOT) \
 		test_regression/main.c \
 		-L$(build_dir) -lmgl -lglfw \
@@ -524,13 +436,8 @@ test-regression: $(build_dir)/libmgl.dylib $(build_dir)/libglfw.dylib
 $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
 		$(CFLAGS) \
-		-I./external/glslang/glslang/Include \
-		-I./external/SPIRV-Cross \
-		-I./external/SPIRV-Tools/include \
-		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
-		-DMGL_GL_CORE -DENABLE_OPT=0 \
-		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
-		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
+		-IMGL/include -IMGL/include/GL \
+		-DMGL_GL_CORE \
 		-isysroot $(SDK_ROOT) \
 		test_dirty_hash/main.c \
 		-L$(build_dir) -lmgl \
@@ -541,27 +448,6 @@ $(build_dir)/test_dirty_hash: test_dirty_hash/main.c $(build_dir)/libmgl.dylib
 
 test-dirty-hash: $(build_dir)/test_dirty_hash
 	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_dirty_hash
-
-$(build_dir)/test_msl_bindings: test_msl_bindings/main.c $(build_dir)/libmgl.dylib
-	$(APPLE_CLANG) -Wall -Wextra -Werror -gfull -O2 -arch $(HOST_ARCH) \
-		$(CFLAGS) \
-		-I./external/glslang/glslang/Include \
-		-I./external/SPIRV-Cross \
-		-I./external/SPIRV-Tools/include \
-		-IMGL/include -IMGL/include/GL -IMGL/SPIRV/SPIRV-Cross \
-		-DMGL_GL_CORE -DENABLE_OPT=0 \
-		-DSPIRV_CROSS_C_API_MSL=1 -DSPIRV_CROSS_C_API_GLSL=1 \
-		-DSPIRV_CROSS_C_API_CPP=1 -DSPIRV_CROSS_C_API_REFLECT=1 \
-		-isysroot $(SDK_ROOT) \
-		test_msl_bindings/main.c \
-		-L$(build_dir) -lmgl \
-		-framework Cocoa -framework CoreFoundation -framework CoreGraphics \
-		-framework IOKit -framework Foundation -framework QuartzCore \
-		-framework Metal -framework OpenGL \
-		-o $@
-
-test-msl-bindings: $(build_dir)/test_msl_bindings
-	DYLD_LIBRARY_PATH=$(abspath $(build_dir)) $(build_dir)/test_msl_bindings
 
 test-benchmark: bench
 	scripts/run_benchmark_smoke.sh --no-build
@@ -595,7 +481,7 @@ test-mglparse: $(build_dir)/test_mglparse
 
 $(build_dir)/test_mglsema: test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c
 	$(APPLE_CLANG) -isysroot $(SDK_ROOT) -Wall -Wextra -Werror -gfull -O0 \
-		-IMGL/include -IMGL/include/GL -Iexternal/glslang/glslang/Include \
+		-IMGL/include -IMGL/include/GL \
 		test_legacy_compat/test_mglsema.c MGL/src/mgl_glsl_sema.c MGL/src/mgl_glsl_parser.c MGL/src/mgl_glsl_lexer.c MGL/src/mgl_ir.c \
 		-o $@
 
@@ -607,15 +493,13 @@ LLVM_ROOT ?= /opt/homebrew/opt/llvm@15
 LLVM_CXX ?= $(APPLE_CLANG)
 LLVM_CXXFLAGS := -std=c++20 -isysroot $(SDK_ROOT) -I$(LLVM_ROOT)/include -IMGL/include \
 	-IMGL/src \
-	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
-	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL \
+	-IMGL/include/GL \
 	-Iexternal/metal-cpp
 LLVM_LDFLAGS := -L$(LLVM_ROOT)/lib -lLLVM-15 -lc++
 # The *.cpp sources (GLSL->metallib compiler + Metal-cpp renderer/loader) build
 # with LLVM headers and metal-cpp (header-only).
 M1_AIR_CXXFLAGS := -std=c++20 -I$(LLVM_ROOT)/include -IMGL/include \
-	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
-	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL \
+	-IMGL/include/GL \
 	-Iexternal/metal-cpp
 CXXFLAGS_GL_CORE := $(CXXFLAGS) -DMGL_GL_CORE $(M1_AIR_CXXFLAGS)
 CXXFLAGS_GL_ES := $(CXXFLAGS) -DMGL_GL_ES $(M1_AIR_CXXFLAGS)
@@ -649,9 +533,7 @@ MCREPRO_COBJ := $(patsubst MGL/src/%.c,$(build_dir)/mcrepro_%.o,$(MCREPRO_CSRC))
 
 $(build_dir)/mcrepro_%.o: MGL/src/%.c
 	$(LLVM_CXX) -x c -std=c11 -g -O0 -isysroot $(SDK_ROOT) -IMGL/include \
-		-IMGL/include/GL -Iexternal/glslang/glslang/Include \
-		-Iexternal/glslang/glslang/Public -Iexternal/glslang/SPIRV \
-		-Iexternal/SPIRV-Cross -c $< -o $@
+		-IMGL/include/GL -c $< -o $@
 
 $(build_dir)/test_mcrepro: test_legacy_compat/test_mcrepro.mm \
 	MGL/src/mgl_air_backend.cpp MGL/src/mgl_metallib_writer.cpp \
@@ -669,7 +551,8 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # Phase 0 (METALCPP_RENDERER_PLAN): Metal-cpp 基础接入 smoke gate.
 # 桥接现有 id<MTLDevice> -> MTL::Device*，init/shutdown 幂等无崩溃。
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
-	MGL/src/mgl_render_cpp.cpp
+	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
+	MGL/src/mgl_render_cpp_objc.h
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
@@ -682,8 +565,7 @@ test-metalcpp: $(build_dir)/test_metalcpp_smoke
 # AIR backend unit tests with GoogleTest (pure compile-time, no GPU).
 GTEST_ROOT ?= $(HOME)/googletest
 GTEST_CXXFLAGS := -I$(GTEST_ROOT)/googletest/include -I$(GTEST_ROOT)/googlemock/include \
-	-Iexternal/glslang/glslang/Include -Iexternal/glslang/glslang/Public \
-	-Iexternal/glslang/SPIRV -Iexternal/SPIRV-Cross -IMGL/include/GL
+	-IMGL/include/GL
 GTEST_LIBS := $(GTEST_ROOT)/build-mgl/lib/libgtest.a \
 	$(GTEST_ROOT)/build-mgl/lib/libgtest_main.a
 
@@ -703,6 +585,6 @@ $(build_dir)/test_mglair_gtest: test_legacy_compat/test_mglair_gtest.cpp \
 test-mglair-gtest: $(build_dir)/test_mglair_gtest
 	$(build_dir)/test_mglair_gtest
 
-.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-msl-bindings test-benchmark test-mglir test-mgllex test-mglparse test-mglsema test-mglair test-mglair-gtest
+.PHONY: default help test dbg core es lib clean install-pkgdeps test-make bench bench-system test-regression test-dirty-hash test-benchmark test-mglir test-mgllex test-mglparse test-mglsema test-mglair test-mglair-gtest
 
 -include $(deps)
