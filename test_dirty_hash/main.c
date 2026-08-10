@@ -94,7 +94,8 @@ static GLuint make_vao(const GLfloat vertices[6], GLuint *out_buffer)
     return vao;
 }
 
-static GLuint make_fbo(GLuint *color_texture)
+static GLuint make_color_fbo_size(GLsizei width, GLsizei height,
+                                  GLuint *color_texture)
 {
     GLuint fbo = 0;
     GLuint texture = 0;
@@ -102,7 +103,7 @@ static GLuint make_fbo(GLuint *color_texture)
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, TEST_W, TEST_H, 0,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -114,6 +115,165 @@ static GLuint make_fbo(GLuint *color_texture)
     }
     *color_texture = texture;
     return fbo;
+}
+
+static GLuint make_fbo(GLuint *color_texture)
+{
+    return make_color_fbo_size(TEST_W, TEST_H, color_texture);
+}
+
+static GLuint make_depth_fbo_size(GLsizei width, GLsizei height,
+                                  GLuint *depth_texture)
+{
+    GLuint fbo = 0;
+    GLuint texture = 0;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+                 width, height, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                           GL_TEXTURE_2D, texture, 0);
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "dirty-hash: depth framebuffer is incomplete\n");
+        return 0;
+    }
+    *depth_texture = texture;
+    return fbo;
+}
+
+static int verify_air_aux_render_pipelines(void)
+{
+    GLuint color_fbos[2] = {0u, 0u};
+    GLuint color_textures[2] = {0u, 0u};
+    GLuint depth_fbos[2] = {0u, 0u};
+    GLuint depth_textures[2] = {0u, 0u};
+    GLint saved_read_fbo = 0;
+    GLint saved_draw_fbo = 0;
+    GLint saved_viewport[4] = {0, 0, 0, 0};
+    GLint saved_scissor_box[4] = {0, 0, 0, 0};
+    GLfloat saved_clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    GLfloat saved_clear_depth = 1.0f;
+    GLboolean saved_scissor = glIsEnabled(GL_SCISSOR_TEST);
+    GLubyte center[4] = {0u, 0u, 0u, 0u};
+    GLubyte corner[4] = {0u, 0u, 0u, 0u};
+    GLfloat depth = 1.0f;
+    int failed = 1;
+
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &saved_read_fbo);
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &saved_draw_fbo);
+    glGetIntegerv(GL_VIEWPORT, saved_viewport);
+    glGetIntegerv(GL_SCISSOR_BOX, saved_scissor_box);
+    glGetFloatv(GL_COLOR_CLEAR_VALUE, saved_clear_color);
+    glGetFloatv(GL_DEPTH_CLEAR_VALUE, &saved_clear_depth);
+    while (glGetError() != GL_NO_ERROR) {}
+
+    color_fbos[0] = make_color_fbo_size(4, 4, &color_textures[0]);
+    color_fbos[1] = make_color_fbo_size(8, 8, &color_textures[1]);
+    if (!color_fbos[0] || !color_fbos[1]) goto done;
+
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_FRAMEBUFFER, color_fbos[0]);
+    glViewport(0, 0, 4, 4);
+    glClearColor(0.25f, 0.5f, 0.75f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, color_fbos[1]);
+    glViewport(0, 0, 8, 8);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, color_fbos[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, color_fbos[1]);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 8, 8,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 8, 8,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glFinish();
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, color_fbos[1]);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, center);
+    if (center[0] < 48u || center[0] > 80u ||
+        center[1] < 112u || center[1] > 144u ||
+        center[2] < 176u || center[2] > 208u) {
+        fprintf(stderr,
+                "dirty-hash: scaled color blit mismatch=%u,%u,%u,%u\n",
+                center[0], center[1], center[2], center[3]);
+        goto done;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, color_fbos[1]);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(2, 2, 4, 4);
+    glClearColor(0.0f, 1.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    glDisable(GL_SCISSOR_TEST);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glReadPixels(4, 4, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, center);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, corner);
+    if (center[0] > 32u || center[1] < 220u || center[2] > 32u ||
+        corner[0] < 48u || corner[1] < 112u || corner[2] < 176u) {
+        fprintf(stderr,
+                "dirty-hash: scissored clear mismatch center=%u,%u,%u,%u corner=%u,%u,%u,%u\n",
+                center[0], center[1], center[2], center[3],
+                corner[0], corner[1], corner[2], corner[3]);
+        goto done;
+    }
+
+    depth_fbos[0] = make_depth_fbo_size(4, 4, &depth_textures[0]);
+    depth_fbos[1] = make_depth_fbo_size(8, 8, &depth_textures[1]);
+    if (!depth_fbos[0] || !depth_fbos[1]) goto done;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, depth_fbos[0]);
+    glViewport(0, 0, 4, 4);
+    glClearDepth(0.25);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glBindFramebuffer(GL_FRAMEBUFFER, depth_fbos[1]);
+    glViewport(0, 0, 8, 8);
+    glClearDepth(1.0);
+    glClear(GL_DEPTH_BUFFER_BIT);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, depth_fbos[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_fbos[1]);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 8, 8,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBlitFramebuffer(0, 0, 4, 4, 0, 0, 8, 8,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glFinish();
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, depth_fbos[1]);
+    glReadPixels(4, 4, 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &depth);
+    if (depth < 0.20f || depth > 0.30f || glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "dirty-hash: scaled depth blit mismatch=%f\n", depth);
+        goto done;
+    }
+
+    printf("AIR_AUX_RENDER_PSO_OK color=%u,%u,%u,%u depth=%.3f\n",
+           center[0], center[1], center[2], center[3], depth);
+    failed = 0;
+
+done:
+    if (saved_scissor) glEnable(GL_SCISSOR_TEST);
+    else glDisable(GL_SCISSOR_TEST);
+    glScissor(saved_scissor_box[0], saved_scissor_box[1],
+              saved_scissor_box[2], saved_scissor_box[3]);
+    glClearColor(saved_clear_color[0], saved_clear_color[1],
+                 saved_clear_color[2], saved_clear_color[3]);
+    glClearDepth(saved_clear_depth);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)saved_read_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)saved_draw_fbo);
+    glViewport(saved_viewport[0], saved_viewport[1],
+               saved_viewport[2], saved_viewport[3]);
+    glDeleteFramebuffers(2, color_fbos);
+    glDeleteTextures(2, color_textures);
+    glDeleteFramebuffers(2, depth_fbos);
+    glDeleteTextures(2, depth_textures);
+    return failed;
 }
 
 static int verify_stable_hash_cache(GLMContext ctx)
@@ -1253,6 +1413,261 @@ done:
     return failed;
 }
 
+static int verify_air_native_tessellation_draw(void)
+{
+    static const char *vertex_source =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position.x - 2.0, position.y, 0.0, 1.0); }\n";
+    static const char *control_source =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = gl_in[gl_InvocationID].gl_Position;\n"
+        "  gl_TessLevelOuter[0] = 1.0;\n"
+        "  gl_TessLevelOuter[1] = 1.0;\n"
+        "  gl_TessLevelOuter[2] = 1.0;\n"
+        "  gl_TessLevelOuter[3] = 1.0;\n"
+        "  gl_TessLevelInner[0] = 1.0;\n"
+        "  gl_TessLevelInner[1] = 1.0;\n"
+        "}\n";
+    static const char *evaluation_source =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "layout(location=0) out vec4 tessColor;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x +\n"
+        "                gl_in[1].gl_Position * gl_TessCoord.y +\n"
+        "                gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  tessColor = vec4(0.0, 1.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 450 core\n"
+        "layout(location=0) in vec4 tessColor;\n"
+        "out vec4 color;\n"
+        "void main() { color = tessColor; }\n";
+    static const GLfloat vertices[6] = {
+        1.2f, -0.8f, 2.8f, -0.8f, 2.0f, 0.8f,
+    };
+    GLuint shaders[4] = {0u, 0u, 0u, 0u};
+    GLuint program = 0u;
+    GLuint program_no_tcs = 0u;
+    GLuint vao = 0u;
+    GLuint buffer = 0u;
+    GLint saved_program = 0;
+    GLint saved_vao = 0;
+    GLint saved_patch_vertices = 3;
+    GLboolean saved_cull = glIsEnabled(GL_CULL_FACE);
+    GLboolean saved_discard = glIsEnabled(GL_RASTERIZER_DISCARD);
+    int failed = 1;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &saved_program);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &saved_vao);
+    glGetIntegerv(GL_PATCH_VERTICES, &saved_patch_vertices);
+    shaders[0] = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    shaders[1] = compile_shader(GL_TESS_CONTROL_SHADER, control_source);
+    shaders[2] = compile_shader(GL_TESS_EVALUATION_SHADER, evaluation_source);
+    shaders[3] = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+    for (size_t i = 0; i < 4; i++) {
+        if (!shaders[i]) goto done;
+    }
+
+    program = glCreateProgram();
+    for (size_t i = 0; i < 4; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (size_t i = 0; i < 4; i++) {
+        glDeleteShader(shaders[i]);
+        shaders[i] = 0u;
+    }
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[2048] = {0};
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "dirty-hash: AIR native tess program link failed: %s\n", log);
+        goto done;
+    }
+
+    vao = make_vao(vertices, &buffer);
+    glUseProgram(program);
+    glBindVertexArray(vao);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+
+    GLubyte center[4] = {0u, 0u, 0u, 0u};
+    glReadPixels(TEST_W / 2, TEST_H / 2, 1, 1,
+                 GL_RGBA, GL_UNSIGNED_BYTE, center);
+    if (glGetError() != GL_NO_ERROR || center[0] > 32u ||
+        center[1] < 200u || center[2] > 32u) {
+        fprintf(stderr,
+                "dirty-hash: AIR native tess draw missing center=%u,%u,%u,%u\n",
+                center[0], center[1], center[2], center[3]);
+        goto done;
+    }
+
+    shaders[0] = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    shaders[1] = compile_shader(GL_TESS_EVALUATION_SHADER, evaluation_source);
+    shaders[2] = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto done;
+    program_no_tcs = glCreateProgram();
+    for (size_t i = 0; i < 3; i++) glAttachShader(program_no_tcs, shaders[i]);
+    glLinkProgram(program_no_tcs);
+    for (size_t i = 0; i < 3; i++) {
+        glDeleteShader(shaders[i]);
+        shaders[i] = 0u;
+    }
+    linked = GL_FALSE;
+    glGetProgramiv(program_no_tcs, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[2048] = {0};
+        glGetProgramInfoLog(program_no_tcs, sizeof(log), NULL, log);
+        fprintf(stderr, "dirty-hash: AIR TES-only program link failed: %s\n", log);
+        goto done;
+    }
+    glUseProgram(program_no_tcs);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    memset(center, 0, sizeof(center));
+    glReadPixels(TEST_W / 2, TEST_H / 2, 1, 1,
+                 GL_RGBA, GL_UNSIGNED_BYTE, center);
+    if (glGetError() != GL_NO_ERROR || center[0] > 32u ||
+        center[1] < 200u || center[2] > 32u) {
+        fprintf(stderr,
+                "dirty-hash: AIR TES-only draw missing center=%u,%u,%u,%u\n",
+                center[0], center[1], center[2], center[3]);
+        goto done;
+    }
+    printf("AIR_NATIVE_TESS_OK tcs=1 no_tcs=1 center=%u,%u,%u,%u\n",
+           center[0], center[1], center[2], center[3]);
+    failed = 0;
+
+done:
+    glPatchParameteri(GL_PATCH_VERTICES, saved_patch_vertices);
+    if (saved_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    if (saved_discard) glEnable(GL_RASTERIZER_DISCARD);
+    else glDisable(GL_RASTERIZER_DISCARD);
+    glBindVertexArray((GLuint)saved_vao);
+    glUseProgram((GLuint)saved_program);
+    if (buffer) glDeleteBuffers(1, &buffer);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (program_no_tcs) glDeleteProgram(program_no_tcs);
+    for (size_t i = 0; i < 4; i++) {
+        if (shaders[i]) glDeleteShader(shaders[i]);
+    }
+    return failed;
+}
+
+static int verify_air_geometry_compute_draw(void)
+{
+    static const char *vertex_source =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position.x - 2.0, position.y, 0.0, 1.0); }\n";
+    static const char *geometry_source =
+        "#version 450 core\n"
+        "layout(triangles) in;\n"
+        "layout(triangle_strip, max_vertices=6) out;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  gl_Position = gl_in[1].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  gl_Position = gl_in[2].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "  gl_Position = gl_in[2].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  gl_Position = gl_in[1].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  gl_Position = gl_in[0].gl_Position + vec4(2.0, 0.0, 0.0, 0.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fragment_source =
+        "#version 450 core\n"
+        "out vec4 color;\n"
+        "void main() { color = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+    static const GLfloat vertices[6] = {
+        -0.8f, -0.8f, 0.8f, -0.8f, 0.0f, 0.8f,
+    };
+    GLuint shaders[3] = {0u, 0u, 0u};
+    GLuint program = 0u;
+    GLuint vao = 0u;
+    GLuint buffer = 0u;
+    GLint saved_program = 0;
+    GLint saved_vao = 0;
+    GLboolean saved_cull = glIsEnabled(GL_CULL_FACE);
+    GLboolean saved_discard = glIsEnabled(GL_RASTERIZER_DISCARD);
+    int failed = 1;
+
+    glGetIntegerv(GL_CURRENT_PROGRAM, &saved_program);
+    glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &saved_vao);
+    shaders[0] = compile_shader(GL_VERTEX_SHADER, vertex_source);
+    shaders[1] = compile_shader(GL_GEOMETRY_SHADER, geometry_source);
+    shaders[2] = compile_shader(GL_FRAGMENT_SHADER, fragment_source);
+    for (size_t i = 0; i < 3; i++) {
+        if (!shaders[i]) goto done;
+    }
+
+    program = glCreateProgram();
+    for (size_t i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (size_t i = 0; i < 3; i++) {
+        glDeleteShader(shaders[i]);
+        shaders[i] = 0u;
+    }
+    GLint linked = GL_FALSE;
+    glGetProgramiv(program, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[2048] = {0};
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "dirty-hash: AIR GS program link failed: %s\n", log);
+        goto done;
+    }
+
+    vao = make_vao(vertices, &buffer);
+    glUseProgram(program);
+    glBindVertexArray(vao);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_RASTERIZER_DISCARD);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    /* Repeat the same program/stage/function tuple so the Metal-cpp A/B gate
+     * proves the renderer-owned compute PSO cache is reused. */
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+
+    GLubyte center[4] = {0u, 0u, 0u, 0u};
+    glReadPixels(TEST_W / 2, TEST_H / 2, 1, 1,
+                 GL_RGBA, GL_UNSIGNED_BYTE, center);
+    if (glGetError() != GL_NO_ERROR || center[0] > 32u ||
+        center[1] > 32u || center[2] < 200u) {
+        fprintf(stderr,
+                "dirty-hash: AIR GS compute draw missing center=%u,%u,%u,%u\n",
+                center[0], center[1], center[2], center[3]);
+        goto done;
+    }
+    printf("AIR_GS_COMPUTE_OK center=%u,%u,%u,%u\n",
+           center[0], center[1], center[2], center[3]);
+    failed = 0;
+
+done:
+    if (saved_cull) glEnable(GL_CULL_FACE); else glDisable(GL_CULL_FACE);
+    if (saved_discard) glEnable(GL_RASTERIZER_DISCARD);
+    else glDisable(GL_RASTERIZER_DISCARD);
+    glBindVertexArray((GLuint)saved_vao);
+    glUseProgram((GLuint)saved_program);
+    if (buffer) glDeleteBuffers(1, &buffer);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    for (size_t i = 0; i < 3; i++) {
+        if (shaders[i]) glDeleteShader(shaders[i]);
+    }
+    return failed;
+}
+
 int main(void)
 {
     static const GLfloat offscreen_triangle[6] = {
@@ -1294,6 +1709,59 @@ int main(void)
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(program);
+    if (getenv("MGL_USE_AIR")) {
+        if (verify_air_aux_render_pipelines() != 0) {
+            return 1;
+        }
+        if (getenv("MGL_TEST_AIR_AUX_RENDER_ONLY")) {
+            glUseProgram(0);
+            glBindVertexArray(0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteProgram(program);
+            glDeleteVertexArrays(1, &offscreen_vao);
+            glDeleteVertexArrays(1, &visible_vao);
+            glDeleteBuffers(1, &offscreen_buffer);
+            glDeleteBuffers(1, &visible_buffer);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &color_texture);
+            glFinish();
+            return 0;
+        }
+        if (verify_air_geometry_compute_draw() != 0) {
+            return 1;
+        }
+        if (getenv("MGL_TEST_AIR_GS_ONLY")) {
+            glUseProgram(0);
+            glBindVertexArray(0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteProgram(program);
+            glDeleteVertexArrays(1, &offscreen_vao);
+            glDeleteVertexArrays(1, &visible_vao);
+            glDeleteBuffers(1, &offscreen_buffer);
+            glDeleteBuffers(1, &visible_buffer);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &color_texture);
+            glFinish();
+            return 0;
+        }
+        if (verify_air_native_tessellation_draw() != 0) {
+            return 1;
+        }
+        if (getenv("MGL_TEST_AIR_NATIVE_TESS_ONLY")) {
+            glUseProgram(0);
+            glBindVertexArray(0);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteProgram(program);
+            glDeleteVertexArrays(1, &offscreen_vao);
+            glDeleteVertexArrays(1, &visible_vao);
+            glDeleteBuffers(1, &offscreen_buffer);
+            glDeleteBuffers(1, &visible_buffer);
+            glDeleteFramebuffers(1, &fbo);
+            glDeleteTextures(1, &color_texture);
+            glFinish();
+            return 0;
+        }
+    }
     glEnable(GL_CULL_FACE);
     if (verify_stable_hash_cache(ctx) != 0) {
         return 1;
@@ -1310,14 +1778,16 @@ int main(void)
     if (verify_compute_finish_visibility() != 0) {
         return 1;
     }
-    if (verify_tcs_to_tes_short_range_visibility() != 0) {
-        return 1;
-    }
-    if (verify_tess_factor_cpu_visibility() != 0) {
-        return 1;
-    }
-    if (verify_tes_xfb_range_isolation() != 0) {
-        return 1;
+    if (!getenv("MGL_USE_AIR")) {
+        if (verify_tcs_to_tes_short_range_visibility() != 0) {
+            return 1;
+        }
+        if (verify_tess_factor_cpu_visibility() != 0) {
+            return 1;
+        }
+        if (verify_tes_xfb_range_isolation() != 0) {
+            return 1;
+        }
     }
     if (verify_get_uniform_array_and_mat3() != 0) {
         return 1;

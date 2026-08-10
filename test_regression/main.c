@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 29
+#define MAX_TESTS 34
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -338,6 +338,70 @@ static GLuint link_program(const char *vs_src, const char *fs_src)
         return 0;
     }
     return p;
+}
+
+static GLuint link_program_with_geometry(const char *vs_src,
+                                         const char *gs_src,
+                                         const char *fs_src)
+{
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs_src),
+        compile_shader(GL_GEOMETRY_SHADER, gs_src),
+        compile_shader(GL_FRAGMENT_SHADER, fs_src),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) {
+        for (int i = 0; i < 3; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "  [geometry program link FAIL] %s\n", log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
+}
+
+static GLuint link_program_with_tessellation(const char *vs_src,
+                                             const char *tcs_src,
+                                             const char *tes_src,
+                                             const char *fs_src)
+{
+    GLuint shaders[4] = {
+        compile_shader(GL_VERTEX_SHADER, vs_src),
+        compile_shader(GL_TESS_CONTROL_SHADER, tcs_src),
+        compile_shader(GL_TESS_EVALUATION_SHADER, tes_src),
+        compile_shader(GL_FRAGMENT_SHADER, fs_src),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2] || !shaders[3]) {
+        for (int i = 0; i < 4; i++) {
+            if (shaders[i]) glDeleteShader(shaders[i]);
+        }
+        return 0;
+    }
+    GLuint program = glCreateProgram();
+    for (int i = 0; i < 4; i++) glAttachShader(program, shaders[i]);
+    glLinkProgram(program);
+    for (int i = 0; i < 4; i++) glDeleteShader(shaders[i]);
+    GLint ok = 0;
+    glGetProgramiv(program, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[2048];
+        glGetProgramInfoLog(program, sizeof(log), NULL, log);
+        fprintf(stderr, "  [tessellation program link FAIL] %s\n", log);
+        glDeleteProgram(program);
+        return 0;
+    }
+    return program;
 }
 
 /* Create an FBO with color texture + depth renderbuffer. Returns fbo id;
@@ -1464,6 +1528,377 @@ cleanup:
     glPixelStorei(GL_UNPACK_IMAGE_HEIGHT, 0);
     if (textures[0] || textures[1]) glDeleteTextures(2, textures);
     if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color_tex) glDeleteTextures(1, &color_tex);
+    return rc;
+}
+
+/* Exercise the complete AIR CullDistance product path: stage reflection
+ * marks the program, the renderer locates culldistance_data, and the hidden
+ * vertex buffers implement primitive-level all-negative culling. */
+static int test_air_cull_distance(unsigned char *pixels,
+                                  const char *out_path)
+{
+    (void)out_path;
+    int rc = 0;
+    GLuint fbo = 0, color_tex = 0, program = 0, vao = 0, ebo = 0;
+    GLuint indirect_buffer = 0;
+    GLuint buffers[3] = {0, 0, 0};
+
+    fbo = make_fbo(REG_W, REG_H, &color_tex);
+    if (!fbo) return 1;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    program = link_program(
+        "#version 460 core\n"
+        "layout(location=0) in vec2 pos;\n"
+        "layout(location=1) in float culldistance_data;\n"
+        "void main(){\n"
+        "  vec2 p=pos;\n"
+        "  p.x += float(gl_InstanceID);\n"
+        "  float d=culldistance_data;\n"
+        "  if (gl_InstanceID == 1) d += 2.0;\n"
+        "  if (gl_BaseInstance != 0) {\n"
+        "    if (gl_BaseInstance != 5) d = -100.0;\n"
+        "  }\n"
+        "  gl_Position=vec4(p,0.0,1.0);\n"
+        "  gl_CullDistance[0]=d;\n"
+        "}\n",
+        "#version 460 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main(){ frag=vec4(0.0,1.0,0.0,1.0); }\n");
+    if (!program) {
+        rc = 2;
+        goto cleanup;
+    }
+    glUseProgram(program);
+
+    static const float positions[] = {
+         4.0f,  4.0f,
+        -1.0f, -1.0f,
+         3.0f, -1.0f,
+        -1.0f,  3.0f,
+    };
+    static const float all_negative[] = {1.0f, -1.0f, -1.0f, -1.0f};
+    static const float one_positive[] = {1.0f, -1.0f, 1.0f, -1.0f};
+
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(3, buffers);
+    const void *data[3] = {positions, all_negative, one_positive};
+    const GLsizeiptr sizes[3] = {
+        (GLsizeiptr)sizeof(positions),
+        (GLsizeiptr)sizeof(all_negative),
+        (GLsizeiptr)sizeof(one_positive),
+    };
+    for (int i = 0; i < 3; i++) {
+        glBindBuffer(GL_ARRAY_BUFFER, buffers[i]);
+        glBufferData(GL_ARRAY_BUFFER, sizes[i], data[i], GL_STATIC_DRAW);
+    }
+
+    glEnableVertexAttribArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, 0);
+    glEnableVertexAttribArray(1);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[1]);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, 0);
+
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLES, 1, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_cull_distance: all-negative draw failed\n");
+        rc = 3;
+        goto cleanup;
+    }
+    for (size_t i = 0; i < (size_t)REG_W * REG_H; i++) {
+        if (pixels[i * 4 + 0] != 0 || pixels[i * 4 + 1] != 0 ||
+            pixels[i * 4 + 2] != 0) {
+            fprintf(stderr,
+                    "air_cull_distance: all-negative primitive was visible\n");
+            rc = 4;
+            goto cleanup;
+        }
+    }
+
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, 0);
+    glDrawArrays(GL_TRIANGLES, 1, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_cull_distance: one-positive draw failed\n");
+        rc = 5;
+        goto cleanup;
+    }
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] > 2 || center[1] < 250 || center[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: one-positive primitive missing "
+                    "(center=%u,%u,%u)\n",
+                    center[0], center[1], center[2]);
+            rc = 6;
+        }
+    }
+    if (rc != 0) goto cleanup;
+
+    static const float strip_positions[] = {
+        -1.0f, -1.0f,
+         0.0f, -1.0f,
+        -1.0f,  1.0f,
+         0.0f,  1.0f,
+    };
+    static const float shared_primitive_distances[] = {
+        -1.0f, -1.0f, -1.0f, 1.0f,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(strip_positions), strip_positions,
+                 GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(shared_primitive_distances),
+                 shared_primitive_distances, GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(32 * REG_W + 16) * 4];
+        const unsigned char *visible = &pixels[(96 * REG_W + 48) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: triangle strip primitive split "
+                    "failed (culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 7;
+            goto cleanup;
+        }
+    }
+
+    static const float fan_positions[] = {
+         0.0f,  0.0f,
+        -1.0f, -1.0f,
+         1.0f, -1.0f,
+         1.0f,  1.0f,
+    };
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(fan_positions), fan_positions,
+                 GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(32 * REG_W + 48) * 4];
+        const unsigned char *visible = &pixels[(80 * REG_W + 112) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: triangle fan primitive split "
+                    "failed (culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 8;
+        }
+    }
+    if (rc != 0) goto cleanup;
+
+    static const float indexed_positions[] = {
+         0.0f, -1.0f,
+         0.0f,  1.0f,
+        -1.0f, -1.0f,
+        -1.0f,  1.0f,
+    };
+    static const float indexed_distances[] = {
+        -1.0f, 1.0f, -1.0f, -1.0f,
+    };
+    static const unsigned short indexed_strip[] = {2, 0, 3, 1};
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(indexed_positions),
+                 indexed_positions, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(indexed_distances),
+                 indexed_distances, GL_STATIC_DRAW);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indexed_strip),
+                 indexed_strip, GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawElements(GL_TRIANGLE_STRIP, 4, GL_UNSIGNED_SHORT, 0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(32 * REG_W + 16) * 4];
+        const unsigned char *visible = &pixels[(96 * REG_W + 48) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: indexed triangle strip split "
+                    "failed (culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 9;
+        }
+    }
+    if (rc != 0) goto cleanup;
+
+    static const float instanced_positions[] = {
+        -0.9f, -0.6f,
+        -0.1f, -0.6f,
+        -0.5f,  0.6f,
+    };
+    static const float instanced_distances[] = {-1.0f, -1.0f, -1.0f};
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(instanced_positions),
+                 instanced_positions, GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(instanced_distances),
+                 instanced_distances, GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArraysInstanced(GL_TRIANGLES, 0, 3, 2);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(64 * REG_W + 32) * 4];
+        const unsigned char *visible = &pixels[(64 * REG_W + 96) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: gl_InstanceID capture split failed "
+                    "(culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 10;
+            goto cleanup;
+        }
+    }
+
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 0, 3, 2, 5u);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(64 * REG_W + 32) * 4];
+        const unsigned char *visible = &pixels[(64 * REG_W + 96) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: base-instance capture split failed "
+                    "(culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 11;
+        }
+    }
+    if (rc != 0) goto cleanup;
+
+    static const float multi_positions[] = {
+        -0.9f, -0.6f,
+        -0.1f, -0.6f,
+        -0.5f,  0.6f,
+         0.1f, -0.6f,
+         0.9f, -0.6f,
+         0.5f,  0.6f,
+    };
+    static const float multi_distances[] = {
+        -1.0f, -1.0f, -1.0f,
+        -1.0f, -1.0f,  1.0f,
+    };
+    static const GLint multi_firsts[] = {0, 3};
+    static const GLsizei multi_counts[] = {3, 3};
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[0]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(multi_positions), multi_positions,
+                 GL_STATIC_DRAW);
+    glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(multi_distances), multi_distances,
+                 GL_STATIC_DRAW);
+
+    clear_color(0.0f, 0.0f, 0.0f);
+    glMultiDrawArrays(GL_TRIANGLES, multi_firsts, multi_counts, 2);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(64 * REG_W + 32) * 4];
+        const unsigned char *visible = &pixels[(64 * REG_W + 96) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: multi-draw array split failed "
+                    "(culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 12;
+            goto cleanup;
+        }
+    }
+
+    static const GLuint array_indirect_commands[] = {
+        3u, 1u, 0u, 0u,
+        3u, 1u, 3u, 0u,
+    };
+    glGenBuffers(1, &indirect_buffer);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, indirect_buffer);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(array_indirect_commands),
+                 array_indirect_commands, GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glMultiDrawArraysIndirect(GL_TRIANGLES, 0, 2, 0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(64 * REG_W + 32) * 4];
+        const unsigned char *visible = &pixels[(64 * REG_W + 96) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: indirect array split failed "
+                    "(culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 13;
+            goto cleanup;
+        }
+    }
+
+    static const unsigned short multi_indices[] = {0, 1, 2, 3, 4, 5};
+    static const GLuint element_indirect_commands[] = {
+        3u, 1u, 0u, 0u, 0u,
+        3u, 1u, 3u, 0u, 0u,
+    };
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(multi_indices), multi_indices,
+                 GL_STATIC_DRAW);
+    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(element_indirect_commands),
+                 element_indirect_commands, GL_STATIC_DRAW);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glMultiDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT, 0, 2, 0);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled = &pixels[(64 * REG_W + 32) * 4];
+        const unsigned char *visible = &pixels[(64 * REG_W + 96) * 4];
+        if (culled[0] > 2 || culled[1] > 2 || culled[2] > 2 ||
+            visible[0] > 2 || visible[1] < 250 || visible[2] > 2) {
+            fprintf(stderr,
+                    "air_cull_distance: indirect element split failed "
+                    "(culled=%u,%u,%u visible=%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            rc = 14;
+        }
+    }
+
+cleanup:
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    if (indirect_buffer) glDeleteBuffers(1, &indirect_buffer);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (buffers[0] || buffers[1] || buffers[2]) glDeleteBuffers(3, buffers);
     if (vao) glDeleteVertexArrays(1, &vao);
     if (program) glDeleteProgram(program);
     if (fbo) glDeleteFramebuffers(1, &fbo);
@@ -3121,6 +3556,370 @@ cleanup:
     return rc;
 }
 
+static int test_air_geometry_varying(unsigned char *pixels,
+                                     const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) out vec3 v_color;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "  v_color = vec3(0.0, 1.0, 0.0);\n"
+        "}\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=6) out;\n"
+        "layout(location=0) in vec3 v_color[];\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "void main() {\n"
+        "  g_color = v_color[0];\n"
+        "  gl_CullDistance[0] = -1.0;\n"
+        "  gl_Position = vec4(-0.9, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.3, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.6,  0.5, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "  gl_CullDistance[0] = 1.0;\n"
+        "  gl_Position = vec4( 0.1, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.7, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.4,  0.5, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 g_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(g_color, 1.0); }\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(program);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *culled =
+            &pixels[((REG_H / 2) * REG_W + 26) * 4];
+        const unsigned char *visible =
+            &pixels[((REG_H / 2) * REG_W + 90) * 4];
+        if (culled[0] > 20u || culled[1] > 20u || culled[2] > 20u ||
+            visible[0] > 20u || visible[1] < 220u || visible[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_varying: expected culled black/visible "
+                    "green, got (%u,%u,%u)/(%u,%u,%u)\n",
+                    culled[0], culled[1], culled[2],
+                    visible[0], visible[1], visible[2]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_geometry_resources(unsigned char *pixels,
+                                       const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "layout(std140, binding=0) uniform Params { vec4 tint; };\n"
+        "layout(std430, binding=1) buffer Data { uint count; vec4 colors[]; } dataBuffer;\n"
+        "layout(binding=0) uniform sampler2D sampleTex;\n"
+        "layout(rgba8, binding=1) uniform image2D outputImage;\n"
+        "void main() {\n"
+        "  dataBuffer.count = uint(dataBuffer.colors.length());\n"
+        "  imageStore(outputImage, ivec2(0), vec4(0.0, 1.0, 0.0, 1.0));\n"
+        "  vec4 storageColor = dataBuffer.colors[0];\n"
+        "  g_color = tint.rgb + storageColor.rgb + "
+        "texture(sampleTex, vec2(0.5)).rgb;\n"
+        "  gl_Position = vec4(-0.7, -0.6, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.7, -0.6, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.0,  0.7, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "layout(location=0) in vec3 g_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(g_color, 1.0); }\n";
+
+    GLuint color = 0u, fbo = 0u, program = 0u, vao = 0u;
+    GLuint ubo = 0u, ssbo = 0u, sampled = 0u, image = 0u;
+    int result = 1;
+    const float tint[4] = {0.0f, 0.25f, 0.0f, 0.0f};
+    struct {
+        uint32_t count;
+        uint32_t padding[3];
+        float color[4];
+    } storage = {0u, {0u, 0u, 0u}, {0.0f, 0.25f, 0.0f, 0.0f}};
+    const unsigned char sampledPixel[4] = {0u, 64u, 0u, 255u};
+    unsigned char imagePixel[4] = {0u, 0u, 0u, 0u};
+
+    fbo = make_fbo(REG_W, REG_H, &color);
+    program = link_program_with_geometry(vs, gs, fs);
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+
+    glGenBuffers(1, &ubo);
+    glBindBuffer(GL_UNIFORM_BUFFER, ubo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(tint), tint, GL_STATIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);
+
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(storage), &storage,
+                 GL_DYNAMIC_COPY);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssbo);
+
+    glGenTextures(1, &sampled);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, sampled);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, sampledPixel);
+
+    glGenTextures(1, &image);
+    /* Keep the storage-image texture on a different sampler unit.  Image
+     * bindings are independent from sampler bindings, but glBindTexture still
+     * updates the currently active sampler unit; leaving GL_TEXTURE0 active
+     * would replace the sampled texture used by the GS. */
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, image);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, imagePixel);
+    glBindImageTexture(1, image, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    glActiveTexture(GL_TEXTURE0);
+
+    glUseProgram(program);
+    GLint samplerLocation = glGetUniformLocation(program, "sampleTex");
+    if (samplerLocation >= 0) glUniform1i(samplerLocation, 0);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                    GL_SHADER_STORAGE_BARRIER_BIT);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(storage), &storage);
+    glBindTexture(GL_TEXTURE_2D, image);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, imagePixel);
+    if (glGetError() != GL_NO_ERROR) {
+        fprintf(stderr, "air_geometry_resources: GL operation failed\n");
+        goto cleanup;
+    }
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] > 20u || center[1] < 180u || center[2] > 20u ||
+            storage.count != 1u || imagePixel[0] > 20u ||
+            imagePixel[1] < 220u || imagePixel[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_resources: expected green + SSBO length 1 "
+                    "+ green image, got pixel=(%u,%u,%u) count=%u "
+                    "image=(%u,%u,%u,%u)\n",
+                    center[0], center[1], center[2], storage.count,
+                    imagePixel[0], imagePixel[1], imagePixel[2], imagePixel[3]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    glBindImageTexture(1, 0, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA8);
+    if (image) glDeleteTextures(1, &image);
+    if (sampled) glDeleteTextures(1, &sampled);
+    if (ssbo) glDeleteBuffers(1, &ssbo);
+    if (ubo) glDeleteBuffers(1, &ubo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_geometry_instancing(unsigned char *pixels,
+                                        const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 460 core\n"
+        "layout(location=0) out vec2 v_offset;\n"
+        "void main() {\n"
+        "  float x = gl_InstanceID == 0 ? -0.5 : 0.5;\n"
+        "  if (gl_BaseInstance != 5) x = 4.0;\n"
+        "  v_offset = vec2(x, 0.0);\n"
+        "  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);\n"
+        "}\n";
+    static const char *gs =
+        "#version 460 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) in vec2 v_offset[];\n"
+        "void main() {\n"
+        "  vec2 o = v_offset[0];\n"
+        "  gl_Position = vec4(o + vec2(-0.3, -0.5), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(o + vec2( 0.3, -0.5), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(o + vec2( 0.0,  0.5), 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 460 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glUseProgram(program);
+    glDrawArraysInstancedBaseInstance(GL_POINTS, 0, 1, 2, 5u);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *left =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 4) * 4];
+        const unsigned char *right =
+            &pixels[((REG_H / 2) * REG_W + 3 * REG_W / 4) * 4];
+        if (left[0] > 20u || left[1] < 220u || left[2] > 20u ||
+            right[0] > 20u || right[1] < 220u || right[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_instancing: expected two green instances, "
+                    "got left=(%u,%u,%u) right=(%u,%u,%u)\n",
+                    left[0], left[1], left[2],
+                    right[0], right[1], right[2]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_varying(unsigned char *pixels,
+                                         const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "layout(location=0) out vec3 v_control;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "  v_control = vec3(1.0);\n"
+        "}\n";
+    static const char *tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "layout(location=0) in vec3 v_control[];\n"
+        "layout(location=0) out vec3 tc_control[];\n"
+        "layout(location=1) patch out vec3 patch_color;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  tc_control[gl_InvocationID] = v_control[gl_InvocationID];\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    patch_color = vec3(0.0, 1.0, 0.0);\n"
+        "    gl_TessLevelOuter[0] = 1.0;\n"
+        "    gl_TessLevelOuter[1] = 1.0;\n"
+        "    gl_TessLevelOuter[2] = 1.0;\n"
+        "    gl_TessLevelInner[0] = 1.0;\n"
+        "  }\n"
+        "}\n";
+    static const char *tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, cw) in;\n"
+        "layout(location=0) in vec3 tc_control[];\n"
+        "layout(location=1) patch in vec3 patch_color;\n"
+        "layout(location=0) out vec3 te_color;\n"
+        "void main() {\n"
+        "  gl_Position = gl_in[0].gl_Position * gl_TessCoord.x + "
+        "gl_in[1].gl_Position * gl_TessCoord.y + "
+        "gl_in[2].gl_Position * gl_TessCoord.z;\n"
+        "  te_color = patch_color * tc_control[0];\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 te_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(te_color, 1.0); }\n";
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_tessellation(vs, tcs, tes, fs);
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    make_pos2_vao(TRI_VERTS, sizeof(TRI_VERTS), &vao, &vbo);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *center =
+            &pixels[((REG_H / 2) * REG_W + REG_W / 2) * 4];
+        if (center[0] > 20u || center[1] < 220u || center[2] > 20u) {
+            fprintf(stderr,
+                    "air_tessellation_varying: center expected green, got "
+                    "(%u,%u,%u,%u)\n",
+                    center[0], center[1], center[2], center[3]);
+            goto cleanup;
+        }
+    }
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -3149,6 +3948,11 @@ static const TestCase TESTS[] = {
     GOLDEN_TEST("vao_binding_switch",     test_vao_binding_switch),
     SELF_CHECK_TEST("agx_3d_texture_workarounds",
                     test_agx_3d_texture_workarounds),
+    SELF_CHECK_TEST("air_cull_distance", test_air_cull_distance),
+    SELF_CHECK_TEST("air_geometry_varying", test_air_geometry_varying),
+    SELF_CHECK_TEST("air_geometry_resources", test_air_geometry_resources),
+    SELF_CHECK_TEST("air_geometry_instancing", test_air_geometry_instancing),
+    SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),
