@@ -929,7 +929,6 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     id<MTLBuffer> capture = mglDrawSupportCreateBuffer(
         _device, captureSize, MTLResourceStorageModeShared);
     if (!capture) return nil;
-
     self->ctx = drawCtx;
     _tessellation.tessVertexCaptureActive = YES;
     drawCtx->state.dirty_bits = DIRTY_ALL;

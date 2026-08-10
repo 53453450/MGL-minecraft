@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 38
+#define MAX_TESTS 39
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -4310,6 +4310,94 @@ cleanup:
     return result;
 }
 
+/* P1 regression: instanced indexed GS with base-vertex and base-instance
+ * (docs/AIR_M3_CPP_TODO.md §3 P1).  drawElementsInstancedBaseVertexBaseInstance
+ * must expand each (instance x indexed vertex) through the GS. */
+static int test_air_geometry_base_vertex_instance(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy;\n"
+        "  gl_Position = vec4(p + vec2(-0.3, -0.4), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(p + vec2( 0.3, -0.4), 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(p + vec2( 0.0,  0.4), 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    /* Indices 2/3 resolve directly to VBO[2]=(-0.3,-0.3), VBO[3]=(0.3,-0.3);
+     * both instances draw the same two triangles (overlapping). */
+    static const float positions[8] = {
+        0.0f, 0.0f, 0.5f, 0.5f, -0.3f, -0.3f, 0.3f, -0.3f,
+    };
+    static const uint32_t indices[2] = {2u, 3u};
+    static const float expected[2][2] = {
+        {-0.3f, -0.4333f}, {0.3f, -0.4333f},
+    };
+
+    GLuint color = 0u;
+    GLuint fbo = make_fbo(REG_W, REG_H, &color);
+    GLuint program = link_program_with_geometry(vs, gs, fs);
+    GLuint vao = 0u, vbo = 0u, ebo = 0u;
+    int result = 1;
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
+                 GL_STATIC_DRAW);
+    glUseProgram(program);
+
+    glDrawElementsInstancedBaseVertexBaseInstance(
+        GL_POINTS, 2, GL_UNSIGNED_INT, (void *)0, 2, 0, 0u);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    for (int i = 0; i < 2; i++) {
+        int sx = (int)((expected[i][0] + 1.0) * 0.5 * REG_W);
+        int sy = (int)((expected[i][1] + 1.0) * 0.5 * REG_H);
+        if (sx < 0 || sx >= REG_W || sy < 0 || sy >= REG_H) goto cleanup;
+        const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+        if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+            fprintf(stderr,
+                    "air_geometry_base_vertex_instance: centroid %d expected "
+                    "green, got (%u,%u,%u)\n",
+                    i, px[0], px[1], px[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 static int test_air_tessellation_varying(unsigned char *pixels,
                                          const char *out_path)
 {
@@ -4431,6 +4519,8 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_geometry_indexed", test_air_geometry_indexed),
     SELF_CHECK_TEST("air_geometry_indirect", test_air_geometry_indirect),
     SELF_CHECK_TEST("air_geometry_multi_draw", test_air_geometry_multi_draw),
+    SELF_CHECK_TEST("air_geometry_base_vertex_instance",
+                    test_air_geometry_base_vertex_instance),
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
