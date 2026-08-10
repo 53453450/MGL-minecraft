@@ -5,8 +5,9 @@
 // 所有权规则：
 //   mglAirLoadLibrary 返回的 library（void* = MTL::Library*，+1 retained）由调用方
 //   拥有，可直接 CFBridgingRetain 转移给 ObjC 侧或 mglAirRelease 释放。
-//   mglAirCreateRenderPipeline / mglAirCreateComputePipeline 返回的 PSO 由 C++
-//   侧 PSO 缓存额外 retain（缓存长期持有），调用方持有一份引用，用完 mglAirRelease。
+//   mglAirCreateRenderPipeline 返回的 PSO 由 loader 缓存额外 retain；调用方也
+//   持有一份引用。mglAirCreateComputePipeline 不缓存，返回值仅由调用方持有。
+//   两者的调用方引用都用 mglAirRelease 释放。
 //------------------------------------------------------------------------------------------------
 #pragma once
 
@@ -17,21 +18,46 @@
 extern "C" {
 #endif
 
-/* finalDescriptor 等价装配的输入（Phase 1 最小集：color/depth/stencil +
- * rasterization + ICB + AIR 顶点布局）。blend/二进制归档 Phase 4 补齐。 */
+/* finalDescriptor 等价装配的输入。二进制归档仍由 ObjC cache 管理，其他
+ * render/vertex/tessellation descriptor 状态逐字段传入 C++ builder。 */
 typedef struct MGLPipelineDescriptorState {
+    uint64_t vertex_program_instance;
+    uint64_t vertex_program_generation;
+    uint64_t fragment_program_instance;
+    uint64_t fragment_program_generation;
     uint32_t color_count;
     uint32_t color_format[8];   /* MTLPixelFormat 以 uint 传 */
     uint32_t depth_format;      /* MTLPixelFormat 以 uint 传（MTLPixelFormatInvalid=0） */
     uint32_t stencil_format;    /* MTLPixelFormat 以 uint 传 */
     int      rasterization_enabled;
     int      icb_enabled;       /* indirect command buffers */
-    /* AIR 顶点布局（由反射给出）：每个 attrib 一个 (format, offset, buffer stride)。
-     * 简化：attrib i → buffer (kMGLVertexAttribBufferBase + i)，stride 为 attrib_stride[i]。 */
+    int      alpha_to_coverage_enabled;
+    int      alpha_to_one_enabled;
+    uint32_t input_primitive_topology;
+    /* AIR 顶点布局（由 finalDescriptor 给出）。 */
     uint32_t attrib_count;
     uint32_t attrib_format[32];
     uint32_t attrib_offset[32];
     uint32_t attrib_stride[32];
+    uint32_t attrib_buffer_index[32];
+    uint32_t attrib_step_function[32];
+    uint32_t attrib_step_rate[32];
+    uint32_t color_write_mask[8];
+    uint32_t source_rgb_blend_factor[8];
+    uint32_t destination_rgb_blend_factor[8];
+    uint32_t source_alpha_blend_factor[8];
+    uint32_t destination_alpha_blend_factor[8];
+    uint32_t rgb_blend_operation[8];
+    uint32_t alpha_blend_operation[8];
+    uint32_t blending_enabled_mask;
+    uint32_t raster_sample_count;
+    uint32_t tessellation_partition_mode;
+    uint32_t max_tessellation_factor;
+    int      tessellation_factor_scale_enabled;
+    uint32_t tessellation_factor_format;
+    uint32_t tessellation_control_point_index_type;
+    uint32_t tessellation_factor_step_function;
+    uint32_t tessellation_output_winding_order;
 } MGLPipelineDescriptorState;
 
 /* device: void* = MTL::Device*（mglRenderCppGetDevice() 取得）。
@@ -39,18 +65,24 @@ typedef struct MGLPipelineDescriptorState {
 int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t size,
                       void** library_out, char* err, size_t errcap);
 
-/* vs_library/fs_library: void* = MTL::Library*（mglAirLoadLibrary 产物）。
- * 内部 newFunction("main") 装配 PSO。成功返回 0 且 *pso_out 非空。 */
-int mglAirCreateRenderPipeline(const void* device, void* vs_library, void* fs_library,
+/* vs_function/fs_function: void* = finalDescriptor 已选定的 MTL::Function*。
+ * 使用实际 function 可保留 capture/clip/tess 等 AIR 变体。成功返回 0 且
+ * *pso_out 非空。 */
+int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_function,
                                const MGLPipelineDescriptorState* desc, void** pso_out,
                                char* err, size_t errcap);
 
-/* library: void* = MTL::Library*；compute function 名为 "main"。 */
+/* library: void* = MTL::Library*；compute function 名为 "main"。返回的
+ * PSO 是未缓存的 +1 引用。Program/renderer compute 缓存在 mgl_render_cpp。 */
 int mglAirCreateComputePipeline(const void* device, void* library,
                                 void** pso_out, char* err, size_t errcap);
 
 /* MTL::Release 包装（对 loader 返回的 +1 引用）。 */
 void mglAirRelease(void* obj);
+
+/* Release the loader-owned PSO cache. Called by the C++ renderer when its
+ * final device user shuts down. Safe to call repeatedly. */
+void mglAirLoaderShutdown(void);
 
 #ifdef __cplusplus
 } // extern "C"

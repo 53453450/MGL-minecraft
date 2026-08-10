@@ -14,37 +14,28 @@
 
 #include <dispatch/dispatch.h>
 #include <map>
-#include <mutex>
 #include <string>
 
 namespace {
 
-// PSO 缓存：key = 描述符状态序列化摘要。缓存长期 retain 一份，返回给调用方
-// 的引用由调用方 mglAirRelease。Phase 4 并入 C++ 渲染器。
-std::mutex g_psoMutex;
-std::map<std::string, void*> g_psoCache;
+// PSO 缓存：key = 描述符状态序列化摘要。进程退出时 C 的 auto-cleanup
+// 可能晚于 C++ 静态析构；因此容器自身保持进程寿命，只在显式 shutdown
+// 中释放其 Metal 对象并 clear，避免访问已经析构的 std::map。
+using PSOCache = std::map<std::string, void*>;
 
-std::string pipelineKey(const MGLPipelineDescriptorState* d) {
-    char buf[1024];
-    int n = snprintf(buf, sizeof buf,
-                     "r%u|d%u|s%u|rz%d|icb%d|c%u", d->color_count,
-                     d->depth_format, d->stencil_format, d->rasterization_enabled,
-                     d->icb_enabled, d->color_count);
-    size_t off = (size_t)n;
-    for (uint32_t i = 0; i < d->color_count && off < sizeof buf - 2; i++) {
-        n = snprintf(buf + off, sizeof buf - off, "|c%u:%u", i, d->color_format[i]);
-        if (n < 0) break;
-        off += (size_t)n;
-    }
-    n = snprintf(buf + off, sizeof buf - off, "|a%d", d->attrib_count);
-    if (n > 0) off += (size_t)n;
-    for (uint32_t i = 0; i < d->attrib_count && off < sizeof buf - 2; i++) {
-        n = snprintf(buf + off, sizeof buf - off, "|a%u:%u@%u~%u", i,
-                     d->attrib_format[i], d->attrib_offset[i], d->attrib_stride[i]);
-        if (n < 0) break;
-        off += (size_t)n;
-    }
-    return std::string(buf);
+PSOCache& psoCache() {
+    static PSOCache* cache = new PSOCache();
+    return *cache;
+}
+
+std::string pipelineKey(const void* vs, const void* fs,
+                        const MGLPipelineDescriptorState* d) {
+    std::string key;
+    key.reserve(sizeof(vs) + sizeof(fs) + sizeof(*d));
+    key.append(reinterpret_cast<const char*>(&vs), sizeof(vs));
+    key.append(reinterpret_cast<const char*>(&fs), sizeof(fs));
+    key.append(reinterpret_cast<const char*>(d), sizeof(*d));
+    return key;
 }
 
 void copyError(NS::Error* e, char* err, size_t errcap) {
@@ -69,6 +60,7 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
+    *library_out = nullptr;
     MTL::Device* dev = static_cast<MTL::Device*>(const_cast<void*>(device));
 
     // ObjC 侧同款：dispatch_data_create → newLibrary(dispatch_data)。
@@ -83,32 +75,32 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
     dispatch_release(data);
     if (!lib) {
         copyError(nsErr, err, errcap);
-        nsErr->release();
         return -1;
     }
     *library_out = lib; // +1 retained，调用方拥有
     return 0;
 }
 
-int mglAirCreateRenderPipeline(const void* device, void* vs_library, void* fs_library,
+int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_function,
                                const MGLPipelineDescriptorState* desc, void** pso_out,
                                char* err, size_t errcap) {
-    if (!device || !vs_library || !desc || !pso_out) {
+    if (!device || !vs_function || !desc || !pso_out) {
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
     MTL::Device* dev = static_cast<MTL::Device*>(const_cast<void*>(device));
-    MTL::Library* vs = static_cast<MTL::Library*>(vs_library);
-    MTL::Library* fs = fs_library ? static_cast<MTL::Library*>(fs_library) : nullptr;
+    MTL::Function* vsFn = static_cast<MTL::Function*>(vs_function);
+    MTL::Function* fsFn = fs_function
+        ? static_cast<MTL::Function*>(fs_function) : nullptr;
 
-    std::string key = pipelineKey(desc);
-    {
-        std::lock_guard<std::mutex> lock(g_psoMutex);
-        auto it = g_psoCache.find(key);
-        if (it != g_psoCache.end()) {
-            *pso_out = it->second;
-            return 0;
-        }
+    *pso_out = nullptr;
+    std::string key = pipelineKey(vs_function, fs_function, desc);
+    PSOCache& cache = psoCache();
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+        *pso_out = it->second;
+        return 0;
     }
 
     MTL::RenderPipelineDescriptor* rpd = MTL::RenderPipelineDescriptor::alloc()->init();
@@ -117,29 +109,19 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_library, void* fs_li
         return -1;
     }
 
-    MTL::Function* vsFn = vs->newFunction(NS::String::string("main", NS::UTF8StringEncoding));
-    if (!vsFn) {
-        if (err && errcap) snprintf(err, errcap, "vertex function 'main' not found");
-        rpd->release();
-        return -1;
-    }
     rpd->setVertexFunction(vsFn);
-    vsFn->release();
-
-    if (fs) {
-        MTL::Function* fsFn =
-            fs->newFunction(NS::String::string("main", NS::UTF8StringEncoding));
-        if (!fsFn) {
-            if (err && errcap) snprintf(err, errcap, "fragment function 'main' not found");
-            rpd->release();
-            return -1;
-        }
+    if (fsFn) {
         rpd->setFragmentFunction(fsFn);
-        fsFn->release();
     }
 
     rpd->setRasterizationEnabled(desc->rasterization_enabled ? true : false);
     rpd->setSupportIndirectCommandBuffers(desc->icb_enabled ? true : false);
+    rpd->setAlphaToCoverageEnabled(desc->alpha_to_coverage_enabled ? true : false);
+    rpd->setAlphaToOneEnabled(desc->alpha_to_one_enabled ? true : false);
+    rpd->setInputPrimitiveTopology(
+        (MTL::PrimitiveTopologyClass)desc->input_primitive_topology);
+    if (desc->raster_sample_count > 0)
+        rpd->setRasterSampleCount(desc->raster_sample_count);
 
     for (uint32_t i = 0; i < desc->color_count && i < 8; i++) {
         MTL::RenderPipelineColorAttachmentDescriptor* ca =
@@ -152,14 +134,48 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_library, void* fs_li
     if (desc->attrib_count > 0) {
         MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc()->init();
         for (uint32_t i = 0; i < desc->attrib_count && i < 32; i++) {
-            const uint32_t bufIdx = 16 + i; // kMGLVertexAttribBufferBase
+            const uint32_t bufIdx = desc->attrib_buffer_index[i];
             vd->attributes()->object(i)->setFormat((MTL::VertexFormat)desc->attrib_format[i]);
             vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
             vd->attributes()->object(i)->setBufferIndex(bufIdx);
             vd->layouts()->object(bufIdx)->setStride(desc->attrib_stride[i]);
+            vd->layouts()->object(bufIdx)->setStepFunction(
+                (MTL::VertexStepFunction)desc->attrib_step_function[i]);
+            vd->layouts()->object(bufIdx)->setStepRate(desc->attrib_step_rate[i]);
         }
         rpd->setVertexDescriptor(vd);
         vd->release();
+    }
+
+    rpd->setTessellationPartitionMode(
+        (MTL::TessellationPartitionMode)desc->tessellation_partition_mode);
+    rpd->setMaxTessellationFactor(desc->max_tessellation_factor);
+    rpd->setTessellationFactorScaleEnabled(
+        desc->tessellation_factor_scale_enabled ? true : false);
+    rpd->setTessellationFactorFormat(
+        (MTL::TessellationFactorFormat)desc->tessellation_factor_format);
+    rpd->setTessellationControlPointIndexType(
+        (MTL::TessellationControlPointIndexType)
+            desc->tessellation_control_point_index_type);
+    rpd->setTessellationFactorStepFunction(
+        (MTL::TessellationFactorStepFunction)
+            desc->tessellation_factor_step_function);
+    rpd->setTessellationOutputWindingOrder(
+        (MTL::Winding)desc->tessellation_output_winding_order);
+
+    for (uint32_t i = 0; i < desc->color_count && i < 8; i++) {
+        MTL::RenderPipelineColorAttachmentDescriptor* ca =
+            rpd->colorAttachments()->object(i);
+        ca->setWriteMask((MTL::ColorWriteMask)desc->color_write_mask[i]);
+        if (desc->blending_enabled_mask & (1u << i)) {
+            ca->setBlendingEnabled(true);
+            ca->setSourceRGBBlendFactor((MTL::BlendFactor)desc->source_rgb_blend_factor[i]);
+            ca->setDestinationRGBBlendFactor((MTL::BlendFactor)desc->destination_rgb_blend_factor[i]);
+            ca->setSourceAlphaBlendFactor((MTL::BlendFactor)desc->source_alpha_blend_factor[i]);
+            ca->setDestinationAlphaBlendFactor((MTL::BlendFactor)desc->destination_alpha_blend_factor[i]);
+            ca->setRgbBlendOperation((MTL::BlendOperation)desc->rgb_blend_operation[i]);
+            ca->setAlphaBlendOperation((MTL::BlendOperation)desc->alpha_blend_operation[i]);
+        }
     }
 
     NS::Error* nsErr = nullptr;
@@ -167,15 +183,11 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_library, void* fs_li
     rpd->release();
     if (!pso) {
         copyError(nsErr, err, errcap);
-        nsErr->release();
         return -1;
     }
 
     pso->retain(); // 缓存长期持有
-    {
-        std::lock_guard<std::mutex> lock(g_psoMutex);
-        g_psoCache[key] = pso;
-    }
+    cache[key] = pso;
     *pso_out = pso; // 调用方持有一份引用（mglAirRelease）
     return 0;
 }
@@ -186,6 +198,7 @@ int mglAirCreateComputePipeline(const void* device, void* library,
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
+    *pso_out = nullptr;
     MTL::Device* dev = static_cast<MTL::Device*>(const_cast<void*>(device));
     MTL::Library* lib = static_cast<MTL::Library*>(library);
     MTL::Function* fn = lib->newFunction(NS::String::string("main", NS::UTF8StringEncoding));
@@ -198,7 +211,6 @@ int mglAirCreateComputePipeline(const void* device, void* library,
     fn->release();
     if (!pso) {
         copyError(nsErr, err, errcap);
-        nsErr->release();
         return -1;
     }
     *pso_out = pso; // +1 retained（compute PSO 暂不进缓存，Phase 4 并入）
@@ -209,6 +221,16 @@ void mglAirRelease(void* obj) {
     if (obj) {
         static_cast<NS::Object*>(obj)->release();
     }
+}
+
+void mglAirLoaderShutdown(void) {
+    PSOCache& cache = psoCache();
+    for (auto &entry : cache) {
+        if (entry.second) {
+            static_cast<MTL::RenderPipelineState*>(entry.second)->release();
+        }
+    }
+    cache.clear();
 }
 
 } // extern "C"
