@@ -195,6 +195,15 @@ void writeRecordTags(TagWriter &w, const MTLBFunction &fn,
     w.u16(4); /* language major */
     w.u16(0); /* language minor */
 
+    /* Post-tessellation vertex functions carry a one-byte TESS tag in the
+     * function record.  Apple's encoding is 4 * controlPointCount plus the
+     * patch kind (triangle=1, quad=2). */
+    if (fn.tessellation) {
+        w.fourcc("TESS");
+        w.u16(1);
+        w.os.write(static_cast<char>(fn.tessellation));
+    }
+
     w.fourcc("ENDT");
 }
 

@@ -43,13 +43,116 @@ GLuint mglAirGLTypeFromIR(const MGLIRType *t)
     }
     case MGLIR_TYPE_MATRIX:
         return (GLuint)(GL_FLOAT_MAT2 + (t->cols - 2));
-    case MGLIR_TYPE_SAMPLER:
-        switch (t->tex_kind) {
-        case MGLIR_TEX_2D:   return GL_SAMPLER_2D;
-        case MGLIR_TEX_3D:   return GL_SAMPLER_3D;
-        case MGLIR_TEX_CUBE: return GL_SAMPLER_CUBE;
-        default:             return GL_SAMPLER_2D;
+    case MGLIR_TYPE_SAMPLER: {
+        const GLboolean is_int = t->tex_storage == MGLIR_SCALAR_INT;
+        const GLboolean is_uint = t->tex_storage == MGLIR_SCALAR_UINT;
+        if (t->tex_depth && !is_int && !is_uint) {
+            switch (t->tex_kind) {
+            case MGLIR_TEX_1D:         return GL_SAMPLER_1D_SHADOW;
+            case MGLIR_TEX_2D:         return GL_SAMPLER_2D_SHADOW;
+            case MGLIR_TEX_CUBE:       return GL_SAMPLER_CUBE_SHADOW;
+            case MGLIR_TEX_1D_ARRAY:   return GL_SAMPLER_1D_ARRAY_SHADOW;
+            case MGLIR_TEX_2D_ARRAY:   return GL_SAMPLER_2D_ARRAY_SHADOW;
+            case MGLIR_TEX_CUBE_ARRAY: return GL_SAMPLER_CUBE_MAP_ARRAY_SHADOW;
+            default:                   return GL_SAMPLER_2D_SHADOW;
+            }
         }
+#define MGL_SAMPLER_TYPE(_FLOAT, _INT, _UINT) \
+        (is_int ? (_INT) : (is_uint ? (_UINT) : (_FLOAT)))
+        switch (t->tex_kind) {
+        case MGLIR_TEX_1D:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_1D, GL_INT_SAMPLER_1D,
+                                    GL_UNSIGNED_INT_SAMPLER_1D);
+        case MGLIR_TEX_2D:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D, GL_INT_SAMPLER_2D,
+                                    GL_UNSIGNED_INT_SAMPLER_2D);
+        case MGLIR_TEX_3D:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_3D, GL_INT_SAMPLER_3D,
+                                    GL_UNSIGNED_INT_SAMPLER_3D);
+        case MGLIR_TEX_CUBE:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_CUBE, GL_INT_SAMPLER_CUBE,
+                                    GL_UNSIGNED_INT_SAMPLER_CUBE);
+        case MGLIR_TEX_2D_RECT:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D_RECT,
+                                    GL_INT_SAMPLER_2D_RECT,
+                                    GL_UNSIGNED_INT_SAMPLER_2D_RECT);
+        case MGLIR_TEX_1D_ARRAY:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_1D_ARRAY,
+                                    GL_INT_SAMPLER_1D_ARRAY,
+                                    GL_UNSIGNED_INT_SAMPLER_1D_ARRAY);
+        case MGLIR_TEX_2D_ARRAY:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D_ARRAY,
+                                    GL_INT_SAMPLER_2D_ARRAY,
+                                    GL_UNSIGNED_INT_SAMPLER_2D_ARRAY);
+        case MGLIR_TEX_CUBE_ARRAY:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_CUBE_MAP_ARRAY,
+                                    GL_INT_SAMPLER_CUBE_MAP_ARRAY,
+                                    GL_UNSIGNED_INT_SAMPLER_CUBE_MAP_ARRAY);
+        case MGLIR_TEX_2D_MS:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D_MULTISAMPLE,
+                                    GL_INT_SAMPLER_2D_MULTISAMPLE,
+                                    GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE);
+        case MGLIR_TEX_2D_MS_ARRAY:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D_MULTISAMPLE_ARRAY,
+                                    GL_INT_SAMPLER_2D_MULTISAMPLE_ARRAY,
+                                    GL_UNSIGNED_INT_SAMPLER_2D_MULTISAMPLE_ARRAY);
+        case MGLIR_TEX_BUFFER:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_BUFFER, GL_INT_SAMPLER_BUFFER,
+                                    GL_UNSIGNED_INT_SAMPLER_BUFFER);
+        default:
+            return MGL_SAMPLER_TYPE(GL_SAMPLER_2D, GL_INT_SAMPLER_2D,
+                                    GL_UNSIGNED_INT_SAMPLER_2D);
+        }
+#undef MGL_SAMPLER_TYPE
+    }
+    case MGLIR_TYPE_IMAGE: {
+        const GLboolean is_int = t->tex_storage == MGLIR_SCALAR_INT;
+        const GLboolean is_uint = t->tex_storage == MGLIR_SCALAR_UINT;
+#define MGL_IMAGE_TYPE(_FLOAT, _INT, _UINT) \
+        (is_int ? (_INT) : (is_uint ? (_UINT) : (_FLOAT)))
+        switch (t->tex_kind) {
+        case MGLIR_TEX_1D:
+            return MGL_IMAGE_TYPE(GL_IMAGE_1D, GL_INT_IMAGE_1D,
+                                  GL_UNSIGNED_INT_IMAGE_1D);
+        case MGLIR_TEX_2D:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D, GL_INT_IMAGE_2D,
+                                  GL_UNSIGNED_INT_IMAGE_2D);
+        case MGLIR_TEX_3D:
+            return MGL_IMAGE_TYPE(GL_IMAGE_3D, GL_INT_IMAGE_3D,
+                                  GL_UNSIGNED_INT_IMAGE_3D);
+        case MGLIR_TEX_CUBE:
+            return MGL_IMAGE_TYPE(GL_IMAGE_CUBE, GL_INT_IMAGE_CUBE,
+                                  GL_UNSIGNED_INT_IMAGE_CUBE);
+        case MGLIR_TEX_2D_RECT:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D_RECT, GL_INT_IMAGE_2D_RECT,
+                                  GL_UNSIGNED_INT_IMAGE_2D_RECT);
+        case MGLIR_TEX_1D_ARRAY:
+            return MGL_IMAGE_TYPE(GL_IMAGE_1D_ARRAY, GL_INT_IMAGE_1D_ARRAY,
+                                  GL_UNSIGNED_INT_IMAGE_1D_ARRAY);
+        case MGLIR_TEX_2D_ARRAY:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D_ARRAY, GL_INT_IMAGE_2D_ARRAY,
+                                  GL_UNSIGNED_INT_IMAGE_2D_ARRAY);
+        case MGLIR_TEX_CUBE_ARRAY:
+            return MGL_IMAGE_TYPE(GL_IMAGE_CUBE_MAP_ARRAY,
+                                  GL_INT_IMAGE_CUBE_MAP_ARRAY,
+                                  GL_UNSIGNED_INT_IMAGE_CUBE_MAP_ARRAY);
+        case MGLIR_TEX_2D_MS:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D_MULTISAMPLE,
+                                  GL_INT_IMAGE_2D_MULTISAMPLE,
+                                  GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE);
+        case MGLIR_TEX_2D_MS_ARRAY:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D_MULTISAMPLE_ARRAY,
+                                  GL_INT_IMAGE_2D_MULTISAMPLE_ARRAY,
+                                  GL_UNSIGNED_INT_IMAGE_2D_MULTISAMPLE_ARRAY);
+        case MGLIR_TEX_BUFFER:
+            return MGL_IMAGE_TYPE(GL_IMAGE_BUFFER, GL_INT_IMAGE_BUFFER,
+                                  GL_UNSIGNED_INT_IMAGE_BUFFER);
+        default:
+            return MGL_IMAGE_TYPE(GL_IMAGE_2D, GL_INT_IMAGE_2D,
+                                  GL_UNSIGNED_INT_IMAGE_2D);
+        }
+#undef MGL_IMAGE_TYPE
+    }
     default:
         return GL_INVALID_ENUM;
     }
@@ -73,24 +176,61 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
     SpirvResource r;
     memset(&r, 0, sizeof(r));
     r.name = strdup(s->name);
-    r.msl_name = strdup(s->name);
     r.location = location;
     r.gl_binding = binding;
     r.binding = binding;
     r.gl_type = mglAirGLTypeFromIR(type);
     r.gl_array_size = mglAirGLArraySizeFromIR(type);
     r.is_array = (type->kind == MGLIR_TYPE_ARRAY) ? GL_TRUE : GL_FALSE;
+    r.is_per_patch = (s->qualifiers & MGL_AST_Q_PATCH) ? GL_TRUE : GL_FALSE;
     r.num_array_dims = (type->kind == MGLIR_TYPE_ARRAY) ? 1u : 0u;
     r.uniform_location = -1;
     r.sampler_unit = 0;
     r.sampler_unit_explicit = GL_FALSE;
-    if (type->kind == MGLIR_TYPE_SAMPLER) {
-        /* SpvDim enum values (SPIR-V 3.10): 1D=0, 2D=1, 3D=2, Cube=3. */
+    if (type->kind == MGLIR_TYPE_SAMPLER ||
+        type->kind == MGLIR_TYPE_IMAGE) {
         switch (type->tex_kind) {
-        case MGLIR_TEX_3D:   r.image_dim = 2; break;
-        case MGLIR_TEX_CUBE: r.image_dim = 3; break;
-        default:             r.image_dim = 1; break;
+        case MGLIR_TEX_1D:
+        case MGLIR_TEX_1D_ARRAY:
+            r.image_dim = MGL_IMAGE_DIM_1D;
+            break;
+        case MGLIR_TEX_3D:
+            r.image_dim = MGL_IMAGE_DIM_3D;
+            break;
+        case MGLIR_TEX_CUBE:
+        case MGLIR_TEX_CUBE_ARRAY:
+            r.image_dim = MGL_IMAGE_DIM_CUBE;
+            break;
+        case MGLIR_TEX_2D_RECT:
+            r.image_dim = MGL_IMAGE_DIM_RECT;
+            break;
+        case MGLIR_TEX_BUFFER:
+            r.image_dim = MGL_IMAGE_DIM_BUFFER;
+            break;
+        case MGLIR_TEX_SUBPASS:
+        case MGLIR_TEX_SUBPASS_MS:
+            r.image_dim = MGL_IMAGE_DIM_SUBPASS_DATA;
+            break;
+        default:
+            r.image_dim = MGL_IMAGE_DIM_2D;
+            break;
         }
+        r.image_arrayed =
+            type->tex_kind == MGLIR_TEX_1D_ARRAY ||
+            type->tex_kind == MGLIR_TEX_2D_ARRAY ||
+            type->tex_kind == MGLIR_TEX_CUBE_ARRAY ||
+            type->tex_kind == MGLIR_TEX_2D_MS_ARRAY;
+        r.image_multisampled =
+            type->tex_kind == MGLIR_TEX_2D_MS ||
+            type->tex_kind == MGLIR_TEX_2D_MS_ARRAY ||
+            type->tex_kind == MGLIR_TEX_SUBPASS_MS;
+        r.texture_data_kind = type->tex_depth
+            ? MGL_SHADER_TEXTURE_DATA_DEPTH
+            : type->tex_storage == MGLIR_SCALAR_INT
+                ? MGL_SHADER_TEXTURE_DATA_SINT
+                : type->tex_storage == MGLIR_SCALAR_UINT
+                    ? MGL_SHADER_TEXTURE_DATA_UINT
+                    : MGL_SHADER_TEXTURE_DATA_FLOAT;
     }
     (void)stage;
 
@@ -133,14 +273,6 @@ static void destroy_list(SpirvResourceList *list)
     for (GLuint i = 0; i < list->count; i++) {
         SpirvResource *r = &list->list[i];
         free((void *)r->name);
-        free(r->msl_name);
-        if (r->msl_argument_names) {
-            for (GLuint a = 0; a < r->msl_argument_count; a++) {
-                free(r->msl_argument_names[a]);
-            }
-            free(r->msl_argument_names);
-        }
-        free(r->msl_combined_sampler_name);
         free(r->ubo_instance_name);
         if (r->ubo_members) {
             for (GLuint m = 0; m < r->ubo_member_count; m++) {
@@ -210,7 +342,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
     uint32_t attrCount = 0, ssboCount = 0, hasPlain = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
-        if (s->is_function) {
+        if (s->is_function ||
+            (s->name && strncmp(s->name, "gl_", 3) == 0)) {
             continue;
         }
         uint32_t q = s->qualifiers;
@@ -220,7 +353,8 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         } else if (q & MGL_AST_Q_BUFFER) {
             ssboCount++;
         } else if ((q & MGL_AST_Q_UNIFORM) &&
-                   t->kind != MGLIR_TYPE_SAMPLER && !s->block_name &&
+                   t->kind != MGLIR_TYPE_SAMPLER &&
+                   t->kind != MGLIR_TYPE_IMAGE && !s->block_name &&
                    !(t->kind == MGLIR_TYPE_STRUCT && t->member_count > 0)) {
             hasPlain = 1;
         }
@@ -231,10 +365,12 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
 
     /* Sampler bindings increment per sampler, matching the AIR metadata
      * texture location indices. */
+    uint32_t texture_binding = 0;
     uint32_t sampler_binding = 0;
     for (uint32_t i = 0; i < mod->symbol_count; i++) {
         const MGLIRSymbol *s = mod->symbols[i];
-        if (s->is_function) {
+        if (s->is_function ||
+            (s->name && strncmp(s->name, "gl_", 3) == 0)) {
             continue;
         }
         const MGLIRType *t = s->type;
@@ -244,13 +380,16 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (q & MGL_AST_Q_UNIFORM) {
             if (t->kind == MGLIR_TYPE_SAMPLER) {
                 push_resource(&lists[_SAMPLED_IMAGE_RES], s, t, location,
-                              sampler_binding, stage);
+                              texture_binding, stage);
                 SpirvResource *last =
                     &lists[_SAMPLED_IMAGE_RES].list[
                         lists[_SAMPLED_IMAGE_RES].count - 1];
-                last->msl_active = GL_TRUE;
-                last->msl_has_combined_sampler = GL_TRUE;
-                last->msl_combined_sampler_binding = sampler_binding;
+                if (s->binding != UINT32_MAX) {
+                    last->gl_binding = s->binding;
+                }
+                last->resource_active = GL_TRUE;
+                last->has_combined_sampler = GL_TRUE;
+                last->combined_sampler_binding = sampler_binding;
                 /* Sampler GL uniform locations live in the synthetic
                  * namespace (mirrors the SPIRV-Cross path in
                  * mglSamplerUniformLocationFromReflection) unless the GLSL
@@ -262,7 +401,21 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                         ? (GLint)s->location
                         : mglSyntheticSamplerUniformLocation(
                               stage, _SAMPLED_IMAGE_RES, sampler_binding);
+                texture_binding++;
                 sampler_binding++;
+                continue;
+            }
+            if (t->kind == MGLIR_TYPE_IMAGE) {
+                push_resource(&lists[_STORAGE_IMAGE_RES], s, t, location,
+                              texture_binding, stage);
+                SpirvResource *last =
+                    &lists[_STORAGE_IMAGE_RES].list[
+                        lists[_STORAGE_IMAGE_RES].count - 1];
+                last->sampler_unit = -1;
+                if (s->binding != UINT32_MAX) {
+                    last->gl_binding = s->binding;
+                }
+                texture_binding++;
                 continue;
             }
             if (s->block_name) {
@@ -272,6 +425,11 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
                 /* Uniform block: independent resource with members. */
                 push_resource(&lists[_UNIFORM_BUFFER_RES], s, t, location,
                               ubo_binding++, stage);
+                if (s->binding != UINT32_MAX) {
+                    lists[_UNIFORM_BUFFER_RES].list[
+                        lists[_UNIFORM_BUFFER_RES].count - 1].gl_binding =
+                        s->binding;
+                }
                 continue;
             }
             /* Plain uniform: collect into the packed aggregate. */
@@ -294,6 +452,10 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         if (q & MGL_AST_Q_BUFFER) {
             push_resource(&lists[_STORAGE_BUFFER_RES], s, t, location,
                           ssbo_binding++, stage);
+            if (s->binding != UINT32_MAX) {
+                lists[_STORAGE_BUFFER_RES].list[
+                    lists[_STORAGE_BUFFER_RES].count - 1].gl_binding = s->binding;
+            }
         } else if (q & MGL_AST_Q_IN) {
             /* Desired location: explicit bindings, stable names, then
              * declaration order (glslang AUTO_MAP_LOCATIONS). */
@@ -357,7 +519,6 @@ int mglAirReflectModule(const MGLIRModule *mod, int stage,
         char agg_name[64];
         snprintf(agg_name, sizeof(agg_name), "air_uniforms_s%d", stage);
         agg.name = strdup(agg_name);
-        agg.msl_name = strdup(agg_name);
         agg.ubo_member_count = agg_count;
         agg.required_size = agg_size;
         agg.uniform_location = -1;   /* assigned by the link pass per stage */

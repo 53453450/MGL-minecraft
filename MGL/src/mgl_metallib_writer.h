@@ -44,6 +44,7 @@ enum MTLBFunctionType {
 struct MTLBFunction {
     std::string name;
     uint8_t type;                    /* MTLBFunctionType */
+    uint8_t tessellation = 0;        /* 4 * control points + patch kind */
     std::vector<uint8_t> bitcode;    /* standalone module blob */
 };
 
