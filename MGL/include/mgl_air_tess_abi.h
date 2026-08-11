@@ -131,6 +131,11 @@ enum {
      * first_vertex, gather_enabled, instance_idx}. */
     MGL_AIR_TESS_SLOT_GATHER_INDEX  = 30, /* TES compute indexed gather    */
     MGL_AIR_TESS_SLOT_GATHER_PARAMS = 25, /* TES compute gather params    */
+    /* TES compute transform-feedback stream: one complete per-vertex
+     * stage-out record per work item (same layout as the slot-28 stage-out
+     * records, stride = stage-out stride).  The runtime binds the GL
+     * transform-feedback target here when feedback is active. */
+    MGL_AIR_TESS_SLOT_XFB_OUT       = 31,
 };
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES == 12u,

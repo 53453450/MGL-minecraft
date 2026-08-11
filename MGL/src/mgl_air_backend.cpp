@@ -162,6 +162,7 @@ struct Codegen {
     llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
     llvm::Value *tessGatherPtr = nullptr;     /* TES compute gather stream */
     llvm::Value *tessGatherParamsPtr = nullptr; /* TES compute gather params*/
+    llvm::Value *xfbOutPtr = nullptr;   /* TES compute XFB stream, buffer(31) */
     llvm::Value *geometryWorkItemId = nullptr;
     llvm::Value *geometryPrimitiveId = nullptr;
     llvm::Value *geometryInvocationId = nullptr;
@@ -5549,7 +5550,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 v.type = typeFromIR(s->type->elem_type);
         } else if (isGS && (q & MGL_AST_Q_OUT)) {
             v.kind = VarSym::OUTPUT;
-        } else if (isKernel) {
+        } else if (isKernel && !isTESCompute) {
             continue;   /* plain compute has no stage varyings */
         } else if (isTES && (q & MGL_AST_Q_IN)) {
             v.kind = VarSym::CONTROL_POINT_INPUT;
@@ -5820,8 +5821,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
          * patch inputs(27) stage_out(28) indirect(29), matching the TCS
          * kernel slot layout, plus the optional indexed gather stream and
          * its params (bound only for indexed draws; the kernel branches on
-         * gather_params.gather_enabled at runtime). */
-        for (int i = 0; i < 7; i++)
+         * gather_params.gather_enabled at runtime), and the optional
+         * transform-feedback stream(31). */
+        for (int i = 0; i < 8; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isTES) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -6020,6 +6022,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
             cg.geometryOutputPtr = cg.stageOutPtr;
             cg.tessGatherPtr = fn->getArg(argSlot++);
             cg.tessGatherParamsPtr = fn->getArg(argSlot++);
+            cg.xfbOutPtr = fn->getArg(argSlot++);
         }
     } else if (isGS) {
         cg.geometryInputPtr = fn->getArg(argSlot++);
@@ -6321,6 +6324,23 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         llvm::Value *innerId = threadItem;
         cg.patchId = patchId;
         cg.geometryWorkItemId = b.CreateAdd(outputBase, innerId);
+        llvm::Value *itemsC = b.CreateAlignedLoad(
+            b.getInt32Ty(),
+            b.CreateGEP(b.getInt32Ty(), contract, b.getInt32(2)),
+            llvm::Align(4));
+        llvm::Function *kfn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock *okBB = llvm::BasicBlock::Create(
+            ctx, "tesk_inrange", kfn);
+        llvm::BasicBlock *oobBB = llvm::BasicBlock::Create(
+            ctx, "tesk_oob", kfn);
+        b.CreateCondBr(b.CreateICmpUGE(innerId, itemsC), oobBB, okBB);
+        {
+            llvm::IRBuilder<>::InsertPoint ip = b.saveIP();
+            b.SetInsertPoint(oobBB);
+            b.CreateRetVoid();
+            b.restoreIP(ip);
+        }
+        b.SetInsertPoint(okBB);
         llvm::Value *factorBase = b.CreateGEP(
             b.getInt8Ty(), cg.tessFactorPtr,
             b.CreateMul(b.CreateZExt(patchId, b.getInt64Ty()),
@@ -6346,18 +6366,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         };
         llvm::Value *u = nullptr, *v = nullptr;
         if (tu->layout_primitive == MGL_AST_TES_ISOLINES) {
-            llvm::Value *segments = ceilClamp(loadHalf(0), 1.0f);
-            llvm::Value *lines = ceilClamp(loadHalf(1), 1.0f);
-            llvm::Value *perLine = b.CreateMul(segments, b.getInt32(2));
+            /* GL 4.6 §11.2.2.3: outer[0] selects the number of isolines n
+             * at v = {0, 1/n, ..., (n-1)/n}; outer[1] selects the m
+             * segments per row.  Each segment is emitted as one line
+             * primitive with two vertices at u = {seg/m, (seg+1)/m}, so
+             * each row contributes 2*m vertices. */
+            llvm::Value *n = ceilClamp(loadHalf(0), 1.0f);
+            llvm::Value *m = ceilClamp(loadHalf(1), 1.0f);
+            llvm::Value *perLine = b.CreateMul(m, b.getInt32(2));
             llvm::Value *lineIdx = b.CreateUDiv(innerId, perLine);
             llvm::Value *t = b.CreateURem(innerId, perLine);
             llvm::Value *seg = b.CreateUDiv(t, b.getInt32(2));
             llvm::Value *vtx = b.CreateURem(t, b.getInt32(2));
-            u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(segments));
-            v = b.CreateFDiv(
-                b.CreateFAdd(toF(lineIdx),
-                             llvm::ConstantFP::get(f32, 0.5)),
-                toF(lines));
+            u = b.CreateFDiv(toF(b.CreateAdd(seg, vtx)), toF(m));
+            v = b.CreateFDiv(toF(lineIdx), toF(n));
         } else if (tu->layout_primitive == MGL_AST_TES_QUADS) {
             /* point_mode quads: one point at each inner grid cell centre. */
             llvm::Value *nx = ceilClamp(loadHalf(4), 1.0f);
@@ -6470,6 +6492,21 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::Type::getFloatTy(ctx));
         storeGeometryPointSize(cg, b.getInt32(0), pointSize);
         storeTessComputeVaryings(cg, b.getInt32(0));
+        if (cg.xfbOutPtr) {
+            /* Transform-feedback stream (slot 31): one complete stage-out
+             * record per work item, same layout/stride as slot 28.  The
+             * runtime binds the GL target here only when feedback is
+             * active; the kernel copy is otherwise skipped. */
+            llvm::Value *xfbSlot = b.CreateMul(
+                b.CreateZExt(cg.geometryWorkItemId, b.getInt64Ty()),
+                b.getInt64(cg.stageOutStride));
+            llvm::Value *xfbBase = b.CreateGEP(b.getInt8Ty(),
+                                               cg.xfbOutPtr, xfbSlot);
+            llvm::Value *stageBase = b.CreateGEP(
+                b.getInt8Ty(), cg.geometryOutputPtr, xfbSlot);
+            b.CreateMemCpy(xfbBase, llvm::Align(16), stageBase,
+                           llvm::Align(16), b.getInt64(cg.stageOutStride));
+        }
     }
 
     if (cg.err && cg.err != 2) {
@@ -6992,20 +7029,22 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (isTESCompute) {
         /* isolines/point-mode TES kernel ABI: stage_in(24, control points),
          * tess factors(26), patch inputs(27), stage out(28, expanded vertex
-         * records), indirect contract(29, {patch_count, items_per_patch}),
-         * and the optional indexed gather stream(30)/params(25). */
+         * records), indirect contract(29, {patch_id, vertices_per_patch,
+         * items_per_patch, output_offset}), the optional indexed gather
+         * stream(30)/params(25), and the optional transform-feedback
+         * stream(31). */
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
-        const uint32_t locs[7] = {24u, 26u, 27u, 28u, 29u, 30u, 25u};
-        const char *names[7] = {"tes_stage_in", "tess_factors",
+        const uint32_t locs[8] = {24u, 26u, 27u, 28u, 29u, 30u, 25u, 31u};
+        const char *names[8] = {"tes_stage_in", "tess_factors",
                                 "tes_patch_inputs", "tes_stage_out",
                                 "tes_indirect", "tes_gather",
-                                "tes_gather_params"};
-        const char *access[7] = {"air.read", "air.read", "air.read",
+                                "tes_gather_params", "tes_xfb_out"};
+        const char *access[8] = {"air.read", "air.read", "air.read",
                                  "air.read_write", "air.read", "air.read",
-                                 "air.read"};
-        for (int i = 0; i < 7; i++) {
+                                 "air.read", "air.read_write"};
+        for (int i = 0; i < 8; i++) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), arg++)),

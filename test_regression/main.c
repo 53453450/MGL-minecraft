@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 49
+#define MAX_TESTS 50
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -6047,6 +6047,217 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_isolines_xfb(unsigned char *pixels,
+                                              const char *out_path)
+{
+    /* P2E transform-feedback coverage for the isolines TES compute path:
+     * two patches, outer {4, 2} each.  Per GL 4.6 §11.2.2.3 the primitive
+     * generator emits n=outer[0] isolines at v = {0, 1/n, ..., (n-1)/n},
+     * each subdivided into m=outer[1] segments; each segment is one line
+     * primitive of two vertices, so 2*n*m = 16 expanded vertices per
+     * patch.  The kernel writes the XFB stream (slot 31) with one
+     * complete stage-out record per work item; the test reads back the
+     * buffer and verifies all 32 expected tf_pos values are present, plus
+     * PRIMITIVES_GENERATED (n*m*2 = 16 lines) / PRIMITIVES_WRITTEN
+     * (32 vertices / 2 = 16 lines) query counts. */
+    (void)out_path;
+    (void)pixels;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "layout(location=0) out vec2 tf_pos;\n"
+        "void main() {\n"
+        "  vec2 p = mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "               gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  tf_pos = p;\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const float positions[12] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,   /* patch A */
+        0.2f, -0.3f, 1.6f, -0.3f, 0.9f, -0.9f,    /* patch B (+0.9) */
+    };
+    static const char *tf_varying = "tf_pos";
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, tbo = 0u;
+    GLuint gen_q = 0u, wr_q = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint program = glCreateProgram();
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_TESS_EVALUATION_SHADER, iso_tes),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!program || !shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glTransformFeedbackVaryings(program, 1, &tf_varying,
+                                GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr,
+                    "air_tessellation_isolines_xfb: link FAIL: %s\n", log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &gen_q);
+    glGenQueries(1, &wr_q);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {1.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+
+    glGenBuffers(1, &tbo);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 4096, NULL,
+                 GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo);
+
+    glBeginTransformFeedback(GL_LINES);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+    glDrawArrays(GL_PATCHES, 0, 6);
+    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glEndTransformFeedback();
+    glFinish();
+    {
+        /* XFB without GL_RASTERIZER_DISCARD must also rasterize: the
+         * passthrough draw emits the captured lines to the FBO. */
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const int sx = (int)((0.0f + 1.0f) * 0.5f * REG_W);
+        const int sy = (int)((-0.15f + 1.0f) * 0.5f * REG_H);
+        int drawn = 0;
+        for (int dy = -2; dy <= 2 && !drawn; dy++) {
+            for (int dx = -2; dx <= 2; dx++) {
+                const int px = sx + dx, py = sy + dy;
+                if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                    drawn = 1;
+                    break;
+                }
+            }
+        }
+        if (!drawn) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_xfb: XFB with rasterization "
+                    "enabled drew no lines at (%d,%d)\n", sx, sy);
+            goto cleanup;
+        }
+    }
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 16u || written != 16u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_xfb: query got generated=%u "
+                    "written=%u, expected 16/16\n", generated, written);
+            goto cleanup;
+        }
+    }
+    {
+        /* Expected records: per patch, 4 isolines at v={0,1/4,1/2,3/4}
+         * (y=-0.3,-0.15,0,0.15), each with 2 segments = 4 vertices at
+         * u={0,1/2,1/2,1} (x=-0.7,-0.35,-0.35,0 for patch A, +0.9 for
+         * patch B) -> 16 records per patch, 32 in total.  Each record is
+         * a full stage-out record (stride 20 floats); its position and
+         * tf_pos must both match the expected tessellated vertex. */
+        GLfloat data[4096 / 4];
+        GLenum err = GL_NO_ERROR;
+        while ((err = glGetError()) != GL_NO_ERROR) { }
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(data),
+                           data);
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_xfb: readback FAIL\n");
+            goto cleanup;
+        }
+        for (int r = 0; r < 32; r++) {
+            const float rx = data[r * 20 + 0];
+            const float ry = data[r * 20 + 1];
+            const float tx = data[r * 20 + 16];
+            const float ty = data[r * 20 + 17];
+            int found = 0;
+            for (int p = 0; p < 2 && !found; p++) {
+                const float dx = p == 1 ? 0.9f : 0.0f;
+                for (int row = 0; row < 4 && !found; row++) {
+                    const float yv = (float)row / 4.0f * 0.6f;
+                    const float exp_y = -0.3f + yv;
+                    for (int seg = 0; seg < 2 && !found; seg++) {
+                        for (int vtx = 0; vtx < 2 && !found; vtx++) {
+                            const float u =
+                                ((float)seg + (float)vtx) / 2.0f;
+                            const float ex = -0.7f + 1.4f * u + dx;
+                            if (rx - ex > -1e-3f && rx - ex < 1e-3f &&
+                                ry - exp_y > -1e-3f && ry - exp_y < 1e-3f &&
+                                tx - ex > -1e-3f && tx - ex < 1e-3f &&
+                                ty - exp_y > -1e-3f &&
+                                ty - exp_y < 1e-3f) {
+                                found = 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_xfb: record %d "
+                        "pos=(%g,%g) tf=(%g,%g) not an expected vertex\n",
+                        r, rx, ry, tx, ty);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (wr_q) glDeleteQueries(1, &wr_q);
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (tbo) glDeleteBuffers(1, &tbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -6104,6 +6315,8 @@ static const TestCase TESTS[] = {
                     test_air_tessellation_isolines_rasterdiscard),
     SELF_CHECK_TEST("air_tessellation_isolines_tripoint_instanced",
                     test_air_tessellation_isolines_tripoint_instanced),
+    SELF_CHECK_TEST("air_tessellation_isolines_xfb",
+                    test_air_tessellation_isolines_xfb),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),
