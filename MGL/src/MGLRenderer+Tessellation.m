@@ -1664,6 +1664,19 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                 }
             }
         }
+    } else {
+        /* The TES compute kernel always declares and writes the XFB stream
+         * slot (31); bind a 1-byte dummy so the slot is never dangling when
+         * GL feedback is inactive. */
+        if (!_tessellation.tessXfbDummyBuffer) {
+            _tessellation.tessXfbDummyBuffer =
+                mglTessCreateBuffer(_device, 1u, MTLResourceStorageModeShared);
+        }
+        if (_tessellation.tessXfbDummyBuffer) {
+            mglTessSetComputeBuffer(computeEncoder,
+                                    _tessellation.tessXfbDummyBuffer, 0u,
+                                    MGL_AIR_TESS_SLOT_XFB_OUT);
+        }
     }
 
     /* Dispatch per patch (item counts differ per patch).  The contract
