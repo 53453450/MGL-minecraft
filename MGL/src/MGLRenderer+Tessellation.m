@@ -1298,10 +1298,36 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
               (unsigned)tesProgram->name);
         return false;
     }
+    if (_tessellation.tessIndexedDraw) {
+        /* Indexed draws: the capture is a sparse [instance][vertex_id]
+         * stream read through the gather stream in the kernel (slot 30 +
+         * params slot 25); the instance offset math below does not apply. */
+        if (!_tessellation.tessControlPointIndexBuffer ||
+            _tessellation.tessInstanceRecords == 0u) {
+            NSLog(@"MGL TESS ERROR: indexed TES compute missing gather "
+                  "program=%u", (unsigned)tesProgram->name);
+            return false;
+        }
+    }
     if (glInStride < MGL_AIR_PER_VERTEX_STRIDE) {
         glInStride = MGL_AIR_PER_VERTEX_STRIDE;
     }
     if (glInVertices == 0u) glInVertices = MAX(1u, contract->patch_vertices);
+    const BOOL glInFromTCS = (glInBuffer == _tessellation.tcsOutputBuffer);
+    const NSUInteger glInInstanceStride =
+        (glInFromTCS || _tessellation.tessIndexedDraw)
+            ? 0u
+            : _tessellation.tessInstanceRecords * glInStride;
+    if (glInFromTCS && instanceCount > 1) {
+        /* The TCS kernel has no instance dimension (its dispatch is
+         * patchCount threads over a single spvOut span), so a second
+         * instance would read the wrong control points.  Reject like the
+         * native path instead of rendering garbage. */
+        NSLog(@"MGL TESS ERROR: TCS + instanced TES compute unsupported "
+              "program=%u instances=%d",
+              tesProgram->name, instanceCount);
+        return false;
+    }
 
     /* Compute per-patch item counts and the per-instance total. */
     const uint16_t *factorBytes =
@@ -1524,9 +1550,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     /* Fixed ABI buffers (backend mgl_air_tess_abi.h §3): stage_in(24) is
      * the control point stream, factors(26) the quad-half records, patch
      * inputs(27) the TCS per-patch output, stageOut(28) the expanded
-     * vertex records, indirect(29) the per-dispatch contract. */
-    mglTessSetComputeBuffer(computeEncoder, glInBuffer, glInOffset,
-                            MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
+     * vertex records, indirect(29) the per-dispatch contract.  The stage_in
+     * offset is rebased per instance (TES-only captures lay out
+     * [instance][vertex]); the remaining ABI buffers are instance
+     * invariant. */
     mglTessSetComputeBuffer(computeEncoder, _tessellation.tessFactorBuffer,
                             0u, MGL_AIR_TESS_SLOT_TESS_FACTOR);
     id<MTLBuffer> patchInputs = _tessellation.tcsPatchOutBuffer;
@@ -1562,7 +1589,34 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
     uint32_t contractWords[4];
     contractWords[1] = glInVertices;
+    const BOOL indexed = _tessellation.tessIndexedDraw;
+    id<MTLBuffer> gatherBuffer = indexed
+        ? _tessellation.tessControlPointIndexBuffer : nil;
+    const GLuint gatherFirstVertex = 0u;
+    const GLuint gatherVertsPerInstance =
+        indexed ? (GLuint)_tessellation.tessInstanceRecords
+                : MAX(1u, contract->patch_vertices);
+    const GLuint gatherPrimsPerInstance =
+        indexed ? patchCount : 0u;
     for (GLuint inst = 0u; inst < instanceCountU; inst++) {
+        const NSUInteger instGlInOffset =
+            indexed ? 0u
+                    : glInOffset + (NSUInteger)inst * glInInstanceStride;
+        mglTessSetComputeBuffer(computeEncoder, glInBuffer, instGlInOffset,
+                                MGL_AIR_TESS_SLOT_TCS_STAGE_IN);
+        if (gatherBuffer) {
+            mglTessSetComputeBuffer(computeEncoder, gatherBuffer, 0u,
+                                    MGL_AIR_TESS_SLOT_GATHER_INDEX);
+        }
+        {
+            const GLuint gatherParams[5] = {
+                gatherVertsPerInstance, gatherPrimsPerInstance,
+                gatherFirstVertex, indexed ? 1u : 0u, inst,
+            };
+            mglTessSetComputeBytes(computeEncoder, gatherParams,
+                                   sizeof(gatherParams),
+                                   MGL_AIR_TESS_SLOT_GATHER_PARAMS);
+        }
         for (GLuint p = 0u; p < patchCount; p++) {
             const void *record =
                 (const void *)((const uint8_t *)factorBytes +
@@ -1590,20 +1644,32 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     /* Rasterize through the passthrough vertex stage. */
+    const GLenum genMode = tesProgram->tess_gen_mode;
+    const GLboolean pointMode = tesProgram->tess_gen_point_mode;
+    const uint64_t primitivesPerInstance =
+        pointMode ? itemsPerInstanceU
+                  : (genMode == GL_ISOLINES ? itemsPerInstanceU / 2u
+                                            : itemsPerInstanceU / 3u);
+    if (MGL_STATE(glm_ctx)->caps.rasterizer_discard) {
+        /* GL_RASTERIZER_DISCARD: no pixels by definition, so skip the
+         * passthrough draw entirely, but the compute expansion already ran
+         * and the primitive query must still count the generated primitives
+         * (persistent query semantics). */
+        _currentCBHasWork = YES;
+        mglRecordActivePrimitiveQueryDraw(
+            glm_ctx,
+            (GLuint64)instanceCount * primitivesPerInstance,
+            (GLuint64)instanceCount * primitivesPerInstance);
+        return YES;
+    }
     if (![self ensureAIRTessEvalPassthroughFunctionForProgram:tesProgram]) {
         NSLog(@"MGL TESS ERROR: TES passthrough vertex unavailable program=%u",
               (unsigned)tesProgram->name);
         return false;
     }
-    const GLenum genMode = tesProgram->tess_gen_mode;
-    const GLboolean pointMode = tesProgram->tess_gen_point_mode;
     MTLPrimitiveType primType = pointMode ? MTLPrimitiveTypePoint
         : (genMode == GL_ISOLINES ? MTLPrimitiveTypeLine
                                   : MTLPrimitiveTypePoint);
-    const uint64_t primitivesPerInstance =
-        pointMode ? itemsPerInstanceU
-                  : (genMode == GL_ISOLINES ? itemsPerInstanceU / 2u
-                                            : itemsPerInstanceU / 3u);
 
     _tessellation.tessComputeActive = YES;
     _tessellation.tessComputeOutputBuffer = outBuffer;

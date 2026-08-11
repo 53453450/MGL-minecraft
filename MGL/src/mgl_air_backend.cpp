@@ -160,6 +160,8 @@ struct Codegen {
     llvm::Value *geometryCountPtr = nullptr;  /* GS indirect draw args */
     llvm::Value *geometryGatherPtr = nullptr; /* GS indexed gather stream */
     llvm::Value *geometryGatherParamsPtr = nullptr; /* GS gather params    */
+    llvm::Value *tessGatherPtr = nullptr;     /* TES compute gather stream */
+    llvm::Value *tessGatherParamsPtr = nullptr; /* TES compute gather params*/
     llvm::Value *geometryWorkItemId = nullptr;
     llvm::Value *geometryPrimitiveId = nullptr;
     llvm::Value *geometryInvocationId = nullptr;
@@ -1695,9 +1697,62 @@ static llvm::Value *emitPerVertexLoad(Codegen &cg, const MGLExpr *e,
             llvm::Align(4));
         llvm::Value *flat = cg.b->CreateAdd(
             cg.b->CreateMul(cg.patchId, verticesPerPatch), iv);
+        llvm::Value *recordIdx = flat;
+        if (cg.isTESCompute && cg.tessGatherPtr && cg.tessGatherParamsPtr) {
+            /* Indexed draws: the stage input is a sparse capture stream
+             * ([instance][vertex_id]) and the gather stream carries the raw
+             * index of every gl_in slot of a per-instance patch group.
+             * Gather params (mgl_air_tess_abi.h §3): {vertices_per_instance,
+             * primitives_per_instance, first_vertex, gather_enabled,
+             * instance_idx}. */
+            llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+            llvm::Value *params = cg.b->CreateBitCast(
+                cg.tessGatherParamsPtr, i32->getPointerTo(1));
+            llvm::Value *gatherEnabled = cg.b->CreateAlignedLoad(
+                i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(3)),
+                llvm::Align(4));
+            llvm::BasicBlock *gatherBB = llvm::BasicBlock::Create(
+                *cg.ctx, "tes_gather", cg.fn);
+            llvm::BasicBlock *arrayBB = llvm::BasicBlock::Create(
+                *cg.ctx, "tes_array", cg.fn);
+            llvm::BasicBlock *mergeBB = llvm::BasicBlock::Create(
+                *cg.ctx, "tes_gather_merge", cg.fn);
+            cg.b->CreateCondBr(
+                cg.b->CreateICmpNE(gatherEnabled, cg.b->getInt32(0)),
+                gatherBB, arrayBB);
+            cg.b->SetInsertPoint(gatherBB);
+            llvm::Value *vertsPerInst = cg.b->CreateAlignedLoad(
+                i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(0)),
+                llvm::Align(4));
+            llvm::Value *firstVertex = cg.b->CreateAlignedLoad(
+                i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(2)),
+                llvm::Align(4));
+            llvm::Value *instanceIdx = cg.b->CreateAlignedLoad(
+                i32, cg.b->CreateGEP(i32, params, cg.b->getInt32(4)),
+                llvm::Align(4));
+            llvm::Value *gatherBase = cg.b->CreateBitCast(
+                cg.tessGatherPtr, i32->getPointerTo(1));
+            llvm::Value *vid = cg.b->CreateAlignedLoad(
+                i32,
+                cg.b->CreateGEP(
+                    i32, gatherBase,
+                    cg.b->CreateZExt(flat, cg.b->getInt64Ty())),
+                llvm::Align(4));
+            llvm::Value *gatherIdx = cg.b->CreateAdd(
+                cg.b->CreateSub(vid, firstVertex),
+                cg.b->CreateMul(instanceIdx, vertsPerInst));
+            cg.b->CreateBr(mergeBB);
+            cg.b->SetInsertPoint(arrayBB);
+            cg.b->CreateBr(mergeBB);
+            cg.b->SetInsertPoint(mergeBB);
+            llvm::PHINode *phi = cg.b->CreatePHI(i32, 2);
+            phi->addIncoming(gatherIdx, gatherBB);
+            phi->addIncoming(flat, arrayBB);
+            recordIdx = phi;
+        }
         llvm::Value *off = cg.b->CreateAdd(
             cg.b->CreateMul(
-                cg.b->CreateZExt(flat, cg.b->getInt64Ty()),
+                cg.b->CreateZExt(recordIdx, cg.b->getInt64Ty()),
                 cg.b->getInt64(cg.stageInStride)),
             cg.b->getInt64(perVertexFieldOffset(field)));
         llvm::Value *p = cg.b->CreateGEP(
@@ -5763,8 +5818,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     if (isTESCompute) {
         /* isolines/point-mode TES kernel ABI: stage_in(24) factors(26)
          * patch inputs(27) stage_out(28) indirect(29), matching the TCS
-         * kernel slot layout. */
-        for (int i = 0; i < 5; i++)
+         * kernel slot layout, plus the optional indexed gather stream and
+         * its params (bound only for indexed draws; the kernel branches on
+         * gather_params.gather_enabled at runtime). */
+        for (int i = 0; i < 7; i++)
             paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
     } else if (isTES) {
         paramTys.push_back(llvm::Type::getInt8Ty(ctx)->getPointerTo(1));
@@ -5961,6 +6018,8 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
              * buffer itself (slot 24). */
             cg.patchControlPtr = cg.stageInPtr;
             cg.geometryOutputPtr = cg.stageOutPtr;
+            cg.tessGatherPtr = fn->getArg(argSlot++);
+            cg.tessGatherParamsPtr = fn->getArg(argSlot++);
         }
     } else if (isGS) {
         cg.geometryInputPtr = fn->getArg(argSlot++);
@@ -6933,17 +6992,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
     } else if (isTESCompute) {
         /* isolines/point-mode TES kernel ABI: stage_in(24, control points),
          * tess factors(26), patch inputs(27), stage out(28, expanded vertex
-         * records), indirect contract(29, {patch_count, items_per_patch}). */
+         * records), indirect contract(29, {patch_count, items_per_patch}),
+         * and the optional indexed gather stream(30)/params(25). */
         uint32_t arg = (hasBuffer ? 1u : 0u) + ssboCount + uboCount +
                        (needsBufferSizeBuffer ? 1u : 0u) + 2u * texCount +
                        imageCount;
-        const uint32_t locs[5] = {24u, 26u, 27u, 28u, 29u};
-        const char *names[5] = {"tes_stage_in", "tess_factors",
+        const uint32_t locs[7] = {24u, 26u, 27u, 28u, 29u, 30u, 25u};
+        const char *names[7] = {"tes_stage_in", "tess_factors",
                                 "tes_patch_inputs", "tes_stage_out",
-                                "tes_indirect"};
-        const char *access[5] = {"air.read", "air.read", "air.read",
-                                 "air.read_write", "air.read"};
-        for (int i = 0; i < 5; i++) {
+                                "tes_indirect", "tes_gather",
+                                "tes_gather_params"};
+        const char *access[7] = {"air.read", "air.read", "air.read",
+                                 "air.read_write", "air.read", "air.read",
+                                 "air.read"};
+        for (int i = 0; i < 7; i++) {
             argNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), arg++)),
@@ -6998,7 +7060,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         uboCount + (needsBufferSizeBuffer ? 1 : 0) + 2 * texCount + imageCount;
     if (isTCS) mArgSlot += 5;
     else if (isGS) mArgSlot += 5;  /* input/output/counts/gather/params */
-    else if (isTESCompute) mArgSlot += 5; /* stage_in/factors/patches/out/indirect */
+    else if (isTESCompute) mArgSlot += 7; /* stage_in/factors/patches/out/indirect/gather/params */
     if (isVS) {
         /* Vertex attribute metadata already emitted above. */
     } else if (isTES && !isTESCompute) {

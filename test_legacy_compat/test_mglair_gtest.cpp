@@ -523,13 +523,14 @@ TEST(Metallib, ArrayLengthRejectsNonArrayReceiver) {
 }
 
 TEST(Metallib, TessEvaluationRejectsUnsupportedPrimitive) {
+    /* isolines became a legal emulated path with P2E (TES compute
+     * expansion), so it must compile; only unknown topologies fail. */
     static const char *src =
         "#version 450 core\n"
         "layout(isolines, equal_spacing, cw) in;\n"
         "void main() { gl_Position = vec4(gl_TessCoord, 1.0); }\n";
     CompileResult r = compile(src, MGL_STAGE_TESS_EVALUATION);
-    EXPECT_NE(0, r.rc);
-    EXPECT_NE(std::string::npos, r.err.find("only layout(triangles/quads)"));
+    EXPECT_EQ(0, r.rc) << r.err;
 }
 
 TEST(Metallib, TessEvaluationQuadAirVertex) {

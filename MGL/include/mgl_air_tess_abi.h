@@ -124,6 +124,13 @@ enum {
     MGL_AIR_TESS_SLOT_INDIRECT      = 29, /* {vertex_count,instance_count}*/
     MGL_AIR_TESS_SLOT_GL_IN         = 30, /* TES gl_in (TCS output verts) */
     MGL_AIR_TESS_SLOT_TCS_STAGE_IN  = 24, /* TCS packed stage_in repl     */
+    /* TES compute indexed draw (same compute-encoder slot namespace as the
+     * GS gather; independent of the render-stage GL_IN slot 30): the
+     * gather stream is one uint32 per gl_in slot of a per-instance patch
+     * group; params = {vertices_per_instance, primitives_per_instance,
+     * first_vertex, gather_enabled, instance_idx}. */
+    MGL_AIR_TESS_SLOT_GATHER_INDEX  = 30, /* TES compute indexed gather    */
+    MGL_AIR_TESS_SLOT_GATHER_PARAMS = 25, /* TES compute gather params    */
 };
 
 MGL_AIR_TESS_STATIC_ASSERT(MGL_AIR_TESS_FACTOR_QUAD_HALF_BYTES == 12u,

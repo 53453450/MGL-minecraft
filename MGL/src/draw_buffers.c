@@ -2094,7 +2094,7 @@ void mglMultiDrawArrays(GLMContext ctx, GLenum mode, const GLint *first, const G
         return;
     }
 
-    if (ctx->draw_defer_enabled) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
                 continue;
@@ -2150,7 +2150,7 @@ void mglMultiDrawElements(GLMContext ctx, GLenum mode, const GLsizei *count, GLe
         return;
     }
 
-    if (ctx->draw_defer_enabled) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {
@@ -2210,7 +2210,7 @@ void mglMultiDrawElementsBaseVertex(GLMContext ctx, GLenum mode, const GLsizei *
         return;
     }
 
-    if (ctx->draw_defer_enabled) {
+    if (ctx->draw_defer_enabled && mode != GL_PATCHES) {
         Buffer *elementBuffer = mglCurrentElementBuffer(ctx, __func__);
         for (GLsizei i = 0; i < drawcount; i++) {
             if (count[i] == 0) {

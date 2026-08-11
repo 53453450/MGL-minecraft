@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 44
+#define MAX_TESTS 49
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -5226,10 +5226,830 @@ cleanup:
     return result;
 }
 
+static int test_air_tessellation_isolines_variants(unsigned char *pixels,
+                                                    const char *out_path)
+{
+    /* P2E combination coverage on top of air_tessellation_isolines_point_mode:
+     * TES-only (no TCS) draws, instanced (VS shifts per gl_InstanceID),
+     * multi-patch (two isoline patches, per-patch TCS factors) and an
+     * indirect command, plus GL_PRIMITIVES_GENERATED query counts. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position + vec2(float(gl_InstanceID) * 0.6, 0.0),\n"
+        "                     0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "               gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const char *quad_tes =
+        "#version 450 core\n"
+        "layout(quads, equal_spacing, point_mode) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "                   gl_TessCoord.x),\n"
+        "               mix(gl_in[2].gl_Position.xy, gl_in[3].gl_Position.xy,\n"
+        "                   gl_TessCoord.x), gl_TessCoord.y);\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    static const char *mp_tcs =
+        "#version 450 core\n"
+        "layout(vertices=3) out;\n"
+        "void main() {\n"
+        "  gl_out[gl_InvocationID].gl_Position = "
+        "gl_in[gl_InvocationID].gl_Position;\n"
+        "  if (gl_InvocationID == 0) {\n"
+        "    if (gl_PrimitiveID == 0) {\n"
+        "      gl_TessLevelOuter[0] = 4.0;\n"
+        "      gl_TessLevelOuter[1] = 2.0;\n"
+        "    } else {\n"
+        "      gl_TessLevelOuter[0] = 2.0;\n"
+        "      gl_TessLevelOuter[1] = 1.0;\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+
+    /* Isoline base points A(-0.7,-0.3) B(0.7,-0.3); C unused.  Quad corners
+     * p00 p10 p01 p11.  Second patch (multi-patch stage) uses its own
+     * control points shifted +0.9. */
+    static const float iso_positions[6] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,
+    };
+    static const float quad_positions[8] = {
+        -0.5f, -0.5f, 0.5f, -0.5f, -0.5f, 0.5f, 0.5f, 0.5f,
+    };
+    static const float mp_positions[12] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, cmd_buf = 0u, q = 0u;
+    GLuint iso_program =
+        link_program_tess_eval_only(vs, iso_tes, fs);
+    GLuint quad_program =
+        link_program_tess_eval_only(vs, quad_tes, fs);
+    GLuint mp_program = link_program_with_tessellation(vs, mp_tcs, iso_tes, fs);
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo || !iso_program || !quad_program || !mp_program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &cmd_buf);
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, cmd_buf);
+    glGenQueries(1, &q);
+
+    /* Stage 1: TES-only instanced isolines, outer {4, 2}.  Two instances,
+     * instance 1 shifted +0.6; 8 lines per instance -> 16 primitives. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(iso_positions), iso_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(iso_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {1.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glDrawArraysInstanced(GL_PATCHES, 0, 3, 2);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 16u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_variants: instanced isoline "
+                    "query got %u primitives, expected 16\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Segment midpoints: u=0.375 -> x=-0.175 on instance 0, +0.6 on
+         * instance 1; v=0.25/0.75 -> y=-0.15/+0.15. */
+        static const float probes[4][2] = {
+            {-0.175f, -0.15f}, { 0.425f, -0.15f},
+            {-0.175f,  0.15f}, { 0.425f,  0.15f},
+        };
+        for (int i = 0; i < 4; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_variants: instanced "
+                        "isoline probe %d not drawn at (%d,%d)\n",
+                        i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Stage 2: TES-only quad point_mode via glDrawArraysIndirect, inner
+     * {3, 3} -> 9 points (query count 9). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad_positions), quad_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(quad_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 4);
+    {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {3.0f, 3.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    {
+        /* DrawArraysIndirectCommand: {count, primCount, first, baseInstance} */
+        const GLuint cmd[4] = {4u, 1u, 0u, 0u};
+        glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(cmd), cmd, GL_STATIC_DRAW);
+    }
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glDrawArraysIndirect(GL_PATCHES, 0);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 9u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_variants: indirect quad point "
+                    "query got %u primitives, expected 9\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float xs[3] = {-1.0f / 3.0f, 0.0f, 1.0f / 3.0f};
+        for (int j = 0; j < 3; j++) {
+            for (int i = 0; i < 3; i++) {
+                const int sx = (int)((xs[i] + 1.0f) * 0.5f * REG_W);
+                const int sy = (int)((xs[j] + 1.0f) * 0.5f * REG_H);
+                const unsigned char *px = &pixels[(sy * REG_W + sx) * 4];
+                if (px[0] > 20u || px[1] < 220u || px[2] > 20u) {
+                    fprintf(stderr,
+                            "air_tessellation_isolines_variants: indirect "
+                            "quad point (%d,%d) expected green, got "
+                            "(%u,%u,%u)\n",
+                            i, j, px[0], px[1], px[2]);
+                    goto cleanup;
+                }
+            }
+        }
+    }
+
+    /* Stage 3: TCS multi-patch isolines.  Patch 0: outer {4,2} (16 items,
+     * 8 lines); patch 1: outer {2,1} (4 items, 2 lines) whose control
+     * points sit at x+0.9 (mirrored base line). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(mp_positions), mp_positions,
+                 GL_STATIC_DRAW);
+    glUseProgram(mp_program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    glDrawArrays(GL_PATCHES, 0, 6);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Patch 0 lines at y=-0.15: x=-0.175 (segment u=0.375).  Patch 1:
+         * 2 segments -> vertices at u=0 and u=0.5; the segment midpoint is
+         * u=0.25 -> x = (0.2+0.9) + ... control points at +0.9: A'(-0.7+0.9,
+         * -0.3) B'(0.7+0.9, -0.3); u=0.25 -> x = -0.7+0.9+1.4*0.25 = 0.55;
+         * y = -0.3 + 0.6*(line+0.5)/1 = -0.15. */
+        static const float probes[2][2] = {
+            {-0.175f, -0.15f},
+            { 0.55f,  -0.15f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_variants: multi-patch "
+                        "isoline probe %d not drawn at (%d,%d)\n",
+                        i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (cmd_buf) glDeleteBuffers(1, &cmd_buf);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (iso_program) glDeleteProgram(iso_program);
+    if (quad_program) glDeleteProgram(quad_program);
+    if (mp_program) glDeleteProgram(mp_program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_isolines_indexed(unsigned char *pixels,
+                                                  const char *out_path)
+{
+    /* Indexed TES-only isolines through the AIR TES compute kernel's
+     * gather path: a shuffled element stream (patch 0 reads gl_in in order
+     * C,A,B) exercises the gather mapping, two instances exercise the
+     * per-instance sparse-capture offset decomposition, and a restart
+     * marker splits the stream into two patches with shared indices. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position + vec2(float(gl_InstanceID) * 0.6, 0.0),\n"
+        "                     0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "               gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const float positions[6] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f, /* A B C */
+    };
+    /* Patch 0: {2,0,1} -> gl_in = (C,A,B); line 0 spans C->A.
+     * Restart (0xFFFFFFFF) then patch 1: {1,0,2} -> gl_in = (B,A,C). */
+    static const GLuint indices[8] = {
+        2u, 0u, 1u, 0xFFFFFFFFu, 1u, 0u, 2u,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, ebo = 0u, q = 0u;
+    GLuint program = link_program_tess_eval_only(vs, iso_tes, fs);
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
+                 GL_STATIC_DRAW);
+    glGenQueries(1, &q);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {1.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    glEnable(GL_PRIMITIVE_RESTART);
+    glPrimitiveRestartIndex(0xFFFFFFFFu);
+    /* Restart splits 7 indices into two 3-vertex patches; two instances ->
+     * 2 patches * 8 lines * 2 instances = 32 primitives. */
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glDrawElementsInstanced(GL_PATCHES, 7, GL_UNSIGNED_INT, 0, 2);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 32u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_indexed: query got %u "
+                    "primitives, expected 32\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Patch 0 line 0: gl_in=(C,A); u=0.375, v=0.25 ->
+         * x = 0 + (-0.7)*0.375 = -0.2625 ; y = -0.9+0.225+0.15 = -0.525.
+         * Patch 1 line 0: gl_in=(B,A) on instance 0 at x+0.0 and the whole
+         * scene shifts +0.6 on instance 1. */
+        static const float probes[3][2] = {
+            {-0.2625f, -0.525f},
+            { 0.3375f, -0.525f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_indexed: probe %d not "
+                        "drawn at (%d,%d)\n", i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_isolines_multidraw(unsigned char *pixels,
+                                                    const char *out_path)
+{
+    /* glMultiDrawArrays over GL_PATCHES: each sub-draw is a separate
+     * TES-only isolines dispatch with its own control points; the query
+     * sums both sub-draws. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "               gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const float positions[12] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,   /* patch A */
+        0.2f,  -0.3f, 1.6f, -0.3f, 0.9f, -0.9f,   /* patch B */
+    };
+    static const GLuint ebo_data[6] = {0u, 1u, 2u, 3u, 4u, 5u};
+    static const void *ebo_ranges[2] = {(void *)0u, (void *)(3u * 4u)};
+    static const GLint firsts[2] = {0, 3};
+    static const GLsizei counts[2] = {3, 3};
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, ebo = 0u, q = 0u;
+    GLuint program = link_program_tess_eval_only(vs, iso_tes, fs);
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenBuffers(1, &ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(ebo_data), ebo_data,
+                 GL_STATIC_DRAW);
+    glGenQueries(1, &q);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {1.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+
+    /* Stage 1: glMultiDrawArrays, two patches -> 16 lines. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glMultiDrawArrays(GL_PATCHES, firsts, counts, 2);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 16u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_multidraw: arrays query got "
+                    "%u primitives, expected 16\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Line 0 midpoint (u=0.375, v=0.25): patch A
+         * x=-0.7+1.4*0.375=-0.175, y=-0.15; patch B starts at +0.9 ->
+         * x=-0.175+0.9=0.725. */
+        static const float probes[2][2] = {
+            {-0.175f, -0.15f},
+            { 0.725f, -0.15f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_multidraw: arrays probe "
+                        "%d not drawn at (%d,%d)\n", i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Stage 2: glMultiDrawElements, same two patches via element ranges. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glMultiDrawElements(GL_PATCHES, counts, GL_UNSIGNED_INT, ebo_ranges, 2);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 16u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_multidraw: elements query got "
+                    "%u primitives, expected 16\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        static const float probes[2][2] = {
+            {-0.175f, -0.15f},
+            { 0.725f, -0.15f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_multidraw: elements probe "
+                        "%d not drawn at (%d,%d)\n", i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (ebo) glDeleteBuffers(1, &ebo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_isolines_rasterdiscard(unsigned char *pixels,
+                                                        const char *out_path)
+{
+    /* P2E rasterizer-discard coverage: with GL_RASTERIZER_DISCARD active the
+     * TES compute expansion must still generate primitives (query counts)
+     * but the passthrough draw must produce no pixels; disabling the cap
+     * restores rasterization. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position, 0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *iso_tes =
+        "#version 450 core\n"
+        "layout(isolines, equal_spacing) in;\n"
+        "void main() {\n"
+        "  vec2 p = mix(gl_in[0].gl_Position.xy, gl_in[1].gl_Position.xy,\n"
+        "               gl_TessCoord.x);\n"
+        "  p.y += gl_TessCoord.y * 0.6;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "}\n";
+    static const float positions[6] = {
+        -0.7f, -0.3f, 0.7f, -0.3f, 0.0f, -0.9f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, q = 0u;
+    GLuint program = link_program_tess_eval_only(vs, iso_tes, fs);
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &q);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {4.0f, 2.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {1.0f, 1.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+
+    /* Stage 1: rasterizer discard active.  Primitive query still counts
+     * (8 lines), the framebuffer stays black. */
+    glEnable(GL_RASTERIZER_DISCARD);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 8u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_rasterdiscard: discard query "
+                    "got %u primitives, expected 8\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    for (int py = 0; py < REG_H; py++) {
+        for (int px = 0; px < REG_W; px++) {
+            const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+            if (c[1] >= 220u) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_rasterdiscard: discard "
+                        "produced pixels at (%d,%d)\n", px, py);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Stage 2: discard disabled again; the same draw must rasterize. */
+    glDisable(GL_RASTERIZER_DISCARD);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_PATCHES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Line 0 midpoint (u=0.375, v=0.25): x=-0.175, y=-0.15. */
+        static const float probes[2][2] = {
+            {-0.175f, -0.15f},
+            {-0.175f,  0.15f},
+        };
+        for (int i = 0; i < 2; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_rasterdiscard: probe %d "
+                        "not drawn at (%d,%d)\n", i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+static int test_air_tessellation_isolines_tripoint_instanced(
+    unsigned char *pixels, const char *out_path)
+{
+    /* P2E instanced coverage for triangle point-mode: two instances of a
+     * triangle patch (inner {2, 2} -> 4 points per patch per instance),
+     * shifted by the VS per gl_InstanceID.  Query counts 4 * 2 = 8. */
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(position + vec2(float(gl_InstanceID) * 0.6, 0.0),\n"
+        "                     0.0, 1.0);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *tri_tes =
+        "#version 450 core\n"
+        "layout(triangles, equal_spacing, point_mode) in;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy * gl_TessCoord.x +\n"
+        "           gl_in[1].gl_Position.xy * gl_TessCoord.y +\n"
+        "           gl_in[2].gl_Position.xy * gl_TessCoord.z;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  gl_PointSize = 8.0;\n"
+        "}\n";
+    /* Triangle A(-0.6,-0.4) B(0.6,-0.4) C(0,0.7). */
+    static const float positions[6] = {
+        -0.6f, -0.4f, 0.6f, -0.4f, 0.0f, 0.7f,
+    };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u, q = 0u;
+    GLuint program = link_program_tess_eval_only(vs, tri_tes, fs);
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo || !program) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                 GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glGenQueries(1, &q);
+    glUseProgram(program);
+    glPatchParameteri(GL_PATCH_VERTICES, 3);
+    {
+        const GLfloat outer[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        const GLfloat inner[2] = {2.0f, 2.0f};
+        glPatchParameterfv(GL_PATCH_DEFAULT_OUTER_LEVEL, outer);
+        glPatchParameterfv(GL_PATCH_DEFAULT_INNER_LEVEL, inner);
+    }
+    glBeginQuery(GL_PRIMITIVES_GENERATED, q);
+    glDrawArraysInstanced(GL_PATCHES, 0, 3, 2);
+    glEndQuery(GL_PRIMITIVES_GENERATED);
+    glFinish();
+    {
+        GLuint written = 0u;
+        glGetQueryObjectuiv(q, GL_QUERY_RESULT, &written);
+        if (written != 8u) {
+            fprintf(stderr,
+                    "air_tessellation_isolines_tripoint_instanced: query got "
+                    "%u primitives, expected 8\n", written);
+            goto cleanup;
+        }
+    }
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* Points (u,v) = (1/6,1/6),(2/3,1/6),(1/6,2/3),(2/3,2/3) with
+         * w=1-u-v mapped via A*u+B*v+C*w: (0,1/3), (-0.3,-13/60),
+         * (0.3,-13/60), (0,-23/30); instance 1 shifted +0.6. */
+        static const float probes[8][2] = {
+            { 0.0f,  1.0f / 3.0f}, { 0.6f,  1.0f / 3.0f},
+            {-0.3f, -13.0f / 60.0f}, { 0.3f, -13.0f / 60.0f},
+            { 0.3f, -13.0f / 60.0f}, { 0.9f, -13.0f / 60.0f},
+            { 0.0f, -23.0f / 30.0f}, { 0.6f, -23.0f / 30.0f},
+        };
+        for (int i = 0; i < 8; i++) {
+            const int sx = (int)((probes[i][0] + 1.0f) * 0.5f * REG_W);
+            const int sy = (int)((probes[i][1] + 1.0f) * 0.5f * REG_H);
+            int found = 0;
+            for (int dy = -2; dy <= 2 && !found; dy++) {
+                for (int dx = -2; dx <= 2; dx++) {
+                    const int px = sx + dx, py = sy + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H) continue;
+                    const unsigned char *c = &pixels[(py * REG_W + px) * 4];
+                    if (c[0] <= 20u && c[1] >= 220u && c[2] <= 20u) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_tessellation_isolines_tripoint_instanced: probe "
+                        "%d not drawn at (%d,%d)\n", i, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (q) glDeleteQueries(1, &q);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
-
 typedef struct {
     const char *name;
     test_fn fn;
@@ -5274,6 +6094,16 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_varying", test_air_tessellation_varying),
     SELF_CHECK_TEST("air_tessellation_isolines_point_mode",
                     test_air_tessellation_isolines_point_mode),
+    SELF_CHECK_TEST("air_tessellation_isolines_variants",
+                    test_air_tessellation_isolines_variants),
+    SELF_CHECK_TEST("air_tessellation_isolines_indexed",
+                    test_air_tessellation_isolines_indexed),
+    SELF_CHECK_TEST("air_tessellation_isolines_multidraw",
+                    test_air_tessellation_isolines_multidraw),
+    SELF_CHECK_TEST("air_tessellation_isolines_rasterdiscard",
+                    test_air_tessellation_isolines_rasterdiscard),
+    SELF_CHECK_TEST("air_tessellation_isolines_tripoint_instanced",
+                    test_air_tessellation_isolines_tripoint_instanced),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),

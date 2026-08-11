@@ -993,9 +993,55 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     };
     mglDrawSupportSetVertexBytes(
         encoder, captureParams, sizeof(captureParams), 28u);
+    /* The capture kernel indexes records by raw vertex_id with no bounds
+     * check; a primitive-restart marker (0xFFFFFFFF for UInt32) in the
+     * stream would write past the sparse record span and corrupt the
+     * next instance's data.  Sanitize the marker away (to vertex 0, whose
+     * record no gathered patch ever references) before drawing. */
+    id<MTLBuffer> sanitizedIndexBuffer = indexBuffer;
+    NSUInteger sanitizedIndexOffset = indexOffset;
+    uint32_t restartIndex = 0u;
+    if (mglPrimitiveRestartIndexForType(drawCtx, indexType, &restartIndex)) {
+        const NSUInteger elemBytes = indexType == GL_UNSIGNED_BYTE ? 1u
+            : indexType == GL_UNSIGNED_SHORT ? 2u : 4u;
+        const NSUInteger streamBytes = (NSUInteger)count * elemBytes;
+        if (indexBuffer.contents &&
+            (NSUInteger)indexOffset + streamBytes <= indexBuffer.length) {
+            uint8_t *copy = malloc(streamBytes);
+            if (copy) {
+                memcpy(copy,
+                       (const uint8_t *)indexBuffer.contents + indexOffset,
+                       streamBytes);
+                if (elemBytes == 1u) {
+                    for (GLsizei i = 0; i < count; i++)
+                        if (((const uint8_t *)copy)[i] ==
+                                (uint8_t)restartIndex)
+                            ((uint8_t *)copy)[i] = 0u;
+                } else if (elemBytes == 2u) {
+                    for (GLsizei i = 0; i < count; i++)
+                        if (((const uint16_t *)copy)[i] ==
+                                (uint16_t)restartIndex)
+                            ((uint16_t *)copy)[i] = 0u;
+                } else {
+                    for (GLsizei i = 0; i < count; i++)
+                        if (((const uint32_t *)copy)[i] == restartIndex)
+                            ((uint32_t *)copy)[i] = 0u;
+                }
+                id<MTLBuffer> clean =
+                    mglDrawSupportCreateBufferWithBytes(
+                        _device, copy, streamBytes,
+                        MTLResourceStorageModeShared);
+                free(copy);
+                if (clean) {
+                    sanitizedIndexBuffer = clean;
+                    sanitizedIndexOffset = 0u;
+                }
+            }
+        }
+    }
     mglDrawSupportDrawIndexedPrimitivesType(
         encoder, MTLPrimitiveTypePoint, (NSUInteger)count, indexType,
-        indexBuffer, indexOffset, (NSUInteger)instanceCount,
+        sanitizedIndexBuffer, sanitizedIndexOffset, (NSUInteger)instanceCount,
         (NSInteger)baseVertex, (NSUInteger)baseInstance);
     _currentCBHasWork = YES;
     [self endRenderEncoding];
@@ -2225,7 +2271,19 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     _tessellation.tessControlPointIndexBuffer = nil;
     _tessellation.tessIndexedDraw = NO;
     _tessellation.tessInstanceRecords = 0u;
-    if (nativeTES) {
+    /* A TCS from a previous draw must not leak into a TES-only dispatch
+     * (dispatchAIRTessEvalCompute reads tcsOutputBuffer as the gl_in
+     * source when non-nil).  The TCS dispatcher re-populates it. */
+    _tessellation.tcsOutputBuffer = nil;
+    _tessellation.tcsOutputOffset = 0u;
+    _tessellation.tcsOutputStride = 0u;
+    _tessellation.tcsOutVertices = 0u;
+    _tessellation.tessFactorBuffer = nil;
+    /* The VS position capture and the default factor buffer are consumed by
+     * both the native patch pipeline and the AIR TES compute expansion
+     * (isolines / point_mode with no TCS), so they must exist even when
+     * nativeTES is unavailable. */
+    if (nativeTES || airTES) {
         const BOOL indexedDraw = (indexType != 0u);
         if (indexedDraw && tcsProgram) {
             /* TCS consumes the VS capture with continuous per-patch
@@ -2333,6 +2391,14 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             !_tessellation.tessFactorBuffer) {
             nativeTES = NO;
         }
+    }
+
+    if (airTES && !tcsProgram) {
+        /* TES-only compute expansion also needs the default levels, and the
+         * buffer is rebuilt per draw because glPatchParameterfv can change
+         * between draws. */
+        _tessellation.tessFactorBuffer = mglDefaultTessFactorBuffer(
+            _device, MGL_STATE(drawCtx), patchCount);
     }
 
     if (tcsProgram) {
@@ -2480,6 +2546,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                      patchCount:patchCount
                                   instanceCount:instanceCount
                                    baseInstance:baseInstance];
+            if (!dispatched) {
+                mglDispatchError(drawCtx, label ? label : "tessellationDraw",
+                                 GL_INVALID_OPERATION);
+            }
             drawCtx->state.dirty_bits = DIRTY_ALL;
             _tessellation.tessVertexCaptureBuffer = nil;
             _tessellation.tessVertexCaptureOffset = 0u;
