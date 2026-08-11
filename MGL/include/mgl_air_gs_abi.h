@@ -58,9 +58,17 @@ enum {
     /* MGLAIRGSIndirectArgs, one 16-byte record per work item.  See 3. */
     MGL_AIR_GS_SLOT_COUNTS = 29,
 
-    /* GS transform-feedback record output (section 5).  Reserved now;
-     * bound only when the GS program is linked with transform feedback. */
-    MGL_AIR_GS_SLOT_XFB    = 30,
+    /* GS transform-feedback record output (section 5).  Bound only when
+     * the GS program is linked with transform feedback.  Numerically the
+     * same slot as the TES XFB stream (MGL_AIR_TESS_SLOT_XFB_OUT) but the
+     * encoders are disjoint. */
+    MGL_AIR_GS_SLOT_XFB    = 31,
+
+    /* GS XFB meta record (section 5): capacity/stride words written by the
+     * renderer plus the GPU-atomic write cursor / written-byte counters.
+     * Kept below 32: the AGX compiler encodes buffer slots in a 5-bit
+     * mask, so slot indices >= 32 crash the shader-compiler service. */
+    MGL_AIR_GS_SLOT_XFB_META = 27,
 };
 
 /* =====================================================================
@@ -208,17 +216,36 @@ typedef struct MGLAIRGSIndexGatherParams {
  * 5. GS transform-feedback record (P1)
  *
  * GS XFB output reuses the per-vertex record layout (position + varyings)
- * written by the GS kernel into a dedicated record buffer (slot 30), then
+ * written by the GS kernel into a dedicated record buffer (slot 31), then
  * the renderer copies whole primitives back into the GL transform-feedback
  * store, honoring session offset / overflow the same way the TES XFB path
  * does (see MGLRenderer+Tessellation.m).
+ *
+ * The GS expanded output is variable-length (culled primitives contribute
+ * nothing, GL 4.6 §13.2.4), so the kernel appends the visible expanded
+ * vertices of each work item through a GPU-atomic cursor instead of a
+ * compile-time fixed offset.  Slot 32 carries one 24-byte meta record:
+ * the renderer pre-writes `stride` (0 disables capture) and `capacity`
+ * (GL-visible store bytes available from the bound offset); the kernel
+ * atomically reserves `visible * stride` bytes at `cursor`, stores the
+ * visible records only when the reservation fits, and counts the actually
+ * written bytes in `written`.
  * ===================================================================== */
-typedef struct MGLAIRGSXFBParams {
-    uint32_t stride;              /* bytes per XFB vertex                  */
-    uint32_t vertices_per_primitive; /* 1/2/3 depending on output mode     */
-    uint32_t visible_bytes;       /* GL-visible store capacity from offset */
-    uint32_t session_offset;      /* current Begin/End write offset        */
-} MGLAIRGSXFBParams;
+typedef struct MGLAIRGSXFBMeta {
+    uint32_t stride;          /* bytes per XFB vertex; 0 = capture off    */
+    uint32_t capacity_bytes;  /* store capacity from the bound offset     */
+    uint64_t cursor;          /* atomic reservation cursor (GPU written)  */
+    uint64_t written;         /* atomic written-byte counter (GPU written)*/
+} MGLAIRGSXFBMeta;
+
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 24u,
+                      "GS XFB meta record is 8 + 8 + 8 bytes");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, stride) == 0u,
+                      "stride must lead the meta record");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, cursor) == 8u,
+                      "cursor must be 64-bit aligned at offset 8");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, written) == 16u,
+                      "written must be 64-bit aligned at offset 16");
 
 /* =====================================================================
  * 6. Static layout invariants shared with the AIR backend

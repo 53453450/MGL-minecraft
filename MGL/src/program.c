@@ -1107,10 +1107,16 @@ void mglLinkProgram(GLMContext ctx, GLuint program)
             pptr->geometry_vertices_out <= 1024u &&
             pptr->geometry_invocations > 0u &&
             pptr->geometry_invocations <= 32u &&
-            pptr->transform_feedback_varying_count == 0;
+            (pptr->transform_feedback_varying_count == 0 ||
+             pptr->transform_feedback_buffer_mode ==
+                 GL_INTERLEAVED_ATTRIBS);
         /* GS expansion uses the shared compute-stage binders for UBOs,
          * SSBOs, atomics, sampled textures and storage images.  Resource
-         * presence is therefore no longer a route restriction. */
+         * presence is therefore no longer a route restriction.  XFB is
+         * supported through the interleaved single-store subset (the
+         * kernel writes one complete stage-out record per visible
+         * vertex into the slot-31 stream); SEPARATE_ATTRIBS stays on the
+         * unsupported path. */
         pptr->gs_route = computeRoute
             ? MGL_GS_ROUTE_COMPUTE : MGL_GS_ROUTE_UNSUPPORTED;
         if (!computeRoute) {

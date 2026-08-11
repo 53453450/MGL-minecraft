@@ -140,13 +140,15 @@ const char *mglBufferSlotReservedName(GLuint slot)
         case 26:
             return "kMGLBufferSlot_TessFactor (TCS/TES compute path)";
         case 27:
-            return "kMGLBufferSlot_PatchOutput (TCS/TES compute path)";
+            return "kMGLBufferSlot_PatchOutput (TCS/TES compute path) / MGL_AIR_GS_SLOT_XFB_META (GS XFB atomic cursor / written counter)";
         case 28:
             return "kMGLBufferSlot_PatchInfo / kMGLCullDistanceParamsBufferIndex / MGL_AIR_GS_SLOT_OUTPUT (TCS/TES compute OR VS cull-distance OR GS expansion)";
         case 29:
             return "kMGLBufferSlot_IndirectParams / kMGLCullDistanceVertexBufferIndex / MGL_AIR_GS_SLOT_COUNTS (TCS/TES compute OR VS cull-distance OR GS expansion)";
         case 30:
-            return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex / MGL_AIR_GS_SLOT_XFB (TES gl_in OR FS gl_FragCoord fixup OR GS XFB)";
+            return "kMGLBufferSlot_TESGlIn / kMGLFragCoordParamsBufferIndex / MGL_AIR_GS_SLOT_GATHER (TES gl_in OR FS gl_FragCoord fixup OR GS indexed gather)";
+        case 31:
+            return "MGL_AIR_TESS_SLOT_XFB_OUT / MGL_AIR_GS_SLOT_XFB (TES/GS transform-feedback stream, disjoint encoders)";
         default:
             return NULL;
     }

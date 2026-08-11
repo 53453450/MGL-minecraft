@@ -120,6 +120,46 @@ static id<MTLBuffer> mglDrawSupportCreateBufferWithBytes(
     return [device newBufferWithBytes:bytes length:length options:options];
 }
 
+static id<MTLBlitCommandEncoder> mglDrawSupportCreateBlitEncoder(
+    id<MTLCommandBuffer> commandBuffer)
+{
+    if (mglDrawSupportUsesMetalCpp()) {
+        void *encoder = NULL;
+        if (mglRenderCppCreateBlitEncoder((__bridge void *)commandBuffer,
+                                          &encoder) == 0 && encoder) {
+            return (__bridge id<MTLBlitCommandEncoder>)encoder;
+        }
+    }
+    return [commandBuffer blitCommandEncoder];
+}
+
+static void mglDrawSupportBlitCopyBuffer(id<MTLBlitCommandEncoder> encoder,
+                                         id<MTLBuffer> source,
+                                         NSUInteger sourceOffset,
+                                         id<MTLBuffer> destination,
+                                         NSUInteger destinationOffset,
+                                         NSUInteger size)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppBlitCopyBuffer(
+            (__bridge void *)encoder, (__bridge void *)source, sourceOffset,
+            (__bridge void *)destination, destinationOffset, size) == 0) {
+        return;
+    }
+    [encoder copyFromBuffer:source sourceOffset:sourceOffset
+                   toBuffer:destination destinationOffset:destinationOffset
+                       size:size];
+}
+
+static void mglDrawSupportEndBlitEncoder(id<MTLBlitCommandEncoder> encoder)
+{
+    if (mglDrawSupportUsesMetalCpp() &&
+        mglRenderCppEndBlitEncoder((__bridge void *)encoder) == 0) {
+        return;
+    }
+    [encoder endEncoding];
+}
+
 static void mglDrawSupportSetVertexBuffer(
     id<MTLRenderCommandEncoder> encoder,
     id<MTLBuffer> buffer,
@@ -1349,6 +1389,83 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
+    /* GS transform feedback (P1, mgl_air_gs_abi.h §5): when GL feedback
+     * is active the kernel appends each work item's visible expanded
+     * vertices to the slot-31 stream through the atomic meta cursor
+     * (slot 32).  The GL store is bound directly only when the maximum
+     * possible capture (every work item fully visible) fits; otherwise
+     * the kernel writes into a full-size temporary and only the prefix
+     * containing complete primitives is copied back. */
+    TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
+    const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
+    id<MTLBuffer> xfbTemporary = nil;
+    id<MTLBuffer> xfbCaptureBuffer = nil;
+    id<MTLBuffer> xfbDestinationMTL = nil;
+    NSUInteger xfbDestinationOffset = 0u;
+    NSUInteger xfbRemainingVisibleBytes = 0u;
+    NSUInteger xfbMaxCaptureBytes = 0u;
+    if (xfbActive) {
+        xfbMaxCaptureBytes =
+            (NSUInteger)workItemCount * expandedVertices * outputStride;
+        BufferBaseTarget *xfbSlot =
+            &MGL_STATE(drawCtx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
+        if (xfbSlot->buf) {
+            if (!xfbSlot->buf->data.mtl_data) {
+                [self bindMTLBuffer:xfbSlot->buf];
+            }
+            id<MTLBuffer> xfbMTL =
+                (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
+            if (xfbMTL) {
+                BufferMap xfbMap = {0};
+                xfbMap.buf = xfbSlot->buf;
+                xfbMap.offset = xfbSlot->offset;
+                xfbMap.size = xfbSlot->size;
+                NSUInteger visibleBytes = mglBufferMapVisibleBackingBytes(
+                    &xfbMap, (size_t)xfbMTL.length);
+                NSUInteger sessionOffset = 0u;
+                if (xfbState->buffer_write_offsets[0] <=
+                    (GLuint64)NSUIntegerMax) {
+                    sessionOffset =
+                        (NSUInteger)xfbState->buffer_write_offsets[0];
+                }
+                if (sessionOffset <= visibleBytes && xfbSlot->offset >= 0 &&
+                    (NSUInteger)xfbSlot->offset <=
+                        NSUIntegerMax - sessionOffset) {
+                    xfbRemainingVisibleBytes = visibleBytes - sessionOffset;
+                    xfbDestinationOffset =
+                        (NSUInteger)xfbSlot->offset + sessionOffset;
+                    if (xfbMaxCaptureBytes <= xfbRemainingVisibleBytes) {
+                        xfbCaptureBuffer = xfbMTL;
+                        xfbDestinationMTL = xfbMTL;
+                        xfbSlot->buf->ever_written = GL_TRUE;
+                    } else {
+                        xfbTemporary = mglDrawSupportCreateBuffer(
+                            _device, xfbMaxCaptureBytes,
+                            MTLResourceStorageModeShared);
+                        if (xfbTemporary) {
+                            memset(xfbTemporary.contents, 0,
+                                   xfbMaxCaptureBytes);
+                            xfbCaptureBuffer = xfbTemporary;
+                            xfbDestinationMTL = xfbMTL;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    MGLAIRGSXFBMeta xfbMeta;
+    memset(&xfbMeta, 0, sizeof(xfbMeta));
+    xfbMeta.stride = xfbCaptureBuffer ? (uint32_t)outputStride : 0u;
+    xfbMeta.capacity_bytes = xfbCaptureBuffer
+        ? (uint32_t)MIN(xfbMaxCaptureBytes, (NSUInteger)UINT32_MAX) : 0u;
+    id<MTLBuffer> xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
+        _device, &xfbMeta, sizeof(xfbMeta), MTLResourceStorageModeShared);
+    if (!xfbMetaBuf) {
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        mglDispatchError(drawCtx, label ? label : "geometryDraw",
+                         GL_OUT_OF_MEMORY);
+        return YES;
+    }
     id<MTLComputeCommandEncoder> compute =
         mglDrawSupportCreateComputeEncoder(
             _renderPassManager.state->currentCommandBuffer);
@@ -1371,6 +1488,16 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
                                    MGL_AIR_GS_SLOT_GATHER);
     mglDrawSupportSetComputeBytes(compute, &gparams, sizeof(gparams),
                                   MGL_AIR_GS_SLOT_GATHER_PARAMS);
+    /* XFB slots (mgl_air_gs_abi.h §5): the meta record is always bound
+     * (stride 0 disables capture in the kernel); the stream is bound only
+     * when capture is active. */
+    if (xfbCaptureBuffer) {
+        mglDrawSupportSetComputeBuffer(compute, xfbCaptureBuffer,
+                                       xfbDestinationOffset,
+                                       MGL_AIR_GS_SLOT_XFB);
+    }
+    mglDrawSupportSetComputeBuffer(compute, xfbMetaBuf, 0u,
+                                   MGL_AIR_GS_SLOT_XFB_META);
     bool buffersOK = [self bindBuffersToComputeEncoder:compute
                                                    stage:_GEOMETRY_SHADER
                                                copyBacks:&stageCopyBacks];
@@ -1387,17 +1514,91 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         MTLSizeMake(1u, 1u, 1u));
     mglDrawSupportEndComputeEncoder(compute);
     if (![self flushStageBindingCopyBacks:&stageCopyBacks
-                     requireCPUVisibility:NO]) {
+                     requireCPUVisibility:xfbActive ? YES : NO]) {
         drawCtx->state.dirty_bits = DIRTY_ALL;
         return YES;
     }
     _geometry.expansionActive = YES;
     _geometry.program = program;
     drawCtx->state.dirty_bits = DIRTY_ALL;
+
+    const GLuint64 queryGenerated =
+        outputPrimitive == MTLPrimitiveTypePoint
+            ? (GLuint64)workItemCount * expandedVertices
+            : (GLuint64)workItemCount * expandedVertices /
+                  (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u);
+    const GLuint64 vpp = outputPrimitive == MTLPrimitiveTypePoint
+        ? 1u
+        : (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u);
+    GLuint64 queryWritten = queryGenerated;
+    if (xfbActive && xfbMetaBuf && xfbMetaBuf.contents) {
+        /* The stage synchronization above made the atomic counters CPU
+         * visible; the written counter counts exactly the bytes the
+         * kernel stored, so culled primitives are excluded. */
+        const MGLAIRGSXFBMeta *meta =
+            (const MGLAIRGSXFBMeta *)xfbMetaBuf.contents;
+        NSUInteger writtenBytes = (NSUInteger)meta->written;
+        if (xfbTemporary && xfbDestinationMTL && writtenBytes > 0u) {
+            /* Temporary capture: copy back only the prefix containing
+             * complete primitives that fits the GL store. */
+            const NSUInteger primitiveBytes = (NSUInteger)vpp * outputStride;
+            NSUInteger copyBytes = primitiveBytes > 0u
+                ? (writtenBytes / primitiveBytes) * primitiveBytes : 0u;
+            if (xfbRemainingVisibleBytes < copyBytes) {
+                copyBytes = xfbRemainingVisibleBytes > primitiveBytes
+                    ? (xfbRemainingVisibleBytes / primitiveBytes) *
+                          primitiveBytes
+                    : 0u;
+            }
+            if (copyBytes > 0u) {
+                id<MTLBlitCommandEncoder> xfbBlit =
+                    mglDrawSupportCreateBlitEncoder(
+                        _renderPassManager.state->currentCommandBuffer);
+                if (!xfbBlit) {
+                    _geometry.expansionActive = NO;
+                    _geometry.program = NULL;
+                    drawCtx->state.dirty_bits = DIRTY_ALL;
+                    return YES;
+                }
+                mglDrawSupportBlitCopyBuffer(xfbBlit, xfbTemporary, 0u,
+                                             xfbDestinationMTL,
+                                             xfbDestinationOffset, copyBytes);
+                mglDrawSupportEndBlitEncoder(xfbBlit);
+            }
+            writtenBytes = copyBytes;
+        }
+        if (writtenBytes > 0u) {
+            const GLuint64 currentOffset =
+                xfbState->buffer_write_offsets[0];
+            xfbState->buffer_write_offsets[0] =
+                (GLuint64)writtenBytes > UINT64_MAX - currentOffset
+                    ? UINT64_MAX
+                    : currentOffset + (GLuint64)writtenBytes;
+        }
+        queryWritten = (outputStride > 0u && vpp > 0u)
+            ? (GLuint64)writtenBytes / ((GLuint64)outputStride * vpp) : 0u;
+    }
+    if (xfbActive && MGL_STATE(drawCtx)->caps.rasterizer_discard) {
+        /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute
+         * expansion already ran and the primitive query must still count
+         * the generated/written primitives (persistent query semantics). */
+        _currentCBHasWork = YES;
+        mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
+                                          queryWritten);
+        _geometry.expansionActive = NO;
+        _geometry.program = NULL;
+        drawCtx->state.dirty_bits = DIRTY_ALL;
+        return YES;
+    }
     if (![self processGLState:true] ||
         !_renderPassManager.state->currentRenderEncoder ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
+        if (xfbActive) {
+            _currentCBHasWork = YES;
+            mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
+                                              queryWritten);
+        }
         _geometry.expansionActive = NO;
         _geometry.program = NULL;
         drawCtx->state.dirty_bits = DIRTY_ALL;
@@ -1417,15 +1618,9 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
             (NSUInteger)primitive * countsRecordBytes);
     }
     _currentCBHasWork = YES;
-    mglRecordActivePrimitiveQueryDraw(
-        drawCtx, outputPrimitive == MTLPrimitiveTypePoint
-            ? (GLuint64)workItemCount * expandedVertices
-            : (GLuint64)workItemCount * expandedVertices /
-                  (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u),
-        outputPrimitive == MTLPrimitiveTypePoint
-            ? (GLuint64)workItemCount * expandedVertices
-            : (GLuint64)workItemCount * expandedVertices /
-                  (outputPrimitive == MTLPrimitiveTypeLine ? 2u : 3u));
+    mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
+                                      xfbActive ? queryWritten
+                                                : queryGenerated);
     _geometry.expansionActive = NO;
     _geometry.program = NULL;
     drawCtx->state.dirty_bits = DIRTY_ALL;
