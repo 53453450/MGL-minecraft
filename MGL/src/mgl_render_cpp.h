@@ -16,6 +16,12 @@ typedef struct TextureParameter_t TextureParameter;
 typedef struct Program_t Program;
 typedef struct __GLsync Sync;
 
+/* P4.2: final/simple/safe pipeline descriptor 的 value-state。完整定义在
+ * mgl_air_loader.h（MGLRenderCppPipelineDescriptorState）；此处只前向声明，
+ * ObjC 侧构造 value-state，不再组装 MTLRenderPipelineDescriptor。 */
+typedef struct MGLRenderCppPipelineDescriptorState
+    MGLRenderCppPipelineDescriptorState;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -382,14 +388,17 @@ int mglRenderCppStorePipeline(
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
     const MGLRenderCppPipelineActiveState *state,
     uint32_t *evicted_out);
-int mglRenderCppLookupPipelineDescriptor(
+/* P4.2: descriptor cache（value-state 版）。缓存 MGLRenderCppPipelineDescriptorState
+ * 值，命中时 ObjC 无需重新组装 descriptor state。旧 pointer-based
+ * LookupPipelineDescriptor / StorePipelineDescriptor 已删除。 */
+int mglRenderCppLookupPipelineDescriptorState(
     void *owner,
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    void **descriptor_out);
-int mglRenderCppStorePipelineDescriptor(
+    MGLRenderCppPipelineDescriptorState *state_out);
+int mglRenderCppStorePipelineDescriptorState(
     void *owner,
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    void *descriptor);
+    const MGLRenderCppPipelineDescriptorState *state);
 int mglRenderCppCreateEvent(void **event_out);
 int mglRenderCppCreateFunction(void *library,
                                const char *name,
@@ -399,6 +408,21 @@ int mglRenderCppCreateFunction(void *library,
                                size_t errcap);
 int mglRenderCppCreateRenderPipelineState(
     void *render_pipeline_descriptor,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+/* P4.2: final/simple/safe descriptor builder 的 C ABI 入口 —— 从
+ * MGLRenderCppPipelineDescriptorState value-state 直接创建 render PSO，
+ * ObjC 不再组装 MTLRenderPipelineDescriptor。vs_function/fs_function 为 +0
+ * borrowed MTL::Function*；binary_archive 为 +0 borrowed MTL::BinaryArchive*
+ * （可为 NULL）。深度/模板 packed normalize 与 MGL_ENABLE_ICB_PIPELINES
+ * opt-in 在 C++ builder 内完成。成功返回 0 且 *pipeline_out 为 +1 引用
+ * （mglAirRelease 释放）。 */
+int mglRenderCppCreateRenderPipelineFromState(
+    void *vs_function,
+    void *fs_function,
+    const MGLRenderCppPipelineDescriptorState *state,
+    void *binary_archive,
     void **pipeline_out,
     char *err,
     size_t errcap);

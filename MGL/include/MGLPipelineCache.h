@@ -25,6 +25,14 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class MGLDepthStencilCacheKey;
 
+/* P4.2: final/simple/safe pipeline descriptor 的 value-state（完整定义在
+ * mgl_air_loader.h）。ObjC 只构造 value-state，不再组装
+ * MTLRenderPipelineDescriptor。 */
+typedef struct MGLRenderCppPipelineDescriptorState
+    MGLRenderCppPipelineDescriptorState;
+typedef struct MGLRenderCppPipelineBlendState_t
+    MGLRenderCppPipelineBlendState;
+
 NS_ASSUME_NONNULL_END
 
 typedef struct MGLPipelineCacheState_t {
@@ -95,12 +103,24 @@ NS_ASSUME_NONNULL_BEGIN
               fragmentFunction:(id<MTLFunction> _Nullable * _Nonnull)fragmentFunctionOut;
 - (nullable MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
     (const uint64_t * _Nonnull)words;
+/* P4.2: descriptor cache 的 value-state 版（gate-on）。命中返回 YES 并拷贝
+ * state；未命中返回 NO。gate-off 走 ObjC descriptor 字典（见上）。 */
+- (BOOL)pipelineDescriptorStateForWords:
+    (const uint64_t * _Nonnull)words
+      state:(MGLRenderCppPipelineDescriptorState * _Nonnull)stateOut;
 - (NSUInteger)storePipeline:(id<MTLRenderPipelineState>)pipeline
               vertexFunction:(nullable id<MTLFunction>)vertexFunction
             fragmentFunction:(nullable id<MTLFunction>)fragmentFunction
                     forWords:(const uint64_t * _Nonnull)words;
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                        forWords:(const uint64_t * _Nonnull)words;
+- (void)storePipelineDescriptorState:
+    (const MGLRenderCppPipelineDescriptorState * _Nonnull)state
+                            forWords:(const uint64_t * _Nonnull)words;
+/* P4.2: blend state owner-first 读取（gate-on 用）。命中 C++ owner 返回 YES；
+ * 否则回退 ObjC 镜像并返回 YES；越界返回 NO。 */
+- (BOOL)blendStateForAttachment:(NSUInteger)index
+                            out:(MGLRenderCppPipelineBlendState * _Nonnull)outState;
 
 - (void)loadBinaryArchive;
 - (void)saveBinaryArchive;

@@ -18,9 +18,11 @@
 extern "C" {
 #endif
 
-/* finalDescriptor 等价装配的输入。二进制归档仍由 ObjC cache 管理，其他
- * render/vertex/tessellation descriptor 状态逐字段传入 C++ builder。 */
-typedef struct MGLPipelineDescriptorState {
+/* P4.2: final/simple/safe descriptor 等价装配的 value-state 输入。ObjC 只
+ * 构造本结构（不再组装 MTLRenderPipelineDescriptor），render/vertex/
+ * tessellation 状态逐字段传入 C++ builder；二进制归档由调用方以
+ * MTL::BinaryArchive*（void*）传给 mglRenderCppCreateRenderPipelineFromState。 */
+typedef struct MGLRenderCppPipelineDescriptorState {
     uint64_t vertex_program_instance;
     uint64_t vertex_program_generation;
     uint64_t fragment_program_instance;
@@ -58,7 +60,10 @@ typedef struct MGLPipelineDescriptorState {
     uint32_t tessellation_control_point_index_type;
     uint32_t tessellation_factor_step_function;
     uint32_t tessellation_output_winding_order;
-} MGLPipelineDescriptorState;
+} MGLRenderCppPipelineDescriptorState;
+
+/* 旧名兼容别名（P3.4 backend-neutral 命名迁移期的过渡名）。 */
+typedef MGLRenderCppPipelineDescriptorState MGLPipelineDescriptorState;
 
 /* device: void* = MTL::Device*（mglRenderCppGetDevice() 取得）。
  * bytes/size: .metallib 字节块。成功返回 0 且 *library_out 非空。 */
@@ -71,6 +76,15 @@ int mglAirLoadLibrary(const void* device, const unsigned char* bytes, size_t siz
 int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_function,
                                const MGLPipelineDescriptorState* desc, void** pso_out,
                                char* err, size_t errcap);
+
+/* P4.2: mglAirCreateRenderPipeline + 二进制归档。binary_archive（+0 borrowed
+ * MTL::BinaryArchive*，可为 NULL）在创建前应用到 descriptor，成功后把该
+ * pipeline 加入 archive —— 镜像 ObjC applyBinaryArchiveToDescriptor /
+ * addPipelineToBinaryArchive。 */
+int mglAirCreateRenderPipelineWithArchive(
+    const void* device, void* vs_function, void* fs_function,
+    const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,
+    void** pso_out, char* err, size_t errcap);
 
 /* library: void* = MTL::Library*；compute function 名为 "main"。返回的
  * PSO 是未缓存的 +1 引用。Program/renderer compute 缓存在 mgl_render_cpp。 */

@@ -187,6 +187,16 @@ uint64_t mglVertexDescriptorSignature(MTLVertexDescriptor *vertexDescriptor);
 /* FNV-1a hash of a MTLRenderPipelineDescriptor for pipeline cache keys. */
 uint64_t mglPipelineDescriptorSignature(MTLRenderPipelineDescriptor *pipelineStateDescriptor);
 
+/* P4.2: value-state 版签名（MGLRenderCppPipelineDescriptorState 的完整定义
+ * 在 mgl_air_loader.h）。哈希字段与顺序必须与 descriptor 版完全一致，保证
+ * Metal-cpp 路径的 pipeline cache key 语义不变。 */
+typedef struct MGLRenderCppPipelineDescriptorState
+    MGLRenderCppPipelineDescriptorState;
+uint64_t mglVertexDescriptorSignatureFromState(
+    const MGLRenderCppPipelineDescriptorState *state);
+uint64_t mglPipelineDescriptorSignatureFromState(
+    const MGLRenderCppPipelineDescriptorState *state);
+
 /* Inverts MTLWinding (CW↔CCW) when `invert` is true; otherwise returns
  * winding unchanged. */
 MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert);

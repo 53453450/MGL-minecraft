@@ -234,11 +234,7 @@ struct PipelineCacheEntry {
 };
 
 struct PipelineCacheDescriptorEntry {
-    ~PipelineCacheDescriptorEntry() {
-        if (descriptor) descriptor->release();
-    }
-
-    MTL::RenderPipelineDescriptor* descriptor = nullptr;
+    MGLRenderCppPipelineDescriptorState state{};
 };
 
 struct PipelineCacheDepthStencilEntry {
@@ -3534,40 +3530,33 @@ int mglRenderCppStorePipeline(
     }
 }
 
-int mglRenderCppLookupPipelineDescriptor(
+int mglRenderCppLookupPipelineDescriptorState(
     void* owner_handle,
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    void** descriptor_out) {
-    if (descriptor_out) *descriptor_out = nullptr;
+    MGLRenderCppPipelineDescriptorState* state_out) {
+    if (state_out) *state_out = {};
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
-    if (!owner || !key_words || !descriptor_out) return -1;
+    if (!owner || !key_words || !state_out) return -1;
     std::lock_guard<std::mutex> lock(owner->mutex);
     const mgl::PipelineCacheKey key =
         mgl::PipelineCacheOwner::makeKey(key_words);
     auto found = owner->descriptorCache.find(key);
     if (found == owner->descriptorCache.end()) return 0;
-    *descriptor_out = found->second->descriptor;
+    *state_out = found->second->state;
     mgl::PipelineCacheOwner::touch(owner->descriptorCacheLRU, key);
     return 1;
 }
 
-int mglRenderCppStorePipelineDescriptor(
+int mglRenderCppStorePipelineDescriptorState(
     void* owner_handle,
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
-    void* descriptor_handle) {
+    const MGLRenderCppPipelineDescriptorState* state) {
     auto* owner = static_cast<mgl::PipelineCacheOwner*>(owner_handle);
-    auto* descriptor =
-        static_cast<MTL::RenderPipelineDescriptor*>(descriptor_handle);
-    if (!owner || !key_words || !descriptor) return -1;
-    MTL::RenderPipelineDescriptor* descriptorCopy = descriptor->copy();
-    if (!descriptorCopy) return -1;
+    if (!owner || !key_words || !state) return -1;
     std::unique_ptr<mgl::PipelineCacheDescriptorEntry> entry(
         new (std::nothrow) mgl::PipelineCacheDescriptorEntry());
-    if (!entry) {
-        descriptorCopy->release();
-        return -1;
-    }
-    entry->descriptor = descriptorCopy;
+    if (!entry) return -1;
+    entry->state = *state;
     std::lock_guard<std::mutex> lock(owner->mutex);
     const mgl::PipelineCacheKey key =
         mgl::PipelineCacheOwner::makeKey(key_words);
@@ -3630,6 +3619,34 @@ int mglRenderCppCreateFunction(void* library,
     if (!function) return -1;
     *function_out = function;
     return 0;
+}
+
+/* P4.2: final/simple/safe descriptor builder 的 C ABI 入口。binary_archive
+ * 为 +0 borrowed MTL::BinaryArchive*（可为 NULL）；PSO 创建与归档应用都在
+ * mgl_air_loader.cpp 的共享 builder 内完成。 */
+int mglRenderCppCreateRenderPipelineFromState(
+    void* vs_function,
+    void* fs_function,
+    const MGLRenderCppPipelineDescriptorState* state,
+    void* binary_archive,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (err && errcap) err[0] = '\0';
+    if (!vs_function || !state || !pipeline_out) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    return mglAirCreateRenderPipelineWithArchive(
+        renderer.device, vs_function, fs_function, state, binary_archive,
+        pipeline_out, err, errcap);
 }
 
 int mglRenderCppCreateRenderPipelineState(

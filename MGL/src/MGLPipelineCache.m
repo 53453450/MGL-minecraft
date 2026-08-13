@@ -5,6 +5,7 @@
 #import "mgl_frame_activity.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
+#include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
 
 @interface MGLPipelineCacheKey ()
 - (void)copyWords:(uint64_t[MGL_PIPELINE_CACHE_KEY_WORDS])words;
@@ -518,16 +519,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 
 - (MTLRenderPipelineDescriptor *)pipelineDescriptorForKey:(MGLPipelineCacheKey *)key
 {
-    if ([self ensureCppOwner] && key) {
-        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
-        [key copyWords:words];
-        void *descriptor = NULL;
-        if (mglRenderCppLookupPipelineDescriptor(
-                _cppOwner, words, &descriptor) == 1 && descriptor) {
-            return (__bridge MTLRenderPipelineDescriptor *)descriptor;
-        }
-        return nil;
-    }
+    /* P4.2: descriptor cache 的 C++ 侧已改为 value-state 版
+     * （pipelineDescriptorStateForWords:state:）；本方法只服务 gate-off 的
+     * ObjC descriptor 字典。 */
     MTLRenderPipelineDescriptor *descriptor = _state.pipelineDescriptorCache[key];
     if (descriptor) MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
     return descriptor;
@@ -581,14 +575,9 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                          forKey:(MGLPipelineCacheKey *)key
 {
+    /* P4.2: gate-off ObjC descriptor 字典（gate-on 走
+     * storePipelineDescriptorState:forWords:）。 */
     if (!descriptor || !key) return;
-    if ([self ensureCppOwner]) {
-        uint64_t words[MGL_PIPELINE_CACHE_KEY_WORDS];
-        [key copyWords:words];
-        mglRenderCppStorePipelineDescriptor(
-            _cppOwner, words, (__bridge void *)descriptor);
-        return;
-    }
     _state.pipelineDescriptorCache[key] = [descriptor copy];
     MGLTouchLRU(_state.pipelineDescriptorCacheLRU, key);
     if (_state.pipelineDescriptorCache.count > 128) {
@@ -648,15 +637,8 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (MTLRenderPipelineDescriptor *)pipelineDescriptorForWords:
     (const uint64_t *)words
 {
+    /* P4.2: gate-off 专用（gate-on 用 pipelineDescriptorStateForWords:state:）。 */
     if (!words) return nil;
-    if ([self ensureCppOwner]) {
-        void *descriptor = NULL;
-        if (mglRenderCppLookupPipelineDescriptor(
-                _cppOwner, words, &descriptor) == 1 && descriptor) {
-            return (__bridge MTLRenderPipelineDescriptor *)descriptor;
-        }
-        return nil;
-    }
     return [self pipelineDescriptorForKey:
         [self pipelineQueryKeyForWords:words]];
 }
@@ -699,15 +681,64 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                        forWords:(const uint64_t *)words
 {
+    /* P4.2: gate-off 专用（gate-on 走 storePipelineDescriptorState:forWords:）。 */
     if (!descriptor || !words) return;
-    if ([self ensureCppOwner]) {
-        mglRenderCppStorePipelineDescriptor(
-            _cppOwner, words, (__bridge void *)descriptor);
-        return;
-    }
     MGLPipelineCacheKey *key =
         [[MGLPipelineCacheKey alloc] initWithWords:words];
     [self storePipelineDescriptor:descriptor forKey:key];
+}
+
+- (BOOL)pipelineDescriptorStateForWords:(const uint64_t *)words
+                                  state:(MGLRenderCppPipelineDescriptorState *)stateOut
+{
+    if (!words || !stateOut) return NO;
+    if ([self ensureCppOwner]) {
+        if (mglRenderCppLookupPipelineDescriptorState(
+                _cppOwner, words, stateOut) == 1) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+- (void)storePipelineDescriptorState:(const MGLRenderCppPipelineDescriptorState *)state
+                            forWords:(const uint64_t *)words
+{
+    if (!state || !words) return;
+    if ([self ensureCppOwner]) {
+        mglRenderCppStorePipelineDescriptorState(
+            _cppOwner, words, state);
+    }
+    /* gate-off 无 value-state cache：ObjC descriptor 字典由
+     * storePipelineDescriptor:forWords: 维护。 */
+}
+
+- (BOOL)blendStateForAttachment:(NSUInteger)index
+                            out:(MGLRenderCppPipelineBlendState *)outState
+{
+    if (index >= MAX_COLOR_ATTACHMENTS || !outState) return NO;
+    if ([self ensureCppOwner]) {
+        if (mglRenderCppGetPipelineBlendState(
+                _cppOwner, (uint32_t)index, outState) == 0) {
+            return YES;
+        }
+    }
+    *outState = (MGLRenderCppPipelineBlendState){
+        .source_rgb_factor =
+            (uint32_t)_state.src_blend_rgb_factor[index],
+        .destination_rgb_factor =
+            (uint32_t)_state.dst_blend_rgb_factor[index],
+        .source_alpha_factor =
+            (uint32_t)_state.src_blend_alpha_factor[index],
+        .destination_alpha_factor =
+            (uint32_t)_state.dst_blend_alpha_factor[index],
+        .rgb_operation =
+            (uint32_t)_state.rgb_blend_operation[index],
+        .alpha_operation =
+            (uint32_t)_state.alpha_blend_operation[index],
+        .color_write_mask = (uint32_t)_state.color_mask[index],
+    };
+    return YES;
 }
 
 - (NSURL *)binaryArchiveURL
@@ -948,13 +979,18 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
         mglRenderCppSetPipelineBlendState(
             _cppOwner, (uint32_t)index, &blend);
     }
-    _state.src_blend_rgb_factor[index] = srcRgbFactor;
-    _state.src_blend_alpha_factor[index] = srcAlphaFactor;
-    _state.dst_blend_rgb_factor[index] = dstRgbFactor;
-    _state.dst_blend_alpha_factor[index] = dstAlphaFactor;
-    _state.rgb_blend_operation[index] = rgbOperation;
-    _state.alpha_blend_operation[index] = alphaOperation;
-    _state.color_mask[index] = colorMask;
+    /* P4.2: gate-on 下 C++ owner 是 blend 状态的唯一权威（value-state 填充走
+     * blendStateForAttachment:out: 的 owner-first 读取）；镜像只服务 gate-off
+     * 的 ObjC descriptor 路径，gate-on 下不再写。 */
+    if (!mglPipelineCacheUsesMetalCpp()) {
+        _state.src_blend_rgb_factor[index] = srcRgbFactor;
+        _state.src_blend_alpha_factor[index] = srcAlphaFactor;
+        _state.dst_blend_rgb_factor[index] = dstRgbFactor;
+        _state.dst_blend_alpha_factor[index] = dstAlphaFactor;
+        _state.rgb_blend_operation[index] = rgbOperation;
+        _state.alpha_blend_operation[index] = alphaOperation;
+        _state.color_mask[index] = colorMask;
+    }
 }
 
 - (void)disableBinaryArchive

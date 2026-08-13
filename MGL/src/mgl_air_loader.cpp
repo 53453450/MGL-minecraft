@@ -11,6 +11,7 @@
 //------------------------------------------------------------------------------------------------
 #include "mgl_metal_cpp.h"
 #include "mgl_air_loader.h"
+#include "mgl_env_flag.h"
 
 #include <dispatch/dispatch.h>
 #include <map>
@@ -29,7 +30,7 @@ PSOCache& psoCache() {
 }
 
 std::string pipelineKey(const void* vs, const void* fs,
-                        const MGLPipelineDescriptorState* d) {
+                        const MGLRenderCppPipelineDescriptorState* d) {
     std::string key;
     key.reserve(sizeof(vs) + sizeof(fs) + sizeof(*d));
     key.append(reinterpret_cast<const char*>(&vs), sizeof(vs));
@@ -48,6 +49,207 @@ void copyError(NS::Error* e, char* err, size_t errcap) {
         }
     }
     snprintf(err, errcap, "unknown Metal error");
+}
+
+// MTL::PixelFormat packed depth-stencil predicate（镜像
+// mgl_texture_compat.h 的 mglMetalPixelFormatIsPackedDepthStencil）。
+bool isPackedDepthStencil(uint32_t format) {
+    return format == static_cast<uint32_t>(MTL::PixelFormatDepth24Unorm_Stencil8) ||
+           format == static_cast<uint32_t>(MTL::PixelFormatDepth32Float_Stencil8);
+}
+
+// P4.2: 在 value-state 上复刻 ObjC mglNormalizePipelineDepthStencilFormats：
+// depth/stencil 各占独立 attachment 但其中之一是 packed 格式时，Metal 要求
+// 两者使用同一个 packed 格式（depth 与 stencil 共享纹理）。
+void normalizeDepthStencilFormats(MGLRenderCppPipelineDescriptorState* desc) {
+    uint32_t depth = desc->depth_format;
+    uint32_t stencil = desc->stencil_format;
+    if (depth == static_cast<uint32_t>(MTL::PixelFormatInvalid) ||
+        stencil == static_cast<uint32_t>(MTL::PixelFormatInvalid) ||
+        depth == stencil) {
+        return;
+    }
+    const bool depthPacked = isPackedDepthStencil(depth);
+    const bool stencilPacked = isPackedDepthStencil(stencil);
+    if (!depthPacked && !stencilPacked) {
+        return;
+    }
+    const uint32_t packed = stencilPacked ? stencil : depth;
+    desc->depth_format = packed;
+    desc->stencil_format = packed;
+}
+
+// P4.2: 由 value-state 组装 MTL::RenderPipelineDescriptor（final/simple/safe
+// 共用）。镜像 ObjC generatePipelineDescriptor +
+// bindBlendStateToPipelineStateDescriptor + mglEnableIndirectCommandBuffersForPipeline：
+//   - label "GLSL Pipeline"
+//   - color attachment 的 writeMask/blend 只在 pixelFormat 有效时设置
+//     （未触碰的 attachment 保持 Metal 默认值，与 ObjC descriptor 一致）
+//   - supportIndirectCommandBuffers 由 MGL_ENABLE_ICB_PIPELINES 显式 opt-in
+// 调用方负责先 normalizeDepthStencilFormats。
+MTL::RenderPipelineDescriptor* buildRenderPipelineDescriptor(
+    const MGLRenderCppPipelineDescriptorState* desc) {
+    MTL::RenderPipelineDescriptor* rpd =
+        MTL::RenderPipelineDescriptor::alloc()->init();
+    if (!rpd) {
+        return nullptr;
+    }
+    rpd->setLabel(
+        NS::String::string("GLSL Pipeline", NS::UTF8StringEncoding));
+
+    rpd->setRasterizationEnabled(desc->rasterization_enabled ? true : false);
+    if (mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES")) {
+        rpd->setSupportIndirectCommandBuffers(true);
+    }
+    rpd->setAlphaToCoverageEnabled(desc->alpha_to_coverage_enabled ? true : false);
+    rpd->setAlphaToOneEnabled(desc->alpha_to_one_enabled ? true : false);
+    rpd->setInputPrimitiveTopology(
+        (MTL::PrimitiveTopologyClass)desc->input_primitive_topology);
+    if (desc->raster_sample_count > 0) {
+        rpd->setRasterSampleCount(desc->raster_sample_count);
+    }
+
+    for (uint32_t i = 0; i < desc->color_count && i < 8; i++) {
+        MTL::RenderPipelineColorAttachmentDescriptor* ca =
+            rpd->colorAttachments()->object(i);
+        ca->setPixelFormat((MTL::PixelFormat)desc->color_format[i]);
+        /* Untouched (invalid-format) attachments keep Metal defaults —
+         * writeMask All, blending off — exactly like the ObjC descriptor
+         * that never touched them. */
+        if (desc->color_format[i] !=
+            static_cast<uint32_t>(MTL::PixelFormatInvalid)) {
+            ca->setWriteMask((MTL::ColorWriteMask)desc->color_write_mask[i]);
+            if (desc->blending_enabled_mask & (1u << i)) {
+                ca->setBlendingEnabled(true);
+                ca->setSourceRGBBlendFactor(
+                    (MTL::BlendFactor)desc->source_rgb_blend_factor[i]);
+                ca->setDestinationRGBBlendFactor(
+                    (MTL::BlendFactor)desc->destination_rgb_blend_factor[i]);
+                ca->setSourceAlphaBlendFactor(
+                    (MTL::BlendFactor)desc->source_alpha_blend_factor[i]);
+                ca->setDestinationAlphaBlendFactor(
+                    (MTL::BlendFactor)desc->destination_alpha_blend_factor[i]);
+                ca->setRgbBlendOperation(
+                    (MTL::BlendOperation)desc->rgb_blend_operation[i]);
+                ca->setAlphaBlendOperation(
+                    (MTL::BlendOperation)desc->alpha_blend_operation[i]);
+            }
+        }
+    }
+
+    rpd->setDepthAttachmentPixelFormat((MTL::PixelFormat)desc->depth_format);
+    rpd->setStencilAttachmentPixelFormat((MTL::PixelFormat)desc->stencil_format);
+
+    if (desc->attrib_count > 0) {
+        MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc()->init();
+        for (uint32_t i = 0; i < desc->attrib_count && i < 32; i++) {
+            const uint32_t bufIdx = desc->attrib_buffer_index[i];
+            vd->attributes()->object(i)->setFormat(
+                (MTL::VertexFormat)desc->attrib_format[i]);
+            vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
+            vd->attributes()->object(i)->setBufferIndex(bufIdx);
+            /* 只有格式有效的 attribute 才写 layout —— 与 ObjC
+             * generateVertexDescriptor 一致：未使用的 attrib（Invalid
+             * 格式、零值 buffer 索引）不得用 0 stride/stepRate 覆盖已写
+             * 的 layout 状态。 */
+            if (desc->attrib_format[i] !=
+                static_cast<uint32_t>(MTL::VertexFormatInvalid)) {
+                vd->layouts()->object(bufIdx)->setStride(desc->attrib_stride[i]);
+                vd->layouts()->object(bufIdx)->setStepFunction(
+                    (MTL::VertexStepFunction)desc->attrib_step_function[i]);
+                vd->layouts()->object(bufIdx)->setStepRate(desc->attrib_step_rate[i]);
+            }
+        }
+        rpd->setVertexDescriptor(vd);
+        vd->release();
+    }
+
+    rpd->setTessellationPartitionMode(
+        (MTL::TessellationPartitionMode)desc->tessellation_partition_mode);
+    /* maxTessellationFactor 默认 64（ObjC descriptor 默认值）；0 表示
+     * 未设置（safe/simple fallback 的零值 state），跳过以避免 Metal
+     * "maxTessellationFactor must be >= 1 and <= 64" 断言。 */
+    if (desc->max_tessellation_factor > 0) {
+        rpd->setMaxTessellationFactor(desc->max_tessellation_factor);
+    }
+    rpd->setTessellationFactorScaleEnabled(
+        desc->tessellation_factor_scale_enabled ? true : false);
+    rpd->setTessellationFactorFormat(
+        (MTL::TessellationFactorFormat)desc->tessellation_factor_format);
+    rpd->setTessellationControlPointIndexType(
+        (MTL::TessellationControlPointIndexType)
+            desc->tessellation_control_point_index_type);
+    rpd->setTessellationFactorStepFunction(
+        (MTL::TessellationFactorStepFunction)
+            desc->tessellation_factor_step_function);
+    rpd->setTessellationOutputWindingOrder(
+        (MTL::Winding)desc->tessellation_output_winding_order);
+
+    return rpd;
+}
+
+// P4.2: 共享 PSO 创建。archive（+0 borrowed）非空时：创建前应用到
+// descriptor（setBinaryArchives），成功后把该 pipeline 加入 archive —— 镜像
+// ObjC applyBinaryArchiveToDescriptor / addPipelineToBinaryArchive。
+int createRenderPipelineInternal(
+    MTL::Device* dev, MTL::Function* vsFn, MTL::Function* fsFn,
+    const MGLRenderCppPipelineDescriptorState* desc, MTL::BinaryArchive* archive,
+    void** pso_out, char* err, size_t errcap) {
+    if (pso_out) *pso_out = nullptr;
+    if (!dev || !vsFn || !desc || !pso_out) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+
+    MGLRenderCppPipelineDescriptorState state = *desc;
+    normalizeDepthStencilFormats(&state);
+
+    std::string key = pipelineKey(vsFn, fsFn, &state);
+    PSOCache& cache = psoCache();
+    auto it = cache.find(key);
+    if (it != cache.end()) {
+        static_cast<MTL::RenderPipelineState*>(it->second)->retain();
+        *pso_out = it->second;
+        return 0;
+    }
+
+    MTL::RenderPipelineDescriptor* rpd =
+        buildRenderPipelineDescriptor(&state);
+    if (!rpd) {
+        if (err && errcap) snprintf(err, errcap, "descriptor alloc failed");
+        return -1;
+    }
+    rpd->setVertexFunction(vsFn);
+    if (fsFn) {
+        rpd->setFragmentFunction(fsFn);
+    }
+    if (archive) {
+        rpd->setBinaryArchives(NS::Array::array(archive));
+    }
+
+    NS::Error* nsErr = nullptr;
+    MTL::RenderPipelineState* pso = dev->newRenderPipelineState(rpd, &nsErr);
+    if (!pso) {
+        copyError(nsErr, err, errcap);
+        rpd->release();
+        return -1;
+    }
+    if (archive) {
+        NS::Error* addErr = nullptr;
+        if (!archive->addRenderPipelineFunctions(rpd, &addErr)) {
+            char addMessage[512] = {0};
+            copyError(addErr, addMessage, sizeof(addMessage));
+            fprintf(stderr,
+                    "MGL BINARY ARCHIVE: addRenderPipeline warning: %s\n",
+                    addMessage[0] ? addMessage : "unknown error");
+        }
+    }
+    rpd->release();
+
+    pso->retain(); // 缓存长期持有
+    cache[key] = pso;
+    *pso_out = pso; // 调用方持有一份引用（mglAirRelease）
+    return 0;
 }
 
 } // namespace
@@ -88,108 +290,27 @@ int mglAirCreateRenderPipeline(const void* device, void* vs_function, void* fs_f
         if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-    MTL::Device* dev = static_cast<MTL::Device*>(const_cast<void*>(device));
-    MTL::Function* vsFn = static_cast<MTL::Function*>(vs_function);
-    MTL::Function* fsFn = fs_function
-        ? static_cast<MTL::Function*>(fs_function) : nullptr;
+    return createRenderPipelineInternal(
+        static_cast<MTL::Device*>(const_cast<void*>(device)),
+        static_cast<MTL::Function*>(vs_function),
+        fs_function ? static_cast<MTL::Function*>(fs_function) : nullptr,
+        desc, nullptr /* archive */, pso_out, err, errcap);
+}
 
-    *pso_out = nullptr;
-    std::string key = pipelineKey(vs_function, fs_function, desc);
-    PSOCache& cache = psoCache();
-    auto it = cache.find(key);
-    if (it != cache.end()) {
-        static_cast<MTL::RenderPipelineState*>(it->second)->retain();
-        *pso_out = it->second;
-        return 0;
-    }
-
-    MTL::RenderPipelineDescriptor* rpd = MTL::RenderPipelineDescriptor::alloc()->init();
-    if (!rpd) {
-        if (err && errcap) snprintf(err, errcap, "descriptor alloc failed");
+int mglAirCreateRenderPipelineWithArchive(
+    const void* device, void* vs_function, void* fs_function,
+    const MGLRenderCppPipelineDescriptorState* desc, void* binary_archive,
+    void** pso_out, char* err, size_t errcap) {
+    if (!device || !vs_function || !desc || !pso_out) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
         return -1;
     }
-
-    rpd->setVertexFunction(vsFn);
-    if (fsFn) {
-        rpd->setFragmentFunction(fsFn);
-    }
-
-    rpd->setRasterizationEnabled(desc->rasterization_enabled ? true : false);
-    rpd->setSupportIndirectCommandBuffers(desc->icb_enabled ? true : false);
-    rpd->setAlphaToCoverageEnabled(desc->alpha_to_coverage_enabled ? true : false);
-    rpd->setAlphaToOneEnabled(desc->alpha_to_one_enabled ? true : false);
-    rpd->setInputPrimitiveTopology(
-        (MTL::PrimitiveTopologyClass)desc->input_primitive_topology);
-    if (desc->raster_sample_count > 0)
-        rpd->setRasterSampleCount(desc->raster_sample_count);
-
-    for (uint32_t i = 0; i < desc->color_count && i < 8; i++) {
-        MTL::RenderPipelineColorAttachmentDescriptor* ca =
-            rpd->colorAttachments()->object(i);
-        ca->setPixelFormat((MTL::PixelFormat)desc->color_format[i]);
-    }
-    rpd->setDepthAttachmentPixelFormat((MTL::PixelFormat)desc->depth_format);
-    rpd->setStencilAttachmentPixelFormat((MTL::PixelFormat)desc->stencil_format);
-
-    if (desc->attrib_count > 0) {
-        MTL::VertexDescriptor* vd = MTL::VertexDescriptor::alloc()->init();
-        for (uint32_t i = 0; i < desc->attrib_count && i < 32; i++) {
-            const uint32_t bufIdx = desc->attrib_buffer_index[i];
-            vd->attributes()->object(i)->setFormat((MTL::VertexFormat)desc->attrib_format[i]);
-            vd->attributes()->object(i)->setOffset(desc->attrib_offset[i]);
-            vd->attributes()->object(i)->setBufferIndex(bufIdx);
-            vd->layouts()->object(bufIdx)->setStride(desc->attrib_stride[i]);
-            vd->layouts()->object(bufIdx)->setStepFunction(
-                (MTL::VertexStepFunction)desc->attrib_step_function[i]);
-            vd->layouts()->object(bufIdx)->setStepRate(desc->attrib_step_rate[i]);
-        }
-        rpd->setVertexDescriptor(vd);
-        vd->release();
-    }
-
-    rpd->setTessellationPartitionMode(
-        (MTL::TessellationPartitionMode)desc->tessellation_partition_mode);
-    rpd->setMaxTessellationFactor(desc->max_tessellation_factor);
-    rpd->setTessellationFactorScaleEnabled(
-        desc->tessellation_factor_scale_enabled ? true : false);
-    rpd->setTessellationFactorFormat(
-        (MTL::TessellationFactorFormat)desc->tessellation_factor_format);
-    rpd->setTessellationControlPointIndexType(
-        (MTL::TessellationControlPointIndexType)
-            desc->tessellation_control_point_index_type);
-    rpd->setTessellationFactorStepFunction(
-        (MTL::TessellationFactorStepFunction)
-            desc->tessellation_factor_step_function);
-    rpd->setTessellationOutputWindingOrder(
-        (MTL::Winding)desc->tessellation_output_winding_order);
-
-    for (uint32_t i = 0; i < desc->color_count && i < 8; i++) {
-        MTL::RenderPipelineColorAttachmentDescriptor* ca =
-            rpd->colorAttachments()->object(i);
-        ca->setWriteMask((MTL::ColorWriteMask)desc->color_write_mask[i]);
-        if (desc->blending_enabled_mask & (1u << i)) {
-            ca->setBlendingEnabled(true);
-            ca->setSourceRGBBlendFactor((MTL::BlendFactor)desc->source_rgb_blend_factor[i]);
-            ca->setDestinationRGBBlendFactor((MTL::BlendFactor)desc->destination_rgb_blend_factor[i]);
-            ca->setSourceAlphaBlendFactor((MTL::BlendFactor)desc->source_alpha_blend_factor[i]);
-            ca->setDestinationAlphaBlendFactor((MTL::BlendFactor)desc->destination_alpha_blend_factor[i]);
-            ca->setRgbBlendOperation((MTL::BlendOperation)desc->rgb_blend_operation[i]);
-            ca->setAlphaBlendOperation((MTL::BlendOperation)desc->alpha_blend_operation[i]);
-        }
-    }
-
-    NS::Error* nsErr = nullptr;
-    MTL::RenderPipelineState* pso = dev->newRenderPipelineState(rpd, &nsErr);
-    rpd->release();
-    if (!pso) {
-        copyError(nsErr, err, errcap);
-        return -1;
-    }
-
-    pso->retain(); // 缓存长期持有
-    cache[key] = pso;
-    *pso_out = pso; // 调用方持有一份引用（mglAirRelease）
-    return 0;
+    return createRenderPipelineInternal(
+        static_cast<MTL::Device*>(const_cast<void*>(device)),
+        static_cast<MTL::Function*>(vs_function),
+        fs_function ? static_cast<MTL::Function*>(fs_function) : nullptr,
+        desc, static_cast<MTL::BinaryArchive*>(binary_archive),
+        pso_out, err, errcap);
 }
 
 int mglAirCreateComputePipeline(const void* device, void* library,

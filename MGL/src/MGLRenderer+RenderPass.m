@@ -905,102 +905,6 @@ static bool mglLoadAIRMainFunction(id<MTLDevice> device,
     return true;
 }
 
-/* Build the same descriptor state used by the ObjC finalDescriptor and ask
- * the Metal-cpp loader to create the PSO.  The C ABI carries only scalar
- * Metal enum values; ObjC retains the returned PSO through bridge_transfer. */
-static id<MTLRenderPipelineState> mglCreateAIRRenderPipelineCpp(
-    id<MTLDevice> device, Program *vertexProgram, int vertexStage,
-    Program *fragmentProgram, MTLRenderPipelineDescriptor *descriptor,
-    MTLVertexDescriptor *vertexDescriptor, void *vertexLibraryOverride,
-    char *errorText, size_t errorCap)
-{
-    if (!device || !vertexProgram || !descriptor || !vertexDescriptor ||
-        !mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") || !mglRenderCppGetDevice()) {
-        return nil;
-    }
-    MGLShaderModule *vsModule = &vertexProgram->modules[vertexStage];
-    MGLShaderModule *fsModule = fragmentProgram ?
-        &fragmentProgram->modules[_FRAGMENT_SHADER] : NULL;
-    if ((!vertexLibraryOverride &&
-         (!vsModule->metallib_bytes || !vsModule->mtl_library)) ||
-        (fragmentProgram && (!fsModule->metallib_bytes || !fsModule->mtl_library))) {
-        return nil;
-    }
-
-    MGLPipelineDescriptorState state = {0};
-    state.vertex_program_instance =
-        vertexProgram->pipeline_cache_instance_id;
-    state.vertex_program_generation =
-        vertexProgram->pipeline_cache_generation;
-    state.fragment_program_instance = fragmentProgram
-        ? fragmentProgram->pipeline_cache_instance_id : 0u;
-    state.fragment_program_generation = fragmentProgram
-        ? fragmentProgram->pipeline_cache_generation : 0u;
-    state.color_count = MAX_COLOR_ATTACHMENTS;
-    for (uint32_t i = 0; i < state.color_count && i < 8u; i++) {
-        MTLRenderPipelineColorAttachmentDescriptor *ca =
-            descriptor.colorAttachments[i];
-        state.color_format[i] = (uint32_t)ca.pixelFormat;
-        state.color_write_mask[i] = (uint32_t)ca.writeMask;
-        state.source_rgb_blend_factor[i] = (uint32_t)ca.sourceRGBBlendFactor;
-        state.destination_rgb_blend_factor[i] = (uint32_t)ca.destinationRGBBlendFactor;
-        state.source_alpha_blend_factor[i] = (uint32_t)ca.sourceAlphaBlendFactor;
-        state.destination_alpha_blend_factor[i] = (uint32_t)ca.destinationAlphaBlendFactor;
-        state.rgb_blend_operation[i] = (uint32_t)ca.rgbBlendOperation;
-        state.alpha_blend_operation[i] = (uint32_t)ca.alphaBlendOperation;
-        if (ca.blendingEnabled) state.blending_enabled_mask |= 1u << i;
-    }
-    state.depth_format = (uint32_t)descriptor.depthAttachmentPixelFormat;
-    state.stencil_format = (uint32_t)descriptor.stencilAttachmentPixelFormat;
-    state.rasterization_enabled = descriptor.rasterizationEnabled ? 1 : 0;
-    state.icb_enabled = descriptor.supportIndirectCommandBuffers ? 1 : 0;
-    state.alpha_to_coverage_enabled = descriptor.alphaToCoverageEnabled ? 1 : 0;
-    state.alpha_to_one_enabled = descriptor.alphaToOneEnabled ? 1 : 0;
-    state.input_primitive_topology = (uint32_t)descriptor.inputPrimitiveTopology;
-    state.raster_sample_count = (uint32_t)descriptor.rasterSampleCount;
-    for (uint32_t i = 0; i < 31u; i++) {
-        MTLVertexAttributeDescriptor *a = vertexDescriptor.attributes[i];
-        if (a.format == MTLVertexFormatInvalid) {
-            continue;
-        }
-        state.attrib_count = i + 1u;
-        state.attrib_format[i] = (uint32_t)a.format;
-        state.attrib_offset[i] = (uint32_t)a.offset;
-        state.attrib_buffer_index[i] = (uint32_t)a.bufferIndex;
-        NSUInteger bi = a.bufferIndex < 31u ? a.bufferIndex : 0u;
-        state.attrib_stride[i] = (uint32_t)vertexDescriptor.layouts[bi].stride;
-        state.attrib_step_function[i] =
-            (uint32_t)vertexDescriptor.layouts[bi].stepFunction;
-        state.attrib_step_rate[i] =
-            (uint32_t)vertexDescriptor.layouts[bi].stepRate;
-    }
-    state.tessellation_partition_mode =
-        (uint32_t)descriptor.tessellationPartitionMode;
-    state.max_tessellation_factor =
-        (uint32_t)descriptor.maxTessellationFactor;
-    state.tessellation_factor_scale_enabled =
-        descriptor.tessellationFactorScaleEnabled ? 1 : 0;
-    state.tessellation_factor_format =
-        (uint32_t)descriptor.tessellationFactorFormat;
-    state.tessellation_control_point_index_type =
-        (uint32_t)descriptor.tessellationControlPointIndexType;
-    state.tessellation_factor_step_function =
-        (uint32_t)descriptor.tessellationFactorStepFunction;
-    state.tessellation_output_winding_order =
-        (uint32_t)descriptor.tessellationOutputWindingOrder;
-
-    void *pso = NULL;
-    void *deviceCPP = mglRenderCppGetDevice();
-    void *vsFunction = (__bridge void *)descriptor.vertexFunction;
-    void *fsFunction = descriptor.fragmentFunction
-        ? (__bridge void *)descriptor.fragmentFunction : NULL;
-    if (mglAirCreateRenderPipeline(deviceCPP, vsFunction, fsFunction, &state,
-                                   &pso, errorText, errorCap) != 0 || !pso) {
-        return nil;
-    }
-    return (__bridge_transfer id<MTLRenderPipelineState>)pso;
-}
-
 @implementation MGLRenderer (RenderPass)
 
 static const char *mglGeometryPassthroughType(GLenum type)
@@ -4705,6 +4609,455 @@ output->name, (unsigned)i,
     return pipelineStateDescriptor;
 }
 
+/* P4.2 gate-on：与 generatePipelineDescriptor + bindBlendStateToPipelineState-
+ * Descriptor 完全等价的 value-state 填充。不创建 MTLRenderPipelineDescriptor；
+ * 所有 descriptor 状态（color/depth/stencil 格式、blend、顶点布局、tessellation、
+ * rasterization、inputPrimitiveTopology、sample count）逐字段写入
+ * MGLRenderCppPipelineDescriptorState。顶点 attribute 状态由
+ * generateVertexDescriptorState 填充（GS/TES compute 展开时为空布局，与
+ * 原路径的空白 MTLVertexDescriptor 等价）。函数选择与 side effects
+ * （bindMTLProgram/bindMTLTexture）与 ObjC 版本一一对应。返回 NO 表示失败
+ * （与 generatePipelineDescriptor 返回 nil 的路径一一对应）。 */
+- (BOOL)generatePipelineDescriptorState:(MGLRenderCppPipelineDescriptorState *)state
+                         vertexFunction:(id<MTLFunction> *)vertexFunctionOut
+                       fragmentFunction:(id<MTLFunction> *)fragmentFunctionOut
+{
+    if (!ctx) {
+        NSLog(@"MGL PIPELINE DESC fail: context is NULL");
+        return NO;
+    }
+    if (!state || !vertexFunctionOut || !fragmentFunctionOut) {
+        NSLog(@"MGL PIPELINE DESC fail: bad out args");
+        return NO;
+    }
+    *vertexFunctionOut = nil;
+    *fragmentFunctionOut = nil;
+
+    const BOOL nativeTES = _tessellation.nativeTESActive;
+    const BOOL tessVertexCapture = _tessellation.tessVertexCaptureActive;
+    const BOOL cullDistanceCapture =
+        _tessellation.cullDistanceCaptureActive;
+    const BOOL geometryExpansion = _geometry.expansionActive;
+    const BOOL tessCompute = _tessellation.tessComputeActive;
+    const int vertexStage = nativeTES ? _TESS_EVALUATION_SHADER : _VERTEX_SHADER;
+    Program *vertexProgram = nativeTES
+        ? _tessellation.nativeTESProgram
+        : mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *fragmentProgram = (tessVertexCapture || cullDistanceCapture)
+        ? NULL : mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    GLuint renderProgramKey = mglCurrentRenderProgramKey(ctx);
+    GLuint vertexProgramName = vertexProgram ? vertexProgram->name : 0u;
+    GLuint fragmentProgramName = fragmentProgram ? fragmentProgram->name : 0u;
+    BOOL rasterizerDiscard = tessVertexCapture || cullDistanceCapture ||
+        MGL_STATE(ctx)->caps.rasterizer_discard ? YES : NO;
+
+    if (!vertexProgram || (!fragmentProgram && !rasterizerDiscard)) {
+        NSLog(@"MGL PIPELINE DESC fail: missing stage program key=%u vs=%p fs=%p current=%u pipeline=%u",
+              (unsigned)renderProgramKey,
+              vertexProgram,
+              fragmentProgram,
+              (unsigned)MGL_STATE(ctx)->program_name,
+              (unsigned)MGL_STATE(ctx)->var.program_pipeline_binding);
+        return NO;
+    }
+
+    if (kMGLVerbosePipelineLogs) {
+        NSLog(@"MGL PIPELINE DESC begin key=%u vsProgram=%u fsProgram=%u",
+              (unsigned)renderProgramKey,
+              (unsigned)vertexProgramName,
+              (unsigned)fragmentProgramName);
+    }
+
+    if ([self bindMTLProgram:vertexProgram] == false) {
+        NSLog(@"MGL PIPELINE DESC fail: bindMTLProgram failed for VS program=%u",
+              (unsigned)vertexProgramName);
+        return NO;
+    }
+    if (fragmentProgram &&
+        fragmentProgram != vertexProgram &&
+        [self bindMTLProgram:fragmentProgram] == false) {
+        NSLog(@"MGL PIPELINE DESC fail: bindMTLProgram failed for FS program=%u",
+              (unsigned)fragmentProgramName);
+        return NO;
+    }
+
+    Shader *vertex_shader = vertexProgram->shader_slots[vertexStage];
+    Shader *fragment_shader = fragmentProgram ? fragmentProgram->shader_slots[_FRAGMENT_SHADER] : NULL;
+    if (!vertex_shader || (!fragment_shader && !rasterizerDiscard)) {
+        NSLog(@"MGL PIPELINE DESC fail: missing shaders key=%u vsProgram=%u fsProgram=%u (vs=%p fs=%p)",
+              (unsigned)renderProgramKey,
+              (unsigned)vertexProgramName,
+              (unsigned)fragmentProgramName,
+              vertex_shader,
+              fragment_shader);
+        return NO;
+    }
+
+    void *vertexFunctionPtr = geometryExpansion
+        ? (__bridge void *)_geometry.passthroughFunction
+        : tessCompute
+        ? (__bridge void *)_tessellation.tessPassthroughFunction
+        : cullDistanceCapture
+        ? vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function
+        : tessVertexCapture
+        ? vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function
+        : vertexProgram->modules[vertexStage].mtl_function;
+    id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vertexFunctionPtr;
+
+    id<MTLFunction> fragmentFunction = fragmentProgram
+        ? (__bridge id<MTLFunction>)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
+        : nil;
+    if (kMGLVerbosePipelineLogs) {
+        NSLog(@"MGL PIPELINE DESC vs=%@ fs=%@",
+              vertexFunction ? vertexFunction.name : @"(null)",
+              fragmentFunction ? fragmentFunction.name : @"(null)");
+    }
+    if (!vertexFunction || (!fragmentFunction && !rasterizerDiscard)) {
+        NSLog(@"MGL PIPELINE DESC fail: missing MTLFunction key=%u vsProgram=%u fsProgram=%u (vs=%p fs=%p)",
+              (unsigned)renderProgramKey,
+              (unsigned)vertexProgramName,
+              (unsigned)fragmentProgramName,
+              vertexFunction,
+              fragmentFunction);
+        return NO;
+    }
+
+    memset(state, 0, sizeof(*state));
+    state->vertex_program_instance =
+        vertexProgram->pipeline_cache_instance_id;
+    state->vertex_program_generation =
+        vertexProgram->pipeline_cache_generation;
+    state->fragment_program_instance = fragmentProgram
+        ? fragmentProgram->pipeline_cache_instance_id : 0u;
+    state->fragment_program_generation = fragmentProgram
+        ? fragmentProgram->pipeline_cache_generation : 0u;
+    state->color_count = MAX_COLOR_ATTACHMENTS;
+    state->rasterization_enabled = rasterizerDiscard ? 0 : 1;
+    /* maxTessellationFactor 默认 64 —— 与 ObjC descriptor 默认值一致
+     * （非 TES pipeline 不设该字段，Metal 默认 64；C++ builder 对 0 跳过
+     * 设置）。 */
+    state->max_tessellation_factor = 64u;
+
+    /* inputPrimitiveTopology：只有 VS/GS 实际写 gl_Layer / gl_ViewportIndex
+     * 时才设置（Metal 要求非 unspecified 的 concrete topology；普通 pipeline
+     * 保持 unspecified 让 Metal 自动检测）。 */
+    {
+        BOOL needsLayerTopology = NO;
+        Shader *vsSlot = vertexProgram ? vertexProgram->shader_slots[_VERTEX_SHADER] : NULL;
+        if (vsSlot && vsSlot->src &&
+            (strstr(vsSlot->src, "gl_Layer") ||
+             strstr(vsSlot->src, "gl_ViewportIndex"))) {
+            needsLayerTopology = YES;
+        }
+        if (!needsLayerTopology && vertexProgram) {
+            Shader *gsSlot = vertexProgram->shader_slots[_GEOMETRY_SHADER];
+            if (gsSlot && gsSlot->src &&
+                (strstr(gsSlot->src, "gl_Layer") ||
+                 strstr(gsSlot->src, "gl_ViewportIndex"))) {
+                needsLayerTopology = YES;
+            }
+        }
+        if (needsLayerTopology) {
+            switch (_lastDrawPrimitiveMode) {
+                case GL_POINTS:
+                    state->input_primitive_topology =
+                        (uint32_t)MTLPrimitiveTopologyClassPoint;
+                    break;
+                case GL_LINES:
+                case GL_LINE_STRIP:
+                case GL_LINE_LOOP:
+                case GL_LINES_ADJACENCY:
+                case GL_LINE_STRIP_ADJACENCY:
+                    state->input_primitive_topology =
+                        (uint32_t)MTLPrimitiveTopologyClassLine;
+                    break;
+                default:
+                    state->input_primitive_topology =
+                        (uint32_t)MTLPrimitiveTopologyClassTriangle;
+                    break;
+            }
+        }
+    }
+
+    if (nativeTES) {
+        switch (vertexProgram->tess_gen_spacing) {
+            case GL_FRACTIONAL_EVEN:
+                state->tessellation_partition_mode =
+                    (uint32_t)MTLTessellationPartitionModeFractionalEven;
+                break;
+            case GL_FRACTIONAL_ODD:
+                state->tessellation_partition_mode =
+                    (uint32_t)MTLTessellationPartitionModeFractionalOdd;
+                break;
+            default:
+                state->tessellation_partition_mode =
+                    (uint32_t)MTLTessellationPartitionModeInteger;
+                break;
+        }
+        state->max_tessellation_factor = 64u;
+        state->tessellation_factor_scale_enabled = 0;
+        state->tessellation_factor_format =
+            (uint32_t)MTLTessellationFactorFormatHalf;
+        /* Indexed native TES 的 CPU gather 流（uint32）作为
+         * controlPointIndexBuffer；非 indexed 用 None。 */
+        state->tessellation_control_point_index_type =
+            _tessellation.tessIndexedDraw
+                ? (uint32_t)MTLTessellationControlPointIndexTypeUInt32
+                : (uint32_t)MTLTessellationControlPointIndexTypeNone;
+        state->tessellation_factor_step_function =
+            (uint32_t)MTLTessellationFactorStepFunctionPerPatch;
+        state->tessellation_output_winding_order =
+            vertexProgram->tess_gen_vertex_order == GL_CW
+                ? (uint32_t)MTLWindingClockwise
+                : (uint32_t)MTLWindingCounterClockwise;
+    }
+
+    /* GL_RASTERIZER_DISCARD / capture 变体：rasterizationEnabled 与 vertex
+     * function 的返回类型匹配（void -> NO，有 stage outputs -> YES）。AIR
+     * TES 总是返回 post-tessellation record，故 native TES 强制 YES。 */
+    if (tessVertexCapture || cullDistanceCapture) {
+        state->rasterization_enabled = 0;
+    } else if (rasterizerDiscard) {
+        GLuint vsOutputCount = vertexProgram->shader_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
+        state->rasterization_enabled =
+            (nativeTES || vsOutputCount > 0) ? 1 : 0;
+    } else {
+        state->rasterization_enabled = 1;
+    }
+
+    /* 附件格式：FBO attachment -> rp/drawable/ctx 兜底（与
+     * generatePipelineDescriptor 的 4526-4652 一致）。 */
+    if (MGL_STATE(ctx)->framebuffer) {
+        Framebuffer *fbo = MGL_STATE(ctx)->framebuffer;
+
+        for (int i = 0; i < MGL_STATE(ctx)->max_color_attachments; i++) {
+            if (fbo->color_attachments[i].texture) {
+                Texture *tex = [self framebufferAttachmentTexture:&fbo->color_attachments[i]];
+                if (tex && ![self bindMTLTexture:tex]) {
+                    NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for color attachment %d tex=%u",
+                          i, tex->name);
+                    return NO;
+                }
+                if (tex && tex->mtl_data) {
+                    state->color_format[i] = (uint32_t)mtlPixelFormatForGLTex(tex);
+                } else {
+                    state->color_format[i] = (uint32_t)MTLPixelFormatInvalid;
+                }
+            }
+
+            if ((fbo->color_attachment_bitfield >> (i + 1)) == 0) {
+                break;
+            }
+        }
+
+        if (fbo->depth.texture) {
+            Texture *tex = [self framebufferAttachmentTexture:&fbo->depth];
+            if (tex && ![self bindMTLTexture:tex]) {
+                NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for depth tex=%u", tex->name);
+                return NO;
+            }
+            if (tex && tex->mtl_data) {
+                MTLPixelFormat depthFormat = mtlPixelFormatForGLTex(tex);
+                if (depthFormat == MTLPixelFormatInvalid) {
+                    NSLog(@"MGL ERROR: Invalid depth texture format, falling back to Depth32Float");
+                    depthFormat = MTLPixelFormatDepth32Float;
+                }
+                state->depth_format = (uint32_t)depthFormat;
+            } else {
+                state->depth_format = (uint32_t)MTLPixelFormatInvalid;
+            }
+        }
+
+        if (fbo->stencil.texture) {
+            Texture *tex = [self framebufferAttachmentTexture:&fbo->stencil];
+            if (tex && ![self bindMTLTexture:tex]) {
+                NSLog(@"MGL PIPELINE DESC fail: bindMTLTexture failed for stencil tex=%u", tex->name);
+                return NO;
+            }
+            if (tex && tex->mtl_data) {
+                MTLPixelFormat stencilFormat = mtlPixelFormatForGLTex(tex);
+                if (stencilFormat == MTLPixelFormatInvalid) {
+                    NSLog(@"MGL ERROR: Invalid stencil texture format, falling back to Stencil8");
+                    stencilFormat = MTLPixelFormatStencil8;
+                }
+                state->stencil_format = (uint32_t)stencilFormat;
+            } else {
+                state->stencil_format = (uint32_t)MTLPixelFormatInvalid;
+            }
+        }
+    } else {
+        MTLPixelFormat preferredColor0 = MTLPixelFormatInvalid;
+        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+            preferredColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
+        } else if (_drawable && _drawable.texture) {
+            preferredColor0 = _drawable.texture.pixelFormat;
+        } else {
+            preferredColor0 = ctx->pixel_format.mtl_pixel_format;
+        }
+        state->color_format[0] = (uint32_t)preferredColor0;
+
+        if (ctx->depth_format.format) {
+            MTLPixelFormat depthFormat = ctx->depth_format.mtl_pixel_format;
+            if (depthFormat == MTLPixelFormatInvalid) {
+                depthFormat = MTLPixelFormatDepth32Float;
+            }
+            state->depth_format = (uint32_t)depthFormat;
+        }
+
+        if (ctx->stencil_format.format) {
+            MTLPixelFormat stencilFormat = ctx->stencil_format.mtl_pixel_format;
+            if (stencilFormat == MTLPixelFormatInvalid ||
+                stencilFormat == MTLPixelFormatDepth32Float_Stencil8) {
+                stencilFormat = MTLPixelFormatStencil8;
+            }
+            state->stencil_format = (uint32_t)stencilFormat;
+        }
+    }
+
+    if (_renderPassManager.state->renderPassDescriptor) {
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            id<MTLTexture> rpColor = mglRenderPassColorTextureFor(_renderPassManager.state, i);
+            if (rpColor) {
+                state->color_format[i] = (uint32_t)rpColor.pixelFormat;
+            }
+        }
+
+        id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
+        id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
+        state->depth_format =
+            rpDepth ? (uint32_t)rpDepth.pixelFormat : (uint32_t)MTLPixelFormatInvalid;
+        state->stencil_format =
+            rpStencil ? (uint32_t)rpStencil.pixelFormat : (uint32_t)MTLPixelFormatInvalid;
+    }
+
+    BOOL color0IsIntentionallyDisabled =
+        MGL_STATE(ctx)->framebuffer &&
+        mglMetalDrawBufferAt(ctx, 0u) == GL_NONE;
+
+    if (!color0IsIntentionallyDisabled &&
+        (state->color_format[0] == (uint32_t)MTLPixelFormatInvalid ||
+         state->color_format[0] == 0u)) {
+        MTLPixelFormat fallbackColor0 = MTLPixelFormatInvalid;
+        if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+            fallbackColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
+        } else if (_drawable && _drawable.texture) {
+            fallbackColor0 = _drawable.texture.pixelFormat;
+        } else {
+            fallbackColor0 = ctx->pixel_format.mtl_pixel_format;
+        }
+        if (fallbackColor0 == MTLPixelFormatInvalid || fallbackColor0 == 0) {
+            fallbackColor0 = MTLPixelFormatBGRA8Unorm;
+        }
+        if (kMGLVerbosePipelineLogs) {
+            NSLog(@"MGL PIPELINE DESC missing color pixel format, fallback pixelFormat=%lu",
+                  (unsigned long)fallbackColor0);
+        }
+        state->color_format[0] = (uint32_t)fallbackColor0;
+    }
+
+    /* rasterSampleCount：与 render pass attachment 的 sample count 对齐
+     * （默认 1）。 */
+    NSUInteger resolvedSampleCount = 1;
+    if (_renderPassManager.state->renderPassDescriptor) {
+        id<MTLTexture> rpColor0 = mglRenderPassColorTextureFor(_renderPassManager.state, 0);
+        id<MTLTexture> rpDepth = mglRenderPassDepthTextureFor(_renderPassManager.state);
+        id<MTLTexture> rpStencil = mglRenderPassStencilTextureFor(_renderPassManager.state);
+        if (rpColor0 && rpColor0.sampleCount > 0) {
+            resolvedSampleCount = rpColor0.sampleCount;
+        } else if (rpDepth && rpDepth.sampleCount > 0) {
+            resolvedSampleCount = rpDepth.sampleCount;
+        } else if (rpStencil && rpStencil.sampleCount > 0) {
+            resolvedSampleCount = rpStencil.sampleCount;
+        }
+    }
+    if (resolvedSampleCount == 0) {
+        resolvedSampleCount = 1;
+    }
+    state->raster_sample_count = (uint32_t)resolvedSampleCount;
+
+    /* 深度/模板 packed normalize（与 mglNormalizePipelineDepthStencilFormats
+     * 一致；C++ builder 内还会再兜底一次）。签名必须在 normalize 之后计算，
+     * 与 gate-off 的 descriptor 路径保持一致。 */
+    {
+        uint32_t depthFormat = state->depth_format;
+        uint32_t stencilFormat = state->stencil_format;
+        if (depthFormat != (uint32_t)MTLPixelFormatInvalid &&
+            stencilFormat != (uint32_t)MTLPixelFormatInvalid &&
+            depthFormat != stencilFormat) {
+            bool depthPacked =
+                depthFormat == (uint32_t)MTLPixelFormatDepth24Unorm_Stencil8 ||
+                depthFormat == (uint32_t)MTLPixelFormatDepth32Float_Stencil8;
+            bool stencilPacked =
+                stencilFormat == (uint32_t)MTLPixelFormatDepth24Unorm_Stencil8 ||
+                stencilFormat == (uint32_t)MTLPixelFormatDepth32Float_Stencil8;
+            if (depthPacked || stencilPacked) {
+                uint32_t packedFormat = stencilPacked ? stencilFormat : depthFormat;
+                state->depth_format = packedFormat;
+                state->stencil_format = packedFormat;
+            }
+        }
+    }
+
+    /* blend / alpha-to-coverage / alpha-to-one（镜像
+     * bindBlendStateToPipelineStateDescriptor；blend 值 owner-first 读取）。 */
+    state->alpha_to_coverage_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_coverage ? 1 : 0;
+    state->alpha_to_one_enabled = MGL_STATE(ctx)->caps.sample_alpha_to_one ? 1 : 0;
+
+    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        if (state->color_format[i] == (uint32_t)MTLPixelFormatInvalid) {
+            continue;
+        }
+        if (mglMetalDrawBufferAt(ctx, (GLuint)i) == GL_NONE) {
+            state->color_write_mask[i] = 0u;
+            continue;
+        }
+        MGLRenderCppPipelineBlendState blend = {0};
+        if (![_pipelineCache blendStateForAttachment:(NSUInteger)i out:&blend]) {
+            NSLog(@"MGL PIPELINE DESC fail: blend state unavailable for attachment %d", i);
+            return NO;
+        }
+        state->color_write_mask[i] = blend.color_write_mask;
+        if (MGL_STATE(ctx)->caps.blendi[i]) {
+            state->blending_enabled_mask |= 1u << i;
+        }
+        state->source_rgb_blend_factor[i] = blend.source_rgb_factor;
+        state->destination_rgb_blend_factor[i] = blend.destination_rgb_factor;
+        state->source_alpha_blend_factor[i] = blend.source_alpha_factor;
+        state->destination_alpha_blend_factor[i] = blend.destination_alpha_factor;
+        state->rgb_blend_operation[i] = blend.rgb_operation;
+        state->alpha_blend_operation[i] = blend.alpha_operation;
+    }
+
+    /* 顶点布局：GS/TES compute 展开用空布局（等价原路径的空白
+     * MTLVertexDescriptor）；其余走 generateVertexDescriptorState。 */
+    if (!(geometryExpansion || tessCompute)) {
+        if (![self generateVertexDescriptorState:state]) {
+            return NO;
+        }
+    }
+
+    if (kMGLVerbosePipelineLogs) {
+        uint32_t activeColorAttachmentCount = 0;
+        for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+            if (state->color_format[i] != (uint32_t)MTLPixelFormatInvalid &&
+                state->color_format[i] != 0u) {
+                activeColorAttachmentCount++;
+            }
+        }
+        NSLog(@"MGL PIPELINE DESC colorAttachmentCount=%u depthFormat=%u stencilFormat=%u sampleCount=%u",
+              (unsigned)activeColorAttachmentCount,
+              (unsigned)state->depth_format,
+              (unsigned)state->stencil_format,
+              (unsigned)state->raster_sample_count);
+        NSLog(@"MGL PIPELINE DESC renderTarget[0]=%u",
+              (unsigned)state->color_format[0]);
+    }
+
+    *vertexFunctionOut = vertexFunction;
+    *fragmentFunctionOut = fragmentFunction;
+    return YES;
+}
+
 #pragma mark vertex descriptor
 
 - (void)updateGLSampledCopiesForEndedRenderPassFramebuffer:(Framebuffer *)fbo
@@ -5901,35 +6254,67 @@ stencil_format_ok:;
 
             if (!skipPipelineBuild) {
             // create pipeline descriptor
-            MTLRenderPipelineDescriptor *pipelineStateDescriptor;
+            // P4.2: gate-on 走 value-state（MGLRenderCppPipelineDescriptorState，
+            // 不组装 MTLRenderPipelineDescriptor）；gate-off 保留 ObjC descriptor
+            // 作为 A/B 基线。
+            const BOOL usesMetalCpp = mglRenderPassUsesMetalCpp();
+            MTLRenderPipelineDescriptor *pipelineStateDescriptor = nil;
+            MTLVertexDescriptor *vertexDescriptor = nil;
+            MGLRenderCppPipelineDescriptorState psoState = {0};
+            id<MTLFunction> psoVertexFunction = nil;
+            id<MTLFunction> psoFragmentFunction = nil;
+            uint32_t builtColor0Format = (uint32_t)MTLPixelFormatInvalid;
+            uint32_t builtDepthFormat = (uint32_t)MTLPixelFormatInvalid;
+            uint32_t builtStencilFormat = (uint32_t)MTLPixelFormatInvalid;
 
-	            pipelineStateDescriptor = [self generatePipelineDescriptor];
-	            if (!pipelineStateDescriptor) {
-	                NSLog(@"MGL PIPELINE CREATE fail error=generatePipelineDescriptor returned nil");
-	                [self invalidateCurrentPipelineStateForReason:@"pipeline descriptor failure"];
-	                _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
-                mglMarkRendererDirtyBits(state,
-                                         DIRTY_PROGRAM | DIRTY_VAO |
-                                         DIRTY_FBO | DIRTY_RENDER_STATE);
-                return false;
+            if (usesMetalCpp) {
+                /* gate-on：blend 状态先同步到 C++ owner（value-state 填充从中
+                 * owner-first 读取），再整体生成 descriptor state。 */
+                [self updateBlendStateCache];
+                state->dirty_bits &= ~DIRTY_ALPHA_STATE;
+                if (![self generatePipelineDescriptorState:&psoState
+                                            vertexFunction:&psoVertexFunction
+                                          fragmentFunction:&psoFragmentFunction]) {
+                    NSLog(@"MGL PIPELINE CREATE fail error=generatePipelineDescriptorState returned NO");
+                    [self invalidateCurrentPipelineStateForReason:@"pipeline descriptor failure"];
+                    _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
+                    mglMarkRendererDirtyBits(state,
+                                             DIRTY_PROGRAM | DIRTY_VAO |
+                                             DIRTY_FBO | DIRTY_RENDER_STATE);
+                    return false;
+                }
+                builtColor0Format = psoState.color_format[0];
+                builtDepthFormat = psoState.depth_format;
+                builtStencilFormat = psoState.stencil_format;
+            } else {
+                pipelineStateDescriptor = [self generatePipelineDescriptor];
+                if (!pipelineStateDescriptor) {
+                    NSLog(@"MGL PIPELINE CREATE fail error=generatePipelineDescriptor returned nil");
+                    [self invalidateCurrentPipelineStateForReason:@"pipeline descriptor failure"];
+                    _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
+                    mglMarkRendererDirtyBits(state,
+                                             DIRTY_PROGRAM | DIRTY_VAO |
+                                             DIRTY_FBO | DIRTY_RENDER_STATE);
+                    return false;
+                }
+                builtColor0Format = (uint32_t)pipelineStateDescriptor.colorAttachments[0].pixelFormat;
+                builtDepthFormat = (uint32_t)pipelineStateDescriptor.depthAttachmentPixelFormat;
+                builtStencilFormat = (uint32_t)pipelineStateDescriptor.stencilAttachmentPixelFormat;
             }
-
-            MTLPixelFormat builtColor0Format = pipelineStateDescriptor.colorAttachments[0].pixelFormat;
-            MTLPixelFormat builtDepthFormat = pipelineStateDescriptor.depthAttachmentPixelFormat;
-            MTLPixelFormat builtStencilFormat = pipelineStateDescriptor.stencilAttachmentPixelFormat;
 
             // Circuit breaker for repeated VS/FS interface mismatch.
             if (now < _gpuRecovery.interfaceMismatchRetryAfter &&
                 currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
-                builtColor0Format == _gpuRecovery.interfaceMismatchColor0Format &&
-                builtDepthFormat == _gpuRecovery.interfaceMismatchDepthFormat &&
-                builtStencilFormat == _gpuRecovery.interfaceMismatchStencilFormat) {
+                builtColor0Format == (uint32_t)_gpuRecovery.interfaceMismatchColor0Format &&
+                builtDepthFormat == (uint32_t)_gpuRecovery.interfaceMismatchDepthFormat &&
+                builtStencilFormat == (uint32_t)_gpuRecovery.interfaceMismatchStencilFormat) {
                 state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
                 return false;
             }
 
-            // create vertex descriptor
-            MTLVertexDescriptor *vertexDescriptor;
+            if (!usesMetalCpp) {
+            // create vertex descriptor (gate-off；gate-on 在
+            // generatePipelineDescriptorState 内完成顶点布局填充)
 
             vertexDescriptor = (_geometry.expansionActive ||
                                 _tessellation.tessComputeActive)
@@ -5965,6 +6350,7 @@ stencil_format_ok:;
             }
 
             pipelineStateDescriptor.vertexDescriptor = vertexDescriptor;
+            }
             BOOL hasPipelineCacheKey = NO;
             bool pipelineResolvedFromCache = false;
             uint64_t pipelineSig = 0;
@@ -5975,8 +6361,14 @@ stencil_format_ok:;
             uint64_t keyWords[MGL_PIPELINE_CACHE_KEY_WORDS] = {0};
 
             if (!pipelineResolvedFromCache && currentProgramName != 0) {
-                pipelineSig = mglPipelineDescriptorSignature(pipelineStateDescriptor);
-                vertexSig = mglVertexDescriptorSignature(vertexDescriptor);
+                /* P4.2: gate-on 对 value-state 计算签名（哈希字段/顺序与
+                 * descriptor 版一致，见 mgl_vertex_format.m）。 */
+                pipelineSig = usesMetalCpp
+                    ? mglPipelineDescriptorSignatureFromState(&psoState)
+                    : mglPipelineDescriptorSignature(pipelineStateDescriptor);
+                vertexSig = usesMetalCpp
+                    ? mglVertexDescriptorSignatureFromState(&psoState)
+                    : mglVertexDescriptorSignature(vertexDescriptor);
 
                 /* Keep descriptor signatures and linked Program identities
                  * lossless. GL names can be reused and a Program can relink
@@ -6043,9 +6435,13 @@ stencil_format_ok:;
                                           stencilFormat:builtStencilFormat
                                             programName:currentProgramName
                                          vertexFunction:cachedFunctionMetadataPresent
-                                             ? cachedVertexFunction : pipelineStateDescriptor.vertexFunction
+                                             ? cachedVertexFunction
+                                             : (usesMetalCpp ? psoVertexFunction
+                                                             : pipelineStateDescriptor.vertexFunction)
                                        fragmentFunction:cachedFunctionMetadataPresent
-                                             ? cachedFragmentFunction : pipelineStateDescriptor.fragmentFunction];
+                                             ? cachedFragmentFunction
+                                             : (usesMetalCpp ? psoFragmentFunction
+                                                             : pipelineStateDescriptor.fragmentFunction)];
                     pipelineResolvedFromCache = true;
                     /* Hit path deliberately skips the LRU touch: touching
                      * would require copying the query-keyed object that must
@@ -6082,6 +6478,21 @@ stencil_format_ok:;
                  * compile itself. */
                 const uint64_t *storeKeyWords = hasPipelineCacheKey
                     ? keyWords : NULL;
+                if (usesMetalCpp) {
+                    /* P4.2 gate-on：value-state PSO build（final/simple/safe
+                     * 全部在 C++ builder 内完成，无 MTLRenderPipelineDescriptor）。 */
+                    return [self buildPipelineStateOnCacheMissWithState:&psoState
+                                                         vertexFunction:psoVertexFunction
+                                                       fragmentFunction:psoFragmentFunction
+                                                           cacheKeyWords:storeKeyWords
+                                                            pipelineSig:pipelineSig
+                                                             vertexSig:vertexSig
+                                                    builtColor0Format:builtColor0Format
+                                                     builtDepthFormat:builtDepthFormat
+                                                   builtStencilFormat:builtStencilFormat
+                                                          programName:currentProgramName
+                                                                 now:now];
+                }
                 return [self buildPipelineStateOnCacheMissWithDescriptor:pipelineStateDescriptor
                                                      vertexDescriptor:vertexDescriptor
                                                         cacheKeyWords:storeKeyWords
@@ -6101,6 +6512,439 @@ stencil_format_ok:;
 
 	            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
 	            }
+
+    return true;
+}
+
+/* P4.2 gate-on：与 buildPipelineStateOnCacheMissUnlockedWithDescriptor 完全
+ * 等价的 PSO build，但输入是 MGLRenderCppPipelineDescriptorState value-state
+ * （无 MTLRenderPipelineDescriptor）。descriptor state cache 命中时复用缓存
+ * state；final/simple/safe 三套组装全部在 C++ builder
+ * （mglRenderCppCreateRenderPipelineFromState）内完成；二进制归档在 C++
+ * builder 内 apply/add。GPU recovery / interface-mismatch / safe-fallback
+ * 语义与 ObjC 版本一致（air_pipeline_safe_fallback 回归依赖 MGL_FORCE_SAFE_
+ * FALLBACK_PIPELINE 测试钩子）。 */
+- (bool)buildPipelineStateOnCacheMissWithState:(const MGLRenderCppPipelineDescriptorState *)pipelineState
+                                vertexFunction:(id<MTLFunction>)vertexFunction
+                              fragmentFunction:(id<MTLFunction>)fragmentFunction
+                                  cacheKeyWords:(const uint64_t *)pipelineCacheKeyWords
+                                    pipelineSig:(uint64_t)pipelineSig
+                                     vertexSig:(uint64_t)vertexSig
+                            builtColor0Format:(uint32_t)builtColor0Format
+                             builtDepthFormat:(uint32_t)builtDepthFormat
+                           builtStencilFormat:(uint32_t)builtStencilFormat
+                                 programName:(GLuint)currentProgramName
+                                        now:(CFTimeInterval)now
+{
+    GLMState *state = MGL_STATE(ctx);
+    Program *currentProgram = mglResolveProgramFromState(ctx);
+    Program *currentVertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
+    Program *currentFragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
+    VertexArray *currentVAO = state->vao;
+    Framebuffer *currentFBO = mglRendererGetValidatedFramebuffer(ctx, "buildPipelineCacheOnCacheMiss.currentFBO");
+    GLuint currentFBOName = currentFBO ? currentFBO->name : 0;
+
+    /* Two-level descriptor caching (value-state 版) */
+    MGLRenderCppPipelineDescriptorState finalState = *pipelineState;
+    BOOL stateFromCache = NO;
+
+    /* Check descriptor state cache on PSO miss; cache new states for reuse. */
+    if (pipelineCacheKeyWords) {
+        MGLRenderCppPipelineDescriptorState cachedState = {0};
+        if ([_pipelineCache pipelineDescriptorStateForWords:pipelineCacheKeyWords
+                                                      state:&cachedState]) {
+            /* Descriptor cache hit - reuse cached state instead of regenerating */
+            finalState = cachedState;
+            stateFromCache = YES;
+            static uint64_t s_descriptorCacheHitCount = 0;
+            s_descriptorCacheHitCount++;
+            if (kMGLVerbosePipelineLogs && s_descriptorCacheHitCount <= 64ull) {
+                NSLog(@"MGL DESCRIPTOR CACHE hit program=%u key=%@ (total %llu)",
+                (unsigned)currentProgramName,
+                [NSString stringWithFormat:@"%016llx/%016llx/%016llx",
+                 (unsigned long long)pipelineCacheKeyWords[0],
+                 (unsigned long long)pipelineCacheKeyWords[5],
+                 (unsigned long long)pipelineCacheKeyWords[6]],
+                (unsigned long long)s_descriptorCacheHitCount);
+            }
+        }
+    }
+
+    MGL_PERF_INC(g_mglPipelineCacheMissesSinceSwap);
+    MGLRenderCppPipelineDescriptorState successfulState = {0};
+    BOOL haveSuccessfulState = NO;
+    id<MTLRenderPipelineState> previousPipelineState = _pipelineCache.state->pipelineState;
+    id<MTLRenderPipelineState> compiledPSO = nil;
+    bool pipelineReusedPrevious = false;
+    char cppError[512] = {0};
+    /* 方法级作用域：@try 内赋值、@catch 的 safe fallback 也要用。 */
+    void *psoPtr = NULL;
+    void *binaryArchive = NULL;
+
+    @try {
+        static uint64_t s_pipelineCreateBeginCount = 0;
+        s_pipelineCreateBeginCount++;
+        if (kMGLVerbosePipelineLogs &&
+        (s_pipelineCreateBeginCount <= 128ull || (s_pipelineCreateBeginCount % 500ull) == 0ull)) {
+            NSLog(@"MGL PIPELINE CREATE begin program=%u vao=%p fbo=%u",
+            (unsigned)currentProgramName, currentVAO, (unsigned)currentFBOName);
+        }
+
+        if (kMGLVerbosePipelineLogs) {
+            NSLog(@"MGL INFO: Creating Metal pipeline state with AGX virtualization compatibility...");
+        }
+
+        /* Test hook (air_pipeline_safe_fallback regression): force the
+         * pipeline-creation exception so the safe-fallback branch below is
+         * exercised deterministically. */
+        if (mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE")) {
+            NSLog(@"MGL TEST: forcing safe-fallback pipeline path");
+            @throw [NSException exceptionWithName:@"MGLForcedSafeFallback"
+                                           reason:@"synthetic pipeline creation failure (test hook)"
+                                         userInfo:nil];
+        }
+
+        if (_pipelineCache.state->binaryArchiveEnabled) {
+            binaryArchive = (__bridge void *)_pipelineCache.state->binaryArchive;
+        }
+        psoPtr = NULL;
+        cppError[0] = '\0';
+        if (mglRenderCppCreateRenderPipelineFromState(
+                (__bridge void *)vertexFunction,
+                fragmentFunction ? (__bridge void *)fragmentFunction : NULL,
+                &finalState, binaryArchive, &psoPtr,
+                cppError, sizeof(cppError)) != 0 || !psoPtr) {
+            if (cppError[0]) {
+                NSLog(@"MGL METALCPP PSO fallback: %s", cppError);
+            }
+        } else {
+            compiledPSO = (__bridge_transfer id<MTLRenderPipelineState>)psoPtr;
+        }
+        if (compiledPSO) {
+            mglMetalCountCreate(MGLMetalKindPSO);
+            successfulState = finalState;
+            haveSuccessfulState = YES;
+        }
+
+        if (!compiledPSO) {
+            NSString *errDesc = cppError[0]
+                ? [NSString stringWithUTF8String:cppError] : @"";
+            BOOL isInterfaceMismatch =
+                [errDesc containsString:@"mismatching vertex shader output"] ||
+                [errDesc containsString:@"not written by vertex shader"];
+
+            if (isInterfaceMismatch) {
+                mglWriteProgramMSLDump(currentVertexProgram, errDesc);
+                if (currentFragmentProgram && currentFragmentProgram != currentVertexProgram) {
+                    mglWriteProgramMSLDump(currentFragmentProgram, errDesc);
+                } else if (!currentVertexProgram) {
+                    mglWriteProgramMSLDump(currentProgram, errDesc);
+                }
+                BOOL sameProgram =
+                (_pipelineCache.state->pipelineProgramName != 0 &&
+                _pipelineCache.state->pipelineProgramName == currentProgramName &&
+                _pipelineCache.state->pipelineVertexFunction == vertexFunction &&
+                _pipelineCache.state->pipelineFragmentFunction == fragmentFunction);
+                BOOL colorCompatible = (_pipelineCache.state->pipelineColor0Format == MTLPixelFormatInvalid ||
+                builtColor0Format == (uint32_t)MTLPixelFormatInvalid ||
+                (uint32_t)_pipelineCache.state->pipelineColor0Format == builtColor0Format);
+                BOOL depthCompatible = (_pipelineCache.state->pipelineDepthFormat == MTLPixelFormatInvalid ||
+                builtDepthFormat == (uint32_t)MTLPixelFormatInvalid ||
+                (uint32_t)_pipelineCache.state->pipelineDepthFormat == builtDepthFormat);
+                BOOL stencilCompatible = (_pipelineCache.state->pipelineStencilFormat == MTLPixelFormatInvalid ||
+                builtStencilFormat == (uint32_t)MTLPixelFormatInvalid ||
+                (uint32_t)_pipelineCache.state->pipelineStencilFormat == builtStencilFormat);
+
+                if (previousPipelineState && sameProgram && colorCompatible && depthCompatible && stencilCompatible) {
+                    NSLog(@"MGL WARNING: Interface mismatch for program %u; reusing previous compatible pipeline once",
+                    (unsigned)currentProgramName);
+                    compiledPSO = previousPipelineState;
+                    pipelineReusedPrevious = true;
+                    _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
+                    _gpuRecovery.interfaceMismatchColor0Format = (MTLPixelFormat)builtColor0Format;
+                    _gpuRecovery.interfaceMismatchDepthFormat = (MTLPixelFormat)builtDepthFormat;
+                    _gpuRecovery.interfaceMismatchStencilFormat = (MTLPixelFormat)builtStencilFormat;
+                    _gpuRecovery.interfaceMismatchStreak = 1u;
+                    _gpuRecovery.interfaceMismatchRetryAfter = now + 0.10;
+                    _gpuRecovery.pipelineRetryAfter = _gpuRecovery.interfaceMismatchRetryAfter;
+                } else {
+                    BOOL sameMismatchSignature =
+                    (currentProgramName == _gpuRecovery.interfaceMismatchProgramName &&
+                    builtColor0Format == (uint32_t)_gpuRecovery.interfaceMismatchColor0Format &&
+                    builtDepthFormat == (uint32_t)_gpuRecovery.interfaceMismatchDepthFormat &&
+                    builtStencilFormat == (uint32_t)_gpuRecovery.interfaceMismatchStencilFormat);
+                    if (sameMismatchSignature) {
+                        if (_gpuRecovery.interfaceMismatchStreak < UINT32_MAX) {
+                            _gpuRecovery.interfaceMismatchStreak++;
+                        }
+                    } else {
+                        _gpuRecovery.interfaceMismatchStreak = 1;
+                        _gpuRecovery.interfaceMismatchProgramName = currentProgramName;
+                        _gpuRecovery.interfaceMismatchColor0Format = (MTLPixelFormat)builtColor0Format;
+                        _gpuRecovery.interfaceMismatchDepthFormat = (MTLPixelFormat)builtDepthFormat;
+                        _gpuRecovery.interfaceMismatchStencilFormat = (MTLPixelFormat)builtStencilFormat;
+                    }
+
+                    // Exponential backoff: 0.10, 0.20, 0.40, 0.80, 1.60, capped at 2.00 sec.
+                    uint32_t cappedShift = (_gpuRecovery.interfaceMismatchStreak > 5u) ? 4u : (_gpuRecovery.interfaceMismatchStreak - 1u);
+                    double retryDelay = 0.10 * (double)(1u << cappedShift);
+                    if (retryDelay > 2.0) {
+                        retryDelay = 2.0;
+                    }
+                    _gpuRecovery.interfaceMismatchRetryAfter = now + retryDelay;
+
+                    if (_gpuRecovery.interfaceMismatchStreak <= 5u || (_gpuRecovery.interfaceMismatchStreak % 200u) == 0u) {
+                        NSLog(@"MGL WARNING: Interface mismatch (program=%u, streak=%u), throttling retries for %.2fs",
+                        (unsigned)currentProgramName,
+                        (unsigned)_gpuRecovery.interfaceMismatchStreak,
+                        retryDelay);
+                    }
+
+                    // Program-level breaker update (ignores attachment signature).
+                    if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
+                        if (_gpuRecovery.programMismatchStreak < UINT32_MAX) {
+                            _gpuRecovery.programMismatchStreak++;
+                        }
+                    } else {
+                        _gpuRecovery.programMismatchProgramName = currentProgramName;
+                        _gpuRecovery.programMismatchStreak = 1u;
+                    }
+                    double programDelay = 0.25 * (double)(1u << ((_gpuRecovery.programMismatchStreak > 6u) ? 6u : (_gpuRecovery.programMismatchStreak - 1u)));
+                    if (programDelay > 20.0) {
+                        programDelay = 20.0;
+                    }
+                    _gpuRecovery.programMismatchRetryAfter = now + programDelay;
+                    if (_gpuRecovery.programMismatchStreak <= 8u || (_gpuRecovery.programMismatchStreak % 64u) == 0u) {
+                        NSLog(@"MGL WARNING: Program %u mismatch breaker set for %.2fs (streak=%u)",
+                        (unsigned)currentProgramName,
+                        programDelay,
+                        (unsigned)_gpuRecovery.programMismatchStreak);
+                    }
+
+                    // Global quarantine for this program to prevent command-buffer storm.
+                    if (_gpuRecovery.interfaceMismatchBlockedProgram == currentProgramName) {
+                        if (_gpuRecovery.interfaceMismatchBlockedStreak < UINT32_MAX) {
+                            _gpuRecovery.interfaceMismatchBlockedStreak++;
+                        }
+                    } else {
+                        _gpuRecovery.interfaceMismatchBlockedProgram = currentProgramName;
+                        _gpuRecovery.interfaceMismatchBlockedStreak = 1u;
+                    }
+                    double quarantineDelay = retryDelay * 8.0;
+                    if (quarantineDelay < 1.00) quarantineDelay = 1.00;
+                    if (quarantineDelay > 15.00) quarantineDelay = 15.00;
+                    _gpuRecovery.interfaceMismatchBlockedUntil = now + quarantineDelay;
+                    if (_gpuRecovery.interfaceMismatchBlockedStreak <= 6u || (_gpuRecovery.interfaceMismatchBlockedStreak % 64u) == 0u) {
+                        NSLog(@"MGL WARNING: Program %u quarantined for %.2fs after interface mismatch (streak=%u)",
+                        (unsigned)currentProgramName,
+                        quarantineDelay,
+                        (unsigned)_gpuRecovery.interfaceMismatchBlockedStreak);
+                    }
+
+                    [self invalidateCurrentPipelineStateForReason:@"interface mismatch pipeline failure"];
+                    _gpuRecovery.pipelineRetryAfter = (_gpuRecovery.interfaceMismatchBlockedUntil > _gpuRecovery.interfaceMismatchRetryAfter)
+                    ? _gpuRecovery.interfaceMismatchBlockedUntil
+                    : _gpuRecovery.interfaceMismatchRetryAfter;
+                    state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+                    return false;
+                }
+            }
+
+            if (!compiledPSO &&
+            MGLCapabilityHasBug(&_capability,
+            MGL_BUG_MSL_PIPELINE_REJECTION)) {
+                [self invalidateCurrentPipelineStateForReason:@"pipeline creation failure"];
+
+                // AGX VIRTUALIZATION FALLBACK: Try with minimal state
+                @try {
+                    NSLog(@"MGL INFO: VIRTUALIZED AGX - Trying simplified compilation fallback...");
+
+                    // Simplify the state to avoid complex shader compilation issues
+                    // （与 simpleDescriptor 一致：只保留 color0/depth/stencil 格式、
+                    // 顶点布局、functions、rasterization 与 tess 字段）。
+                    MGLRenderCppPipelineDescriptorState simpleState = finalState;
+                    simpleState.blending_enabled_mask = 0;
+                    simpleState.alpha_to_coverage_enabled = 0;
+                    simpleState.alpha_to_one_enabled = 0;
+                    simpleState.raster_sample_count = 0;   /* C++ builder 默认 1 */
+                    for (int i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+                        simpleState.color_write_mask[i] = 0;
+                        simpleState.source_rgb_blend_factor[i] = 0;
+                        simpleState.destination_rgb_blend_factor[i] = 0;
+                        simpleState.source_alpha_blend_factor[i] = 0;
+                        simpleState.destination_alpha_blend_factor[i] = 0;
+                        simpleState.rgb_blend_operation[i] = 0;
+                        simpleState.alpha_blend_operation[i] = 0;
+                        if (i > 0) {
+                            simpleState.color_format[i] = (uint32_t)MTLPixelFormatInvalid;
+                        }
+                    }
+                    psoPtr = NULL;
+                    cppError[0] = '\0';
+                    if (mglRenderCppCreateRenderPipelineFromState(
+                            (__bridge void *)vertexFunction,
+                            fragmentFunction ? (__bridge void *)fragmentFunction : NULL,
+                            &simpleState, binaryArchive, &psoPtr,
+                            cppError, sizeof(cppError)) == 0 && psoPtr) {
+                        compiledPSO = (__bridge_transfer id<MTLRenderPipelineState>)psoPtr;
+                    }
+                    if (compiledPSO) {
+                        mglMetalCountCreate(MGLMetalKindPSO);
+                        successfulState = simpleState;
+                        haveSuccessfulState = YES;
+                        builtColor0Format = simpleState.color_format[0];
+                        builtDepthFormat = simpleState.depth_format;
+                        builtStencilFormat = simpleState.stencil_format;
+                    }
+                } @catch (NSException *innerException) {
+                    NSLog(@"MGL ERROR: VIRTUALIZED AGX - Simplified compilation also failed: %@", innerException);
+                }
+            }
+        }
+
+    } @catch (NSException *exception) {
+        NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - Metal pipeline creation crashed: %@", exception);
+        NSLog(@"MGL CRITICAL: Exception name: %@", [exception name]);
+        NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
+
+        BOOL forceSafeFallback =
+            mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
+        if (!MGLCapabilityHasBug(&_capability,
+        MGL_BUG_MSL_PIPELINE_REJECTION) && !forceSafeFallback) {
+            [self invalidateCurrentPipelineStateForReason:@"pipeline creation exception"];
+            _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
+            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            return false;
+        }
+
+        // VIRTUALIZED AGX ULTIMATE FALLBACK: Create minimal safe pipeline
+        NSLog(@"MGL INFO: VIRTUALIZED AGX - Creating ultimate fallback pipeline for virtualization safety");
+
+        @try {
+            MGLRenderCppPipelineDescriptorState safeState = {0};
+            safeState.color_count = MAX_COLOR_ATTACHMENTS;
+            safeState.rasterization_enabled = 1;   /* safeDescriptor 未设置，默认 YES */
+            MTLPixelFormat safeColor0Format = (MTLPixelFormat)finalState.color_format[0];
+            if (_renderPassManager.state->renderPassDescriptor && mglRenderPassColorTextureFor(_renderPassManager.state, 0)) {
+                safeColor0Format = mglRenderPassColorTextureFor(_renderPassManager.state, 0).pixelFormat;
+            } else if (_drawable && _drawable.texture) {
+                safeColor0Format = _drawable.texture.pixelFormat;
+            }
+            if (safeColor0Format == MTLPixelFormatInvalid) {
+                safeColor0Format = MTLPixelFormatBGRA8Unorm;
+            }
+            safeState.color_format[0] = (uint32_t)safeColor0Format;
+            safeState.depth_format = finalState.depth_format;
+            safeState.stencil_format = finalState.stencil_format;
+
+            // Precompiled safe shaders (mgl_aux_assets table).  No runtime
+            // source compilation; failures log the program/format context and
+            // never retry with the source compiler.
+            const MGLAuxShaderAsset *safe =
+                mglAuxShaderAssetFind("safe_fallback");
+            void *safeVS = NULL;
+            void *safeFS = NULL;
+            char libError[512] = {0};
+            if (!safe || !safe->data || safe->size == 0 ||
+                mglRenderCppCreateAuxFunctions(
+                    safe->data, safe->size, safe->hash,
+                    "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                    &safeVS, &safeFS,
+                    libError, sizeof(libError)) != 0 || !safeVS) {
+                NSLog(@"MGL CRITICAL: safe fallback asset unavailable "
+                      @"program=%u color0=%lu hash=0x%016llx error=%s",
+                      (unsigned)currentProgramName,
+                      (unsigned long)safeColor0Format,
+                      safe ? (unsigned long long)safe->hash : 0ull,
+                      libError[0] ? libError : "asset missing");
+            } else {
+                id<MTLFunction> safeVSFunction =
+                    (__bridge_transfer id<MTLFunction>)safeVS;
+                id<MTLFunction> safeFSFunction =
+                    safeFS ? (__bridge_transfer id<MTLFunction>)safeFS : nil;
+                psoPtr = NULL;
+                cppError[0] = '\0';
+                if (mglRenderCppCreateRenderPipelineFromState(
+                        (__bridge void *)safeVSFunction,
+                        safeFSFunction ? (__bridge void *)safeFSFunction : NULL,
+                        &safeState, binaryArchive, &psoPtr,
+                        cppError, sizeof(cppError)) == 0 && psoPtr) {
+                    compiledPSO = (__bridge_transfer id<MTLRenderPipelineState>)psoPtr;
+                }
+            }
+            if (compiledPSO) {
+                mglMetalCountCreate(MGLMetalKindPSO);
+                successfulState = safeState;
+                haveSuccessfulState = YES;
+                builtColor0Format = safeState.color_format[0];
+                builtDepthFormat = safeState.depth_format;
+                builtStencilFormat = safeState.stencil_format;
+                NSLog(@"MGL INFO: VIRTUALIZED AGX - Safe fallback pipeline created successfully");
+            }
+        } @catch (NSException *fallbackException) {
+            NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - Even fallback pipeline failed: %@", fallbackException);
+        }
+
+        if (!compiledPSO) {
+            NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - All pipeline creation attempts failed, disabling rendering");
+            [self invalidateCurrentPipelineStateForReason:@"all pipeline fallbacks failed"];
+            _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
+            state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+            return false;
+        }
+    }
+
+    if (!compiledPSO) {
+        NSLog(@"MGL ERROR: Failed to create pipeline state: %s", cppError[0] ? cppError : "unknown error");
+        NSLog(@"MGL WARNING: Skipping draw for this pipeline build failure; will retry later");
+        [self invalidateCurrentPipelineStateForReason:@"pipeline state is nil after creation"];
+        _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.10;
+        state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
+        return false;
+    } else {
+        if (kMGLVerbosePipelineLogs) {
+            NSLog(@"MGL PIPELINE CREATE success pipeline=%p", compiledPSO);
+            NSLog(@"MGL INFO: Pipeline state created successfully");
+        }
+        /* Publish the compile result to the shared state under a short
+         * re-acquired lock. */
+        METAL_LOCK();
+        if (!pipelineReusedPrevious && haveSuccessfulState) {
+            // Clear interface-mismatch breaker after a real compile.
+            _gpuRecovery.interfaceMismatchStreak = 0;
+            _gpuRecovery.interfaceMismatchProgramName = 0;
+            _gpuRecovery.interfaceMismatchColor0Format = MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchDepthFormat = MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchStencilFormat = MTLPixelFormatInvalid;
+            _gpuRecovery.interfaceMismatchRetryAfter = 0.0;
+            [_pipelineCache activatePipelineState:compiledPSO
+                                   color0Format:(MTLPixelFormat)builtColor0Format
+                                    depthFormat:(MTLPixelFormat)builtDepthFormat
+                                  stencilFormat:(MTLPixelFormat)builtStencilFormat
+                                    programName:currentProgramName
+                                 vertexFunction:vertexFunction
+                               fragmentFunction:fragmentFunction];
+            /* 归档 add 已由 C++ builder 完成（binaryArchive 非空时）。 */
+            [self insertPipelineStateIntoCacheWithWords:pipelineCacheKeyWords
+                                            pipelineSig:pipelineSig
+                                             vertexSig:vertexSig
+                                                  state:&successfulState
+                                         vertexFunction:vertexFunction
+                                       fragmentFunction:fragmentFunction
+                                          stateFromCache:stateFromCache];
+            if (_gpuRecovery.programMismatchProgramName == currentProgramName) {
+                _gpuRecovery.programMismatchProgramName = 0;
+                _gpuRecovery.programMismatchRetryAfter = 0.0;
+                _gpuRecovery.programMismatchStreak = 0u;
+            }
+            if (_gpuRecovery.interfaceMismatchBlockedProgram == currentProgramName) {
+                _gpuRecovery.interfaceMismatchBlockedProgram = 0;
+                _gpuRecovery.interfaceMismatchBlockedUntil = 0.0;
+                _gpuRecovery.interfaceMismatchBlockedStreak = 0u;
+            }
+        }
+        METAL_UNLOCK();
+    }
 
     return true;
 }
@@ -6228,34 +7072,10 @@ stencil_format_ok:;
         }
 
         [_pipelineCache applyBinaryArchiveToDescriptor:finalDescriptor];
-        char cppError[512] = {0};
-        if (mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP")) {
-            compiledPSO = mglCreateAIRRenderPipelineCpp(
-                _device, currentVertexProgram,
-                _tessellation.nativeTESActive ? _TESS_EVALUATION_SHADER
-                                               : _VERTEX_SHADER,
-                currentFragmentProgram, finalDescriptor, vertexDescriptor,
-                (_geometry.expansionActive ||
-                 _tessellation.tessComputeActive)
-                    ? (_tessellation.tessComputeActive
-                       ? (__bridge void *)_tessellation.tessPassthroughLibrary
-                       : (__bridge void *)_geometry.passthroughLibrary)
-                    : _tessellation.cullDistanceCaptureActive
-                    ? currentVertexProgram->modules[_VERTEX_SHADER]
-                          .mtl_cull_capture_library
-                    : _tessellation.tessVertexCaptureActive
-                    ? currentVertexProgram->modules[_VERTEX_SHADER]
-                          .mtl_tess_capture_library
-                    : NULL,
-                cppError, sizeof cppError);
-            if (!compiledPSO && cppError[0]) {
-                NSLog(@"MGL METALCPP PSO fallback: %s", cppError);
-            }
-        }
-        if (!compiledPSO) {
-            compiledPSO = mglRenderPassCreatePipeline(
-                _device, finalDescriptor, &error);
-        }
+        /* P4.2: gate-on 走 buildPipelineStateOnCacheMissWithState:（value-state
+         * builder）；本方法只服务 gate-off 的 ObjC descriptor 路径。 */
+        compiledPSO = mglRenderPassCreatePipeline(
+            _device, finalDescriptor, &error);
         if (compiledPSO) {
             mglMetalCountCreate(MGLMetalKindPSO);
             successfulDescriptor = finalDescriptor;
@@ -6634,6 +7454,32 @@ stencil_format_ok:;
             if (!descriptorFromCache && descriptor) {
                 [_pipelineCache storePipelineDescriptor:descriptor
                                                forWords:pipelineCacheKeyWords];
+            }
+    }
+}
+
+/* P4.2 gate-on：insertPipelineIntoCacheWithWords 的 value-state 版。 */
+- (void)insertPipelineStateIntoCacheWithWords:(const uint64_t *)pipelineCacheKeyWords
+                                  pipelineSig:(uint64_t)pipelineSig
+                                   vertexSig:(uint64_t)vertexSig
+                                        state:(const MGLRenderCppPipelineDescriptorState *)state
+                               vertexFunction:(id<MTLFunction>)vertexFunction
+                             fragmentFunction:(id<MTLFunction>)fragmentFunction
+                                stateFromCache:(BOOL)stateFromCache
+{
+    if (pipelineCacheKeyWords && _pipelineCache.state->pipelineState) {
+            (void)pipelineSig;
+            (void)vertexSig;
+            [_pipelineCache storePipeline:_pipelineCache.state->pipelineState
+                           vertexFunction:vertexFunction
+                         fragmentFunction:fragmentFunction
+                                 forWords:pipelineCacheKeyWords];
+
+            /* Cache the descriptor state for future PSO cache misses.
+             * Only cache if state was generated (not from cache). */
+            if (!stateFromCache && state) {
+                [_pipelineCache storePipelineDescriptorState:state
+                                                    forWords:pipelineCacheKeyWords];
             }
     }
 }

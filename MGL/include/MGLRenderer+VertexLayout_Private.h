@@ -26,9 +26,14 @@
 
 #import "MGLRenderer.h"
 
+/* P4.2: value-state 版顶点布局填充（完整定义见 mgl_air_loader.h）。 */
+typedef struct MGLRenderCppPipelineDescriptorState
+    MGLRenderCppPipelineDescriptorState;
+
 @interface MGLRenderer ()
 
 - (MTLVertexDescriptor *)generateVertexDescriptor;
+- (BOOL)generateVertexDescriptorState:(MGLRenderCppPipelineDescriptorState *)state;
 - (void)updateBlendStateCache;
 - (void)bindBlendStateToPipelineStateDescriptor:(MTLRenderPipelineDescriptor *)pipelineStateDescriptor;
 

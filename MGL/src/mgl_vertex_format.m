@@ -11,6 +11,8 @@
 
 #import "mgl_vertex_format.h"
 
+#include "mgl_air_loader.h"   /* MGLRenderCppPipelineDescriptorState */
+
 #include <string.h>
 
 /* === Vertex format mapping (extern) === */
@@ -251,4 +253,89 @@ MTLWinding mglMaybeInvertMTLWinding(MTLWinding winding, BOOL invert)
     return (winding == MTLWindingClockwise)
         ? MTLWindingCounterClockwise
         : MTLWindingClockwise;
+}
+
+/* === P4.2: value-state signatures ===
+ *
+ * 哈希字段与顺序与 descriptor 版完全一致：mglPipelineDescriptorSignature 先
+ * 哈希 pipeline 级字段，再逐 color attachment 哈希；mglVertexDescriptorSignature
+ * 先哈希 32 个 attribute，再哈希 31 个 layout。layout 的最终值取「生成顺序里
+ * 最后写它的 attribute」（attribute 索引升序即生成顺序），与 ObjC descriptor
+ * 的累积写入语义一致。 */
+
+uint64_t mglVertexDescriptorSignatureFromState(
+    const MGLRenderCppPipelineDescriptorState *state)
+{
+    uint64_t hash = 1469598103934665603ull;
+    if (!state) {
+        return hash;
+    }
+
+    uint32_t layoutStride[31] = {0};
+    uint32_t layoutStepFunction[31] = {0};  /* PerVertex = 0 */
+    uint32_t layoutStepRate[31] = {0};
+    for (uint32_t i = 0; i < 31u; i++) {
+        layoutStepRate[i] = 1u;
+    }
+
+    for (uint32_t i = 0; i < MAX_ATTRIBS; i++) {
+        hash = mglHashStepU64(hash, (uint64_t)state->attrib_format[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->attrib_offset[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->attrib_buffer_index[i]);
+        uint32_t bi = state->attrib_buffer_index[i] < 31u
+            ? state->attrib_buffer_index[i] : 0u;
+        /* 只有 format 有效（非 Invalid）的 attribute 才在 ObjC 生成路径里写
+         * layout；未写过的 layout 保持默认 (0/PerVertex/1)。 */
+        if (state->attrib_format[i] != (uint32_t)MTLVertexFormatInvalid) {
+            layoutStride[bi] = state->attrib_stride[i];
+            layoutStepFunction[bi] = state->attrib_step_function[i];
+            layoutStepRate[bi] = state->attrib_step_rate[i];
+        }
+    }
+
+    for (uint32_t i = 0; i < 31u; i++) {
+        hash = mglHashStepU64(hash, (uint64_t)layoutStride[i]);
+        hash = mglHashStepU64(hash, (uint64_t)layoutStepFunction[i]);
+        hash = mglHashStepU64(hash, (uint64_t)layoutStepRate[i]);
+    }
+
+    return hash;
+}
+
+uint64_t mglPipelineDescriptorSignatureFromState(
+    const MGLRenderCppPipelineDescriptorState *state)
+{
+    uint64_t hash = 1469598103934665603ull;
+    if (!state) {
+        return hash;
+    }
+
+    hash = mglHashStepU64(hash, (uint64_t)state->raster_sample_count);
+    hash = mglHashStepU64(hash, (uint64_t)state->rasterization_enabled);
+    hash = mglHashStepU64(hash, (uint64_t)state->alpha_to_coverage_enabled);
+    hash = mglHashStepU64(hash, (uint64_t)state->alpha_to_one_enabled);
+    hash = mglHashStepU64(hash, (uint64_t)state->depth_format);
+    hash = mglHashStepU64(hash, (uint64_t)state->stencil_format);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_partition_mode);
+    hash = mglHashStepU64(hash, (uint64_t)state->max_tessellation_factor);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_factor_scale_enabled);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_factor_format);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_control_point_index_type);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_factor_step_function);
+    hash = mglHashStepU64(hash, (uint64_t)state->tessellation_output_winding_order);
+
+    for (uint32_t i = 0; i < MAX_COLOR_ATTACHMENTS; i++) {
+        hash = mglHashStepU64(hash, (uint64_t)state->color_format[i]);
+        hash = mglHashStepU64(hash,
+            (state->blending_enabled_mask & (1u << i)) ? 1ull : 0ull);
+        hash = mglHashStepU64(hash, (uint64_t)state->source_rgb_blend_factor[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->destination_rgb_blend_factor[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->rgb_blend_operation[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->source_alpha_blend_factor[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->destination_alpha_blend_factor[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->alpha_blend_operation[i]);
+        hash = mglHashStepU64(hash, (uint64_t)state->color_write_mask[i]);
+    }
+
+    return hash;
 }

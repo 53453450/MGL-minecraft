@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "mgl_render_cpp_objc.h"
+#include "mgl_air_loader.h"
 #include "mgl_aux_assets.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_program.h"
@@ -20,6 +21,9 @@
 extern "C" void mglAirLoaderShutdown(void) {}
 extern "C" int mglAirLoadLibrary(const void *, const unsigned char *, size_t,
                                   void **, char *, size_t) { return -1; }
+extern "C" int mglAirCreateRenderPipelineWithArchive(
+    const void *, void *, void *, const MGLRenderCppPipelineDescriptorState *,
+    void *, void **, char *, size_t) { return -1; }
 static uint64_t s_metalReleaseCount = 0;
 static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
@@ -1404,11 +1408,17 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
     uint64_t key[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS] =
         {77, 1, 2, 3, 4, 5, 6};
     uint32_t evicted = UINT32_MAX;
+    /* P4.2: descriptor cache 已改为 value-state 版。 */
+    MGLRenderCppPipelineDescriptorState descriptorState = {};
+    descriptorState.color_count = 8;
+    descriptorState.color_format[0] = (uint32_t)MTLPixelFormatRGBA8Unorm;
+    descriptorState.depth_format = (uint32_t)MTLPixelFormatDepth32Float;
+    descriptorState.raster_sample_count = 1;
     if (mglRenderCppActivatePipelineState(owner, &active) != 0 ||
         mglRenderCppStorePipeline(owner, key, &active, &evicted) != 0 ||
         evicted != 0 ||
-        mglRenderCppStorePipelineDescriptor(
-            owner, key, (__bridge void *)descriptor) != 0) {
+        mglRenderCppStorePipelineDescriptorState(
+            owner, key, &descriptorState) != 0) {
         fprintf(stderr, "FAIL: pipeline cache owner store\n");
         mglRenderCppDestroyPipelineCacheOwner(&owner);
         return 1;
@@ -1416,7 +1426,7 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
 
     MGLRenderCppPipelineActiveState activeSnapshot = {};
     MGLRenderCppPipelineActiveState cached = {};
-    void *cachedDescriptor = NULL;
+    MGLRenderCppPipelineDescriptorState cachedState = {};
     if (mglRenderCppGetPipelineActiveState(owner, &activeSnapshot) != 0 ||
         activeSnapshot.pipeline_state != (__bridge void *)pipeline ||
         activeSnapshot.vertex_function != (__bridge void *)vertex ||
@@ -1426,18 +1436,10 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
         cached.pipeline_state != (__bridge void *)pipeline ||
         cached.vertex_function != (__bridge void *)vertex ||
         cached.fragment_function != (__bridge void *)fragment ||
-        mglRenderCppLookupPipelineDescriptor(
-            owner, key, &cachedDescriptor) != 1 || !cachedDescriptor ||
-        cachedDescriptor == (__bridge void *)descriptor) {
+        mglRenderCppLookupPipelineDescriptorState(
+            owner, key, &cachedState) != 1 ||
+        memcmp(&cachedState, &descriptorState, sizeof(cachedState)) != 0) {
         fprintf(stderr, "FAIL: pipeline cache owner lookup\n");
-        mglRenderCppDestroyPipelineCacheOwner(&owner);
-        return 1;
-    }
-    MTLRenderPipelineDescriptor *cachedDescriptorObject =
-        (__bridge MTLRenderPipelineDescriptor *)cachedDescriptor;
-    if (cachedDescriptorObject.colorAttachments[0].pixelFormat !=
-        MTLPixelFormatRGBA8Unorm) {
-        fprintf(stderr, "FAIL: pipeline descriptor cache copy\n");
         mglRenderCppDestroyPipelineCacheOwner(&owner);
         return 1;
     }
@@ -1485,10 +1487,11 @@ static int verifyPipelineCacheOwner(id<MTLDevice> device) {
 
     mglRenderCppResetPipelineCacheOwner(owner);
     cached = {};
-    cachedDescriptor = NULL;
+    cachedState = {};
     if (mglRenderCppLookupPipeline(owner, key, &cached) != 0 ||
-        mglRenderCppLookupPipelineDescriptor(
-            owner, key, &cachedDescriptor) != 0 || cachedDescriptor) {
+        mglRenderCppLookupPipelineDescriptorState(
+            owner, key, &cachedState) != 0 ||
+        cachedState.color_format[0] != 0u) {
         fprintf(stderr, "FAIL: pipeline cache owner reset\n");
         mglRenderCppDestroyPipelineCacheOwner(&owner);
         return 1;
