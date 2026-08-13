@@ -2480,6 +2480,67 @@ static int verifyRenderEncoderOwner(id<MTLDevice> device) {
         printf("BINDING_SNAPSHOT_OK\n");
     }
 
+    /* P4.3c: whole-batch simple replay.  Valid batch encodes; unknown command
+     * type falls back to NEEDS_OBJC; bad args are rejected. */
+    {
+        id<MTLBuffer> replayIndexBuffer =
+            [device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+        if (!replayIndexBuffer) {
+            fprintf(stderr, "FAIL: replay batch index buffer\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        MGLRenderCppReplayBatchCommand replayCmds[2] = {
+            {
+                .cmd_type = 0,   /* MGL_CMD_DRAW_ARRAYS */
+                .first = 0,
+                .count = 3,
+                .instance_count = 1,
+            },
+            {
+                .cmd_type = 1,   /* MGL_CMD_DRAW_ELEMENTS */
+                .count = 3,
+                .instance_count = 1,
+                .index_type = (uint32_t)MTLIndexTypeUInt16,
+                .index_buffer = (__bridge void *)replayIndexBuffer,
+                .index_buffer_offset = 0,
+            },
+        };
+        MGLRenderCppReplayBatch replayBatch = {
+            .primitive_type = (uint32_t)MTLPrimitiveTypeTriangle,
+            .command_count = 2,
+            .commands = replayCmds,
+        };
+        MGLRenderCppReplayBatch unknownType = replayBatch;
+        unknownType.commands = replayCmds;
+        MGLRenderCppReplayBatchCommand unknownCmd = replayCmds[0];
+        unknownCmd.cmd_type = 0x7f;
+        MGLRenderCppReplayBatchCommand badCmd[1] = {unknownCmd};
+        unknownType.commands = badCmd;
+        unknownType.command_count = 1;
+        MGLRenderCppReplayBatch emptyBatch = replayBatch;
+        emptyBatch.command_count = 0;
+        char replayError[128] = {0};
+        if (mglRenderCppReplayBatchDraws(
+                stateEncoder, &replayBatch, replayError,
+                sizeof(replayError)) != MGL_RENDER_CPP_REPLAY_BATCH_OK ||
+            mglRenderCppReplayBatchDraws(
+                stateEncoder, &unknownType, NULL, 0) !=
+                MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC ||
+            mglRenderCppReplayBatchDraws(
+                stateEncoder, &emptyBatch, NULL, 0) !=
+                MGL_RENDER_CPP_REPLAY_BATCH_ERROR ||
+            mglRenderCppReplayBatchDraws(NULL, &replayBatch, NULL, 0) !=
+                MGL_RENDER_CPP_REPLAY_BATCH_ERROR) {
+            fprintf(stderr, "FAIL: replay batch draws\n");
+            mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);
+            mglRenderCppDestroyRenderPassStateOwner(&stateOwner);
+            return 1;
+        }
+        printf("REPLAY_BATCH_OK\n");
+    }
+
     if (mglRenderCppEndRenderEncoderOwner(adoptedStateEncoderOwner) != 0) {
         fprintf(stderr, "FAIL: render-pass state owner encoder end\n");
         mglRenderCppDestroyRenderEncoderOwner(&adoptedStateEncoderOwner);

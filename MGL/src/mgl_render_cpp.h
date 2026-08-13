@@ -882,6 +882,46 @@ int mglRenderCppEncodeBindingSnapshot(
     char *err,
     size_t errcap);
 
+/* P4.3c: whole-batch simple replay（最小 surgery 版）。满足「简单批」条件的
+ * batch（无 dynamic binding / sampler 快照 / cull-distance / 多边形模拟 /
+ * primitive restart，元素命令已 prepare 索引缓冲）由 ObjC 把命令解析成纯 C
+ * 数组，一次交给 C++ 循环绘制 —— replay 执行 loop 在 C++，数据仍是 ObjC
+ * batch arena 的只读快照。命令数超上限或任一条无法解析时 ObjC 回退原循环。 */
+#define MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS 128u
+
+typedef struct MGLRenderCppReplayBatchCommand_t {
+    uint32_t cmd_type;          /* MGLDrawCommandType 数值（draw_command.h） */
+    int32_t first;
+    uint32_t count;
+    uint32_t instance_count;
+    int32_t base_vertex;
+    uint32_t base_instance;
+    uint32_t index_type;        /* MTLIndexType（ObjC 已转换） */
+    uint32_t index_buffer_offset;
+    void *index_buffer;         /* +0 borrowed MTL::Buffer*（ObjC 已 prepare） */
+} MGLRenderCppReplayBatchCommand;
+
+typedef struct MGLRenderCppReplayBatch_t {
+    uint32_t primitive_type;    /* MTLPrimitiveType（batch key） */
+    uint32_t command_count;
+    const MGLRenderCppReplayBatchCommand *commands;
+} MGLRenderCppReplayBatch;
+
+enum {
+    MGL_RENDER_CPP_REPLAY_BATCH_OK = 0,          /* 全部命令已由 C++ 绘制 */
+    MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC = 1,  /* 有命令无法在 C++ 处理 */
+    MGL_RENDER_CPP_REPLAY_BATCH_ERROR = -1,      /* 参数非法（不应发生） */
+};
+
+/* 契约：调用方必须已保证全部命令类型合法、元素命令 index_buffer 非空且
+ * index_type != 0xFFFFFFFF、count 超限时直接回退 ObjC；因此本函数成功即
+ * 全部绘制，失败（NEEDS_OBJC/ERROR）时 ObjC 必须整体回退原循环（不得部分
+ * 重放）。 */
+int mglRenderCppReplayBatchDraws(void *render_encoder,
+                                 const MGLRenderCppReplayBatch *batch,
+                                 char *err,
+                                 size_t errcap);
+
 enum {
     MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS = 8,
     MGL_RENDER_CPP_MAX_SAMPLE_POSITIONS = 32,

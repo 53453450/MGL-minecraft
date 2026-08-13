@@ -1044,6 +1044,111 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
     return fallback_ok;
 }
 
+/* P4.3c: 简单批的 C++ 整批重放。满足全部前置条件（无 dynamic binding /
+ * sampler 快照 / cull-distance / primitive restart / 多边形模拟，元素命令
+ * 索引缓冲可 prepare，命令数不超上限）时把命令解析成纯 C 数组交给
+ * mglRenderCppReplayBatchDraws 一次绘制；任一条件不满足返回 NO，调用方
+ * 整体回退 ObjC 逐命令循环（不得部分重放）。 */
+- (BOOL)tryReplaySimpleBatchWithCpp:(MGLDrawBatch *)batch
+                            context:(GLMContext)glm_ctx
+                      encodeContext:(const MGLEncodeContext *)encCtx
+{
+    if (!mglBatchReplayUsesMetalCpp()) {
+        return NO;
+    }
+    if (!encCtx || !encCtx->encoder || !batch ||
+        batch->command_count == 0 ||
+        batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
+        return NO;
+    }
+    Program *batchProgram =
+        mglResolveProgramForStageFromState(glm_ctx, _VERTEX_SHADER);
+    if (batchProgram && batchProgram->uses_cull_distance) {
+        return NO;
+    }
+    if (MGL_STATE(glm_ctx)->caps.primitive_restart) {
+        return NO;
+    }
+    if (batch->has_dynamic_vertex_bindings ||
+        batch->has_dynamic_uniform_bindings ||
+        batch->has_dynamic_texture_bindings ||
+        batch->has_sampler_snapshots || batch->sampler_snapshots_mixed) {
+        return NO;
+    }
+    if (batch->key.primitive_type == 0xFFu) {
+        return NO;
+    }
+    /* 多边形模拟（point/fan/line-loop/quads）逐命令特例，不走 C++。 */
+    GLenum batchMode = batch->commands[0].mode;
+    if (mglPolygonModePointForDrawMode(glm_ctx, batchMode) ||
+        batchMode == GL_TRIANGLE_FAN || batchMode == GL_LINE_LOOP ||
+        batchMode == GL_QUADS) {
+        return NO;
+    }
+
+    MGLRenderCppReplayBatchCommand cmds[MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS];
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        MGLDrawCommand *cmd = &batch->commands[i];
+        MGLRenderCppReplayBatchCommand *out = &cmds[i];
+        *out = (MGLRenderCppReplayBatchCommand){
+            .cmd_type = (uint32_t)cmd->type,
+            .first = cmd->first,
+            .count = (uint32_t)cmd->count,
+            .instance_count = (uint32_t)cmd->instanceCount,
+            .base_vertex = cmd->baseVertex,
+            .base_instance = cmd->baseInstance,
+        };
+        switch (cmd->type) {
+            case MGL_CMD_DRAW_ARRAYS:
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED:
+            case MGL_CMD_DRAW_ARRAYS_INSTANCED_BASE_INSTANCE:
+                break;
+            case MGL_CMD_DRAW_ELEMENTS:
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED:
+            case MGL_CMD_DRAW_ELEMENTS_BASE_VERTEX:
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX:
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_INSTANCE:
+            case MGL_CMD_DRAW_ELEMENTS_INSTANCED_BASE_VERTEX_BASE_INSTANCE: {
+                Buffer *glBuf = NULL;
+                id<MTLBuffer> idxBuf = nil;
+                if (![self resolveElementBufferForCommand:cmd
+                                                    label:"cppBatchReplay"
+                                                  context:glm_ctx
+                                                 glBuffer:&glBuf
+                                                mtlBuffer:&idxBuf]) {
+                    return NO;
+                }
+                NSUInteger idxOffset = cmd->indexBufferOffset;
+                MTLIndexType mtlIdxType = getMTLIndexType(cmd->indexType);
+                if ((GLuint)mtlIdxType == 0xFFFFFFFFu) {
+                    return NO;
+                }
+                id<MTLBuffer> prepared = mglPreparedElementIndexBuffer(
+                    _device, glBuf, idxBuf, cmd->indexType,
+                    &idxOffset, &mtlIdxType);
+                if (!prepared || (GLuint)mtlIdxType == 0xFFFFFFFFu) {
+                    return NO;
+                }
+                out->index_type = (uint32_t)mtlIdxType;
+                out->index_buffer_offset = (uint32_t)idxOffset;
+                out->index_buffer = (__bridge void *)prepared;
+                break;
+            }
+            default:
+                return NO;
+        }
+    }
+
+    MGLRenderCppReplayBatch replayBatch = {
+        .primitive_type = (uint32_t)batch->key.primitive_type,
+        .command_count = batch->command_count,
+        .commands = cmds,
+    };
+    return mglRenderCppReplayBatchDraws(
+        (__bridge void *)encCtx->encoder, &replayBatch, NULL, 0) ==
+        MGL_RENDER_CPP_REPLAY_BATCH_OK;
+}
+
 - (void)issueDirectBatch:(MGLDrawBatch *)batch context:(GLMContext)glm_ctx
              encodeContext:(const MGLEncodeContext *)encCtx
 {
@@ -1051,6 +1156,14 @@ static uint64_t mglRendererSamplerSnapshotHash(const MGLSamplerSnapshotKey *key)
      * encoder (RT-sampled-copy path) and refresh liveEncCtx.encoder in place,
      * so the per-command draw dispatch below targets the live encoder. */
     MGLEncodeContext liveEncCtx = *encCtx;
+    /* P4.3c: gate-on 下满足「简单批」条件的 batch 由 C++ 整批循环绘制
+     * （replay 执行 loop 的最小 surgery 版：数据仍是本 batch arena 的只读
+     * 快照，循环与最终 draw 在 C++；不满足时整体回退下方 ObjC 循环）。 */
+    if ([self tryReplaySimpleBatchWithCpp:batch
+                                  context:glm_ctx
+                            encodeContext:&liveEncCtx]) {
+        return;
+    }
     for (uint32_t i = 0; i < batch->command_count; i++) {
         MGLDrawCommand *cmd = &batch->commands[i];
         Program *batchProgram =

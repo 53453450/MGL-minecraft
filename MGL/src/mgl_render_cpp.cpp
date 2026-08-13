@@ -6617,6 +6617,98 @@ int mglRenderCppEncodeBindingSnapshot(
     return 0;
 }
 
+/* P4.3c: whole-batch simple replay。命令类型数值与 draw_command.h 的
+ * MGLDrawCommandType 一致（GL 头不进入 C++ include 链，这里硬编码稳定
+ * ABI 常量）。契约见 mgl_render_cpp.h —— 调用方已预校验，本函数只对
+ * 「未知命令类型」返回 NEEDS_OBJC（调用方整体回退）。 */
+namespace {
+enum {
+    kCmdDrawArrays = 0,
+    kCmdDrawElements = 1,
+    kCmdDrawArraysInstanced = 2,
+    kCmdDrawElementsInstanced = 3,
+    kCmdDrawElementsBaseVertex = 4,
+    kCmdDrawElementsInstancedBaseVertex = 5,
+    kCmdDrawArraysInstancedBaseInstance = 6,
+    kCmdDrawElementsInstancedBaseInstance = 7,
+    kCmdDrawElementsInstancedBaseVertexBaseInstance = 8,
+};
+}
+
+int mglRenderCppReplayBatchDraws(void* render_encoder,
+                                 const MGLRenderCppReplayBatch* batch,
+                                 char* err,
+                                 size_t errcap) {
+    if (err && errcap) err[0] = '\0';
+    if (!render_encoder || !batch || !batch->commands ||
+        batch->command_count == 0) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return MGL_RENDER_CPP_REPLAY_BATCH_ERROR;
+    }
+    if (batch->command_count > MGL_RENDER_CPP_REPLAY_BATCH_MAX_COMMANDS) {
+        return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+    }
+    for (uint32_t i = 0; i < batch->command_count; i++) {
+        const MGLRenderCppReplayBatchCommand* cmd = &batch->commands[i];
+        if (cmd->count == 0) {
+            continue;   /* 与 ObjC 路径的空 draw 等价（Metal no-op） */
+        }
+        MGLRenderCppDrawPlan plan = {};
+        plan.primitive_type = batch->primitive_type;
+        switch (cmd->cmd_type) {
+            /* arrays 家族 */
+            case kCmdDrawArrays:
+            case kCmdDrawArraysInstanced:
+            case kCmdDrawArraysInstancedBaseInstance:
+                plan.kind = MGL_RENDER_CPP_DRAW_ARRAY;
+                plan.vertex_start = static_cast<uint64_t>(cmd->first);
+                plan.vertex_count = cmd->count;
+                plan.instance_count = cmd->instance_count;
+                plan.base_instance = cmd->base_instance;
+                break;
+            /* elements 家族 */
+            case kCmdDrawElements:
+            case kCmdDrawElementsInstanced:
+            case kCmdDrawElementsBaseVertex:
+            case kCmdDrawElementsInstancedBaseVertex:
+            case kCmdDrawElementsInstancedBaseInstance:
+            case kCmdDrawElementsInstancedBaseVertexBaseInstance:
+                if (!cmd->index_buffer ||
+                    cmd->index_type == 0xFFFFFFFFu) {
+                    if (err && errcap) {
+                        snprintf(err, errcap,
+                                 "replay command %u: unready index buffer",
+                                 i);
+                    }
+                    return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+                }
+                plan.kind = MGL_RENDER_CPP_DRAW_INDEXED;
+                plan.index_count = cmd->count;
+                plan.index_type = cmd->index_type;
+                plan.index_buffer = cmd->index_buffer;
+                plan.index_buffer_offset = cmd->index_buffer_offset;
+                plan.base_vertex = cmd->base_vertex;
+                plan.instance_count = cmd->instance_count;
+                plan.base_instance = cmd->base_instance;
+                break;
+            default:
+                if (err && errcap) {
+                    snprintf(err, errcap,
+                             "replay command %u: unknown cmd_type %u",
+                             i, cmd->cmd_type);
+                }
+                return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+        }
+        if (mglRenderCppEncodeDraw(render_encoder, &plan, err, errcap) != 0) {
+            if (err && errcap && !err[0]) {
+                snprintf(err, errcap, "replay command %u encode failed", i);
+            }
+            return MGL_RENDER_CPP_REPLAY_BATCH_NEEDS_OBJC;
+        }
+    }
+    return MGL_RENDER_CPP_REPLAY_BATCH_OK;
+}
+
 int mglRenderCppSetRenderBytes(void* render_encoder,
                                const void* bytes,
                                size_t length,
