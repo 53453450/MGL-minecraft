@@ -1,0 +1,9 @@
+# Precompiled aux shader assets for the renderer (P3: no runtime source compile).
+# Format: asset_name|<metal source>|<comma-separated entry names>
+# The entries must match the functions declared in the .metal source.
+scaled_blit|scaled_blit.metal|mgl_scaled_blit_vs,mgl_scaled_blit_fs
+scaled_blit_cs|scaled_blit_cs.metal|mgl_scaled_blit_cs
+scaled_depth_blit|scaled_depth_blit.metal|mgl_scaled_depth_blit_vs,mgl_scaled_depth_blit_fs
+msaa_integer_resolve|msaa_integer_resolve.metal|mgl_msaa_resolve_uint,mgl_msaa_resolve_int
+clear_rect|clear_rect.metal|mgl_clear_rect_vs,mgl_clear_rect_fs
+safe_fallback|safe_fallback.metal|mgl_safe_fallback_vs,mgl_safe_fallback_fs

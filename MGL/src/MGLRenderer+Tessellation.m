@@ -7,7 +7,6 @@
 #import "MGLRenderer+Tessellation_Private.h"
 #import "mgl_sampler_compat.h"
 #import "mgl_trace_log.h"
-#import "mgl_msl_compiler.h"
 #import "mgl_compute_pipeline_cache.h"
 #import "mgl_metal_bridge.h"
 #include "mgl_env_flag.h"
@@ -470,7 +469,7 @@ typedef struct {
 
     Program *stageProgram = mglResolveProgramForStageFromState(ctx, stage);
     if (stageProgram &&
-        stageProgram->spirv[stage].needs_buffer_size_buffer) {
+        stageProgram->modules[stage].needs_runtime_array_size_buffer) {
         uint32_t sizeConstants[kMGLMaxBufferSlots] = {0};
         for (GLuint i = 0; i < stageBufferMap.count; i++) {
             BufferMap *map = &stageBufferMap.buffers[i];
@@ -479,7 +478,7 @@ typedef struct {
                 ? (NSUInteger)map->metal_binding_index
                 : (NSUInteger)map->buffer_base_index;
             if (metalSlot >= kMGLMaxBufferSlots ||
-                metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX) {
+                metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX) {
                 continue;
             }
             GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
@@ -548,7 +547,7 @@ typedef struct {
     }
     if (bindings->size_buffer) {
         mglTessSetComputeBuffer(computeCommandEncoder, bindings->size_buffer,
-                                0, MGL_BUFFER_SIZE_BUFFER_INDEX);
+                                0, MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
     }
     return true;
 }
@@ -600,7 +599,7 @@ typedef struct {
         return nil;
     }
 
-    if (!tcsProgram->spirv[_TESS_CONTROL_SHADER].metallib_bytes) {
+    if (!tcsProgram->modules[_TESS_CONTROL_SHADER].metallib_bytes) {
         return nil;
     }
 
@@ -795,7 +794,7 @@ typedef struct {
     }
 
     Shader *tcsShader = tcsProgram->shader_slots[_TESS_CONTROL_SHADER];
-    if (!tcsShader || !tcsProgram->spirv[_TESS_CONTROL_SHADER].mtl_function) {
+    if (!tcsShader || !tcsProgram->modules[_TESS_CONTROL_SHADER].mtl_function) {
         NSLog(@"MGL TESS WARNING: TCS program %u has no compiled function", tcsProgram->name);
         return false;
     }
@@ -844,10 +843,10 @@ typedef struct {
     GLuint tcsImgCount = [self getProgramBindingCount:_TESS_CONTROL_SHADER
                                                   type:_STORAGE_IMAGE_RES];
     for (GLuint i = 0; i < tcsImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tcsProgram &&
-            i < tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tcsProgram,
                                               _TESS_CONTROL_SHADER,
@@ -889,10 +888,10 @@ typedef struct {
 
     /* PASS 2: Bind storage images for TCS stage. */
     for (GLuint i = 0; i < tcsImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tcsProgram &&
-            i < tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tcsProgram,
                                               _TESS_CONTROL_SHADER,
@@ -937,10 +936,10 @@ typedef struct {
     GLuint tcsSampledCount = [self getProgramBindingCount:_TESS_CONTROL_SHADER
                                                      type:_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; i < tcsSampledCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tcsProgram &&
-            i < tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].count) {
-            resource = &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].list[i];
+            i < tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].count) {
+            resource = &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_SAMPLED_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tcsProgram,
                                               _TESS_CONTROL_SHADER,
@@ -1018,7 +1017,7 @@ typedef struct {
     if (tcsOutVertices == 0) tcsOutVertices = patchVertices;
 
     NSUInteger tcsOutStride = mglAIRPerVertexStrideForResources(
-        &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER]
+        &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
                                                  [_STAGE_OUTPUT_RES]);
     _tessellation.tcsOutputStride = tcsOutStride;
     _tessellation.tcsOutVertices = tcsOutVertices;
@@ -1049,8 +1048,8 @@ typedef struct {
     if (tcsProgram) {
         /* Per-patch outputs share _STAGE_OUTPUT_RES with
          * per-vertex outputs; SpvDecorationPatch is reflected as is_per_patch. */
-        SpirvResourceList *outs =
-            &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
+        MGLShaderResourceList *outs =
+            &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER][_STAGE_OUTPUT_RES];
         tcsPatchStride = mglAIRPatchVaryingStride(outs);
     }
     NSUInteger tcsPatchSize = (NSUInteger)patchCountTC * tcsPatchStride;
@@ -1099,7 +1098,7 @@ typedef struct {
     NSUInteger tcsStageInOffset = _tessellation.tessVertexCaptureOffset;
     if (tcsStageInBuffer) {
         tcsInStride = mglAIRPerVertexStrideForResources(
-            &tcsProgram->spirv_resources_list[_TESS_CONTROL_SHADER]
+            &tcsProgram->shader_resources_list[_TESS_CONTROL_SHADER]
                                                      [_STAGE_INPUT_RES]);
     } else {
         tcsStageInBuffer =
@@ -1179,14 +1178,14 @@ static NSUInteger mglTESXFBVertexStride(const Program *program)
         return 0u;
     }
 
-    const SpirvResourceList *outputs =
-        &program->spirv_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
+    const MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger stride = 0u;
     for (GLsizei varying = 0;
          varying < program->transform_feedback_varying_count;
          varying++) {
         const char *name = program->transform_feedback_varying_names[varying];
-        const SpirvResource *output = NULL;
+        const MGLShaderResource *output = NULL;
         for (GLuint i = 0; name && outputs->list && i < outputs->count; i++) {
             if (outputs->list[i].name && strcmp(outputs->list[i].name, name) == 0) {
                 output = &outputs->list[i];
@@ -1269,7 +1268,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
-    if (!tesShader || !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function) {
+    if (!tesShader || !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function) {
         NSLog(@"MGL TESS WARNING: TES program %u has no compiled function",
               tesProgram->name);
         return false;
@@ -1371,7 +1370,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     const GLuint itemsPerInstanceU = (GLuint)itemsPerInstance;
 
     NSUInteger outStride = mglAIRPerVertexStrideForResources(
-        &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+        &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
                                              [_STAGE_OUTPUT_RES]);
     if (outStride < MGL_AIR_PER_VERTEX_STRIDE) {
         outStride = MGL_AIR_PER_VERTEX_STRIDE;
@@ -1412,11 +1411,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     GLuint tesImgCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
                                                   type:_STORAGE_IMAGE_RES];
     for (GLuint i = 0; i < tesImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (i <
-            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
             resource =
-                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,
@@ -1458,11 +1457,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 2: bind storage images for the TES stage. */
     for (GLuint i = 0; i < tesImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (i <
-            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
             resource =
-                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,
@@ -1493,11 +1492,11 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     GLuint tesSampledCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
                                                    type:_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; i < tesSampledCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (i <
-            tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
+            tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
             resource =
-                &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
+                &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,
@@ -1786,8 +1785,8 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
             NSLog(@"MGL TESS XFB: failed to create bounded copy encoder");
             return false;
         }
-        const SpirvResourceList *outputs =
-            &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER]
+        const MGLShaderResourceList *outputs =
+            &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER]
                                                 [_STAGE_OUTPUT_RES];
         for (NSUInteger vertex = 0u; vertex < xfbCopiedVertices; vertex++) {
             NSUInteger compactOffset = 0u;
@@ -1796,7 +1795,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
                  varying++) {
                 const char *name =
                     tesProgram->transform_feedback_varying_names[varying];
-                const SpirvResource *output = NULL;
+                const MGLShaderResource *output = NULL;
                 for (GLuint i = 0u; name && outputs->list && i < outputs->count;
                      i++) {
                     if (outputs->list[i].name &&
@@ -1921,7 +1920,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 }
 
 /* Dispatch a TES (Tessellation Evaluation Shader) when there is no TCS and
- * GL_RASTERIZER_DISCARD is active.  SPIRV-Cross lowers the TES to a Metal
+ * GL_RASTERIZER_DISCARD is active.  The AIR backend lowers the TES to a Metal
  * post-tessellation vertex function (`[[patch(quad, 0)]] vertex ...`), but
  * macOS 26.5 SDK removed postTessellationVertexFunction / isTessellationEnabled
  * from MTLRenderPipelineDescriptor.  We therefore rewrite the TES MSL to a
@@ -1940,7 +1939,7 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     }
 
     Shader *tesShader = tesProgram->shader_slots[_TESS_EVALUATION_SHADER];
-    if (!tesShader || !tesProgram->spirv[_TESS_EVALUATION_SHADER].mtl_function) {
+    if (!tesShader || !tesProgram->modules[_TESS_EVALUATION_SHADER].mtl_function) {
         NSLog(@"MGL TESS WARNING: TES program %u has no compiled function", tesProgram->name);
         return false;
     }
@@ -1982,10 +1981,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     GLuint tesImgCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
                                                   type:_STORAGE_IMAGE_RES];
     for (GLuint i = 0; i < tesImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tesProgram &&
-            i < tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,
@@ -2027,10 +2026,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
 
     /* PASS 2: Bind storage images for TES stage. */
     for (GLuint i = 0; i < tesImgCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tesProgram &&
-            i < tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
-            resource = &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
+            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].count) {
+            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_STORAGE_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,
@@ -2075,10 +2074,10 @@ static GLuint mglAIRTessEvalItemsPerPatch(const Program *tesProgram,
     GLuint tesSampledCount = [self getProgramBindingCount:_TESS_EVALUATION_SHADER
                                                      type:_SAMPLED_IMAGE_RES];
     for (GLuint i = 0; i < tesSampledCount; i++) {
-        SpirvResource *resource = NULL;
+        MGLShaderResource *resource = NULL;
         if (tesProgram &&
-            i < tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
-            resource = &tesProgram->spirv_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
+            i < tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].count) {
+            resource = &tesProgram->shader_resources_list[_TESS_EVALUATION_SHADER][_SAMPLED_IMAGE_RES].list[i];
         }
         if (mglShouldSkipStageTextureResource(tesProgram,
                                               _TESS_EVALUATION_SHADER,

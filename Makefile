@@ -108,11 +108,44 @@ help:
 		'  make test-regression  Build and run the headless regression suite.' \
 		'  make test-dirty-hash  Run the minimal dirty-hash batch regression.' \
 		'  make test             Run the interactive GLFW test application.' \
+		'  make check-air-only   Fail if production paths reference the legacy GLSL->SPIR-V->MSL chain.' \
 		'  make clean            Remove local build outputs.'
+
+# P3 硬闸：生产路径不得残留旧 source-compile 链（详见 scripts/check_air_only.sh）。
+check-air-only:
+	@bash scripts/check_air_only.sh
 
 # mgl
 #mgl_srcs_c := $(wildcard MGL/src/*.c)
 mgl_srcs_c := $(filter-out %/gl_core.c  %/gl_es.c, $(wildcard MGL/src/*.c))
+
+# Aux shader assets (P3): the precompiled metallib table embeds all helper
+# shaders; the runtime never compiles .metal source.  The table is regenerated
+# when a *.metal, the MANIFEST, or the generator changes; the committed
+# mgl_aux_assets.* files keep clean clones buildable without the metal tools.
+MGL_METAL ?= $(shell xcrun --sdk macosx --find metal 2>/dev/null)
+MGL_METALLIB ?= $(shell xcrun --sdk macosx --find metallib 2>/dev/null)
+AUX_METAL_SRCS := $(wildcard MGL/aux_shaders/*.metal)
+AUX_BUILD_DIR := $(build_dir)/aux
+AUX_METALLIBS := $(patsubst MGL/aux_shaders/%.metal,$(AUX_BUILD_DIR)/%.metallib,$(AUX_METAL_SRCS))
+AUX_ASSET_STAMP := $(AUX_BUILD_DIR)/aux_assets.stamp
+
+$(AUX_BUILD_DIR)/%.air: MGL/aux_shaders/%.metal
+	@mkdir -p $(dir $@)
+	$(MGL_METAL) -c $< -o $@
+
+$(AUX_BUILD_DIR)/%.metallib: $(AUX_BUILD_DIR)/%.air
+	$(MGL_METALLIB) $< -o $@
+
+$(AUX_ASSET_STAMP): MGL/aux_shaders/MANIFEST $(AUX_METALLIBS) scripts/gen_aux_assets.py
+	@mkdir -p $(dir $@)
+	python3 scripts/gen_aux_assets.py MGL/aux_shaders/MANIFEST \
+		$(AUX_BUILD_DIR) MGL/include/mgl_aux_assets.h MGL/src/mgl_aux_assets.c
+	@touch $@
+
+# The generated table is part of both dylibs; regenerate it before compiling.
+$(build_core_dir)/MGL/src/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
+$(build_es_dir)/MGL/src/mgl_aux_assets.o: $(AUX_ASSET_STAMP)
 
 # MGL/src currently has no C++ sources, but the wildcard must be defined so
 # the .cpp rules below are not silently dropped if one is added later.
@@ -570,11 +603,12 @@ test-mcrepro: $(build_dir)/test_mcrepro
 # 桥接现有 id<MTLDevice> -> MTL::Device*，init/shutdown 幂等无崩溃。
 $(build_dir)/test_metalcpp_smoke: test_legacy_compat/test_metalcpp_smoke.mm \
 	MGL/src/mgl_render_cpp.cpp MGL/src/mgl_render_cpp.h \
-	MGL/src/mgl_render_cpp_objc.h
+	MGL/src/mgl_render_cpp_objc.h MGL/src/mgl_aux_assets.c
 	$(LLVM_CXX) -x objective-c++ -fobjc-arc -g -O0 $(LLVM_CXXFLAGS) $(LLVM_LDFLAGS) \
 		-framework Cocoa -framework Foundation -framework Metal \
 		test_legacy_compat/test_metalcpp_smoke.mm \
 		MGL/src/mgl_render_cpp.cpp \
+		MGL/src/mgl_aux_assets.c \
 		-o $@
 
 test-metalcpp: $(build_dir)/test_metalcpp_smoke
@@ -619,6 +653,7 @@ test-air:
 # Keep the local gate serial: the GPU suites share Metal compiler/archive state.
 # The interactive GLFW application and performance benchmark remain explicit.
 test-all:
+	$(MAKE) check-air-only
 	$(MAKE) test-frontends
 	$(MAKE) test-air
 	$(MAKE) test-dirty-hash
@@ -628,6 +663,6 @@ test-all:
 	build-test-regression test-regression test-dirty-hash test-benchmark \
 	test-legacy-compat test-mglir test-mgllex test-mglparse test-mglsema \
 	test-mglair test-mglair-gtest test-mcrepro test-metalcpp test-frontends \
-	test-air test-all
+	test-air test-all check-air-only
 
 -include $(deps)

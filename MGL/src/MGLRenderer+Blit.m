@@ -4,6 +4,7 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+Blit_Private.h"
 #include "mgl_env_flag.h"
+#include "mgl_aux_assets.h"
 #include "mgl_render_cpp_objc.h"
 
 /* Shared state for mtlBlitFramebuffer color blit helpers.
@@ -165,22 +166,6 @@ static void mglBlitGetTextureBytes(id<MTLTexture> texture,
         [texture getBytes:bytes bytesPerRow:bytesPerRow
                fromRegion:region mipmapLevel:level];
     }
-}
-
-static id<MTLFunction> mglBlitCreateFunction(
-    id<MTLLibrary> library,
-    NSString *name)
-{
-    if (mglBlitUsesMetalCpp()) {
-        void *function = NULL;
-        if (mglRenderCppCreateFunction(
-                (__bridge void *)library, name.UTF8String, NULL,
-                &function, NULL, 0) == 0 && function) {
-            return (__bridge_transfer id<MTLFunction>)function;
-        }
-        return nil;
-    }
-    return [library newFunctionWithName:name];
 }
 
 static id<MTLSamplerState> mglBlitCreateSampler(
@@ -585,14 +570,27 @@ static id<MTLComputePipelineState> mglLookupCppAuxComputePipeline(
     return nil;
 }
 
-static id<MTLComputePipelineState> mglCreateCppAuxComputePipeline(
-    id<MTLFunction> function, uint32_t kind, uint64_t variant, NSError **error)
+static id<MTLComputePipelineState> mglCreateCppAuxComputePipelineFromAsset(
+    const char *assetName, const char *entryName,
+    uint32_t kind, uint64_t variant, NSError **error)
 {
+    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
+    if (!asset || !asset->data || asset->size == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"MGLBlitAuxAsset"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    [NSString stringWithFormat:
+                                                        @"aux shader asset '%s' missing", assetName]}];
+        }
+        return nil;
+    }
     void *pipeline = NULL;
     char message[512] = {0};
-    if (mglRenderCppGetOrCreateAuxComputePipeline(
-            (__bridge void *)function, kind, variant,
-            &pipeline, message, sizeof(message)) == 0 && pipeline) {
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            asset->data, asset->size, asset->hash, entryName,
+            kind, variant, &pipeline, message, sizeof(message)) == 0 &&
+        pipeline) {
         return (__bridge_transfer id<MTLComputePipelineState>)pipeline;
     }
     if (error) {
@@ -605,6 +603,70 @@ static id<MTLComputePipelineState> mglCreateCppAuxComputePipeline(
                                                 description}];
     }
     return nil;
+}
+
+static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipelineFromAsset(
+    const char *assetName, const char *vsEntry, const char *fsEntry,
+    uint32_t kind, uint64_t variant,
+    MTLPixelFormat colorFormat, MTLPixelFormat depthFormat,
+    MTLPixelFormat stencilFormat, MTLColorWriteMask colorWriteMask,
+    uint32_t rasterSampleCount, NSError **error)
+{
+    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
+    if (!asset || !asset->data || asset->size == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"MGLBlitAuxAsset"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    [NSString stringWithFormat:
+                                                        @"aux shader asset '%s' missing", assetName]}];
+        }
+        return nil;
+    }
+    void *pipeline = NULL;
+    char message[512] = {0};
+    int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
+    if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+            asset->data, asset->size, asset->hash,
+            vsEntry, fsEntry, kind, variant,
+            (uint32_t)colorFormat, (uint32_t)depthFormat,
+            (uint32_t)stencilFormat, (uint32_t)colorWriteMask, icbEnabled,
+            rasterSampleCount, &pipeline, message, sizeof(message)) == 0 &&
+        pipeline) {
+        return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
+    }
+    if (error) {
+        NSString *description = message[0]
+            ? [NSString stringWithUTF8String:message]
+            : @"Metal-cpp auxiliary render pipeline creation failed";
+        *error = [NSError errorWithDomain:@"MGLBlitPipeline"
+                                     code:2
+                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                description}];
+    }
+    return nil;
+}
+
+/* Gate-off ObjC path: load the precompiled aux metallib with the plain
+ * Metal load-from-data API.  Never runtime source compilation. */
+static id<MTLLibrary> mglBlitLoadAuxLibrary(id<MTLDevice> device,
+                                            const char *assetName,
+                                            NSError **error)
+{
+    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
+    if (!asset || !asset->data || asset->size == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"MGLBlitAuxAsset"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    [NSString stringWithFormat:
+                                                        @"aux shader asset '%s' missing", assetName]}];
+        }
+        return nil;
+    }
+    dispatch_data_t data = dispatch_data_create(
+        asset->data, asset->size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    return [device newLibraryWithData:data error:error];
 }
 
 static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
@@ -621,37 +683,6 @@ static id<MTLRenderPipelineState> mglLookupCppAuxRenderPipeline(
             (uint32_t)colorWriteMask, icbEnabled, rasterSampleCount,
             &pipeline, NULL, 0) == 0 && pipeline) {
         return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
-    }
-    return nil;
-}
-
-static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
-    id<MTLFunction> vertexFunction, id<MTLFunction> fragmentFunction,
-    uint32_t kind, uint64_t variant,
-    MTLPixelFormat colorFormat, MTLPixelFormat depthFormat,
-    MTLPixelFormat stencilFormat, MTLColorWriteMask colorWriteMask,
-    uint32_t rasterSampleCount, NSError **error)
-{
-    void *pipeline = NULL;
-    char message[512] = {0};
-    int icbEnabled = mgl_env_flag_enabled("MGL_ENABLE_ICB_PIPELINES");
-    if (mglRenderCppGetOrCreateAuxRenderPipeline(
-            (__bridge void *)vertexFunction,
-            (__bridge void *)fragmentFunction,
-            kind, variant, (uint32_t)colorFormat, (uint32_t)depthFormat,
-            (uint32_t)stencilFormat, (uint32_t)colorWriteMask, icbEnabled,
-            rasterSampleCount, &pipeline, message, sizeof(message)) == 0 &&
-        pipeline) {
-        return (__bridge_transfer id<MTLRenderPipelineState>)pipeline;
-    }
-    if (error) {
-        NSString *description = message[0]
-            ? [NSString stringWithUTF8String:message]
-            : @"Metal-cpp auxiliary render pipeline creation failed";
-        *error = [NSError errorWithDomain:@"MGLBlitPipeline"
-                                     code:2
-                                 userInfo:@{NSLocalizedDescriptionKey:
-                                                description}];
     }
     return nil;
 }
@@ -704,66 +735,45 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
                 pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
                 MTLColorWriteMaskAll, 1u);
         if (cached) return cached;
-    } else {
-        if (!_blit.scaledBlitPipelineCache) {
-            _blit.scaledBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+        NSError *error = nil;
+        id<MTLRenderPipelineState> pipeline =
+            mglCreateCppAuxRenderPipelineFromAsset(
+                "scaled_blit", "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",
+                MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT, variant,
+                pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
+                MTLColorWriteMaskAll, 1u, &error);
+        if (!pipeline) {
+            NSLog(@"MGL ERROR: scaled blit asset pipeline create failed pixelFormat=%lu error=%@",
+                  (unsigned long)pixelFormat, error);
+            if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return nil;
         }
-        id<MTLRenderPipelineState> cached = _blit.scaledBlitPipelineCache[key];
-        if (cached) return cached;
+        NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu (Metal-cpp asset)",
+              (unsigned long)pixelFormat);
+        return pipeline;
     }
 
-    static NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "struct MGLScaledBlitParams { float4 uvRect; float forceOpaqueAlpha; float3 _padding; };\n"
-         "struct MGLScaledBlitVOut { float4 position [[position]]; float2 uv; };\n"
-         "vertex MGLScaledBlitVOut mgl_scaled_blit_vs(uint vid [[vertex_id]], constant MGLScaledBlitParams& p [[buffer(0)]]) {\n"
-         "    float2 pos[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };\n"
-         "    float2 uv[4] = { float2(p.uvRect.x, p.uvRect.w), float2(p.uvRect.z, p.uvRect.w), float2(p.uvRect.x, p.uvRect.y), float2(p.uvRect.z, p.uvRect.y) };\n"
-         "    MGLScaledBlitVOut o;\n"
-         "    o.position = float4(pos[vid], 0.0, 1.0);\n"
-         "    o.uv = uv[vid];\n"
-         "    return o;\n"
-         "}\n"
-         "fragment float4 mgl_scaled_blit_fs(MGLScaledBlitVOut in [[stage_in]], constant MGLScaledBlitParams& p [[buffer(0)]], texture2d<float> src [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-         "    float4 color = src.sample(s, in.uv);\n"
-         "    if (p.forceOpaqueAlpha > 0.5) { color.a = 1.0; }\n"
-         "    return color;\n"
-         "}\n";
+    if (!_blit.scaledBlitPipelineCache) {
+        _blit.scaledBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    }
+    id<MTLRenderPipelineState> cached = _blit.scaledBlitPipelineCache[key];
+    if (cached) return cached;
 
     NSError *error = nil;
-    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
-                                                     options:nil
-                                                       label:@"MGL scaled blit"
-                                                       error:&error];
+    id<MTLLibrary> library = mglBlitLoadAuxLibrary(_device, "scaled_blit", &error);
     if (!library) {
-        NSLog(@"MGL ERROR: scaled blit shader compile failed: %@", error);
+        NSLog(@"MGL ERROR: scaled blit asset library load failed pixelFormat=%lu error=%@",
+              (unsigned long)pixelFormat, error);
         return nil;
     }
 
     id<MTLFunction> vs =
-        mglBlitCreateFunction(library, @"mgl_scaled_blit_vs");
+        [library newFunctionWithName:@"mgl_scaled_blit_vs"];
     id<MTLFunction> fs =
-        mglBlitCreateFunction(library, @"mgl_scaled_blit_fs");
+        [library newFunctionWithName:@"mgl_scaled_blit_fs"];
     if (!vs || !fs) {
         NSLog(@"MGL ERROR: scaled blit shader functions missing vs=%@ fs=%@", vs, fs);
         return nil;
-    }
-
-    if (useMetalCpp) {
-        id<MTLRenderPipelineState> pipeline =
-            mglCreateCppAuxRenderPipeline(
-                vs, fs, MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT, variant,
-                pixelFormat, MTLPixelFormatInvalid, MTLPixelFormatInvalid,
-                MTLColorWriteMaskAll, 1u, &error);
-        if (!pipeline) {
-            NSLog(@"MGL ERROR: scaled blit Metal-cpp pipeline create failed pixelFormat=%lu error=%@",
-                  (unsigned long)pixelFormat, error);
-            return nil;
-        }
-        NSLog(@"MGL INFO: created scaled blit pipeline pixelFormat=%lu (Metal-cpp)",
-              (unsigned long)pixelFormat);
-        return pipeline;
     }
 
     MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
@@ -816,50 +826,46 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
                 MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT,
                 (uint64_t)pixelFormat);
         if (cached) return cached;
-    } else {
-        if (!_blit.scaledBlitComputePipelineCache) {
-            _blit.scaledBlitComputePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+        NSError *error = nil;
+        id<MTLComputePipelineState> pipeline =
+            mglCreateCppAuxComputePipelineFromAsset(
+                "scaled_blit_cs", "mgl_scaled_blit_cs",
+                MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT,
+                (uint64_t)pixelFormat, &error);
+        if (!pipeline) {
+            NSLog(@"MGL ERROR: scaled blit asset compute pipeline create failed pixelFormat=%lu error=%@",
+                  (unsigned long)pixelFormat, error);
+            if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return nil;
         }
-        id<MTLComputePipelineState> cached = _blit.scaledBlitComputePipelineCache[key];
-        if (cached) return cached;
+        NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu (Metal-cpp asset)",
+              (unsigned long)pixelFormat);
+        return pipeline;
     }
 
-    static NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "struct MGLScaledBlitComputeParams { uint2 dstSize; uint srcLevel; uint dstLevel; };\n"
-         "kernel void mgl_scaled_blit_cs(uint2 gid [[thread_position_in_grid]],\n"
-         "                               constant MGLScaledBlitComputeParams& p [[buffer(0)]],\n"
-         "                               texture2d<float, access::read> src [[texture(0)]],\n"
-         "                               texture2d<float, access::write> dst [[texture(1)]]) {\n"
-         "    if (gid.x >= p.dstSize.x || gid.y >= p.dstSize.y) return;\n"
-         "    uint2 srcCoord = uint2(gid.x, p.dstSize.y - 1u - gid.y);\n"
-         "    float4 color = src.read(srcCoord, p.srcLevel);\n"
-         "    dst.write(color, gid, p.dstLevel);\n"
-         "}\n";
+    if (!_blit.scaledBlitComputePipelineCache) {
+        _blit.scaledBlitComputePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    }
+    id<MTLComputePipelineState> cached = _blit.scaledBlitComputePipelineCache[key];
+    if (cached) return cached;
 
     NSError *error = nil;
-    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
-                                                     options:nil
-                                                       label:@"MGL scaled blit compute"
-                                                       error:&error];
+    id<MTLLibrary> library = mglBlitLoadAuxLibrary(_device, "scaled_blit_cs", &error);
     if (!library) {
-        NSLog(@"MGL ERROR: scaled blit compute shader compile failed: %@", error);
+        NSLog(@"MGL ERROR: scaled blit compute asset library load failed pixelFormat=%lu error=%@",
+              (unsigned long)pixelFormat, error);
         return nil;
     }
 
     id<MTLFunction> function =
-        mglBlitCreateFunction(library, @"mgl_scaled_blit_cs");
+        [library newFunctionWithName:@"mgl_scaled_blit_cs"];
     if (!function) {
         NSLog(@"MGL ERROR: scaled blit compute shader function missing");
         return nil;
     }
 
-    id<MTLComputePipelineState> pipeline = useMetalCpp
-        ? mglCreateCppAuxComputePipeline(
-              function, MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT,
-              (uint64_t)pixelFormat, &error)
-        : [_device newComputePipelineStateWithFunction:function error:&error];
+    id<MTLComputePipelineState> pipeline =
+        [_device newComputePipelineStateWithFunction:function error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: scaled blit compute pipeline create failed pixelFormat=%lu error=%@",
               (unsigned long)pixelFormat,
@@ -867,10 +873,8 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
         return nil;
     }
 
-    if (!useMetalCpp) {
-        _blit.scaledBlitComputePipelineCache[key] = pipeline;
-        [self mglCapAuxCache:_blit.scaledBlitComputePipelineCache limit:16];
-    }
+    _blit.scaledBlitComputePipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.scaledBlitComputePipelineCache limit:16];
     NSLog(@"MGL INFO: created scaled blit compute pipeline pixelFormat=%lu", (unsigned long)pixelFormat);
     return pipeline;
 }
@@ -895,67 +899,46 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
                 MTLPixelFormatInvalid, pixelFormat, stencilFormat,
                 MTLColorWriteMaskNone, 1u);
         if (cached) return cached;
-    } else {
-        if (!_blit.scaledDepthBlitPipelineCache) {
-            _blit.scaledDepthBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+        NSError *error = nil;
+        id<MTLRenderPipelineState> pipeline =
+            mglCreateCppAuxRenderPipelineFromAsset(
+                "scaled_depth_blit", "mgl_scaled_depth_blit_vs",
+                "mgl_scaled_depth_blit_fs",
+                MGL_RENDER_CPP_AUX_RENDER_SCALED_DEPTH_BLIT, variant,
+                MTLPixelFormatInvalid, pixelFormat, stencilFormat,
+                MTLColorWriteMaskNone, 1u, &error);
+        if (!pipeline) {
+            NSLog(@"MGL ERROR: scaled depth asset pipeline create failed depthPixelFormat=%lu error=%@",
+                  (unsigned long)pixelFormat, error);
+            if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return nil;
         }
-        id<MTLRenderPipelineState> cached = _blit.scaledDepthBlitPipelineCache[key];
-        if (cached) return cached;
+        NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu (Metal-cpp asset)",
+              (unsigned long)pixelFormat);
+        return pipeline;
     }
 
-    static NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "struct MGLScaledBlitParams { float4 uvRect; float forceOpaqueAlpha; float3 _padding; };\n"
-         "struct MGLScaledBlitVOut { float4 position [[position]]; float2 uv; };\n"
-         "struct MGLScaledDepthBlitFOut { float depth [[depth(any)]]; };\n"
-         "vertex MGLScaledBlitVOut mgl_scaled_depth_blit_vs(uint vid [[vertex_id]], constant MGLScaledBlitParams& p [[buffer(0)]]) {\n"
-         "    float2 pos[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };\n"
-         "    float2 uv[4] = { float2(p.uvRect.x, p.uvRect.w), float2(p.uvRect.z, p.uvRect.w), float2(p.uvRect.x, p.uvRect.y), float2(p.uvRect.z, p.uvRect.y) };\n"
-         "    MGLScaledBlitVOut o;\n"
-         "    o.position = float4(pos[vid], 0.0, 1.0);\n"
-         "    o.uv = uv[vid];\n"
-         "    return o;\n"
-         "}\n"
-         "fragment MGLScaledDepthBlitFOut mgl_scaled_depth_blit_fs(MGLScaledBlitVOut in [[stage_in]], depth2d<float> srcDepth [[texture(0)]], sampler s [[sampler(0)]]) {\n"
-         "    MGLScaledDepthBlitFOut out;\n"
-         "    out.depth = srcDepth.sample(s, in.uv);\n"
-         "    return out;\n"
-         "}\n";
+    if (!_blit.scaledDepthBlitPipelineCache) {
+        _blit.scaledDepthBlitPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:4];
+    }
+    id<MTLRenderPipelineState> cached = _blit.scaledDepthBlitPipelineCache[key];
+    if (cached) return cached;
 
     NSError *error = nil;
-    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
-                                                     options:nil
-                                                       label:@"MGL scaled depth blit"
-                                                       error:&error];
+    id<MTLLibrary> library = mglBlitLoadAuxLibrary(_device, "scaled_depth_blit", &error);
     if (!library) {
-        NSLog(@"MGL ERROR: scaled depth blit shader compile failed: %@", error);
+        NSLog(@"MGL ERROR: scaled depth blit asset library load failed depthPixelFormat=%lu error=%@",
+              (unsigned long)pixelFormat, error);
         return nil;
     }
 
     id<MTLFunction> vs =
-        mglBlitCreateFunction(library, @"mgl_scaled_depth_blit_vs");
+        [library newFunctionWithName:@"mgl_scaled_depth_blit_vs"];
     id<MTLFunction> fs =
-        mglBlitCreateFunction(library, @"mgl_scaled_depth_blit_fs");
+        [library newFunctionWithName:@"mgl_scaled_depth_blit_fs"];
     if (!vs || !fs) {
         NSLog(@"MGL ERROR: scaled depth blit shader functions missing vs=%@ fs=%@", vs, fs);
         return nil;
-    }
-
-    if (useMetalCpp) {
-        id<MTLRenderPipelineState> pipeline =
-            mglCreateCppAuxRenderPipeline(
-                vs, fs, MGL_RENDER_CPP_AUX_RENDER_SCALED_DEPTH_BLIT,
-                variant, MTLPixelFormatInvalid, pixelFormat, stencilFormat,
-                MTLColorWriteMaskNone, 1u, &error);
-        if (!pipeline) {
-            NSLog(@"MGL ERROR: scaled depth Metal-cpp pipeline create failed depthPixelFormat=%lu error=%@",
-                  (unsigned long)pixelFormat, error);
-            return nil;
-        }
-        NSLog(@"MGL INFO: created scaled depth blit pipeline depthPixelFormat=%lu (Metal-cpp)",
-              (unsigned long)pixelFormat);
-        return pipeline;
     }
 
     MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
@@ -991,6 +974,8 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
 - (id<MTLComputePipelineState>)msaaIntegerResolvePipelineForSigned:(BOOL)signedInteger
 {
     NSNumber *key = @(signedInteger ? 1u : 0u);
+    const char *entryName = signedInteger
+        ? "mgl_msaa_resolve_int" : "mgl_msaa_resolve_uint";
     BOOL useMetalCpp = mglBlitUsesMetalCpp();
     if (useMetalCpp) {
         id<MTLComputePipelineState> cached =
@@ -998,56 +983,44 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
                 MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
                 signedInteger ? 1u : 0u);
         if (cached) return cached;
-    } else {
-        if (!_blit.msaaIntegerResolvePipelineCache) {
-            _blit.msaaIntegerResolvePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:2];
+        NSError *error = nil;
+        id<MTLComputePipelineState> pipeline =
+            mglCreateCppAuxComputePipelineFromAsset(
+                "msaa_integer_resolve", entryName,
+                MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
+                signedInteger ? 1u : 0u, &error);
+        if (!pipeline) {
+            NSLog(@"MGL ERROR: MSAA integer resolve asset pipeline create failed signed=%d error=%@",
+                  signedInteger ? 1 : 0, error);
+            if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
+            return nil;
         }
-        id<MTLComputePipelineState> cached = _blit.msaaIntegerResolvePipelineCache[key];
-        if (cached) return cached;
+        return pipeline;
     }
 
-    NSString *entryName = signedInteger ? @"mgl_msaa_resolve_int" : @"mgl_msaa_resolve_uint";
-    static NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "struct MGLMSAAIntegerResolveParams { uint2 srcOrigin; uint2 dstOrigin; uint2 size; uint2 _padding; };\n"
-         "kernel void mgl_msaa_resolve_uint(texture2d_ms<uint, access::read> src [[texture(0)]], texture2d<uint, access::write> dst [[texture(1)]], constant MGLMSAAIntegerResolveParams& p [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {\n"
-         "    if (gid.x >= p.size.x || gid.y >= p.size.y) return;\n"
-         "    uint2 srcCoord = p.srcOrigin + gid;\n"
-         "    uint2 dstCoord = p.dstOrigin + gid;\n"
-         "    // GL requires GL_NEAREST for integer/MSAA blits; choose sample 0 deterministically.\n"
-         "    dst.write(src.read(srcCoord, 0), dstCoord);\n"
-         "}\n"
-         "kernel void mgl_msaa_resolve_int(texture2d_ms<int, access::read> src [[texture(0)]], texture2d<int, access::write> dst [[texture(1)]], constant MGLMSAAIntegerResolveParams& p [[buffer(0)]], uint2 gid [[thread_position_in_grid]]) {\n"
-         "    if (gid.x >= p.size.x || gid.y >= p.size.y) return;\n"
-         "    uint2 srcCoord = p.srcOrigin + gid;\n"
-         "    uint2 dstCoord = p.dstOrigin + gid;\n"
-         "    // GL requires GL_NEAREST for integer/MSAA blits; choose sample 0 deterministically.\n"
-         "    dst.write(src.read(srcCoord, 0), dstCoord);\n"
-         "}\n";
+    if (!_blit.msaaIntegerResolvePipelineCache) {
+        _blit.msaaIntegerResolvePipelineCache = [[NSMutableDictionary alloc] initWithCapacity:2];
+    }
+    id<MTLComputePipelineState> cached = _blit.msaaIntegerResolvePipelineCache[key];
+    if (cached) return cached;
 
     NSError *error = nil;
-    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
-                                                     options:nil
-                                                       label:@"MGL MSAA integer resolve"
-                                                       error:&error];
+    id<MTLLibrary> library = mglBlitLoadAuxLibrary(_device, "msaa_integer_resolve", &error);
     if (!library) {
-        NSLog(@"MGL ERROR: MSAA integer resolve shader compile failed: %@", error);
+        NSLog(@"MGL ERROR: MSAA integer resolve asset library load failed signed=%d error=%@",
+              signedInteger ? 1 : 0, error);
         return nil;
     }
 
     id<MTLFunction> function =
-        mglBlitCreateFunction(library, entryName);
+        [library newFunctionWithName:[NSString stringWithUTF8String:entryName]];
     if (!function) {
-        NSLog(@"MGL ERROR: MSAA integer resolve shader function missing %@", entryName);
+        NSLog(@"MGL ERROR: MSAA integer resolve shader function missing %s", entryName);
         return nil;
     }
 
-    id<MTLComputePipelineState> pipeline = useMetalCpp
-        ? mglCreateCppAuxComputePipeline(
-              function, MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE,
-              signedInteger ? 1u : 0u, &error)
-        : [_device newComputePipelineStateWithFunction:function error:&error];
+    id<MTLComputePipelineState> pipeline =
+        [_device newComputePipelineStateWithFunction:function error:&error];
     if (!pipeline) {
         NSLog(@"MGL ERROR: MSAA integer resolve pipeline create failed signed=%d error=%@",
               signedInteger ? 1 : 0,
@@ -1055,10 +1028,8 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
         return nil;
     }
 
-    if (!useMetalCpp) {
-        _blit.msaaIntegerResolvePipelineCache[key] = pipeline;
-        [self mglCapAuxCache:_blit.msaaIntegerResolvePipelineCache limit:8];
-    }
+    _blit.msaaIntegerResolvePipelineCache[key] = pipeline;
+    [self mglCapAuxCache:_blit.msaaIntegerResolvePipelineCache limit:8];
     return pipeline;
 }
 
@@ -1974,63 +1945,47 @@ static id<MTLRenderPipelineState> mglCreateCppAuxRenderPipeline(
                 writesColor ? MTLColorWriteMaskAll : MTLColorWriteMaskNone,
                 1u);
         if (cached) return cached;
-    } else {
-        if (!_blit.clearRectPipelineCache) {
-            _blit.clearRectPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:8];
-        }
-        id<MTLRenderPipelineState> cached = _blit.clearRectPipelineCache[key];
-        if (cached) return cached;
-    }
-
-    NSError *error = nil;
-    NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "struct MGLClearRectParams { float4 color; float depth; float3 _padding; };\n"
-         "struct MGLClearRectVOut { float4 position [[position]]; };\n"
-         "vertex MGLClearRectVOut mgl_clear_rect_vs(uint vid [[vertex_id]], constant MGLClearRectParams& p [[buffer(0)]]) {\n"
-         "    float2 pos[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };\n"
-         "    MGLClearRectVOut o;\n"
-         "    o.position = float4(pos[vid & 3u], p.depth, 1.0);\n"
-         "    return o;\n"
-         "}\n"
-         "fragment float4 mgl_clear_rect_fs(MGLClearRectVOut in [[stage_in]], constant MGLClearRectParams& p [[buffer(0)]]) {\n"
-         "    return p.color;\n"
-         "}\n";
-
-    id<MTLLibrary> library = [self newMetalLibraryWithSource:source
-                                                     options:nil
-                                                       label:@"MGL scissored clear"
-                                                       error:&error];
-    if (!library) {
-        NSLog(@"MGL ERROR: scissored clear shader compile failed: %@", error);
-        return nil;
-    }
-
-    id<MTLFunction> vs =
-        mglBlitCreateFunction(library, @"mgl_clear_rect_vs");
-    id<MTLFunction> fs = writesColor
-        ? mglBlitCreateFunction(library, @"mgl_clear_rect_fs") : nil;
-    if (!vs || (writesColor && !fs)) {
-        NSLog(@"MGL ERROR: scissored clear shader functions missing vs=%@ fs=%@", vs, fs);
-        return nil;
-    }
-
-    if (useMetalCpp) {
+        NSError *error = nil;
         id<MTLRenderPipelineState> pipeline =
-            mglCreateCppAuxRenderPipeline(
-                vs, fs, MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, variant,
+            mglCreateCppAuxRenderPipelineFromAsset(
+                "clear_rect", "mgl_clear_rect_vs",
+                writesColor ? "mgl_clear_rect_fs" : NULL,
+                MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, variant,
                 colorFormat, depthFormat, MTLPixelFormatInvalid,
                 writesColor ? MTLColorWriteMaskAll : MTLColorWriteMaskNone,
                 1u, &error);
         if (!pipeline) {
-            NSLog(@"MGL ERROR: scissored clear Metal-cpp pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
+            NSLog(@"MGL ERROR: scissored clear asset pipeline create failed color=%lu depth=%lu writesColor=%d writesDepth=%d error=%@",
                   (unsigned long)colorFormat, (unsigned long)depthFormat,
                   writesColor ? 1 : 0, writesDepth ? 1 : 0, error);
+            if (ctx) mglDispatchError(ctx, __FUNCTION__, GL_INVALID_OPERATION);
             return nil;
         }
-        NSLog(@"MGL INFO: created scissored clear pipeline (Metal-cpp)");
+        NSLog(@"MGL INFO: created scissored clear pipeline (Metal-cpp asset)");
         return pipeline;
+    }
+
+    if (!_blit.clearRectPipelineCache) {
+        _blit.clearRectPipelineCache = [[NSMutableDictionary alloc] initWithCapacity:8];
+    }
+    id<MTLRenderPipelineState> cached = _blit.clearRectPipelineCache[key];
+    if (cached) return cached;
+
+    NSError *error = nil;
+    id<MTLLibrary> library = mglBlitLoadAuxLibrary(_device, "clear_rect", &error);
+    if (!library) {
+        NSLog(@"MGL ERROR: scissored clear asset library load failed color=%lu depth=%lu error=%@",
+              (unsigned long)colorFormat, (unsigned long)depthFormat, error);
+        return nil;
+    }
+
+    id<MTLFunction> vs =
+        [library newFunctionWithName:@"mgl_clear_rect_vs"];
+    id<MTLFunction> fs = writesColor
+        ? [library newFunctionWithName:@"mgl_clear_rect_fs"] : nil;
+    if (!vs || (writesColor && !fs)) {
+        NSLog(@"MGL ERROR: scissored clear shader functions missing vs=%@ fs=%@", vs, fs);
+        return nil;
     }
 
     MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];

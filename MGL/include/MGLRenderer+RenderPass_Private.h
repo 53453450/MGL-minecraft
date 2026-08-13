@@ -143,11 +143,6 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
 - (id<MTLTexture>)createMTLTextureFromGLTexture:(Texture *)tex;
 - (id<MTLTexture>)createFallbackMTLTexture:(Texture *)tex;
 - (id<MTLSamplerState>)createMTLSamplerForTexParam:(TextureParameter *)tex_param target:(GLuint)target;
-- (id<MTLLibrary>)compileShader:(const char *)str;
-- (id<MTLFunction>)newFunctionFromLibrary:(id<MTLLibrary>)library
-                                entryName:(NSString *)entryName
-                                   source:(const char *)source
-                                    label:(NSString *)label;
 - (MTLStencilOperation)mtlStencilOpForGLOp:(GLenum)op;
 - (bool)checkDrawBufferSize:(GLuint)index;
 - (id)newDrawBuffer:(MTLPixelFormat)pixelFormat isDepthStencil:(bool)depthStencil;
@@ -156,12 +151,6 @@ void mglEnableIndirectCommandBuffersForPipeline(MTLRenderPipelineDescriptor *pip
                         customSize:(CGSize)size;
 - (MTLBlendFactor)blendFactorFromGL:(GLenum)gl_blend;
 - (MTLBlendOperation)blendOperationFromGL:(GLenum)gl_blend_op;
-
-// === Private method declarations (defined in MGLRenderer.m, called from categories) ===
-- (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
-                                    options:(MTLCompileOptions *)options
-                                      label:(NSString *)label
-                                      error:(NSError **)error;
 
 // Thread Safety: *Locked variants defined in MGLRenderer.m
 - (void)mtlDeleteMTLObjLocked:(GLMContext)glm_ctx buffer:(void *)obj;

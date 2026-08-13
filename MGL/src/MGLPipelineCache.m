@@ -3,7 +3,6 @@
 #import <os/lock.h>
 
 #import "mgl_frame_activity.h"
-#import "mgl_msl_compiler.h"
 #include "mgl_env_flag.h"
 #include "mgl_render_cpp.h"
 
@@ -711,55 +710,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     [self storePipelineDescriptor:descriptor forKey:key];
 }
 
-- (void)initializeCompilerIfAvailableUnlessDisabled:(BOOL)disabled
-{
-#if MGL_HAS_MTL4_COMPILER
-    if (!_device || _state.mtl4Compiler || disabled) return;
-    if (@available(macOS 26.0, *)) {
-        if (![_device respondsToSelector:@selector(newCompilerWithDescriptor:error:)]) return;
-        NSError *error = nil;
-        if (mglPipelineCacheUsesMetalCpp()) {
-            void *compiler = NULL;
-            char message[512] = {0};
-            if (mglRenderCppCreateMetal4Compiler(
-                    "MGL Metal 4 shader compiler", &compiler,
-                    message, sizeof(message)) == 0 && compiler) {
-                _state.mtl4Compiler =
-                    (__bridge_transfer id<MTL4Compiler>)compiler;
-            } else {
-                error = mglPipelineCacheMetalCppError(message, 10);
-            }
-        } else {
-            MTL4CompilerDescriptor *descriptor =
-                [[MTL4CompilerDescriptor alloc] init];
-            descriptor.label = @"MGL Metal 4 shader compiler";
-            _state.mtl4Compiler =
-                [_device newCompilerWithDescriptor:descriptor error:&error];
-        }
-        if (_state.mtl4Compiler) {
-            NSLog(@"MGL INFO: Metal 4 compiler enabled for shader libraries");
-        } else if (error) {
-            NSLog(@"MGL WARNING: Metal 4 compiler unavailable, falling back to MTLDevice library compile: %@",
-                  error.localizedDescription);
-        }
-    }
-#else
-    (void)disabled;
-#endif
-}
-
-- (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
-                                      options:(MTLCompileOptions *)options
-                                        label:(NSString *)label
-                                        error:(NSError **)error
-{
-#if MGL_HAS_MTL4_COMPILER
-    return mglCompileMSL(_device, _state.mtl4Compiler, source, options, label, error);
-#else
-    return mglCompileMSL(_device, nil, source, options, label, error);
-#endif
-}
-
 - (NSURL *)binaryArchiveURL
 {
     NSArray *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory,
@@ -1040,9 +990,6 @@ static NSString *MGLSafeArchivePathComponent(NSString *value)
     _state.depthStencilStateCacheLRU = nil;
     _state.depthStencilCacheQueryKey = nil;
     _state.binaryArchive = nil;
-#if MGL_HAS_MTL4_COMPILER
-    _state.mtl4Compiler = nil;
-#endif
     _device = nil;
     mglRenderCppDestroyPipelineCacheOwner(&_cppOwner);
 }

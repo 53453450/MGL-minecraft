@@ -12,6 +12,7 @@
 #include "mgl_metal_cpp.h"
 #include "mgl_render_cpp.h"
 #include "mgl_air_loader.h"
+#include "mgl_aux_assets.h"
 #include "mgl_compute_pipeline_cache.h"
 #include "mgl_env_flag.h"
 #include "mgl_types_buffer.h"
@@ -654,6 +655,10 @@ struct RendererCpp {
         auxComputePipelines;
     std::map<AuxRenderPipelineKey, MTL::RenderPipelineState*>
         auxRenderPipelines;
+    /* Precompiled aux shader asset libraries (mgl_aux_assets table), keyed by
+     * their FNV-1a hash, owned by the renderer until shutdown.  Functions from
+     * these libraries are always +1 refs handed to callers. */
+    std::map<uint64_t, MTL::Library*> auxLibraries;
     std::map<ConvertedVertexBufferKey, MTL::Buffer*>
         convertedVertexBuffers;
     std::array<Buffer*, kPackedStructBufferCapacity> packedStructBuffers{};
@@ -861,6 +866,10 @@ void releasePipelineCaches(RendererCpp& renderer) {
         if (entry.second) entry.second->release();
     }
     renderer.auxRenderPipelines.clear();
+    for (auto& entry : renderer.auxLibraries) {
+        if (entry.second) entry.second->release();
+    }
+    renderer.auxLibraries.clear();
     for (auto& entry : renderer.convertedVertexBuffers) {
         if (entry.second) entry.second->release();
     }
@@ -2565,7 +2574,7 @@ int mglRenderCppBindAIRProgram(Program* program,
                 return MGL_RENDER_CPP_AIR_PROGRAM_ERROR;
             }
         }
-        Spirv* spirv = &program->spirv[stage];
+        MGLShaderModule* spirv = &program->modules[stage];
         if (!spirv->metallib_bytes || spirv->metallib_size == 0u) {
             return MGL_RENDER_CPP_AIR_PROGRAM_NOT_APPLICABLE;
         }
@@ -2579,7 +2588,7 @@ int mglRenderCppBindAIRProgram(Program* program,
                         mgl::geometryShaderIsPassthrough(shader))) {
             continue;
         }
-        Spirv* spirv = &program->spirv[stage];
+        MGLShaderModule* spirv = &program->modules[stage];
         if (!spirv->mtl_library || !spirv->mtl_function) {
             mgl::releaseBridgedObject(&spirv->mtl_function);
             mgl::releaseBridgedObject(&spirv->mtl_library);
@@ -3590,79 +3599,6 @@ int mglRenderCppCreateEvent(void** event_out) {
     return 0;
 }
 
-int mglRenderCppCreateMetal4Compiler(const char* label,
-                                     void** compiler_out,
-                                     char* err,
-                                     size_t errcap) {
-    if (compiler_out) *compiler_out = nullptr;
-    if (err && errcap) err[0] = '\0';
-    if (!compiler_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
-
-    MTL4::CompilerDescriptor* descriptor =
-        MTL4::CompilerDescriptor::alloc()->init();
-    if (!descriptor) return -1;
-    if (label && label[0]) {
-        descriptor->setLabel(
-            NS::String::string(label, NS::UTF8StringEncoding));
-    }
-    NS::Error* nsError = nullptr;
-    MTL4::Compiler* compiler =
-        renderer.device->newCompiler(descriptor, &nsError);
-    descriptor->release();
-    if (!compiler) {
-        mgl::copyError(nsError, err, errcap);
-        return -1;
-    }
-    *compiler_out = compiler;
-    return 0;
-}
-
-int mglRenderCppCompileLibrary(void* compiler,
-                               void* source_string,
-                               void* compile_options,
-                               const char* label,
-                               void** library_out,
-                               char* err,
-                               size_t errcap) {
-    if (library_out) *library_out = nullptr;
-    if (err && errcap) err[0] = '\0';
-    NS::String* source = static_cast<NS::String*>(source_string);
-    if (!source || !library_out) return -1;
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) return -1;
-
-    NS::Error* nsError = nullptr;
-    MTL::Library* library = nullptr;
-    MTL::CompileOptions* options =
-        static_cast<MTL::CompileOptions*>(compile_options);
-    if (compiler) {
-        MTL4::LibraryDescriptor* descriptor =
-            MTL4::LibraryDescriptor::alloc()->init();
-        if (!descriptor) return -1;
-        descriptor->setSource(source);
-        descriptor->setOptions(options);
-        if (label && label[0]) {
-            descriptor->setName(
-                NS::String::string(label, NS::UTF8StringEncoding));
-        }
-        library = static_cast<MTL4::Compiler*>(compiler)->newLibrary(
-            descriptor, &nsError);
-        descriptor->release();
-    } else {
-        library = renderer.device->newLibrary(source, options, &nsError);
-    }
-    if (!library) {
-        mgl::copyError(nsError, err, errcap);
-        return -1;
-    }
-    *library_out = library;
-    return 0;
-}
-
 int mglRenderCppCreateFunction(void* library,
                                const char* name,
                                void* function_constant_values,
@@ -4089,7 +4025,7 @@ int mglGetOrCreateProgramComputePipeline(Program* program,
         if (err && errcap) snprintf(err, errcap, "invalid Program or shader stage");
         return -1;
     }
-    Spirv* spirv = &program->spirv[stage];
+    MGLShaderModule* spirv = &program->modules[stage];
     if (!spirv->mtl_function) {
         if (err && errcap) snprintf(err, errcap, "compiled compute function is unavailable");
         return -1;
@@ -4124,26 +4060,92 @@ void mglRenderCppInvalidateProgramPipelines(uint64_t program_instance) {
     }
 }
 
-int mglRenderCppGetOrCreateAuxComputePipeline(
-    void* function,
-    uint32_t kind,
-    uint64_t variant,
-    void** pipeline_out,
-    char* err,
-    size_t errcap) {
-    if (pipeline_out) *pipeline_out = nullptr;
-    if (!pipeline_out || kind == 0) {
-        if (err && errcap) snprintf(err, errcap, "bad args");
-        return -1;
-    }
+namespace {
 
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
-        return -1;
+/* Loads (or returns the cached) MTL::Library for an embedded aux shader asset.
+ * Validates the table row (non-empty) and the FNV-1a fingerprint before
+ * loading from bytes.  The library is owned by the renderer until shutdown;
+ * the returned pointer is borrowed.  Assumes renderer.mutex is held. */
+MTL::Library* loadAuxLibraryLocked(mgl::RendererCpp& renderer,
+                                   const unsigned char* bytes,
+                                   size_t size,
+                                   uint64_t asset_hash,
+                                   char* err,
+                                   size_t errcap) {
+    if (!bytes || size == 0) {
+        if (err && errcap) {
+            snprintf(err, errcap, "aux shader asset row is empty (table not built?)");
+        }
+        return nullptr;
     }
+    auto found = renderer.auxLibraries.find(asset_hash);
+    if (found != renderer.auxLibraries.end()) return found->second;
+    const uint64_t computedHash = mglAuxAssetHash(bytes, size);
+    if (computedHash != asset_hash) {
+        if (err && errcap) {
+            snprintf(err, errcap,
+                     "aux shader asset hash mismatch (table 0x%016llx, computed 0x%016llx)",
+                     static_cast<unsigned long long>(asset_hash),
+                     static_cast<unsigned long long>(computedHash));
+        }
+        return nullptr;
+    }
+    // Same loading path as mglAirLoadLibrary: dispatch_data -> newLibrary.
+    dispatch_data_t dispatchData = dispatch_data_create(
+        bytes, size, nullptr, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    if (!dispatchData) {
+        if (err && errcap) {
+            snprintf(err, errcap, "aux shader asset dispatch_data_create failed");
+        }
+        return nullptr;
+    }
+    NS::Error* nsError = nullptr;
+    MTL::Library* library = renderer.device->newLibrary(dispatchData, &nsError);
+#ifdef __OBJC__
+    // -fobjc-arc builds (test_metalcpp_smoke) manage dispatch objects
+    // automatically; the C++ lib build releases the temporary manually.
+    (void)dispatchData;
+#else
+    dispatch_release(dispatchData);
+#endif
+    if (!library) {
+        mgl::copyError(nsError, err, errcap);
+        return nullptr;
+    }
+    library->retain();
+    renderer.auxLibraries.emplace(asset_hash, library);
+    if (mgl_env_flag_enabled("MGL_METALCPP_DIAG")) {
+        fprintf(stderr,
+                "MGL METALCPP: aux shader asset library loaded "
+                "hash=0x%016llx bytes=%zu\n",
+                static_cast<unsigned long long>(asset_hash), size);
+    }
+    return library;
+}
 
+MTL::Function* newAuxEntryFunction(MTL::Library* library,
+                                   const char* entry,
+                                   char* err,
+                                   size_t errcap) {
+    if (!entry) return nullptr;
+    MTL::Function* function = library->newFunction(
+        NS::String::string(entry, NS::UTF8StringEncoding));
+    if (!function && err && errcap) {
+        snprintf(err, errcap, "aux shader entry function '%s' not found",
+                 entry);
+    }
+    return function;
+}
+
+/* Core of mglRenderCppGetOrCreateAuxComputePipeline: lookup/create against the
+ * renderer-lifetime cache.  Assumes renderer.mutex is held. */
+int getOrCreateAuxComputePipelineLocked(mgl::RendererCpp& renderer,
+                                        void* function,
+                                        uint32_t kind,
+                                        uint64_t variant,
+                                        void** pipeline_out,
+                                        char* err,
+                                        size_t errcap) {
     mgl::AuxComputePipelineKey key = {kind, variant};
     auto found = renderer.auxComputePipelines.find(key);
     if (found != renderer.auxComputePipelines.end()) {
@@ -4179,32 +4181,23 @@ int mglRenderCppGetOrCreateAuxComputePipeline(
     return 0;
 }
 
-int mglRenderCppGetOrCreateAuxRenderPipeline(
-    void* vertex_function,
-    void* fragment_function,
-    uint32_t kind,
-    uint64_t variant,
-    uint32_t color_format,
-    uint32_t depth_format,
-    uint32_t stencil_format,
-    uint32_t color_write_mask,
-    int icb_enabled,
-    uint32_t raster_sample_count,
-    void** pipeline_out,
-    char* err,
-    size_t errcap) {
-    if (pipeline_out) *pipeline_out = nullptr;
-    if (!pipeline_out || kind == 0 || raster_sample_count == 0) {
-        if (err && errcap) snprintf(err, errcap, "bad args");
-        return -1;
-    }
-    mgl::RendererCpp& renderer = mgl::renderer();
-    std::lock_guard<std::mutex> lock(renderer.mutex);
-    if (!renderer.device) {
-        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
-        return -1;
-    }
-
+/* Core of mglRenderCppGetOrCreateAuxRenderPipeline: descriptor assembly plus
+ * lookup/create against the renderer-lifetime cache.  Assumes renderer.mutex
+ * is held. */
+int getOrCreateAuxRenderPipelineLocked(mgl::RendererCpp& renderer,
+                                       void* vertex_function,
+                                       void* fragment_function,
+                                       uint32_t kind,
+                                       uint64_t variant,
+                                       uint32_t color_format,
+                                       uint32_t depth_format,
+                                       uint32_t stencil_format,
+                                       uint32_t color_write_mask,
+                                       int icb_enabled,
+                                       uint32_t raster_sample_count,
+                                       void** pipeline_out,
+                                       char* err,
+                                       size_t errcap) {
     mgl::AuxRenderPipelineKey key = {
         kind, variant, color_format, depth_format, stencil_format,
         color_write_mask, raster_sample_count, icb_enabled != 0};
@@ -4228,7 +4221,9 @@ int mglRenderCppGetOrCreateAuxRenderPipeline(
     MTL::RenderPipelineDescriptor* descriptor =
         MTL::RenderPipelineDescriptor::alloc()->init();
     if (!descriptor) {
-        if (err && errcap) snprintf(err, errcap, "render descriptor allocation failed");
+        if (err && errcap) {
+            snprintf(err, errcap, "render descriptor allocation failed");
+        }
         return -1;
     }
     descriptor->setVertexFunction(
@@ -4265,6 +4260,191 @@ int mglRenderCppGetOrCreateAuxRenderPipeline(
                 vertex_function, fragment_function);
     }
     *pipeline_out = pipeline;
+    return 0;
+}
+
+}  // namespace
+
+int mglRenderCppGetOrCreateAuxComputePipeline(
+    void* function,
+    uint32_t kind,
+    uint64_t variant,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (!pipeline_out || kind == 0) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    return getOrCreateAuxComputePipelineLocked(
+        renderer, function, kind, variant, pipeline_out, err, errcap);
+}
+
+int mglRenderCppGetOrCreateAuxRenderPipeline(
+    void* vertex_function,
+    void* fragment_function,
+    uint32_t kind,
+    uint64_t variant,
+    uint32_t color_format,
+    uint32_t depth_format,
+    uint32_t stencil_format,
+    uint32_t color_write_mask,
+    int icb_enabled,
+    uint32_t raster_sample_count,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (!pipeline_out || kind == 0 || raster_sample_count == 0) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    return getOrCreateAuxRenderPipelineLocked(
+        renderer, vertex_function, fragment_function, kind, variant,
+        color_format, depth_format, stencil_format, color_write_mask,
+        icb_enabled, raster_sample_count, pipeline_out, err, errcap);
+}
+
+int mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    const unsigned char* bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char* entry_name,
+    uint32_t kind,
+    uint64_t variant,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (!pipeline_out || kind == 0 || !entry_name) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    MTL::Library* library = loadAuxLibraryLocked(
+        renderer, bytes, size, asset_hash, err, errcap);
+    if (!library) return -1;
+    MTL::Function* function =
+        newAuxEntryFunction(library, entry_name, err, errcap);
+    if (!function) return -1;
+    int result = getOrCreateAuxComputePipelineLocked(
+        renderer, function, kind, variant, pipeline_out, err, errcap);
+    function->release();
+    return result;
+}
+
+int mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+    const unsigned char* bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char* vertex_entry,
+    const char* fragment_entry,
+    uint32_t kind,
+    uint64_t variant,
+    uint32_t color_format,
+    uint32_t depth_format,
+    uint32_t stencil_format,
+    uint32_t color_write_mask,
+    int icb_enabled,
+    uint32_t raster_sample_count,
+    void** pipeline_out,
+    char* err,
+    size_t errcap) {
+    if (pipeline_out) *pipeline_out = nullptr;
+    if (!pipeline_out || kind == 0 || raster_sample_count == 0 ||
+        !vertex_entry) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    MTL::Library* library = loadAuxLibraryLocked(
+        renderer, bytes, size, asset_hash, err, errcap);
+    if (!library) return -1;
+    MTL::Function* vertexFunction =
+        newAuxEntryFunction(library, vertex_entry, err, errcap);
+    if (!vertexFunction) return -1;
+    MTL::Function* fragmentFunction =
+        newAuxEntryFunction(library, fragment_entry, err, errcap);
+    if (fragment_entry && !fragmentFunction) {
+        vertexFunction->release();
+        if (err && errcap && !err[0]) {
+            snprintf(err, errcap, "aux shader entry functions missing");
+        }
+        return -1;
+    }
+    int result = getOrCreateAuxRenderPipelineLocked(
+        renderer, vertexFunction, fragmentFunction, kind, variant,
+        color_format, depth_format, stencil_format, color_write_mask,
+        icb_enabled, raster_sample_count, pipeline_out, err, errcap);
+    vertexFunction->release();
+    if (fragmentFunction) fragmentFunction->release();
+    return result;
+}
+
+int mglRenderCppCreateAuxFunctions(
+    const unsigned char* bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char* vertex_entry,
+    const char* fragment_entry,
+    void** vertex_out,
+    void** fragment_out,
+    char* err,
+    size_t errcap) {
+    if (vertex_out) *vertex_out = nullptr;
+    if (fragment_out) *fragment_out = nullptr;
+    if (!vertex_out || !vertex_entry) {
+        if (err && errcap) snprintf(err, errcap, "bad args");
+        return -1;
+    }
+    mgl::RendererCpp& renderer = mgl::renderer();
+    std::lock_guard<std::mutex> lock(renderer.mutex);
+    if (!renderer.device) {
+        if (err && errcap) snprintf(err, errcap, "Metal-cpp renderer is not initialized");
+        return -1;
+    }
+    MTL::Library* library = loadAuxLibraryLocked(
+        renderer, bytes, size, asset_hash, err, errcap);
+    if (!library) return -1;
+    MTL::Function* vertexFunction =
+        newAuxEntryFunction(library, vertex_entry, err, errcap);
+    if (!vertexFunction) return -1;
+    MTL::Function* fragmentFunction =
+        newAuxEntryFunction(library, fragment_entry, err, errcap);
+    if (fragment_entry && !fragmentFunction) {
+        vertexFunction->release();
+        if (err && errcap && !err[0]) {
+            snprintf(err, errcap, "aux shader entry function '%s' not found",
+                     fragment_entry);
+        }
+        return -1;
+    }
+    *vertex_out = vertexFunction;
+    if (fragment_out) *fragment_out = fragmentFunction;
     return 0;
 }
 

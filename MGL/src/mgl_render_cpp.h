@@ -67,7 +67,7 @@ enum {
 };
 
 /* Load every AIR-backed stage in a linked Program and install the resulting
- * +1 library/function references directly in its Spirv slots.  Programs that
+ * +1 library/function references directly in its MGLShaderModule slots.  Programs that
  * still contain a legacy MSL stage are left untouched and return
  * NOT_APPLICABLE so the ObjC baseline can bind the whole program. */
 int mglRenderCppBindAIRProgram(Program *program,
@@ -391,17 +391,6 @@ int mglRenderCppStorePipelineDescriptor(
     const uint64_t key_words[MGL_RENDER_CPP_PIPELINE_CACHE_KEY_WORDS],
     void *descriptor);
 int mglRenderCppCreateEvent(void **event_out);
-int mglRenderCppCreateMetal4Compiler(const char *label,
-                                     void **compiler_out,
-                                     char *err,
-                                     size_t errcap);
-int mglRenderCppCompileLibrary(void *compiler,
-                               void *source_string,
-                               void *compile_options,
-                               const char *label,
-                               void **library_out,
-                               char *err,
-                               size_t errcap);
 int mglRenderCppCreateFunction(void *library,
                                const char *name,
                                void *function_constant_values,
@@ -510,6 +499,61 @@ int mglRenderCppGetOrCreateAuxRenderPipeline(
     int icb_enabled,
     uint32_t raster_sample_count,
     void **pipeline_out,
+    char *err,
+    size_t errcap);
+
+/* Aux render PSO from the precompiled aux shader asset table
+ * (see mgl_aux_assets.h). bytes/size/hash come from an embedded table row;
+ * the C++ side validates size and the FNV-1a hash, loads MTL::Library from the
+ * bytes, resolves the entry functions, and creates the PSO through the same
+ * renderer-lifetime cache as the function-based path. vertex_entry is the
+ * metallib entry name; fragment_entry may be NULL for fragment-less kinds.
+ * On success *pipeline_out is a +1 MTL::RenderPipelineState reference. */
+int mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+    const unsigned char *bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char *vertex_entry,
+    const char *fragment_entry,
+    uint32_t kind,
+    uint64_t variant,
+    uint32_t color_format,
+    uint32_t depth_format,
+    uint32_t stencil_format,
+    uint32_t color_write_mask,
+    int icb_enabled,
+    uint32_t raster_sample_count,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+
+/* Aux compute PSO from the precompiled aux shader asset table. entry_name is
+ * the metallib kernel name. On success *pipeline_out is a +1
+ * MTL::ComputePipelineState reference. */
+int mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+    const unsigned char *bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char *entry_name,
+    uint32_t kind,
+    uint64_t variant,
+    void **pipeline_out,
+    char *err,
+    size_t errcap);
+
+/* Resolve entry functions from a precompiled aux shader asset for descriptor
+ * paths that keep ObjC descriptor assembly (e.g. the safe fallback branch).
+ * vertex_out is always a +1 MTL::Function; fragment_out is +1 when
+ * fragment_entry is non-NULL. The underlying library is cached by the C++
+ * renderer and released at shutdown. */
+int mglRenderCppCreateAuxFunctions(
+    const unsigned char *bytes,
+    size_t size,
+    uint64_t asset_hash,
+    const char *vertex_entry,
+    const char *fragment_entry,
+    void **vertex_out,
+    void **fragment_out,
     char *err,
     size_t errcap);
 

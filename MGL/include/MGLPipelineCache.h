@@ -4,16 +4,6 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-#ifndef MGL_HAS_MTL4_COMPILER
-#if __has_include(<Metal/MTL4Compiler.h>) && __has_include(<Metal/MTL4LibraryDescriptor.h>)
-#import <Metal/MTL4Compiler.h>
-#import <Metal/MTL4LibraryDescriptor.h>
-#define MGL_HAS_MTL4_COMPILER 1
-#else
-#define MGL_HAS_MTL4_COMPILER 0
-#endif
-#endif
-
 #include "glm_context.h"
 
 NS_ASSUME_NONNULL_BEGIN
@@ -65,9 +55,6 @@ typedef struct MGLPipelineCacheState_t {
     BOOL dsCacheEnabled;
     id<MTLBinaryArchive> __strong _Nullable binaryArchive;
     BOOL binaryArchiveEnabled;
-#if MGL_HAS_MTL4_COMPILER
-    id<MTL4Compiler> __strong _Nullable mtl4Compiler;
-#endif
     BOOL psoDedupEnabled;
 } MGLPipelineCacheState;
 
@@ -114,12 +101,6 @@ NS_ASSUME_NONNULL_BEGIN
                     forWords:(const uint64_t * _Nonnull)words;
 - (void)storePipelineDescriptor:(MTLRenderPipelineDescriptor *)descriptor
                        forWords:(const uint64_t * _Nonnull)words;
-
-- (void)initializeCompilerIfAvailableUnlessDisabled:(BOOL)disabled;
-- (nullable id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
-                                              options:(nullable MTLCompileOptions *)options
-                                                label:(nullable NSString *)label
-                                                error:(NSError **)error;
 
 - (void)loadBinaryArchive;
 - (void)saveBinaryArchive;

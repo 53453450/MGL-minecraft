@@ -19,7 +19,7 @@
  */
 
 /* MGLRenderer_Private.h transitively imports Foundation, Metal, simd, os/lock.h,
- * glm_context.h, pixel_utils.h, spirv_cross_c.h, and all mgl_* compatibility
+ * glm_context.h, pixel_utils.h, and all mgl_* compatibility
  * headers listed below.  Only imports unique to this TU are listed here. */
 #import <objc/runtime.h>
 #import <MetalKit/MetalKit.h>
@@ -48,7 +48,6 @@
 #import "mgl_state_log.h"
 #import "mgl_trace_log.h"
 #import "mgl_byte_hash.h"
-#import "mgl_msl_compiler.h"
 #import "mgl_compute_pipeline_cache.h"
 #import "mgl_metal_bridge.h"
 
@@ -793,19 +792,19 @@ GLuint mglCurrentRenderProgramKey(GLMContext ctx)
 
 static void mglLogProgramResourceInterface(Program *program, int stage, int type)
 {
-    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || type < 0 || type >= _MAX_SPIRV_RES) {
+    if (!program || stage < 0 || stage >= _MAX_SHADER_TYPES || type < 0 || type >= MGL_MAX_SHADER_RESOURCES) {
         return;
     }
 
-    SpirvResourceList *resources = &program->spirv_resources_list[stage][type];
+    MGLShaderResourceList *resources = &program->shader_resources_list[stage][type];
     mglTraceLogNSString(@"MGL IFACE program=%u stage=%s type=%s count=%u",
                   (unsigned)program->name,
                   mglShaderStageName(stage),
-                  mglSpirvResourceTypeName(type),
+                  mglMGLShaderResourceTypeName(type),
                   (unsigned)resources->count);
 
     for (GLuint i = 0; i < resources->count; i++) {
-        SpirvResource *res = &resources->list[i];
+        MGLShaderResource *res = &resources->list[i];
         mglTraceLogNSString(@"MGL IFACE   #%u name=%s loc=%u glBinding=%u metalBinding=%u set=%u typeId=%u baseTypeId=%u required=%zu imageDim=%u arrayed=%u",
                       (unsigned)i,
                       res->name ? res->name : "(null)",
@@ -2621,7 +2620,7 @@ void mglTraceDrawElementsAttrib(GLMContext ctx,
     }
     MTLVertexFormat format = glTypeSizeToMtlType(a->type, a->size, effectiveNormalized);
     int mappedIndex = mglRendererResolveVertexAttributeBufferIndex(ctx, vao, attrib, "drawElements.attrib.trace");
-    SpirvResource *resource = mglRendererProgramVertexAttribResource(program, attrib);
+    MGLShaderResource *resource = mglRendererProgramVertexAttribResource(program, attrib);
     mglTraceLogNSString(@"MGL TRACE drawElements.attrib%u call=%llu program=%u indexElement=%lu resource=%s metalSlot=%d vbo=%u rawIndex=%u baseVertex=%d vertexIndex=%llu bindingIndex=%u bindingOffset=%lu relOffset=%lu vertexOffset=%lu stride=%lu size=%u type=0x%x normalized=%u/%u format=%lu(%s) decoded=(%.6f,%.6f,%.6f,%.6f) raw=%s",
           (unsigned)attrib,
           (unsigned long long)drawCall,
@@ -2903,50 +2902,6 @@ void logDirtyBits(GLMContext ctx)
 
 /* getProgramBinding* / getProgramExpectedTexture* / getProgramLocation moved
  * to MGLRenderer+ProgramBinding.m */
-
-- (id<MTLLibrary>)newMetalLibraryWithSource:(NSString *)source
-                                    options:(MTLCompileOptions *)options
-                                      label:(NSString *)label
-                                      error:(NSError **)error
-{
-    return [_pipelineCache newMetalLibraryWithSource:source
-                                             options:options
-                                               label:label
-                                               error:error];
-}
-
-- (id<MTLLibrary>) compileShader: (const char *) str
-{
-    id<MTLLibrary> library;
-    __autoreleasing NSError *error = nil;
-    BOOL sourceHasUnsupportedGeometryEmission =
-        str && (strstr(str, "EmitVertex") || strstr(str, "EndPrimitive"));
-
-    library = [self newMetalLibraryWithSource:[NSString stringWithUTF8String: str]
-                                      options:nil
-                                        label:@"MGL program shader"
-                                        error:&error];
-    if(!library) {
-        if (sourceHasUnsupportedGeometryEmission) {
-            NSLog(@"MGL WARNING: Skipped unsupported geometry-shader MSL compile: %@",
-                  error.localizedDescription ?: error);
-            return nil;
-        }
-        NSLog(@"MGL ERROR: Failed to compile shader: %@ ", [error localizedDescription] );
-        // Return nil instead of asserting - caller must handle this gracefully
-        return nil;
-    }
-
-    return library;
-}
-
-- (id<MTLFunction>)newFunctionFromLibrary:(id<MTLLibrary>)library
-                                entryName:(NSString *)entryName
-                                   source:(const char *)source
-                                    label:(NSString *)label
-{
-    return mglNewFunctionFromLibrary(library, entryName, source, label);
-}
 
 /* invalidateCurrentPipelineStateForReason: moved to MGLRenderer+RenderPass.m */
 

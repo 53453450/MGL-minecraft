@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "mgl_render_cpp_objc.h"
+#include "mgl_aux_assets.h"
 #include "mgl_types_texture.h"
 #include "mgl_types_program.h"
 #include "mgl_types_state.h"
@@ -24,6 +25,27 @@ static uint64_t s_metalCreateCount = 0;
 extern "C" void mglMetalCountRelease(int) { ++s_metalReleaseCount; }
 extern "C" void mglMetalCountCreate(int) { ++s_metalCreateCount; }
 extern "C" void mglRecordBufferCowSnapshot(uint64_t) {}
+
+/* Load a precompiled aux metallib with the plain Metal load-from-data API.
+ * Smoke fixtures must not compile MSL source. */
+static id<MTLLibrary> smokeLoadAssetLibrary(id<MTLDevice> device,
+                                            const char *assetName)
+{
+    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
+    if (!asset) {
+        fprintf(stderr, "FAIL: asset library %s missing\n", assetName);
+        return nil;
+    }
+    dispatch_data_t data = dispatch_data_create(
+        asset->data, asset->size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    NSError *error = nil;
+    id<MTLLibrary> library = [device newLibraryWithData:data error:&error];
+    if (!library) {
+        fprintf(stderr, "FAIL: asset library %s: %s\n", assetName,
+                error.localizedDescription.UTF8String ?: "unknown");
+    }
+    return library;
+}
 static int s_legacyBufferBindCount = 0;
 extern "C" void mtlBindBuffer(GLMContext, Buffer *) {
     ++s_legacyBufferBindCount;
@@ -697,9 +719,9 @@ static int verifyAIRProgramClassification(void) {
 
     program.shader_slots[_VERTEX_SHADER] = NULL;
     program.shader_slots[_GEOMETRY_SHADER] = &shader;
-    program.spirv[_GEOMETRY_SHADER].metallib_bytes =
+    program.modules[_GEOMETRY_SHADER].metallib_bytes =
         reinterpret_cast<unsigned char *>(&program);
-    program.spirv[_GEOMETRY_SHADER].metallib_size = 1;
+    program.modules[_GEOMETRY_SHADER].metallib_size = 1;
     if (mglRenderCppBindAIRProgram(&program, &failedStage, message,
                                    sizeof(message)) !=
             MGL_RENDER_CPP_AIR_PROGRAM_ERROR ||
@@ -991,54 +1013,230 @@ static int verifyNoCopyBufferFacade(void) {
     return 0;
 }
 
-static int verifyCompilerAndBinaryArchive(void) {
-    NSString *source = @
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "vertex float4 archiveVertex(uint vid [[vertex_id]]) {\n"
-        "  const float2 p[3] = { float2(-1.0, -1.0), "
-        "float2(3.0, -1.0), float2(-1.0, 3.0) };\n"
-        "  return float4(p[vid], 0.0, 1.0);\n"
-        "}\n"
-        "fragment float4 archiveFragment() {\n"
-        "  return float4(0.25, 0.5, 0.75, 1.0);\n"
-        "}\n"
-        "constant uint archiveValue [[function_constant(7)]];\n"
-        "kernel void archiveKernel(device uint *output [[buffer(0)]]) {\n"
-        "  output[0] = archiveValue;\n"
-        "}\n";
+/* P3.1: precompiled aux shader assets.  Verifies the embedded table (entries
+ * + hash), render/compute PSO creation from metallib bytes, cache hits, the
+ * function resolver, and every error path (bad hash / unknown entry / empty
+ * row).  All pipelines must come from the precompiled bytes — no source is
+ * compiled anywhere on this path. */
+static int verifyAuxShaderAssets(void) {
+    static const struct {
+        const char *name;
+        const char *firstEntry;
+        size_t expectedEntries;
+    } kAssets[] = {
+        {"scaled_blit", "mgl_scaled_blit_vs", 2},
+        {"scaled_blit_cs", "mgl_scaled_blit_cs", 1},
+        {"scaled_depth_blit", "mgl_scaled_depth_blit_vs", 2},
+        {"msaa_integer_resolve", "mgl_msaa_resolve_uint", 2},
+        {"clear_rect", "mgl_clear_rect_vs", 2},
+        {"safe_fallback", "mgl_safe_fallback_vs", 2},
+    };
     char message[1024] = {0};
 
-    void *compilerPtr = NULL;
-    if (mglRenderCppCreateMetal4Compiler(
-            "MGL Smoke Metal 4 Compiler", &compilerPtr,
-            message, sizeof(message)) != 0 || !compilerPtr) {
-        fprintf(stderr, "FAIL: Metal 4 compiler facade: %s\n",
-                message[0] ? message : "unknown");
+    for (size_t i = 0; i < sizeof(kAssets) / sizeof(kAssets[0]); ++i) {
+        const MGLAuxShaderAsset *asset =
+            mglAuxShaderAssetFind(kAssets[i].name);
+        if (!asset || !asset->data || asset->size == 0 || asset->hash == 0) {
+            fprintf(stderr, "FAIL: aux asset %s missing from table\n",
+                    kAssets[i].name);
+            return 1;
+        }
+        if (mglAuxAssetHash(asset->data, asset->size) != asset->hash) {
+            fprintf(stderr, "FAIL: aux asset %s hash mismatch\n",
+                    kAssets[i].name);
+            return 1;
+        }
+        if (strcmp(asset->functions[0], kAssets[i].firstEntry) != 0) {
+            fprintf(stderr, "FAIL: aux asset %s first entry mismatch\n",
+                    kAssets[i].name);
+            return 1;
+        }
+        size_t count = 0;
+        while (count < 4 && asset->functions[count]) ++count;
+        if (count != kAssets[i].expectedEntries) {
+            fprintf(stderr, "FAIL: aux asset %s entry count %zu != %zu\n",
+                    kAssets[i].name, count, kAssets[i].expectedEntries);
+            return 1;
+        }
+    }
+    if (mglAuxShaderAssetFind("no_such_asset") != NULL ||
+        mglAuxShaderAssetCount !=
+            sizeof(kAssets) / sizeof(kAssets[0])) {
+        fprintf(stderr, "FAIL: aux asset table integrity\n");
         return 1;
     }
-    id compiler = (__bridge_transfer id)compilerPtr;
 
-    void *libraryPtr = NULL;
-    if (mglRenderCppCompileLibrary(
-            (__bridge void *)compiler, (__bridge void *)source, NULL,
-            "MGL Smoke Archive Library", &libraryPtr,
-            message, sizeof(message)) != 0 || !libraryPtr) {
-        fprintf(stderr, "FAIL: Metal 4 library compile facade: %s\n",
-                message[0] ? message : "unknown");
+    /* Render PSO create + cache hit + variant split. */
+    const MGLAuxShaderAsset *blit = mglAuxShaderAssetFind("scaled_blit");
+    void *p1 = NULL, *p2 = NULL, *p3 = NULL;
+#define MGL_AUX_CREATE_RENDER(_asset, _fmt, _out)                          \
+    do {                                                                   \
+        if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(          \
+                (_asset)->data, (_asset)->size, (_asset)->hash,            \
+                "mgl_scaled_blit_vs", "mgl_scaled_blit_fs",                \
+                MGL_RENDER_CPP_AUX_RENDER_SCALED_BLIT,                     \
+                (uint64_t)(uint32_t)(_fmt), (uint32_t)(_fmt), 0, 0,        \
+                MTLColorWriteMaskAll, 0, 1u, &(_out), message,             \
+                sizeof(message)) != 0 || !(_out)) {                        \
+            fprintf(stderr, "FAIL: aux render PSO create: %s\n",           \
+                    message[0] ? message : "?");                           \
+            return 1;                                                      \
+        }                                                                  \
+    } while (0)
+    MGL_AUX_CREATE_RENDER(blit, MTLPixelFormatBGRA8Unorm, p1);
+    MGL_AUX_CREATE_RENDER(blit, MTLPixelFormatBGRA8Unorm, p2);
+    if (p1 != p2) {
+        fprintf(stderr, "FAIL: aux render PSO cache miss (same key)\n");
         return 1;
     }
-    id<MTLLibrary> library =
-        (__bridge_transfer id<MTLLibrary>)libraryPtr;
+    MGL_AUX_CREATE_RENDER(blit, MTLPixelFormatRGBA8Unorm, p3);
+    if (p1 == p3) {
+        fprintf(stderr, "FAIL: aux render PSO variants collapsed\n");
+        return 1;
+    }
+    CFRelease(p1);
+    CFRelease(p2);
+    CFRelease(p3);
+
+    /* Compute PSO create + cache hit, plus variant split for msaa. */
+    const MGLAuxShaderAsset *cs = mglAuxShaderAssetFind("scaled_blit_cs");
+    void *cp1 = NULL, *cp2 = NULL, *mp0 = NULL, *mp1 = NULL;
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
+            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+            &cp1, message, sizeof(message)) != 0 || !cp1) {
+        fprintf(stderr, "FAIL: aux compute PSO create: %s\n",
+                message[0] ? message : "?");
+        return 1;
+    }
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            cs->data, cs->size, cs->hash, "mgl_scaled_blit_cs",
+            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 1u,
+            &cp2, message, sizeof(message)) != 0 || !cp2 || cp1 != cp2) {
+        fprintf(stderr, "FAIL: aux compute PSO cache miss (same key)\n");
+        return 1;
+    }
+    const MGLAuxShaderAsset *msaa =
+        mglAuxShaderAssetFind("msaa_integer_resolve");
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_uint",
+            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
+            &mp0, message, sizeof(message)) != 0 || !mp0) {
+        fprintf(stderr, "FAIL: msaa uint PSO create: %s\n",
+                message[0] ? message : "?");
+        return 1;
+    }
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_int",
+            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 1u,
+            &mp1, message, sizeof(message)) != 0 || !mp1 || mp0 == mp1) {
+        fprintf(stderr, "FAIL: msaa int PSO create/variant split\n");
+        return 1;
+    }
+    CFRelease(cp1);
+    CFRelease(cp2);
+    CFRelease(mp0);
+    CFRelease(mp1);
+
+    /* Fragment-less clear_rect: fsEntry NULL is a valid config. */
+    const MGLAuxShaderAsset *clear = mglAuxShaderAssetFind("clear_rect");
+    void *cr = NULL;
+    if (mglRenderCppGetOrCreateAuxRenderPipelineFromMetallib(
+            clear->data, clear->size, clear->hash,
+            "mgl_clear_rect_vs", NULL,
+            MGL_RENDER_CPP_AUX_RENDER_CLEAR_RECT, 0u,
+            MTLPixelFormatRGBA8Unorm, MTLPixelFormatDepth32Float, 0,
+            MTLColorWriteMaskNone, 0, 1u,
+            &cr, message, sizeof(message)) != 0 || !cr) {
+        fprintf(stderr, "FAIL: fragment-less clear_rect PSO create: %s\n",
+                message[0] ? message : "?");
+        return 1;
+    }
+    CFRelease(cr);
+
+    /* Function resolver for descriptor-assembled paths (safe fallback). */
+    const MGLAuxShaderAsset *safe = mglAuxShaderAssetFind("safe_fallback");
+    void *vs = NULL, *fs = NULL;
+    if (mglRenderCppCreateAuxFunctions(
+            safe->data, safe->size, safe->hash,
+            "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+            &vs, &fs, message, sizeof(message)) != 0 || !vs || !fs) {
+        fprintf(stderr, "FAIL: aux function resolver: %s\n",
+                message[0] ? message : "?");
+        return 1;
+    }
+    id<MTLFunction> vsFn = (__bridge_transfer id<MTLFunction>)vs;
+    id<MTLFunction> fsFn = (__bridge_transfer id<MTLFunction>)fs;
+    if (![vsFn.name isEqualToString:@"mgl_safe_fallback_vs"] ||
+        ![fsFn.name isEqualToString:@"mgl_safe_fallback_fs"]) {
+        fprintf(stderr, "FAIL: aux function names\n");
+        return 1;
+    }
+    void *vsOnly = NULL, *fsOnly = (void *)0x1;
+    if (mglRenderCppCreateAuxFunctions(
+            blit->data, blit->size, blit->hash,
+            "mgl_scaled_blit_vs", NULL,
+            &vsOnly, &fsOnly, message, sizeof(message)) != 0 ||
+        !vsOnly || fsOnly != NULL) {
+        fprintf(stderr, "FAIL: fragment-less aux function resolver\n");
+        return 1;
+    }
+    CFRelease(vsOnly);
+
+    /* Error paths: bad hash, unknown entry, empty row. */
+    void *bad = NULL;
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            cs->data, cs->size, cs->hash + 1, "mgl_scaled_blit_cs",
+            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            message, sizeof(message)) == 0 || bad != NULL ||
+        !strstr(message, "hash")) {
+        fprintf(stderr, "FAIL: bad aux hash accepted\n");
+        return 1;
+    }
+    bad = NULL;
+    message[0] = 0;
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            cs->data, cs->size, cs->hash, "mgl_no_such_kernel",
+            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            message, sizeof(message)) == 0 || bad != NULL) {
+        fprintf(stderr, "FAIL: unknown aux entry accepted\n");
+        return 1;
+    }
+    bad = NULL;
+    message[0] = 0;
+    if (mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            NULL, 0, 0, "mgl_scaled_blit_cs",
+            MGL_RENDER_CPP_AUX_COMPUTE_SCALED_BLIT, 0u, &bad,
+            message, sizeof(message)) == 0 || bad != NULL) {
+        fprintf(stderr, "FAIL: empty aux row accepted\n");
+        return 1;
+    }
+
+    printf("AUX_ASSETS_OK\n");
+    return 0;
+}
+
+static int verifyCompilerAndBinaryArchive(void) {
+    /* P3.3: no source compiler exists anymore.  The smoke now exercises the
+     * precompiled path end to end: embedded metallib bytes -> library ->
+     * functions -> render PSO (descriptor-assembled) -> compute PSO -> binary
+     * archive lifecycle. */
+    char message[1024] = {0};
+
+    const MGLAuxShaderAsset *safe =
+        mglAuxShaderAssetFind("safe_fallback");
+    if (!safe) {
+        fprintf(stderr, "FAIL: safe_fallback asset missing\n");
+        return 1;
+    }
     void *vertexPtr = NULL;
     void *fragmentPtr = NULL;
-    if (mglRenderCppCreateFunction(
-            (__bridge void *)library, "archiveVertex", NULL,
-            &vertexPtr, message, sizeof(message)) != 0 || !vertexPtr ||
-        mglRenderCppCreateFunction(
-            (__bridge void *)library, "archiveFragment", NULL,
-            &fragmentPtr, message, sizeof(message)) != 0 || !fragmentPtr) {
-        fprintf(stderr, "FAIL: Metal 4 function facade: %s\n",
+    if (mglRenderCppCreateAuxFunctions(
+            safe->data, safe->size, safe->hash,
+            "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+            &vertexPtr, &fragmentPtr,
+            message, sizeof(message)) != 0 || !vertexPtr || !fragmentPtr) {
+        fprintf(stderr, "FAIL: precompiled library function resolve: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
@@ -1046,52 +1244,44 @@ static int verifyCompilerAndBinaryArchive(void) {
         (__bridge_transfer id<MTLFunction>)vertexPtr;
     id<MTLFunction> fragment =
         (__bridge_transfer id<MTLFunction>)fragmentPtr;
-
-    MTLFunctionConstantValues *constantValues =
-        [[MTLFunctionConstantValues alloc] init];
-    uint32_t archiveValue = 37;
-    [constantValues setConstantValue:&archiveValue
-                                type:MTLDataTypeUInt
-                             atIndex:7];
-    void *kernelPtr = NULL;
-    if (mglRenderCppCreateFunction(
-            (__bridge void *)library, "archiveKernel",
-            (__bridge void *)constantValues, &kernelPtr,
-            message, sizeof(message)) != 0 || !kernelPtr) {
-        fprintf(stderr, "FAIL: function constants facade: %s\n",
-                message[0] ? message : "unknown");
-        return 1;
-    }
-    id<MTLFunction> kernel =
-        (__bridge_transfer id<MTLFunction>)kernelPtr;
-    if (![kernel.name isEqualToString:@"archiveKernel"]) {
-        fprintf(stderr, "FAIL: specialized function properties\n");
+    if (![vertex.name isEqualToString:@"mgl_safe_fallback_vs"] ||
+        ![fragment.name isEqualToString:@"mgl_safe_fallback_fs"]) {
+        fprintf(stderr, "FAIL: precompiled function names\n");
         return 1;
     }
 
-    void *classicLibraryPtr = NULL;
-    if (mglRenderCppCompileLibrary(
-            NULL, (__bridge void *)source, NULL,
-            "MGL Smoke Classic Library", &classicLibraryPtr,
-            message, sizeof(message)) != 0 || !classicLibraryPtr) {
-        fprintf(stderr, "FAIL: classic library compile facade: %s\n",
+    MTLRenderPipelineDescriptor *pipelineDesc =
+        [[MTLRenderPipelineDescriptor alloc] init];
+    pipelineDesc.vertexFunction = vertex;
+    pipelineDesc.fragmentFunction = fragment;
+    pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+    void *renderPipelinePtr = NULL;
+    if (mglRenderCppCreateRenderPipelineState(
+            (__bridge void *)pipelineDesc, &renderPipelinePtr,
+            message, sizeof(message)) != 0 || !renderPipelinePtr) {
+        fprintf(stderr, "FAIL: precompiled render PSO: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
-    id<MTLLibrary> classicLibrary =
-        (__bridge_transfer id<MTLLibrary>)classicLibraryPtr;
-    void *classicFunctionPtr = NULL;
-    if (mglRenderCppCreateFunction(
-            (__bridge void *)classicLibrary, "archiveVertex", NULL,
-            &classicFunctionPtr, message, sizeof(message)) != 0 ||
-        !classicFunctionPtr) {
-        fprintf(stderr, "FAIL: classic compiled function facade: %s\n",
+    id<MTLRenderPipelineState> renderPipeline =
+        (__bridge_transfer id<MTLRenderPipelineState>)renderPipelinePtr;
+
+    const MGLAuxShaderAsset *msaa =
+        mglAuxShaderAssetFind("msaa_integer_resolve");
+    void *computePipelinePtr = NULL;
+    if (!msaa ||
+        mglRenderCppGetOrCreateAuxComputePipelineFromMetallib(
+            msaa->data, msaa->size, msaa->hash, "mgl_msaa_resolve_uint",
+            MGL_RENDER_CPP_AUX_COMPUTE_MSAA_INTEGER_RESOLVE, 0u,
+            &computePipelinePtr,
+            message, sizeof(message)) != 0 || !computePipelinePtr) {
+        fprintf(stderr, "FAIL: precompiled compute PSO: %s\n",
                 message[0] ? message : "unknown");
         return 1;
     }
-    id<MTLFunction> classicFunction =
-        (__bridge_transfer id<MTLFunction>)classicFunctionPtr;
-    if (![classicFunction.name isEqualToString:@"archiveVertex"]) return 1;
+    id<MTLComputePipelineState> computePipeline =
+        (__bridge_transfer id<MTLComputePipelineState>)computePipelinePtr;
+    if (!renderPipeline || !computePipeline) return 1;
 
     MTLBinaryArchiveDescriptor *archiveDesc =
         [[MTLBinaryArchiveDescriptor alloc] init];
@@ -1105,31 +1295,6 @@ static int verifyCompilerAndBinaryArchive(void) {
     }
     id<MTLBinaryArchive> archive =
         (__bridge_transfer id<MTLBinaryArchive>)archivePtr;
-
-    MTLRenderPipelineDescriptor *pipelineDesc =
-        [[MTLRenderPipelineDescriptor alloc] init];
-    pipelineDesc.vertexFunction = vertex;
-    pipelineDesc.fragmentFunction = fragment;
-    pipelineDesc.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
-    void *renderPipelinePtr = NULL;
-    void *computePipelinePtr = NULL;
-    if (mglRenderCppCreateRenderPipelineState(
-            (__bridge void *)pipelineDesc, &renderPipelinePtr,
-            message, sizeof(message)) != 0 || !renderPipelinePtr ||
-        mglRenderCppCreateComputePipelineState(
-            (__bridge void *)kernel, &computePipelinePtr,
-            message, sizeof(message)) != 0 || !computePipelinePtr) {
-        fprintf(stderr, "FAIL: generic pipeline facade: %s\n",
-                message[0] ? message : "unknown");
-        if (renderPipelinePtr) CFRelease(renderPipelinePtr);
-        if (computePipelinePtr) CFRelease(computePipelinePtr);
-        return 1;
-    }
-    id<MTLRenderPipelineState> renderPipeline =
-        (__bridge_transfer id<MTLRenderPipelineState>)renderPipelinePtr;
-    id<MTLComputePipelineState> computePipeline =
-        (__bridge_transfer id<MTLComputePipelineState>)computePipelinePtr;
-    if (!renderPipeline || !computePipeline) return 1;
 
     if (mglRenderCppSetRenderPipelineBinaryArchive(
             (__bridge void *)pipelineDesc,
@@ -1168,25 +1333,15 @@ static int verifyCompilerAndBinaryArchive(void) {
         return 1;
     }
 
-    printf("COMPILER_ARCHIVE_OK\n");
+    printf("PRECOMPILED_PSO_OK\n");
     return 0;
 }
 
 static int verifyPipelineCacheOwner(id<MTLDevice> device) {
-    NSString *source =
-        @"#include <metal_stdlib>\n"
-         "using namespace metal;\n"
-         "vertex float4 cache_vs(uint vid [[vertex_id]]) {\n"
-         "  const float2 p[3] = {float2(-1,-1), float2(3,-1), float2(-1,3)};\n"
-         "  return float4(p[vid], 0, 1);\n"
-         "}\n"
-         "fragment float4 cache_fs() { return float4(1,0,0,1); }\n";
+    id<MTLLibrary> library = smokeLoadAssetLibrary(device, "scaled_blit");
     NSError *error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:source
-                                                  options:nil
-                                                    error:&error];
-    id<MTLFunction> vertex = [library newFunctionWithName:@"cache_vs"];
-    id<MTLFunction> fragment = [library newFunctionWithName:@"cache_fs"];
+    id<MTLFunction> vertex = [library newFunctionWithName:@"mgl_scaled_blit_vs"];
+    id<MTLFunction> fragment = [library newFunctionWithName:@"mgl_scaled_blit_fs"];
     MTLRenderPipelineDescriptor *descriptor =
         [MTLRenderPipelineDescriptor new];
     descriptor.vertexFunction = vertex;
@@ -2377,31 +2532,13 @@ static int verifyQueryUtilities(id<MTLDevice> device) {
 }
 
 static int verifyRawRenderAndBlitFacade(id<MTLDevice> device) {
-    NSString *source = @
-        "#include <metal_stdlib>\n"
-        "using namespace metal;\n"
-        "struct VSOut { float4 position [[position]]; float2 uv; };\n"
-        "vertex VSOut smokeVertex(uint vid [[vertex_id]], "
-        "constant float4& scale [[buffer(0)]]) {\n"
-        "  const float2 positions[4] = { float2(-1.0, -1.0), "
-        "float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };\n"
-        "  const float2 uvs[4] = { float2(0.0, 1.0), float2(1.0, 1.0), "
-        "float2(0.0, 0.0), float2(1.0, 0.0) };\n"
-        "  VSOut out; out.position = float4(positions[vid] * scale.xy, 0.0, 1.0); "
-        "out.uv = uvs[vid]; return out;\n"
-        "}\n"
-        "fragment float4 smokeFragment(VSOut in [[stage_in]], "
-        "constant float4& tint [[buffer(0)]], "
-        "texture2d<float> sourceTexture [[texture(0)]], "
-        "sampler sourceSampler [[sampler(0)]]) {\n"
-        "  return sourceTexture.sample(sourceSampler, in.uv) * tint;\n"
-        "}\n";
+    /* Precompiled fixture shaders: scaled_blit vs/fs cover a fullscreen
+     * quad and sample texture(0) with buffer(0) params — the encoders and
+     * readbacks below only require that combination. */
+    id<MTLLibrary> library = smokeLoadAssetLibrary(device, "scaled_blit");
     NSError *error = nil;
-    id<MTLLibrary> library = [device newLibraryWithSource:source
-                                                  options:nil
-                                                    error:&error];
-    id<MTLFunction> vertex = [library newFunctionWithName:@"smokeVertex"];
-    id<MTLFunction> fragment = [library newFunctionWithName:@"smokeFragment"];
+    id<MTLFunction> vertex = [library newFunctionWithName:@"mgl_scaled_blit_vs"];
+    id<MTLFunction> fragment = [library newFunctionWithName:@"mgl_scaled_blit_fs"];
     MTLRenderPipelineDescriptor *pipelineDesc =
         [MTLRenderPipelineDescriptor new];
     pipelineDesc.vertexFunction = vertex;
@@ -2604,6 +2741,7 @@ int main(void) {
         if (verifyVertexConversions() != 0) return 1;
         if (verifySamplerConversion() != 0) return 1;
         if (verifyAIRProgramClassification() != 0) return 1;
+        if (verifyAuxShaderAssets() != 0) return 1;
         if (verifyResourceCreation() != 0) return 1;
         if (verifyTextureTransferFacade() != 0) return 1;
         if (verifyNoCopyBufferFacade() != 0) return 1;

@@ -4,10 +4,34 @@
 #import "MGLRenderer_Private.h"
 #import "MGLRenderer+RenderPass_Private.h"
 #include "mgl_air_loader.h"     /* METALCPP: AIR metallib 加载（Phase 1） */
+#include "mgl_aux_assets.h"
 #include "mgl_render_cpp_objc.h" /* METALCPP: C ABI + ObjC state adapter */
 #include "mgl_shader_abi.h"
 
 #import <objc/message.h>
+
+/* Gate-off path: load a precompiled aux metallib with the plain Metal
+ * load-from-data API (safe fallback branch; never runtime compilation). */
+static id<MTLLibrary> mglRenderPassLoadAuxLibrary(id<MTLDevice> device,
+                                                  const char *assetName,
+                                                  NSError **error)
+{
+    const MGLAuxShaderAsset *asset = mglAuxShaderAssetFind(assetName);
+    if (!asset || !asset->data || asset->size == 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"MGLRenderPassAuxAsset"
+                                         code:1
+                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                    [NSString stringWithFormat:
+                                                        @"aux shader asset '%s' missing",
+                                                     assetName]}];
+        }
+        return nil;
+    }
+    dispatch_data_t data = dispatch_data_create(
+        asset->data, asset->size, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+    return [device newLibraryWithData:data error:error];
+}
 
 static BOOL mglRenderPassUsesMetalCpp(void)
 {
@@ -604,12 +628,12 @@ static id<MTLRenderPipelineState> mglCreateAIRRenderPipelineCpp(
         !mglEnvFlagEnabledDefaultOn("MGL_USE_METALCPP") || !mglRenderCppGetDevice()) {
         return nil;
     }
-    Spirv *vsSpirv = &vertexProgram->spirv[vertexStage];
-    Spirv *fsSpirv = fragmentProgram ?
-        &fragmentProgram->spirv[_FRAGMENT_SHADER] : NULL;
+    MGLShaderModule *vsModule = &vertexProgram->modules[vertexStage];
+    MGLShaderModule *fsModule = fragmentProgram ?
+        &fragmentProgram->modules[_FRAGMENT_SHADER] : NULL;
     if ((!vertexLibraryOverride &&
-         (!vsSpirv->metallib_bytes || !vsSpirv->mtl_library)) ||
-        (fragmentProgram && (!fsSpirv->metallib_bytes || !fsSpirv->mtl_library))) {
+         (!vsModule->metallib_bytes || !vsModule->mtl_library)) ||
+        (fragmentProgram && (!fsModule->metallib_bytes || !fsModule->mtl_library))) {
         return nil;
     }
 
@@ -724,8 +748,8 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     _geometry.passthroughFunction = nil;
     _geometry.passthroughProgramInstanceId = 0u;
 
-    SpirvResourceList *outputs =
-        &program->spirv_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_GEOMETRY_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
     NSUInteger vec4Stride = recordStride / 16u;
     NSMutableString *source = [NSMutableString stringWithString:
@@ -734,7 +758,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
          "    vec4 records[];\n"
          "} mgl_gs_output;\n"];
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
+        MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
         /* GL 4.6 §11.1.3.4: only stream 0 is rasterized; outputs on
          * streams > 0 are transform-feedback only and must not appear
@@ -775,7 +799,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
              "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.w);\n"];
      }
      for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-         SpirvResource *output = &outputs->list[i];
+         MGLShaderResource *output = &outputs->list[i];
          if (output->is_per_patch) continue;
          if (output->stream > 0) continue;
          const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
@@ -841,8 +865,8 @@ output->name, (unsigned)i,
     _tessellation.tessPassthroughFunction = nil;
     _tessellation.tessPassthroughProgramInstanceId = 0u;
 
-    SpirvResourceList *outputs =
-        &program->spirv_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
+    MGLShaderResourceList *outputs =
+        &program->shader_resources_list[_TESS_EVALUATION_SHADER][_STAGE_OUTPUT_RES];
     NSUInteger recordStride = mglAIRPerVertexStrideForResources(outputs);
     NSUInteger vec4Stride = recordStride / 16u;
     NSMutableString *source = [NSMutableString stringWithString:
@@ -851,7 +875,7 @@ output->name, (unsigned)i,
          "    vec4 records[];\n"
          "} mgl_tes_output;\n"];
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
+        MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
         const char *type = mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
@@ -871,7 +895,7 @@ output->name, (unsigned)i,
          "    gl_PointSize = mgl_point_size.x;\n",
          (unsigned long)vec4Stride];
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
+        MGLShaderResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
         if (!swizzle || !output->name) return NO;
@@ -1575,8 +1599,8 @@ output->name, (unsigned)i,
                     continue;
                 }
                 if (ptr->gs_route == MGL_GS_ROUTE_COMPUTE &&
-                    ptr->spirv[i].metallib_bytes &&
-                    ptr->spirv[i].metallib_size > 0u) {
+                    ptr->modules[i].metallib_bytes &&
+                    ptr->modules[i].metallib_size > 0u) {
                     /* The AIR geometry stage is a compute kernel.  Load it
                      * below like TCS/CS; the draw helper owns dispatch and
                      * expanded-output rendering. */
@@ -1591,38 +1615,38 @@ output->name, (unsigned)i,
                 return false;
                 }
             }
-            if (ptr->spirv[i].metallib_bytes && ptr->spirv[i].metallib_size > 0) {
+            if (ptr->modules[i].metallib_bytes && ptr->modules[i].metallib_size > 0) {
                 /* AIR path: the stage was compiled by the self-hosted
                  * frontend into a metallib blob; load it directly. */
-                if (ptr->spirv[i].mtl_library == NULL || ptr->spirv[i].mtl_function == NULL) {
-                    mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_function);
-                    mglSafeReleaseMetalObj((void **)&ptr->spirv[i].mtl_library);
+                if (ptr->modules[i].mtl_library == NULL || ptr->modules[i].mtl_function == NULL) {
+                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_function);
+                    mglSafeReleaseMetalObj((void **)&ptr->modules[i].mtl_library);
                     id<MTLLibrary> library = nil;
                     id<MTLFunction> function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
-                            _device, ptr->spirv[i].metallib_bytes,
-                            ptr->spirv[i].metallib_size, &library, &function,
+                            _device, ptr->modules[i].metallib_bytes,
+                            ptr->modules[i].metallib_size, &library, &function,
                             loadError, sizeof loadError)) {
                         NSLog(@"MGL ERROR: Failed to load AIR metallib program=%u stage=%d: %s",
                               (unsigned)ptr->name, i,
                               loadError[0] ? loadError : "?");
                         return false;
                     }
-                    ptr->spirv[i].mtl_library = (void *)CFBridgingRetain(library);
-                    ptr->spirv[i].mtl_function = (void *)CFBridgingRetain(function);
+                    ptr->modules[i].mtl_library = (void *)CFBridgingRetain(library);
+                    ptr->modules[i].mtl_function = (void *)CFBridgingRetain(function);
                 }
                 if (i == _VERTEX_SHADER &&
-                    ptr->spirv[i].metallib_tess_capture_bytes &&
-                    (!ptr->spirv[i].mtl_tess_capture_library ||
-                     !ptr->spirv[i].mtl_tess_capture_function)) {
+                    ptr->modules[i].metallib_tess_capture_bytes &&
+                    (!ptr->modules[i].mtl_tess_capture_library ||
+                     !ptr->modules[i].mtl_tess_capture_function)) {
                     id<MTLLibrary> library = nil;
                     id<MTLFunction> function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
                             _device,
-                            ptr->spirv[i].metallib_tess_capture_bytes,
-                            ptr->spirv[i].metallib_tess_capture_size,
+                            ptr->modules[i].metallib_tess_capture_bytes,
+                            ptr->modules[i].metallib_tess_capture_size,
                             &library, &function, loadError,
                             sizeof loadError)) {
                         NSLog(@"MGL ERROR: Failed to load AIR tess VS capture program=%u: %s",
@@ -1630,22 +1654,22 @@ output->name, (unsigned)i,
                               loadError[0] ? loadError : "?");
                         return false;
                     }
-                    ptr->spirv[i].mtl_tess_capture_library =
+                    ptr->modules[i].mtl_tess_capture_library =
                         (void *)CFBridgingRetain(library);
-                    ptr->spirv[i].mtl_tess_capture_function =
+                    ptr->modules[i].mtl_tess_capture_function =
                         (void *)CFBridgingRetain(function);
                 }
                 if (i == _VERTEX_SHADER &&
-                    ptr->spirv[i].metallib_cull_capture_bytes &&
-                    (!ptr->spirv[i].mtl_cull_capture_library ||
-                     !ptr->spirv[i].mtl_cull_capture_function)) {
+                    ptr->modules[i].metallib_cull_capture_bytes &&
+                    (!ptr->modules[i].mtl_cull_capture_library ||
+                     !ptr->modules[i].mtl_cull_capture_function)) {
                     id<MTLLibrary> library = nil;
                     id<MTLFunction> function = nil;
                     char loadError[256] = {0};
                     if (!mglLoadAIRMainFunction(
                             _device,
-                            ptr->spirv[i].metallib_cull_capture_bytes,
-                            ptr->spirv[i].metallib_cull_capture_size,
+                            ptr->modules[i].metallib_cull_capture_bytes,
+                            ptr->modules[i].metallib_cull_capture_size,
                             &library, &function, loadError,
                             sizeof loadError)) {
                         NSLog(@"MGL ERROR: Failed to load AIR cull-distance "
@@ -1654,9 +1678,9 @@ output->name, (unsigned)i,
                               loadError[0] ? loadError : "?");
                         return false;
                     }
-                    ptr->spirv[i].mtl_cull_capture_library =
+                    ptr->modules[i].mtl_cull_capture_library =
                         (void *)CFBridgingRetain(library);
-                    ptr->spirv[i].mtl_cull_capture_function =
+                    ptr->modules[i].mtl_cull_capture_function =
                         (void *)CFBridgingRetain(function);
                 }
             } else {
@@ -4081,14 +4105,14 @@ output->name, (unsigned)i,
             : tessCompute
             ? (__bridge void *)_tessellation.tessPassthroughFunction
             : cullDistanceCapture
-            ? vertexProgram->spirv[_VERTEX_SHADER].mtl_cull_capture_function
+            ? vertexProgram->modules[_VERTEX_SHADER].mtl_cull_capture_function
             : tessVertexCapture
-            ? vertexProgram->spirv[_VERTEX_SHADER].mtl_tess_capture_function
-            : vertexProgram->spirv[vertexStage].mtl_function;
+            ? vertexProgram->modules[_VERTEX_SHADER].mtl_tess_capture_function
+            : vertexProgram->modules[vertexStage].mtl_function;
 
 	    id<MTLFunction> vertexFunction = (__bridge id<MTLFunction>)vertexFunctionPtr;
 	    id<MTLFunction> fragmentFunction = fragmentProgram
-	        ? (__bridge id<MTLFunction>)fragmentProgram->spirv[_FRAGMENT_SHADER].mtl_function
+	        ? (__bridge id<MTLFunction>)fragmentProgram->modules[_FRAGMENT_SHADER].mtl_function
 	        : nil;
     if (kMGLVerbosePipelineLogs) {
         NSLog(@"MGL PIPELINE DESC vs=%@ fs=%@",
@@ -4193,13 +4217,13 @@ output->name, (unsigned)i,
      * match the vertex function's return type:
      *   - vertex returns void  (no stage outputs)  -> rasterizationEnabled = NO
      *   - vertex returns struct (has stage outputs) -> rasterizationEnabled = YES
-     * SPIRV-Cross generates a void return type when the vertex shader has
+     * The AIR backend generates a void return type when the vertex shader has
      * no varying outputs (e.g. SSBO-only vertex shaders), and a struct
      * return type when it has varying outputs. */
     if (tessVertexCapture || cullDistanceCapture) {
         pipelineStateDescriptor.rasterizationEnabled = NO;
     } else if (rasterizerDiscard) {
-        GLuint vsOutputCount = vertexProgram->spirv_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
+        GLuint vsOutputCount = vertexProgram->shader_resources_list[vertexStage][_STAGE_OUTPUT_RES].count;
         /* Native AIR TES always returns its post-tessellation output record,
          * including the built-in position.  Built-ins are intentionally not
          * present in the reflected user stage-output list, so a zero count
@@ -5899,6 +5923,17 @@ stencil_format_ok:;
             NSLog(@"MGL INFO: Using synchronous pipeline creation to prevent virtualization crashes");
         }
 
+        /* Test hook (air_pipeline_safe_fallback regression): force the
+         * pipeline-creation exception so the safe-fallback branch below is
+         * exercised deterministically.  Reads the env var uncached (getenv)
+         * so an in-process regression can toggle it between draws. */
+        if (mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE")) {
+            NSLog(@"MGL TEST: forcing safe-fallback pipeline path");
+            @throw [NSException exceptionWithName:@"MGLForcedSafeFallback"
+                                           reason:@"synthetic pipeline creation failure (test hook)"
+                                         userInfo:nil];
+        }
+
         // PROPER FIX: Disable async compilation that causes completion queue crashes
         if (kMGLVerbosePipelineLogs &&
         MGLCapabilityHasBug(&_capability, MGL_BUG_ASYNC_SHADER_COMPILE_IN_VM)) {
@@ -5919,10 +5954,10 @@ stencil_format_ok:;
                        ? (__bridge void *)_tessellation.tessPassthroughLibrary
                        : (__bridge void *)_geometry.passthroughLibrary)
                     : _tessellation.cullDistanceCaptureActive
-                    ? currentVertexProgram->spirv[_VERTEX_SHADER]
+                    ? currentVertexProgram->modules[_VERTEX_SHADER]
                           .mtl_cull_capture_library
                     : _tessellation.tessVertexCaptureActive
-                    ? currentVertexProgram->spirv[_VERTEX_SHADER]
+                    ? currentVertexProgram->modules[_VERTEX_SHADER]
                           .mtl_tess_capture_library
                     : NULL,
                 cppError, sizeof cppError);
@@ -6122,8 +6157,10 @@ stencil_format_ok:;
         NSLog(@"MGL CRITICAL: Exception name: %@", [exception name]);
         NSLog(@"MGL CRITICAL: Exception reason: %@", [exception reason]);
 
+        BOOL forceSafeFallback =
+            mgl_env_flag_enabled("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
         if (!MGLCapabilityHasBug(&_capability,
-        MGL_BUG_MSL_PIPELINE_REJECTION)) {
+        MGL_BUG_MSL_PIPELINE_REJECTION) && !forceSafeFallback) {
             [self invalidateCurrentPipelineStateForReason:@"pipeline creation exception"];
             _gpuRecovery.pipelineRetryAfter = CFAbsoluteTimeGetCurrent() + 0.25;
             state->dirty_bits &= ~(DIRTY_PROGRAM | DIRTY_VAO | DIRTY_FBO);
@@ -6151,39 +6188,67 @@ stencil_format_ok:;
             mglNormalizePipelineDepthStencilFormats(safeDescriptor, "safe-fallback");
             mglEnableIndirectCommandBuffersForPipeline(safeDescriptor);
 
-            // Use hardcoded minimal shaders that are guaranteed to work in virtualization
-            NSString *safeVertexShader = @"#include <metal_stdlib>\nusing namespace metal;\nvertex float4 main(uint vid [[vertex_id]]) { return float4(0.0, 0.0, 0.0, 1.0); }";
-            NSString *safeFragmentShader = @"#include <metal_stdlib>\nusing namespace metal;\nfragment float4 main() { return float4(0.0, 0.0, 0.0, 1.0); }";
-
-            NSError *libraryError;
-            id<MTLLibrary> vertLibrary = [self newMetalLibraryWithSource:safeVertexShader
-            options:nil
-            label:@"MGL safe vertex fallback"
-            error:&libraryError];
-            id<MTLLibrary> fragLibrary = [self newMetalLibraryWithSource:safeFragmentShader
-            options:nil
-            label:@"MGL safe fragment fallback"
-            error:&libraryError];
-
-            if (vertLibrary && fragLibrary) {
-                safeDescriptor.vertexFunction =
-                    mglRenderPassCreateFunction(
-                        vertLibrary, @"main", NULL, 0);
-                safeDescriptor.fragmentFunction =
-                    mglRenderPassCreateFunction(
-                        fragLibrary, @"main", NULL, 0);
-
-                [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
-                compiledPSO = mglRenderPassCreatePipeline(
-                    _device, safeDescriptor, &error);
-                if (compiledPSO) {
-                    mglMetalCountCreate(MGLMetalKindPSO);
-                    successfulDescriptor = safeDescriptor;
-                    builtColor0Format = safeDescriptor.colorAttachments[0].pixelFormat;
-                    builtDepthFormat = safeDescriptor.depthAttachmentPixelFormat;
-                    builtStencilFormat = safeDescriptor.stencilAttachmentPixelFormat;
-                    NSLog(@"MGL INFO: VIRTUALIZED AGX - Safe fallback pipeline created successfully");
+            // Precompiled safe shaders (mgl_aux_assets table).  No runtime
+            // source compilation; failures log the program/format context and
+            // never retry with the source compiler.
+            if (mglRenderPassUsesMetalCpp()) {
+                const MGLAuxShaderAsset *safe =
+                    mglAuxShaderAssetFind("safe_fallback");
+                void *safeVS = NULL;
+                void *safeFS = NULL;
+                char libError[512] = {0};
+                if (!safe || !safe->data || safe->size == 0 ||
+                    mglRenderCppCreateAuxFunctions(
+                        safe->data, safe->size, safe->hash,
+                        "mgl_safe_fallback_vs", "mgl_safe_fallback_fs",
+                        &safeVS, &safeFS,
+                        libError, sizeof(libError)) != 0 || !safeVS) {
+                    NSLog(@"MGL CRITICAL: safe fallback asset unavailable "
+                          @"program=%u color0=%lu hash=0x%016llx error=%s",
+                          (unsigned)currentProgramName,
+                          (unsigned long)safeColor0Format,
+                          safe ? (unsigned long long)safe->hash : 0ull,
+                          libError[0] ? libError : "asset missing");
+                } else {
+                    safeDescriptor.vertexFunction =
+                        (__bridge_transfer id<MTLFunction>)safeVS;
+                    safeDescriptor.fragmentFunction =
+                        safeFS ? (__bridge_transfer id<MTLFunction>)safeFS : nil;
+                    [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
+                    compiledPSO = mglRenderPassCreatePipeline(
+                        _device, safeDescriptor, &error);
                 }
+            } else {
+                NSError *libraryError = nil;
+                id<MTLLibrary> safeLibrary =
+                    mglRenderPassLoadAuxLibrary(_device, "safe_fallback",
+                                                &libraryError);
+                if (!safeLibrary) {
+                    NSLog(@"MGL CRITICAL: safe fallback asset load failed "
+                          @"program=%u color0=%lu error=%@",
+                          (unsigned)currentProgramName,
+                          (unsigned long)safeColor0Format, libraryError);
+                } else {
+                    safeDescriptor.vertexFunction =
+                        mglRenderPassCreateFunction(
+                            safeLibrary, @"mgl_safe_fallback_vs", NULL, 0);
+                    safeDescriptor.fragmentFunction =
+                        mglRenderPassCreateFunction(
+                            safeLibrary, @"mgl_safe_fallback_fs", NULL, 0);
+                    if (safeDescriptor.vertexFunction && safeDescriptor.fragmentFunction) {
+                        [_pipelineCache applyBinaryArchiveToDescriptor:safeDescriptor];
+                        compiledPSO = mglRenderPassCreatePipeline(
+                            _device, safeDescriptor, &error);
+                    }
+                }
+            }
+            if (compiledPSO) {
+                mglMetalCountCreate(MGLMetalKindPSO);
+                successfulDescriptor = safeDescriptor;
+                builtColor0Format = safeDescriptor.colorAttachments[0].pixelFormat;
+                builtDepthFormat = safeDescriptor.depthAttachmentPixelFormat;
+                builtStencilFormat = safeDescriptor.stencilAttachmentPixelFormat;
+                NSLog(@"MGL INFO: VIRTUALIZED AGX - Safe fallback pipeline created successfully");
             }
         } @catch (NSException *fallbackException) {
             NSLog(@"MGL CRITICAL: VIRTUALIZED AGX - Even fallback pipeline failed: %@", fallbackException);
@@ -6288,8 +6353,8 @@ stencil_format_ok:;
 
 
 /* Bind spvBufferSizeConstants for runtime-sized SSBO arrays in vertex/fragment
- * stages.  SPIRV-Cross emits code that reads uint32 byte-sizes from a
- * constant uint* buffer at MGL_BUFFER_SIZE_BUFFER_INDEX when a shader uses
+ * stages.  The AIR backend emits code that reads uint32 byte-sizes from a
+ * constant uint* buffer at MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX when a shader uses
  * .length() on unsized SSBO arrays.  The render encoder has separate buffer
  * tables for vertex and fragment, so we bind a size buffer for each stage
  * that needs it. */
@@ -6300,7 +6365,7 @@ stencil_format_ok:;
     }
 
     Program *vertexProgram = mglResolveProgramForStageFromState(ctx, _VERTEX_SHADER);
-    if (vertexProgram && vertexProgram->spirv[_VERTEX_SHADER].needs_buffer_size_buffer)
+    if (vertexProgram && vertexProgram->modules[_VERTEX_SHADER].needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         memset(sizeConstants, 0, sizeof(sizeConstants));
@@ -6313,7 +6378,7 @@ stencil_format_ok:;
             NSUInteger metalSlot = map->has_metal_binding
                 ? (NSUInteger)map->metal_binding_index
                 : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
+            if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
                 continue;
             GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
@@ -6336,16 +6401,16 @@ stencil_format_ok:;
             mglRenderPassSetBuffer(
                 _renderPassManager.state->currentRenderEncoder,
                 _vertexSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_VERTEX,
-                MGL_BUFFER_SIZE_BUFFER_INDEX);
+                MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundVertexBuffer:_vertexSizeBuffer
                                        offset:0
-                                      atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+                                      atIndex:MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
             MGL_PERF_INC(g_mglSetVertexBufferCallsSinceSwap);
         }
     }
 
     Program *fragmentProgram = mglResolveProgramForStageFromState(ctx, _FRAGMENT_SHADER);
-    if (fragmentProgram && fragmentProgram->spirv[_FRAGMENT_SHADER].needs_buffer_size_buffer)
+    if (fragmentProgram && fragmentProgram->modules[_FRAGMENT_SHADER].needs_runtime_array_size_buffer)
     {
         uint32_t sizeConstants[31];
         memset(sizeConstants, 0, sizeof(sizeConstants));
@@ -6358,7 +6423,7 @@ stencil_format_ok:;
             NSUInteger metalSlot = map->has_metal_binding
                 ? (NSUInteger)map->metal_binding_index
                 : (NSUInteger)map->buffer_base_index;
-            if (metalSlot >= 31 || metalSlot == MGL_BUFFER_SIZE_BUFFER_INDEX)
+            if (metalSlot >= 31 || metalSlot == MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX)
                 continue;
             GLsizeiptr visibleSize = mglBufferMapVisibleSize(map);
             sizeConstants[metalSlot] = (uint32_t)visibleSize;
@@ -6377,10 +6442,10 @@ stencil_format_ok:;
             mglRenderPassSetBuffer(
                 _renderPassManager.state->currentRenderEncoder,
                 _fragmentSizeBuffer, 0, MGL_RENDER_CPP_BINDING_STAGE_FRAGMENT,
-                MGL_BUFFER_SIZE_BUFFER_INDEX);
+                MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX);
             [self recordLastBoundFragmentBuffer:_fragmentSizeBuffer
                                          offset:0
-                                        atIndex:MGL_BUFFER_SIZE_BUFFER_INDEX];
+                                        atIndex:MGL_RUNTIME_ARRAY_SIZE_BUFFER_INDEX];
             MGL_PERF_INC(g_mglSetFragmentBufferCallsSinceSwap);
         }
     }

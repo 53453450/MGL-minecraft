@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 53
+#define MAX_TESTS 54
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -7101,6 +7101,148 @@ cleanup:
     return result;
 }
 
+/* P3.2: safe-fallback pipeline built from the precompiled safe_fallback
+ * metallib asset — no runtime source compilation in the emergency path.
+ *
+ * Phase A (flag unset): the AIR final pipeline renders the green triangle;
+ * the safe assets must not leak into the normal path.
+ * Phase B (MGL_FORCE_SAFE_FALLBACK_PIPELINE=1): pipeline creation throws a
+ * synthetic exception before the real PSO build; the virtualized-AGX safe
+ * branch must resolve functions from the embedded asset and create a usable
+ * PSO.  Its shaders output a degenerate center triangle, so the probe keeps
+ * the clear color and the draw completes without GL error.
+ * Phase C (fresh program, flag unset): green again — the forced fallback left
+ * no fallout in the shared pipeline cache.
+ */
+static int test_air_pipeline_safe_fallback(unsigned char *pixels,
+                                           const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint programA = 0u, programB = 0u, programC = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    programA = link_program(vs, fs);
+    programB = link_program(vs, fs);
+    programC = link_program(vs, fs);
+    if (!programA || !programB || !programC) goto cleanup;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    static const float tri[6] = { -0.2f, -0.2f, 0.4f, -0.2f, -0.2f, 0.4f };
+    glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+
+    /* Probe inside the triangle (centroid) and outside it (clear color). */
+    const int px[2][2] = {
+        { (int)((0.0f + 1.0f) * 0.5f * REG_W),
+          (int)((0.0f + 1.0f) * 0.5f * REG_H) },
+        { (int)((-0.7f + 1.0f) * 0.5f * REG_W),
+          (int)((0.7f + 1.0f) * 0.5f * REG_H) },
+    };
+
+    /* Phase A: normal AIR pipeline renders the green triangle. */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glUseProgram(programA);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *c =
+            &pixels[(px[0][1] * REG_W + px[0][0]) * 4];
+        if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase A probe not green "
+                    "(%u,%u,%u)\n", c[0], c[1], c[2]);
+            goto cleanup;
+        }
+    }
+
+    /* Phase B: forced pipeline-creation exception -> safe fallback PSO from
+     * the precompiled asset.  Draw must complete with no GL error, and the
+     * (degenerate) safe shaders must have replaced the green program. */
+    clear_color(0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    setenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE", "1", 1);
+    glUseProgram(programB);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    unsetenv("MGL_FORCE_SAFE_FALLBACK_PIPELINE");
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *c =
+            &pixels[(px[0][1] * REG_W + px[0][0]) * 4];
+        if (c[0] > 20u || c[1] > 20u || c[2] < 220u) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase B probe not clear "
+                    "blue (%u,%u,%u) — safe fallback did not take over\n",
+                    c[0], c[1], c[2]);
+            goto cleanup;
+        }
+        GLenum err = GL_NO_ERROR;
+        while ((err = glGetError()) != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase B GL error 0x%x\n",
+                    err);
+            goto cleanup;
+        }
+    }
+
+    /* Phase C: fresh program draws green again (cache/pipeline state clean). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(programC);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        const unsigned char *c =
+            &pixels[(px[0][1] * REG_W + px[0][0]) * 4];
+        if (c[0] > 20u || c[1] < 220u || c[2] > 20u) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase C probe not green "
+                    "(%u,%u,%u)\n", c[0], c[1], c[2]);
+            goto cleanup;
+        }
+        const unsigned char *outside =
+            &pixels[(px[1][1] * REG_W + px[1][0]) * 4];
+        if (outside[0] > 20u || outside[1] > 20u || outside[2] > 20u) {
+            fprintf(stderr,
+                    "air_pipeline_safe_fallback: phase C outside probe "
+                    "not black (%u,%u,%u)\n",
+                    outside[0], outside[1], outside[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (programA) glDeleteProgram(programA);
+    if (programB) glDeleteProgram(programB);
+    if (programC) glDeleteProgram(programC);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -7165,6 +7307,8 @@ static const TestCase TESTS[] = {
                     test_air_geometry_multi_stream_xfb),
     SELF_CHECK_TEST("air_geometry_layer_viewport",
                     test_air_geometry_layer_viewport),
+    SELF_CHECK_TEST("air_pipeline_safe_fallback",
+                    test_air_pipeline_safe_fallback),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),

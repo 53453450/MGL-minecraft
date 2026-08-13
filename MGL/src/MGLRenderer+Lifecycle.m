@@ -301,8 +301,6 @@ void* CppCreateMGLRendererAndBindToContext (void *glm_ctx)
         }
     }
     _pipelineCache.device = _device;
-    [_pipelineCache initializeCompilerIfAvailableUnlessDisabled:
-        mglEnvFlagEnabled("MGL_DISABLE_MTL4_COMPILER")];
 
     /* Initialize AGX Capability Layer (centralized device detection +
      * capability queries + driver bug markers).  Replaces scattered
