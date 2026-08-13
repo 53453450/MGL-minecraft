@@ -183,6 +183,7 @@ static void push_resource(SpirvResourceList *list, const MGLIRSymbol *s,
     r.gl_array_size = mglAirGLArraySizeFromIR(type);
     r.is_array = (type->kind == MGLIR_TYPE_ARRAY) ? GL_TRUE : GL_FALSE;
     r.is_per_patch = (s->qualifiers & MGL_AST_Q_PATCH) ? GL_TRUE : GL_FALSE;
+    r.stream = (s->stream >= 0) ? s->stream : 0;
     r.num_array_dims = (type->kind == MGLIR_TYPE_ARRAY) ? 1u : 0u;
     r.uniform_location = -1;
     r.sampler_unit = 0;

@@ -188,6 +188,10 @@ typedef struct SpirvResource_t {
     GLuint  texture_data_kind;
     /* True for tessellation patch variables (SpvDecorationPatch). */
     GLboolean is_per_patch;
+    /* GS output stream index (GL 4.6 §11.1.3.4); 0 for non-GS stages or
+     * stream 0 outputs.  Streams > 0 are transform-feedback only and must
+     * be excluded from the rasterizing passthrough vertex function. */
+    GLint   stream;
     /* UBO member uniforms (only valid for _UNIFORM_BUFFER_RES). */
     SpirvUBOMember       *ubo_members;
     GLuint                ubo_member_count;
@@ -241,6 +245,13 @@ typedef struct Program_t {
     GLenum geometry_output_type;
     GLuint geometry_vertices_out;
     GLuint geometry_invocations;
+    /* GS multi-stream XFB layout (GL 4.6 §11.1.3.4): stream s captures to
+     * transform-feedback buffer s with a compact position+varyings record
+     * of geometry_stream_xfb_stride[s] bytes (stream 0 keeps the full
+     * stage-out record at runtime). */
+    GLuint geometry_stream_count;           /* streams used: 1..4 */
+    GLuint geometry_stream_varying_count[4];
+    GLuint geometry_stream_xfb_stride[4];
     /* TES execution mode reflection: layout(...) in; */
     GLenum tess_gen_mode;        /* GL_TRIANGLES / GL_QUADS / GL_ISOLINES */
     GLenum tess_gen_spacing;     /* GL_EQUAL / GL_FRACTIONAL_EVEN / GL_FRACTIONAL_ODD */

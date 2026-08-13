@@ -308,6 +308,31 @@ static void mglRenderPassSetPersistentAttachment(
         attachment.slice = slice;
         attachment.depthPlane = depthPlane;
     }
+    if (commandState->renderPassDescriptor) {
+        /* Layered rendering: cap the number of arrays the VS
+         * [[render_target_array_index]] output may select.  Keep it at most
+         * the largest arrayLength among currently attached color textures, so
+         * switching between layered and plain targets stays valid. */
+        NSUInteger maxArrayLength = 1u;
+        MTLRenderPassColorAttachmentDescriptorArray *colors =
+            commandState->renderPassDescriptor.colorAttachments;
+        for (NSUInteger i = 0u; i < MAX_COLOR_ATTACHMENTS; i++) {
+            id<MTLTexture> t = colors[i].texture;
+            if (t && t.arrayLength > maxArrayLength) {
+                maxArrayLength = t.arrayLength;
+            }
+        }
+        commandState->renderPassDescriptor.renderTargetArrayLength =
+            maxArrayLength;
+        /* Layered pass: the layer comes from the VS
+         * [[render_target_array_index]] output, so a non-zero attachment
+         * slice would be ignored (or dropped) by Metal.  GL's
+         * glFramebufferTextureLayer slice is honored via the array index
+         * instead, keeping the descriptor slice at 0. */
+        if (attachment && maxArrayLength > 0u) {
+            attachment.slice = 0u;
+        }
+    }
     if (mglRenderPassUsesMetalCpp() && commandState->renderPassStateOwner) {
         mglRenderCppSetRenderPassStateAttachmentTexture(
             commandState->renderPassStateOwner, attachmentKind,
@@ -687,6 +712,7 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
 }
 
 - (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
+                                     outputPrimitive:(MTLPrimitiveType)outputPrimitive
 {
     if (!program) return NO;
     if (_geometry.passthroughLibrary && _geometry.passthroughFunction &&
@@ -710,6 +736,11 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
         SpirvResource *output = &outputs->list[i];
         if (output->is_per_patch) continue;
+        /* GL 4.6 §11.1.3.4: only stream 0 is rasterized; outputs on
+         * streams > 0 are transform-feedback only and must not appear
+         * in the passthrough vertex function (they share location
+         * values with stream 0 outputs and would cause conflicts). */
+        if (output->stream > 0) continue;
         const char *type = mglGeometryPassthroughType(output->gl_type);
         if (!type || !output->name) {
             NSLog(@"MGL GS ERROR: unsupported passthrough varying type 0x%x",
@@ -722,26 +753,46 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     [source appendFormat:
         @"void main() {\n"
          "    int mgl_base = gl_VertexID * %lu;\n"
-         "    gl_Position = mgl_gs_output.records[mgl_base];\n"
-         "    vec4 mgl_point_size = "
-         "mgl_gs_output.records[mgl_base + 1];\n"
-         "    gl_PointSize = mgl_point_size.x;\n",
+         "    gl_Position = mgl_gs_output.records[mgl_base];\n",
          (unsigned long)vec4Stride];
-    for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
-        SpirvResource *output = &outputs->list[i];
-        if (output->is_per_patch) continue;
-        const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
-        if (!swizzle || !output->name) return NO;
-        [source appendFormat:
-            @"    vec4 mgl_slot_%u = "
-             "mgl_gs_output.records[mgl_base + %u];\n"
-             "    %s = mgl_slot_%u%s;\n",
-            (unsigned)i,
-            (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
-            output->name, (unsigned)i,
-            swizzle];
+    if (outputPrimitive == MTLPrimitiveTypePoint) {
+        [source appendString:
+            @"    vec4 mgl_point_size = "
+             "mgl_gs_output.records[mgl_base + 1];\n"
+             "    gl_PointSize = mgl_point_size.x;\n"];
+    }
+    Shader *mgl_gs = program->shader_slots[_GEOMETRY_SHADER];
+    if (mgl_gs && mgl_gs->src &&
+        (strstr(mgl_gs->src, "gl_Layer") ||
+         strstr(mgl_gs->src, "gl_ViewportIndex"))) {
+        /* Per-vertex layer / viewport-index words (offsets 40/44) ride in
+         * record vec4 index 2 (z/w); Metal applies them per primitive from
+         * its last vertex, matching GL 4.6 §11.1.3.5/§11.1.3.6. */
+        [source appendString:
+            @"    vec4 mgl_layer_vp = "
+             "mgl_gs_output.records[mgl_base + 2];\n"
+             "    gl_Layer = floatBitsToInt(mgl_layer_vp.z);\n"
+             "    gl_ViewportIndex = floatBitsToInt(mgl_layer_vp.w);\n"];
+     }
+     for (GLuint i = 0; outputs->list && i < outputs->count; i++) {
+         SpirvResource *output = &outputs->list[i];
+         if (output->is_per_patch) continue;
+         if (output->stream > 0) continue;
+         const char *swizzle = mglGeometryPassthroughSwizzle(output->gl_type);
+         if (!swizzle || !output->name) return NO;
+         [source appendFormat:
+             @"    vec4 mgl_slot_%u = "
+              "mgl_gs_output.records[mgl_base + %u];\n"
+              "    %s = mgl_slot_%u%s;\n",
+             (unsigned)i,
+             (unsigned)(MGL_AIR_PER_VERTEX_STRIDE / 16u + output->location),
+output->name, (unsigned)i,
+             swizzle];
     }
     [source appendString:@"}\n"];
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG passthrough source:\n%@", source);
+    }
     unsigned char *bytes = NULL;
     size_t size = 0u;
     char errorText[512] = {0};
@@ -2266,8 +2317,56 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
                 }
             }
 
-            [self setViewportIfNeeded:(MTLViewport){vx, metalVy, vw, vh,
-                                       state->var.depth_range[0], state->var.depth_range[1]}];
+            /* gl_ViewportIndex: when glViewportIndexedf* set any slot
+             * beyond 0, bind the whole 16-entry viewport array (Metal
+             * selects per vertex via viewport_array_index).  Slot 0 uses
+             * the resolved/clamped rectangle computed above. */
+            if (state->viewport_array_set) {
+                double viewports[MGL_MAX_VIEWPORTS * 6];
+                viewports[0] = vx;
+                viewports[1] = metalVy;
+                viewports[2] = vw;
+                viewports[3] = vh;
+                viewports[4] = state->var.depth_range[0];
+                viewports[5] = state->var.depth_range[1];
+                for (int vi = 1; vi < MGL_MAX_VIEWPORTS; vi++) {
+                    GLdouble avx = state->viewport_array[vi][0];
+                    GLdouble avy = state->viewport_array[vi][1];
+                    GLdouble avw = state->viewport_array[vi][2];
+                    GLdouble avh = state->viewport_array[vi][3];
+                    GLdouble metalAvy = (GLdouble)passHeight - (avy + avh);
+                    if (metalAvy < 0.0) metalAvy = 0.0;
+                    viewports[vi * 6 + 0] = avx;
+                    viewports[vi * 6 + 1] = metalAvy;
+                    viewports[vi * 6 + 2] = avw;
+                    viewports[vi * 6 + 3] = avh;
+                    viewports[vi * 6 + 4] = state->var.depth_range[0];
+                    viewports[vi * 6 + 5] = state->var.depth_range[1];
+                }
+                mglRenderCppBindingSetViewports(
+                    _bindingStateOwner,
+                    (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                    viewports, (uint64_t)MGL_MAX_VIEWPORTS);
+            } else {
+                /* A shader may still write gl_ViewportIndex (e.g. gl_Layer
+                 * alone binds viewport index to the same value per GL 4.6
+                 * §11.1.3.5).  Keep every slot of the array valid even when
+                 * glViewportIndexedf was never called: unset slots mirror
+                 * slot 0 so such draws rasterize instead of being clipped. */
+                double viewports[MGL_MAX_VIEWPORTS * 6];
+                for (int vi = 0; vi < MGL_MAX_VIEWPORTS; vi++) {
+                    viewports[vi * 6 + 0] = vx;
+                    viewports[vi * 6 + 1] = metalVy;
+                    viewports[vi * 6 + 2] = vw;
+                    viewports[vi * 6 + 3] = vh;
+                    viewports[vi * 6 + 4] = state->var.depth_range[0];
+                    viewports[vi * 6 + 5] = state->var.depth_range[1];
+                }
+                mglRenderCppBindingSetViewports(
+                    _bindingStateOwner,
+                    (__bridge void *)_renderPassManager.state->currentRenderEncoder,
+                    viewports, (uint64_t)MGL_MAX_VIEWPORTS);
+            }
         } else {
             if (traceEncoderState) {
                 NSLog(@"MGL WARNING: updateCurrentRenderEncoder could not resolve pass size; using raw GL viewport");
@@ -4015,6 +4114,49 @@ static const char *mglGeometryPassthroughSwizzle(GLenum type)
     pipelineStateDescriptor.label = @"GLSL Pipeline";
     pipelineStateDescriptor.vertexFunction = vertexFunction;
     pipelineStateDescriptor.fragmentFunction = fragmentFunction;
+    /* Metal requires a concrete inputPrimitiveTopology when the vertex
+     * function writes [[render_target_array_index]] / [[viewport_array_index]].
+     * Only set it when the active VS or GS actually writes gl_Layer /
+     * gl_ViewportIndex; leaving it unspecified lets Metal auto-detect for
+     * ordinary pipelines (e.g. VS writing gl_PointSize with triangle
+     * draws would otherwise be rejected). */
+    {
+        BOOL needsLayerTopology = NO;
+        Shader *vsSlot = vertexProgram ? vertexProgram->shader_slots[_VERTEX_SHADER] : NULL;
+        if (vsSlot && vsSlot->src &&
+            (strstr(vsSlot->src, "gl_Layer") ||
+             strstr(vsSlot->src, "gl_ViewportIndex"))) {
+            needsLayerTopology = YES;
+        }
+        if (!needsLayerTopology && vertexProgram) {
+            Shader *gsSlot = vertexProgram->shader_slots[_GEOMETRY_SHADER];
+            if (gsSlot && gsSlot->src &&
+                (strstr(gsSlot->src, "gl_Layer") ||
+                 strstr(gsSlot->src, "gl_ViewportIndex"))) {
+                needsLayerTopology = YES;
+            }
+        }
+        if (needsLayerTopology) {
+            switch (_lastDrawPrimitiveMode) {
+                case GL_POINTS:
+                    pipelineStateDescriptor.inputPrimitiveTopology =
+                        MTLPrimitiveTopologyClassPoint;
+                    break;
+                case GL_LINES:
+                case GL_LINE_STRIP:
+                case GL_LINE_LOOP:
+                case GL_LINES_ADJACENCY:
+                case GL_LINE_STRIP_ADJACENCY:
+                    pipelineStateDescriptor.inputPrimitiveTopology =
+                        MTLPrimitiveTopologyClassLine;
+                    break;
+                default:
+                    pipelineStateDescriptor.inputPrimitiveTopology =
+                        MTLPrimitiveTopologyClassTriangle;
+                    break;
+            }
+        }
+    }
     if (nativeTES) {
         switch (vertexProgram->tess_gen_spacing) {
             case GL_FRACTIONAL_EVEN:

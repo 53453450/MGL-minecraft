@@ -1113,6 +1113,10 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (!program || !geometryShader) {
         return NO;
     }
+    if (getenv("MGL_GS_DIAG")) {
+        NSLog(@"MGL GS DIAG enter program=%u mode=0x%x count=%d first=%d",
+              (unsigned)program->name, (unsigned)mode, (int)count, (int)first);
+    }
     /* Keep the old narrow passthrough optimization.  It does not need a
      * compute expansion and remains a normal VS->FS draw. */
     const char *geometrySource = geometryShader->src;
@@ -1189,7 +1193,8 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
 
     self->ctx = drawCtx;
-    if (![self ensureAIRGeometryPassthroughFunctionForProgram:program]) {
+    if (![self ensureAIRGeometryPassthroughFunctionForProgram:program
+                                              outputPrimitive:outputPrimitive]) {
         mglDispatchError(drawCtx, label ? label : "geometryDraw",
                          GL_OUT_OF_MEMORY);
         return YES;
@@ -1390,12 +1395,17 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
 
     MGLStageBindingCopyBackList stageCopyBacks = {0};
     /* GS transform feedback (P1, mgl_air_gs_abi.h §5): when GL feedback
-     * is active the kernel appends each work item's visible expanded
-     * vertices to the slot-31 stream through the atomic meta cursor
-     * (slot 32).  The GL store is bound directly only when the maximum
-     * possible capture (every work item fully visible) fits; otherwise
-     * the kernel writes into a full-size temporary and only the prefix
-     * containing complete primitives is copied back. */
+     * is active the kernel appends output vertices to the slot-31 stream
+     * through the per-stream atomic meta cursors (slot 27).  Stream 0
+     * keeps the single-stream path: the GL store is bound directly only
+     * when the maximum possible capture fits, otherwise the kernel writes
+     * into a full-size temporary and only the prefix containing complete
+     * primitives is copied back.  Multi-stream programs share one physical
+     * slot-31 buffer split into per-stream segments (capture_base), one
+     * segment per used stream, copied back per stream afterward; the GL
+     * transform-feedback buffer i receives stream i (documented MGL
+     * mapping, stream s has a compact position+varyings record of
+     * geometry_stream_xfb_stride[s] bytes). */
     TransformFeedback *xfbState = MGL_STATE(drawCtx)->transform_feedback;
     const bool xfbActive = xfbState && xfbState->active && !xfbState->paused;
     id<MTLBuffer> xfbTemporary = nil;
@@ -1404,50 +1414,128 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     NSUInteger xfbDestinationOffset = 0u;
     NSUInteger xfbRemainingVisibleBytes = 0u;
     NSUInteger xfbMaxCaptureBytes = 0u;
+    const uint32_t gsStreamCount =
+        program->geometry_stream_count > 0u ? program->geometry_stream_count
+                                            : 1u;
+    const bool multiStream = gsStreamCount > 1u;
+    NSUInteger streamPhysBase[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger streamCapBytes[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger streamDstOffset[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    NSUInteger streamRemaining[MGL_AIR_GS_MAX_STREAMS] = {0u};
+    id<MTLBuffer> streamDstMTL[MGL_AIR_GS_MAX_STREAMS] = {nil};
+    NSUInteger streamStride[MGL_AIR_GS_MAX_STREAMS] = {0u};
     if (xfbActive) {
-        xfbMaxCaptureBytes =
-            (NSUInteger)workItemCount * expandedVertices * outputStride;
-        BufferBaseTarget *xfbSlot =
-            &MGL_STATE(drawCtx)->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
-        if (xfbSlot->buf) {
-            if (!xfbSlot->buf->data.mtl_data) {
-                [self bindMTLBuffer:xfbSlot->buf];
-            }
-            id<MTLBuffer> xfbMTL =
-                (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
-            if (xfbMTL) {
-                BufferMap xfbMap = {0};
-                xfbMap.buf = xfbSlot->buf;
-                xfbMap.offset = xfbSlot->offset;
-                xfbMap.size = xfbSlot->size;
-                NSUInteger visibleBytes = mglBufferMapVisibleBackingBytes(
-                    &xfbMap, (size_t)xfbMTL.length);
+        streamStride[0] = outputStride;
+        for (uint32_t s = 1u; s < gsStreamCount; s++) {
+            streamStride[s] = program->geometry_stream_xfb_stride[s];
+        }
+        if (multiStream) {
+            NSUInteger physTotal = 0u;
+            for (uint32_t s = 0u; s < gsStreamCount; s++) {
+                BufferBaseTarget *slot = &MGL_STATE(drawCtx)
+                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[s];
+                if (!slot->buf) {
+                    streamStride[s] = 0u;
+                    continue;
+                }
+                if (!slot->buf->data.mtl_data) {
+                    [self bindMTLBuffer:slot->buf];
+                }
+                id<MTLBuffer> mtl = (__bridge id<MTLBuffer>)(
+                    slot->buf->data.mtl_data);
+                if (!mtl) continue;
+                BufferMap map = {0};
+                map.buf = slot->buf;
+                map.offset = slot->offset;
+                map.size = slot->size;
+                NSUInteger visible = mglBufferMapVisibleBackingBytes(
+                    &map, (size_t)mtl.length);
                 NSUInteger sessionOffset = 0u;
-                if (xfbState->buffer_write_offsets[0] <=
+                if (xfbState->buffer_write_offsets[s] <=
                     (GLuint64)NSUIntegerMax) {
                     sessionOffset =
-                        (NSUInteger)xfbState->buffer_write_offsets[0];
+                        (NSUInteger)xfbState->buffer_write_offsets[s];
                 }
-                if (sessionOffset <= visibleBytes && xfbSlot->offset >= 0 &&
-                    (NSUInteger)xfbSlot->offset <=
+                if (sessionOffset > visible || slot->offset < 0 ||
+                    (NSUInteger)slot->offset >
                         NSUIntegerMax - sessionOffset) {
-                    xfbRemainingVisibleBytes = visibleBytes - sessionOffset;
-                    xfbDestinationOffset =
-                        (NSUInteger)xfbSlot->offset + sessionOffset;
-                    if (xfbMaxCaptureBytes <= xfbRemainingVisibleBytes) {
-                        xfbCaptureBuffer = xfbMTL;
-                        xfbDestinationMTL = xfbMTL;
-                        xfbSlot->buf->ever_written = GL_TRUE;
-                    } else {
-                        xfbTemporary = mglDrawSupportCreateBuffer(
-                            _device, xfbMaxCaptureBytes,
-                            MTLResourceStorageModeShared);
-                        if (xfbTemporary) {
-                            memset(xfbTemporary.contents, 0,
-                                   xfbMaxCaptureBytes);
-                            xfbCaptureBuffer = xfbTemporary;
+                    continue;
+                }
+                streamRemaining[s] = visible - sessionOffset;
+                streamDstOffset[s] = (NSUInteger)slot->offset + sessionOffset;
+                streamDstMTL[s] = mtl;
+                NSUInteger maxCap = (s == 0u)
+                    ? (NSUInteger)workItemCount * expandedVertices *
+                          streamStride[0]
+                    : (NSUInteger)workItemCount *
+                          (program->geometry_vertices_out > 0u
+                               ? program->geometry_vertices_out : 1u) *
+                          streamStride[s];
+                streamCapBytes[s] = MIN(maxCap, streamRemaining[s]);
+                if (streamCapBytes[s] > (NSUInteger)UINT32_MAX) {
+                    streamCapBytes[s] = (NSUInteger)UINT32_MAX;
+                }
+                streamPhysBase[s] = physTotal;
+                physTotal += streamCapBytes[s];
+            }
+            if (physTotal > 0u) {
+                xfbTemporary = mglDrawSupportCreateBuffer(
+                    _device, physTotal, MTLResourceStorageModeShared);
+                if (xfbTemporary) {
+                    memset(xfbTemporary.contents, 0, physTotal);
+                    xfbCaptureBuffer = xfbTemporary;
+                }
+            }
+        } else {
+            xfbMaxCaptureBytes =
+                (NSUInteger)workItemCount * expandedVertices * outputStride;
+            BufferBaseTarget *xfbSlot = &MGL_STATE(drawCtx)
+                ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[0];
+            if (xfbSlot->buf) {
+                if (!xfbSlot->buf->data.mtl_data) {
+                    [self bindMTLBuffer:xfbSlot->buf];
+                }
+                id<MTLBuffer> xfbMTL =
+                    (__bridge id<MTLBuffer>)(xfbSlot->buf->data.mtl_data);
+                if (xfbMTL) {
+                    BufferMap xfbMap = {0};
+                    xfbMap.buf = xfbSlot->buf;
+                    xfbMap.offset = xfbSlot->offset;
+                    xfbMap.size = xfbSlot->size;
+                    NSUInteger visibleBytes = mglBufferMapVisibleBackingBytes(
+                        &xfbMap, (size_t)xfbMTL.length);
+                    NSUInteger sessionOffset = 0u;
+                    if (xfbState->buffer_write_offsets[0] <=
+                        (GLuint64)NSUIntegerMax) {
+                        sessionOffset =
+                            (NSUInteger)xfbState->buffer_write_offsets[0];
+                    }
+                    if (sessionOffset <= visibleBytes && xfbSlot->offset >= 0 &&
+                        (NSUInteger)xfbSlot->offset <=
+                            NSUIntegerMax - sessionOffset) {
+                        xfbRemainingVisibleBytes = visibleBytes - sessionOffset;
+                        xfbDestinationOffset =
+                            (NSUInteger)xfbSlot->offset + sessionOffset;
+                        if (xfbMaxCaptureBytes <= xfbRemainingVisibleBytes) {
+                            xfbCaptureBuffer = xfbMTL;
                             xfbDestinationMTL = xfbMTL;
+                            xfbSlot->buf->ever_written = GL_TRUE;
+                        } else {
+                            xfbTemporary = mglDrawSupportCreateBuffer(
+                                _device, xfbMaxCaptureBytes,
+                                MTLResourceStorageModeShared);
+                            if (xfbTemporary) {
+                                memset(xfbTemporary.contents, 0,
+                                       xfbMaxCaptureBytes);
+                                xfbCaptureBuffer = xfbTemporary;
+                                xfbDestinationMTL = xfbMTL;
+                            }
                         }
+                        streamDstMTL[0] = xfbDestinationMTL;
+                        streamDstOffset[0] = xfbDestinationOffset;
+                        streamRemaining[0] = xfbRemainingVisibleBytes;
+                        streamCapBytes[0] = MIN(xfbMaxCaptureBytes,
+                                                xfbRemainingVisibleBytes);
                     }
                 }
             }
@@ -1455,9 +1543,15 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     MGLAIRGSXFBMeta xfbMeta;
     memset(&xfbMeta, 0, sizeof(xfbMeta));
-    xfbMeta.stride = xfbCaptureBuffer ? (uint32_t)outputStride : 0u;
-    xfbMeta.capacity_bytes = xfbCaptureBuffer
-        ? (uint32_t)MIN(xfbMaxCaptureBytes, (NSUInteger)UINT32_MAX) : 0u;
+    for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+        xfbMeta.stream[s].stride = (xfbCaptureBuffer && streamStride[s] > 0u &&
+                                    streamCapBytes[s] > 0u)
+            ? (uint32_t)streamStride[s] : 0u;
+        xfbMeta.stream[s].capacity_bytes =
+            (uint32_t)MIN(streamCapBytes[s], (NSUInteger)UINT32_MAX);
+        xfbMeta.stream[s].capture_base =
+            (uint32_t)MIN(streamPhysBase[s], (NSUInteger)UINT32_MAX);
+    }
     id<MTLBuffer> xfbMetaBuf = mglDrawSupportCreateBufferWithBytes(
         _device, &xfbMeta, sizeof(xfbMeta), MTLResourceStorageModeShared);
     if (!xfbMetaBuf) {
@@ -1520,9 +1614,23 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     }
     _geometry.expansionActive = YES;
     _geometry.program = program;
+    /* The passthrough pipeline rasterizes the GS output primitive class, so
+     * drive inputPrimitiveTopology from the output mode, not the GL input
+     * mode (e.g. points in -> triangle_strip out). */
+    switch (outputPrimitive) {
+        case MTLPrimitiveTypePoint:
+            _lastDrawPrimitiveMode = GL_POINTS;
+            break;
+        case MTLPrimitiveTypeLine:
+            _lastDrawPrimitiveMode = GL_LINES;
+            break;
+        default:
+            _lastDrawPrimitiveMode = GL_TRIANGLES;
+            break;
+    }
     drawCtx->state.dirty_bits = DIRTY_ALL;
 
-    const GLuint64 queryGenerated =
+    GLuint64 queryGenerated =
         outputPrimitive == MTLPrimitiveTypePoint
             ? (GLuint64)workItemCount * expandedVertices
             : (GLuint64)workItemCount * expandedVertices /
@@ -1534,49 +1642,102 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     if (xfbActive && xfbMetaBuf && xfbMetaBuf.contents) {
         /* The stage synchronization above made the atomic counters CPU
          * visible; the written counter counts exactly the bytes the
-         * kernel stored, so culled primitives are excluded. */
+         * kernel stored, so culled primitives are excluded.
+         *
+         * Multi-stream (GL 4.6 §11.1.3.4): each stream's segment lives at
+         * streamPhysBase[s] in the temporary; copy each back to its GL XFB
+         * destination, rounded down to a whole-primitive prefix so partial
+         * records don't corrupt the GL-visible store.  Streams 1..3 are
+         * XFB-only and don't contribute to PRIMITIVES_GENERATED /
+         * TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN (stream 0 primitives only,
+         * GL 4.6 §13.2.4). */
         const MGLAIRGSXFBMeta *meta =
             (const MGLAIRGSXFBMeta *)xfbMetaBuf.contents;
-        NSUInteger writtenBytes = (NSUInteger)meta->written;
-        if (xfbTemporary && xfbDestinationMTL && writtenBytes > 0u) {
-            /* Temporary capture: copy back only the prefix containing
-             * complete primitives that fits the GL store. */
-            const NSUInteger primitiveBytes = (NSUInteger)vpp * outputStride;
-            NSUInteger copyBytes = primitiveBytes > 0u
-                ? (writtenBytes / primitiveBytes) * primitiveBytes : 0u;
-            if (xfbRemainingVisibleBytes < copyBytes) {
-                copyBytes = xfbRemainingVisibleBytes > primitiveBytes
-                    ? (xfbRemainingVisibleBytes / primitiveBytes) *
-                          primitiveBytes
-                    : 0u;
-            }
-            if (copyBytes > 0u) {
-                id<MTLBlitCommandEncoder> xfbBlit =
-                    mglDrawSupportCreateBlitEncoder(
-                        _renderPassManager.state->currentCommandBuffer);
-                if (!xfbBlit) {
-                    _geometry.expansionActive = NO;
-                    _geometry.program = NULL;
-                    drawCtx->state.dirty_bits = DIRTY_ALL;
-                    return YES;
+        NSUInteger writtenBytesStream0 = (NSUInteger)meta->stream[0].written;
+        if (xfbTemporary) {
+            /* Slow path (single- or multi-stream): the kernel captured into
+             * a temporary; copy each stream's segment back to its GL XFB
+             * buffer.  The fast path (direct bind, no temporary) skips this
+             * and only advances the write offset below. */
+            id<MTLBlitCommandEncoder> xfbBlit = nil;
+            for (uint32_t s = 0u; s < gsStreamCount; s++) {
+                if (!streamDstMTL[s] || streamStride[s] == 0u) continue;
+                NSUInteger w = (NSUInteger)meta->stream[s].written;
+                if (w == 0u) continue;
+                NSUInteger pbytes = (s == 0u)
+                    ? (NSUInteger)vpp * outputStride
+                    : streamStride[s];  /* streams > 0 are points-only (vpp=1) */
+                NSUInteger copyBytes = pbytes > 0u
+                    ? (w / pbytes) * pbytes : 0u;
+                if (streamRemaining[s] < copyBytes) {
+                    copyBytes = streamRemaining[s] > pbytes
+                        ? (streamRemaining[s] / pbytes) * pbytes
+                        : 0u;
                 }
-                mglDrawSupportBlitCopyBuffer(xfbBlit, xfbTemporary, 0u,
-                                             xfbDestinationMTL,
-                                             xfbDestinationOffset, copyBytes);
-                mglDrawSupportEndBlitEncoder(xfbBlit);
+                if (copyBytes == 0u) continue;
+                if (!xfbBlit) {
+                    xfbBlit = mglDrawSupportCreateBlitEncoder(
+                        _renderPassManager.state->currentCommandBuffer);
+                    if (!xfbBlit) {
+                        _geometry.expansionActive = NO;
+                        _geometry.program = NULL;
+                        drawCtx->state.dirty_bits = DIRTY_ALL;
+                        return YES;
+                    }
+                }
+                mglDrawSupportBlitCopyBuffer(xfbBlit, xfbTemporary,
+                                             streamPhysBase[s],
+                                             streamDstMTL[s],
+                                             streamDstOffset[s], copyBytes);
+                BufferBaseTarget *slot = &MGL_STATE(drawCtx)
+                    ->buffer_base[_TRANSFORM_FEEDBACK_BUFFER].buffers[s];
+                if (slot->buf) slot->buf->ever_written = GL_TRUE;
+                const GLuint64 currentOffset =
+                    xfbState->buffer_write_offsets[s];
+                xfbState->buffer_write_offsets[s] =
+                    (GLuint64)copyBytes > UINT64_MAX - currentOffset
+                        ? UINT64_MAX
+                        : currentOffset + (GLuint64)copyBytes;
+                if (s == 0u) writtenBytesStream0 = copyBytes;
             }
-            writtenBytes = copyBytes;
-        }
-        if (writtenBytes > 0u) {
+            if (xfbBlit) mglDrawSupportEndBlitEncoder(xfbBlit);
+        } else if (writtenBytesStream0 > 0u) {
+            /* Fast path (single-stream direct bind): the kernel wrote
+             * straight into the GL XFB buffer; just advance the offset. */
             const GLuint64 currentOffset =
                 xfbState->buffer_write_offsets[0];
             xfbState->buffer_write_offsets[0] =
-                (GLuint64)writtenBytes > UINT64_MAX - currentOffset
+                (GLuint64)writtenBytesStream0 > UINT64_MAX - currentOffset
                     ? UINT64_MAX
-                    : currentOffset + (GLuint64)writtenBytes;
+                    : currentOffset + (GLuint64)writtenBytesStream0;
         }
         queryWritten = (outputStride > 0u && vpp > 0u)
-            ? (GLuint64)writtenBytes / ((GLuint64)outputStride * vpp) : 0u;
+            ? (GLuint64)writtenBytesStream0 /
+                  ((GLuint64)outputStride * vpp) : 0u;
+        /* Multi-stream (GL 4.6 §13.2.4.2): TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN
+         * counts primitives written to ALL transform feedback buffers, so
+         * add streams 1..3's written primitives.  Each stream > 0 is
+         * points-only (vpp=1) with streamStride[s] bytes per primitive. */
+        if (multiStream) {
+            for (uint32_t s = 1u; s < gsStreamCount; s++) {
+                if (streamStride[s] == 0u) continue;
+                GLuint64 sw = (GLuint64)meta->stream[s].written;
+                queryWritten += sw / (GLuint64)streamStride[s];
+            }
+        }
+    }
+    /* Multi-stream (GL 4.6 §13.2.4.1): PRIMITIVES_GENERATED counts only
+     * stream 0 primitives (emitted to the rasterizer).  The static
+     * estimate above includes all streams' expanded vertices; replace
+     * it with the actual stream 0 visible count from the counts buffer. */
+    if (multiStream && counts && counts.contents) {
+        const uint32_t *cw = (const uint32_t *)counts.contents;
+        GLuint64 stream0Visible = 0u;
+        for (GLuint w = 0u; w < workItemCount; w++) {
+            stream0Visible += (GLuint64)cw[
+                w * MGL_AIR_GS_COUNTS_RECORD_WORDS + 0];
+        }
+        queryGenerated = (vpp > 0u) ? stream0Visible / vpp : 0u;
     }
     if (xfbActive && MGL_STATE(drawCtx)->caps.rasterizer_discard) {
         /* GL_RASTERIZER_DISCARD: no pixels by definition; the compute
@@ -1594,6 +1755,13 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
         !_renderPassManager.state->currentRenderEncoder ||
         [self currentDrawRasterizationIsEmpty] ||
         [self currentDrawModeIsFullyCulled:gsOutputMode]) {
+        if (getenv("MGL_GS_DIAG")) {
+            NSLog(@"MGL GS DIAG raster-skip: pgl=%d enc=%d empty=%d cull=%d",
+                  [self processGLState:true] ? 1 : 0,
+                  _renderPassManager.state->currentRenderEncoder ? 1 : 0,
+                  [self currentDrawRasterizationIsEmpty] ? 1 : 0,
+                  [self currentDrawModeIsFullyCulled:gsOutputMode] ? 1 : 0);
+        }
         if (xfbActive) {
             _currentCBHasWork = YES;
             mglRecordActivePrimitiveQueryDraw(drawCtx, queryGenerated,
@@ -1608,6 +1776,28 @@ static GLuint64 mglNativeTessPrimitiveCount(id<MTLBuffer> canonical,
     [self applyPolygonOffsetForDrawMode:gsOutputMode];
     id<MTLRenderCommandEncoder> encoder =
         _renderPassManager.state->currentRenderEncoder;
+    if (getenv("MGL_GS_DIAG")) {
+        const uint32_t *cw = (const uint32_t *)counts.contents;
+        const float *ow = (const float *)output.contents;
+        NSLog(@"MGL GS DIAG draw loop: workItemCount=%u outputStride=%lu "
+              "recordsPerPrimitive=%lu outputPrimitive=%d",
+              (unsigned)workItemCount, (unsigned long)outputStride,
+              (unsigned long)recordsPerPrimitive, (int)outputPrimitive);
+        for (GLuint p = 0u; p < workItemCount && p < 4u; p++) {
+            NSUInteger off = ((NSUInteger)p * recordsPerPrimitive +
+                              MGL_AIR_GS_HEADER_RECORDS) * outputStride;
+            const float *pos = (const float *)(
+                (const uint8_t *)output.contents + off);
+            NSLog(@"MGL GS DIAG prim=%u counts(vertex=%u inst=%u baseV=%u "
+                  "baseI=%u) pos[0]=(%g,%g,%g,%g)",
+                  (unsigned)p, cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 0],
+                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 1],
+                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 2],
+                  cw[p * MGL_AIR_GS_COUNTS_RECORD_WORDS + 3],
+                  pos[0], pos[1], pos[2], pos[3]);
+        }
+        (void)ow;
+    }
     for (GLuint primitive = 0u; primitive < workItemCount; primitive++) {
         NSUInteger offset =
             ((NSUInteger)primitive * recordsPerPrimitive +

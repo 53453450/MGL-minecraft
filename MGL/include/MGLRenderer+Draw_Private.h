@@ -410,7 +410,8 @@ typedef struct {
                                                   baseInstance:(GLuint)baseInstance
                                                      maxIndex:(uint32_t)maxIndex
                                                      outOffset:(NSUInteger *)outOffset;
-- (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program;
+- (BOOL)ensureAIRGeometryPassthroughFunctionForProgram:(Program *)program
+                                      outputPrimitive:(MTLPrimitiveType)outputPrimitive;
 - (BOOL)ensureAIRTessEvalPassthroughFunctionForProgram:(Program *)program;
 - (bool)bindBuffersToComputeEncoder:(id<MTLComputeCommandEncoder>)encoder
                                stage:(int)stage

@@ -646,6 +646,12 @@ int mglRenderCppBindingSetViewport(void *binding_state,
                                   double height,
                                   double znear,
                                   double zfar);
+/* Array viewport binding (gl_ViewportIndex): viewports carries count
+ * interleaved {x, y, w, h, znear, zfar} tuples, count <= 16. */
+int mglRenderCppBindingSetViewports(void *binding_state,
+                                    void *render_encoder,
+                                    const double *viewports,
+                                    uint64_t count);
 int mglRenderCppBindingSetScissor(void *binding_state,
                                  void *render_encoder,
                                  uint64_t x,

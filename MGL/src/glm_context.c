@@ -473,6 +473,10 @@ GLMContext createGLMContext(GLenum format, GLenum type,
             STATE(scissor_box_array[i][1]) = 0;
             STATE(scissor_box_array[i][2]) = vpW;
             STATE(scissor_box_array[i][3]) = vpH;
+        }
+        STATE(viewport_array_set) = GL_FALSE;
+        for (int i = 0; i < MGL_MAX_VIEWPORTS; i++)
+        {
             STATE(depth_range_array[i][0]) = 0.0;
             STATE(depth_range_array[i][1]) = 1.0;
         }

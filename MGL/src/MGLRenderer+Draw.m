@@ -133,6 +133,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawArrays: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     METAL_LOCK();
     [self mtlDrawArraysLocked:ctx mode:mode first:first count:count];
     METAL_UNLOCK();
@@ -140,6 +142,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawArraysLocked: (GLMContext) ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     self->ctx = ctx;
 
     static uint64_t s_drawArraysCallCount = 0;
@@ -666,6 +670,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElements: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     METAL_LOCK();
     [self mtlDrawElementsLocked:glm_ctx mode:mode count:count type:type indices:indices];
     METAL_UNLOCK();
@@ -673,6 +679,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsLocked: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     ctx = glm_ctx;
 
     static uint64_t s_drawElementsCallCount = 0;
@@ -1900,6 +1908,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawRangeElements: (GLMContext) glm_ctx mode:(GLenum) mode start:(GLuint) start end:(GLuint) end count: (GLsizei) count type: (GLenum) type indices:(const void *)indices
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
     (void)start;
@@ -2084,6 +2094,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawArraysInstanced: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
@@ -2205,6 +2217,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsInstanced: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -2395,6 +2409,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type: (GLenum) type indices:(const void *)indices basevertex:(GLint) basevertex
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -2578,6 +2594,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawRangeElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode start: (GLuint) start end: (GLuint) end count:(GLsizei) count type: (GLenum) type indices:(const void *)indices basevertex:(GLint) basevertex
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
     (void)start;
@@ -2763,6 +2781,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsInstancedBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count:(GLsizei) count type: (GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -2950,6 +2970,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawArraysIndirect: (GLMContext) glm_ctx mode:(GLenum) mode indirect: (const void *) indirect
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
 
     mglTraceLog("DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p program=%u",
@@ -3167,6 +3189,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsIndirect: (GLMContext) glm_ctx mode:(GLenum) mode type:(GLenum) type indirect: (const void *) indirect
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -3469,6 +3493,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawArraysInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode first: (GLint) first count: (GLsizei) count instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
 
     if ([self handleTessellationPatchDrawIfNeeded:glm_ctx
@@ -3591,6 +3617,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlDrawElementsInstancedBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode  count: (GLsizei) count type:(GLenum) type indices:(const void *)indices instancecount:(GLsizei) instancecount baseinstance:(GLuint) baseinstance
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -3783,6 +3811,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 -(void) mtlDrawElementsInstancedBaseVertexBaseInstance: (GLMContext) glm_ctx mode:(GLenum) mode count: (GLsizei) count type:(GLenum) type indices:(const void *)indices
                                                         instancecount:(GLsizei) instancecount basevertex:(GLint) basevertex baseinstance:(GLuint) baseinstance
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -3974,6 +4004,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlMultiDrawArrays: (GLMContext)glm_ctx mode:(GLenum) mode first:(const GLint *)first count:(const GLsizei *)count drawcount:(GLsizei) drawcount
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
 
     if (mode == GL_PATCHES) {
@@ -4146,6 +4178,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlMultiDrawElements: (GLMContext)glm_ctx mode:(GLenum) mode count:(const GLsizei *)count type:(GLenum)type indices:(const void *const*)indices drawcount:(GLsizei) drawcount
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -4362,6 +4396,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlMultiDrawElementsBaseVertex: (GLMContext) glm_ctx mode:(GLenum) mode count: (const GLsizei *) count type: (GLenum) type indices:(const void *const *)indices drawcount:(GLsizei) drawcount basevertex:(const GLint *) basevertex
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 
@@ -4581,6 +4617,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlMultiDrawArraysIndirect: (GLMContext)glm_ctx mode:(GLenum) mode indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
 
     mglTraceLog("MULTI_DRAW_ARRAYS_INDIRECT_MTL_ENTRY mode=0x%x indirect=%p drawcount=%d stride=%d program=%u",
@@ -4852,6 +4890,8 @@ bool mglRendererProgramHasSampledResourceNamed(Program *program, const char *nam
 
 -(void) mtlMultiDrawElementsIndirect: (GLMContext)glm_ctx mode:(GLenum) mode type:(GLenum)type indirect:(const void *)indirect drawcount:(GLsizei) drawcount stride:(GLsizei)stride
 {
+    self->_lastDrawPrimitiveMode = mode;
+
     MTLPrimitiveType primitiveType;
     MTLIndexType indexType;
 

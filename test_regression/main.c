@@ -39,7 +39,7 @@
 
 #define REG_W 128
 #define REG_H 128
-#define MAX_TESTS 51
+#define MAX_TESTS 53
 #define SOAK_ITERATIONS 100000u
 #define SOAK_SAMPLE_INTERVAL 4096u
 #define SOAK_DEFAULT_GROWTH_LIMIT_MB 64u
@@ -460,6 +460,36 @@ static GLuint make_fbo(int w, int h, GLuint *out_tex)
     GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
     if (st != GL_FRAMEBUFFER_COMPLETE) {
         fprintf(stderr, "  [FBO incomplete: 0x%x]\n", st);
+        return 0;
+    }
+    if (out_tex) *out_tex = tex;
+    return fbo;
+}
+
+/* Two-layer 2D array framebuffer for gl_Layer coverage; the draw target is
+ * switched between layers with glFramebufferTextureLayer. */
+static GLuint make_layer_fbo(int w, int h, GLuint *out_tex)
+{
+    GLuint fbo, tex, rbo;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
+    glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, w, h, 2, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, tex, 0, 0);
+
+    glGenRenderbuffers(1, &rbo);
+    glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, w, h);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, rbo);
+
+    GLenum st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (st != GL_FRAMEBUFFER_COMPLETE) {
+        fprintf(stderr, "  [layer FBO incomplete: 0x%x]\n", st);
         return 0;
     }
     if (out_tex) *out_tex = tex;
@@ -6542,6 +6572,536 @@ cleanup:
     return result;
 }
 
+/* GS multi-stream transform feedback (P1, GL 4.6 §11.1.3.4): points in,
+ * points out, two streams.  Stream 0 rasterizes and captures to XFB
+ * buffer 0; stream 1 captures to XFB buffer 1 (no rasterization).
+ *
+ * Each input point emits one vertex to stream 0 (s0_data = p) and one to
+ * stream 1 (s1_data = p + (0.5, 0)).  After drawing 3 points:
+ *   - 3 green points rasterized (stream 0 only)
+ *   - PRIMITIVES_GENERATED = 3 (stream 0 only, GL 4.6 §13.2.4)
+ *   - TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = 6 (all streams, 3+3)
+ *   - XFB buffer 0: 3 full stage-out records (80B each, stride 20 floats)
+ *   - XFB buffer 1: 3 compact records (32B each, stride 8 floats:
+ *     position + s1_data)
+ *
+ * XFB record ordering is validated order-agnostically: Metal compute
+ * does not guarantee thread-group execution order, and the GS kernel
+ * uses an atomic cursor to reserve XFB space, so records may appear in
+ * any order.  GL 4.6 mandates primitive-order preservation; a prefix-sum
+ * dispatch would be needed to satisfy that strictly and is left as a
+ * future task. */
+static int test_air_geometry_multi_stream_xfb(unsigned char *pixels,
+                                              const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 position;\n"
+        "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
+    static const char *gs =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(points, max_vertices=2) out;\n"
+        "layout(location=0) out vec2 s0_data;\n"
+        "layout(stream=1, location=0) out vec2 s1_data;\n"
+        "void main() {\n"
+        "  vec2 p = gl_in[0].gl_Position.xy;\n"
+        "  s0_data = p;\n"
+        "  gl_Position = vec4(p, 0.0, 1.0);\n"
+        "  EmitStreamVertex(0);\n"
+        "  EndStreamPrimitive(0);\n"
+        "  s1_data = p + vec2(0.5, 0.0);\n"
+        "  gl_Position = vec4(p + vec2(0.5, 0.0), 0.0, 1.0);\n"
+        "  EmitStreamVertex(1);\n"
+        "  EndStreamPrimitive(1);\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec2 s0_data;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *varyings[] = { "s0_data", "s1_data" };
+
+    GLuint fbo = 0u, color = 0u, vao = 0u, vbo = 0u;
+    GLuint tbo0 = 0u, tbo1 = 0u;
+    GLuint gen_q = 0u, wr_q = 0u, program = 0u;
+    int result = 1;
+    fbo = make_fbo(REG_W, REG_H, &color);
+    if (!fbo) goto cleanup;
+
+    GLuint shaders[3] = {
+        compile_shader(GL_VERTEX_SHADER, vs),
+        compile_shader(GL_GEOMETRY_SHADER, gs),
+        compile_shader(GL_FRAGMENT_SHADER, fs),
+    };
+    if (!shaders[0] || !shaders[1] || !shaders[2]) goto cleanup;
+    program = glCreateProgram();
+    if (!program) goto cleanup;
+    for (int i = 0; i < 3; i++) glAttachShader(program, shaders[i]);
+    glTransformFeedbackVaryings(program, 2, varyings,
+                                GL_INTERLEAVED_ATTRIBS);
+    glLinkProgram(program);
+    for (int i = 0; i < 3; i++) glDeleteShader(shaders[i]);
+    {
+        GLint ok = 0;
+        glGetProgramiv(program, GL_LINK_STATUS, &ok);
+        if (!ok) {
+            char log[2048];
+            glGetProgramInfoLog(program, sizeof(log), NULL, log);
+            fprintf(stderr,
+                    "air_geometry_multi_stream_xfb: link FAIL: %s\n", log);
+            goto cleanup;
+        }
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glGenQueries(1, &gen_q);
+    glGenQueries(1, &wr_q);
+    glUseProgram(program);
+
+    glGenBuffers(1, &tbo0);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 4096, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 0, tbo0);
+
+    glGenBuffers(1, &tbo1);
+    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+    glBufferData(GL_TRANSFORM_FEEDBACK_BUFFER, 4096, NULL, GL_STATIC_READ);
+    glBindBufferBase(GL_TRANSFORM_FEEDBACK_BUFFER, 1, tbo1);
+
+    /* Draw 3 points. */
+    {
+        static const float positions[6] = {
+            -0.5f, -0.3f, 0.0f, -0.3f, 0.5f, -0.3f,
+        };
+        glBufferData(GL_ARRAY_BUFFER, sizeof(positions), positions,
+                     GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+        glBeginTransformFeedback(GL_POINTS);
+        glBeginQuery(GL_PRIMITIVES_GENERATED, gen_q);
+        glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, wr_q);
+        glDrawArrays(GL_POINTS, 0, 3);
+        glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
+        glEndQuery(GL_PRIMITIVES_GENERATED);
+        glEndTransformFeedback();
+        glFinish();
+    }
+
+    /* Verify rasterization (stream 0 only). */
+    {
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        const int probes[3][2] = {
+            { (int)((-0.5f + 1.0f) * 0.5f * REG_W),
+              (int)((-0.3f + 1.0f) * 0.5f * REG_H) },
+            { (int)(( 0.0f + 1.0f) * 0.5f * REG_W),
+              (int)((-0.3f + 1.0f) * 0.5f * REG_H) },
+            { (int)(( 0.5f + 1.0f) * 0.5f * REG_W),
+              (int)((-0.3f + 1.0f) * 0.5f * REG_H) },
+        };
+        for (int i = 0; i < 3; i++) {
+            /* Point rasterization may land on either of two adjacent
+             * pixels depending on the rounding convention, so check a
+             * 2-pixel neighborhood around the expected center. */
+            int found = 0;
+            for (int dy = 0; dy <= 1 && !found; dy++) {
+                for (int dx = -1; dx <= 1 && !found; dx++) {
+                    int px = probes[i][0] + dx;
+                    int py = probes[i][1] + dy;
+                    if (px < 0 || px >= REG_W || py < 0 || py >= REG_H)
+                        continue;
+                    const unsigned char *c =
+                        &pixels[(py * REG_W + px) * 4];
+                    if (c[1] >= 180u) found = 1;
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_geometry_multi_stream_xfb: stream 0 point %d "
+                        "not green near (%d,%d)\n",
+                        i, probes[i][0], probes[i][1]);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Verify queries (GL 4.6 §13.2.4):
+     *   PRIMITIVES_GENERATED = stream 0 primitives only (rasterizer-bound) = 3
+     *   TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN = all streams = 3+3 = 6 */
+    {
+        GLuint generated = 0u, written = 0u;
+        glGetQueryObjectuiv(gen_q, GL_QUERY_RESULT, &generated);
+        glGetQueryObjectuiv(wr_q, GL_QUERY_RESULT, &written);
+        if (generated != 3u || written != 6u) {
+            fprintf(stderr,
+                    "air_geometry_multi_stream_xfb: query got generated=%u "
+                    "written=%u, expected 3/6\n", generated, written);
+            goto cleanup;
+        }
+    }
+
+    /* Stream 0 XFB: full stage-out records (80B = 20 floats per record).
+     * position at float 0..3, s0_data at float 16..17. */
+    {
+        GLfloat data[4096 / 4];
+        GLenum err = GL_NO_ERROR;
+        while ((err = glGetError()) != GL_NO_ERROR) { }
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo0);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(data),
+                           data);
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "air_geometry_multi_stream_xfb: stream 0 readback FAIL\n");
+            goto cleanup;
+        }
+        /* XFB records may arrive out of order because Metal compute
+         * does not guarantee thread-group execution order and the GS
+         * kernel uses an atomic cursor to reserve XFB space.  Validate
+         * that all expected records are present, regardless of order. */
+        static const float expPos[3][2] = {
+            { -0.5f, -0.3f }, { 0.0f, -0.3f }, { 0.5f, -0.3f },
+        };
+        int matched[3] = { 0, 0, 0 };
+        for (int r = 0; r < 3; r++) {
+            float rx = data[r * 20 + 0];
+            float ry = data[r * 20 + 1];
+            float sx = data[r * 20 + 16];
+            float sy = data[r * 20 + 17];
+            int found = 0;
+            for (int e = 0; e < 3; e++) {
+                if (matched[e]) continue;
+                if (rx - expPos[e][0] > -1e-3f &&
+                    rx - expPos[e][0] < 1e-3f &&
+                    ry - expPos[e][1] > -1e-3f &&
+                    ry - expPos[e][1] < 1e-3f &&
+                    sx - expPos[e][0] > -1e-3f &&
+                    sx - expPos[e][0] < 1e-3f &&
+                    sy - expPos[e][1] > -1e-3f &&
+                    sy - expPos[e][1] < 1e-3f) {
+                    matched[e] = 1;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_geometry_multi_stream_xfb: stream 0 record %d "
+                        "pos=(%g,%g) s0_data=(%g,%g) has no match\n",
+                        r, rx, ry, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Stream 1 XFB: compact records (32B = 8 floats per record).
+     * position at float 0..3, s1_data at float 4..5.
+     * s1_data = p + (0.5, 0). */
+    {
+        GLfloat data[4096 / 4];
+        GLenum err = GL_NO_ERROR;
+        while ((err = glGetError()) != GL_NO_ERROR) { }
+        glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, tbo1);
+        glGetBufferSubData(GL_TRANSFORM_FEEDBACK_BUFFER, 0, sizeof(data),
+                           data);
+        if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr,
+                    "air_geometry_multi_stream_xfb: stream 1 readback FAIL\n");
+            goto cleanup;
+        }
+        /* Same order-agnostic validation as stream 0 (see comment above). */
+        static const float expPos[3][2] = {
+            { 0.0f, -0.3f }, { 0.5f, -0.3f }, { 1.0f, -0.3f },
+        };
+        int matched[3] = { 0, 0, 0 };
+        for (int r = 0; r < 3; r++) {
+            float rx = data[r * 8 + 0];
+            float ry = data[r * 8 + 1];
+            float sx = data[r * 8 + 4];
+            float sy = data[r * 8 + 5];
+            int found = 0;
+            for (int e = 0; e < 3; e++) {
+                if (matched[e]) continue;
+                if (rx - expPos[e][0] > -1e-3f &&
+                    rx - expPos[e][0] < 1e-3f &&
+                    ry - expPos[e][1] > -1e-3f &&
+                    ry - expPos[e][1] < 1e-3f &&
+                    sx - expPos[e][0] > -1e-3f &&
+                    sx - expPos[e][0] < 1e-3f &&
+                    sy - expPos[e][1] > -1e-3f &&
+                    sy - expPos[e][1] < 1e-3f) {
+                    matched[e] = 1;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) {
+                fprintf(stderr,
+                        "air_geometry_multi_stream_xfb: stream 1 record %d "
+                        "pos=(%g,%g) s1_data=(%g,%g) has no match\n",
+                        r, rx, ry, sx, sy);
+                goto cleanup;
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (wr_q) glDeleteQueries(1, &wr_q);
+    if (gen_q) glDeleteQueries(1, &gen_q);
+    if (tbo1) glDeleteBuffers(1, &tbo1);
+    if (tbo0) glDeleteBuffers(1, &tbo0);
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (program) glDeleteProgram(program);
+    if (fbo) glDeleteFramebuffers(1, &fbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
+/* GS gl_Layer / gl_ViewportIndex output (P1): a points-in/triangle-strip-out
+ * GS writes gl_Layer=1 (layer scene) or gl_ViewportIndex=1 (viewport scene);
+ * the expanded triangle must land on framebuffer layer 1 / the second
+ * viewport respectively. */
+static int test_air_geometry_layer_viewport(unsigned char *pixels,
+                                            const char *out_path)
+{
+    (void)out_path;
+    static const char *vs =
+        "#version 450 core\n"
+        "layout(location=0) out vec3 v_color;\n"
+        "void main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); v_color = vec3(0.0, 1.0, 0.0); }\n";
+    static const char *gs_layer =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) in vec3 v_color[];\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "void main() {\n"
+        "  gl_Layer = 1;\n"
+        "  g_color = v_color[0];\n"
+        "  gl_Position = vec4(-0.5, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.1, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.2,  0.3, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *gs_viewport =
+        "#version 450 core\n"
+        "layout(points) in;\n"
+        "layout(triangle_strip, max_vertices=3) out;\n"
+        "layout(location=0) in vec3 v_color[];\n"
+        "layout(location=0) out vec3 g_color;\n"
+        "void main() {\n"
+        "  gl_ViewportIndex = 1;\n"
+        "  g_color = v_color[0];\n"
+        "  gl_Position = vec4(-0.5, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4( 0.1, -0.5, 0.0, 1.0); EmitVertex();\n"
+        "  gl_Position = vec4(-0.2,  0.3, 0.0, 1.0); EmitVertex();\n"
+        "  EndPrimitive();\n"
+        "}\n";
+    static const char *fs =
+        "#version 450 core\n"
+        "layout(location=0) in vec3 g_color;\n"
+        "layout(location=0) out vec4 frag;\n"
+        "void main() { frag = vec4(g_color, 1.0); }\n";
+    static const float position[2] = {-0.5f, -0.5f};
+    static const float centroid[2] = {-0.2f, -0.2333f};
+    GLuint color = 0u;
+    GLuint vao = 0u, vbo = 0u;
+    int result = 1;
+
+    GLuint lfbo = make_layer_fbo(REG_W, REG_H, &color);
+    if (!lfbo) goto cleanup;
+    /* Isolation probe: a plain VS writing gl_Layer=1 (no GS) must also land
+     * on layer 1; this splits backend [[layer]] output from the GS chain. */
+    {
+        static const char *vs_layer =
+            "#version 450 core\n"
+            "layout(location=0) in vec2 position;\n"
+            "layout(location=0) out vec3 g_color;\n"
+            "void main() { gl_Position = vec4(position, 0.0, 1.0);\n"
+            "  g_color = vec3(0.0, 1.0, 0.0); gl_Layer = 1; }\n";
+        GLuint probeProgram = link_program(vs_layer, fs);
+        if (!probeProgram) goto cleanup;
+        static const float tri[6] = {
+            -0.5f, -0.5f, 0.5f, -0.5f, 0.0f, 0.5f,
+        };
+        GLuint pvao = 0u, pvbo = 0u;
+        glGenVertexArrays(1, &pvao);
+        glBindVertexArray(pvao);
+        glGenBuffers(1, &pvbo);
+        glBindBuffer(GL_ARRAY_BUFFER, pvbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(tri), tri, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+        glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
+        glUseProgram(probeProgram);
+        clear_color(0.0f, 0.0f, 0.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glFinish();
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 0);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        {
+            int cx = REG_W / 2, cy = REG_H / 2;
+            const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+            if (pp[1] >= 180) {
+                fprintf(stderr,
+                        "air_geometry_layer_viewport: probe layer 0 got "
+                        "(%d,%d,%d); expected untouched\n", pp[0], pp[1], pp[2]);
+            }
+        }
+        glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+        glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        {
+            int cx = REG_W / 2, cy = REG_H / 2;
+            const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+            if (pp[1] < 180) {
+                fprintf(stderr,
+                        "air_geometry_layer_viewport: probe layer 1 center got "
+                        "(%d,%d,%d); expected green\n", pp[0], pp[1], pp[2]);
+            goto cleanup;
+            }
+        }
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0u);
+
+    /* Scene 1: gl_Layer=1 must land the triangle on framebuffer layer 1 and
+     * leave layer 0 untouched, regardless of the attachment slice the
+     * glFramebufferTextureLayer single-slice binding is currently on.  The
+     * probe above left the slice at 1, so the GS chain draws onto a
+     * non-zero slice here (a Metal layered pass must select the layer via
+     * the [render_target_array_index] output, ignoring the attachment
+     * slice). */
+    GLuint layerProgram = link_program_with_geometry(vs, gs_layer, fs);
+    if (!layerProgram) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, lfbo);
+    glGenVertexArrays(1, &vao);
+    glBindVertexArray(vao);
+    glGenBuffers(1, &vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(position), position, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, (void *)0);
+    glUseProgram(layerProgram);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 0);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = (int)((centroid[0] + 1.0) * 0.5 * REG_W);
+        int cy = (int)((centroid[1] + 1.0) * 0.5 * REG_H);
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] >= 180 || pp[0] > 40 || pp[2] > 40) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: layer 0 got color "
+                    "(%d,%d,%d) at centroid; expected untouched\n",
+                    pp[0], pp[1], pp[2]);
+        }
+    }
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = (int)((centroid[0] + 1.0) * 0.5 * REG_W);
+        int cy = (int)((centroid[1] + 1.0) * 0.5 * REG_H);
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] < 180 || pp[0] > 40 || pp[2] > 40) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: layer 1 centroid got "
+                    "(%d,%d,%d); expected green triangle (slice 1 draw)\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+    }
+
+    /* Scene 1b: same GS chain while the single-slice binding sits on
+     * layer 0 (the default path before this fix's slice handling). */
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 0);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = (int)((centroid[0] + 1.0) * 0.5 * REG_W);
+        int cy = (int)((centroid[1] + 1.0) * 0.5 * REG_H);
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] >= 180 || pp[0] > 40 || pp[2] > 40) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: layer 0 got color "
+                    "(%d,%d,%d) at centroid; expected untouched (1b)\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+    }
+    glFramebufferTextureLayer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, color, 0, 1);
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        int cx = (int)((centroid[0] + 1.0) * 0.5 * REG_W);
+        int cy = (int)((centroid[1] + 1.0) * 0.5 * REG_H);
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] < 180 || pp[0] > 40 || pp[2] > 40) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: layer 1 centroid got "
+                    "(%d,%d,%d); expected green triangle (1b)\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+    }
+
+    GLuint viewportProgram = link_program_with_geometry(vs, gs_viewport, fs);
+    GLuint vfbo = make_fbo(REG_W, REG_H, &color);
+    if (!vfbo || !viewportProgram) goto cleanup;
+    glBindFramebuffer(GL_FRAMEBUFFER, vfbo);
+    glUseProgram(viewportProgram);
+    glViewport(0, 0, REG_W, REG_H);
+    glViewportIndexedf(1, 0.0f, 0.0f, (GLfloat)REG_W / 2.0f,
+                       (GLfloat)REG_H);
+    clear_color(0.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_POINTS, 0, 1);
+    glFinish();
+    glReadPixels(0, 0, REG_W, REG_H, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    {
+        /* NDC -> viewport 1 (left half, full height). */
+        int cx = (int)((centroid[0] + 1.0) * 0.5 * (REG_W / 2));
+        int cy = (int)((centroid[1] + 1.0) * 0.5 * REG_H);
+        const unsigned char *pp = &pixels[(cy * REG_W + cx) * 4];
+        if (pp[1] < 180 || pp[0] > 40 || pp[2] > 40) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: viewport-1 centroid got "
+                    "(%d,%d,%d); expected green in left half\n",
+                    pp[0], pp[1], pp[2]);
+            goto cleanup;
+        }
+        /* Mirror position in the right half (viewport 0) must be empty. */
+        int rx = (int)((centroid[0] + 1.0) * 0.5 * (REG_W / 2)) + REG_W / 2;
+        const unsigned char *rp = &pixels[(cy * REG_W + rx) * 4];
+        if (rp[1] >= 180) {
+            fprintf(stderr,
+                    "air_geometry_layer_viewport: viewport-0 mirror got "
+                    "(%d,%d,%d); expected empty\n", rp[0], rp[1], rp[2]);
+            goto cleanup;
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    if (vbo) glDeleteBuffers(1, &vbo);
+    if (vao) glDeleteVertexArrays(1, &vao);
+    if (layerProgram) glDeleteProgram(layerProgram);
+    if (viewportProgram) glDeleteProgram(viewportProgram);
+    if (lfbo) glDeleteFramebuffers(1, &lfbo);
+    if (vfbo) glDeleteFramebuffers(1, &vfbo);
+    if (color) glDeleteTextures(1, &color);
+    return result;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test registry                                                      */
 /* ------------------------------------------------------------------ */
@@ -6602,6 +7162,10 @@ static const TestCase TESTS[] = {
     SELF_CHECK_TEST("air_tessellation_isolines_xfb",
                     test_air_tessellation_isolines_xfb),
     SELF_CHECK_TEST("air_geometry_xfb", test_air_geometry_xfb),
+    SELF_CHECK_TEST("air_geometry_multi_stream_xfb",
+                    test_air_geometry_multi_stream_xfb),
+    SELF_CHECK_TEST("air_geometry_layer_viewport",
+                    test_air_geometry_layer_viewport),
     GOLDEN_TEST("texture_binding_switch", test_texture_binding_switch),
     GOLDEN_TEST("texture_parameter_switch", test_texture_parameter_switch),
     GOLDEN_TEST("sampler_parameter_switch", test_sampler_parameter_switch),

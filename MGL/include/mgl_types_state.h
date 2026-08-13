@@ -119,6 +119,7 @@ typedef struct {
     GLuint max_vertex_attribs; // GL_MAX_VERTEX_ATTRIBS
     GLint viewport[4]; // GL_VIEWPORT
     GLfloat viewport_array[MGL_MAX_VIEWPORTS][4];
+    GLboolean viewport_array_set; // glViewportIndexedf* set any slot > 0
     GLint scissor_box_array[MGL_MAX_VIEWPORTS][4];
     GLdouble depth_range_array[MGL_MAX_VIEWPORTS][2];
     GLfloat color_clear_value[4]; // GL_COLOR_CLEAR_VALUE

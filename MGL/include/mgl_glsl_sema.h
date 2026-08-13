@@ -59,6 +59,7 @@ typedef struct MGLIRSymbol {
     uint32_t matrix_major;      /* MGL_AST_MATRIX_* */
     uint32_t binding;           /* -1 if unspecified */
     uint32_t location;          /* -1 if unspecified */
+    int32_t  stream;            /* GS output stream, -1 if unspecified (0) */
     uint32_t offset;            /* block member offset / -1 */
     char *block_name;           /* owning anonymous block, or NULL */
     uint32_t block_member_index;/* member index within the block */

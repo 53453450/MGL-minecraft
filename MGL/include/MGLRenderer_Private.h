@@ -214,6 +214,10 @@ static inline double mglTraceNowSeconds(void)
     void *_bindingStateOwner;
     MGLTessellationState _tessellation;
     MGLGeometryState _geometry;
+    /* Most recent GL primitive mode handed to a draw entry point, used to
+     * derive MTLRenderPipelineDescriptor.inputPrimitiveTopology (required by
+     * Metal when the VS writes [[render_target_array_index]]). */
+    GLenum _lastDrawPrimitiveMode;
     MGLBatchingState _batching;
     /* Command buffer that needs waitUntilCompleted after METAL_UNLOCK.
      * Set by flushCommandBufferLocked: when finish=true, consumed by

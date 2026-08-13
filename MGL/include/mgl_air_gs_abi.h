@@ -213,7 +213,7 @@ typedef struct MGLAIRGSIndexGatherParams {
 } MGLAIRGSIndexGatherParams;
 
 /* =====================================================================
- * 5. GS transform-feedback record (P1)
+ * 5. GS transform-feedback records (P1, multi-stream 2026-08-12)
  *
  * GS XFB output reuses the per-vertex record layout (position + varyings)
  * written by the GS kernel into a dedicated record buffer (slot 31), then
@@ -221,31 +221,49 @@ typedef struct MGLAIRGSIndexGatherParams {
  * store, honoring session offset / overflow the same way the TES XFB path
  * does (see MGLRenderer+Tessellation.m).
  *
+ * Streams 0..3 (GL 4.6 §11.1.3.4, GLSL 4.60 §4.3.8.2/§8.13): only stream 0
+ * is rasterized; streams 1..3 exist solely for transform feedback and are
+ * only legal when the output primitive type is points.  The single
+ * physical slot-31 buffer is split into per-stream segments
+ * (capture_base = byte offset of the segment); each stream owns one
+ * MGLAIRGSXFBStreamMeta with its own atomic cursor / written counter.
+ *
  * The GS expanded output is variable-length (culled primitives contribute
  * nothing, GL 4.6 §13.2.4), so the kernel appends the visible expanded
  * vertices of each work item through a GPU-atomic cursor instead of a
- * compile-time fixed offset.  Slot 32 carries one 24-byte meta record:
+ * compile-time fixed offset.  Slot 27 carries the 4-stream meta block:
  * the renderer pre-writes `stride` (0 disables capture) and `capacity`
- * (GL-visible store bytes available from the bound offset); the kernel
- * atomically reserves `visible * stride` bytes at `cursor`, stores the
- * visible records only when the reservation fits, and counts the actually
- * written bytes in `written`.
+ * (GL-visible store bytes available from the bound offset) per stream;
+ * the kernel atomically reserves `visible * stride` bytes at the stream's
+ * `cursor`, stores the visible records only when the reservation fits,
+ * and counts the actually written bytes in `written`.
  * ===================================================================== */
-typedef struct MGLAIRGSXFBMeta {
+#define MGL_AIR_GS_MAX_STREAMS 4u
+
+typedef struct MGLAIRGSXFBStreamMeta {
     uint32_t stride;          /* bytes per XFB vertex; 0 = capture off    */
     uint32_t capacity_bytes;  /* store capacity from the bound offset     */
+    uint32_t capture_base;    /* byte offset of this stream's segment in
+                               * the slot-31 buffer (renderer preset)     */
+    uint32_t pad;             /* keep u64 fields 8-aligned               */
     uint64_t cursor;          /* atomic reservation cursor (GPU written)  */
     uint64_t written;         /* atomic written-byte counter (GPU written)*/
+} MGLAIRGSXFBStreamMeta;
+
+typedef struct MGLAIRGSXFBMeta {
+    MGLAIRGSXFBStreamMeta stream[MGL_AIR_GS_MAX_STREAMS];
 } MGLAIRGSXFBMeta;
 
-MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 24u,
-                      "GS XFB meta record is 8 + 8 + 8 bytes");
-MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, stride) == 0u,
-                      "stride must lead the meta record");
-MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, cursor) == 8u,
-                      "cursor must be 64-bit aligned at offset 8");
-MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBMeta, written) == 16u,
-                      "written must be 64-bit aligned at offset 16");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBStreamMeta) == 32u,
+                      "GS XFB stream meta is 12 + 4 pad + 8 + 8 bytes");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, stride) == 0u,
+                      "stride must lead the stream meta");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, cursor) == 16u,
+                      "cursor must be 64-bit aligned at offset 16");
+MGL_AIR_STATIC_ASSERT(offsetof(MGLAIRGSXFBStreamMeta, written) == 24u,
+                      "written must be 64-bit aligned at offset 24");
+MGL_AIR_STATIC_ASSERT(sizeof(MGLAIRGSXFBMeta) == 128u,
+                      "GS XFB meta is 4 x 32-byte stream blocks");
 
 /* =====================================================================
  * 6. Static layout invariants shared with the AIR backend

@@ -1009,6 +1009,7 @@ static MGLDecl *parse_declaration(MGLParser *p)
     d->layout_vertices = -1;   /* TCS: layout(vertices=N), unspecified */
     d->layout_max_vertices = -1; /* GS: layout(max_vertices=N), unspecified */
     d->layout_invocations = 1; /* GS: layout(invocations=N), GLSL default 1 */
+    d->layout_stream = -1;   /* GS output stream, -1 = unspecified (0) */
     d->layout_primitive = MGL_AST_TES_DEFAULT;      /* TES mode / GS in topology */
     d->layout_primitive_out = MGL_AST_GS_OUT_DEFAULT;
     d->layout_spacing = MGL_AST_SPACING_DEFAULT;
@@ -1177,6 +1178,8 @@ more_qualifiers:
                         d->layout_max_vertices = (int32_t)cur_double(p);
                     } else if (n == 11 && memcmp(s, "invocations", 11) == 0) {
                         d->layout_invocations = (int32_t)cur_double(p);
+                    } else if (n == 6 && memcmp(s, "stream", 6) == 0) {
+                        d->layout_stream = (int32_t)cur_double(p);
                     }
                     advance(p);
                 } else if (at_any_ident(p)) {
@@ -1213,6 +1216,7 @@ more_qualifiers:
         if (d->layout_vertices >= 0)          tu->layout_vertices = d->layout_vertices;
         if (d->layout_max_vertices >= 0)      tu->layout_max_vertices = d->layout_max_vertices;
         if (d->layout_invocations >= 1)       tu->layout_invocations = d->layout_invocations;
+        if (d->layout_stream >= 0)            tu->layout_stream = d->layout_stream;
         if (d->layout_primitive != MGL_AST_TES_DEFAULT)
             tu->layout_primitive = d->layout_primitive;
         if (d->layout_primitive_out != MGL_AST_GS_OUT_DEFAULT)
@@ -1693,6 +1697,7 @@ MGLTranslationUnit *mglGLSLParse(const char *src, size_t len)
         free(expanded);
         return NULL;
     }
+    tu->layout_stream = -1; /* GS default output stream unspecified (0) */
 
     MGLParser p;
     memset(&p, 0, sizeof(p));

@@ -843,6 +843,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
         pptr->geometry_invocations = stage_info.geometry_invocations;
+        pptr->geometry_stream_count = stage_info.gs_stream_count;
+        for (uint32_t si = 0; si < 4u; si++) {
+            pptr->geometry_stream_varying_count[si] =
+                stage_info.gs_stream_varying_count[si];
+            pptr->geometry_stream_xfb_stride[si] =
+                stage_info.gs_stream_xfb_stride[si];
+        }
     }
     if (stage == _TESS_EVALUATION_SHADER) {
         /* The TES metallib TESS tag must carry the control points per
@@ -927,6 +934,13 @@ static int mglAirCompileStage(GLMContext ctx, Program *pptr, int stage)
         pptr->geometry_output_type = stage_info.geometry_output_type;
         pptr->geometry_vertices_out = stage_info.geometry_vertices_out;
         pptr->geometry_invocations = stage_info.geometry_invocations;
+        pptr->geometry_stream_count = stage_info.gs_stream_count;
+        for (uint32_t si = 0; si < 4u; si++) {
+            pptr->geometry_stream_varying_count[si] =
+                stage_info.gs_stream_varying_count[si];
+            pptr->geometry_stream_xfb_stride[si] =
+                stage_info.gs_stream_xfb_stride[si];
+        }
     }
     return 1;
 }

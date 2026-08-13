@@ -62,6 +62,13 @@ typedef struct MGLAIRStageInfo {
     uint32_t uses_cull_distance;
     uint32_t cull_distance_count;
     uint32_t needs_buffer_size_buffer;
+    /* GS multi-stream (GL 4.6 §11.1.3.4): stream 0 is rasterized; streams
+     * 1..3 feed transform feedback only and require points output.  The
+     * per-stream XFB capture record is position (16B) + that stream's
+     * varyings in ascending location order (16B each). */
+    uint32_t gs_stream_count;            /* number of streams used (1..4) */
+    uint32_t gs_stream_varying_count[4];
+    uint32_t gs_stream_xfb_stride[4];
 } MGLAIRStageInfo;
 
 /* Fixed inter-stage record shared by VS capture, TCS, TES and the GS compute
@@ -72,6 +79,11 @@ enum {
     MGL_AIR_PER_VERTEX_POINT_SIZE_OFFSET = 16,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_OFFSET = 20,
     MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT = 8,
+    /* gl_Layer / gl_ViewportIndex outputs (GS expansion): one int per
+     * vertex; the rasterizing vertex stage re-emits both (GL 4.6
+     * §11.1.3.5/§11.1.3.6 tie them to the same value). */
+    MGL_AIR_PER_VERTEX_LAYER_OFFSET = 40,
+    MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET = 44,
     MGL_AIR_PER_VERTEX_STRIDE = 64,
 };
 
@@ -79,7 +91,9 @@ typedef struct MGLAIRPerVertexRecord {
     float position[4];
     float point_size;
     float cull_distance[MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT];
-    uint32_t reserved[3];
+    int32_t layer;
+    int32_t viewport_index;
+    uint32_t reserved;
 } MGLAIRPerVertexRecord;
 
 static inline uint32_t mglAIRPerVertexStrideForResources(

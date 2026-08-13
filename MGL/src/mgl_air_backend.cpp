@@ -110,6 +110,7 @@ struct VarSym {
                 UBO, TEXTURE, IMAGE, LOCAL } kind = LOCAL;
     uint32_t bufferOffset = 0;
     uint32_t location = UINT32_MAX;
+    int32_t stream = 0;          /* GS output stream for OUTPUT vars */
     bool isPatch = false;
     bool written = false;
 };
@@ -190,6 +191,7 @@ struct Codegen {
     bool usesCullDistance = false;
     llvm::Value *fragPos = nullptr;      /* fragment: [[position]] (gl_FragCoord) */
     bool pointSize = false;              /* vertex: writes gl_PointSize */
+    bool layerViewport = false;          /* writes gl_Layer / gl_ViewportIndex */
     std::map<std::string, llvm::Value *> ssboPtrs;  /* SSBO instance -> buffer */
     std::map<std::string, uint32_t> ssboSlots;      /* SSBO instance -> Metal slot */
     std::map<std::string, llvm::Value *> uboPtrs;   /* uniform block -> buffer */
@@ -2012,6 +2014,46 @@ static llvm::Value *loadGeometryPointSize(Codegen &cg, uint32_t record)
     return cg.b->CreateAlignedLoad(cg.b->getFloatTy(), p, llvm::Align(4));
 }
 
+static void storeGeometryLayer(Codegen &cg, llvm::Value *record,
+                               llvm::Value *layer)
+{
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_LAYER_OFFSET));
+    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    cg.b->CreateAlignedStore(layer, p, llvm::Align(4));
+}
+
+static void storeGeometryViewportIndex(Codegen &cg, llvm::Value *record,
+                                       llvm::Value *viewportIndex)
+{
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(), geometryRecordPtr(cg, record),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET));
+    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    cg.b->CreateAlignedStore(viewportIndex, p, llvm::Align(4));
+}
+
+static llvm::Value *loadGeometryLayer(Codegen &cg, uint32_t record)
+{
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(),
+        geometryRecordPtr(cg, cg.b->getInt32(record)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_LAYER_OFFSET));
+    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p, llvm::Align(4));
+}
+
+static llvm::Value *loadGeometryViewportIndex(Codegen &cg, uint32_t record)
+{
+    llvm::Value *p = cg.b->CreateGEP(
+        cg.b->getInt8Ty(),
+        geometryRecordPtr(cg, cg.b->getInt32(record)),
+        cg.b->getInt64(MGL_AIR_PER_VERTEX_VIEWPORT_INDEX_OFFSET));
+    p = cg.b->CreateBitCast(p, cg.b->getInt32Ty()->getPointerTo(1));
+    return cg.b->CreateAlignedLoad(cg.b->getInt32Ty(), p, llvm::Align(4));
+}
+
 static llvm::Value *loadGeometryCullDistances(Codegen &cg, uint32_t record)
 {
     llvm::Type *arrayTy = llvm::ArrayType::get(
@@ -2050,6 +2092,12 @@ static void storeGeometryVaryings(Codegen &cg, llvm::Value *record)
     for (VarSym &varying : *cg.auxSyms) {
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
+        /* The stage-out record feeds stream 0 rasterization and stream 0
+         * XFB only; stream > 0 varyings are captured in compact per-stream
+         * records by emitGeometryStreamVertex (GL 4.6 §11.1.3.4).  Skipping
+         * them here also avoids location collisions between streams that
+         * share the same layout(location=N) value. */
+        if (varying.stream != 0) continue;
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         llvm::Value *value = cg.lvalues.count(varying.name)
             ? cg.lvalues[varying.name] : llvm::UndefValue::get(ty);
@@ -2090,6 +2138,7 @@ static void copyGeometryVaryings(Codegen &cg, llvm::Value *dst,
     for (VarSym &varying : *cg.auxSyms) {
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
+        if (varying.stream != 0) continue;
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
                                varying.location * 16u;
@@ -2116,6 +2165,7 @@ static void copyGeometryVaryingsSelected(Codegen &cg, llvm::Value *dst,
     for (VarSym &varying : *cg.auxSyms) {
         if (varying.kind != VarSym::OUTPUT ||
             varying.location == UINT32_MAX) continue;
+        if (varying.stream != 0) continue;
         llvm::Type *ty = llvmType(varying.type, *cg.ctx);
         uint64_t fieldOffset = MGL_AIR_PER_VERTEX_STRIDE +
                                varying.location * 16u;
@@ -2162,6 +2212,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0);
     llvm::Value *cullDistances = cg.lvalues.count("gl_CullDistance")
         ? cg.lvalues["gl_CullDistance"] : defaultCullDistances(cg);
+    llvm::Value *layer = cg.lvalues.count("gl_Layer")
+        ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
+    llvm::Value *viewportIndex = cg.lvalues.count("gl_ViewportIndex")
+        ? cg.lvalues["gl_ViewportIndex"] : cg.b->getInt32(0);
     llvm::Value *outputCountPtr = geometryCounterPtr(cg, 0);
     llvm::Value *stripCountPtr = geometryCounterPtr(cg, 1);
     llvm::Value *emitCountPtr = geometryCounterPtr(cg, 2);
@@ -2188,6 +2242,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPointSize(cg, outputRecord, pointSize);
         storeGeometryCullDistances(cg, outputRecord, cullDistances);
         storeGeometryVaryings(cg, outputRecord);
+        storeGeometryLayer(cg, outputRecord, layer);
+        storeGeometryViewportIndex(cg, outputRecord, viewportIndex);
         llvm::Value *visibleIncrement = cg.b->CreateSelect(
             geometryPrimitiveCulled(cg, {cullDistances}),
             cg.b->getInt32(0), cg.b->getInt32(1));
@@ -2218,6 +2274,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         llvm::Value *previous = loadGeometryPosition(cg, 0);
         llvm::Value *previousPoint = loadGeometryPointSize(cg, 0);
         llvm::Value *previousCull = loadGeometryCullDistances(cg, 0);
+        llvm::Value *previousLayer = loadGeometryLayer(cg, 0);
+        llvm::Value *previousViewport = loadGeometryViewportIndex(cg, 0);
         llvm::Value *outputCount = cg.b->CreateAlignedLoad(
             cg.b->getInt32Ty(), outputCountPtr, llvm::Align(4));
         llvm::Value *outputRecord = cg.b->CreateAdd(
@@ -2225,6 +2283,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, outputRecord, previous);
         storeGeometryPointSize(cg, outputRecord, previousPoint);
         storeGeometryCullDistances(cg, outputRecord, previousCull);
+        storeGeometryLayer(cg, outputRecord, previousLayer);
+        storeGeometryViewportIndex(cg, outputRecord, previousViewport);
         copyGeometryVaryings(cg, outputRecord, 0);
         storeGeometryPosition(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), pos);
@@ -2232,6 +2292,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), pointSize);
         storeGeometryCullDistances(cg,
             cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), cullDistances);
+        storeGeometryLayer(cg,
+            cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), layer);
+        storeGeometryViewportIndex(cg,
+            cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), viewportIndex);
         storeGeometryVaryings(
             cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)));
         llvm::Value *lineIncrement = cg.b->CreateSelect(
@@ -2246,6 +2310,8 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         storeGeometryPosition(cg, cg.b->getInt32(0), pos);
         storeGeometryPointSize(cg, cg.b->getInt32(0), pointSize);
         storeGeometryCullDistances(cg, cg.b->getInt32(0), cullDistances);
+        storeGeometryLayer(cg, cg.b->getInt32(0), layer);
+        storeGeometryViewportIndex(cg, cg.b->getInt32(0), viewportIndex);
         storeGeometryVaryings(cg, cg.b->getInt32(0));
         cg.b->CreateAlignedStore(
             cg.b->CreateAdd(stripCount, cg.b->getInt32(1)),
@@ -2273,6 +2339,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previousPoint1 = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull0 = loadGeometryCullDistances(cg, 0);
     llvm::Value *previousCull1 = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousLayer0 = loadGeometryLayer(cg, 0);
+    llvm::Value *previousLayer1 = loadGeometryLayer(cg, 1);
+    llvm::Value *previousViewport0 = loadGeometryViewportIndex(cg, 0);
+    llvm::Value *previousViewport1 = loadGeometryViewportIndex(cg, 1);
     llvm::Value *odd = cg.b->CreateICmpNE(
         cg.b->CreateAnd(stripCount, cg.b->getInt32(1)), cg.b->getInt32(0));
     llvm::Value *first = cg.b->CreateSelect(odd, previous1, previous0);
@@ -2285,12 +2355,22 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         odd, previousCull1, previousCull0);
     llvm::Value *secondCull = cg.b->CreateSelect(
         odd, previousCull0, previousCull1);
+    llvm::Value *firstLayer = cg.b->CreateSelect(
+        odd, previousLayer1, previousLayer0);
+    llvm::Value *secondLayer = cg.b->CreateSelect(
+        odd, previousLayer0, previousLayer1);
+    llvm::Value *firstViewport = cg.b->CreateSelect(
+        odd, previousViewport1, previousViewport0);
+    llvm::Value *secondViewport = cg.b->CreateSelect(
+        odd, previousViewport0, previousViewport1);
     llvm::Value *outputCount = cg.b->CreateAlignedLoad(
         cg.b->getInt32Ty(), outputCountPtr, llvm::Align(4));
     llvm::Value *outputRecord = cg.b->CreateAdd(outputCount, cg.b->getInt32(2));
     storeGeometryPosition(cg, outputRecord, first);
     storeGeometryPointSize(cg, outputRecord, firstPoint);
     storeGeometryCullDistances(cg, outputRecord, firstCull);
+    storeGeometryLayer(cg, outputRecord, firstLayer);
+    storeGeometryViewportIndex(cg, outputRecord, firstViewport);
     copyGeometryVaryingsSelected(cg, outputRecord, 0, 1, odd);
     storeGeometryPosition(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), second);
@@ -2298,6 +2378,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondPoint);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondCull);
+    storeGeometryLayer(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondLayer);
+    storeGeometryViewportIndex(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), secondViewport);
     copyGeometryVaryingsSelected(
         cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(1)), 1, 0, odd);
     storeGeometryPosition(cg,
@@ -2306,6 +2390,10 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), pointSize);
     storeGeometryCullDistances(cg,
         cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), cullDistances);
+    storeGeometryLayer(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), layer);
+    storeGeometryViewportIndex(cg,
+        cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)), viewportIndex);
     storeGeometryVaryings(
         cg, cg.b->CreateAdd(outputRecord, cg.b->getInt32(2)));
     llvm::Value *triangleIncrement = cg.b->CreateSelect(
@@ -2321,17 +2409,173 @@ static llvm::Value *emitGeometryVertex(Codegen &cg)
     llvm::Value *previous1ForNext = loadGeometryPosition(cg, 1);
     llvm::Value *previousPoint1ForNext = loadGeometryPointSize(cg, 1);
     llvm::Value *previousCull1ForNext = loadGeometryCullDistances(cg, 1);
+    llvm::Value *previousLayer1ForNext = loadGeometryLayer(cg, 1);
+    llvm::Value *previousViewport1ForNext = loadGeometryViewportIndex(cg, 1);
     storeGeometryPosition(cg, cg.b->getInt32(0), previous1ForNext);
     storeGeometryPointSize(cg, cg.b->getInt32(0), previousPoint1ForNext);
     storeGeometryCullDistances(cg, cg.b->getInt32(0), previousCull1ForNext);
+    storeGeometryLayer(cg, cg.b->getInt32(0), previousLayer1ForNext);
+    storeGeometryViewportIndex(cg, cg.b->getInt32(0), previousViewport1ForNext);
     copyGeometryVaryings(cg, cg.b->getInt32(0), 1);
     storeGeometryPosition(cg, cg.b->getInt32(1), pos);
     storeGeometryPointSize(cg, cg.b->getInt32(1), pointSize);
     storeGeometryCullDistances(cg, cg.b->getInt32(1), cullDistances);
+    storeGeometryLayer(cg, cg.b->getInt32(1), layer);
+    storeGeometryViewportIndex(cg, cg.b->getInt32(1), viewportIndex);
     storeGeometryVaryings(cg, cg.b->getInt32(1));
     cg.b->CreateAlignedStore(
         cg.b->CreateAdd(stripCount, cg.b->getInt32(1)),
         stripCountPtr, llvm::Align(4));
+    cg.b->CreateAlignedStore(
+        cg.b->CreateAdd(emitCount, cg.b->getInt32(1)),
+        emitCountPtr, llvm::Align(4));
+    cg.b->CreateBr(doneBB);
+    cg.b->SetInsertPoint(doneBB);
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*cg.ctx), 0);
+}
+
+/* Store the XFB capture record of `stream` (position + that stream's
+ * varyings in ascending location order, one 16-byte slot each) to the
+ * byte pointer `dst`.  Stream 0 keeps the batch path below (full
+ * stage-out records); streams > 0 write compact per-stream records. */
+static void storeGeometryXFBStreamVaryings(Codegen &cg, llvm::Value *dst,
+                                           int32_t stream)
+{
+    if (!cg.auxSyms) return;
+    std::vector<VarSym *> selected;
+    for (VarSym &v : *cg.auxSyms) {
+        if (v.kind == VarSym::OUTPUT && v.location != UINT32_MAX &&
+            v.stream == stream) {
+            selected.push_back(&v);
+        }
+    }
+    std::sort(selected.begin(), selected.end(),
+              [](const VarSym *a, const VarSym *b) {
+                  return a->location < b->location;
+              });
+    llvm::Value *bytePtr = dst;
+    for (size_t i = 0; i < selected.size(); i++) {
+        VarSym *v = selected[i];
+        llvm::Type *ty = llvmType(v->type, *cg.ctx);
+        llvm::Value *value = cg.lvalues.count(v->name)
+            ? cg.lvalues[v->name] : llvm::UndefValue::get(ty);
+        llvm::Value *p = cg.b->CreateGEP(
+            cg.b->getInt8Ty(), bytePtr, cg.b->getInt64(i * 16u));
+        p = cg.b->CreateBitCast(p, ty->getPointerTo(1));
+        cg.b->CreateAlignedStore(value, p, llvm::Align(4));
+    }
+}
+
+/* EmitVertex on stream > 0 (GLSL 4.60 §8.13): streams above 0 are never
+ * rasterized; the vertex is appended to that stream's transform-feedback
+ * segment only, through the same atomic cursor protocol as the stream 0
+ * batch path.  Only legal with points output (checked at the call site). */
+static llvm::Value *emitGeometryStreamVertex(Codegen &cg, int32_t stream)
+{
+    if (!cg.isGeometry || !cg.geometryOutputPtr || !cg.geometryCountPtr ||
+        !cg.geometryPrimitiveId || cg.geometryMaxVertices == 0 ||
+        !cg.geometryXfbPtr || !cg.geometryXfbMetaPtr) {
+        cg.err = 1;
+        cg.errmsg = "GS AIR codegen: EmitStreamVertex requires the M3 XFB ABI";
+        return nullptr;
+    }
+    llvm::Value *pos = cg.lvalues.count("gl_Position")
+        ? cg.lvalues["gl_Position"]
+        : llvm::UndefValue::get(llvm::FixedVectorType::get(
+              llvm::Type::getFloatTy(*cg.ctx), 4));
+    pos = coerceScalar(cg, pos, MGLIR_SCALAR_FLOAT);
+    llvm::Type *v4 = llvm::FixedVectorType::get(
+        llvm::Type::getFloatTy(*cg.ctx), 4);
+    if (pos->getType() != v4) {
+        if (pos->getType()->isVectorTy()) pos = cg.b->CreateBitCast(pos, v4);
+        else pos = cg.b->CreateVectorSplat(4, pos);
+    }
+    llvm::Value *cullDistances = cg.lvalues.count("gl_CullDistance")
+        ? cg.lvalues["gl_CullDistance"] : defaultCullDistances(cg);
+
+    llvm::Value *emitCountPtr = geometryCounterPtr(cg, 2);
+    llvm::Value *emitCount = cg.b->CreateAlignedLoad(
+        cg.b->getInt32Ty(), emitCountPtr, llvm::Align(4));
+    llvm::Value *canEmit = cg.b->CreateICmpULT(
+        emitCount, cg.b->getInt32(cg.geometryMaxVertices));
+    llvm::BasicBlock *emitBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_emit", cg.fn);
+    llvm::BasicBlock *doneBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_done", cg.fn);
+    cg.b->CreateCondBr(canEmit, emitBB, doneBB);
+    cg.b->SetInsertPoint(emitBB);
+
+    /* Culled primitives contribute nothing (same policy as the stream 0
+     * batch path, GL 4.6 §13.2.4). */
+    llvm::Value *culled = geometryPrimitiveCulled(cg, {cullDistances});
+    llvm::BasicBlock *appendBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_append", cg.fn);
+    cg.b->CreateCondBr(culled, doneBB, appendBB);
+    cg.b->SetInsertPoint(appendBB);
+
+    llvm::Type *i32 = llvm::Type::getInt32Ty(*cg.ctx);
+    llvm::Type *i64 = llvm::Type::getInt64Ty(*cg.ctx);
+    llvm::Value *metaBase = cg.b->CreateBitCast(
+        cg.geometryXfbMetaPtr, i32->getPointerTo(1));
+    /* Stream block offset: MGLAIRGSXFBStreamMeta is 32 bytes, with
+     * stride@0 capacity@4 capture_base@8 cursor@16 written@24. */
+    llvm::Value *blockOff = cg.b->getInt32(stream * 8u); /* 32B in u32 words */
+    llvm::Value *stride = cg.b->CreateAlignedLoad(
+        i32, cg.b->CreateGEP(i32, metaBase, blockOff), llvm::Align(4));
+    llvm::Value *captureOn = cg.b->CreateICmpNE(stride, cg.b->getInt32(0));
+    llvm::BasicBlock *xfbOnBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_xfb_on", cg.fn);
+    cg.b->CreateCondBr(captureOn, xfbOnBB, doneBB);
+    cg.b->SetInsertPoint(xfbOnBB);
+
+    llvm::Value *size = cg.b->CreateZExt(stride, i64);
+    /* 32-bit device atomics (AGX compiler service rejects 64-bit
+     * atomicrmw); any single stream caps at 2^32 bytes per draw. */
+    llvm::Value *cursorPtr = cg.b->CreateGEP(
+        i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(4)));
+    llvm::Value *reserved32 = cg.b->CreateAtomicRMW(
+        llvm::AtomicRMWInst::Add, cursorPtr, stride,
+        llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
+    llvm::Value *reserved = cg.b->CreateZExt(reserved32, i64);
+    llvm::Value *capacity = cg.b->CreateZExt(
+        cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, metaBase,
+                                 cg.b->CreateAdd(blockOff, cg.b->getInt32(1))),
+            llvm::Align(4)),
+        i64);
+    llvm::Value *end = cg.b->CreateAdd(reserved, size);
+    llvm::Value *fits = cg.b->CreateICmpULE(end, capacity);
+    llvm::BasicBlock *xfbWriteBB = llvm::BasicBlock::Create(
+        *cg.ctx, "gs_stream_xfb_write", cg.fn);
+    cg.b->CreateCondBr(fits, xfbWriteBB, doneBB);
+    cg.b->SetInsertPoint(xfbWriteBB);
+    {
+        llvm::Value *writtenPtr = cg.b->CreateGEP(
+            i32, metaBase, cg.b->CreateAdd(blockOff, cg.b->getInt32(6)));
+        cg.b->CreateAtomicRMW(llvm::AtomicRMWInst::Add, writtenPtr, stride,
+                              llvm::MaybeAlign(),
+                              llvm::AtomicOrdering::Monotonic);
+        llvm::Value *base = cg.b->CreateAlignedLoad(
+            i32, cg.b->CreateGEP(i32, metaBase,
+                                 cg.b->CreateAdd(blockOff, cg.b->getInt32(2))),
+            llvm::Align(4));
+        llvm::Value *dst = cg.b->CreateGEP(
+            cg.b->getInt8Ty(), cg.geometryXfbPtr,
+            cg.b->CreateAdd(cg.b->CreateZExt(base, i64), reserved));
+        llvm::Value *dst16 = cg.b->CreateBitCast(
+            dst, v4->getPointerTo(1));
+        cg.b->CreateAlignedStore(pos, dst16, llvm::Align(16));
+        /* Varyings start after the 16-byte position slot (stride is
+         * 16 + count*16 per mgl_air_gs_abi.h §5). */
+        llvm::Value *varyingDst = cg.b->CreateGEP(
+            cg.b->getInt8Ty(), dst, cg.b->getInt64(16));
+        storeGeometryXFBStreamVaryings(cg, varyingDst, stream);
+    }
+    llvm::Value *strip = cg.b->CreateAlignedLoad(
+        cg.b->getInt32Ty(), geometryCounterPtr(cg, 1), llvm::Align(4));
+    cg.b->CreateAlignedStore(
+        cg.b->CreateAdd(strip, cg.b->getInt32(1)),
+        geometryCounterPtr(cg, 1), llvm::Align(4));
     cg.b->CreateAlignedStore(
         cg.b->CreateAdd(emitCount, cg.b->getInt32(1)),
         emitCountPtr, llvm::Align(4));
@@ -2753,7 +2997,7 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (strcmp(name, "EmitStreamVertex") == 0 &&
                 e->u.call.arg_count != 1) {
                 cg.err = 1;
-                cg.errmsg = "GS AIR codegen: only stream 0 is supported";
+                cg.errmsg = "GS AIR codegen: EmitStreamVertex takes one constant stream argument";
                 return nullptr;
             }
             if (strcmp(name, "EmitVertex") == 0 && e->u.call.arg_count != 0) {
@@ -2761,20 +3005,32 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
                 cg.errmsg = "GS AIR codegen: EmitVertex takes no arguments";
                 return nullptr;
             }
+            int32_t stream = 0;
             if (strcmp(name, "EmitStreamVertex") == 0) {
-                llvm::Value *stream = emitExpr(cg, e->u.call.args[0], mod, locals);
-                if (!stream) return nullptr;
-                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(stream)) {
-                    if (!ci->isZero()) {
+                llvm::Value *sv = emitExpr(
+                    cg, e->u.call.args[0], mod, locals);
+                if (!sv) return nullptr;
+                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
+                    if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
                         cg.err = 1;
-                        cg.errmsg = "GS AIR codegen: only stream 0 is supported";
+                        cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
                         return nullptr;
                     }
+                    stream = (int32_t)ci->getZExtValue();
                 } else {
                     cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: stream must be constant zero";
+                    cg.errmsg = "GS AIR codegen: stream must be a constant expression";
                     return nullptr;
                 }
+                if (stream > 0 &&
+                    cg.geometryOutputType != MGL_AST_GS_OUT_POINTS) {
+                    cg.err = 1;
+                    cg.errmsg = "GS AIR codegen: streams above 0 require points output";
+                    return nullptr;
+                }
+            }
+            if (stream > 0) {
+                return emitGeometryStreamVertex(cg, stream);
             }
             return emitGeometryVertex(cg);
         }
@@ -2783,20 +3039,21 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             if (strcmp(name, "EndStreamPrimitive") == 0) {
                 if (e->u.call.arg_count != 1) {
                     cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: only stream 0 is supported";
+                    cg.errmsg = "GS AIR codegen: EndStreamPrimitive takes one constant stream argument";
                     return nullptr;
                 }
-                llvm::Value *stream = emitExpr(cg, e->u.call.args[0], mod, locals);
-                if (!stream) return nullptr;
-                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(stream)) {
-                    if (!ci->isZero()) {
+                llvm::Value *sv = emitExpr(
+                    cg, e->u.call.args[0], mod, locals);
+                if (!sv) return nullptr;
+                if (auto *ci = llvm::dyn_cast<llvm::ConstantInt>(sv)) {
+                    if (ci->getZExtValue() >= MGL_AIR_GS_MAX_STREAMS) {
                         cg.err = 1;
-                        cg.errmsg = "GS AIR codegen: only stream 0 is supported";
+                        cg.errmsg = "GS AIR codegen: stream must be in [0, 3]";
                         return nullptr;
                     }
                 } else {
                     cg.err = 1;
-                    cg.errmsg = "GS AIR codegen: stream must be constant zero";
+                    cg.errmsg = "GS AIR codegen: stream must be a constant expression";
                     return nullptr;
                 }
             } else if (e->u.call.arg_count != 0) {
@@ -3801,6 +4058,12 @@ llvm::Value *emitExpr(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_FLOAT);
             return v;
         }
+        if (strcmp(name, "gl_Layer") == 0 ||
+            strcmp(name, "gl_ViewportIndex") == 0) {
+            cg.layerViewport = true;
+            cg.lvalues[name] = coerceScalar(cg, v, MGLIR_SCALAR_INT);
+            return v;
+        }
         auto lit = locals.find(name);
         if (lit != locals.end()) {
             v = coerceScalar(cg, v, lit->second.scalar);
@@ -3962,6 +4225,10 @@ MType exprType(Codegen &cg, const MGLExpr *e, const MGLIRModule *mod,
             t.scalar = MGLIR_SCALAR_FLOAT;
             if (e->u.call.arg_count > 0)
                 t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
+        } else if (strcmp(name, "floatBitsToInt") == 0) {
+            t.scalar = MGLIR_SCALAR_INT;
+            if (e->u.call.arg_count > 0)
+                t.vec = exprType(cg, e->u.call.args[0], mod, locals).vec;
         } else if (strcmp(name, "length") == 0 ||
                    strcmp(name, "distance") == 0 ||
                    strcmp(name, "dot") == 0) {
@@ -4010,6 +4277,19 @@ static llvm::Value *emitMathBuiltin(Codegen &cg, const MGLExpr *e,
     llvm::Value *a0 = nullptr, *a1 = nullptr, *a2 = nullptr;
     (void)a1;
     (void)a2;
+
+    if (strcmp(name, "floatBitsToInt") == 0) {
+        if (!need(1)) return nullptr;
+        a0 = arg(0);
+        if (!a0) return nullptr;
+        if (a0->getType()->isVectorTy()) {
+            return cg.b->CreateBitCast(a0, llvm::VectorType::get(
+                llvm::Type::getInt32Ty(*cg.ctx),
+                llvm::cast<llvm::FixedVectorType>(a0->getType())->getNumElements(),
+                false));
+        }
+        return cg.b->CreateBitCast(a0, cg.b->getInt32Ty());
+    }
 
     if (strcmp(name, "sin") == 0 || strcmp(name, "cos") == 0 ||
         strcmp(name, "exp") == 0 || strcmp(name, "exp2") == 0 ||
@@ -4550,6 +4830,20 @@ llvm::Value *assembleReturn(Codegen &cg) {
                         ? cg.lvalues["gl_PointSize"]
                         : llvm::ConstantFP::get(llvm::Type::getFloatTy(*cg.ctx), 1.0),
                     ri++);
+            }
+            if (cg.layerViewport) {
+                /* GL 4.6 §11.1.3.5/§11.1.3.6 tie layer and viewport index
+                 * to the same value when only one is written. */
+                const bool hasLayer = cg.lvalues.count("gl_Layer") != 0;
+                const bool hasViewport = cg.lvalues.count("gl_ViewportIndex") != 0;
+                llvm::Value *layer = hasLayer
+                    ? cg.lvalues["gl_Layer"] : cg.b->getInt32(0);
+                llvm::Value *viewportIndex = hasViewport
+                    ? cg.lvalues["gl_ViewportIndex"] : cg.b->getInt32(0);
+                if (hasLayer && !hasViewport) viewportIndex = layer;
+                if (hasViewport && !hasLayer) layer = viewportIndex;
+                ret = cg.b->CreateInsertValue(ret, layer, ri++);
+                ret = cg.b->CreateInsertValue(ret, viewportIndex, ri++);
             }
             for (uint32_t i = 0; i < cg.varyings.size(); i++) {
                 llvm::Value *vv = cg.lvalues.count(cg.varyings[i]->name)
@@ -5521,6 +5815,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         v.name = s->name;
         v.type = typeFromIR(s->type);
         v.location = s->location;
+        v.stream = s->stream;
         uint32_t q = s->qualifiers;
         v.isPatch = (q & MGL_AST_Q_PATCH) != 0;
         if (q & MGL_AST_Q_UNIFORM) {
@@ -5552,6 +5847,13 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 v.type = typeFromIR(s->type->elem_type);
         } else if (isGS && (q & MGL_AST_Q_OUT)) {
             v.kind = VarSym::OUTPUT;
+            if (v.stream < 0) {
+                v.stream = tu->layout_stream >= 0
+                    ? tu->layout_stream : 0;
+            }
+            if (v.stream < 0 || v.stream >= MGL_AIR_GS_MAX_STREAMS) {
+                v.stream = 0;
+            }
         } else if (isKernel && !isTESCompute) {
             continue;   /* plain compute has no stage varyings */
         } else if (isTES && (q & MGL_AST_Q_IN)) {
@@ -5681,6 +5983,9 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
         !isVS && !isTES && !isKernel && strstr(src, "gl_FragCoord") != nullptr;
     const bool usesPointSize =
         (isVS || isTES) && strstr(src, "gl_PointSize") != nullptr;
+    const bool usesLayerViewport =
+        isVS && (strstr(src, "gl_Layer") != nullptr ||
+                 strstr(src, "gl_ViewportIndex") != nullptr);
     if (isVS || isTES) {
         /* retElems always carries the output record (capture variants
          * write it to the XFB buffer). */
@@ -5692,6 +5997,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 MGL_AIR_PER_VERTEX_CULL_DISTANCE_COUNT));
         } else if (usesPointSize) {
             retElems.push_back(llvm::Type::getFloatTy(ctx));
+        }
+        if (usesLayerViewport) {
+            retElems.push_back(llvm::Type::getInt32Ty(ctx));
+            retElems.push_back(llvm::Type::getInt32Ty(ctx));
         }
         for (VarSym &v : syms) {
             if (v.kind == VarSym::VARYING) {
@@ -6576,8 +6885,10 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                  * halves of the meta cursor/written u64 fields, so any
                  * single draw can capture at most 2^32 bytes. */
                 llvm::Value *size32 = b.CreateTrunc(size64, i32);
+                /* Stream 0 block (MGLAIRGSXFBStreamMeta): stride@0
+                 * capacity@4 capture_base@8 cursor@16 written@24. */
                 llvm::Value *cursorPtr = b.CreateGEP(
-                    i32, metaBase, b.getInt32(2));
+                    i32, metaBase, b.getInt32(4));
                 llvm::Value *reserved32 = b.CreateAtomicRMW(
                     llvm::AtomicRMWInst::Add, cursorPtr, size32,
                     llvm::MaybeAlign(), llvm::AtomicOrdering::Monotonic);
@@ -6595,7 +6906,7 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 b.SetInsertPoint(xfbWriteBB);
                 {
                     llvm::Value *writtenPtr = b.CreateGEP(
-                        i32, metaBase, b.getInt32(4));
+                        i32, metaBase, b.getInt32(6));
                     b.CreateAtomicRMW(llvm::AtomicRMWInst::Add, writtenPtr,
                                       size32, llvm::MaybeAlign(),
                                       llvm::AtomicOrdering::Monotonic);
@@ -6607,8 +6918,12 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                      * the in-tree LLVM build, so avoid it here. */
                     llvm::Value *src = geometryRecordPtr(
                         cg, b.getInt32(2));
+                    llvm::Value *base = b.CreateAlignedLoad(
+                        i32, b.CreateGEP(i32, metaBase, b.getInt32(2)),
+                        llvm::Align(4));
                     llvm::Value *dst = b.CreateGEP(
-                        b.getInt8Ty(), cg.geometryXfbPtr, reserved);
+                        b.getInt8Ty(), cg.geometryXfbPtr,
+                        b.CreateAdd(b.CreateZExt(base, i64), reserved));
                     b.CreateMemCpy(dst, llvm::Align(16), src,
                                    llvm::Align(16), size64);
                 }
@@ -7345,6 +7660,20 @@ static int compileGLSLImpl(const char *src, int stage, int capture,
                 llvm::MDString::get(ctx, "air.arg_name"),
                 llvm::MDString::get(ctx, "psize")}));
         }
+        if (usesLayerViewport) {
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.render_target_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_layer")}));
+            outNodes.push_back(llvm::MDNode::get(ctx, {
+                llvm::MDString::get(ctx, "air.viewport_array_index"),
+                llvm::MDString::get(ctx, "air.arg_type_name"),
+                llvm::MDString::get(ctx, "uint"),
+                llvm::MDString::get(ctx, "air.arg_name"),
+                llvm::MDString::get(ctx, "mgl_viewport_index")}));
+        }
         for (VarSym *v : varyings) {
             outNodes.push_back(llvm::MDNode::get(ctx, {
                 llvm::MDString::get(ctx, "air.vertex_output"),
@@ -7701,6 +8030,30 @@ static void fillStageInfo(const MGLTranslationUnit *tu,
             ? static_cast<uint32_t>(tu->layout_max_vertices) : 0u;
         stage_info->geometry_invocations = tu->layout_invocations > 0
             ? static_cast<uint32_t>(tu->layout_invocations) : 1u;
+        /* Per-stream output layout: count the OUTPUT varyings per stream
+         * (position + varying slots at 16B each make the XFB record
+         * stride).  Streams above 0 are transform-feedback only. */
+        uint32_t count[MGL_AIR_GS_MAX_STREAMS] = {};
+        uint32_t maxStream = 0u;
+        for (uint32_t i = 0u; i < mod->symbol_count; i++) {
+            const MGLIRSymbol *s = mod->symbols[i];
+            if (s->is_function || !s->name ||
+                strncmp(s->name, "gl_", 3) == 0) {
+                continue;
+            }
+            if (!(s->qualifiers & MGL_AST_Q_OUT)) continue;
+            int32_t stream = s->stream >= 0
+                ? s->stream
+                : (tu->layout_stream >= 0 ? tu->layout_stream : 0);
+            if (stream < 0 || stream >= MGL_AIR_GS_MAX_STREAMS) stream = 0;
+            count[stream]++;
+            if ((uint32_t)stream > maxStream) maxStream = (uint32_t)stream;
+        }
+        stage_info->gs_stream_count = maxStream + 1u;
+        for (uint32_t s = 0u; s < MGL_AIR_GS_MAX_STREAMS; s++) {
+            stage_info->gs_stream_varying_count[s] = count[s];
+            stage_info->gs_stream_xfb_stride[s] = 16u + count[s] * 16u;
+        }
     }
 }
 

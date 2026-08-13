@@ -593,6 +593,7 @@ struct BindingState {
         releaseObjects(fragmentSamplers);
         viewport = {};
         viewport.zfar = 1.0;
+        viewportCount = 0;
         scissor = {};
         triangleFillMode = MTL::TriangleFillModeFill;
         valid = false;
@@ -636,6 +637,8 @@ struct BindingState {
     std::vector<MTL::SamplerState*> vertexSamplers;
     std::vector<MTL::SamplerState*> fragmentSamplers;
     MTL::Viewport viewport = {0.0, 0.0, 0.0, 0.0, 0.0, 1.0};
+    MTL::Viewport viewports[MGL_MAX_VIEWPORTS];
+    uint64_t viewportCount = 0;
     MTL::ScissorRect scissor = {0, 0, 0, 0};
     MTL::TriangleFillMode triangleFillMode = MTL::TriangleFillModeFill;
     bool valid = false;
@@ -4808,9 +4811,44 @@ int mglRenderCppBindingSetViewport(void* binding_state,
     if (emitted) {
         encoder->setViewport(viewport);
         state->viewport = viewport;
+        state->viewports[0] = viewport;
+        state->viewportCount = 1;
     }
     mgl::recordBindingResult(*state, MGL_RENDER_CPP_BINDING_VIEWPORT, emitted);
     return emitted ? 1 : 0;
+}
+
+int mglRenderCppBindingSetViewports(void* binding_state,
+                                    void* render_encoder,
+                                    const double* viewports,
+                                    uint64_t count) {
+    mgl::BindingState* state = static_cast<mgl::BindingState*>(binding_state);
+    MTL::RenderCommandEncoder* encoder =
+        static_cast<MTL::RenderCommandEncoder*>(render_encoder);
+    if (!state || !encoder || !viewports || count == 0u ||
+        count > MGL_MAX_VIEWPORTS) {
+        return -1;
+    }
+    MTL::Viewport vps[MGL_MAX_VIEWPORTS];
+    for (uint64_t i = 0; i < count; i++) {
+        vps[i] = {viewports[6 * i], viewports[6 * i + 1],
+                  viewports[6 * i + 2], viewports[6 * i + 3],
+                  viewports[6 * i + 4], viewports[6 * i + 5]};
+    }
+    bool same = state->valid && state->viewportCount == count;
+    for (uint64_t i = 0; same && i < count; i++) {
+        same = mgl::viewportEqual(state->viewports[i], vps[i]);
+    }
+    if (!same) {
+        encoder->setViewports(vps, count);
+        for (uint64_t i = 0; i < count; i++) {
+            state->viewports[i] = vps[i];
+        }
+        state->viewportCount = count;
+        state->viewport = vps[0];
+    }
+    mgl::recordBindingResult(*state, MGL_RENDER_CPP_BINDING_VIEWPORT, !same);
+    return same ? 0 : 1;
 }
 
 int mglRenderCppBindingSetScissor(void* binding_state,
@@ -5707,6 +5745,24 @@ int mglRenderCppSetRenderPassStateAttachmentTexture(
     destination->level = level;
     destination->slice = slice;
     destination->depth_plane = depth_plane;
+
+    /* Layered rendering: keep renderTargetArrayLength capped at the largest
+     * arrayLength among attached color textures (>= 1). */
+    uint64_t maxArrayLength = 1u;
+    for (uint32_t i = 0u; i < MGL_RENDER_CPP_MAX_COLOR_ATTACHMENTS; ++i) {
+        MTL::Texture* t = static_cast<MTL::Texture*>(
+            owner->state.color[i].attachment.texture);
+        if (t && t->arrayLength() > maxArrayLength) {
+            maxArrayLength = t->arrayLength();
+        }
+    }
+    owner->state.render_target_array_length = maxArrayLength;
+    /* Layered pass: the layer comes from the VS
+     * [[render_target_array_index]] output; a non-zero attachment slice is
+     * ignored (or dropped) by Metal, so keep it at 0. */
+    if (maxArrayLength > 0u && destination) {
+        destination->slice = 0u;
+    }
     return 0;
 }
 

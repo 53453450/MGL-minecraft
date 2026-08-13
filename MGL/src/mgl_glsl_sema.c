@@ -1000,6 +1000,7 @@ static const BiFn kBuiltins[] = {
     { "length",    1, { BI_ARG_GENF }, BI_RET_FLOAT },
     { "distance",  2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
     { "dot",       2, { BI_ARG_GENF, BI_ARG_GENF }, BI_RET_FLOAT },
+    { "floatBitsToInt", 1, { BI_ARG_GENF }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENI }, BI_RET_GENI },
     { "abs",       1, { BI_ARG_GENF }, BI_RET_GENF },
     { "min",       2, { BI_ARG_GENI, BI_ARG_GENI }, BI_RET_GENI },
@@ -1515,6 +1516,13 @@ static MGLIRType *check_expr(Sema *s, SymTab *tab, const MGLExpr *e)
                     mglIRTypeScalar(MGLIR_SCALAR_FLOAT), 2));
             }
             if (strcmp(e->u.var_ref.name, "gl_PrimitiveIDIn") == 0) {
+                return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
+            }
+            if (strcmp(e->u.var_ref.name, "gl_Layer") == 0 ||
+                strcmp(e->u.var_ref.name, "gl_ViewportIndex") == 0) {
+                /* GS (or vertex) per-primitive output builtins; the AIR
+                 * backend maps them to the per-vertex record layer /
+                 * viewport-index words and the raster vertex outputs. */
                 return scratch_type(s, mglIRTypeScalar(MGLIR_SCALAR_INT));
             }
             if (strcmp(e->u.var_ref.name, "gl_in") == 0) {
@@ -2143,6 +2151,7 @@ static void analyze_variable(Sema *s, SymTab *tab, const MGLDecl *d, int global)
             isym->location = (d->layout_location >= 0)
                                  ? (uint32_t)d->layout_location
                                  : UINT32_MAX;
+            isym->stream = d->layout_stream;
             /* layout block: compute offsets on the block type */
             if (d->struct_members && d->struct_member_count > 0) {
                 layout_block(s, d, t);

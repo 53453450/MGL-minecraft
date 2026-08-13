@@ -6604,6 +6604,7 @@ void mglViewportIndexedf(GLMContext ctx, GLuint index, GLfloat x, GLfloat y, GLf
 		ctx->state.viewport_array[index][1] = y;
 		ctx->state.viewport_array[index][2] = w;
 		ctx->state.viewport_array[index][3] = h;
+		ctx->state.viewport_array_set = GL_TRUE;
 		mglMarkRendererDirtyBits(&ctx->state, DIRTY_RENDER_STATE);
 	}
 }
