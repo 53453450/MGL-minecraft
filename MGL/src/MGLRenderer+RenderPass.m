@@ -1397,6 +1397,7 @@ output->name, (unsigned)i,
         }
 
         if (actualColor0 != expectedColor0) {
+            return false;
         }
 
         id<MTLTexture> expectedDepth = nil;
@@ -1410,8 +1411,10 @@ output->name, (unsigned)i,
             expectedDepth = defaultPassNeedsDepth ? _drawBuffers[mgl_drawbuffer].depthbuffer : nil;
             expectedStencil = defaultPassNeedsStencil ? _drawBuffers[mgl_drawbuffer].stencilbuffer : nil;
             if (MGL_STATE(ctx)->caps.depth_test && !expectedDepth) {
+                return false;
             }
             if ((MGL_STATE(ctx)->caps.stencil_test || ctx->stencil_format.format) && !expectedStencil) {
+                return false;
             }
         }
 
@@ -1424,8 +1427,10 @@ output->name, (unsigned)i,
                   &passState, MGL_RENDER_CPP_RENDER_PASS_ATTACHMENT_STENCIL, 0)
             : mglRenderPassStencilTextureFor(_renderPassManager.state);
         if (actualDepth != expectedDepth) {
+            return false;
         }
         if (actualStencil != expectedStencil) {
+            return false;
         }
 
         return true;
@@ -1451,6 +1456,7 @@ output->name, (unsigned)i,
             tex->is_render_target = true;
             if (!tex->mtl_data) {
                 if (![self bindMTLTexture:tex]) {
+                    return false;
                 }
             }
             expected = (__bridge id<MTLTexture>)(tex->mtl_data);
@@ -1463,6 +1469,7 @@ output->name, (unsigned)i,
             : _renderPassManager.state->renderPassDescriptor
                   .colorAttachments[colorSlot].texture;
         if (actual != expected) {
+            return false;
         }
 
         if (attachment && actual) {
@@ -1477,6 +1484,7 @@ output->name, (unsigned)i,
                           .colorAttachments[colorSlot],
                       subresource);
             if (!matches) {
+                return false;
             }
         }
 
@@ -1503,6 +1511,7 @@ output->name, (unsigned)i,
         if (depthTex && !depthTex->mtl_data) {
             depthTex->is_render_target = true;
             if (![self bindMTLTexture:depthTex]) {
+                return false;
             }
         }
         expectedDepth = depthTex ? (__bridge id<MTLTexture>)(depthTex->mtl_data) : nil;
